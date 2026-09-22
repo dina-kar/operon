@@ -1,0 +1,21 @@
+# Rust
+/target/
+**/target/
+*.rs.bk
+*.pdb
+
+# Operon local dev data
+/.operon/
+/data/
+*.wal
+*.seg
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Env
+.env
+.env.*

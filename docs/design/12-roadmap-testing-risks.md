@@ -1,0 +1,60 @@
+# 12 — Roadmap, Testing & Risks
+
+Status: **Approved** · 2026-09-22
+
+Build order follows the pain point: **search + vector first (ES + Qdrant), then graph (Neo4j), then Kafka, then analytics (ClickHouse/Iceberg), then scale/reliability hardening.** The internal log exists from M0 because everything depends on it.
+
+---
+
+## 1. Milestones
+
+| M | Name | Scope | Exit gates |
+|---|---|---|---|
+| **M0** | Foundation | `operon dev/standalone`; meta on openraft; `object_store` abstraction with fault-injection wrapper; internal stream engine (`standard` class, leaderless sequencing, segmenter); foyer cache (H0/H1); worker leases + task framework; link framework (exactly-once apply); PkIndex on SlateDB; GC; DST harness | kill -9 at every step of write/commit/segment paths → no acknowledged-data loss, no torn state; object-store PUT/GET/412/409 fault matrix passes; linearizability check on sequencer & manifest-pointer CAS |
+| **M1** | Collections (ES + Qdrant) | Lance + Tantivy splits under one manifest; upserts/deletes; tail indexes; native hybrid API + Python/TS SDK; Arrow Flight SQL; Qdrant API Phase A; ES API Phase A; hot tier: pinned splits + Qdrant-derived HNSW artifacts; affinity routing | LangChain + LlamaIndex vector-store tests (ES and Qdrant backends) pass unmodified; BEIR nDCG@10 within 1 pt of ES BM25; Recall@10 within 1% of Qdrant at equal hot-tier latency; results identical with hot tier on/off |
+| **M2** | Graph (Neo4j) | Mapped + native graphs; ID maps; CSR/CSC sidecars; edge overlay; Expand/VarExpand/ShortestPath; Cypher Phase A; Bolt 5; Neo4j procedure shims; `leiden`/`pagerank`/`wcc` table functions | Graphiti, LightRAG, LangChain `Neo4jGraph`, LlamaIndex property-graph tests pass unmodified; LDBC SNB IS1–IS7 on SF1; openCypher TCK pass-rate tracked |
+| **M3** | Streams (Kafka) | Kafka gateway: produce/fetch/metadata/admin, consumer groups (classic + KIP-848), idempotent producers, compacted topics, SASL/mTLS/ACLs; `express` WAL class; zone-aware routing | librdkafka, Java, franz-go, kcat, Kafka Connect, Flink (at-least-once) client matrix; OpenMessaging Benchmark vs AutoMQ OSS/Kafka; Jepsen-style tests (no lost acknowledged writes, no reordering, no duplicates with idempotence) across node and AZ kills |
+| **M4** | Analytics (ClickHouse + Iceberg) | Lakekeeper integration; Iceberg writes incl. DV writer; keyed tables; stream→table links; MVs with mergeable states; ClickHouse HTTP + dialect + function-compat; Iceberg hot tier T0–T3 | ClickBench (hot) median within 2–3× ClickHouse OSS; TPC-H SF100 completes; clickhouse-connect + Grafana over HTTP work; Spark/Trino/DuckDB read Operon tables via Lakekeeper |
+| **M5** | Scale & reliability | `quorum` WAL (Raft journals); Kafka transactions + read_committed; datafusion-distributed; meta sharding (multi-Raft); multi-tenancy hardening (quotas, fair share, 1M namespaces); K8s operator; DR restore; OpenFGA authZ | Failover RTO < 5 s (quorum) with RPO 0; chaos suite green for 72 h; 1M-namespace test; tenant-isolation tests; restore-from-bucket drill |
+| Phase C | Research | SPFresh incremental IVF; DiskANN hot tier; WCOJ/factorized graph joins; ClickHouse Native TCP; region failover; Vortex hot encoding | — |
+
+## 2. Testing strategy
+
+1. **Deterministic simulation testing (DST)** for meta, sequencer, journals, link apply and manifest commits — simulated network, clock, disk and object store (evaluate `madsim` vs `turmoil`; Iggy and FoundationDB/TigerBeetle as practice references). Every merged PR runs a DST seed sweep.
+2. **Object-store fault injection:** an `object_store` wrapper injecting latency, 5xx, throttling (503 SlowDown), 412/409 on conditional writes, partial reads, and crashes between PUT and commit.
+3. **Crash-consistency tests:** kill -9 at instrumented failpoints (`fail` crate) across write, segment, commit, compaction and GC paths.
+4. **Property-based tests (`proptest`):** WAL/segment encode/decode, offset index, manifest evolution, deletion bitmap algebra, CSR build vs. naive adjacency, tail merge vs. full rebuild.
+5. **Differential testing:**
+   - Hot tier on/off must return identical results (random disabling in CI).
+   - Operon vs. reference engines: ES (BM25 rankings on fixed corpora), Qdrant (recall), Neo4j (Cypher results on LDBC/fixture graphs), ClickHouse (query results on ClickBench data), DataFusion-on-Parquet baseline.
+6. **Jepsen-style tests** for Kafka semantics and cross-object consistency tokens (write via Kafka/ES/Cypher → strong read in another surface must reflect it).
+7. **Conformance suites** per gateway (client libraries and framework integrations listed in each milestone gate) — these define compatibility scope.
+8. **Benchmarks in CI (nightly):** OpenMessaging Benchmark, BEIR, VectorDBBench, LDBC SNB, ClickBench, TPC-H; tracked for regressions, including S3 request counts per operation (cost regressions are bugs).
+
+## 3. Risk register
+
+| # | Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|---|
+| 1 | Scope: five pillars is five products | High | High | Strict milestone order; compat scope defined by conformance suites, not feature requests; ship M0+M1 as a useful product on its own |
+| 2 | Lance vendor control / API churn | Medium | High | Pin format 2.1 and crate versions; `CollectionStore` trait boundary; contribute upstream; Vortex/own format as long-term fallback |
+| 3 | Lance small-commit cost | High (if misused) | Medium | Never commit per write; batch via Operon log |
+| 4 | iceberg-rust write gaps (DVs, RowDelta) | Certain | Medium | RisingWave fork + own DV writer, upstreamed; append-only tables unblocked meanwhile |
+| 5 | Lakekeeper requires Postgres | Medium | Medium | Verify pluggable backend; else bundle managed Postgres for catalog only |
+| 6 | Meta Raft becomes the bottleneck at high partition/namespace counts | Medium | High | Batch proposals per node flush; coalesce offset commits; multi-Raft sharding in M5; FoundationDB backend option |
+| 7 | Cold-query latency disappoints (0.5–1 s) | Medium | Medium | Affinity routing, published hot artifacts, prewarm API, clear "pin" UX; document the cold/warm contract |
+| 8 | Cross-AZ costs on `quorum` class | Certain | Low–Medium | Default classes avoid it; placement hints; document pricing |
+| 9 | Qdrant fork maintenance (large codebase) | Medium | Medium | Take minimal subset (HNSW, quantization, filter planner); evaluate `qdrant-edge` boundary first |
+| 10 | Quickwit fork divergence | Medium | Low–Medium | Fork only storage/directories/DSL crates; pin; periodic rebase |
+| 11 | Competitive: HelixDB / LanceDB / Milvus move into the same slot | Medium | High | Speed to M1; differentiate on compat gateways + Kafka + Iceberg + fully open serving layer; consider collaboration with HelixDB |
+| 12 | Compatibility long tail (ES DSL, Cypher, ClickHouse functions) | High | Medium | Usage-driven prioritization from target integrations; clear, documented unsupported-feature errors |
+| 13 | S3 provider behavior differences (conditional writes, Express/Rapid semantics) | Medium | Medium | Provider conformance tests in CI against real S3/GCS/Azure/MinIO |
+| 14 | Correctness bugs in tail merge / consistency tokens | Medium | High | DST + differential tests + Jepsen-style cross-surface checks |
+
+## 4. Suggested first 90 days (M0 kickoff)
+
+1. Repo + workspace skeleton (`operon-meta`, `operon-log`, `operon-store`, `operon-cache`, `operon-worker`, `operon-link`, `operon-pk`, `operon-sim`), CI with DST harness.
+2. `object_store` fault-injection wrapper + provider conformance tests.
+3. Meta state machine on openraft (namespaces, streams, sequencer, leases, manifest pointers) with snapshots to S3.
+4. Leaderless `standard` WAL write path + segmenter + fetch path (native API).
+5. Link framework + exactly-once apply against a toy target; PkIndex on SlateDB.
+6. Crash/fault gates for M0.
