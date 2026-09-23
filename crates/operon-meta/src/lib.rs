@@ -8,6 +8,7 @@
 mod codec;
 mod command;
 mod db;
+mod log_store;
 mod raft;
 mod state;
 mod state_machine;
@@ -15,6 +16,7 @@ mod types;
 
 pub use command::{ApplyError, Command, Reply};
 pub use db::LocalDb;
+pub use log_store::LogStore;
 pub use raft::{EntryReply, NodeId, SnapshotData, TypeConfig};
 pub use state::{MAX_KEY_LEN, MAX_LEASE_TTL_MS, MAX_NAME_LEN, MAX_PARTITIONS, MetaState};
 pub use state_machine::StateMachineStore;
