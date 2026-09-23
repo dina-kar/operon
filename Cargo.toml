@@ -17,11 +17,17 @@ foyer = "0.22"
 futures = "0.3"
 moka = { version = "0.12", features = ["future"] }
 object_store = { version = "0.14", features = ["aws", "gcp", "azure", "fs"] }
+openraft = { version = "=0.10.0-alpha.34", default-features = false, features = ["serde", "tokio-rt"] }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
 proptest = "1"
+redb = "4"
+serde = { version = "1", features = ["derive"] }
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
 url = "2"
+operon-common = { path = "crates/operon-common", version = "0.0.1" }
 operon-store = { path = "crates/operon-store", version = "0.0.1" }
 
 [workspace.lints.rust]

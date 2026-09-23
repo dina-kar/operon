@@ -1,0 +1,65 @@
+mod catalog;
+
+use std::collections::BTreeMap;
+
+use operon_common::{NamespaceId, StreamId};
+use serde::{Deserialize, Serialize};
+
+use crate::command::{ApplyError, Command, Reply};
+use crate::types::{Namespace, PartitionState, Stream};
+
+/// Longest namespace or stream name, in bytes.
+pub const MAX_NAME_LEN: usize = 255;
+/// Most partitions a stream may have.
+pub const MAX_PARTITIONS: u32 = 10_000;
+
+/// The metastore state machine.
+///
+/// `apply` must be deterministic: it reads nothing but the state and the
+/// command (time arrives inside commands), and it keeps everything in ordered
+/// maps, so replicas that apply the same log hold identical state and encode
+/// identical snapshots.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaState {
+    last_namespace_id: u64,
+    last_stream_id: u64,
+    namespaces: BTreeMap<NamespaceId, Namespace>,
+    namespace_names: BTreeMap<String, NamespaceId>,
+    streams: BTreeMap<StreamId, Stream>,
+    stream_names: BTreeMap<(NamespaceId, String), StreamId>,
+    partitions: BTreeMap<(StreamId, u32), PartitionState>,
+}
+
+impl MetaState {
+    /// Applies one command. On error the state is unchanged.
+    pub fn apply(&mut self, command: Command) -> Result<Reply, ApplyError> {
+        match command {
+            Command::CreateNamespace { name } => self.create_namespace(name),
+            Command::CreateStream {
+                namespace,
+                name,
+                partitions,
+                class,
+            } => self.create_stream(namespace, name, partitions, class),
+        }
+    }
+}
+
+/// Names are 1..=255 bytes of ASCII letters, digits, `-`, `_` and `.`, and are
+/// not `.` or `..`, so they are safe as object path segments.
+fn validate_name(kind: &str, name: &str) -> Result<(), ApplyError> {
+    let ok = !name.is_empty()
+        && name.len() <= MAX_NAME_LEN
+        && name != "."
+        && name != ".."
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
+    if ok {
+        Ok(())
+    } else {
+        Err(ApplyError::InvalidArgument(format!(
+            "invalid {kind} name {name:?}"
+        )))
+    }
+}
