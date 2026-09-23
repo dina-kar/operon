@@ -109,3 +109,31 @@ pub enum ApplyError {
     #[error("fenced: lease {lease} is no longer at the given epoch")]
     Fenced { lease: String },
 }
+
+impl std::fmt::Display for Command {
+    /// A short summary for logs; openraft requires log payloads to be `Display`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Command::CreateNamespace { name } => write!(f, "CreateNamespace({name})"),
+            Command::CreateStream {
+                namespace, name, ..
+            } => write!(f, "CreateStream({namespace}/{name})"),
+            Command::CommitWal { object, chunks } => {
+                write!(f, "CommitWal({object}, {} chunks)", chunks.len())
+            }
+            Command::AcquireLease { key, owner, .. } => write!(f, "AcquireLease({key}, {owner})"),
+            Command::RenewLease {
+                key, owner, epoch, ..
+            } => write!(f, "RenewLease({key}, {owner}, epoch {epoch})"),
+            Command::ReleaseLease { key, owner, epoch } => {
+                write!(f, "ReleaseLease({key}, {owner}, epoch {epoch})")
+            }
+            Command::CasPointer {
+                namespace,
+                key,
+                expected,
+                ..
+            } => write!(f, "CasPointer({namespace}/{key}, expected {expected:?})"),
+        }
+    }
+}
