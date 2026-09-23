@@ -21,6 +21,9 @@ Living document. Newest decisions at the bottom of each table.
 | D13 | 2026-09-22 | Compatibility scope defined by external conformance suites (client libs, framework integrations) | Prevents unbounded compat long tail | Approved |
 | D14 | 2026-09-22 | Build order: M0 foundation → M1 collections → M2 graph → M3 Kafka → M4 analytics → M5 scale | Follows the AI-app pain point (ES+Qdrant+Neo4j first) | Approved (§12) |
 | D15 | 2026-09-22 | DataFusion as the single query engine; datafusion-distributed (not Ballista) | Extensibility, ecosystem, interactive distributed execution | Approved (§05) |
+| D16 | 2026-09-23 | Metastore Raft: openraft pinned to `=0.10.0-alpha.34`; the local Raft log, vote and snapshot pointer in **redb**; log entries and snapshot bodies encoded with **postcard** | openraft 0.10 alphas change APIs between releases; redb is pure Rust and ACID (RocksDB would add a C++ build) | Approved (M0.2 plan) |
+| D17 | 2026-09-23 | Meta snapshots live only in object storage, one set per node: `meta/snapshots/<node_id>/<term>-<index>.snap` (amends §01 §6) | Nodes snapshot independently; per-node paths let each node delete its previous snapshot without breaking another node's restart | Approved (M0.2 plan) |
+| D18 | 2026-09-23 | Metastore ids are dense `u64` counters allocated by the state machine; stream ids are unique across the cluster | `apply` must be deterministic (no random ULIDs); a cluster-unique stream id makes `(stream, partition)` a complete key | Approved (M0.2 plan) |
 
 ## Open questions
 

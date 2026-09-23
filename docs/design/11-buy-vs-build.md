@@ -15,7 +15,9 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | Collection format | **Lance** (`lance` crate) | Apache-2.0 | 12.0 (format 2.1) | Docs, vectors, IVF + scalar indexes | Vendor-led (LanceDB Inc.), fast API churn → pin + trait boundary; small-commit cost → batch via own WAL |
 | Full-text | **Tantivy** | MIT | 0.26.1 | Inverted index, fast fields, aggregations | Healthy, 16k stars |
 | KV / PK index / ID map | **SlateDB** | Apache-2.0 (Commonhaus) | 0.16 | PkIndex, vertex-ID maps | Pre-1.0 API; single writer per DB (fits our fencing model); used by HelixDB, Dropbox |
-| Consensus | **openraft** | Apache-2.0 | 0.10 (alpha) | Meta Raft, `quorum` journals | API unstable pre-1.0; used in production by Databend |
+| Consensus | **openraft** | MIT/Apache-2.0 | 0.10.0-alpha.34 (pinned exactly) | Meta Raft, `quorum` journals | API unstable pre-1.0 (alphas break APIs); used in production by Databend |
+| Local Raft log | **redb** | MIT/Apache-2.0 | 4.3 | Meta Raft log, vote, snapshot pointer | Pure Rust, ACID, fsync per commit; passes openraft's storage test suite |
+| Binary encoding | **postcard** | MIT/Apache-2.0 | 1.1 | Raft log entries, meta snapshot bodies | Stable wire format since 1.0; snapshots add a versioned, checksummed envelope |
 | Iceberg | **iceberg-rust** (+ RisingWave fork) | Apache-2.0 | 0.10.1 | Iceberg reads/appends; row deltas via fork | DV writer + RowDelta missing upstream → build and upstream |
 | Iceberg compaction | **nimtable/iceberg-compaction** | Apache-2.0 | active | Compaction engine | RisingWave ecosystem |
 | Iceberg catalog | **Lakekeeper** | Apache-2.0 | 0.13.6 | REST catalog for tables + external engines | Postgres backend today (verify pluggable backend); vendor Vakamo sells "Plus" |
