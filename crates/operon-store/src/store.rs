@@ -41,6 +41,38 @@ impl Store {
         Self::new(Arc::new(InMemory::new()))
     }
 
+    /// Opens a store from a URL such as `s3://bucket/prefix`, `gs://bucket`,
+    /// `az://container`, `file:///abs/dir` or `memory:///`.
+    ///
+    /// `options` are backend-specific keys (for example `aws_region`); credentials
+    /// not given here are read from the environment by the backend.
+    pub fn from_url<I, K, V>(url: &str, options: I) -> Result<Self, StoreError>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<str>,
+        V: Into<String>,
+    {
+        let parsed = url::Url::parse(url).map_err(|e| StoreError::InvalidUrl(e.to_string()))?;
+        if parsed.scheme() == "file" {
+            let dir = parsed
+                .to_file_path()
+                .map_err(|()| StoreError::InvalidUrl(url.to_string()))?;
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| StoreError::InvalidUrl(format!("{url}: {e}")))?;
+            let fs = object_store::local::LocalFileSystem::new_with_prefix(&dir)
+                .map_err(|e| map_err(url, e))?;
+            return Ok(Self::new(Arc::new(fs)));
+        }
+        let (store, prefix) =
+            object_store::parse_url_opts(&parsed, options).map_err(|e| map_err(url, e))?;
+        let store: Arc<dyn ObjectStore> = if prefix.as_ref().is_empty() {
+            Arc::from(store)
+        } else {
+            Arc::new(object_store::prefix::PrefixStore::new(store, prefix))
+        };
+        Ok(Self::new(store))
+    }
+
     /// The underlying object store, for integrations that need it directly.
     pub fn inner(&self) -> &Arc<dyn ObjectStore> {
         &self.inner
