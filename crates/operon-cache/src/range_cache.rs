@@ -4,7 +4,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::{Bytes, BytesMut};
-use foyer::{BlockEngineConfig, DeviceBuilder, FsDeviceBuilder, HybridCache, HybridCacheBuilder};
+use foyer::{
+    BlockEngineConfig, DeviceBuilder, FsDeviceBuilder, HybridCache, HybridCacheBuilder, RecoverMode,
+};
+use futures::{StreamExt, TryStreamExt};
 use operon_store::{Store, StoreError};
 
 /// Errors returned by [`RangeCache`].
@@ -21,9 +24,21 @@ pub enum CacheError {
         end: u64,
         size: u64,
     },
+    #[error("size mismatch for {path}: expected {expected} bytes, got {actual}")]
+    SizeMismatch {
+        path: String,
+        expected: u64,
+        actual: u64,
+    },
 }
 
 /// NVMe (or any local directory) tier configuration.
+///
+/// The disk tier always starts cold: it never recovers blocks left behind by a
+/// previous process. A directory reused across runs (or across a config change
+/// such as a different `block_size`) is treated as empty rather than replayed,
+/// so a stale on-disk block can never be served as if it matched the current
+/// configuration.
 #[derive(Clone, Debug)]
 pub struct DiskConfig {
     pub dir: PathBuf,
@@ -57,6 +72,10 @@ pub struct CacheStats {
     pub hits: u64,
     pub misses: u64,
     pub checksum_failures: u64,
+    /// Lookups where the foyer cache itself returned an error (for example disk
+    /// I/O on the disk tier). These are treated as misses and served from the
+    /// store; they never fail the read.
+    pub cache_errors: u64,
 }
 
 #[derive(Debug, Default)]
@@ -64,6 +83,7 @@ struct Counters {
     hits: AtomicU64,
     misses: AtomicU64,
     checksum_failures: AtomicU64,
+    cache_errors: AtomicU64,
 }
 
 /// Read-through cache of byte ranges of immutable objects.
@@ -87,6 +107,10 @@ impl std::fmt::Debug for RangeCache {
 
 const CRC_LEN: usize = 4;
 
+/// Caps how many block fetches a single multi-block `read` drives concurrently,
+/// so a large range request cannot open unbounded concurrent store/cache lookups.
+const MAX_CONCURRENT_BLOCK_FETCHES: usize = 16;
+
 impl RangeCache {
     pub async fn new(store: Store, config: RangeCacheConfig) -> Result<Self, CacheError> {
         if config.block_size == 0 {
@@ -105,6 +129,11 @@ impl RangeCache {
                     .map_err(|e| CacheError::Cache(e.to_string()))?;
                 memory
                     .with_engine_config(BlockEngineConfig::new(device))
+                    // The disk tier is immutable-block cache data, not a source of
+                    // truth (see `DiskConfig`): never recover it on open, so a
+                    // reused directory or a changed `block_size` can't resurrect a
+                    // stale block under a key the current config would also use.
+                    .with_recover_mode(RecoverMode::None)
                     .build()
                     .await
             }
@@ -146,10 +175,11 @@ impl RangeCache {
         }
         let first = range.start / self.block_size;
         let last = (range.end - 1) / self.block_size;
-        let blocks = futures::future::try_join_all(
-            (first..=last).map(|index| self.block(path, index, size)),
-        )
-        .await?;
+        let blocks: Vec<Bytes> =
+            futures::stream::iter((first..=last).map(|index| self.block(path, index, size)))
+                .buffered(MAX_CONCURRENT_BLOCK_FETCHES)
+                .try_collect()
+                .await?;
 
         let mut out = BytesMut::with_capacity((range.end - range.start) as usize);
         for (index, block) in (first..=last).zip(blocks) {
@@ -161,29 +191,60 @@ impl RangeCache {
         Ok(out.freeze())
     }
 
+    /// Gracefully closes the cache, flushing any in-memory blocks to the disk
+    /// tier (if configured) and waiting for pending disk writes to finish.
+    ///
+    /// Not required for correctness (the disk tier always starts cold, see
+    /// [`DiskConfig`]), but recommended before process exit so a later reopen
+    /// can reuse warm blocks instead of refetching them from the store.
+    pub async fn close(&self) -> Result<(), CacheError> {
+        self.blocks
+            .close()
+            .await
+            .map_err(|e| CacheError::Cache(e.to_string()))
+    }
+
     /// Current hit/miss counters.
     pub fn stats(&self) -> CacheStats {
         CacheStats {
             hits: self.counters.hits.load(Ordering::Relaxed),
             misses: self.counters.misses.load(Ordering::Relaxed),
             checksum_failures: self.counters.checksum_failures.load(Ordering::Relaxed),
+            cache_errors: self.counters.cache_errors.load(Ordering::Relaxed),
         }
     }
 
     async fn block(&self, path: &str, index: u64, size: u64) -> Result<Bytes, CacheError> {
         let key = block_key(path, index);
-        if let Some(entry) = self
+        let start = index * self.block_size;
+        // `size` is only ever passed in for a block index derived from a
+        // validated range, so `start < size` always holds here.
+        let expected = self.block_size.min(size - start);
+        let cache_hit = match self
             .blocks
             .get(&key)
             .await
-            .map_err(|e| CacheError::Cache(e.to_string()))?
+            .map_err(|e| CacheError::Cache(e.to_string()))
         {
+            Ok(entry) => entry,
+            Err(_) => {
+                // A foyer lookup error (for example disk I/O) does not mean the
+                // data is unavailable: treat it as a miss and fetch from the
+                // store instead of failing the read.
+                self.counters.cache_errors.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+        };
+        if let Some(entry) = cache_hit {
             match verify(entry.value()) {
-                Some(data) => {
+                // A verified block whose length no longer matches what this
+                // read expects (for example the object shrank after `size`
+                // was cached) is just as unusable as a checksum failure.
+                Some(data) if data.len() as u64 == expected => {
                     self.counters.hits.fetch_add(1, Ordering::Relaxed);
                     return Ok(data);
                 }
-                None => {
+                _ => {
                     self.counters
                         .checksum_failures
                         .fetch_add(1, Ordering::Relaxed);
@@ -192,9 +253,15 @@ impl RangeCache {
             }
         }
         self.counters.misses.fetch_add(1, Ordering::Relaxed);
-        let start = index * self.block_size;
-        let end = (start + self.block_size).min(size);
+        let end = start + expected;
         let data = self.store.get_range(path, start..end).await?;
+        if data.len() as u64 != expected {
+            return Err(CacheError::SizeMismatch {
+                path: path.to_string(),
+                expected,
+                actual: data.len() as u64,
+            });
+        }
         self.blocks.insert(key, seal(&data));
         Ok(data)
     }

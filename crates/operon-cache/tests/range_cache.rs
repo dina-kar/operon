@@ -1,12 +1,110 @@
+use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
+use async_trait::async_trait;
 use bytes::Bytes;
+use futures::stream::BoxStream;
 use object_store::memory::InMemory;
+use object_store::path::Path;
+use object_store::{
+    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    PutMultipartOptions, PutOptions, PutPayload, PutResult,
+};
 use operon_cache::{CacheError, DiskConfig, RangeCache, RangeCacheConfig};
 use operon_store::{Fault, FaultyStore, Op, Store};
 
 fn data(len: usize) -> Bytes {
     Bytes::from((0..len).map(|i| (i % 251) as u8).collect::<Vec<u8>>())
+}
+
+/// An [`ObjectStore`] wrapper that records the peak number of concurrent
+/// `get_opts` calls in flight, for asserting bounded fan-out.
+struct ConcurrencyTrackingStore {
+    inner: InMemory,
+    current: AtomicUsize,
+    max_seen: AtomicUsize,
+}
+
+impl ConcurrencyTrackingStore {
+    fn new() -> Self {
+        Self {
+            inner: InMemory::new(),
+            current: AtomicUsize::new(0),
+            max_seen: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl fmt::Debug for ConcurrencyTrackingStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConcurrencyTrackingStore").finish()
+    }
+}
+
+impl fmt::Display for ConcurrencyTrackingStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ConcurrencyTrackingStore")
+    }
+}
+
+#[async_trait]
+impl ObjectStore for ConcurrencyTrackingStore {
+    async fn put_opts(
+        &self,
+        location: &Path,
+        payload: PutPayload,
+        opts: PutOptions,
+    ) -> object_store::Result<PutResult> {
+        self.inner.put_opts(location, payload, opts).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &Path,
+        opts: PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &Path,
+        options: GetOptions,
+    ) -> object_store::Result<GetResult> {
+        let n = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_seen.fetch_max(n, Ordering::SeqCst);
+        // Give overlapping calls a chance to actually run concurrently.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let result = self.inner.get_opts(location, options).await;
+        self.current.fetch_sub(1, Ordering::SeqCst);
+        result
+    }
+
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, object_store::Result<Path>>,
+    ) -> BoxStream<'static, object_store::Result<Path>> {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+
+    async fn list_with_delimiter(&self, prefix: Option<&Path>) -> object_store::Result<ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &Path,
+        to: &Path,
+        options: CopyOptions,
+    ) -> object_store::Result<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
 }
 
 async fn cache_over(store: Store, block_size: u64) -> RangeCache {
@@ -111,5 +209,117 @@ async fn disk_tier_configuration_serves_correct_bytes() {
     assert_eq!(
         cache.read("obj", 100..3000).await.unwrap(),
         body.slice(100..3000)
+    );
+}
+
+#[tokio::test]
+async fn reopened_disk_dir_with_different_block_size_does_not_serve_stale_blocks() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = data(64);
+
+    let store = Store::in_memory();
+    store.put("obj", body.clone()).await.unwrap();
+    let cache = RangeCache::new(
+        store.clone(),
+        RangeCacheConfig {
+            block_size: 8,
+            memory_bytes: 1024,
+            disk: Some(DiskConfig {
+                dir: dir.path().to_path_buf(),
+                capacity_bytes: 64 << 20,
+            }),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(cache.read("obj", 0..64).await.unwrap(), body);
+    // Force all in-memory blocks to the disk tier and close cleanly so the
+    // reopen below deterministically sees them.
+    cache.close().await.unwrap();
+    drop(cache);
+
+    // Reopen the same on-disk directory with a different block size. If the
+    // disk tier recovers its old contents, the block keyed the same way as
+    // before (but sized for a different block_size) would be served as a hit
+    // with wrong bytes.
+    let cache = RangeCache::new(
+        store,
+        RangeCacheConfig {
+            block_size: 16,
+            memory_bytes: 1024,
+            disk: Some(DiskConfig {
+                dir: dir.path().to_path_buf(),
+                capacity_bytes: 64 << 20,
+            }),
+        },
+    )
+    .await
+    .unwrap();
+
+    let got = cache.read("obj", 16..32).await.unwrap();
+    assert_eq!(got, body.slice(16..32), "got wrong bytes after reopen");
+}
+
+#[tokio::test]
+async fn shrunk_object_after_cached_size_returns_size_mismatch_without_panicking() {
+    let store = Store::in_memory();
+    store.put("obj", data(100)).await.unwrap();
+    let cache = cache_over(store.clone(), 100).await;
+
+    // Prime the cached size at 100 bytes.
+    assert_eq!(cache.size("obj").await.unwrap(), 100);
+
+    // The object shrinks after `size` was cached; the cache still believes it
+    // is 100 bytes, so `read` will ask the store for a 100-byte block.
+    store.put("obj", data(70)).await.unwrap();
+
+    let err = cache.read("obj", 66..100).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            CacheError::SizeMismatch {
+                expected: 100,
+                actual: 70,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+
+    // Must not panic while slicing a too-short block.
+    let err = cache.read("obj", 71..100).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            CacheError::SizeMismatch {
+                expected: 100,
+                actual: 70,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn multi_block_read_bounds_concurrent_block_fetches() {
+    let tracker = Arc::new(ConcurrencyTrackingStore::new());
+    let store = Store::new(tracker.clone());
+    let block_size = 64usize;
+    let blocks = 40;
+    let body = data(block_size * blocks);
+    store.put("obj", body.clone()).await.unwrap();
+    let cache = cache_over(store, block_size as u64).await;
+
+    let got = cache
+        .read("obj", 0..(block_size * blocks) as u64)
+        .await
+        .unwrap();
+    assert_eq!(got, body);
+
+    let max_seen = tracker.max_seen.load(Ordering::SeqCst);
+    assert!(
+        max_seen <= 16,
+        "expected at most 16 concurrent block fetches, saw {max_seen}"
     );
 }
