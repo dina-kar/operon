@@ -15,6 +15,9 @@ use object_store::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Op {
     Put,
+    /// Covers [`Store::get`](crate::Store::get), [`Store::get_range`](crate::Store::get_range)
+    /// and [`Store::head`](crate::Store::head): `object_store` routes all three through
+    /// `get_opts`, so a fault queued for `Get` applies to any of them.
     Get,
     Delete,
     List,

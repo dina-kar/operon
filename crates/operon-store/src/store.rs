@@ -9,6 +9,16 @@ use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload,
 
 use crate::error::{StoreError, map_err};
 
+/// Parses `path` as an [`object_store::path::Path`] without percent-encoding it.
+///
+/// `Path::from` percent-encodes its input, so a literal `%` would not round-trip
+/// between `put` and a path later returned by `list`. `Path::parse` treats the
+/// string as already-decoded segments (rejecting `.` and `..` segments and
+/// ASCII control characters), which is what every `Store` method needs.
+fn parse_path(path: &str) -> Result<Path, StoreError> {
+    Path::parse(path).map_err(|e| StoreError::InvalidPath(format!("{path}: {e}")))
+}
+
 /// Opaque version of an object, used for compare-and-swap writes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObjectVersion {
@@ -123,7 +133,7 @@ impl Store {
         };
         let result = self
             .inner
-            .put_opts(&Path::from(path), PutPayload::from(data), opts)
+            .put_opts(&parse_path(path)?, PutPayload::from(data), opts)
             .await
             .map_err(|e| map_err(path, e))?;
         Ok(ObjectVersion {
@@ -136,7 +146,7 @@ impl Store {
     pub async fn get(&self, path: &str) -> Result<(Bytes, ObjectInfo), StoreError> {
         let result = self
             .inner
-            .get(&Path::from(path))
+            .get(&parse_path(path)?)
             .await
             .map_err(|e| map_err(path, e))?;
         let info = to_info(&result.meta);
@@ -144,13 +154,15 @@ impl Store {
         Ok((bytes, info))
     }
 
-    /// Reads bytes `range` of an object. An empty range returns empty bytes.
+    /// Reads bytes `range` of an object.
+    ///
+    /// An empty or inverted range returns empty bytes without a request.
     pub async fn get_range(&self, path: &str, range: Range<u64>) -> Result<Bytes, StoreError> {
         if range.start >= range.end {
             return Ok(Bytes::new());
         }
         self.inner
-            .get_range(&Path::from(path), range)
+            .get_range(&parse_path(path)?, range)
             .await
             .map_err(|e| map_err(path, e))
     }
@@ -159,7 +171,7 @@ impl Store {
     pub async fn head(&self, path: &str) -> Result<ObjectInfo, StoreError> {
         let meta = self
             .inner
-            .head(&Path::from(path))
+            .head(&parse_path(path)?)
             .await
             .map_err(|e| map_err(path, e))?;
         Ok(to_info(&meta))
@@ -167,23 +179,24 @@ impl Store {
 
     /// Deletes an object. Deleting a missing object succeeds.
     pub async fn delete(&self, path: &str) -> Result<(), StoreError> {
-        match self.inner.delete(&Path::from(path)).await {
+        match self.inner.delete(&parse_path(path)?).await {
             Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
             Err(e) => Err(map_err(path, e)),
         }
     }
 
     /// Lists all objects under `prefix` (recursively), sorted by path.
+    ///
+    /// An empty `prefix` lists the whole store.
     pub async fn list(&self, prefix: &str) -> Result<Vec<ObjectInfo>, StoreError> {
-        let prefix_path = Path::from(prefix);
-        let prefix_arg = if prefix.is_empty() {
+        let prefix_path = if prefix.is_empty() {
             None
         } else {
-            Some(&prefix_path)
+            Some(parse_path(prefix)?)
         };
         let mut infos: Vec<ObjectInfo> = self
             .inner
-            .list(prefix_arg)
+            .list(prefix_path.as_ref())
             .map_ok(|meta| to_info(&meta))
             .try_collect()
             .await

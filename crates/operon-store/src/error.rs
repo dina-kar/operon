@@ -11,6 +11,8 @@ pub enum StoreError {
     NotSupported(String),
     #[error("invalid store url: {0}")]
     InvalidUrl(String),
+    #[error("invalid path: {0}")]
+    InvalidPath(String),
     #[error("object store error: {0}")]
     Backend(#[source] object_store::Error),
 }

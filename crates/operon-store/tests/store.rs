@@ -22,3 +22,29 @@ async fn get_of_missing_object_is_not_found() {
     let err = store.get("nope").await.unwrap_err();
     assert!(matches!(err, StoreError::NotFound { .. }), "got {err:?}");
 }
+
+#[tokio::test]
+async fn paths_with_percent_round_trip_through_list_get_and_delete() {
+    let store = Store::in_memory();
+    store.put("a%b", b("data")).await.unwrap();
+
+    let listed = store.list("").await.unwrap();
+    assert_eq!(listed.len(), 1);
+    let path = listed[0].path.clone();
+
+    let (data, _) = store.get(&path).await.unwrap();
+    assert_eq!(data, b("data"));
+
+    store.delete(&path).await.unwrap();
+    assert!(matches!(
+        store.head(&path).await.unwrap_err(),
+        StoreError::NotFound { .. }
+    ));
+}
+
+#[tokio::test]
+async fn relative_path_segments_are_rejected() {
+    let store = Store::in_memory();
+    let err = store.put("d/./e", b("x")).await.unwrap_err();
+    assert!(matches!(err, StoreError::InvalidPath(_)), "got {err:?}");
+}
