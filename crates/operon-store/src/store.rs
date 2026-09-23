@@ -1,6 +1,8 @@
+use std::ops::Range;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use futures::TryStreamExt;
 use object_store::memory::InMemory;
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
@@ -108,6 +110,54 @@ impl Store {
         let info = to_info(&result.meta);
         let bytes = result.bytes().await.map_err(|e| map_err(path, e))?;
         Ok((bytes, info))
+    }
+
+    /// Reads bytes `range` of an object. An empty range returns empty bytes.
+    pub async fn get_range(&self, path: &str, range: Range<u64>) -> Result<Bytes, StoreError> {
+        if range.start >= range.end {
+            return Ok(Bytes::new());
+        }
+        self.inner
+            .get_range(&Path::from(path), range)
+            .await
+            .map_err(|e| map_err(path, e))
+    }
+
+    /// Reads object metadata.
+    pub async fn head(&self, path: &str) -> Result<ObjectInfo, StoreError> {
+        let meta = self
+            .inner
+            .head(&Path::from(path))
+            .await
+            .map_err(|e| map_err(path, e))?;
+        Ok(to_info(&meta))
+    }
+
+    /// Deletes an object. Deleting a missing object succeeds.
+    pub async fn delete(&self, path: &str) -> Result<(), StoreError> {
+        match self.inner.delete(&Path::from(path)).await {
+            Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+            Err(e) => Err(map_err(path, e)),
+        }
+    }
+
+    /// Lists all objects under `prefix` (recursively), sorted by path.
+    pub async fn list(&self, prefix: &str) -> Result<Vec<ObjectInfo>, StoreError> {
+        let prefix_path = Path::from(prefix);
+        let prefix_arg = if prefix.is_empty() {
+            None
+        } else {
+            Some(&prefix_path)
+        };
+        let mut infos: Vec<ObjectInfo> = self
+            .inner
+            .list(prefix_arg)
+            .map_ok(|meta| to_info(&meta))
+            .try_collect()
+            .await
+            .map_err(|e| map_err(prefix, e))?;
+        infos.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(infos)
     }
 }
 
