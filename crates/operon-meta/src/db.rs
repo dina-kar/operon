@@ -2,7 +2,7 @@
 
 use std::io;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use redb::{Database, ReadableDatabase, TableDefinition};
 
@@ -23,6 +23,12 @@ impl LocalDb {
         std::fs::create_dir_all(data_dir)?;
         let db = Database::create(data_dir.join("meta.redb")).map_err(io::Error::other)?;
         Ok(Self { db: Arc::new(db) })
+    }
+
+    /// A handle that does not keep the database open, to detect when every
+    /// user has let go of it.
+    pub(crate) fn downgrade(&self) -> Weak<Database> {
+        Arc::downgrade(&self.db)
     }
 
     /// Runs `f` on a blocking thread, so redb's file I/O and fsyncs do not stall

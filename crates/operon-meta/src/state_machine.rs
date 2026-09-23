@@ -35,13 +35,40 @@ struct Applied {
     state: MetaState,
 }
 
+/// Read access to the applied state, shared with the state machine. Holds no
+/// storage handles, so it does not keep the local database open.
+#[derive(Clone, Debug)]
+pub(crate) struct StateReader {
+    applied: Arc<RwLock<Applied>>,
+}
+
+impl StateReader {
+    fn applied(&self) -> RwLockReadGuard<'_, Applied> {
+        self.applied.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn applied_mut(&self) -> RwLockWriteGuard<'_, Applied> {
+        self.applied.write().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Runs `f` against the applied state.
+    pub(crate) fn read<T>(&self, f: impl FnOnce(&MetaState) -> T) -> T {
+        f(&self.applied().state)
+    }
+
+    /// Index of the last applied log entry.
+    pub(crate) fn last_applied_index(&self) -> Option<u64> {
+        self.applied().last_applied.map(|id| id.index)
+    }
+}
+
 #[derive(Debug)]
 struct Inner {
     node_id: NodeId,
     store: Store,
     prefix: String,
     db: LocalDb,
-    applied: RwLock<Applied>,
+    applied: StateReader,
     /// Serializes snapshot builds and installs, so the snapshot pointer only moves forward.
     snapshot_lock: Mutex<()>,
 }
@@ -84,7 +111,9 @@ impl StateMachineStore {
                 store,
                 prefix: prefix.into(),
                 db,
-                applied: RwLock::new(applied),
+                applied: StateReader {
+                    applied: Arc::new(RwLock::new(applied)),
+                },
                 snapshot_lock: Mutex::new(()),
             }),
         })
@@ -92,21 +121,19 @@ impl StateMachineStore {
 
     /// Runs `f` against the applied state.
     pub fn read<T>(&self, f: impl FnOnce(&MetaState) -> T) -> T {
-        f(&self.applied().state)
+        self.inner.applied.read(f)
+    }
+
+    pub(crate) fn reader(&self) -> StateReader {
+        self.inner.applied.clone()
     }
 
     fn applied(&self) -> RwLockReadGuard<'_, Applied> {
-        self.inner
-            .applied
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.inner.applied.applied()
     }
 
     fn applied_mut(&self) -> RwLockWriteGuard<'_, Applied> {
-        self.inner
-            .applied
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.inner.applied.applied_mut()
     }
 
     fn snapshot_path(&self, last_log_id: Option<&LogId>) -> String {
