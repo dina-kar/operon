@@ -93,3 +93,46 @@ impl PartitionState {
         self.index.range(start..).map(|(_, entry)| entry)
     }
 }
+
+/// A lease on a key, such as a worker task (design §09 §3, §6).
+///
+/// The epoch grows by one every time a different holder takes the lease and
+/// never goes back, so a holder fenced by its epoch can detect that someone
+/// else has taken over.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lease {
+    pub epoch: u64,
+    /// `None` once the holder has released the lease.
+    pub owner: Option<String>,
+    pub deadline_ms: u64,
+}
+
+impl Lease {
+    /// Whether the lease is held (not released and not expired) at `now_ms`.
+    pub fn is_held_at(&self, now_ms: u64) -> bool {
+        self.owner.is_some() && now_ms < self.deadline_ms
+    }
+}
+
+/// What a successful acquire or renew hands back to the holder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeaseGrant {
+    pub epoch: u64,
+    pub deadline_ms: u64,
+}
+
+/// A precondition that a lease is still at `epoch` (not released and not
+/// taken over by anyone else). Expiry alone does not break a fence: until
+/// another holder takes the lease, nobody else can have acted under it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fence {
+    pub lease: String,
+    pub epoch: u64,
+}
+
+/// A versioned pointer, such as a collection's current manifest location.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pointer {
+    pub version: u64,
+    pub value: String,
+}

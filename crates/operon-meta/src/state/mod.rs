@@ -1,4 +1,6 @@
 mod catalog;
+mod leases;
+mod pointers;
 mod sequencer;
 
 use std::collections::BTreeMap;
@@ -7,7 +9,7 @@ use operon_common::{NamespaceId, StreamId};
 use serde::{Deserialize, Serialize};
 
 use crate::command::{ApplyError, Command, Reply};
-use crate::types::{Namespace, PartitionState, Stream};
+use crate::types::{Lease, Namespace, PartitionState, Pointer, Stream};
 
 /// Longest namespace or stream name, in bytes.
 pub const MAX_NAME_LEN: usize = 255;
@@ -15,6 +17,8 @@ pub const MAX_NAME_LEN: usize = 255;
 pub const MAX_PARTITIONS: u32 = 10_000;
 /// Longest object path, lease key or pointer key, in bytes.
 pub const MAX_KEY_LEN: usize = 1024;
+/// Longest lease a holder may take or renew for: one hour.
+pub const MAX_LEASE_TTL_MS: u64 = 3_600_000;
 
 /// The metastore state machine.
 ///
@@ -24,6 +28,9 @@ pub const MAX_KEY_LEN: usize = 1024;
 /// identical snapshots.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetaState {
+    /// The latest `now_ms` of any applied command. Time never goes backwards,
+    /// even when a new leader's clock is behind the old one's.
+    clock_ms: u64,
     last_namespace_id: u64,
     last_stream_id: u64,
     namespaces: BTreeMap<NamespaceId, Namespace>,
@@ -34,6 +41,8 @@ pub struct MetaState {
     /// Base offsets assigned to each committed WAL object, for idempotent retries.
     /// Entries are removed when the segmenter retires the object (M0.3).
     wal_commits: BTreeMap<String, Vec<u64>>,
+    leases: BTreeMap<String, Lease>,
+    pointers: BTreeMap<(NamespaceId, String), Pointer>,
 }
 
 impl MetaState {
@@ -48,7 +57,33 @@ impl MetaState {
                 class,
             } => self.create_stream(namespace, name, partitions, class),
             Command::CommitWal { object, chunks } => self.commit_wal(object, chunks),
+            Command::AcquireLease {
+                key,
+                owner,
+                ttl_ms,
+                now_ms,
+            } => self.acquire_lease(key, owner, ttl_ms, now_ms),
+            Command::RenewLease {
+                key,
+                owner,
+                epoch,
+                ttl_ms,
+                now_ms,
+            } => self.renew_lease(key, owner, epoch, ttl_ms, now_ms),
+            Command::ReleaseLease { key, owner, epoch } => self.release_lease(key, owner, epoch),
+            Command::CasPointer {
+                namespace,
+                key,
+                expected,
+                value,
+                fence,
+            } => self.cas_pointer(namespace, key, expected, value, fence),
         }
+    }
+
+    /// The metastore clock: the latest `now_ms` of any applied command.
+    pub fn clock_ms(&self) -> u64 {
+        self.clock_ms
     }
 }
 

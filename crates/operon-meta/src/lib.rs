@@ -10,5 +10,8 @@ mod state;
 mod types;
 
 pub use command::{ApplyError, Command, Reply};
-pub use state::{MAX_KEY_LEN, MAX_NAME_LEN, MAX_PARTITIONS, MetaState};
-pub use types::{IndexEntry, Namespace, PartitionState, Stream, WalChunk, WalClass};
+pub use state::{MAX_KEY_LEN, MAX_LEASE_TTL_MS, MAX_NAME_LEN, MAX_PARTITIONS, MetaState};
+pub use types::{
+    Fence, IndexEntry, Lease, LeaseGrant, Namespace, PartitionState, Pointer, Stream, WalChunk,
+    WalClass,
+};

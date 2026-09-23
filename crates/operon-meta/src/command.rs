@@ -1,7 +1,7 @@
 use operon_common::{NamespaceId, StreamId};
 use serde::{Deserialize, Serialize};
 
-use crate::types::{WalChunk, WalClass};
+use crate::types::{Fence, LeaseGrant, Pointer, WalChunk, WalClass};
 
 /// A change to the metastore. Commands are replicated through the Raft log and
 /// applied in log order by [`crate::MetaState::apply`].
@@ -24,6 +24,41 @@ pub enum Command {
         object: String,
         chunks: Vec<WalChunk>,
     },
+    /// Takes a free or expired lease for `ttl_ms`, bumping its epoch. If
+    /// `owner` already holds the lease, extends it and keeps the epoch, so a
+    /// retry after a lost acknowledgement gets the same grant back.
+    AcquireLease {
+        key: String,
+        owner: String,
+        ttl_ms: u64,
+        now_ms: u64,
+    },
+    /// Extends a held, unexpired lease by `ttl_ms` from `now_ms`.
+    RenewLease {
+        key: String,
+        owner: String,
+        epoch: u64,
+        ttl_ms: u64,
+        now_ms: u64,
+    },
+    /// Releases a lease. Releasing an already-released lease at the same
+    /// epoch succeeds, so the command is safe to retry.
+    ReleaseLease {
+        key: String,
+        owner: String,
+        epoch: u64,
+    },
+    /// Sets a pointer if its current version is `expected` (`None`: the
+    /// pointer must not exist yet) and, when `fence` is given, the fencing
+    /// lease is still at the fence's epoch. The new version is `expected + 1`
+    /// (or 1 for a new pointer).
+    CasPointer {
+        namespace: NamespaceId,
+        key: String,
+        expected: Option<u64>,
+        value: String,
+        fence: Option<Fence>,
+    },
 }
 
 /// The result of successfully applying a [`Command`].
@@ -34,6 +69,11 @@ pub enum Reply {
     /// The base offset of each chunk, in the order the chunks were given.
     WalCommitted {
         base_offsets: Vec<u64>,
+    },
+    Lease(LeaseGrant),
+    LeaseReleased,
+    PointerSet {
+        version: u64,
     },
 }
 
@@ -56,4 +96,16 @@ pub enum ApplyError {
     StreamNotFound(StreamId),
     #[error("partition not found: stream {stream} partition {partition}")]
     PartitionNotFound { stream: StreamId, partition: u32 },
+    #[error("lease is held by {owner} until {deadline_ms}")]
+    LeaseHeld { owner: String, deadline_ms: u64 },
+    /// The caller no longer holds the lease at the epoch it named: it expired,
+    /// was released, or was taken over.
+    #[error("lease lost: {key}")]
+    LeaseLost { key: String },
+    /// Carries the current pointer, so a writer retrying after a lost
+    /// acknowledgement can check whether the current value is its own.
+    #[error("pointer version mismatch, current: {current:?}")]
+    VersionMismatch { current: Option<Pointer> },
+    #[error("fenced: lease {lease} is no longer at the given epoch")]
+    Fenced { lease: String },
 }
