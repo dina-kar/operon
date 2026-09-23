@@ -1,0 +1,25 @@
+[package]
+name = "operon-cache"
+description = "Read-through RAM + NVMe byte-range cache over immutable objects."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+bytes.workspace = true
+crc32c.workspace = true
+foyer.workspace = true
+futures.workspace = true
+moka.workspace = true
+operon-store.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+object_store.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
