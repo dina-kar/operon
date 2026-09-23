@@ -3,7 +3,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use object_store::memory::InMemory;
 use object_store::path::Path;
-use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload};
+use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
 
 use crate::error::{StoreError, map_err};
 
@@ -42,6 +42,34 @@ impl Store {
     /// The underlying object store, for integrations that need it directly.
     pub fn inner(&self) -> &Arc<dyn ObjectStore> {
         &self.inner
+    }
+
+    /// Writes `data` only if no object exists at `path`.
+    ///
+    /// Returns [`StoreError::AlreadyExists`] if an object is already present.
+    pub async fn put_if_absent(
+        &self,
+        path: &str,
+        data: Bytes,
+    ) -> Result<ObjectVersion, StoreError> {
+        self.put_with_mode(path, data, PutMode::Create).await
+    }
+
+    /// Writes `data` only if the current object at `path` has version `expected`.
+    ///
+    /// Returns [`StoreError::PreconditionFailed`] if the object changed, and
+    /// [`StoreError::NotSupported`] on backends without conditional updates.
+    pub async fn put_if_match(
+        &self,
+        path: &str,
+        data: Bytes,
+        expected: &ObjectVersion,
+    ) -> Result<ObjectVersion, StoreError> {
+        let mode = PutMode::Update(UpdateVersion {
+            e_tag: expected.e_tag.clone(),
+            version: expected.version.clone(),
+        });
+        self.put_with_mode(path, data, mode).await
     }
 
     /// Writes `data`, replacing any existing object.
