@@ -1,4 +1,5 @@
 mod catalog;
+mod sequencer;
 
 use std::collections::BTreeMap;
 
@@ -12,6 +13,8 @@ use crate::types::{Namespace, PartitionState, Stream};
 pub const MAX_NAME_LEN: usize = 255;
 /// Most partitions a stream may have.
 pub const MAX_PARTITIONS: u32 = 10_000;
+/// Longest object path, lease key or pointer key, in bytes.
+pub const MAX_KEY_LEN: usize = 1024;
 
 /// The metastore state machine.
 ///
@@ -28,6 +31,9 @@ pub struct MetaState {
     streams: BTreeMap<StreamId, Stream>,
     stream_names: BTreeMap<(NamespaceId, String), StreamId>,
     partitions: BTreeMap<(StreamId, u32), PartitionState>,
+    /// Base offsets assigned to each committed WAL object, for idempotent retries.
+    /// Entries are removed when the segmenter retires the object (M0.3).
+    wal_commits: BTreeMap<String, Vec<u64>>,
 }
 
 impl MetaState {
@@ -41,6 +47,7 @@ impl MetaState {
                 partitions,
                 class,
             } => self.create_stream(namespace, name, partitions, class),
+            Command::CommitWal { object, chunks } => self.commit_wal(object, chunks),
         }
     }
 }
@@ -62,4 +69,15 @@ fn validate_name(kind: &str, name: &str) -> Result<(), ApplyError> {
             "invalid {kind} name {name:?}"
         )))
     }
+}
+
+/// Keys (object paths, lease keys, pointer keys) are 1..=1024 bytes.
+fn validate_key(kind: &str, key: &str) -> Result<(), ApplyError> {
+    if key.is_empty() || key.len() > MAX_KEY_LEN {
+        return Err(ApplyError::InvalidArgument(format!(
+            "{kind} must be 1..={MAX_KEY_LEN} bytes, got {}",
+            key.len()
+        )));
+    }
+    Ok(())
 }

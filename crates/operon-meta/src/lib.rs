@@ -10,5 +10,5 @@ mod state;
 mod types;
 
 pub use command::{ApplyError, Command, Reply};
-pub use state::{MAX_NAME_LEN, MAX_PARTITIONS, MetaState};
-pub use types::{Namespace, PartitionState, Stream, WalClass};
+pub use state::{MAX_KEY_LEN, MAX_NAME_LEN, MAX_PARTITIONS, MetaState};
+pub use types::{IndexEntry, Namespace, PartitionState, Stream, WalChunk, WalClass};
