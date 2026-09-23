@@ -45,7 +45,7 @@ Build order follows the pain point: **search + vector first (ES + Qdrant), then 
 | 8 | Cross-AZ costs on `quorum` class | Certain | Low–Medium | Default classes avoid it; placement hints; document pricing |
 | 9 | Qdrant fork maintenance (large codebase) | Medium | Medium | Take minimal subset (HNSW, quantization, filter planner); evaluate `qdrant-edge` boundary first |
 | 10 | Quickwit fork divergence | Medium | Low–Medium | Fork only storage/directories/DSL crates; pin; periodic rebase |
-| 11 | Competitive: HelixDB / LanceDB / Milvus move into the same slot | Medium | High | Speed to M1; differentiate on compat gateways + Kafka + Iceberg + fully open serving layer; consider collaboration with HelixDB |
+| 11 | Competitive: HelixDB / LanceDB / Milvus / Databend move into the same slot (Databend now markets analytics + search + vector "for agents" on S3) | Medium | High | Speed to M1; differentiate on compat gateways + Kafka + Iceberg + fully open serving layer (Databend has ELv2 parts); consider collaboration with HelixDB |
 | 12 | Compatibility long tail (ES DSL, Cypher, ClickHouse functions) | High | Medium | Usage-driven prioritization from target integrations; clear, documented unsupported-feature errors |
 | 13 | S3 provider behavior differences (conditional writes, Express/Rapid semantics) | Medium | Medium | Provider conformance tests in CI against real S3/GCS/Azure/MinIO |
 | 14 | Correctness bugs in tail merge / consistency tokens | Medium | High | DST + differential tests + Jepsen-style cross-surface checks |

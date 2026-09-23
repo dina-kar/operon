@@ -55,7 +55,9 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | HelixDB v3 | Apache-2.0 | Graph + vector on SlateDB/S3 with foyer + tantivy (closest OSS rival) |
 | Neon | Apache-2.0 | Quorum WAL (safekeepers) + S3 pageserver split |
 | Milvus 3.0 | Apache-2.0 (Go/C++) | Lake-native "external collections" over Lance/Iceberg/Parquet/Vortex; Woodpecker zero-disk WAL |
-| GreptimeDB, RisingWave (Hummock), InfluxDB 3, Databend | Apache-2.0 (Databend mixed) | Stateless frontends + object-store engines + metasrv patterns |
+| GreptimeDB, RisingWave (Hummock), InfluxDB 3 | Apache-2.0 | Stateless frontends + object-store engines + metasrv patterns |
+| Databend | Apache-2.0 + Elastic License 2.0 | Stateless warehouse on S3, meta-service on openraft (whose upstream it maintains). Since 2026 it has been repositioned as an "agent-ready" warehouse (analytics + full-text + vector search + sandboxed Python UDFs), which makes it a competitor for M1/M4 (see §12 risk 11). It is SQL-first, with no ES/Qdrant/Kafka/Neo4j wire compatibility |
+| Octopii | Apache-2.0 | Deterministic simulation of openraft clusters (simulated time and RNG, VFS fault injection, partitioned in-memory network, cluster oracle): the reference for M0.4's simulation harness. Not adopted: it vendors a modified openraft, is not on crates.io, has a single maintainer, and pulls in `protobuf` 2.x (RUSTSEC-2024-0437) |
 | DiskANN (Rust) | MIT | SSD-resident ANN for larger-than-RAM hot tier (Phase C evaluation) |
 | Vortex | Apache-2.0 (LF AI & Data) | Future local/hot encoding option |
 | Apache Iggy | Apache-2.0 | Thread-per-core io_uring design, VSR clustering, DST practices |
