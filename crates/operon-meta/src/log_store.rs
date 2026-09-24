@@ -15,7 +15,7 @@ use crate::raft::{LogId, TypeConfig};
 
 /// Log entries by index, postcard-encoded.
 const LOG_TABLE: TableDefinition<u64, &[u8]> = TableDefinition::new("raft_log");
-const VOTE_KEY: &str = "vote";
+pub(crate) const VOTE_KEY: &str = "vote";
 const COMMITTED_KEY: &str = "committed";
 const PURGED_KEY: &str = "purged";
 

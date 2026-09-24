@@ -367,3 +367,52 @@ async fn shutdown_cuts_short_a_snapshot_upload_being_retried() {
         .unwrap();
     assert_eq!(names, ["acme"]);
 }
+
+#[tokio::test]
+async fn a_node_without_local_state_refuses_to_start_over_existing_snapshots() {
+    let store = Store::in_memory();
+    let dir = TempDir::new().unwrap();
+    let node = start(config(&dir, &store)).await;
+    node.create_namespace("acme").await.unwrap();
+    node.snapshot().await.unwrap();
+    node.shutdown().await.unwrap();
+
+    // The same node on a replaced (empty) data directory would start an empty
+    // metastore, reissue ids and later overwrite the snapshots. So would any
+    // other node id pointed at this bucket.
+    for id in [1, 2] {
+        let empty = TempDir::new().unwrap();
+        let err = MetaNode::start(
+            MetaConfig::new(id, empty.path(), store.clone()),
+            &Router::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, MetaError::Config(msg) if msg.contains("snapshot")),
+            "{err:?}"
+        );
+    }
+
+    // An operator who knows the snapshots are stale can override the check.
+    let empty = TempDir::new().unwrap();
+    let mut cfg = MetaConfig::new(1, empty.path(), store.clone());
+    cfg.allow_fresh_start_with_existing_snapshots = true;
+    let fresh = start(cfg).await;
+    assert_eq!(
+        fresh
+            .read(Consistency::Local, |s| s.namespaces().count())
+            .await
+            .unwrap(),
+        0
+    );
+    fresh.shutdown().await.unwrap();
+
+    // The original data directory still starts, with its state.
+    let node = start(config(&dir, &store)).await;
+    let names = node
+        .read(Consistency::Linearizable, namespace_names)
+        .await
+        .unwrap();
+    assert_eq!(names, ["acme"]);
+}

@@ -17,11 +17,13 @@ use crate::clock::{Clock, SystemClock};
 use crate::command::{Command, Reply};
 use crate::db::LocalDb;
 use crate::error::MetaError;
-use crate::log_store::LogStore;
+use crate::log_store::{LogStore, VOTE_KEY};
 use crate::network::{MetaRaft, NetworkFactory, Router};
 use crate::raft::NodeId;
 use crate::state::MetaState;
-use crate::state_machine::{SnapshotIoCloser, StateMachineStore, StateReader};
+use crate::state_machine::{
+    SNAPSHOT_POINTER_KEY, SnapshotIoCloser, StateMachineStore, StateReader,
+};
 use crate::types::{Fence, LeaseGrant, WalChunk, WalClass};
 
 /// How to start a meta node.
@@ -43,6 +45,12 @@ pub struct MetaConfig {
     pub request_timeout: Duration,
     /// Stamps lease commands. Default [`SystemClock`].
     pub clock: Arc<dyn Clock>,
+    /// Lets a node with no local state start even though `snapshot_prefix`
+    /// already holds snapshots. Default `false`: such a node has most likely
+    /// lost its data directory, and starting it empty would fork the
+    /// metastore and later overwrite the snapshots it should be restored
+    /// from. Set it only when those snapshots are known to be stale.
+    pub allow_fresh_start_with_existing_snapshots: bool,
 }
 
 impl MetaConfig {
@@ -56,6 +64,7 @@ impl MetaConfig {
             logs_after_snapshot: 1_000,
             request_timeout: Duration::from_secs(5),
             clock: Arc::new(SystemClock),
+            allow_fresh_start_with_existing_snapshots: false,
         }
     }
 }
@@ -117,10 +126,44 @@ fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
+/// Refuses to start a node that has no local state while the snapshot store
+/// already holds metastore snapshots: its data directory was most likely lost
+/// or replaced, and starting empty would fork the metastore (design §01 §1:
+/// the bucket is the recovery point).
+async fn check_fresh_start(config: &MetaConfig, db: &LocalDb) -> Result<(), MetaError> {
+    if config.allow_fresh_start_with_existing_snapshots
+        || db.get_meta(SNAPSHOT_POINTER_KEY).await?.is_some()
+        || db.get_meta(VOTE_KEY).await?.is_some()
+    {
+        return Ok(());
+    }
+    let prefix = format!("{}/", config.snapshot_prefix.trim_end_matches('/'));
+    let existing = config
+        .store
+        .list(&prefix)
+        .await
+        .map_err(std::io::Error::other)?;
+    match existing.iter().find(|o| o.path.ends_with(".snap")) {
+        None => Ok(()),
+        Some(found) => Err(MetaError::Config(format!(
+            "node {} has no local state in {}, but the snapshot store already holds \
+             metastore snapshots (for example {}); restore the node's data directory, \
+             or set allow_fresh_start_with_existing_snapshots if they are stale",
+            config.node_id,
+            config.data_dir.display(),
+            found.path
+        ))),
+    }
+}
+
 impl MetaNode {
     /// Opens the node's local storage, loads its latest snapshot, and starts
     /// Raft. A node that was never initialized waits for
     /// [`MetaNode::initialize`] (here or on a peer) before it can serve requests.
+    ///
+    /// A node with no local state refuses to start if the snapshot store
+    /// already holds snapshots, unless
+    /// [`MetaConfig::allow_fresh_start_with_existing_snapshots`] is set.
     pub async fn start(config: MetaConfig, router: &Router) -> Result<Self, MetaError> {
         let raft_config = openraft::Config {
             cluster_name: "operon-meta".to_string(),
@@ -132,6 +175,7 @@ impl MetaNode {
         .map_err(|e| MetaError::Config(e.to_string()))?;
 
         let db = LocalDb::open(&config.data_dir)?;
+        check_fresh_start(&config, &db).await?;
         let db_handle = db.downgrade();
         let sm = StateMachineStore::open(
             config.node_id,
