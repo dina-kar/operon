@@ -57,12 +57,23 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/namespaces/{ns}/links", post(create_link))
         .route("/v1/namespaces/{ns}/links/{link}", get(describe_link))
         .fallback(no_route)
+        .method_not_allowed_fallback(method_not_allowed)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
 
 async fn no_route() -> ApiError {
     ApiError::not_found("no such route")
+}
+
+/// A known route with a method it does not serve: `405` with the usual JSON
+/// error body (M0.3 re-review M3), not axum's empty one.
+async fn method_not_allowed(method: axum::http::Method) -> ApiError {
+    ApiError::new(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "invalid_argument",
+        format!("{method} is not allowed on this route"),
+    )
 }
 
 /// Turns an axum extractor rejection (a bad path segment, query, or body,

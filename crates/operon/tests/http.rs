@@ -503,6 +503,35 @@ async fn framework_rejections_use_the_json_error_body() {
         assert!(body["message"].as_str().is_some(), "{path}: {body}");
     }
 
+    // M0.3 re-review M3: a known route with the wrong method is a 405 with
+    // the JSON error body too.
+    for (method, path) in [
+        (reqwest::Method::GET, "/v1/namespaces"),
+        (
+            reqwest::Method::DELETE,
+            "/v1/namespaces/acme/streams/events",
+        ),
+        (reqwest::Method::PUT, "/v1/namespaces/acme/links"),
+    ] {
+        let response = api
+            .http
+            .request(method.clone(), format!("{}{path}", api.base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "{method} {path}"
+        );
+        let body: Value = response.json().await.expect("a JSON error body");
+        assert_eq!(body["error"], "invalid_argument", "{method} {path}");
+        assert!(
+            body["message"].as_str().is_some(),
+            "{method} {path}: {body}"
+        );
+    }
+
     let (status, body) = api
         .get(&format!(
             "/v1/namespaces/acme/streams/events/partitions/0/records?offset=0&max_bytes={}",
