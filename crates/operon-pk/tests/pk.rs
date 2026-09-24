@@ -170,13 +170,16 @@ async fn lost_put_acknowledgements_lose_no_acknowledged_write() {
         )
         .await
         .expect("a write finishes");
+        // SlateDB retries a failed WAL PUT, also one that was applied, so
+        // every write succeeds and the only writer never fences itself
+        // (review M7: `Fenced` means a newer writer exists).
         match result {
             Ok(()) => acknowledged.push(key),
-            Err(PkError::Fenced | PkError::Closed) => break,
-            Err(_) => {}
+            Err(err) => panic!("write {i} failed: {err:?}"),
         }
     }
-    assert!(!acknowledged.is_empty());
+    assert_eq!(acknowledged.len(), 20);
+    assert_eq!(faults.pending(Op::Put), 0, "every fault was reached");
     // Whatever state the writer ended in, a new writer sees every
     // acknowledged write.
     let _ = index.close().await;
