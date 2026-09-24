@@ -2092,6 +2092,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "operon-sim"
+version = "0.0.1"
+dependencies = [
+ "bytes",
+ "object_store",
+ "operon-cache",
+ "operon-common",
+ "operon-link",
+ "operon-log",
+ "operon-meta",
+ "operon-store",
+ "operon-worker",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "operon-store"
 version = "0.0.1"
 dependencies = [
