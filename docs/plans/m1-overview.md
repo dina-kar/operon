@@ -89,6 +89,8 @@ The `operon` binary wires them; every gateway is behind a cargo feature (`qdrant
 
 ```rust
 pub struct CollectionId(pub u64);   // operon-common (`id_type!`); dense, allocated by the state machine (D18)
+// The schema types of §6.3 live in `operon_common::schema` (operon-meta carries them in commands); operon-collection re-exports them (A17).
+// Collection names: at most 222 bytes (A17).
 // New Command variants go at the END of the enum (postcard-encoded Raft entries); snapshot format version 4 → 5 (codec.rs).
 
 Command::CreateCollection { namespace: NamespaceId, name: String, schema: CollectionSchema, partitions: u32 }
@@ -102,7 +104,7 @@ Command::DropCollection { namespace: NamespaceId, name: String, now_ms: u64 }
     // and records the collection's prefixes as retired for GC.
 Command::UpdateCollectionSchema { collection: CollectionId, expected_version: u64, schema: CollectionSchema }
     // -> Reply::SchemaUpdated { version: u64 }. Additive only (new fields, new vectors); anything else is ApplyError::IncompatibleSchema.
-    // VersionMismatch when expected_version is stale; a retry that finds the same schema at expected_version + 1 succeeds.
+    // ApplyError::SchemaVersionMismatch { collection, current } when expected_version is stale (A16); a retry that finds the same schema at expected_version + 1 succeeds.
 Command::UpdateAliases { namespace: NamespaceId, actions: Vec<AliasAction> }   // atomic; AliasAction::{Create { alias, collection }, Delete { alias }}
     // -> Reply::AliasesUpdated
 ```
@@ -167,6 +169,8 @@ ns/<ns>/collections/<cid>/
   text/splits/<ulid>.split                                  # Tantivy split bundle with hotcache footer
   text/deletes/<split_ulid>/<ulid>.bitmap                   # roaring delete bitmap for one split, whole (not incremental)
   manifests/<version:020>-<ulid>.pb                         # immutable collection manifest
+  pkdelta/<version:020>-<ulid>.pkd                          # the keys one commit changed; PK-index repair (R8)
+  deadletters/<version:020>-<ulid>.dlq                      # records one commit dead-lettered
   hot/<kind>/<manifest_version:020>-<ulid>/…               # derived hot artifacts (M1.3)
 ns/<ns>/pk/collection-<cid>/                                # PkIndex (SlateDB)
 ```
@@ -176,7 +180,7 @@ The manifest is protobuf (`prost`) inside Operon's standard envelope (magic `OPC
 ```text
 CollectionManifest {
   version, parent_version, collection_id, schema_version, created_at_ms
-  lance_version                                           // the Lance dataset version this manifest reads
+  lance_version                                           // the detached Lance version id this manifest reads (R7)
   splits:   [SplitRef { ulid, doc_count, deleted_count, size_bytes, footer_range, row_id_ranges: [(start, end)], delete_bitmap: Option<path>, schema_version }]
   vector_indexes: [VectorIndexRef { column, lance_index_uuid, indexed_row_ids_upto }]
   hot_artifacts:  [HotArtifactRef { kind, column, prefix, source_version }]   // written by M1.3; empty before
@@ -293,7 +297,7 @@ ES and Qdrant have no namespaces. Each gateway serves one namespace, `default` u
 | R4 | `_source` is stored verbatim; typed fields are derived by `source_path` | ES returns `_source` byte-for-byte in spirit and Qdrant returns payloads unchanged; one document model for both | Storage for both `_source` and typed columns |
 | R5 | Tantivy is the engine for text scoring, filters and aggregations; Lance stores documents and vectors and runs ANN. A filter reaches ANN as a row-id allow-list (pre-filter) or a post-filter, chosen by estimated selectivity (§06 §4) | Tantivy handles multi-valued fields, JSON paths and ES aggregations natively; one filter evaluator for durable splits and the tail (a RAM Tantivy index) | Filter-heavy vector queries depend on the allow-list hand-off to Lance being cheap; M1.2 measures it |
 | R6 | BM25 statistics (doc count, average field length, document frequencies) are global across a query's splits and tail, via Tantivy's statistics provider | ES scores a single-shard index with global statistics; per-split IDF would miss the BEIR gate | One extra statistics pass per query (cached per manifest) |
-| R7 | The Operon manifest is the only lineage of the Lance dataset: a collection commit is based exactly on its parent manifest's `lance_version` and can never include fragments from a Lance version no live manifest references (a crashed or fenced writer's). M1.1 fixes the mechanism with the pinned Lance API and proves it with crash and zombie tests | Lance's own commit loop rebases concurrent appends; that would double-apply a zombie's batch | A Lance version is written per commit even if its CAS then fails (GC collects it) |
+| R7 | The Operon manifest is the only lineage of the Lance dataset: a collection commit is based exactly on its parent manifest's `lance_version` and can never include fragments from a Lance version no live manifest references (a crashed or fenced writer's). **Mechanism (M1.1 Ruling 1): Lance detached versions.** The mainline holds only the empty version 1; every later commit is `CommitBuilder::with_detached(true)` on the dataset checked out at the parent's `lance_version`, through `LanceCommitter::commit`, the only code allowed to commit to Lance. No code path may call a Lance API that commits to the mainline (`append`, `delete`, `create_index`, `optimize_indices`, `commit_compaction`, `cleanup_*`) | Lance's own commit loop rebases concurrent appends; that would double-apply a zombie's batch | A Lance version is written per commit even if its CAS then fails (GC collects it) |
 | R8 | The PK index is derived state: updated after the manifest CAS, carrying its own applied watermark, and repaired from committed objects on task start. Datasets are created with Lance **stable row ids** (`enable_stable_row_ids = true`, fixed at creation); the PK index, Tantivy docs (`_rowid` fast field) and `SplitRef.row_id_ranges` hold row ids, never row addresses | SlateDB is a separate commit and can never be atomic with the pointer CAS. Row addresses change on every Lance compaction (spike §g); row ids survive it, so compaction rewrites neither splits nor the PK index | Task start after a crash pays a repair scan of at most one batch. Stable row ids are marked experimental in Lance 12: M1.1 pins behaviour with tests |
 | R9 | One link-apply task per collection (D30 stands). Compaction, split merges and index builds commit through the same pointer CAS and rebase on `Conflict` | One manifest per collection: parallel partition-range tasks would only contend on its CAS | Ingest per collection is bounded by one task; M5 revisits |
 | R10 | Deterministic ordering everywhere: score desc, then canonical PK asc | Required by hot on/off identity and by paging (`search_after`, `scroll`) | None |
@@ -303,9 +307,9 @@ ES and Qdrant have no namespaces. Each gateway serves one namespace, `default` u
 | R14 | Qdrant and Elasticsearch servers are used only as external test oracles (Docker images in M1.7); no code, spec tests or resources from Elastic are vendored (Q10 resolved: not in M1) | License policy (D11) | Conformance relies on client-library and framework suites |
 | R15 | Every gateway returns its protocol's error body; `ServiceError` maps to one status per variant, fixed in each gateway plan | Clients branch on those errors | — |
 | R16 | Dropping a collection frees its name at once; re-creating it gets a new id and new prefixes | ES and Qdrant test suites drop and re-create names back to back | Old objects wait for GC's grace |
-| R17 | Dynamic mapping is a schema update proposed by the gateway before it appends the write (`UpdateCollectionSchema`, CAS on the schema version); the link worker never changes the schema | `apply` stays deterministic, and a mapping is visible before any document that needs it | Two racing writers retry on `VersionMismatch` |
+| R17 | Dynamic mapping is a schema update proposed by the gateway before it appends the write (`UpdateCollectionSchema`, CAS on the schema version); the link worker never changes the schema | `apply` stays deterministic, and a mapping is visible before any document that needs it | Two racing writers retry on `SchemaVersionMismatch` |
 | R18 | Lance datasets use file format **2.1** explicitly (`data_storage_version = V2_1`; Lance 12 defaults to 2.2) | Design §03 §3.1 pins 2.1 until 2.2 is evaluated | A later move to 2.2 is per dataset, by compaction (§03 §6) |
-| R19 | Lance is always given an explicit commit handler (never the `UnsafeCommitHandler` it silently picks for an unknown URL scheme), auto-cleanup is never enabled, and Operon's GC deletes Lance versions via `cleanup_with_policy(versions(..))` computed from live manifests | R7 and GC own lineage and deletion | — |
+| R19 | Lance is always given an explicit commit handler (never the `UnsafeCommitHandler` it silently picks for an unknown URL scheme), auto-cleanup is never enabled, and Lance cleanup is never run: it sees only mainline manifests and would delete detached versions' files (A15). Operon's GC computes Lance reachability from retained collection manifests | R7 and GC own lineage and deletion | — |
 | R20 | Q7: **depend on `qdrant-edge =0.8.0`** behind Operon's own `HnswIndex` trait in `operon-hnsw`; do not vendor Qdrant `lib/segment` (≈200k LOC once its imports are followed). Allow-list filters are `has_id` sets; artifacts are built in a local directory, published as files and opened read-only (mmap) on the owning node | Buy over build; the trait keeps a later fork possible | 0.x API churn; heavy dependency tree, isolated by the feature |
 | R21 | Quickwit code is vendored file by file into `operon-quickwit` from Quickwit `af0591a3`, adapted to Tantivy 0.26.2 (≈16k LOC + ≈1.2k LOC shim, spike §d); its S3 backend is not taken (our `Storage` impl sits on `operon-store`) | Quickwit's crates are coupled through `quickwit-config`/`-proto`/`-common`; files are not | Re-sync by diff on Tantivy bumps |
 
@@ -365,3 +369,7 @@ Adopted 2026-09-25 from the M1.4, M1.5, M1.6 and M1.7 plans (their proposals are
 | A12 | `GET` collections list route; `PrimaryKey` JSON form | M1.6 A1, A3 |
 | A13 | Hot-tier request header, response header, flags and status fields | M1.7 amendment 1 |
 | A14 | Exit-gate wording for sparse/hybrid and `:memory:` tests | M1.4 A4, M1.7 amendment 5 — **owner decision pending**: the alternative is to pull Qdrant sparse vectors (§06 §6) into M1 |
+| A15 | R19: Lance cleanup is never run (detached versions) | M1.1 A1 |
+| A16 | `ApplyError::SchemaVersionMismatch` | M1.1 A2 |
+| A17 | Schema types in `operon_common::schema`; `VectorIndexSpec`, `HnswParams`, `Quantization` defined by M1.1; collection names ≤ 222 bytes | M1.1 A5 |
+| A18 | Layout: `pkdelta/` and `deadletters/`; `lance_version` is a detached id; R7's mechanism. Vector indexes grow by delta index segments with periodic full rebuilds (`optimize_indices` commits to the mainline and is not used) | M1.1 A3, A4 |
