@@ -5,6 +5,7 @@
 //! is a [`Command`] applied in Raft log order, so every replica computes the same
 //! state (design §01 §3.2, §02 §3).
 
+mod client;
 mod clock;
 mod codec;
 mod command;
@@ -18,6 +19,7 @@ mod state;
 mod state_machine;
 mod types;
 
+pub use client::{MetaClient, MetaClientConfig};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use command::{ApplyError, Command, Reply};
 pub use db::LocalDb;

@@ -289,6 +289,14 @@ impl MetaNode {
         self.inner.id
     }
 
+    /// Watches the index of the last log entry this node has applied (0 before
+    /// any). It changes after every applied entry, once the entry's effect is
+    /// visible to [`Consistency::Local`] reads, so a reader waiting for a
+    /// state change subscribes, reads, and then waits for a change.
+    pub fn watch_applied(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.state.watch_applied()
+    }
+
     /// The leader this node currently knows of.
     pub async fn current_leader(&self) -> Option<NodeId> {
         self.inner.raft.current_leader().await
