@@ -53,9 +53,33 @@ struct Applied {
 #[derive(Clone, Debug)]
 pub(crate) struct StateReader {
     applied: Arc<RwLock<Applied>>,
+    /// The index of the last applied log entry (0 before any), published after
+    /// the state it describes is readable.
+    applied_index: Arc<watch::Sender<u64>>,
 }
 
 impl StateReader {
+    fn new() -> Self {
+        Self {
+            applied: Arc::default(),
+            applied_index: Arc::new(watch::Sender::new(0)),
+        }
+    }
+
+    /// Watches the index of the last applied log entry.
+    pub(crate) fn watch_applied(&self) -> watch::Receiver<u64> {
+        self.applied_index.subscribe()
+    }
+
+    fn publish_applied(&self) {
+        let index = self.last_applied_index().unwrap_or(0);
+        self.applied_index.send_if_modified(|current| {
+            let changed = *current != index;
+            *current = index;
+            changed
+        });
+    }
+
     fn applied(&self) -> RwLockReadGuard<'_, Applied> {
         self.applied.read().unwrap_or_else(PoisonError::into_inner)
     }
@@ -171,9 +195,7 @@ impl StateMachineStore {
                 store,
                 prefix: prefix.into(),
                 db,
-                applied: StateReader {
-                    applied: Arc::default(),
-                },
+                applied: StateReader::new(),
                 snapshot_lock: Mutex::new(()),
                 current: std::sync::Mutex::new(None),
                 closed: Arc::new(watch::Sender::new(false)),
@@ -207,6 +229,7 @@ impl StateMachineStore {
                 meta,
                 bytes: Arc::from(data.as_ref()),
             }));
+            sm.inner.applied.publish_applied();
         }
         Ok(sm)
     }
@@ -409,6 +432,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                     }
                 }
             };
+            self.inner.applied.publish_applied();
             if let Some(responder) = responder {
                 responder.send(reply);
             }
@@ -459,6 +483,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
             membership: meta.last_membership.clone(),
             state,
         };
+        self.inner.applied.publish_applied();
         Ok(())
     }
 

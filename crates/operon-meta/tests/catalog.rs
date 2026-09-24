@@ -18,6 +18,7 @@ fn create_stream(
         name: name.to_string(),
         partitions,
         class: WalClass::Standard,
+        retention: operon_meta::Retention::default(),
     })
 }
 

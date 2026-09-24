@@ -18,6 +18,7 @@ fn state_with_streams(partitions_a: u32, partitions_b: u32) -> MetaState {
                 name: name.to_string(),
                 partitions,
                 class: WalClass::Standard,
+                retention: operon_meta::Retention::default(),
             })
             .expect("create stream");
     }
@@ -37,6 +38,7 @@ fn chunk(stream: u64, partition: u32, records: u32, start: u64) -> WalChunk {
 fn commit(state: &mut MetaState, object: &str, chunks: Vec<WalChunk>) -> Result<Reply, ApplyError> {
     state.apply(Command::CommitWal {
         object: object.to_string(),
+        created_at_ms: 0,
         chunks,
     })
 }

@@ -81,6 +81,7 @@ async fn applied_entries_update_state_and_applied_log_id() {
                     name: "events".to_string(),
                     partitions: 2,
                     class: WalClass::Standard,
+                    retention: operon_meta::Retention::default(),
                 },
             ),
         ],

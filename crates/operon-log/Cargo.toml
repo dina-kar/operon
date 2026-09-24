@@ -1,6 +1,6 @@
 [package]
-name = "operon-meta"
-description = "Operon metastore: Raft-replicated namespaces, streams, sequencer, leases and pointers."
+name = "operon-log"
+description = "Operon's internal log: WAL objects, segments, the leaderless write path, fetch, segmenting and retention."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,26 +10,28 @@ authors.workspace = true
 [dependencies]
 bytes.workspace = true
 crc32c.workspace = true
-futures.workspace = true
-openraft.workspace = true
+moka.workspace = true
+operon-cache.workspace = true
 operon-common.workspace = true
+operon-meta.workspace = true
 operon-store.workspace = true
 postcard.workspace = true
-redb.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-
-[features]
-# Fault-injection hooks for tests in this and dependent crates. Not part of
-# the stable API.
-test-util = []
+ulid.workspace = true
 
 [dev-dependencies]
-operon-meta = { path = ".", features = ["test-util"] }
+async-trait.workspace = true
+crc32c.workspace = true
+futures.workspace = true
+kafka-protocol.workspace = true
+operon-meta = { workspace = true, features = ["test-util"] }
+object_store.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
+ulid.workspace = true
 
 [lints]
 workspace = true

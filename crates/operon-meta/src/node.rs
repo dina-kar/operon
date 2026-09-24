@@ -25,7 +25,7 @@ use crate::state::MetaState;
 use crate::state_machine::{
     SNAPSHOT_POINTER_KEY, SnapshotIoCloser, StateMachineStore, StateReader,
 };
-use crate::types::{Fence, LeaseGrant, WalChunk, WalClass};
+use crate::types::{Fence, LeaseGrant, Retention, WalChunk, WalClass};
 
 /// How to start a meta node.
 #[derive(Clone, Debug)]
@@ -53,6 +53,13 @@ pub struct MetaConfig {
     /// metastore and later overwrite the snapshots it should be restored
     /// from. Set it only when those snapshots are known to be stale.
     pub allow_fresh_start_with_existing_snapshots: bool,
+    /// How far ahead of the leader's own clock a command's time stamp
+    /// (`now_ms`, or a WAL commit's `created_at_ms`) may be. The leader
+    /// refuses to propose a command stamped further ahead, with
+    /// [`MetaError::ClockSkew`]: the metastore clock never goes back, so one
+    /// such stamp would otherwise make every later WAL commit stale until real
+    /// time caught up. Default 60 s.
+    pub max_clock_skew: Duration,
 }
 
 impl MetaConfig {
@@ -67,6 +74,7 @@ impl MetaConfig {
             request_timeout: Duration::from_secs(5),
             clock: Arc::new(SystemClock),
             allow_fresh_start_with_existing_snapshots: false,
+            max_clock_skew: Duration::from_secs(60),
         }
     }
 }
@@ -104,6 +112,7 @@ struct Inner {
     router: Router,
     clock: Arc<dyn Clock>,
     request_timeout: Duration,
+    max_clock_skew: Duration,
 }
 
 /// A running meta node. Cheap to clone; clones share the node.
@@ -233,6 +242,7 @@ impl MetaNode {
                 router: router.clone(),
                 clock: config.clock,
                 request_timeout: config.request_timeout,
+                max_clock_skew: config.max_clock_skew,
             }),
         })
     }
@@ -289,6 +299,14 @@ impl MetaNode {
         self.inner.id
     }
 
+    /// Watches the index of the last log entry this node has applied (0 before
+    /// any). It changes after every applied entry, once the entry's effect is
+    /// visible to [`Consistency::Local`] reads, so a reader waiting for a
+    /// state change subscribes, reads, and then waits for a change.
+    pub fn watch_applied(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.state.watch_applied()
+    }
+
     /// The leader this node currently knows of.
     pub async fn current_leader(&self) -> Option<NodeId> {
         self.inner.raft.current_leader().await
@@ -330,7 +348,12 @@ impl MetaNode {
     /// id the first attempt created.
     ///
     /// [`ApplyError::NamespaceExists`]: crate::ApplyError::NamespaceExists
+    ///
+    /// A leader refuses a command stamped more than
+    /// [`MetaConfig::max_clock_skew`] ahead of its own clock with
+    /// [`MetaError::ClockSkew`], before proposing it.
     pub async fn write(&self, command: Command) -> Result<Reply, MetaError> {
+        self.check_clock(&command)?;
         let write = self.inner.raft.client_write(command);
         let result = tokio::time::timeout(self.inner.request_timeout, write)
             .await
@@ -350,6 +373,34 @@ impl MetaNode {
             }
             Err(e) => Err(unavailable(e)),
         }
+    }
+
+    /// Refuses a command whose time stamp is too far ahead of this node's
+    /// clock, if this node is the leader (a follower answers `NotLeader`
+    /// anyway, and the leader checks). The check runs before proposing, so
+    /// `MetaState::apply` stays deterministic.
+    fn check_clock(&self, command: &Command) -> Result<(), MetaError> {
+        let stamped_ms = match command {
+            Command::AcquireLease { now_ms, .. }
+            | Command::RenewLease { now_ms, .. }
+            | Command::SwapSegment { now_ms, .. }
+            | Command::TrimPartition { now_ms, .. }
+            | Command::PruneWalCommits { now_ms } => *now_ms,
+            Command::CommitWal { created_at_ms, .. } => *created_at_ms,
+            _ => return Ok(()),
+        };
+        let leader = self.inner.raft.metrics().borrow_watched().current_leader;
+        if leader != Some(self.inner.id) {
+            return Ok(());
+        }
+        let leader_ms = self.inner.clock.now_ms();
+        if stamped_ms > leader_ms.saturating_add(millis(self.inner.max_clock_skew)) {
+            return Err(MetaError::ClockSkew {
+                stamped_ms,
+                leader_ms,
+            });
+        }
+        Ok(())
     }
 
     /// Runs `f` against the state machine at the requested consistency.
@@ -398,6 +449,7 @@ impl MetaNode {
             name: name.to_string(),
             partitions,
             class,
+            retention: Retention::default(),
         };
         match self.write(command).await? {
             Reply::StreamCreated(id) => Ok(id),
@@ -405,14 +457,17 @@ impl MetaNode {
         }
     }
 
-    /// Commits a durable WAL object; returns each chunk's base offset.
+    /// Commits a durable WAL object created at `created_at_ms`; returns each
+    /// chunk's base offset.
     pub async fn commit_wal(
         &self,
         object: &str,
+        created_at_ms: u64,
         chunks: Vec<WalChunk>,
     ) -> Result<Vec<u64>, MetaError> {
         let command = Command::CommitWal {
             object: object.to_string(),
+            created_at_ms,
             chunks,
         };
         match self.write(command).await? {

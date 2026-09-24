@@ -1,7 +1,9 @@
+use std::ops::Range;
+
 use operon_common::{NamespaceId, StreamId};
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Fence, LeaseGrant, Pointer, WalChunk, WalClass};
+use crate::types::{Fence, LeaseGrant, Pointer, Retention, WalChunk, WalClass};
 
 /// A change to the metastore. Commands are replicated through the Raft log and
 /// applied in log order by [`crate::MetaState::apply`].
@@ -11,24 +13,82 @@ pub enum Command {
     /// acknowledgement fails with [`ApplyError::NamespaceExists`], which
     /// carries the id the first attempt created.
     CreateNamespace { name: String },
-    /// Creates a stream in a namespace. Names are unique within the namespace.
-    /// A retry after a lost acknowledgement fails with
-    /// [`ApplyError::StreamExists`], which carries the id the first attempt
-    /// created.
+    /// Creates a stream in a namespace, with its retention policy. Names are
+    /// unique within the namespace. A retry after a lost acknowledgement fails
+    /// with [`ApplyError::StreamExists`], which carries the id the first
+    /// attempt created.
     CreateStream {
         namespace: NamespaceId,
         name: String,
         partitions: u32,
         class: WalClass,
+        retention: Retention,
     },
     /// Assigns offsets to every chunk of a durable WAL object and appends the
     /// chunks to their partitions' offset indexes, atomically. Committing the
     /// same object again returns the offsets of the first commit and changes
     /// nothing, so a log node may retry after a lost acknowledgement.
+    ///
+    /// `created_at_ms` is the WAL object's creation time (its ULID time). A
+    /// commit of an object not seen before is rejected with
+    /// [`ApplyError::StaleCommit`] once `created_at_ms` is more than
+    /// [`WAL_COMMIT_WINDOW_MS`](crate::WAL_COMMIT_WINDOW_MS) behind the
+    /// metastore clock, and commit records are pruned only after twice that
+    /// ([`Command::PruneWalCommits`]). A retry therefore either returns the
+    /// first commit's offsets or is rejected; it never commits the object
+    /// twice. A rejected *retry* does not mean the first attempt failed: its
+    /// record may have been pruned (see [`ApplyError::StaleCommit`]).
+    /// `created_at_ms` does not advance the metastore clock; the proposing
+    /// leader refuses one too far in its future
+    /// ([`MetaConfig::max_clock_skew`](crate::MetaConfig::max_clock_skew)).
     CommitWal {
         object: String,
+        created_at_ms: u64,
         chunks: Vec<WalChunk>,
     },
+    /// Sets a stream's retention policy. Setting the same policy again is a
+    /// no-op, so a retry is safe.
+    SetRetention {
+        stream: StreamId,
+        retention: Retention,
+    },
+    /// Replaces a contiguous run of WAL index entries of one partition with one
+    /// segment entry covering the same offsets (design §02 §5). `replaces`
+    /// names each replaced entry by `(base_offset, WAL object)`, in offset
+    /// order; `byte_range` is the segment's data region.
+    ///
+    /// A retry after a lost acknowledgement finds a segment entry for
+    /// `segment` at `replaces[0].0` and succeeds without changing anything (a
+    /// segment path contains a ULID, so it names one swap). Otherwise the fence
+    /// is checked, and every replaced entry must still be a WAL entry of the
+    /// named object ([`ApplyError::IndexMismatch`] if a concurrent swap or trim
+    /// moved it).
+    SwapSegment {
+        stream: StreamId,
+        partition: u32,
+        replaces: Vec<(u64, String)>,
+        segment: String,
+        byte_range: Range<u64>,
+        max_timestamp_ms: i64,
+        fence: Option<Fence>,
+        now_ms: u64,
+    },
+    /// Makes offsets below `before_offset` (capped at the high watermark)
+    /// unreadable and drops the index entries wholly below it. The log start
+    /// only moves forward, so a retry is a no-op that returns the same log
+    /// start.
+    TrimPartition {
+        stream: StreamId,
+        partition: u32,
+        before_offset: u64,
+        now_ms: u64,
+    },
+    /// Forgets WAL commit records older than twice the commit window. A retry
+    /// removes nothing more.
+    PruneWalCommits { now_ms: u64 },
+    /// Removes collected objects from the retired set. Unknown paths are
+    /// ignored, so a retry is safe.
+    ForgetObjects { objects: Vec<String> },
     /// Takes a free or expired lease for `ttl_ms`, bumping its epoch. If
     /// `owner` already holds the lease, extends it to `now_ms + ttl_ms` and
     /// keeps the epoch, so a retry after a lost acknowledgement gets the same
@@ -68,8 +128,11 @@ pub enum Command {
     /// pointer must not exist yet) and, when `fence` is given, the fencing
     /// lease is still at the fence's epoch. The new version is `expected + 1`
     /// (or 1 for a new pointer). A retry after a lost acknowledgement fails
-    /// with [`ApplyError::VersionMismatch`]; if its current pointer holds the
-    /// caller's value at `expected + 1`, the first attempt succeeded.
+    /// with [`ApplyError::VersionMismatch`]. A current pointer holding the
+    /// caller's value at `expected + 1` means the first attempt *may* have
+    /// succeeded: another writer may have written the same value. Callers
+    /// that must know write a unique value (for example a manifest path
+    /// containing a ULID).
     CasPointer {
         namespace: NamespaceId,
         key: String,
@@ -92,6 +155,17 @@ pub enum Reply {
     LeaseReleased,
     PointerSet {
         version: u64,
+    },
+    RetentionSet,
+    SegmentSwapped,
+    Trimmed {
+        log_start_offset: u64,
+    },
+    Pruned {
+        removed: u32,
+    },
+    Forgotten {
+        removed: u32,
     },
 }
 
@@ -126,6 +200,17 @@ pub enum ApplyError {
     VersionMismatch { current: Option<Pointer> },
     #[error("fenced: lease {lease} is no longer at the given epoch")]
     Fenced { lease: String },
+    /// A segment swap named index entries that are no longer there as given:
+    /// a concurrent swap or trim changed the partition's index.
+    #[error("index mismatch: stream {stream} partition {partition}")]
+    IndexMismatch { stream: StreamId, partition: u32 },
+    /// A WAL object is too old to commit (see [`Command::CommitWal`]), and no
+    /// commit record for it remains. On a first attempt its records were never
+    /// committed. On a retry after an attempt whose outcome was unknown, the
+    /// first attempt may have committed them and its record may since have
+    /// been pruned: the outcome is still unknown.
+    #[error("stale WAL commit: {object}")]
+    StaleCommit { object: String },
 }
 
 impl std::fmt::Display for Command {
@@ -136,8 +221,33 @@ impl std::fmt::Display for Command {
             Command::CreateStream {
                 namespace, name, ..
             } => write!(f, "CreateStream({namespace}/{name})"),
-            Command::CommitWal { object, chunks } => {
+            Command::CommitWal { object, chunks, .. } => {
                 write!(f, "CommitWal({object}, {} chunks)", chunks.len())
+            }
+            Command::SetRetention { stream, .. } => write!(f, "SetRetention({stream})"),
+            Command::SwapSegment {
+                stream,
+                partition,
+                replaces,
+                segment,
+                ..
+            } => write!(
+                f,
+                "SwapSegment({stream}/{partition}, {segment}, {} entries)",
+                replaces.len()
+            ),
+            Command::TrimPartition {
+                stream,
+                partition,
+                before_offset,
+                ..
+            } => write!(
+                f,
+                "TrimPartition({stream}/{partition}, before {before_offset})"
+            ),
+            Command::PruneWalCommits { .. } => write!(f, "PruneWalCommits"),
+            Command::ForgetObjects { objects } => {
+                write!(f, "ForgetObjects({} objects)", objects.len())
             }
             Command::AcquireLease { key, owner, .. } => write!(f, "AcquireLease({key}, {owner})"),
             Command::RenewLease {

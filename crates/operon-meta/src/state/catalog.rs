@@ -4,7 +4,7 @@ use operon_common::{NamespaceId, StreamId};
 
 use super::{MAX_PARTITIONS, MetaState, validate_name};
 use crate::command::{ApplyError, Reply};
-use crate::types::{Namespace, PartitionState, Stream, WalClass};
+use crate::types::{Namespace, PartitionState, Retention, Stream, WalClass};
 
 impl MetaState {
     pub(super) fn create_namespace(&mut self, name: String) -> Result<Reply, ApplyError> {
@@ -25,6 +25,7 @@ impl MetaState {
         name: String,
         partitions: u32,
         class: WalClass,
+        retention: Retention,
     ) -> Result<Reply, ApplyError> {
         validate_name("stream", &name)?;
         if !(1..=MAX_PARTITIONS).contains(&partitions) {
@@ -55,6 +56,7 @@ impl MetaState {
                 name,
                 partitions,
                 class,
+                retention,
             },
         );
         Ok(Reply::StreamCreated(id))
@@ -94,6 +96,11 @@ impl MetaState {
         self.streams
             .values()
             .filter(move |s| s.namespace == namespace)
+    }
+
+    /// Every stream, in id order.
+    pub fn all_streams(&self) -> impl Iterator<Item = &Stream> {
+        self.streams.values()
     }
 
     /// Sequencer state of one partition, if the stream and partition exist.

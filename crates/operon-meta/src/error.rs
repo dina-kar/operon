@@ -31,6 +31,12 @@ pub enum MetaError {
     /// is unknown, and retrying it is safe.
     #[error("metastore unavailable: {0}")]
     Unavailable(String),
+    /// The leader refused to propose a command stamped `stamped_ms`, more
+    /// than [`MetaConfig::max_clock_skew`](crate::MetaConfig::max_clock_skew)
+    /// ahead of its own clock `leader_ms`. Nothing was proposed; fix the
+    /// proposer's clock. Not retried by [`MetaClient`](crate::MetaClient).
+    #[error("clock skew: command stamped {stamped_ms} ms, leader clock {leader_ms} ms")]
+    ClockSkew { stamped_ms: u64, leader_ms: u64 },
     /// The node-local database or the snapshot store failed.
     #[error("storage error: {0}")]
     Storage(#[from] io::Error),

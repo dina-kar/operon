@@ -131,9 +131,9 @@ Streams generate high-rate metadata: offset assignment per flush, consumer offse
 ```
 s3://<bucket>/<cluster_prefix>/
   meta/snapshots/<node_id>/<raft_term>-<index>.snap # metastore snapshots, one set per meta node (D17)
+  wal/<class>/<node_id>/<ulid>.wal                  # standard/express WAL objects: multi-partition, multi-namespace (D25)
   ns/<namespace_id>/
-    wal/<class>/<node_id>/<ulid>.wal                # standard/express WAL objects (multi-partition)
-    streams/<stream_id>/<partition>/<base_offset>-<ulid>.seg
+    streams/<stream_id>/<partition>/<base_offset:020>-<ulid>.seg
     collections/<collection_id>/
       lance/…                                        # Lance dataset (data/, _versions/, _indices/)
       text/splits/<ulid>.split                       # Tantivy split bundles (with hotcache footer)

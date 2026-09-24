@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 
 use operon_common::{NamespaceId, StreamId};
 use operon_meta::{
-    ApplyError, Consistency, Fence, ManualClock, MetaConfig, MetaError, MetaNode, RaftStatus,
-    Router, WalChunk, WalClass,
+    ApplyError, Clock, Command, Consistency, Fence, ManualClock, MetaConfig, MetaError, MetaNode,
+    RaftStatus, Router, WalChunk, WalClass,
 };
 use operon_store::{Fault, FaultyStore, Op, Store};
 use tempfile::TempDir;
@@ -72,20 +72,20 @@ async fn a_single_node_serves_writes_and_reads() {
         .await
         .unwrap();
     assert_eq!(
-        node.commit_wal("wal/1.wal", vec![chunk(stream, 10)])
+        node.commit_wal("wal/1.wal", 0, vec![chunk(stream, 10)])
             .await
             .unwrap(),
         [0]
     );
     assert_eq!(
-        node.commit_wal("wal/2.wal", vec![chunk(stream, 5)])
+        node.commit_wal("wal/2.wal", 0, vec![chunk(stream, 5)])
             .await
             .unwrap(),
         [10]
     );
     // A retried commit gets its original offsets.
     assert_eq!(
-        node.commit_wal("wal/1.wal", vec![chunk(stream, 10)])
+        node.commit_wal("wal/1.wal", 0, vec![chunk(stream, 10)])
             .await
             .unwrap(),
         [0]
@@ -278,7 +278,7 @@ async fn state_survives_a_restart_after_snapshot_and_log_purge() {
         .create_stream(ns, "events", 1, WalClass::Standard)
         .await
         .unwrap();
-    node.commit_wal("wal/1.wal", vec![chunk(stream, 7)])
+    node.commit_wal("wal/1.wal", 0, vec![chunk(stream, 7)])
         .await
         .unwrap();
     node.snapshot().await.unwrap();
@@ -289,7 +289,7 @@ async fn state_survives_a_restart_after_snapshot_and_log_purge() {
     let snapshotted = wait_for_status(&node, |s| s.purged >= s.snapshot).await;
     assert_eq!(snapshotted.purged, status.snapshot);
     // Entries after the snapshot are recovered from the log.
-    node.commit_wal("wal/2.wal", vec![chunk(stream, 3)])
+    node.commit_wal("wal/2.wal", 0, vec![chunk(stream, 3)])
         .await
         .unwrap();
 
@@ -325,7 +325,7 @@ async fn state_survives_a_restart_after_snapshot_and_log_purge() {
         Some(10)
     );
     assert_eq!(
-        node.commit_wal("wal/3.wal", vec![chunk(stream, 1)])
+        node.commit_wal("wal/3.wal", 0, vec![chunk(stream, 1)])
             .await
             .unwrap(),
         [10]
@@ -507,4 +507,86 @@ async fn invalid_configs_are_rejected() {
     cfg.snapshot_every = 0;
     let err = MetaNode::start(cfg, &Router::new()).await.unwrap_err();
     assert!(matches!(err, MetaError::Config(_)), "{err:?}");
+}
+
+/// A command stamped far ahead of the leader's clock is refused before it is
+/// proposed, so it cannot push the metastore clock forward and make every
+/// later WAL commit stale.
+#[tokio::test]
+async fn the_leader_refuses_commands_stamped_too_far_ahead() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    let clock = Arc::new(ManualClock::new(1_700_000_000_000));
+    let mut cfg = config(&dir, &store);
+    cfg.clock = clock.clone();
+    let node = start(cfg).await;
+    let ns = node.create_namespace("acme").await.unwrap();
+    let stream = node
+        .create_stream(ns, "events", 1, WalClass::Standard)
+        .await
+        .unwrap();
+    let now = clock.now_ms();
+    let day = 86_400_000;
+    let clock_before = node
+        .read(Consistency::Local, |s| s.clock_ms())
+        .await
+        .unwrap();
+
+    let skewed = [
+        Command::AcquireLease {
+            key: "l".to_string(),
+            owner: "o".to_string(),
+            ttl_ms: 1_000,
+            now_ms: now + day,
+        },
+        Command::PruneWalCommits { now_ms: now + day },
+        Command::TrimPartition {
+            stream,
+            partition: 0,
+            before_offset: 0,
+            now_ms: now + 61_000,
+        },
+        Command::CommitWal {
+            object: "wal/future.wal".to_string(),
+            created_at_ms: now + day,
+            chunks: vec![chunk(stream, 1)],
+        },
+    ];
+    for command in skewed {
+        let err = node.write(command.clone()).await.unwrap_err();
+        assert!(
+            matches!(err, MetaError::ClockSkew { leader_ms, .. } if leader_ms == now),
+            "{command:?}: {err:?}"
+        );
+    }
+    assert_eq!(
+        node.read(Consistency::Local, |s| s.clock_ms())
+            .await
+            .unwrap(),
+        clock_before
+    );
+
+    // Within the tolerance is fine, and commits from a correct clock keep working.
+    node.write(Command::PruneWalCommits {
+        now_ms: now + 59_000,
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        node.commit_wal("wal/now.wal", now, vec![chunk(stream, 2)])
+            .await
+            .unwrap(),
+        [0]
+    );
+    // A client with a skewed clock gets the refusal at once, not after retries.
+    let skewed_client = operon_meta::MetaClient::new(
+        node.clone(),
+        vec![],
+        Arc::new(ManualClock::new(now + day)),
+        operon_meta::MetaClientConfig::default(),
+    );
+    let started = Instant::now();
+    let err = skewed_client.prune_wal_commits().await.unwrap_err();
+    assert!(matches!(err, MetaError::ClockSkew { .. }), "{err:?}");
+    assert!(started.elapsed() < Duration::from_secs(2));
+    node.shutdown().await.unwrap();
 }
