@@ -326,6 +326,20 @@ impl MetaNode {
         }
     }
 
+    /// The fatal error that stopped this node's Raft, if any (M0.2 review
+    /// N4: a retrying client cannot tell a fatally failed leader from one
+    /// that is merely unavailable). `None` while Raft runs, and after a
+    /// clean [`MetaNode::shutdown`].
+    pub fn fatal_error(&self) -> Option<String> {
+        let metrics = self.inner.raft.metrics();
+        let m = metrics.borrow_watched();
+        match &m.running_state {
+            Ok(()) => None,
+            Err(openraft::error::Fatal::Stopped) => None,
+            Err(fatal) => Some(fatal.to_string()),
+        }
+    }
+
     /// Waits until this node knows of a leader, and returns it.
     pub async fn wait_for_leader(&self, timeout: Duration) -> Result<NodeId, MetaError> {
         let metrics = self
