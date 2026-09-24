@@ -1,0 +1,22 @@
+[package]
+name = "operon-pk"
+description = "Operon's primary-key index: a fenced single-writer SlateDB per keyed object."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+bytes.workspace = true
+object_store.workspace = true
+operon-store.workspace = true
+slatedb.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

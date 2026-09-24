@@ -27,6 +27,7 @@ proptest = "1"
 redb = "4"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 serde = { version = "1", features = ["derive"] }
+slatedb = { version = "0.16", default-features = false }
 serde_json = "1"
 tempfile = "3"
 thiserror = "2"
@@ -40,6 +41,7 @@ operon-cache = { path = "crates/operon-cache", version = "0.0.1" }
 operon-common = { path = "crates/operon-common", version = "0.0.1" }
 operon-log = { path = "crates/operon-log", version = "0.0.1" }
 operon-meta = { path = "crates/operon-meta", version = "0.0.1" }
+operon-pk = { path = "crates/operon-pk", version = "0.0.1" }
 operon-store = { path = "crates/operon-store", version = "0.0.1" }
 operon-worker = { path = "crates/operon-worker", version = "0.0.1" }
 
