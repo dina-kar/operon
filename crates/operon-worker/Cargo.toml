@@ -1,0 +1,30 @@
+[package]
+name = "operon-worker"
+description = "Operon's worker task framework: lease-fenced background tasks with priorities and fair share."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+operon-common.workspace = true
+operon-meta.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[features]
+# Test hooks (pausing lease renewals). Not part of the stable API.
+test-util = []
+
+[dev-dependencies]
+operon-meta = { workspace = true, features = ["test-util"] }
+operon-worker = { path = ".", features = ["test-util"] }
+operon-store.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

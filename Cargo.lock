@@ -1833,6 +1833,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "operon-worker"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "operon-common",
+ "operon-meta",
+ "operon-store",
+ "operon-worker",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

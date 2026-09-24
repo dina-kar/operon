@@ -31,6 +31,7 @@ serde_json = "1"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ulid = "3"
@@ -40,6 +41,7 @@ operon-common = { path = "crates/operon-common", version = "0.0.1" }
 operon-log = { path = "crates/operon-log", version = "0.0.1" }
 operon-meta = { path = "crates/operon-meta", version = "0.0.1" }
 operon-store = { path = "crates/operon-store", version = "0.0.1" }
+operon-worker = { path = "crates/operon-worker", version = "0.0.1" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
