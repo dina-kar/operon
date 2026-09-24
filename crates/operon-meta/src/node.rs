@@ -107,6 +107,9 @@ struct Inner {
 }
 
 /// A running meta node. Cheap to clone; clones share the node.
+///
+/// Call [`MetaNode::shutdown`] before dropping the last handle: the [`Router`]
+/// keeps a node that was not shut down running, with its local database open.
 #[derive(Clone)]
 pub struct MetaNode {
     inner: Arc<Inner>,
@@ -318,6 +321,15 @@ impl MetaNode {
 
     /// Proposes a command and waits until it is committed and applied.
     /// Must be sent to the leader.
+    ///
+    /// On [`MetaError::NotLeader`], [`MetaError::Timeout`] or
+    /// [`MetaError::Unavailable`] the outcome is unknown: the command may have
+    /// been applied, or may still be. Retrying (on the leader) is safe, because
+    /// every command is retry-safe; the retry may then report the first
+    /// attempt's effect, for example [`ApplyError::NamespaceExists`] with the
+    /// id the first attempt created.
+    ///
+    /// [`ApplyError::NamespaceExists`]: crate::ApplyError::NamespaceExists
     pub async fn write(&self, command: Command) -> Result<Reply, MetaError> {
         let write = self.inner.raft.client_write(command);
         let result = tokio::time::timeout(self.inner.request_timeout, write)
@@ -328,6 +340,9 @@ impl MetaNode {
                 Some(reply) => Ok(reply?),
                 None => Err(unavailable("a command entry produced no reply")),
             },
+            // openraft also answers a write it already proposed this way, when
+            // this node loses leadership (or purges the entry's log range after
+            // installing a snapshot) before the reply: the outcome is unknown.
             Err(RaftError::APIError(ClientWriteError::ForwardToLeader(forward))) => {
                 Err(MetaError::NotLeader {
                     leader: forward.leader_id,

@@ -7,9 +7,14 @@ use crate::types::{Fence, LeaseGrant, Pointer, WalChunk, WalClass};
 /// applied in log order by [`crate::MetaState::apply`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Command {
-    /// Creates a namespace. Names are unique.
+    /// Creates a namespace. Names are unique. A retry after a lost
+    /// acknowledgement fails with [`ApplyError::NamespaceExists`], which
+    /// carries the id the first attempt created.
     CreateNamespace { name: String },
     /// Creates a stream in a namespace. Names are unique within the namespace.
+    /// A retry after a lost acknowledgement fails with
+    /// [`ApplyError::StreamExists`], which carries the id the first attempt
+    /// created.
     CreateStream {
         namespace: NamespaceId,
         name: String,
@@ -25,15 +30,26 @@ pub enum Command {
         chunks: Vec<WalChunk>,
     },
     /// Takes a free or expired lease for `ttl_ms`, bumping its epoch. If
-    /// `owner` already holds the lease, extends it and keeps the epoch, so a
-    /// retry after a lost acknowledgement gets the same grant back.
+    /// `owner` already holds the lease, extends it to `now_ms + ttl_ms` and
+    /// keeps the epoch, so a retry after a lost acknowledgement gets the same
+    /// epoch back (with the retry's deadline). If the lease expired between
+    /// the attempts, the retry takes it again at the next epoch, and fences at
+    /// the first attempt's epoch fail.
+    ///
+    /// The same owner string always shares the lease and its epoch, so owners
+    /// must be unique per process incarnation (for example a host name plus a
+    /// random suffix chosen at start): a restarted worker that reused its
+    /// predecessor's owner would share fencing rights with it.
     AcquireLease {
         key: String,
         owner: String,
         ttl_ms: u64,
         now_ms: u64,
     },
-    /// Extends a held, unexpired lease by `ttl_ms` from `now_ms`.
+    /// Extends a held, unexpired lease by `ttl_ms` from `now_ms`. A retry
+    /// after a lost acknowledgement extends it again from the retry's
+    /// `now_ms`, or fails with [`ApplyError::LeaseLost`] if the lease expired
+    /// in between, which the first attempt would not have prevented.
     RenewLease {
         key: String,
         owner: String,
@@ -51,7 +67,9 @@ pub enum Command {
     /// Sets a pointer if its current version is `expected` (`None`: the
     /// pointer must not exist yet) and, when `fence` is given, the fencing
     /// lease is still at the fence's epoch. The new version is `expected + 1`
-    /// (or 1 for a new pointer).
+    /// (or 1 for a new pointer). A retry after a lost acknowledgement fails
+    /// with [`ApplyError::VersionMismatch`]; if its current pointer holds the
+    /// caller's value at `expected + 1`, the first attempt succeeded.
     CasPointer {
         namespace: NamespaceId,
         key: String,
