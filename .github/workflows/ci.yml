@@ -36,6 +36,15 @@ jobs:
       - name: crash gate
         run: cargo test -p operon --features failpoints --test crash --locked
 
+  sim:
+    name: simulation seed sweep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: simulation (32 seeds x 300 steps)
+        run: cargo test -p operon-sim --release --locked
+
   deny:
     name: licenses, advisories, sources
     runs-on: ubuntu-latest
