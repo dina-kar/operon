@@ -97,6 +97,11 @@ impl MetaState {
             .filter(move |s| s.namespace == namespace)
     }
 
+    /// Every stream, in id order.
+    pub fn all_streams(&self) -> impl Iterator<Item = &Stream> {
+        self.streams.values()
+    }
+
     /// Sequencer state of one partition, if the stream and partition exist.
     pub fn partition(&self, stream: StreamId, partition: u32) -> Option<&PartitionState> {
         self.partitions.get(&(stream, partition))

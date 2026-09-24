@@ -14,11 +14,15 @@ mod error;
 pub mod paths;
 mod reader;
 mod record;
+mod retention;
 pub mod segment;
+mod segmenter;
 pub mod wal;
 mod writer;
 
 pub use error::LogError;
 pub use reader::{FetchRequest, FetchResponse, LogReader};
 pub use record::{Encoding, OffsetRecord, Record};
+pub use retention::{Retention, RetentionConfig, RetentionReport};
+pub use segmenter::{BackgroundTask, Segmenter, SegmenterConfig, SegmenterReport};
 pub use writer::{AppendAck, LogConfig, LogWriter};

@@ -1542,11 +1542,13 @@ dependencies = [
 name = "operon-log"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
  "bytes",
  "crc32c",
  "futures",
  "kafka-protocol",
  "moka",
+ "object_store",
  "operon-cache",
  "operon-common",
  "operon-meta",

@@ -261,3 +261,148 @@ pub async fn small_cache(store: &Store) -> operon_cache::RangeCache {
     .await
     .expect("cache")
 }
+
+/// An object store that holds the next PUT under a prefix until released,
+/// to interleave a background task with the test.
+pub struct PausingStore {
+    inner: Arc<dyn object_store::ObjectStore>,
+    gate: Arc<Gate>,
+}
+
+pub struct Gate {
+    prefix: std::sync::Mutex<Option<String>>,
+    paused: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+}
+
+impl Default for Gate {
+    fn default() -> Self {
+        Self {
+            prefix: std::sync::Mutex::new(None),
+            paused: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+        }
+    }
+}
+
+impl Gate {
+    /// Holds the next PUT whose path starts with `prefix`.
+    pub fn arm(&self, prefix: &str) {
+        *self.prefix.lock().expect("lock") = Some(prefix.to_string());
+    }
+
+    /// Waits until a PUT is held.
+    pub async fn paused(&self) {
+        tokio::time::timeout(WAIT, self.paused.notified())
+            .await
+            .expect("a PUT was held");
+    }
+
+    /// Lets the held PUT continue.
+    pub fn release(&self) {
+        self.release.add_permits(1);
+    }
+
+    fn take(&self, path: &str) -> bool {
+        let mut prefix = self.prefix.lock().expect("lock");
+        if prefix.as_deref().is_some_and(|p| path.starts_with(p)) {
+            *prefix = None;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl PausingStore {
+    pub fn create() -> (Arc<Gate>, Store) {
+        let gate = Arc::new(Gate::default());
+        let store = PausingStore {
+            inner: Store::in_memory().inner().clone(),
+            gate: gate.clone(),
+        };
+        (gate, Store::new(Arc::new(store)))
+    }
+}
+
+impl std::fmt::Debug for PausingStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PausingStore")
+    }
+}
+
+impl std::fmt::Display for PausingStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PausingStore")
+    }
+}
+
+#[async_trait::async_trait]
+impl object_store::ObjectStore for PausingStore {
+    async fn put_opts(
+        &self,
+        location: &object_store::path::Path,
+        payload: object_store::PutPayload,
+        opts: object_store::PutOptions,
+    ) -> object_store::Result<object_store::PutResult> {
+        if self.gate.take(location.as_ref()) {
+            self.gate.paused.notify_one();
+            self.gate
+                .release
+                .acquire()
+                .await
+                .expect("semaphore open")
+                .forget();
+        }
+        self.inner.put_opts(location, payload, opts).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &object_store::path::Path,
+        opts: object_store::PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &object_store::path::Path,
+        options: object_store::GetOptions,
+    ) -> object_store::Result<object_store::GetResult> {
+        self.inner.get_opts(location, options).await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: futures::stream::BoxStream<
+            'static,
+            object_store::Result<object_store::path::Path>,
+        >,
+    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::path::Path>> {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&object_store::path::Path>,
+    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&object_store::path::Path>,
+    ) -> object_store::Result<object_store::ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &object_store::path::Path,
+        to: &object_store::path::Path,
+        options: object_store::CopyOptions,
+    ) -> object_store::Result<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
+}
