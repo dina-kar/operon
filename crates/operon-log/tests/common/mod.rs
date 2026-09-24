@@ -159,3 +159,105 @@ where
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
+
+/// Rewrites up to `max_entries` leading WAL entries of a partition into one
+/// segment and swaps it in, the way the segmenter does. Returns the segment
+/// path, or `None` if there was nothing to segment or the swap lost a race.
+pub async fn segment_now(
+    meta: &MetaClient,
+    store: &Store,
+    namespace: NamespaceId,
+    stream: StreamId,
+    partition: u32,
+    max_entries: usize,
+) -> Option<String> {
+    let entries: Vec<operon_meta::IndexEntry> = meta
+        .read(Consistency::Local, |s| {
+            s.partition(stream, partition)
+                .expect("partition")
+                .entries()
+                .skip_while(|e| e.kind == EntryKind::Segment)
+                .take_while(|e| e.kind == EntryKind::Wal)
+                .take(max_entries)
+                .cloned()
+                .collect()
+        })
+        .await
+        .expect("read");
+    let first = entries.first()?;
+    let mut builder = segment::SegmentBuilder::new(
+        stream,
+        partition,
+        first.base_offset,
+        operon_log::Encoding::Kafka,
+    );
+    let mut max_ts = i64::MIN;
+    for entry in &entries {
+        let bytes = store
+            .get_range(&entry.object, entry.byte_range.clone())
+            .await
+            .ok()?;
+        for b in batch::batches(&bytes) {
+            let b = b.expect("batch");
+            builder
+                .push_batch(
+                    Bytes::copy_from_slice(b.bytes),
+                    b.record_count,
+                    b.max_timestamp_ms,
+                )
+                .expect("push");
+        }
+        max_ts = max_ts.max(entry.max_timestamp_ms);
+    }
+    let (bytes, footer) = builder.finish();
+    let path = operon_log::paths::segment(
+        namespace,
+        stream,
+        partition,
+        first.base_offset,
+        ulid::Ulid::generate(),
+    );
+    store
+        .put_if_absent(&path, bytes)
+        .await
+        .expect("put segment");
+    let replaces = entries
+        .iter()
+        .map(|e| (e.base_offset, e.object.clone()))
+        .collect();
+    match meta
+        .swap_segment(
+            stream,
+            partition,
+            replaces,
+            &path,
+            footer.data,
+            max_ts,
+            None,
+        )
+        .await
+    {
+        Ok(()) => Some(path),
+        Err(operon_meta::MetaError::Rejected(operon_meta::ApplyError::IndexMismatch {
+            ..
+        })) => {
+            store.delete(&path).await.expect("delete");
+            None
+        }
+        Err(err) => panic!("swap: {err}"),
+    }
+}
+
+/// A small range cache over `store`, so reads often miss and hit the store.
+pub async fn small_cache(store: &Store) -> operon_cache::RangeCache {
+    operon_cache::RangeCache::new(
+        store.clone(),
+        operon_cache::RangeCacheConfig {
+            block_size: 512,
+            memory_bytes: 16 * 1024,
+            disk: None,
+        },
+    )
+    .await
+    .expect("cache")
+}

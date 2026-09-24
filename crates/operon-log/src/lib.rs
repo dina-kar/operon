@@ -12,11 +12,13 @@
 pub mod batch;
 mod error;
 pub mod paths;
+mod reader;
 mod record;
 pub mod segment;
 pub mod wal;
 mod writer;
 
 pub use error::LogError;
+pub use reader::{FetchRequest, FetchResponse, LogReader};
 pub use record::{Encoding, OffsetRecord, Record};
 pub use writer::{AppendAck, LogConfig, LogWriter};

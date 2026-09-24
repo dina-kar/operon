@@ -1544,6 +1544,7 @@ version = "0.0.1"
 dependencies = [
  "bytes",
  "crc32c",
+ "futures",
  "kafka-protocol",
  "moka",
  "operon-cache",
