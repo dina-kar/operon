@@ -15,6 +15,7 @@ bytes = "1"
 crc32c = "0.6"
 foyer = "0.22"
 futures = "0.3"
+kafka-protocol = { version = "0.18", default-features = false }
 moka = { version = "0.12", features = ["future"] }
 object_store = { version = "0.14", features = ["aws", "gcp", "azure", "fs"] }
 openraft = { version = "=0.10.0-alpha.34", default-features = false, features = ["serde", "tokio-rt"] }
@@ -26,8 +27,12 @@ tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
+ulid = "3"
 url = "2"
+operon-cache = { path = "crates/operon-cache", version = "0.0.1" }
 operon-common = { path = "crates/operon-common", version = "0.0.1" }
+operon-log = { path = "crates/operon-log", version = "0.0.1" }
+operon-meta = { path = "crates/operon-meta", version = "0.0.1" }
 operon-store = { path = "crates/operon-store", version = "0.0.1" }
 
 [workspace.lints.rust]
