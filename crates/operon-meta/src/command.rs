@@ -3,7 +3,9 @@ use std::ops::Range;
 use operon_common::{NamespaceId, StreamId};
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Fence, LeaseGrant, Pointer, Retention, WalChunk, WalClass};
+use std::collections::BTreeMap;
+
+use crate::types::{Fence, LeaseGrant, LinkId, Pointer, Retention, TargetRef, WalChunk, WalClass};
 
 /// A change to the metastore. Commands are replicated through the Raft log and
 /// applied in log order by [`crate::MetaState::apply`].
@@ -23,6 +25,17 @@ pub enum Command {
         partitions: u32,
         class: WalClass,
         retention: Retention,
+    },
+    /// Declares a link from stream `source` (in `namespace`) into `target`.
+    /// Names are unique within the namespace. A retry after a lost
+    /// acknowledgement fails with [`ApplyError::LinkExists`], which carries
+    /// the id the first attempt created.
+    CreateLink {
+        namespace: NamespaceId,
+        name: String,
+        source: StreamId,
+        target: TargetRef,
+        options: BTreeMap<String, String>,
     },
     /// Assigns offsets to every chunk of a durable WAL object and appends the
     /// chunks to their partitions' offset indexes, atomically. Committing the
@@ -171,6 +184,7 @@ pub enum Command {
 pub enum Reply {
     NamespaceCreated(NamespaceId),
     StreamCreated(StreamId),
+    LinkCreated(LinkId),
     /// The base offset of each chunk, in the order the chunks were given.
     WalCommitted {
         base_offsets: Vec<u64>,
@@ -210,6 +224,10 @@ pub enum ApplyError {
     StreamExists(StreamId),
     #[error("stream not found: {0}")]
     StreamNotFound(StreamId),
+    /// Carries the existing id, so a retry after a lost acknowledgement can
+    /// recover it.
+    #[error("link already exists: {0}")]
+    LinkExists(LinkId),
     #[error("partition not found: stream {stream} partition {partition}")]
     PartitionNotFound { stream: StreamId, partition: u32 },
     #[error("lease is held by {owner} until {deadline_ms}")]
@@ -245,6 +263,9 @@ impl std::fmt::Display for Command {
             Command::CreateStream {
                 namespace, name, ..
             } => write!(f, "CreateStream({namespace}/{name})"),
+            Command::CreateLink {
+                namespace, name, ..
+            } => write!(f, "CreateLink({namespace}/{name})"),
             Command::CommitWal { object, chunks, .. } => {
                 write!(f, "CommitWal({object}, {} chunks)", chunks.len())
             }

@@ -31,6 +31,7 @@ pub use raft::{EntryReply, NodeId, SnapshotData, TypeConfig};
 pub use state::{MAX_KEY_LEN, MAX_LEASE_TTL_MS, MAX_NAME_LEN, MAX_PARTITIONS, MetaState};
 pub use state_machine::StateMachineStore;
 pub use types::{
-    EntryKind, Fence, IndexEntry, Lease, LeaseGrant, Namespace, PartitionState, Pointer, Retention,
-    Stream, WAL_COMMIT_WINDOW_MS, WalChunk, WalClass, WalCommitRecord,
+    EntryKind, Fence, IndexEntry, Lease, LeaseGrant, Link, LinkId, Namespace, PartitionState,
+    Pointer, Retention, Stream, TargetRef, WAL_COMMIT_WINDOW_MS, WalChunk, WalClass,
+    WalCommitRecord,
 };

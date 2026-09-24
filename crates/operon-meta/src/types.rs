@@ -31,6 +31,36 @@ pub struct Retention {
     pub max_bytes: Option<u64>,
 }
 
+/// Identifies a link (design §09).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct LinkId(pub u64);
+
+impl std::fmt::Display for LinkId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// What a link materializes into: a target `kind` (such as `counter`, the
+/// M0 test target) and the target's name.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetRef {
+    pub kind: String,
+    pub name: String,
+}
+
+/// A declared, continuously maintained materialization of a stream into a
+/// target (design §09 §1).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Link {
+    pub id: LinkId,
+    pub namespace: NamespaceId,
+    pub name: String,
+    pub source: StreamId,
+    pub target: TargetRef,
+    pub options: BTreeMap<String, String>,
+}
+
 /// A partitioned, offset-addressed stream (design §01 §2.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Stream {

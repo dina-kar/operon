@@ -12,8 +12,9 @@ use crate::state::MetaState;
 const SNAPSHOT_MAGIC: &[u8; 8] = b"OPNMETA\0";
 /// Version 2 (M0.3) added the log engine's state: entry kinds, log start
 /// offsets, retention, WAL commit times, live chunk counts and retired objects.
-/// Version-1 snapshots are rejected (M0.3 plan, ruling 9).
-const SNAPSHOT_FORMAT_VERSION: u32 = 2;
+/// Version 3 (M0.4) added the link catalog. Older snapshots are rejected
+/// (M0.3 plan, ruling 9: nothing is deployed yet).
+const SNAPSHOT_FORMAT_VERSION: u32 = 3;
 /// Magic, then the format version.
 const HEADER_LEN: usize = 12;
 /// The crc32c trailer.
@@ -108,6 +109,16 @@ mod tests {
                     max_bytes: Some(20),
                 },
             },
+            Command::CreateLink {
+                namespace: NamespaceId(1),
+                name: "counts".to_string(),
+                source: StreamId(1),
+                target: crate::types::TargetRef {
+                    kind: "counter".to_string(),
+                    name: "counts".to_string(),
+                },
+                options: [("batch_interval".to_string(), "2s".to_string())].into(),
+            },
         ];
         for command in commands {
             state.apply(command).expect("setup");
@@ -160,22 +171,25 @@ mod tests {
         );
         assert_eq!(state.retired().count(), 2);
         assert_eq!(state.wal_live_chunks("w3"), Some(1));
+        assert_eq!(state.all_links().count(), 1);
         let meta = SnapshotMeta::default();
         let bytes = encode_snapshot(&meta, &state).unwrap();
-        assert_eq!(&bytes[8..12], &2u32.to_le_bytes());
+        assert_eq!(&bytes[8..12], &3u32.to_le_bytes());
         let (decoded_meta, decoded) = decode_snapshot(&bytes).unwrap();
         assert_eq!(decoded_meta, meta);
         assert_eq!(decoded, state);
     }
 
     #[test]
-    fn version_1_snapshots_are_rejected() {
-        let mut bytes = encode_snapshot(&SnapshotMeta::default(), &log_state()).unwrap();
-        bytes.truncate(bytes.len() - TRAILER_LEN);
-        bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
-        let crc = crc32c::crc32c(&bytes);
-        bytes.extend_from_slice(&crc.to_le_bytes());
-        let err = decode_snapshot(&bytes).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::Unsupported, "{err}");
+    fn older_snapshot_versions_are_rejected() {
+        for version in [1u32, 2] {
+            let mut bytes = encode_snapshot(&SnapshotMeta::default(), &log_state()).unwrap();
+            bytes.truncate(bytes.len() - TRAILER_LEN);
+            bytes[8..12].copy_from_slice(&version.to_le_bytes());
+            let crc = crc32c::crc32c(&bytes);
+            bytes.extend_from_slice(&crc.to_le_bytes());
+            let err = decode_snapshot(&bytes).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::Unsupported, "{err}");
+        }
     }
 }

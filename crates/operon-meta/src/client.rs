@@ -15,7 +15,7 @@ use crate::error::MetaError;
 use crate::node::{Consistency, MetaNode};
 use crate::raft::NodeId;
 use crate::state::MetaState;
-use crate::types::{Fence, LeaseGrant, Retention, WalChunk, WalClass};
+use crate::types::{Fence, LeaseGrant, LinkId, Retention, TargetRef, WalChunk, WalClass};
 
 /// The longest wait between two attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(1);
@@ -311,6 +311,30 @@ impl MetaClient {
         };
         match self.write(command).await? {
             Reply::StreamCreated(id) => Ok(id),
+            other => Err(MetaError::UnexpectedReply(other)),
+        }
+    }
+
+    /// Declares a link from `source` into `target` ([`Command::CreateLink`]).
+    /// A retry after a lost acknowledgement reports
+    /// [`ApplyError::LinkExists`](crate::ApplyError::LinkExists) with the id.
+    pub async fn create_link(
+        &self,
+        namespace: NamespaceId,
+        name: &str,
+        source: StreamId,
+        target: TargetRef,
+        options: std::collections::BTreeMap<String, String>,
+    ) -> Result<LinkId, MetaError> {
+        let command = Command::CreateLink {
+            namespace,
+            name: name.to_string(),
+            source,
+            target,
+            options,
+        };
+        match self.write(command).await? {
+            Reply::LinkCreated(id) => Ok(id),
             other => Err(MetaError::UnexpectedReply(other)),
         }
     }

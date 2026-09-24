@@ -1,5 +1,6 @@
 mod catalog;
 mod leases;
+mod links;
 mod pointers;
 mod retention;
 mod segments;
@@ -11,7 +12,9 @@ use operon_common::{NamespaceId, StreamId};
 use serde::{Deserialize, Serialize};
 
 use crate::command::{ApplyError, Command, Reply};
-use crate::types::{Lease, Namespace, PartitionState, Pointer, Stream, WalCommitRecord};
+use crate::types::{
+    Lease, Link, LinkId, Namespace, PartitionState, Pointer, Stream, WalCommitRecord,
+};
 
 /// Longest namespace or stream name, in bytes.
 pub const MAX_NAME_LEN: usize = 255;
@@ -54,6 +57,9 @@ pub struct MetaState {
     retired: BTreeMap<String, u64>,
     leases: BTreeMap<String, Lease>,
     pointers: BTreeMap<(NamespaceId, String), Pointer>,
+    last_link_id: u64,
+    links: BTreeMap<LinkId, Link>,
+    link_names: BTreeMap<(NamespaceId, String), LinkId>,
 }
 
 impl MetaState {
@@ -68,6 +74,13 @@ impl MetaState {
                 class,
                 retention,
             } => self.create_stream(namespace, name, partitions, class, retention),
+            Command::CreateLink {
+                namespace,
+                name,
+                source,
+                target,
+                options,
+            } => self.create_link(namespace, name, source, target, options),
             Command::CommitWal {
                 object,
                 created_at_ms,
