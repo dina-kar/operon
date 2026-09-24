@@ -15,6 +15,8 @@ Status: **Approved** · 2026-09-22
 | `table → collection` | Search projection of `products(title, description)` | Collection manifest |
 | `table/collection → graph` | Edge table `knows` → adjacency sidecars | Graph manifest |
 | `table → table` | Materialized view / rollup (§08 §4) | Iceberg snapshot |
+| `table/collection → changelog stream` | Row-level changes of `tickets` as a stream (§02 §8.1) | Fenced append to the changelog stream, before the target commit |
+| `durable_events → table/graph` | Durable-execution search index and execution graph (§14 Phase B) | Iceberg snapshot / graph manifest |
 | implicit | Every table/collection/graph's own implicit stream → itself | per target |
 
 ```sql
@@ -46,6 +48,7 @@ CREATE LINK tickets_search
 3. It builds target files, then commits the target **including the new applied offsets**.
 4. A zombie task (stale epoch) fails its commit: Iceberg optimistic concurrency / manifest-pointer CAS rejects it; leases are also fenced by epoch.
 5. Restart = resume from the committed applied offset. Duplicate work after crashes is discarded, never double-applied.
+6. A link with a changelog appends change records before the target commit, fenced by epoch and by the changelog's recorded `source_upto`; the retried task skips what is already appended (§02 §8.1).
 
 ## 4. Errors, dead letters, schema evolution
 
@@ -70,6 +73,8 @@ CREATE LINK tickets_search
 | Graph algorithms | User job | Result tables/columns |
 | GC | Schedule | Unreferenced object deletion (§03 §7) |
 | Meta snapshot | Raft log size / schedule | Snapshot to S3 |
+| Durable timer sweep (§14 Phase B) | Timer shard lease | Fires due promise/task/schedule deadlines |
+| Durable retention (§14) | Policy schedule | Deletes settled origin documents past retention |
 
 ## 6. Scheduling
 

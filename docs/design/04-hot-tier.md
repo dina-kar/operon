@@ -22,12 +22,13 @@ Status: **Approved** · 2026-09-22
 
 | Object | Durable tier | H2 hot structure | H3 tail |
 |---|---|---|---|
-| Stream | Segments / WAL objects | Recent segments pinned in RAM/NVMe; per-partition read-ahead | Recent record batches (written-through at produce) |
+| Stream | Segments / WAL objects | Recent segments pinned in RAM/NVMe; per-partition read-ahead | Recent record batches (written-through at produce); Arrow batches for `arrow`-encoded streams, shared with the object's tail index without decoding |
 | Collection — vectors | Lance IVF index + vectors | **HNSW** (Qdrant `lib/segment`-derived: HNSW, filterable-HNSW links, quantization) on NVMe/RAM | Small in-memory HNSW / flat index over tail points |
 | Collection — text | Tantivy splits on S3 | Splits pinned on NVMe (whole files), hotcaches in RAM | In-memory Tantivy index (RAM directory) over tail docs |
 | Collection — docs | Lance fragments | Hot fragments on NVMe | Tail docs in Arrow |
 | **Table (Iceberg)** | Parquet + Iceberg metadata | **Hot projections** (MergeTree-like sorted parts + sparse PK index + skip indexes + aggregate projections) on NVMe | Arrow buffers of rows beyond last Iceberg commit |
 | Graph | CSR/CSC sidecars | CSR/CSC chunks resident in RAM for hot vertex ranges; hot vertex-ID map | Edge-delta overlay (adds/deletes since last sidecar build) |
+| Durable execution (§14) | Origin documents | Canonical document bytes cached per origin, bounded by count and weight, revalidated with `If-None-Match: <etag>` on every read | — (every transition is a durable write) |
 
 ## 3. The Iceberg + Lakekeeper hot tier (tables)
 

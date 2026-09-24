@@ -22,6 +22,8 @@ A **namespace** contains five kinds of objects.
 - Partitioned, ordered, offset-addressed log of records `(key, value, headers, timestamp)`.
 - Per-stream **WAL class**: `standard` | `express` | `quorum` (§02).
 - Retention by time/size, or `compacted` (last value per key).
+- Segment **encoding** `kafka` (RecordBatch v2) or `arrow` (columnar, for schema'd streams) (§02 §5).
+- **Changelog streams:** any keyed table or collection can expose its row-level changes as a stream (`upsert` or `full` mode with before images) (§02 §8.1).
 - **Explicit streams** are created by users (Kafka topics). **Implicit streams** back every table, collection and graph: a write to a collection is appended to that collection's implicit stream first.
 
 ### 2.2 Table (replaces ClickHouse)
@@ -47,12 +49,16 @@ A **namespace** contains five kinds of objects.
   - `tables/collections → graph` (adjacency maintenance)
 - Every link records its **applied offset** atomically with each target commit ⇒ exactly-once materialization and consistency tokens.
 
+### 2.6 Durable execution (replaces Temporal-style workflow engines)
+- Not a sixth object kind but a **service** on the Resonate protocol (§14): durable promises, tasks with fenced leases, and schedules, used by agent code through the Resonate SDKs.
+- State: one canonical document per workflow **origin** at `ns/<ns>/durable/wf/<origin>`, committed with one conditional PUT per transition; deadlines as timer objects. No metastore traffic.
+
 ## 3. System shape
 
 One binary, `operon`, runs any combination of five roles. All roles except `meta` are stateless; `meta` holds only metadata (Raft-replicated, snapshotted to S3).
 
 ```
- clients:  Kafka │ ES REST │ Qdrant REST/gRPC │ Bolt/Cypher │ ClickHouse HTTP │ native gRPC/REST/Flight SQL
+ clients:  Kafka │ ES REST │ Qdrant REST/gRPC │ Bolt/Cypher │ ClickHouse HTTP │ Resonate HTTP │ native gRPC/REST/Flight SQL
                                           │
                               ┌──── gateway role ────┐   protocol → logical ops, auth, rate limits
                               ▼                      ▼
@@ -65,7 +71,8 @@ One binary, `operon`, runs any combination of five roles. All roles except `meta
                               ▼                      │
           ┌───────────────────────── object storage bucket ─────────────────────────┐
           │ WAL objects · log segments · Iceberg (Parquet + metadata) · Lance ·     │
-          │ Tantivy splits · adjacency sidecars · manifests · hot-tier artifacts    │
+          │ Tantivy splits · adjacency sidecars · manifests · hot-tier artifacts ·  │
+          │ durable-execution documents and timers                                  │
           └──────────────────────────────────────────────────────────────────────────┘
                               ▲
              worker role: segmenting, link apply, index build, compaction,
@@ -81,7 +88,7 @@ One binary, `operon`, runs any combination of five roles. All roles except `meta
 
 | Role | Responsibility | State | Scales with |
 |---|---|---|---|
-| `gateway` | Protocol frontends, authN/Z, request routing, rate limiting | None | Connections, request rate |
+| `gateway` | Protocol frontends (including the Resonate server, §14), authN/Z, request routing, rate limiting | None | Connections, request rate |
 | `log` | Accept writes, write WAL, request offset assignment, serve recent fetches; host `quorum` journals | `quorum` WAL tail only (replicated) | Ingest bandwidth |
 | `query` | Execute reads/queries; own the hot tier for its routed objects | Cache + hot tier (derived) | Query load, hot data size |
 | `worker` | Background tasks (§09) | None (leases in meta) | Ingest volume, index/compaction backlog |
@@ -115,6 +122,8 @@ Streams generate high-rate metadata: offset assignment per flush, consumer offse
 | Cross-object reads | Snapshot per object; with a consistency token, guaranteed to reflect the token's offsets in every object that derives from those streams |
 | Atomic multi-record writes | Atomic per request within one stream (a `_bulk`, a Cypher statement, a Kafka transaction — §02) |
 | External Iceberg readers | See Iceberg snapshots at commit cadence (default 10–60 s); no tail |
+| Durable promises and tasks (§14) | Linearizable per workflow origin; independent across origins; searches are surveys |
+| Changelog streams | Per key, change order = source commit order; exactly-once via fenced appends (§02 §8.1) |
 | Not provided | Multi-object serializable transactions; interactive OLTP transactions |
 
 ## 6. Object storage layout
@@ -136,17 +145,21 @@ s3://<bucket>/<cluster_prefix>/
       adj/<source_ref>/<segment_ulid>.{csr,csc}
       manifests/<version>.pb
     pk/<object_id>/…                                 # SlateDB instance: primary key → row location
+    durable/                                         # durable execution (§14), Resonate blob layout
+      wf/<enc(origin)>                               # one document per workflow origin (CAS'd)
+      sched/<enc(schedule_id)>                       # one object per schedule
+      t/<NN>/<deadline>_<enc(target)>@<token>        # zero-byte timer objects
   warehouse/<namespace_id>/<table_id>/               # Iceberg table location (managed via Lakekeeper)
     metadata/…  data/…
 ```
 
-All data objects are immutable and named by ULID/version. Only metastore pointers and Iceberg catalog pointers move.
+All data objects are immutable and named by ULID/version. Only metastore pointers and Iceberg catalog pointers move. The one exception is `durable/`: workflow documents are mutable objects replaced by conditional PUT, because the Resonate protocol commits each transition as one atomic write per origin.
 
 ## 7. Failure model (summary)
 
 | Failure | Effect | Recovery |
 |---|---|---|
-| Any `gateway`/`query`/`worker` node | In-flight requests retried; hot tier for its objects goes cold | Re-route by rendezvous hashing; warm from S3 or prebuilt artifacts |
+| Any `gateway`/`query`/`worker` node | In-flight requests retried (durable-execution requests are idempotent); hot tier for its objects goes cold | Re-route by rendezvous hashing; warm from S3 or prebuilt artifacts |
 | `log` node (standard/express) | Unflushed, unacknowledged batches lost (producer retries) | Any node continues; orphan WAL objects GC'd |
 | `log` node (quorum) | None for acknowledged data | Raft election in the journal (~1–3 s) |
 | One AZ | `standard`/`express`(multi-bucket)/`quorum` survive with RPO 0 | Capacity in remaining AZs |

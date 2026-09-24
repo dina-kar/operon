@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 - Design documents (`docs/design`) and repository governance files.
+- Design: durable execution through the Resonate protocol (§14); `arrow` segment encoding and changelog streams, adapted from Apache Fluss (§02).
 - Cargo workspace, CI (fmt, clippy, tests, cargo-deny license policy).
 - `operon-store`: object storage access with create-only and compare-and-swap writes, range reads, S3/GCS/Azure/local/in-memory backends from URLs, and `FaultyStore` fault injection.
 - `operon-cache`: read-through RAM + NVMe byte-range cache with per-block crc32c verification.

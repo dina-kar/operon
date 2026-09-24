@@ -1,6 +1,6 @@
 # 11 — Buy vs Build
 
-Status: **Approved** · research as of 2026-09-22
+Status: **Approved** · research as of 2026-09-22 (Fluss and Resonate added 2026-09-24)
 
 Rule: **buy (embed/fork) everything that is not the differentiator; build the serving layer that closed competitors keep closed.** Only Apache-2.0 / MIT / compatible permissive dependencies. No AGPL, BSL, SSPL or ELv2 code in the engine.
 
@@ -41,6 +41,7 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | **lance-graph** | Apache-2.0 | Cypher parser + planner lowering to DataFusion | Small project (slowing activity); we need extensions (MERGE, Bolt semantics, overlay) |
 | **Nisshi** (formerly Tansu) | Apache-2.0 | Kafka broker structure, schema registry pieces, S3/Iceberg integration patterns | Bus factor 1 upstream; only selective borrowing |
 | **RisingWave iceberg-rust fork** | Apache-2.0 | RowDelta/RewriteFiles, equality & position deletes | Upstream gaps; plan to converge on upstream |
+| **Resonate** (`resonatehq/resonate`, `impl/server/core`) | Apache-2.0 | `resonate-core` (protocol types, `ResonateServer` trait), `resonate-plugin`, `resonate-gateway-http`, `resonate-server-blob` (object-storage backend on `object_store` 0.14), HTTP push/poll transports; the differential and linearizability test harness (§14) | Not on crates.io (git-only, workspace 0.10.1); vendor-led by a seed-stage company with fast protocol evolution → pin a git revision, keep Operon's code behind the `ResonateServer` trait, replace `resonate-auth` with Operon auth |
 
 ## 3. Reference designs only (no code)
 
@@ -59,6 +60,8 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | Milvus 3.0 | Apache-2.0 (Go/C++) | Lake-native "external collections" over Lance/Iceberg/Parquet/Vortex; Woodpecker zero-disk WAL |
 | GreptimeDB, RisingWave (Hummock), InfluxDB 3 | Apache-2.0 | Stateless frontends + object-store engines + metasrv patterns |
 | Databend | Apache-2.0 + Elastic License 2.0 | Stateless warehouse on S3, meta-service on openraft (whose upstream it maintains). Since 2026 it has been repositioned as an "agent-ready" warehouse (analytics + full-text + vector search + sandboxed Python UDFs), which makes it a competitor for M1/M4 (see §12 risk 11). It is SQL-first, with no ES/Qdrant/Kafka/Neo4j wire compatibility |
+| Apache Fluss (incubating) | Apache-2.0 (Java) | Columnar (Arrow) log with projection pushdown, primary-key tables that emit changelogs with before images, union reads of fresh log + lakehouse, tiering to Iceberg/Paimon/Lance. Taken as ideas: `arrow` segment encoding (§02 §5) and changelog streams (§02 §8.1). Not embeddable (JVM, ZooKeeper, tablet-server disks); a competitor for M3/M4 (§12 risk 11). Its Rust client (`fluss-rust` 0.1) is a possible interop target, not a dependency |
+| Resonate specification | Apache-2.0 | Lean 4 executable abstract machine, TLA+ model, property catalogue and a trace checker that replays a real server's traffic against the model: a reference for M0.4's simulation and linearizability checks alongside Octopii |
 | Octopii | Apache-2.0 | Deterministic simulation of openraft clusters (simulated time and RNG, VFS fault injection, partitioned in-memory network, cluster oracle): the reference for M0.4's simulation harness. Not adopted: it vendors a modified openraft, is not on crates.io, has a single maintainer, and pulls in `protobuf` 2.x (RUSTSEC-2024-0437) |
 | DiskANN (Rust) | MIT | SSD-resident ANN for larger-than-RAM hot tier (Phase C evaluation) |
 | Vortex | Apache-2.0 (LF AI & Data) | Future local/hot encoding option |
@@ -87,7 +90,7 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 
 These are what turbopuffer, LanceDB Enterprise, AutoMQ commercial and ClickHouse Cloud keep closed — and what Operon ships open:
 
-1. **Log engine** with `standard` / `express` (multi-zonal quorum) / `quorum` (Raft journals) WAL classes, leaderless sequencing, segmenting, Kafka semantics (§02).
+1. **Log engine** with `standard` / `express` (multi-zonal quorum) / `quorum` (Raft journals) WAL classes, leaderless sequencing, segmenting, `kafka`/`arrow` segment encodings, changelog streams with fenced appends, Kafka semantics (§02).
 2. **Stateless serving fleet**: affinity routing, H0–H3 caching, hot-tier lifecycle (§04).
 3. **Collection engine**: Lance + Tantivy under one manifest, upserts via PK index + delete bitmaps, tail indexes (§03, §06).
 4. **Iceberg hot tier**: T0 file index, hot projections (MergeTree-on-NVMe), real-time tail (§04 §3).
@@ -96,6 +99,7 @@ These are what turbopuffer, LanceDB Enterprise, AutoMQ commercial and ClickHouse
 7. **Links**: exactly-once declarative materialization with transforms and `embed()` (§09).
 8. **Compatibility gateways**: Kafka, ES subset, Qdrant, Bolt/Cypher, ClickHouse HTTP (§02, §06–§08).
 9. **Iceberg DV writer / RowDelta** — contributed upstream to iceberg-rust.
+10. **Durable-execution integration**: the Resonate surface on Operon's store, auth and routing; in Phase B the change stream, search index, execution graph and cluster-wide timer shards (§14).
 
 ## 6. Key sources
 
@@ -108,3 +112,5 @@ These are what turbopuffer, LanceDB Enterprise, AutoMQ commercial and ClickHouse
 - Graph: github.com/lance-format/lance-graph · github.com/LadybugDB/ladybug · github.com/apache/incubator-graphar · github.com/HelixDB/helix-db · github.com/cwida/duckpgq-extension · opencypher.org
 - Storage/infra: github.com/slatedb/slatedb · github.com/databendlabs/openraft · datafusion.apache.org · github.com/datafusion-contrib/datafusion-distributed · docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html
 - ClickHouse: clickhouse.com/blog/clickhouse-cloud-stateless-compute · clickhouse.com/blog/full-text-search-ga-release
+- Fluss: github.com/apache/fluss · fluss.apache.org/blog/releases/0.9 · github.com/apache/fluss-rust · jack-vanlightly.com/blog/2025/9/2/understanding-apache-fluss
+- Resonate: github.com/resonatehq/resonate (`impl/server/core/crates/resonate-server-blob/README.md`, `impl/server/s3/docs/on-s3.md`, `spec/`) · resonatehq.io/durable-execution

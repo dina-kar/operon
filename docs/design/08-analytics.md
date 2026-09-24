@@ -60,6 +60,10 @@ TTL ts + INTERVAL 180 DAY;
 3. **Materialized views** (§4) from other tables/streams.
 4. **Bulk load**: register existing Parquet files into the Iceberg table (add-files) or `INSERT … SELECT` from `s3()`/`url()` table functions (Phase B).
 
+Implicit streams of tables use the `arrow` segment encoding (§02 §5): the link reads only the columns it writes and skips JSON decoding, and the T3 tail holds the same Arrow batches.
+
+**CDC out:** keyed tables (`ReplacingMergeTree`) can expose a changelog stream (§02 §8.1), so downstream consumers and rollups see updates and deletes, not just inserts.
+
 ## 4. Materialized views
 
 ClickHouse MVs are insert-triggered transforms; Operon implements them as links with a SQL transform:

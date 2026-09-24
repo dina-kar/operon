@@ -10,10 +10,11 @@ The durable tier is the **only source of truth**. It consists of open formats on
 
 | Object | Primary format | Secondary structures | Pointer lives in |
 |---|---|---|---|
-| Stream | Operon WAL objects → segments (Kafka RecordBatch v2 bytes) | Sparse offset/timestamp index in footer | Meta (offset index) |
+| Stream | Operon WAL objects → segments (`kafka`: RecordBatch v2 bytes; `arrow`: Arrow IPC, §02 §5) | Sparse offset/timestamp index in footer; per-column ranges for `arrow` | Meta (offset index) |
 | Table | **Apache Iceberg** v2/v3 (Parquet data, deletion vectors in Puffin) | PK index (SlateDB) for keyed tables | **Lakekeeper** (Iceberg REST catalog) |
 | Collection | **Lance** dataset (docs, vectors, scalar + IVF indexes) | **Tantivy splits** + per-split deletion bitmaps; PK index | Meta → collection manifest (S3) |
 | Graph | Source tables/collections | CSR/CSC adjacency sidecars; vertex-ID map (SlateDB) | Meta → graph manifest (S3) |
+| Durable execution (§14) | Resonate blob documents: one canonical JSON-lines document per origin | Timer objects (zero-byte, name = record); schedule objects | None: the document itself is the state, replaced by conditional PUT |
 
 ## 2. Tables — Iceberg via Lakekeeper
 
@@ -33,6 +34,7 @@ The durable tier is the **only source of truth**. It consists of open formats on
 - Keyed tables maintain a **PK index**: SlateDB instance mapping `pk → (data_file, row_position)`, updated by the worker that writes each data file (it knows positions).
 - Upsert = write new row + add old position to the **deletion vector** of its data file (Iceberg v3 Puffin DV). This keeps reads merge-on-read-cheap.
 - Fallback for engines/versions without v3: equality deletes, converted to DVs/rewrites by compaction.
+- **Changelog:** because the PK index locates the old row, the apply worker can emit before/after images to the table's changelog stream (§02 §8.1) at the cost of one cached read per update.
 - **Gap:** apache/iceberg-rust cannot yet write DVs or RowDelta commits (open PRs as of 2026-09). Plan: start from the **RisingWave iceberg-rust fork** (equality/position deletes, RewriteFiles), build the DV writer, and upstream it.
 
 ### 2.4 Maintenance
@@ -101,11 +103,13 @@ For each edge source segment (an Iceberg data file or a Lance fragment), the gra
 
 ## 5. Primary-key indexes
 
-A single abstraction (`PkIndex`) backed by **SlateDB** (object-storage-native LSM, writer fencing, SSI transactions) per keyed object, located at `ns/<ns>/pk/<object_id>/`. Used by: keyed tables (row positions), collections (split doc + Lance row address), graph vertex-ID maps. Written only by the owning worker (single-writer per object shard, fenced by lease epoch).
+A single abstraction (`PkIndex`) backed by **SlateDB** (object-storage-native LSM, writer fencing, SSI transactions) per keyed object, located at `ns/<ns>/pk/<object_id>/`. Used by: keyed tables (row positions), collections (split doc + Lance row address), graph vertex-ID maps, and changelog streams in `full` mode (before-image lookup). Written only by the owning worker (single-writer per object shard, fenced by lease epoch).
 
 ## 6. Format versioning and compatibility
 
 - Every Operon-defined format (WAL object, segment, split footer extensions, manifests, sidecars) carries `magic + format_version`; readers support N and N−1.
+- WAL chunks and segments also carry an `encoding` field from their first version, so adding `arrow` (§02 §5) is not a format break.
+- Durable-execution documents use the Resonate blob format (header `v`, currently 1) unchanged; Operon does not extend it, so upstream tools can read Operon's `durable/` prefix.
 - Third-party formats are pinned: Lance file format 2.1, Iceberg spec v2 with v3 features enabled per table, Tantivy index version as shipped by the pinned fork.
 - Upgrades that change formats are opt-in per object and rolled forward by compaction.
 
@@ -113,3 +117,4 @@ A single abstraction (`PkIndex`) backed by **SlateDB** (object-storage-native LS
 
 - Reachability-based: an object is deletable when no live manifest/snapshot/offset-index entry references it **and** it is older than the grace period (default 1 h; ≥ longest query timeout).
 - Time travel: manifests/snapshots retained per policy (default 24 h for collections/graphs, Iceberg snapshot policy for tables); GC respects retention.
+- `durable/` is outside reachability GC: the Resonate server owns those objects and collects its own orphan timers. Settled-promise retention (deleting old origin documents) is a per-namespace policy run as a worker task.
