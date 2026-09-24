@@ -3,8 +3,8 @@
 
 use operon_common::{NamespaceId, StreamId};
 use operon_meta::{
-    ApplyError, Command, EntryKind, Fence, MetaState, Reply, Retention, WAL_COMMIT_WINDOW_MS,
-    WalChunk, WalClass,
+    ApplyError, Command, EntryKind, Fence, Freshness, MetaState, Reply, Retention,
+    WAL_COMMIT_WINDOW_MS, WalChunk, WalClass,
 };
 use proptest::prelude::*;
 
@@ -77,8 +77,15 @@ fn swap(
         max_timestamp_ms: 2_000,
         fence,
         now_ms,
+        fresh: FRESH,
     }
 }
+
+/// Never stale in these tests (the segment was just written).
+const FRESH: Freshness = Freshness {
+    created_at_ms: 0,
+    max_age_ms: u64::MAX,
+};
 
 fn trim(partition: u32, before_offset: u64, now_ms: u64) -> Command {
     Command::TrimPartition {
@@ -265,6 +272,42 @@ fn a_retried_swap_succeeds_and_changes_nothing() {
     }
     assert_eq!(state.apply(retry), Ok(Reply::SegmentSwapped));
     assert_eq!(state, before);
+}
+
+/// M0.4 review I1: a swap of a segment older than its freshness bound, by
+/// the metastore clock or its own stamp, is refused and changes nothing
+/// (not even the clock); within the bound it applies.
+#[test]
+fn a_swap_past_its_freshness_is_refused_and_changes_nothing() {
+    let mut state = three_wal_entries();
+    set_clock(&mut state, 10_000);
+    let before = state.clone();
+    let fresh = Freshness {
+        created_at_ms: 5_000,
+        max_age_ms: 4_999,
+    };
+    for now_ms in [9_000, 12_000] {
+        let mut command = swap(0, &[(0, "w1")], "seg-a", None, now_ms);
+        if let Command::SwapSegment { fresh: f, .. } = &mut command {
+            *f = fresh;
+        }
+        assert!(
+            matches!(
+                state.apply(command),
+                Err(ApplyError::StaleObject { clock_ms, .. }) if clock_ms == now_ms.max(10_000)
+            ),
+            "now {now_ms}"
+        );
+        assert_eq!(state, before);
+    }
+    let mut command = swap(0, &[(0, "w1")], "seg-a", None, 9_000);
+    if let Command::SwapSegment { fresh: f, .. } = &mut command {
+        *f = Freshness {
+            max_age_ms: 5_000,
+            ..fresh
+        };
+    }
+    assert_eq!(state.apply(command), Ok(Reply::SegmentSwapped));
 }
 
 #[test]
@@ -690,6 +733,7 @@ proptest! {
                         max_timestamp_ms: 0,
                         fence: None,
                         now_ms: now,
+                        fresh: FRESH,
                     };
                     // Runs of WAL entries split by a segment are not contiguous:
                     // those swaps must fail as mismatches and change nothing.

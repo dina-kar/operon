@@ -563,6 +563,7 @@ impl MetaNode {
             expected,
             value: value.to_string(),
             fence,
+            fresh: None,
         };
         match self.write(command).await? {
             Reply::PointerSet { version } => Ok(version),

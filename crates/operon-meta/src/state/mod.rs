@@ -97,6 +97,7 @@ impl MetaState {
                 max_timestamp_ms,
                 fence,
                 now_ms,
+                fresh,
             } => self.swap_segment(
                 stream,
                 partition,
@@ -106,6 +107,7 @@ impl MetaState {
                 max_timestamp_ms,
                 fence,
                 now_ms,
+                fresh,
             ),
             Command::TrimPartition {
                 stream,
@@ -143,7 +145,8 @@ impl MetaState {
                 expected,
                 value,
                 fence,
-            } => self.cas_pointer(namespace, key, expected, value, fence),
+                fresh,
+            } => self.cas_pointer(namespace, key, expected, value, fence, fresh),
         }
     }
 

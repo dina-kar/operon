@@ -3,11 +3,17 @@
 //! Storage (exact, M0.4 plan Task 3):
 //! - data: `ns/<ns>/links/<link_id>/data/<ulid>.cnt`, the batch's deltas as a
 //!   `BTreeMap<String, i64>`, written create-only;
-//! - manifest: `ns/<ns>/links/<link_id>/manifests/<version:020>.man`,
+//! - manifest: `ns/<ns>/links/<link_id>/manifests/<version:020>-<ulid>.man`,
 //!   `{ version, parent, data, applied, skipped }`, written create-only;
-//!   `data` lists every data file so far, so one manifest describes the table;
+//!   `data` lists every data file so far, so one manifest describes the table.
+//!   The ULID makes every commit attempt's manifest path unique, so a
+//!   manifest orphaned by a crash or a fenced task never blocks the next
+//!   commit (M0.4 review M1); garbage collection removes it;
 //! - commit: a CAS of the pointer `link/<link_id>` from `version` to the new
-//!   manifest's path, fenced by the task lease.
+//!   manifest's path, fenced by the task lease and carrying the commit's
+//!   [`Freshness`](operon_meta::Freshness): the metastore refuses it once the
+//!   commit is older than `max_commit_delay`, so it can never reference an
+//!   object garbage collection may have deleted (M0.4 review I1).
 //!
 //! Both objects are postcard bodies in Operon's envelope (magic, format
 //! version, crc32c trailer; M0.3 global constraints).
@@ -19,7 +25,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use operon_common::NamespaceId;
-use operon_meta::{ApplyError, Consistency, Fence, Link, LinkId, MetaClient, MetaError, Pointer};
+use operon_meta::{
+    ApplyError, Consistency, Fence, Freshness, Link, LinkId, MetaClient, MetaError, Pointer,
+};
 use operon_store::{Store, StoreError};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -31,10 +39,10 @@ use crate::target::{ApplyBatch, CommitError, CommitStep, LinkTarget, TargetState
 /// The link target kind `CounterTable` serves.
 pub const COUNTER_KIND: &str = "counter";
 
-/// The longest a commit may take from its data PUT to its pointer CAS, and
-/// the oldest orphaned manifest a commit adopts. Older objects are left to
-/// garbage collection, so a commit never references an object that GC may
-/// already have deleted: GC's grace must be longer than this.
+/// The longest a commit may take from its data PUT to its pointer CAS,
+/// enforced by the metastore when the CAS is applied. Older objects are left
+/// to garbage collection, so a commit never references an object that GC
+/// may already have deleted: GC's grace must be longer than this.
 pub const MAX_COMMIT_DELAY: Duration = Duration::from_secs(600);
 
 const DATA_MAGIC: &[u8; 8] = b"OPNCNTD\0";
@@ -103,22 +111,22 @@ fn data_path(namespace: NamespaceId, link: LinkId, ulid: Ulid) -> String {
     format!("{}data/{ulid}.cnt", link_prefix(namespace, link))
 }
 
-pub(crate) fn manifest_path(namespace: NamespaceId, link: LinkId, version: u64) -> String {
+fn manifest_path(namespace: NamespaceId, link: LinkId, version: u64, ulid: Ulid) -> String {
     format!(
-        "{}manifests/{version:020}.man",
+        "{}manifests/{version:020}-{ulid}.man",
         link_prefix(namespace, link)
     )
+}
+
+/// The version in a manifest path's name (`<version:020>-<ulid>.man`).
+pub(crate) fn manifest_version(path: &str) -> Option<u64> {
+    let name = path.rsplit('/').next()?.strip_suffix(".man")?;
+    name.split('-').next()?.parse().ok()
 }
 
 /// The pointer holding the current manifest path: `link/<link_id>`.
 pub(crate) fn pointer_key(link: LinkId) -> String {
     format!("link/{link}")
-}
-
-/// The creation time of a data file, from the ULID in its name.
-pub(crate) fn data_file_ms(path: &str) -> Option<u64> {
-    let name = path.rsplit('/').next()?.strip_suffix(".cnt")?;
-    Ulid::from_string(name).ok().map(|u| u.timestamp_ms())
 }
 
 fn millis(duration: Duration) -> u64 {
@@ -195,9 +203,8 @@ impl CounterTable {
         self
     }
 
-    /// The longest a commit may take from its data PUT to its CAS, and the
-    /// oldest orphaned manifest it adopts (default [`MAX_COMMIT_DELAY`]).
-    /// Garbage collection's grace must be longer.
+    /// The longest a commit may take from its data PUT to its CAS (default
+    /// [`MAX_COMMIT_DELAY`]). Garbage collection's grace must be longer.
     pub fn with_max_commit_delay(mut self, delay: Duration) -> Self {
         self.max_commit_delay = delay;
         self
@@ -308,77 +315,17 @@ impl CounterTable {
     pub async fn applied(&self) -> Result<BTreeMap<u32, u64>, LinkError> {
         Ok(self.current().await?.applied.clone())
     }
-
-    /// Adopts an orphaned manifest that occupies version `expected + 1`
-    /// (left by a commit that crashed or was fenced between its manifest PUT
-    /// and its CAS): any manifest built on `expected` is a valid successor,
-    /// so the pointer is moved to it, as long as it and its new data files are
-    /// young enough that garbage collection cannot have deleted them. Then
-    /// the caller reloads (`Conflict`).
-    async fn adopt(
-        &self,
-        parent: &Manifest,
-        path: &str,
-        fence: &Fence,
-    ) -> Result<u64, CommitError> {
-        let orphan = self.read_manifest(path).await?;
-        let blocked = |why: String| CommitError::Other(LinkError::Blocked(why));
-        let expected = parent.version;
-        if orphan.version != expected + 1
-            || orphan.parent != expected
-            || !orphan.data.starts_with(&parent.data)
-        {
-            return Err(CommitError::Other(LinkError::Corrupt(format!(
-                "{path} is not a successor of version {expected}"
-            ))));
-        }
-        let now = self.meta.now_ms();
-        let max_age = millis(self.max_commit_delay);
-        let info = self.store.head(path).await.map_err(LinkError::from)?;
-        if now.saturating_sub(info.last_modified_ms) > max_age {
-            return Err(blocked(format!(
-                "{path} is an orphan too old to adopt; garbage collection will remove it"
-            )));
-        }
-        for data in &orphan.data[parent.data.len()..] {
-            let young = data_file_ms(data).is_some_and(|ms| now.saturating_sub(ms) <= max_age);
-            let present = match self.store.head(data).await {
-                Ok(_) => true,
-                Err(StoreError::NotFound { .. }) => false,
-                Err(err) => return Err(LinkError::from(err).into()),
-            };
-            if !young || !present {
-                return Err(blocked(format!(
-                    "{path} references {data}, which is missing or too old to adopt"
-                )));
-            }
-        }
-        let expected_version = (expected > 0).then_some(expected);
-        match self
-            .meta
-            .cas_pointer(
-                self.namespace,
-                &pointer_key(self.link),
-                expected_version,
-                path,
-                Some(fence.clone()),
-            )
-            .await
-        {
-            Ok(_) => {
-                tracing::info!(%path, "adopted an orphaned link manifest");
-                self.remember(Arc::new(orphan));
-                Err(CommitError::Conflict)
-            }
-            Err(err) => Err(cas_error(err)),
-        }
-    }
 }
 
 fn cas_error(err: MetaError) -> CommitError {
     match err {
         MetaError::Rejected(ApplyError::VersionMismatch { .. }) => CommitError::Conflict,
         MetaError::Rejected(ApplyError::Fenced { .. }) => CommitError::Fenced,
+        // Too late: the new objects are left to garbage collection and the
+        // next run commits the batch again with new ones.
+        MetaError::Rejected(err @ ApplyError::StaleObject { .. }) => {
+            CommitError::Other(LinkError::Blocked(err.to_string()))
+        }
         other => CommitError::Other(LinkError::Meta(other)),
     }
 }
@@ -454,11 +401,13 @@ impl LinkTarget for CounterTable {
     ) -> Result<u64, CommitError> {
         let parent = match self.remembered(expected_version) {
             Some(parent) => parent,
-            None if expected_version == 0 => Arc::new(Manifest::default()),
-            None => Arc::new(
-                self.read_manifest(&manifest_path(self.namespace, self.link, expected_version))
-                    .await?,
-            ),
+            None => {
+                let current = self.current().await?;
+                if current.version != expected_version {
+                    return Err(CommitError::Conflict);
+                }
+                current
+            }
         };
         let (deltas, skipped) = deltas(&parent, &batch)?;
         let started = self.meta.now_ms();
@@ -483,17 +432,20 @@ impl LinkTarget for CounterTable {
             applied,
             skipped: parent.skipped.saturating_add(skipped),
         };
-        let path = manifest_path(self.namespace, self.link, manifest.version);
+        let ulid = Ulid::from_parts(started, Ulid::generate().random());
+        let path = manifest_path(self.namespace, self.link, manifest.version, ulid);
         match self
             .store
             .put_if_absent(&path, encode(MANIFEST_MAGIC, &manifest)?)
             .await
         {
             Ok(_) => {}
+            // Only a retry of our own PUT can have created this unique path.
             Err(StoreError::AlreadyExists { .. }) => {
-                let existing = self.read_manifest(&path).await?;
-                if existing != manifest {
-                    return self.adopt(&parent, &path, fence).await;
+                if self.read_manifest(&path).await? != manifest {
+                    return Err(CommitError::Other(LinkError::Corrupt(format!(
+                        "{path} exists with other content"
+                    ))));
                 }
             }
             Err(err) => return Err(LinkError::from(err).into()),
@@ -510,9 +462,20 @@ impl LinkTarget for CounterTable {
         }
         let expected = (expected_version > 0).then_some(expected_version);
         let key = pointer_key(self.link);
+        let fresh = Freshness {
+            created_at_ms: started,
+            max_age_ms: millis(self.max_commit_delay),
+        };
         let version = match self
             .meta
-            .cas_pointer(self.namespace, &key, expected, &path, Some(fence.clone()))
+            .cas_pointer_fresh(
+                self.namespace,
+                &key,
+                expected,
+                &path,
+                Some(fence.clone()),
+                Some(fresh),
+            )
             .await
         {
             Ok(version) => version,

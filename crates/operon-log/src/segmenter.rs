@@ -11,8 +11,8 @@ use bytes::Bytes;
 use operon_cache::RangeCache;
 use operon_common::{NamespaceId, StreamId};
 use operon_meta::{
-    ApplyError, Command, Consistency, EntryKind, IndexEntry, MetaClient, MetaError, PartitionState,
-    Reply, WalClass,
+    ApplyError, Command, Consistency, EntryKind, Freshness, IndexEntry, MetaClient, MetaError,
+    PartitionState, Reply, WalClass,
 };
 use operon_store::Store;
 use operon_worker::{
@@ -355,6 +355,13 @@ impl SegmentTask {
             max_timestamp_ms,
             fence: Some(ctx.fence.clone()),
             now_ms: ctx.meta.now_ms(),
+            // Enforced when the swap is applied, so a swap delayed past the
+            // deadline (retries, a frozen process) can never reference a
+            // segment GC may have deleted (M0.4 review I1).
+            fresh: Freshness {
+                created_at_ms: written_at,
+                max_age_ms: millis(self.shared.config.swap_deadline),
+            },
         };
         let (result, earlier_unknown) = ctx.meta.write_tracked(command).await;
         match result {
@@ -369,7 +376,9 @@ impl SegmentTask {
             // swap may have been applied and then trimmed: leave the segment
             // to garbage collection (M0.3 re-review M7).
             Err(MetaError::Rejected(
-                rejection @ (ApplyError::IndexMismatch { .. } | ApplyError::Fenced { .. }),
+                rejection @ (ApplyError::IndexMismatch { .. }
+                | ApplyError::Fenced { .. }
+                | ApplyError::StaleObject { .. }),
             )) => {
                 if !earlier_unknown {
                     self.delete_unused(ctx, &path).await;

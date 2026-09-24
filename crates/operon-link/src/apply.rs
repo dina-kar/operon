@@ -27,8 +27,8 @@ pub struct LinkConfig {
     /// Most record bytes (keys, values and headers) one commit applies.
     /// Default 64 MiB.
     pub max_batch_bytes: usize,
-    /// The longest a commit may take from its data PUT to its CAS, and the
-    /// oldest orphaned manifest a commit adopts; garbage collection's grace
+    /// The longest a commit may take from its data PUT to its CAS, enforced
+    /// by the metastore when the CAS is applied; garbage collection's grace
     /// must be longer. Default [`MAX_COMMIT_DELAY`] (10 min).
     pub max_commit_delay: Duration,
 }

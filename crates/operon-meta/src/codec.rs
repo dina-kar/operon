@@ -149,6 +149,10 @@ mod tests {
                 max_timestamp_ms: 5,
                 fence: None,
                 now_ms: 1_000,
+                fresh: crate::types::Freshness {
+                    created_at_ms: 1_000,
+                    max_age_ms: 60_000,
+                },
             })
             .expect("swap");
         state

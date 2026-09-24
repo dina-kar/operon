@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use common::{Meta, fast_config, faulty_store, records, segment_now};
+use common::{Meta, fast_config, faulty_store, read_direct, records, segment_now};
 use operon_log::LogWriter;
 use operon_log::gc::{GcConfig, GcReport, GcSource};
 use operon_meta::{Clock, Consistency, ManualClock, MetaClientConfig, SystemClock};
@@ -242,6 +242,100 @@ async fn a_gc_run_skips_when_another_owner_holds_the_lease() {
             .await
             .unwrap()
             .is_none()
+    );
+    f.shutdown().await;
+}
+
+/// M0.4 review I1: a segment PUT whose swap is delayed past the swap deadline
+/// (a frozen segmenter, slow retries) while GC deletes the unreferenced
+/// segment. The metastore must refuse the late swap, so the index never
+/// references the deleted segment and no acknowledged offset is lost.
+#[tokio::test]
+async fn a_swap_delayed_past_its_deadline_is_refused_after_gc_deleted_the_segment() {
+    let f = Fixture::start(Store::in_memory()).await;
+    let acked = f.writer.append(f.stream, 0, records("a", 3)).await.unwrap();
+    assert_eq!(acked.base_offset, 0);
+    let entries: Vec<operon_meta::IndexEntry> = f
+        .meta
+        .client
+        .read(Consistency::Local, |s| {
+            s.partition(f.stream, 0)
+                .expect("partition")
+                .entries()
+                .cloned()
+                .collect()
+        })
+        .await
+        .expect("read");
+
+    // The segmenter's steps by hand: build and PUT the segment (not late).
+    let mut builder =
+        operon_log::segment::SegmentBuilder::new(f.stream, 0, 0, operon_log::Encoding::Kafka);
+    for entry in &entries {
+        let bytes = f
+            .store
+            .get_range(&entry.object, entry.byte_range.clone())
+            .await
+            .expect("get");
+        for b in operon_log::batch::batches(&bytes) {
+            let b = b.expect("batch");
+            builder
+                .push_batch(
+                    Bytes::copy_from_slice(b.bytes),
+                    b.record_count,
+                    b.max_timestamp_ms,
+                )
+                .expect("push");
+        }
+    }
+    let (bytes, footer) = builder.finish();
+    let written_at = f.clock.now_ms();
+    let path = operon_log::paths::segment(f.ns, f.stream, 0, 0, ulid_at(written_at));
+    f.store.put_if_absent(&path, bytes).await.expect("put");
+    let swap = operon_meta::Command::SwapSegment {
+        stream: f.stream,
+        partition: 0,
+        replaces: entries
+            .iter()
+            .map(|e| (e.base_offset, e.object.clone()))
+            .collect(),
+        segment: path.clone(),
+        byte_range: footer.data,
+        max_timestamp_ms: entries.iter().map(|e| e.max_timestamp_ms).max().unwrap(),
+        fence: None,
+        now_ms: written_at,
+        fresh: operon_meta::Freshness {
+            created_at_ms: written_at,
+            max_age_ms: 30_000,
+        },
+    };
+
+    // The stall, then GC deletes the unreferenced segment.
+    f.clock.advance(GRACE + Duration::from_secs(1));
+    let source = GcSource::new(f.store.clone(), config());
+    assert_eq!(f.gc(&source).await.orphan_segments, 1);
+    assert!(!f.exists(&path).await);
+
+    // The late swap is refused and changes nothing.
+    let err = f.meta.client.write(swap).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            operon_meta::MetaError::Rejected(operon_meta::ApplyError::StaleObject { .. })
+        ),
+        "{err:?}"
+    );
+    assert!(f.retired().await.is_empty());
+    f.check().await;
+
+    // Another GC after the grace period deletes nothing live, and every
+    // acknowledged record is still readable.
+    f.clock.advance(GRACE + Duration::from_secs(1));
+    assert_eq!(f.gc(&source).await.retired, 0);
+    let read = read_direct(&f.meta.client, &f.store, f.stream, 0).await;
+    assert_eq!(
+        read.iter().map(|r| r.offset).collect::<Vec<_>>(),
+        vec![0, 1, 2]
     );
     f.shutdown().await;
 }

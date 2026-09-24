@@ -159,7 +159,11 @@ async fn link_objects_are_collected_by_reachability() {
         "{prefix}data/{}.cnt",
         Ulid::from_parts(now, Ulid::generate().random())
     );
-    let orphan_manifest = format!("{prefix}manifests/{:020}.man", 16);
+    let orphan_manifest = format!(
+        "{prefix}manifests/{:020}-{}.man",
+        16,
+        Ulid::from_parts(now, Ulid::generate().random())
+    );
     for path in [&orphan_data, &orphan_manifest] {
         store.put(path, Bytes::from_static(b"x")).await.unwrap();
     }
@@ -175,18 +179,24 @@ async fn link_objects_are_collected_by_reachability() {
     // Young: nothing goes.
     let report = gc.run_once(&meta, "gc").await.unwrap().unwrap();
     assert_eq!(report.orphan_other, 0);
-    // Manifests are aged by their modification time, which is real time:
-    // step well past the grace period.
+    // Step well past the grace period.
     clock.advance(Duration::from_secs(600));
     let report = gc.run_once(&meta, "gc").await.unwrap().unwrap();
     // Manifests 1..=11 and the two orphans.
     assert_eq!(report.orphan_other, 13, "{report:?}");
     assert!(!exists(&store, &orphan_data).await);
     assert!(!exists(&store, &orphan_manifest).await);
-    for version in 1..=15u64 {
-        let path = format!("{prefix}manifests/{version:020}.man");
-        assert_eq!(exists(&store, &path).await, version >= 12, "{path}");
-    }
+    let kept: Vec<u64> = store
+        .list(&format!("{prefix}manifests/"))
+        .await
+        .unwrap()
+        .iter()
+        .map(|info| {
+            let name = info.path.rsplit('/').next().unwrap();
+            name.split('-').next().unwrap().parse().unwrap()
+        })
+        .collect();
+    assert_eq!(kept, vec![12, 13, 14, 15]);
     // The table reads the same, and keeps working.
     assert_eq!(table.snapshot().await.unwrap(), before);
     writer
@@ -423,6 +433,8 @@ async fn gc_alongside_everything(w: Workload) {
         LinkConfig {
             batch_records: 5,
             batch_interval: Duration::ZERO,
+            // Below the grace period, as the server clamps it (review M3).
+            max_commit_delay: grace / 2,
             ..LinkConfig::default()
         },
     )));
@@ -432,6 +444,7 @@ async fn gc_alongside_everything(w: Workload) {
         SegmenterConfig {
             min_bytes: 1,
             target_bytes: 1024,
+            swap_deadline: grace / 2,
             ..SegmenterConfig::default()
         },
     )));

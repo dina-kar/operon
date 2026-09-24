@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use std::collections::BTreeMap;
 
-use crate::types::{Fence, LeaseGrant, LinkId, Pointer, Retention, TargetRef, WalChunk, WalClass};
+use crate::types::{
+    Fence, Freshness, LeaseGrant, LinkId, Pointer, Retention, TargetRef, WalChunk, WalClass,
+};
 
 /// A change to the metastore. Commands are replicated through the Raft log and
 /// applied in log order by [`crate::MetaState::apply`].
@@ -75,7 +77,10 @@ pub enum Command {
     /// segment path contains a ULID, so it names one swap). Otherwise the fence
     /// is checked, and every replaced entry must still be a WAL entry of the
     /// named object ([`ApplyError::IndexMismatch`] if a concurrent swap or trim
-    /// moved it).
+    /// moved it), and the segment must still be fresh: once the metastore
+    /// clock (or `now_ms`) is past `fresh`, the swap is refused with
+    /// [`ApplyError::StaleObject`], because garbage collection may already
+    /// have deleted the segment.
     SwapSegment {
         stream: StreamId,
         partition: u32,
@@ -85,6 +90,7 @@ pub enum Command {
         max_timestamp_ms: i64,
         fence: Option<Fence>,
         now_ms: u64,
+        fresh: Freshness,
     },
     /// Makes offsets below `before_offset` (capped at the high watermark)
     /// unreadable and drops the index entries wholly below it. The log start
@@ -169,13 +175,16 @@ pub enum Command {
     /// caller's value at `expected + 1` means the first attempt *may* have
     /// succeeded: another writer may have written the same value. Callers
     /// that must know write a unique value (for example a manifest path
-    /// containing a ULID).
+    /// containing a ULID). With `fresh`, the objects the new value makes
+    /// reachable must still be fresh at the metastore clock
+    /// ([`ApplyError::StaleObject`] otherwise).
     CasPointer {
         namespace: NamespaceId,
         key: String,
         expected: Option<u64>,
         value: String,
         fence: Option<Fence>,
+        fresh: Option<Freshness>,
     },
 }
 
@@ -253,6 +262,18 @@ pub enum ApplyError {
     /// been pruned: the outcome is still unknown.
     #[error("stale WAL commit: {object}")]
     StaleCommit { object: String },
+    /// A command would reference an object created too long ago
+    /// ([`Freshness`]): garbage collection may already have deleted it.
+    /// Nothing changed; the object is left to garbage collection.
+    #[error(
+        "stale object {object}: created at {created_at_ms} ms, max age {max_age_ms} ms, metastore clock {clock_ms} ms"
+    )]
+    StaleObject {
+        object: String,
+        created_at_ms: u64,
+        max_age_ms: u64,
+        clock_ms: u64,
+    },
 }
 
 impl std::fmt::Display for Command {

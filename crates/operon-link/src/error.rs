@@ -16,9 +16,9 @@ pub enum LinkError {
     Corrupt(String),
     #[error("not found: {0}")]
     NotFound(String),
-    /// The commit cannot proceed yet, for example because an orphaned
-    /// manifest occupies the next version until garbage collection removes
-    /// it. Retry later.
+    /// The commit cannot proceed now, for example because it took longer
+    /// than `max_commit_delay` and the metastore refused it as stale. Retry
+    /// later.
     #[error("blocked: {0}")]
     Blocked(String),
 }

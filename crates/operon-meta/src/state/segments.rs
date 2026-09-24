@@ -7,7 +7,7 @@ use operon_common::StreamId;
 
 use super::{MetaState, validate_key};
 use crate::command::{ApplyError, Reply};
-use crate::types::{EntryKind, Fence, IndexEntry, PartitionState};
+use crate::types::{EntryKind, Fence, Freshness, IndexEntry, PartitionState};
 
 impl MetaState {
     #[allow(clippy::too_many_arguments)]
@@ -21,6 +21,7 @@ impl MetaState {
         max_timestamp_ms: i64,
         fence: Option<Fence>,
         now_ms: u64,
+        fresh: Freshness,
     ) -> Result<Reply, ApplyError> {
         validate_key("segment path", &segment)?;
         let state = self.partition_state(stream, partition)?;
@@ -43,6 +44,15 @@ impl MetaState {
             return Err(ApplyError::InvalidArgument(format!(
                 "a segment needs a non-empty byte range, got {byte_range:?}"
             )));
+        }
+        let clock_ms = self.clock_ms.max(now_ms);
+        if fresh.expired_at(clock_ms) {
+            return Err(ApplyError::StaleObject {
+                object: segment,
+                created_at_ms: fresh.created_at_ms,
+                max_age_ms: fresh.max_age_ms,
+                clock_ms,
+            });
         }
         let mismatch = || ApplyError::IndexMismatch { stream, partition };
         let mut expected_base = *first_base;

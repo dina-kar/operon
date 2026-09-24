@@ -597,6 +597,7 @@ async fn cas(rec: Arc<Recorder>, meta: MetaClient, ns: NamespaceId, key: String,
         expected,
         value: value.clone(),
         fence: None,
+        fresh: None,
     };
     let invoke = rec.tick();
     let (result, earlier_unknown) = meta.write_tracked(command).await;
@@ -1162,5 +1163,38 @@ async fn verify(cluster: &Cluster, rec: &Recorder) {
                 node.id()
             ));
         }
+    }
+
+    // 5. No dangling reference (M0.4 review M5): every object an index entry
+    // or a link pointer names exists in the store (faults are off by now).
+    // The raw stream's commits name objects that were never written.
+    let (ns, streams, partitions) = (cluster.ns, [cluster.events], cluster.partitions);
+    let referenced = cluster.nodes[0]
+        .read(Consistency::Local, |s| {
+            let mut objects = BTreeSet::new();
+            for stream in streams {
+                for partition in 0..partitions {
+                    if let Some(state) = s.partition(stream, partition) {
+                        objects.extend(state.entries().map(|e| e.object.clone()));
+                    }
+                }
+            }
+            for link in s.links(ns) {
+                if let Some(pointer) = s.pointer(ns, &format!("link/{}", link.id)) {
+                    objects.insert(pointer.value.clone());
+                }
+            }
+            objects
+        })
+        .await;
+    match referenced {
+        Ok(objects) => {
+            for object in objects {
+                if let Err(err) = cluster.store.head(&object).await {
+                    rec.violation(format!("dangling reference to {object}: {err}"));
+                }
+            }
+        }
+        Err(err) => rec.violation(format!("reading references: {err}")),
     }
 }

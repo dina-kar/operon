@@ -15,7 +15,9 @@ use crate::error::MetaError;
 use crate::node::{Consistency, MetaNode};
 use crate::raft::NodeId;
 use crate::state::MetaState;
-use crate::types::{Fence, LeaseGrant, LinkId, Retention, TargetRef, WalChunk, WalClass};
+use crate::types::{
+    Fence, Freshness, LeaseGrant, LinkId, Retention, TargetRef, WalChunk, WalClass,
+};
 
 /// The longest wait between two attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(1);
@@ -370,6 +372,7 @@ impl MetaClient {
         byte_range: Range<u64>,
         max_timestamp_ms: i64,
         fence: Option<Fence>,
+        fresh: Freshness,
     ) -> Result<(), MetaError> {
         let command = Command::SwapSegment {
             stream,
@@ -380,6 +383,7 @@ impl MetaClient {
             max_timestamp_ms,
             fence,
             now_ms: self.now_ms(),
+            fresh,
         };
         match self.write(command).await? {
             Reply::SegmentSwapped => Ok(()),
@@ -533,12 +537,29 @@ impl MetaClient {
         value: &str,
         fence: Option<Fence>,
     ) -> Result<u64, MetaError> {
+        self.cas_pointer_fresh(namespace, key, expected, value, fence, None)
+            .await
+    }
+
+    /// [`MetaClient::cas_pointer`], refused with
+    /// [`ApplyError::StaleObject`](crate::ApplyError::StaleObject) once the
+    /// objects the value references are no longer `fresh`.
+    pub async fn cas_pointer_fresh(
+        &self,
+        namespace: NamespaceId,
+        key: &str,
+        expected: Option<u64>,
+        value: &str,
+        fence: Option<Fence>,
+        fresh: Option<Freshness>,
+    ) -> Result<u64, MetaError> {
         let command = Command::CasPointer {
             namespace,
             key: key.to_string(),
             expected,
             value: value.to_string(),
             fence,
+            fresh,
         };
         match self.write(command).await? {
             Reply::PointerSet { version } => Ok(version),

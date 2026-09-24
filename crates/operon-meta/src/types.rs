@@ -272,6 +272,30 @@ pub struct Fence {
     pub epoch: u64,
 }
 
+/// How long a newly written object may take to become referenced: a command
+/// that makes the metastore reference it is refused
+/// ([`ApplyError::StaleObject`](crate::ApplyError::StaleObject)) once the
+/// metastore clock is past `created_at_ms + max_age_ms`. Garbage collection
+/// deletes an unreferenced object only once the metastore clock is at least
+/// `created_at_ms + grace`, so with `max_age_ms` below the grace a command
+/// applied after GC decided to delete an object is always refused (M0.4
+/// review I1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Freshness {
+    /// When the object was created, by the writer's clock (the time in its
+    /// ULID).
+    pub created_at_ms: u64,
+    pub max_age_ms: u64,
+}
+
+impl Freshness {
+    /// Whether a command carrying this freshness is refused at metastore
+    /// clock `clock_ms`.
+    pub fn expired_at(&self, clock_ms: u64) -> bool {
+        self.created_at_ms.saturating_add(self.max_age_ms) < clock_ms
+    }
+}
+
 /// A versioned pointer, such as a collection's current manifest location.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pointer {

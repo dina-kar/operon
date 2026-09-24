@@ -18,11 +18,18 @@
 //!    older than `grace` (by the ULID in their name, else their
 //!    modification time).
 //!
-//! Every decision uses a linearizable metastore read. Object deletes cannot
-//! be fenced by the metastore, so before each batch of deletes the task
-//! confirms it still holds its lease; and it only ever deletes garbage,
-//! which nothing can reference again (new references only go to objects
-//! younger than the grace period).
+//! Every decision uses a linearizable metastore read, and ages are measured
+//! against the **metastore clock** (`MetaState::clock_ms`, read in the same
+//! or an earlier linearizable read), not this node's wall clock. Commands
+//! that make the metastore reference a new object (`SwapSegment`, a link's
+//! fenced `CasPointer`) carry the object's [`Freshness`] and are refused once
+//! the metastore clock is past it; with their deadlines below `grace`, any
+//! such command applied after GC's read is refused, so an object GC decided
+//! to delete can never become referenced (M0.4 review I1). Object deletes
+//! cannot be fenced by the metastore, so before each batch of deletes the
+//! task confirms it still holds its lease.
+//!
+//! [`Freshness`]: operon_meta::Freshness
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -324,6 +331,11 @@ impl GcTask {
         self.confirm_lease(ctx).await?;
         let mut deleted = Vec::with_capacity(paths.len());
         for path in paths {
+            // Stop promptly once cancelled (review M8); what was deleted so
+            // far is reported, the rest waits for the next run.
+            if ctx.cancel.is_cancelled() {
+                break;
+            }
             match self.shared.store.delete(&path).await {
                 Ok(()) => deleted.push(path),
                 Err(err) => tracing::warn!(%path, %err, "gc could not delete an object"),
@@ -335,12 +347,12 @@ impl GcTask {
     /// Pass 1: retired objects past the grace period.
     async fn retired(&self, ctx: &TaskContext, report: &mut GcReport) -> Result<(), TaskError> {
         let config = &self.shared.config;
-        let now = ctx.meta.now_ms();
         let grace = millis(config.grace);
         let limit = config.list_page;
         let due: Vec<String> = ctx
             .meta
             .read(Consistency::Linearizable, |s| {
+                let now = s.clock_ms();
                 s.retired()
                     .filter(|(_, at)| at.saturating_add(grace) <= now)
                     .map(|(path, _)| path.to_string())
@@ -365,24 +377,26 @@ impl GcTask {
     /// Pass 2: WAL objects that were never committed and never can be.
     async fn orphan_wal(&self, ctx: &TaskContext, report: &mut GcReport) -> Result<(), TaskError> {
         let config = &self.shared.config;
-        let now = ctx.meta.now_ms();
         let min_age = 2 * WAL_COMMIT_WINDOW_MS + millis(config.grace);
         let listed = self.shared.store.list("wal/").await.map_err(store_failed)?;
-        let old: Vec<String> = listed
+        let candidates: Vec<(String, u64)> = listed
             .iter()
             .filter(|info| info.path.ends_with(".wal"))
-            .filter(|info| object_time_ms(info).saturating_add(min_age) <= now)
-            .map(|info| info.path.clone())
+            .map(|info| (info.path.clone(), object_time_ms(info)))
             .collect();
-        if old.is_empty() {
+        if candidates.is_empty() {
             return Ok(());
         }
         let limit = config.list_page;
         let orphans: Vec<String> = ctx
             .meta
             .read(Consistency::Linearizable, |s| {
+                let now = s.clock_ms();
                 let retired: BTreeSet<&str> = s.retired().map(|(p, _)| p).collect();
-                old.iter()
+                candidates
+                    .iter()
+                    .filter(|(_, created)| created.saturating_add(min_age) <= now)
+                    .map(|(p, _)| p)
                     .filter(|p| s.wal_live_chunks(p).is_none() && !retired.contains(p.as_str()))
                     .take(limit)
                     .cloned()
@@ -414,24 +428,23 @@ impl GcTask {
                 return Ok(());
             }
             // Segments.
-            let now = ctx.meta.now_ms();
             let listed = self
                 .shared
                 .store
                 .list(&format!("ns/{namespace}/streams/"))
                 .await
                 .map_err(store_failed)?;
-            let old: Vec<String> = listed
+            let candidates: Vec<(String, u64)> = listed
                 .iter()
                 .filter(|info| info.path.ends_with(".seg"))
-                .filter(|info| object_time_ms(info).saturating_add(grace) <= now)
-                .map(|info| info.path.clone())
+                .map(|info| (info.path.clone(), object_time_ms(info)))
                 .collect();
-            if !old.is_empty() {
+            if !candidates.is_empty() {
                 let limit = config.list_page;
                 let orphans: Vec<String> = ctx
                     .meta
                     .read(Consistency::Linearizable, |s| {
+                        let now = s.clock_ms();
                         let mut kept: BTreeSet<&str> = s.retired().map(|(p, _)| p).collect();
                         for stream in s.streams(namespace) {
                             for partition in 0..stream.partitions {
@@ -440,7 +453,10 @@ impl GcTask {
                                 }
                             }
                         }
-                        old.iter()
+                        candidates
+                            .iter()
+                            .filter(|(_, created)| created.saturating_add(grace) <= now)
+                            .map(|(p, _)| p)
                             .filter(|p| !kept.contains(p.as_str()))
                             .take(limit)
                             .cloned()
@@ -453,6 +469,13 @@ impl GcTask {
             // Objects of the registered roots.
             for root in &self.shared.roots {
                 let prefix = format!("ns/{namespace}/{}", root.prefix());
+                // The clock is read before the roots: a commit applied after
+                // this read that references an object at least `grace` old
+                // by this clock is refused as stale.
+                let now = ctx
+                    .meta
+                    .read(Consistency::Linearizable, |s| s.clock_ms())
+                    .await?;
                 let reachable = match root
                     .reachable(
                         &ctx.meta,
@@ -468,7 +491,6 @@ impl GcTask {
                         continue;
                     }
                 };
-                let now = ctx.meta.now_ms();
                 let listed = self
                     .shared
                     .store

@@ -449,6 +449,10 @@ async fn a_segment_the_metastore_retired_is_not_deleted_on_mismatch() {
             40..41,
             0,
             None,
+            operon_meta::Freshness {
+                created_at_ms: meta.client.now_ms(),
+                max_age_ms: 600_000,
+            },
         )
         .await
         .unwrap();
