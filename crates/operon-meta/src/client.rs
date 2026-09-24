@@ -129,10 +129,11 @@ impl MetaClient {
         self.local().watch_applied()
     }
 
-    /// For tests: makes the next successful write report
-    /// [`MetaError::Timeout`] although it was applied, like a lost
-    /// acknowledgement. The client then retries as it would after a real one.
-    #[doc(hidden)]
+    /// For tests: makes the next successful write through this client (or
+    /// any clone) report [`MetaError::Timeout`] although it was applied, like
+    /// a lost acknowledgement. The client then retries as it would after a
+    /// real one. Only with the `test-util` feature.
+    #[cfg(feature = "test-util")]
     pub fn inject_lost_ack(&self) {
         self.inner.lost_acks.fetch_add(1, Ordering::SeqCst);
     }
@@ -167,7 +168,9 @@ impl MetaClient {
     }
 
     /// Runs `op` against the leader, retrying as the type docs describe.
-    async fn on_leader<T, F, Fut>(&self, op: F) -> Result<T, MetaError>
+    /// Also returns whether an attempt before the last one failed with an
+    /// error that leaves a write's outcome unknown.
+    async fn on_leader<T, F, Fut>(&self, op: F) -> (Result<T, MetaError>, bool)
     where
         F: Fn(MetaNode) -> Fut,
         Fut: Future<Output = Result<T, MetaError>>,
@@ -176,15 +179,16 @@ impl MetaClient {
         let mut backoff = self.inner.config.backoff;
         let mut target = self.first_target();
         let mut followed_hint = false;
+        let mut earlier_unknown = false;
         let count = self.inner.nodes.len();
         loop {
             let node = self.inner.nodes[target].clone();
             let err = match op(node.clone()).await {
                 Ok(value) => {
                     self.remember_leader(node.id());
-                    return Ok(value);
+                    return (Ok(value), earlier_unknown);
                 }
-                Err(err) if !is_retryable(&err) => return Err(err),
+                Err(err) if !is_retryable(&err) => return (Err(err), earlier_unknown),
                 Err(err) => err,
             };
             // A fresh hint to another node is followed at once; anything else
@@ -201,14 +205,16 @@ impl MetaClient {
             {
                 target = next;
                 followed_hint = true;
+                earlier_unknown = true;
                 continue;
             }
             target = hinted.unwrap_or((target + 1) % count);
             followed_hint = false;
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(err);
+                return (Err(err), earlier_unknown);
             }
+            earlier_unknown = true;
             tracing::debug!(%err, ?backoff, "metastore request failed; retrying");
             tokio::time::sleep(backoff.min(remaining)).await;
             backoff = (backoff * 2).min(MAX_BACKOFF);
@@ -217,6 +223,16 @@ impl MetaClient {
 
     /// Proposes `command` on the leader and waits until it is applied.
     pub async fn write(&self, command: Command) -> Result<Reply, MetaError> {
+        self.write_tracked(command).await.0
+    }
+
+    /// Like [`MetaClient::write`], and also says whether an earlier attempt of
+    /// this call failed with an error that leaves its outcome unknown
+    /// (`NotLeader`, `Timeout` or `Unavailable`). When it did, a rejection of
+    /// the final attempt does not prove the command was never applied: for
+    /// example a retried `CommitWal` whose commit record has since been pruned
+    /// is rejected as stale although the first attempt committed it.
+    pub async fn write_tracked(&self, command: Command) -> (Result<Reply, MetaError>, bool) {
         self.on_leader(|node| {
             let command = command.clone();
             async move {
@@ -246,7 +262,8 @@ impl MetaClient {
                         node.read(Consistency::Linearizable, |_| ()).await?;
                         Ok(node)
                     })
-                    .await?;
+                    .await
+                    .0?;
                 // The leader has applied everything up to the confirmed read
                 // index, and its state only moves forward.
                 leader.read(Consistency::Local, f).await
@@ -264,6 +281,7 @@ impl MetaClient {
         }
     }
 
+    /// Creates a stream that keeps its records forever.
     pub async fn create_stream(
         &self,
         namespace: NamespaceId,
@@ -271,11 +289,25 @@ impl MetaClient {
         partitions: u32,
         class: WalClass,
     ) -> Result<StreamId, MetaError> {
+        self.create_stream_with_retention(namespace, name, partitions, class, Retention::default())
+            .await
+    }
+
+    /// Creates a stream with a retention policy, in one command.
+    pub async fn create_stream_with_retention(
+        &self,
+        namespace: NamespaceId,
+        name: &str,
+        partitions: u32,
+        class: WalClass,
+        retention: Retention,
+    ) -> Result<StreamId, MetaError> {
         let command = Command::CreateStream {
             namespace,
             name: name.to_string(),
             partitions,
             class,
+            retention,
         };
         match self.write(command).await? {
             Reply::StreamCreated(id) => Ok(id),

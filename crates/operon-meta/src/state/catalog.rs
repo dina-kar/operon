@@ -25,6 +25,7 @@ impl MetaState {
         name: String,
         partitions: u32,
         class: WalClass,
+        retention: Retention,
     ) -> Result<Reply, ApplyError> {
         validate_name("stream", &name)?;
         if !(1..=MAX_PARTITIONS).contains(&partitions) {
@@ -55,7 +56,7 @@ impl MetaState {
                 name,
                 partitions,
                 class,
-                retention: Retention::default(),
+                retention,
             },
         );
         Ok(Reply::StreamCreated(id))

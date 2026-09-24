@@ -18,6 +18,7 @@ fn state_with_streams(partitions_a: u32, partitions_b: u32) -> MetaState {
                 name: name.to_string(),
                 partitions,
                 class: WalClass::Standard,
+                retention: operon_meta::Retention::default(),
             })
             .expect("create stream");
     }

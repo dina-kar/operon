@@ -24,6 +24,7 @@ fn state(partitions: u32) -> MetaState {
             name: "events".to_string(),
             partitions,
             class: WalClass::Standard,
+            retention: operon_meta::Retention::default(),
         })
         .expect("create stream");
     state
@@ -535,8 +536,6 @@ fn retention_is_set_per_stream() {
 #[test]
 fn rejected_commands_leave_the_state_and_clock_unchanged() {
     let mut state = three_wal_entries();
-    set_clock(&mut state, 1_000);
-    let before = state.clone();
     let rejected = [
         swap(0, &[(0, "wrong")], "seg", None, 99_000),
         swap(
@@ -556,12 +555,65 @@ fn rejected_commands_leave_the_state_and_clock_unchanged() {
             now_ms: 99_000,
         },
         trim(7, 1, 99_000),
+        // Empty `replaces`, an empty or inverted byte range, an over-long path.
+        swap(0, &[], "seg", None, 99_000),
+        with_byte_range(40..40),
+        with_byte_range(std::ops::Range { start: 90, end: 40 }),
+        swap(
+            0,
+            &[(0, "w1")],
+            &"s".repeat(operon_meta::MAX_KEY_LEN + 1),
+            None,
+            99_000,
+        ),
+        // A first commit older than the window.
+        Command::CommitWal {
+            object: "late".to_string(),
+            created_at_ms: 0,
+            chunks: vec![chunk(0, 1)],
+        },
+        Command::SetRetention {
+            stream: StreamId(9),
+            retention: Retention::default(),
+        },
     ];
+    // Make the window matter for the stale commit above.
+    set_clock(&mut state, WAL_COMMIT_WINDOW_MS + 1_000);
+    let before = state.clone();
     for command in rejected {
         assert!(state.apply(command.clone()).is_err(), "{command:?}");
         assert_eq!(state, before, "{command:?}");
-        assert_eq!(state.clock_ms(), 1_000);
+        assert_eq!(state.clock_ms(), WAL_COMMIT_WINDOW_MS + 1_000);
     }
+}
+
+/// A swap of w1 whose segment has `byte_range`.
+fn with_byte_range(range: std::ops::Range<u64>) -> Command {
+    let mut command = swap(0, &[(0, "w1")], "seg", None, 99_000_000);
+    if let Command::SwapSegment { byte_range, .. } = &mut command {
+        *byte_range = range;
+    }
+    command
+}
+
+#[test]
+fn a_stream_is_created_with_its_retention() {
+    let mut state = state(1);
+    let retention = Retention {
+        max_age_ms: None,
+        max_bytes: Some(1 << 20),
+    };
+    let reply = state.apply(Command::CreateStream {
+        namespace: NamespaceId(1),
+        name: "kept".to_string(),
+        partitions: 1,
+        class: WalClass::Standard,
+        retention,
+    });
+    let Ok(Reply::StreamCreated(id)) = reply else {
+        panic!("{reply:?}");
+    };
+    assert_eq!(state.stream(id).unwrap().retention, retention);
 }
 
 #[derive(Clone, Debug)]

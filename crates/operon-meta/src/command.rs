@@ -13,15 +13,16 @@ pub enum Command {
     /// acknowledgement fails with [`ApplyError::NamespaceExists`], which
     /// carries the id the first attempt created.
     CreateNamespace { name: String },
-    /// Creates a stream in a namespace. Names are unique within the namespace.
-    /// A retry after a lost acknowledgement fails with
-    /// [`ApplyError::StreamExists`], which carries the id the first attempt
-    /// created.
+    /// Creates a stream in a namespace, with its retention policy. Names are
+    /// unique within the namespace. A retry after a lost acknowledgement fails
+    /// with [`ApplyError::StreamExists`], which carries the id the first
+    /// attempt created.
     CreateStream {
         namespace: NamespaceId,
         name: String,
         partitions: u32,
         class: WalClass,
+        retention: Retention,
     },
     /// Assigns offsets to every chunk of a durable WAL object and appends the
     /// chunks to their partitions' offset indexes, atomically. Committing the
@@ -35,7 +36,11 @@ pub enum Command {
     /// metastore clock, and commit records are pruned only after twice that
     /// ([`Command::PruneWalCommits`]). A retry therefore either returns the
     /// first commit's offsets or is rejected; it never commits the object
-    /// twice. `created_at_ms` does not advance the metastore clock.
+    /// twice. A rejected *retry* does not mean the first attempt failed: its
+    /// record may have been pruned (see [`ApplyError::StaleCommit`]).
+    /// `created_at_ms` does not advance the metastore clock; the proposing
+    /// leader refuses one too far in its future
+    /// ([`MetaConfig::max_clock_skew`](crate::MetaConfig::max_clock_skew)).
     CommitWal {
         object: String,
         created_at_ms: u64,
@@ -199,8 +204,11 @@ pub enum ApplyError {
     /// a concurrent swap or trim changed the partition's index.
     #[error("index mismatch: stream {stream} partition {partition}")]
     IndexMismatch { stream: StreamId, partition: u32 },
-    /// A WAL object is too old to commit (see [`Command::CommitWal`]). Its
-    /// records were never committed.
+    /// A WAL object is too old to commit (see [`Command::CommitWal`]), and no
+    /// commit record for it remains. On a first attempt its records were never
+    /// committed. On a retry after an attempt whose outcome was unknown, the
+    /// first attempt may have committed them and its record may since have
+    /// been pruned: the outcome is still unknown.
     #[error("stale WAL commit: {object}")]
     StaleCommit { object: String },
 }

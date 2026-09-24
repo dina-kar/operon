@@ -21,7 +21,13 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
+[features]
+# Fault-injection hooks for tests in this and dependent crates. Not part of
+# the stable API.
+test-util = []
+
 [dev-dependencies]
+operon-meta = { path = ".", features = ["test-util"] }
 proptest.workspace = true
 tempfile.workspace = true
 

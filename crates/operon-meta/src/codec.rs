@@ -99,6 +99,7 @@ mod tests {
                 name: "events".to_string(),
                 partitions: 1,
                 class: WalClass::Standard,
+                retention: Retention::default(),
             },
             Command::SetRetention {
                 stream: StreamId(1),

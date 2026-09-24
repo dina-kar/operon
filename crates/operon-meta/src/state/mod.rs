@@ -66,7 +66,8 @@ impl MetaState {
                 name,
                 partitions,
                 class,
-            } => self.create_stream(namespace, name, partitions, class),
+                retention,
+            } => self.create_stream(namespace, name, partitions, class, retention),
             Command::CommitWal {
                 object,
                 created_at_ms,

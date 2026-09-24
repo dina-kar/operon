@@ -114,9 +114,10 @@ impl From<MetaError> for ApiError {
                 | ApplyError::PartitionNotFound { .. } => ApiError::not_found(message),
                 _ => internal(message),
             },
-            MetaError::NotLeader { .. } | MetaError::Timeout | MetaError::Unavailable(_) => {
-                unavailable(message)
-            }
+            MetaError::NotLeader { .. }
+            | MetaError::Timeout
+            | MetaError::Unavailable(_)
+            | MetaError::ClockSkew { .. } => unavailable(message),
             _ => internal(message),
         }
     }
@@ -221,22 +222,23 @@ async fn create_stream(
 ) -> ApiResult {
     let request: CreateStream = parse_json(&body)?;
     let namespace = namespace_id(&state.meta, &ns).await?;
+    let retention = request
+        .retention
+        .map_or(Retention::default(), |r| Retention {
+            max_age_ms: r.max_age_ms,
+            max_bytes: r.max_bytes,
+        });
+    // One command, so the stream never exists without its retention.
     let id = state
         .meta
-        .create_stream(
+        .create_stream_with_retention(
             namespace,
             &request.name,
             request.partitions,
             WalClass::Standard,
+            retention,
         )
         .await?;
-    if let Some(retention) = request.retention {
-        let retention = Retention {
-            max_age_ms: retention.max_age_ms,
-            max_bytes: retention.max_bytes,
-        };
-        state.meta.set_retention(id, retention).await?;
-    }
     Ok((StatusCode::CREATED, axum::Json(json!({ "id": id.0 }))).into_response())
 }
 

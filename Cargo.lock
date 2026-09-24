@@ -1806,6 +1806,7 @@ dependencies = [
  "futures",
  "openraft",
  "operon-common",
+ "operon-meta",
  "operon-store",
  "postcard",
  "proptest",
