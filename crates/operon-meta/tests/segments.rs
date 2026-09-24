@@ -745,6 +745,19 @@ proptest! {
                 .map(|o| u64::from(state.wal_live_chunks(o).unwrap_or(0)))
                 .sum();
             prop_assert_eq!(live, wal_entries);
+            // The same, plus the incremental byte counts (M0.3 re-review M13)
+            // and retired objects never referenced, as the crash gate and the
+            // simulation check them.
+            let violations = state.check_invariants();
+            prop_assert!(violations.is_empty(), "{:?}", violations);
+            for p in 0..2 {
+                let partition = state.partition(S, p).unwrap();
+                let bytes: u64 = partition
+                    .entries()
+                    .map(|e| e.byte_range.end - e.byte_range.start)
+                    .sum();
+                prop_assert_eq!(partition.bytes(), bytes);
+            }
         }
     }
 }

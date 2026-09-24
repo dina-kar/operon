@@ -147,6 +147,13 @@ pub struct PartitionState {
     pub(crate) next_offset: u64,
     pub(crate) log_start_offset: u64,
     pub(crate) index: BTreeMap<u64, IndexEntry>,
+    /// The sum of the index entries' byte range lengths, kept as entries are
+    /// added and removed (M0.3 re-review M13).
+    pub(crate) bytes: u64,
+}
+
+fn entry_bytes(entry: &IndexEntry) -> u64 {
+    entry.byte_range.end.saturating_sub(entry.byte_range.start)
 }
 
 impl PartitionState {
@@ -168,12 +175,35 @@ impl PartitionState {
     }
 
     /// The bytes the partition's index entries cover: the sum of their byte
-    /// range lengths.
+    /// range lengths. O(1): kept up to date as entries change.
     pub fn bytes(&self) -> u64 {
-        self.index
-            .values()
-            .map(|entry| entry.byte_range.end - entry.byte_range.start)
-            .sum()
+        self.bytes
+    }
+
+    /// Adds an index entry, keeping the byte count.
+    pub(crate) fn insert_entry(&mut self, entry: IndexEntry) {
+        self.bytes += entry_bytes(&entry);
+        if let Some(replaced) = self.index.insert(entry.base_offset, entry) {
+            self.bytes -= entry_bytes(&replaced);
+        }
+    }
+
+    /// Removes the index entry at `base_offset`, keeping the byte count.
+    pub(crate) fn remove_entry(&mut self, base_offset: u64) -> Option<IndexEntry> {
+        let entry = self.index.remove(&base_offset)?;
+        self.bytes -= entry_bytes(&entry);
+        Some(entry)
+    }
+
+    /// Removes and returns the first index entry if it ends at or before
+    /// `offset`.
+    pub(crate) fn pop_first_before(&mut self, offset: u64) -> Option<IndexEntry> {
+        let base = self
+            .index
+            .first_key_value()
+            .filter(|(_, e)| e.end_offset() <= offset)
+            .map(|(base, _)| *base)?;
+        self.remove_entry(base)
     }
 
     /// The index entry holding `offset`, if that offset is committed and not

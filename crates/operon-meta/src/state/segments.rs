@@ -63,21 +63,18 @@ impl MetaState {
         let state = self.partition_state_mut(stream, partition)?;
         let mut removed = Vec::with_capacity(replaces.len());
         for (base, _) in &replaces {
-            if let Some(entry) = state.index.remove(base) {
+            if let Some(entry) = state.remove_entry(*base) {
                 removed.push(entry);
             }
         }
-        state.index.insert(
-            *first_base,
-            IndexEntry {
-                kind: EntryKind::Segment,
-                base_offset: *first_base,
-                records,
-                object: segment,
-                byte_range,
-                max_timestamp_ms,
-            },
-        );
+        state.insert_entry(IndexEntry {
+            kind: EntryKind::Segment,
+            base_offset: *first_base,
+            records,
+            object: segment,
+            byte_range,
+            max_timestamp_ms,
+        });
         for entry in removed {
             self.release_entry(entry);
         }
@@ -100,11 +97,8 @@ impl MetaState {
         let state = self.partition_state_mut(stream, partition)?;
         let before = before_offset.min(state.next_offset);
         let mut removed = Vec::new();
-        while let Some(entry) = state.index.first_entry() {
-            if entry.get().end_offset() > before {
-                break;
-            }
-            removed.push(entry.remove());
+        while let Some(entry) = state.pop_first_before(before) {
+            removed.push(entry);
         }
         state.log_start_offset = state.log_start_offset.max(before);
         let log_start_offset = state.log_start_offset;

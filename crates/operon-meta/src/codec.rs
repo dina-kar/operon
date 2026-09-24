@@ -12,9 +12,10 @@ use crate::state::MetaState;
 const SNAPSHOT_MAGIC: &[u8; 8] = b"OPNMETA\0";
 /// Version 2 (M0.3) added the log engine's state: entry kinds, log start
 /// offsets, retention, WAL commit times, live chunk counts and retired objects.
-/// Version 3 (M0.4) added the link catalog. Older snapshots are rejected
-/// (M0.3 plan, ruling 9: nothing is deployed yet).
-const SNAPSHOT_FORMAT_VERSION: u32 = 3;
+/// Version 3 (M0.4) added the link catalog, and version 4 the per-partition
+/// byte counts. Older snapshots are rejected (M0.3 plan, ruling 9: nothing is
+/// deployed yet).
+const SNAPSHOT_FORMAT_VERSION: u32 = 4;
 /// Magic, then the format version.
 const HEADER_LEN: usize = 12;
 /// The crc32c trailer.
@@ -174,7 +175,7 @@ mod tests {
         assert_eq!(state.all_links().count(), 1);
         let meta = SnapshotMeta::default();
         let bytes = encode_snapshot(&meta, &state).unwrap();
-        assert_eq!(&bytes[8..12], &3u32.to_le_bytes());
+        assert_eq!(&bytes[8..12], &4u32.to_le_bytes());
         let (decoded_meta, decoded) = decode_snapshot(&bytes).unwrap();
         assert_eq!(decoded_meta, meta);
         assert_eq!(decoded, state);
@@ -182,7 +183,7 @@ mod tests {
 
     #[test]
     fn older_snapshot_versions_are_rejected() {
-        for version in [1u32, 2] {
+        for version in [1u32, 2, 3] {
             let mut bytes = encode_snapshot(&SnapshotMeta::default(), &log_state()).unwrap();
             bytes.truncate(bytes.len() - TRAILER_LEN);
             bytes[8..12].copy_from_slice(&version.to_le_bytes());

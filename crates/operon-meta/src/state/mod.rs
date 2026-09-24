@@ -1,4 +1,5 @@
 mod catalog;
+mod invariants;
 mod leases;
 mod links;
 mod pointers;
