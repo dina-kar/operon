@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Nightly: the long simulation sweep (M0.4 plan Task 6).
+    - cron: "17 2 * * *"
 
 permissions:
   contents: read
@@ -43,7 +46,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - name: simulation (32 seeds x 300 steps)
+        if: github.event_name != 'schedule'
         run: cargo test -p operon-sim --release --locked
+      - name: simulation (1000 seeds x 300 steps, nightly)
+        if: github.event_name == 'schedule'
+        run: cargo test -p operon-sim --release --locked --test sim
+        env:
+          SIM_SEEDS: "1000"
 
   deny:
     name: licenses, advisories, sources
