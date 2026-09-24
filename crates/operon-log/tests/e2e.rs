@@ -413,6 +413,18 @@ async fn acknowledged_appends_survive_a_meta_leader_failover() {
     writer_b.shutdown().await.unwrap();
     segmenter.stop().await;
     retention.stop().await;
+    // The background loop raced the failover, but under load (or while its
+    // node was the isolated leader) it may not have finished a run; one more
+    // run makes sure the check below sees trimmed partitions.
+    let report = Retention::new(
+        cluster.client(cluster.leader().await),
+        "retention-1",
+        RetentionConfig::default(),
+    )
+    .run_once()
+    .await
+    .unwrap();
+    assert!(!report.skipped);
     cluster.converge(stream).await;
 
     // Every node serves the same, correct log.
