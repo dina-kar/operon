@@ -1,10 +1,10 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use operon_common::{NamespaceId, StreamId};
 use operon_meta::{
-    ApplyError, Consistency, Fence, ManualClock, MetaConfig, MetaError, MetaNode, Router, WalChunk,
-    WalClass,
+    ApplyError, Consistency, Fence, ManualClock, MetaConfig, MetaError, MetaNode, RaftStatus,
+    Router, WalChunk, WalClass,
 };
 use operon_store::{Fault, FaultyStore, Op, Store};
 use tempfile::TempDir;
@@ -32,6 +32,22 @@ fn faulty_store() -> (Arc<FaultyStore>, Store) {
 
 fn namespace_names(state: &operon_meta::MetaState) -> Vec<String> {
     state.namespaces().map(|n| n.name.clone()).collect()
+}
+
+/// Waits until `node`'s status satisfies `check`.
+async fn wait_for_status(node: &MetaNode, check: impl Fn(RaftStatus) -> bool) -> RaftStatus {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let status = node.status();
+        if check(status) {
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "status never matched: {status:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 fn chunk(stream: StreamId, records: u32) -> WalChunk {
@@ -190,6 +206,10 @@ async fn initialize_is_idempotent_and_checks_membership() {
     let node = start(config(&dir, &store)).await;
     node.initialize([1]).await.unwrap();
     node.create_namespace("acme").await.unwrap();
+    // Initializing an existing cluster with other voters is a mistake, not a no-op.
+    let err = node.initialize([1, 2]).await.unwrap_err();
+    assert!(matches!(err, MetaError::Config(_)), "{err:?}");
+    node.initialize([1]).await.unwrap();
 
     let (dir2, store2) = (TempDir::new().unwrap(), Store::in_memory());
     let other = MetaNode::start(MetaConfig::new(5, dir2.path(), store2), &Router::new())
@@ -207,11 +227,19 @@ async fn state_survives_a_restart() {
     node.shutdown().await.unwrap();
     drop(node);
 
-    let node = start(config(&dir, &store)).await;
-    let names: Vec<String> = node
-        .read(Consistency::Linearizable, |s| {
-            s.namespaces().map(|n| n.name.clone()).collect()
-        })
+    // Recovery re-applies the log inside `start`: a local read right away,
+    // before any leader is elected, already sees the write.
+    let node = MetaNode::start(config(&dir, &store), &Router::new())
+        .await
+        .unwrap();
+    let names = node
+        .read(Consistency::Local, namespace_names)
+        .await
+        .unwrap();
+    assert_eq!(names, ["acme"]);
+    node.wait_for_leader(WAIT).await.unwrap();
+    let names = node
+        .read(Consistency::Linearizable, namespace_names)
         .await
         .unwrap();
     assert_eq!(names, ["acme"]);
@@ -257,6 +285,9 @@ async fn state_survives_a_restart_after_snapshot_and_log_purge() {
     let status = node.status();
     assert_eq!(status.leader, Some(1));
     assert!(status.snapshot.is_some() && status.snapshot == status.last_applied);
+    // The purge follows the snapshot asynchronously.
+    let snapshotted = wait_for_status(&node, |s| s.purged >= s.snapshot).await;
+    assert_eq!(snapshotted.purged, status.snapshot);
     // Entries after the snapshot are recovered from the log.
     node.commit_wal("wal/2.wal", vec![chunk(stream, 3)])
         .await
@@ -264,17 +295,35 @@ async fn state_survives_a_restart_after_snapshot_and_log_purge() {
 
     let snapshots = store.list("meta/snapshots/1/").await.unwrap();
     assert_eq!(snapshots.len(), 1, "{snapshots:?}");
+    let before = node.status();
     node.shutdown().await.unwrap();
     drop(node);
 
-    let node = start(cfg).await;
-    let next = node
-        .read(Consistency::Linearizable, |s| {
-            s.partition(stream, 0).map(|p| p.next_offset())
-        })
-        .await
-        .unwrap();
-    assert_eq!(next, Some(10));
+    // Right after `start`, before any leader: the local state already holds
+    // the snapshot plus the re-applied log tail, and the status reports it.
+    let node = MetaNode::start(cfg, &Router::new()).await.unwrap();
+    let status = node.status();
+    assert_eq!(
+        (status.last_applied, status.snapshot, status.purged),
+        (
+            before.last_applied,
+            snapshotted.snapshot,
+            snapshotted.purged
+        ),
+        "{status:?}"
+    );
+    let next_offset = |s: &operon_meta::MetaState| s.partition(stream, 0).map(|p| p.next_offset());
+    assert_eq!(
+        node.read(Consistency::Local, next_offset).await.unwrap(),
+        Some(10)
+    );
+    node.wait_for_leader(WAIT).await.unwrap();
+    assert_eq!(
+        node.read(Consistency::Linearizable, next_offset)
+            .await
+            .unwrap(),
+        Some(10)
+    );
     assert_eq!(
         node.commit_wal("wal/3.wal", vec![chunk(stream, 1)])
             .await
@@ -336,6 +385,40 @@ async fn a_node_keeps_serving_through_failed_snapshot_uploads() {
         .await
         .unwrap();
     assert_eq!(names, ["acme", "globex", "initech"]);
+}
+
+#[tokio::test]
+async fn snapshot_waits_out_an_in_flight_build_that_covers_less() {
+    let dir = TempDir::new().unwrap();
+    let (faulty, store) = faulty_store();
+    let mut cfg = config(&dir, &store);
+    cfg.snapshot_every = 5;
+    let node = start(cfg).await;
+
+    // Slow down the automatic build (retrying failed uploads) so that it is
+    // still in flight, covering fewer entries, when `snapshot` is called.
+    for _ in 0..4 {
+        faulty.inject(Op::Put, Fault::Error);
+    }
+    for i in 0..5 {
+        node.create_namespace(&format!("ns{i}")).await.unwrap();
+    }
+    while faulty.calls(Op::Put) == 0 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    // Too few entries for openraft to start another automatic build after
+    // this one: only `snapshot` itself can get the snapshot to cover them.
+    for i in 5..7 {
+        node.create_namespace(&format!("ns{i}")).await.unwrap();
+    }
+    let applied = node.status().last_applied;
+
+    node.snapshot().await.unwrap();
+    let status = node.status();
+    assert!(
+        status.snapshot >= applied,
+        "{status:?}, applied {applied:?}"
+    );
 }
 
 #[tokio::test]
@@ -415,4 +498,13 @@ async fn a_node_without_local_state_refuses_to_start_over_existing_snapshots() {
         .await
         .unwrap();
     assert_eq!(names, ["acme"]);
+}
+
+#[tokio::test]
+async fn invalid_configs_are_rejected() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    let mut cfg = config(&dir, &store);
+    cfg.snapshot_every = 0;
+    let err = MetaNode::start(cfg, &Router::new()).await.unwrap_err();
+    assert!(matches!(err, MetaError::Config(_)), "{err:?}");
 }

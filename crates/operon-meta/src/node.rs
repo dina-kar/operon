@@ -1,6 +1,6 @@
 //! A running meta node: Raft, local storage and the typed client API.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use openraft::async_runtime::WatchReceiver;
 use openraft::error::{ClientWriteError, InitializeError, LinearizableReadError, RaftError};
+use openraft::metrics::WaitError;
 use openraft::{BasicNode, Raft, ReadPolicy, SnapshotPolicy};
 use operon_common::{NamespaceId, StreamId};
 use operon_store::Store;
@@ -36,7 +37,8 @@ pub struct MetaConfig {
     pub store: Store,
     /// Object path prefix for snapshots. Default `meta/snapshots`.
     pub snapshot_prefix: String,
-    /// Build a snapshot after this many log entries. Default 10 000.
+    /// Build a snapshot after this many log entries; must be at least 1.
+    /// Default 10 000.
     pub snapshot_every: u64,
     /// Log entries kept after a snapshot, so slightly lagging followers catch
     /// up from the log instead of a full snapshot. Default 1 000.
@@ -126,6 +128,9 @@ fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
+/// How often [`MetaNode::snapshot`] re-requests a build while it waits.
+const SNAPSHOT_RETRIGGER: Duration = Duration::from_millis(50);
+
 /// Refuses to start a node that has no local state while the snapshot store
 /// already holds metastore snapshots: its data directory was most likely lost
 /// or replaced, and starting empty would fork the metastore (design §01 §1:
@@ -165,6 +170,11 @@ impl MetaNode {
     /// already holds snapshots, unless
     /// [`MetaConfig::allow_fresh_start_with_existing_snapshots`] is set.
     pub async fn start(config: MetaConfig, router: &Router) -> Result<Self, MetaError> {
+        if config.snapshot_every == 0 {
+            return Err(MetaError::Config(
+                "snapshot_every must be at least 1".to_string(),
+            ));
+        }
         let raft_config = openraft::Config {
             cluster_name: "operon-meta".to_string(),
             snapshot_policy: SnapshotPolicy::LogsSinceLast(config.snapshot_every),
@@ -196,9 +206,18 @@ impl MetaNode {
         )
         .await
         .map_err(unavailable)?;
-        // openraft re-applies the committed entries after the snapshot in the
-        // background (the log store persists the commit index); until it has,
-        // `Consistency::Local` reads may see an older state.
+        // `Raft::new` has already re-applied the committed entries after the
+        // snapshot (the log store persists the commit index), so local reads
+        // see the pre-restart state. Wait for the core's first metrics too, so
+        // that `status` reports it from the start.
+        let recovered = state.last_applied_index();
+        raft.wait(Some(config.request_timeout))
+            .metrics(
+                |m| m.last_applied.map(|id| id.index) >= recovered,
+                "the recovered state in the metrics",
+            )
+            .await
+            .map_err(unavailable)?;
         router.register(config.node_id, raft.clone());
 
         Ok(Self {
@@ -216,25 +235,50 @@ impl MetaNode {
     }
 
     /// Makes `members` the cluster's first voters. Call it once, on any member,
-    /// when the cluster is new; calling it again (anywhere) is a no-op.
+    /// when the cluster is new; calling it again (anywhere) with the same
+    /// members is a no-op. Calling it on a node that already belongs to a
+    /// cluster with other voters fails with [`MetaError::Config`].
     pub async fn initialize(
         &self,
         members: impl IntoIterator<Item = NodeId>,
     ) -> Result<(), MetaError> {
         let raft = &self.inner.raft;
+        let members: BTreeSet<NodeId> = members.into_iter().collect();
         if raft.is_initialized().await.map_err(unavailable)? {
-            return Ok(());
+            return self.check_voters(&members).await;
         }
-        let members: BTreeMap<NodeId, BasicNode> = members
-            .into_iter()
-            .map(|id| (id, BasicNode::default()))
+        let nodes: BTreeMap<NodeId, BasicNode> = members
+            .iter()
+            .map(|id| (*id, BasicNode::default()))
             .collect();
-        match raft.initialize(members).await {
-            Ok(()) | Err(RaftError::APIError(InitializeError::NotAllowed(_))) => Ok(()),
+        match raft.initialize(nodes).await {
+            Ok(()) => Ok(()),
+            Err(RaftError::APIError(InitializeError::NotAllowed(_))) => {
+                self.check_voters(&members).await
+            }
             Err(RaftError::APIError(InitializeError::NotInMembers(e))) => {
                 Err(MetaError::Config(e.to_string()))
             }
             Err(e) => Err(unavailable(e)),
+        }
+    }
+
+    /// Checks that an already initialized node's voters are `members`. A node
+    /// that has so far only seen a peer's vote request knows no membership
+    /// yet, and passes.
+    async fn check_voters(&self, members: &BTreeSet<NodeId>) -> Result<(), MetaError> {
+        let voters: BTreeSet<NodeId> = self
+            .inner
+            .raft
+            .with_raft_state(|st| st.membership_state.effective().voter_ids().collect())
+            .await
+            .map_err(unavailable)?;
+        if voters.is_empty() || voters == *members {
+            Ok(())
+        } else {
+            Err(MetaError::Config(format!(
+                "already initialized with voters {voters:?}, not {members:?}"
+            )))
         }
     }
 
@@ -247,7 +291,8 @@ impl MetaNode {
         self.inner.raft.current_leader().await
     }
 
-    /// This node's Raft progress.
+    /// This node's Raft progress, as of openraft's latest metrics report
+    /// (which may trail the node by a moment).
     pub fn status(&self) -> RaftStatus {
         let metrics = self.inner.raft.metrics();
         let m = metrics.borrow_watched();
@@ -434,25 +479,36 @@ impl MetaNode {
     }
 
     /// Builds a snapshot of everything applied so far and waits until it is in
-    /// object storage.
+    /// object storage. Returns at once on a node that has applied nothing yet
+    /// (it was never initialized): there is nothing to snapshot.
     pub async fn snapshot(&self) -> Result<(), MetaError> {
-        let target = self.inner.state.last_applied_index();
-        self.inner
-            .raft
-            .trigger()
-            .snapshot()
-            .await
-            .map_err(unavailable)?;
-        self.inner
-            .raft
-            .wait(Some(self.inner.request_timeout))
-            .metrics(
-                |m| m.snapshot.map(|id| id.index) >= target,
-                "a snapshot of everything applied",
-            )
-            .await
-            .map_err(|_| MetaError::Timeout)?;
-        Ok(())
+        let Some(target) = self.inner.state.last_applied_index() else {
+            return Ok(());
+        };
+        let raft = &self.inner.raft;
+        let deadline = Instant::now() + self.inner.request_timeout;
+        loop {
+            // openraft ignores the trigger while a build is in flight, and that
+            // build may cover less than `target`; so keep re-triggering until a
+            // snapshot covers it.
+            raft.trigger().snapshot().await.map_err(unavailable)?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let covered = raft
+                .wait(Some(remaining.min(SNAPSHOT_RETRIGGER)))
+                .metrics(
+                    |m| m.snapshot.is_some_and(|id| id.index >= target),
+                    "a snapshot of everything applied",
+                )
+                .await;
+            match covered {
+                Ok(_) => return Ok(()),
+                Err(WaitError::ShuttingDown) => return Err(unavailable(WaitError::ShuttingDown)),
+                Err(WaitError::Timeout(..)) if Instant::now() >= deadline => {
+                    return Err(MetaError::Timeout);
+                }
+                Err(WaitError::Timeout(..)) => {}
+            }
+        }
     }
 
     /// Stops Raft, disconnects the node, and waits until its local database is
