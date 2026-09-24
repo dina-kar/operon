@@ -275,7 +275,10 @@ async fn an_index_mismatch_deletes_the_new_segment() {
     gate.arm("ns/");
     let run = tokio::spawn(async move { segmenter.run_once().await });
     gate.paused().await;
-    meta.client.trim_partition(stream, 0, 3).await.unwrap();
+    meta.client
+        .trim_partition(stream, 0, 3, None)
+        .await
+        .unwrap();
     gate.release();
 
     let report = run.await.unwrap().unwrap();
@@ -361,7 +364,7 @@ async fn differential(steps: Vec<Step>, max_bytes: usize) {
                 let before = keep.index(hwm as usize + 1) as u64;
                 let start = meta
                     .client
-                    .trim_partition(stream, partition, before)
+                    .trim_partition(stream, partition, before, None)
                     .await
                     .expect("trim");
                 let slot = log_start.entry(partition).or_default();
@@ -449,7 +452,10 @@ async fn a_segment_the_metastore_retired_is_not_deleted_on_mismatch() {
         )
         .await
         .unwrap();
-    meta.client.trim_partition(stream, 0, 3).await.unwrap();
+    meta.client
+        .trim_partition(stream, 0, 3, None)
+        .await
+        .unwrap();
     assert!(retired(&meta).await.contains(&path));
     gate.release();
 

@@ -76,19 +76,27 @@ pub enum Command {
     /// Makes offsets below `before_offset` (capped at the high watermark)
     /// unreadable and drops the index entries wholly below it. The log start
     /// only moves forward, so a retry is a no-op that returns the same log
-    /// start.
+    /// start. With a `fence`, the trim is applied only while the fencing lease
+    /// is at the fence's epoch ([`ApplyError::Fenced`] otherwise, and nothing
+    /// changes); a retry whose fence was broken after the first attempt
+    /// applied is rejected, but the first attempt's trim stays.
     TrimPartition {
         stream: StreamId,
         partition: u32,
         before_offset: u64,
+        fence: Option<Fence>,
         now_ms: u64,
     },
     /// Forgets WAL commit records older than twice the commit window. A retry
-    /// removes nothing more.
-    PruneWalCommits { now_ms: u64 },
+    /// removes nothing more. Fenced like [`Command::TrimPartition`].
+    PruneWalCommits { fence: Option<Fence>, now_ms: u64 },
     /// Removes collected objects from the retired set. Unknown paths are
-    /// ignored, so a retry is safe.
-    ForgetObjects { objects: Vec<String> },
+    /// ignored, so a retry is safe. Fenced like [`Command::TrimPartition`]:
+    /// garbage collection forgets objects under its task lease.
+    ForgetObjects {
+        objects: Vec<String>,
+        fence: Option<Fence>,
+    },
     /// Takes a free or expired lease for `ttl_ms`, bumping its epoch. If
     /// `owner` already holds the lease, extends it to `now_ms + ttl_ms` and
     /// keeps the epoch, so a retry after a lost acknowledgement gets the same
@@ -111,6 +119,22 @@ pub enum Command {
     /// `now_ms`, or fails with [`ApplyError::LeaseLost`] if the lease expired
     /// in between, which the first attempt would not have prevented.
     RenewLease {
+        key: String,
+        owner: String,
+        epoch: u64,
+        ttl_ms: u64,
+        now_ms: u64,
+    },
+    /// Re-takes an expired lease that nobody else took: if `owner` still
+    /// holds the lease at `epoch` (not released and not taken over), its
+    /// deadline becomes `now_ms + ttl_ms` and the epoch stays, whether or not
+    /// it had expired. Otherwise it fails with [`ApplyError::LeaseLost`] and
+    /// changes nothing. Fences at `epoch` stay valid throughout, because
+    /// expiry alone never broke them. A retry after a lost acknowledgement
+    /// extends the deadline again (or fails the same way if someone took the
+    /// lease in between), so it is safe. Worker tasks use it to keep running
+    /// after a renewal came too late (M0.3 re-review N3).
+    ReacquireLease {
         key: String,
         owner: String,
         epoch: u64,
@@ -246,13 +270,16 @@ impl std::fmt::Display for Command {
                 "TrimPartition({stream}/{partition}, before {before_offset})"
             ),
             Command::PruneWalCommits { .. } => write!(f, "PruneWalCommits"),
-            Command::ForgetObjects { objects } => {
+            Command::ForgetObjects { objects, .. } => {
                 write!(f, "ForgetObjects({} objects)", objects.len())
             }
             Command::AcquireLease { key, owner, .. } => write!(f, "AcquireLease({key}, {owner})"),
             Command::RenewLease {
                 key, owner, epoch, ..
             } => write!(f, "RenewLease({key}, {owner}, epoch {epoch})"),
+            Command::ReacquireLease {
+                key, owner, epoch, ..
+            } => write!(f, "ReacquireLease({key}, {owner}, epoch {epoch})"),
             Command::ReleaseLease { key, owner, epoch } => {
                 write!(f, "ReleaseLease({key}, {owner}, epoch {epoch})")
             }

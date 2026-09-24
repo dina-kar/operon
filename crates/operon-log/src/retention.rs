@@ -141,12 +141,14 @@ impl Retention {
                     })
                     .await?;
                 if let Some(before) = before {
-                    self.meta.trim_partition(stream, partition, before).await?;
+                    self.meta
+                        .trim_partition(stream, partition, before, None)
+                        .await?;
                     report.trimmed += 1;
                 }
             }
         }
-        report.pruned = self.meta.prune_wal_commits().await?;
+        report.pruned = self.meta.prune_wal_commits(None).await?;
         Ok(report)
     }
 

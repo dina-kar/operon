@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use openraft::async_runtime::WatchReceiver;
@@ -12,7 +12,6 @@ use openraft::metrics::WaitError;
 use openraft::{BasicNode, Raft, ReadPolicy, SnapshotPolicy};
 use operon_common::{NamespaceId, StreamId};
 use operon_store::Store;
-use redb::Database;
 
 use crate::clock::{Clock, SystemClock};
 use crate::command::{Command, Reply};
@@ -58,7 +57,9 @@ pub struct MetaConfig {
     /// refuses to propose a command stamped further ahead, with
     /// [`MetaError::ClockSkew`]: the metastore clock never goes back, so one
     /// such stamp would otherwise make every later WAL commit stale until real
-    /// time caught up. Default 60 s.
+    /// time caught up. Default 5 min: generous, because a leader whose own
+    /// clock is behind by more than this refuses correct proposers (M0.3
+    /// re-review N1; design §10 §2).
     pub max_clock_skew: Duration,
 }
 
@@ -74,7 +75,7 @@ impl MetaConfig {
             request_timeout: Duration::from_secs(5),
             clock: Arc::new(SystemClock),
             allow_fresh_start_with_existing_snapshots: false,
-            max_clock_skew: Duration::from_secs(60),
+            max_clock_skew: Duration::from_secs(300),
         }
     }
 }
@@ -106,7 +107,7 @@ struct Inner {
     raft: MetaRaft,
     state: StateReader,
     /// Lets `shutdown` wait until Raft's tasks have closed the local database.
-    db: Weak<Database>,
+    db_closed: tokio::sync::watch::Receiver<bool>,
     /// Lets `shutdown` cut short snapshot uploads that are being retried.
     snapshot_io: SnapshotIoCloser,
     router: Router,
@@ -198,7 +199,7 @@ impl MetaNode {
 
         let db = LocalDb::open(&config.data_dir)?;
         check_fresh_start(&config, &db).await?;
-        let db_handle = db.downgrade();
+        let db_closed = db.closed();
         let sm = StateMachineStore::open(
             config.node_id,
             config.store.clone(),
@@ -237,7 +238,7 @@ impl MetaNode {
                 id: config.node_id,
                 raft,
                 state,
-                db: db_handle,
+                db_closed,
                 snapshot_io,
                 router: router.clone(),
                 clock: config.clock,
@@ -383,9 +384,10 @@ impl MetaNode {
         let stamped_ms = match command {
             Command::AcquireLease { now_ms, .. }
             | Command::RenewLease { now_ms, .. }
+            | Command::ReacquireLease { now_ms, .. }
             | Command::SwapSegment { now_ms, .. }
             | Command::TrimPartition { now_ms, .. }
-            | Command::PruneWalCommits { now_ms } => *now_ms,
+            | Command::PruneWalCommits { now_ms, .. } => *now_ms,
             Command::CommitWal { created_at_ms, .. } => *created_at_ms,
             _ => return Ok(()),
         };
@@ -592,13 +594,13 @@ impl MetaNode {
         self.inner.raft.shutdown().await.map_err(unavailable)?;
         // openraft's state machine and snapshot tasks may still hold storage
         // handles for a moment after the core stops.
-        let deadline = Instant::now() + self.inner.request_timeout;
-        while self.inner.db.strong_count() > 0 {
-            if Instant::now() >= deadline {
-                return Err(unavailable("local database still in use after shutdown"));
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+        // Waits for the file to be closed, not just for the last handle to go
+        // (M0.3 re-review N4), so a restart in the same process can open it.
+        let mut closed = self.inner.db_closed.clone();
+        match tokio::time::timeout(self.inner.request_timeout, closed.wait_for(|c| *c)).await {
+            // A dropped sender also means the database is closed.
+            Ok(_) => Ok(()),
+            Err(_) => Err(unavailable("local database still in use after shutdown")),
         }
-        Ok(())
     }
 }

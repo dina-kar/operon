@@ -144,6 +144,7 @@ mod tests {
                 stream: StreamId(1),
                 partition: 0,
                 before_offset: 3,
+                fence: None,
                 now_ms: 2_000,
             })
             .expect("trim");

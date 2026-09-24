@@ -345,7 +345,11 @@ async fn out_of_range_offsets_get_416_with_both_bounds() {
         })
         .await
         .unwrap();
-    server.meta().trim_partition(stream, 0, 2).await.unwrap();
+    server
+        .meta()
+        .trim_partition(stream, 0, 2, None)
+        .await
+        .unwrap();
     let (status, body) = api
         .get("/v1/namespaces/acme/streams/events/partitions/0/records?offset=1")
         .await;

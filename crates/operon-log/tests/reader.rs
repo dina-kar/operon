@@ -289,7 +289,11 @@ async fn offsets_out_of_range_are_rejected_on_both_sides() {
         ),
         "{err:?}"
     );
-    f.meta.client.trim_partition(f.stream, 0, 3).await.unwrap();
+    f.meta
+        .client
+        .trim_partition(f.stream, 0, 3, None)
+        .await
+        .unwrap();
     let err = f.fetch(2, 100).await.unwrap_err();
     assert!(
         matches!(
@@ -354,11 +358,11 @@ async fn fetches_racing_swaps_and_trims_are_correct_or_out_of_range() {
                 for path in &retired {
                     f.store.delete(path).await.unwrap();
                 }
-                f.meta.client.forget_objects(retired).await.unwrap();
+                f.meta.client.forget_objects(retired, None).await.unwrap();
                 trim_to += 2;
                 f.meta
                     .client
-                    .trim_partition(f.stream, 0, trim_to)
+                    .trim_partition(f.stream, 0, trim_to, None)
                     .await
                     .unwrap();
                 tokio::task::yield_now().await;

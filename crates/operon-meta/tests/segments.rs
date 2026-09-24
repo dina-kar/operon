@@ -85,6 +85,7 @@ fn trim(partition: u32, before_offset: u64, now_ms: u64) -> Command {
         stream: S,
         partition,
         before_offset,
+        fence: None,
         now_ms,
     }
 }
@@ -92,7 +93,10 @@ fn trim(partition: u32, before_offset: u64, now_ms: u64) -> Command {
 /// Advances the metastore clock to `now_ms` with a command that only moves time.
 fn set_clock(state: &mut MetaState, now_ms: u64) {
     state
-        .apply(Command::PruneWalCommits { now_ms })
+        .apply(Command::PruneWalCommits {
+            fence: None,
+            now_ms,
+        })
         .expect("prune");
 }
 
@@ -187,6 +191,7 @@ fn a_retried_commit_is_deduplicated_until_pruned_and_then_rejected() {
     set_clock(&mut state, t0 + 2 * WAL_COMMIT_WINDOW_MS);
     assert_eq!(
         state.apply(Command::PruneWalCommits {
+            fence: None,
             now_ms: t0 + 2 * WAL_COMMIT_WINDOW_MS
         }),
         Ok(Reply::Pruned { removed: 0 })
@@ -200,6 +205,7 @@ fn a_retried_commit_is_deduplicated_until_pruned_and_then_rejected() {
     // never committed again as new offsets.
     assert_eq!(
         state.apply(Command::PruneWalCommits {
+            fence: None,
             now_ms: t0 + 2 * WAL_COMMIT_WINDOW_MS + 1
         }),
         Ok(Reply::Pruned { removed: 1 })
@@ -497,6 +503,7 @@ fn forgetting_removes_retired_objects_and_ignores_unknown_ones() {
     state.apply(trim(0, 5, 3_000)).unwrap();
     let forget = Command::ForgetObjects {
         objects: vec!["w1".to_string(), "unknown".to_string()],
+        fence: None,
     };
     assert_eq!(
         state.apply(forget.clone()),
@@ -552,6 +559,7 @@ fn rejected_commands_leave_the_state_and_clock_unchanged() {
             stream: StreamId(9),
             partition: 0,
             before_offset: 1,
+            fence: None,
             now_ms: 99_000,
         },
         trim(7, 1, 99_000),
@@ -739,4 +747,69 @@ proptest! {
             prop_assert_eq!(live, wal_entries);
         }
     }
+}
+
+/// M0.4: trims, WAL-commit pruning and forgetting objects can be fenced by a
+/// worker task's lease; a stale epoch changes nothing, not even the clock.
+#[test]
+fn fenced_trims_prunes_and_forgets_need_the_lease_at_its_epoch() {
+    let mut state = three_wal_entries();
+    let acquire = |owner: &str, now_ms: u64| Command::AcquireLease {
+        key: "task/retention".to_string(),
+        owner: owner.to_string(),
+        ttl_ms: 1_000,
+        now_ms,
+    };
+    state.apply(acquire("a", 100)).unwrap();
+    state.apply(acquire("b", 5_000)).unwrap();
+    let fence = |epoch| {
+        Some(Fence {
+            lease: "task/retention".to_string(),
+            epoch,
+        })
+    };
+    let fenced = Err(ApplyError::Fenced {
+        lease: "task/retention".to_string(),
+    });
+    let before = state.clone();
+    let stale = [
+        Command::TrimPartition {
+            stream: S,
+            partition: 0,
+            before_offset: 5,
+            fence: fence(1),
+            now_ms: 9_000,
+        },
+        Command::PruneWalCommits {
+            fence: fence(1),
+            now_ms: 9_000,
+        },
+        Command::ForgetObjects {
+            objects: vec!["w1".to_string()],
+            fence: fence(1),
+        },
+    ];
+    for command in stale {
+        assert_eq!(state.apply(command.clone()), fenced, "{command:?}");
+        assert_eq!(state, before, "{command:?}");
+    }
+    assert_eq!(
+        state.apply(Command::TrimPartition {
+            stream: S,
+            partition: 0,
+            before_offset: 5,
+            fence: fence(2),
+            now_ms: 9_000,
+        }),
+        Ok(Reply::Trimmed {
+            log_start_offset: 5
+        })
+    );
+    assert_eq!(
+        state.apply(Command::PruneWalCommits {
+            fence: fence(2),
+            now_ms: 9_000,
+        }),
+        Ok(Reply::Pruned { removed: 0 })
+    );
 }

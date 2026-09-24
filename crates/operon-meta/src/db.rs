@@ -2,19 +2,39 @@
 
 use std::io;
 use std::path::Path;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
 use redb::{Database, ReadableDatabase, TableDefinition};
+use tokio::sync::watch;
 
 /// Small node-local records (Raft vote, commit and purge markers, the current
 /// snapshot pointer), keyed by name, postcard-encoded.
 pub(crate) const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
+/// Reports `true` once dropped. It is the last field of [`Handle`], so it is
+/// dropped after the database, and the report means the database file is
+/// closed and its lock released.
+#[derive(Debug)]
+struct CloseSignal(watch::Sender<bool>);
+
+impl Drop for CloseSignal {
+    fn drop(&mut self) {
+        self.0.send_replace(true);
+    }
+}
+
+#[derive(Debug)]
+struct Handle {
+    // Field order matters: `db` is dropped (closing the file) before `closed`.
+    db: Database,
+    closed: CloseSignal,
+}
+
 /// The node-local metadata database. Everything the node keeps on local disk
 /// lives here; snapshots themselves live in object storage.
 #[derive(Clone, Debug)]
 pub struct LocalDb {
-    db: Arc<Database>,
+    handle: Arc<Handle>,
 }
 
 impl LocalDb {
@@ -22,13 +42,21 @@ impl LocalDb {
     pub fn open(data_dir: &Path) -> io::Result<Self> {
         std::fs::create_dir_all(data_dir)?;
         let db = Database::create(data_dir.join("meta.redb")).map_err(io::Error::other)?;
-        Ok(Self { db: Arc::new(db) })
+        let (closed, _) = watch::channel(false);
+        Ok(Self {
+            handle: Arc::new(Handle {
+                db,
+                closed: CloseSignal(closed),
+            }),
+        })
     }
 
-    /// A handle that does not keep the database open, to detect when every
-    /// user has let go of it.
-    pub(crate) fn downgrade(&self) -> Weak<Database> {
-        Arc::downgrade(&self.db)
+    /// Becomes `true` (or its sender is gone) once every handle is dropped
+    /// *and* the database file is closed. A `Weak` count reaching zero is not
+    /// enough: `Arc` decrements it before it drops the database, so the file
+    /// lock can outlive it for a moment (M0.3 re-review N4).
+    pub(crate) fn closed(&self) -> watch::Receiver<bool> {
+        self.handle.closed.0.subscribe()
     }
 
     /// Runs `f` on a blocking thread, so redb's file I/O and fsyncs do not stall
@@ -38,8 +66,8 @@ impl LocalDb {
         T: Send + 'static,
         F: FnOnce(&Database) -> Result<T, redb::Error> + Send + 'static,
     {
-        let db = self.db.clone();
-        tokio::task::spawn_blocking(move || f(&db).map_err(io::Error::other))
+        let handle = self.handle.clone();
+        tokio::task::spawn_blocking(move || f(&handle.db).map_err(io::Error::other))
             .await
             .map_err(io::Error::other)?
     }

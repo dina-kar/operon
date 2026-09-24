@@ -97,10 +97,11 @@ impl MetaState {
                 stream,
                 partition,
                 before_offset,
+                fence,
                 now_ms,
-            } => self.trim_partition(stream, partition, before_offset, now_ms),
-            Command::PruneWalCommits { now_ms } => self.prune_wal_commits(now_ms),
-            Command::ForgetObjects { objects } => self.forget_objects(objects),
+            } => self.trim_partition(stream, partition, before_offset, fence, now_ms),
+            Command::PruneWalCommits { fence, now_ms } => self.prune_wal_commits(fence, now_ms),
+            Command::ForgetObjects { objects, fence } => self.forget_objects(objects, fence),
             Command::AcquireLease {
                 key,
                 owner,
@@ -114,6 +115,13 @@ impl MetaState {
                 ttl_ms,
                 now_ms,
             } => self.renew_lease(key, owner, epoch, ttl_ms, now_ms),
+            Command::ReacquireLease {
+                key,
+                owner,
+                epoch,
+                ttl_ms,
+                now_ms,
+            } => self.reacquire_lease(key, owner, epoch, ttl_ms, now_ms),
             Command::ReleaseLease { key, owner, epoch } => self.release_lease(key, owner, epoch),
             Command::CasPointer {
                 namespace,

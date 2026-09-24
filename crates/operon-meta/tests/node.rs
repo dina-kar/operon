@@ -518,6 +518,8 @@ async fn the_leader_refuses_commands_stamped_too_far_ahead() {
     let clock = Arc::new(ManualClock::new(1_700_000_000_000));
     let mut cfg = config(&dir, &store);
     cfg.clock = clock.clone();
+    // The M0.3 default; M0.4 raised the default to 5 min (re-review N1).
+    cfg.max_clock_skew = Duration::from_secs(60);
     let node = start(cfg).await;
     let ns = node.create_namespace("acme").await.unwrap();
     let stream = node
@@ -538,11 +540,15 @@ async fn the_leader_refuses_commands_stamped_too_far_ahead() {
             ttl_ms: 1_000,
             now_ms: now + day,
         },
-        Command::PruneWalCommits { now_ms: now + day },
+        Command::PruneWalCommits {
+            fence: None,
+            now_ms: now + day,
+        },
         Command::TrimPartition {
             stream,
             partition: 0,
             before_offset: 0,
+            fence: None,
             now_ms: now + 61_000,
         },
         Command::CommitWal {
@@ -567,6 +573,7 @@ async fn the_leader_refuses_commands_stamped_too_far_ahead() {
 
     // Within the tolerance is fine, and commits from a correct clock keep working.
     node.write(Command::PruneWalCommits {
+        fence: None,
         now_ms: now + 59_000,
     })
     .await
@@ -585,8 +592,29 @@ async fn the_leader_refuses_commands_stamped_too_far_ahead() {
         operon_meta::MetaClientConfig::default(),
     );
     let started = Instant::now();
-    let err = skewed_client.prune_wal_commits().await.unwrap_err();
+    let err = skewed_client.prune_wal_commits(None).await.unwrap_err();
     assert!(matches!(err, MetaError::ClockSkew { .. }), "{err:?}");
     assert!(started.elapsed() < Duration::from_secs(2));
+    node.shutdown().await.unwrap();
+}
+
+/// M0.3 re-review N4: `shutdown` returns only once the local database file is
+/// closed, so the node restarts at once in the same process, even on a
+/// multi-threaded runtime where the last handle may be dropped on another
+/// thread.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_restarts_in_the_same_process_right_after_shutdown() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    for i in 0..20 {
+        let node = start(config(&dir, &store)).await;
+        node.create_namespace(&format!("ns-{i}")).await.unwrap();
+        node.shutdown().await.unwrap();
+    }
+    let node = start(config(&dir, &store)).await;
+    let count = node
+        .read(Consistency::Local, |s| s.namespaces().count())
+        .await
+        .unwrap();
+    assert_eq!(count, 20);
     node.shutdown().await.unwrap();
 }

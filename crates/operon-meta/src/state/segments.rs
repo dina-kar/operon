@@ -89,9 +89,13 @@ impl MetaState {
         stream: StreamId,
         partition: u32,
         before_offset: u64,
+        fence: Option<Fence>,
         now_ms: u64,
     ) -> Result<Reply, ApplyError> {
         self.partition_state(stream, partition)?;
+        if let Some(fence) = &fence {
+            self.check_fence(fence)?;
+        }
         self.clock_ms = self.clock_ms.max(now_ms);
         let state = self.partition_state_mut(stream, partition)?;
         let before = before_offset.min(state.next_offset);

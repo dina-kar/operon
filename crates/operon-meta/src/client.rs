@@ -363,17 +363,20 @@ impl MetaClient {
         }
     }
 
-    /// Trims a partition below `before_offset`; returns the new log start.
+    /// Trims a partition below `before_offset`, fenced by `fence` if given;
+    /// returns the new log start.
     pub async fn trim_partition(
         &self,
         stream: StreamId,
         partition: u32,
         before_offset: u64,
+        fence: Option<Fence>,
     ) -> Result<u64, MetaError> {
         let command = Command::TrimPartition {
             stream,
             partition,
             before_offset,
+            fence,
             now_ms: self.now_ms(),
         };
         match self.write(command).await? {
@@ -396,9 +399,11 @@ impl MetaClient {
         }
     }
 
-    /// Prunes old WAL commit records; returns how many were removed.
-    pub async fn prune_wal_commits(&self) -> Result<u32, MetaError> {
+    /// Prunes old WAL commit records, fenced by `fence` if given; returns how
+    /// many were removed.
+    pub async fn prune_wal_commits(&self, fence: Option<Fence>) -> Result<u32, MetaError> {
         let command = Command::PruneWalCommits {
+            fence,
             now_ms: self.now_ms(),
         };
         match self.write(command).await? {
@@ -407,9 +412,17 @@ impl MetaClient {
         }
     }
 
-    /// Removes collected objects from the retired set; returns how many were there.
-    pub async fn forget_objects(&self, objects: Vec<String>) -> Result<u32, MetaError> {
-        match self.write(Command::ForgetObjects { objects }).await? {
+    /// Removes collected objects from the retired set, fenced by `fence` if
+    /// given; returns how many were there.
+    pub async fn forget_objects(
+        &self,
+        objects: Vec<String>,
+        fence: Option<Fence>,
+    ) -> Result<u32, MetaError> {
+        match self
+            .write(Command::ForgetObjects { objects, fence })
+            .await?
+        {
             Reply::Forgotten { removed } => Ok(removed),
             other => Err(MetaError::UnexpectedReply(other)),
         }
@@ -441,6 +454,28 @@ impl MetaClient {
         ttl: Duration,
     ) -> Result<LeaseGrant, MetaError> {
         let command = Command::RenewLease {
+            key: key.to_string(),
+            owner: owner.to_string(),
+            epoch,
+            ttl_ms: millis(ttl),
+            now_ms: self.now_ms(),
+        };
+        match self.write(command).await? {
+            Reply::Lease(grant) => Ok(grant),
+            other => Err(MetaError::UnexpectedReply(other)),
+        }
+    }
+
+    /// Extends a lease `owner` still holds at `epoch`, even if it expired,
+    /// as long as nobody else took it ([`Command::ReacquireLease`]).
+    pub async fn reacquire_lease(
+        &self,
+        key: &str,
+        owner: &str,
+        epoch: u64,
+        ttl: Duration,
+    ) -> Result<LeaseGrant, MetaError> {
+        let command = Command::ReacquireLease {
             key: key.to_string(),
             owner: owner.to_string(),
             epoch,
