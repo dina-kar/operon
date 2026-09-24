@@ -41,7 +41,7 @@ M1.4, M1.5 and M1.6 are independent of each other and may run in parallel once M
 
 | Exit gate | Plan |
 |---|---|
-| LangChain + LlamaIndex vector-store tests (ES and Qdrant backends) pass unmodified | M1.7 (surface built in M1.4, M1.5) |
+| LangChain + LlamaIndex vector-store tests (ES and Qdrant backends) pass unmodified: each suite runs with its own commands and only its server URL/environment pointed at Operon; tests of sparse or hybrid (dense + sparse) retrieval need Qdrant sparse vectors (Phase B, §06 §6) and are run and reported but not gated; tests hard-wired to Qdrant's in-process `:memory:` mode never reach a server and are not counted (A14) | M1.7 (surface built in M1.4, M1.5) |
 | BEIR nDCG@10 within 1 point of ES BM25 | M1.7 (analyzers and global statistics in M1.2) |
 | Recall@10 within 1% of Qdrant at equal hot-tier latency | M1.7 (HNSW in M1.3) |
 | Results identical with the hot tier on and off | M1.3 (harness), M1.7 (at scale); see Ruling R12 |
@@ -140,16 +140,24 @@ pub struct CollectionSchema {
     pub vectors: Vec<VectorSpec>,           // unique names; "" is Qdrant's unnamed default vector
     pub dynamic: DynamicMapping,            // Strict | Ignore | Map
     pub max_fields: u32,                    // default 1000 (ES index.mapping.total_fields.limit)
+    pub annotations: BTreeMap<String, String>,  // opaque gateway data, keys namespaced `es.*` / `qdrant.*`; preserved (A1)
 }
 pub struct FieldSpec { pub name: String /* dot path, e.g. "meta.author" or "title.keyword" */, pub source_path: String /* where the value comes from in _source */,
-                       pub kind: FieldKind, pub indexed: bool, pub fast: bool }
+                       pub kind: FieldKind, pub indexed: bool, pub fast: bool,
+                       pub ignore_malformed: bool /* a value of the wrong type is skipped, not a violation (A2) */ }
 pub enum FieldKind { Text { analyzer: String, positions: bool }, Keyword, I64, F64, Bool, Date, Uuid, Json }
 pub struct VectorSpec { pub name: String, pub dim: u32, pub distance: Distance, pub element: VectorElement /* F32 in M1 */,
                         pub index: VectorIndexSpec, pub hnsw: HnswParams, pub quantization: Option<Quantization> }
 pub enum Distance { Cosine, Dot, Euclid, Manhattan }
 ```
 
-Every document keeps its `_source` verbatim (a Qdrant payload is its `_source`). Fields are values extracted from `_source` by `source_path` (arrays give multi-valued fields); they are what is indexed, filtered, sorted and aggregated. With `DynamicMapping::Map`, a gateway that sees unmapped paths proposes `UpdateCollectionSchema` with ES's dynamic rules before it appends the write (Ruling R17). With `Ignore` (the Qdrant default), unmapped paths live only in `_source`; Qdrant payload indexes add fields.
+Every document keeps its `_source` verbatim (a Qdrant payload is its `_source`). Fields are values extracted from `_source` by `source_path` (arrays give multi-valued fields); they are what is indexed, filtered, sorted and aggregated. With `DynamicMapping::Map`, a gateway that sees unmapped paths proposes `UpdateCollectionSchema` with ES's dynamic rules before it appends the write (Ruling R17). With `Ignore` (the Qdrant default), unmapped paths live only in `_source`.
+
+**JSON fields (A3).** A `FieldKind::Json` field with `source_path: ""` indexes the whole `_source`. `Query` field names address paths inside a Json field as `"<field>.<path>"` (dot-separated, arrays flattened, type-strict: a numeric range matches only numeric leaves). String leaves are indexed raw (exact match, fast) and, in a companion Tantivy field defined by M1.1, tokenized with the `standard` analyzer, so `Match`/`MatchPhrase` work on JSON paths. Every Qdrant collection has a Json field named `payload` with `source_path: ""`, and Qdrant filters always address `payload.<key>`; Qdrant payload indexes are recorded in `annotations`.
+
+**No backfill (A4).** Fields added by `UpdateCollectionSchema` apply to documents written after the schema version that added them (ES put-mapping semantics). Each `SplitRef` records the `schema_version` it was written with.
+
+**Analyzers (A5, M1.1 in `operon-text`).** `standard` (ES standard: UAX #29 word segmentation + lowercase, no stop words, max token length 255), `english` (Lucene's EnglishAnalyzer chain: standard tokenizer → English possessive filter → lowercase → Lucene English stop words → the original Porter stemmer, not Porter2/Snowball), `simple`, `whitespace`, `keyword`. The BEIR gate depends on `english` matching Lucene.
 
 ### 6.4 Durable layout, manifest and commit (M1.1)
 
@@ -169,7 +177,7 @@ The manifest is protobuf (`prost`) inside Operon's standard envelope (magic `OPC
 CollectionManifest {
   version, parent_version, collection_id, schema_version, created_at_ms
   lance_version                                           // the Lance dataset version this manifest reads
-  splits:   [SplitRef { ulid, doc_count, deleted_count, size_bytes, footer_range, row_id_ranges: [(start, end)], delete_bitmap: Option<path> }]
+  splits:   [SplitRef { ulid, doc_count, deleted_count, size_bytes, footer_range, row_id_ranges: [(start, end)], delete_bitmap: Option<path>, schema_version }]
   vector_indexes: [VectorIndexRef { column, lance_index_uuid, indexed_row_ids_upto }]
   hot_artifacts:  [HotArtifactRef { kind, column, prefix, source_version }]   // written by M1.3; empty before
   applied:  { partition: next_offset }                    // exactly-once watermark (§09 §3)
@@ -179,10 +187,12 @@ CollectionManifest {
 
 Commit (§03 §3.3, exact order): write new Lance data/deletion files and the Lance version → write the new split and the changed delete bitmaps → write the manifest → `cas_pointer(ns, "collection/<cid>", expected = parent, fence = task lease, freshness = the oldest new object's creation time with max age = link `max_commit_delay`)`. Readers load the pointer, then the manifest, and read only the Lance version, splits and bitmaps it names.
 
+**Retention for pinned reads (A6).** GC keeps every manifest younger than the collection's time-travel retention (default 24 h, §03 §7) plus the last `keep_manifests`, with everything they reference, and an implicit stream is trimmed only below the `applied` offsets of the oldest retained manifest. So a `Pinned` read (§6.5) stays valid for as long as its manifest is retained, with no metastore hold.
+
 ### 6.5 Consistency tokens and read consistency (M1.2)
 
 - A write returns `ConsistencyToken(Vec<(StreamId, u32 /* partition */, u64 /* next offset after the write */)>)`. Text form: `v1:` followed by `s<stream>/p<partition>@<offset>` items joined by `,`, e.g. `v1:s7/p3@918274`. HTTP header on every write response and accepted on every read request: `Operon-Consistency-Token`.
-- `ReadConsistency::{Strong (default), Eventual, AtLeast(ConsistencyToken)}`. `Strong` reads the implicit stream's high watermarks with a linearizable metastore read at request start and merges the tail up to them; `AtLeast` merges up to the token's offsets (and at least the durable state); `Eventual` reads the durable state and whatever tail is already in memory.
+- `ReadConsistency::{Strong (default), Eventual, AtLeast(ConsistencyToken), Pinned { manifest_version: u64, token: ConsistencyToken }}`. `Pinned` (A6; ES point in time, Qdrant snapshot reads) reads the durable state at `manifest_version` plus the tail from that manifest's `applied` offsets up to `token`, and fails with `NotFound` once the manifest is no longer retained (§6.4). `Strong` reads the implicit stream's high watermarks with a linearizable metastore read at request start and merges the tail up to them; `AtLeast` merges up to the token's offsets (and at least the durable state); `Eventual` reads the durable state and whatever tail is already in memory.
 
 ### 6.6 The search IR (M1.2 implements; M1.4, M1.5, M1.6 compile to it)
 
@@ -209,13 +219,17 @@ pub enum Retriever {
     Fused { inputs: Vec<Retriever>, fusion: Fusion, k: usize },               // Qdrant nested prefetch
     Rescore { input: Box<Retriever>, field: String, query: Vec<f32>, k: usize },  // Qdrant prefetch + query
 }
-pub struct AnnParams { pub exact: bool, pub nprobes: Option<u32>, pub refine_factor: Option<u32>, pub ef: Option<u32>, pub oversampling: Option<f32> }
+pub struct AnnParams { pub exact: bool, pub nprobes: Option<u32>, pub refine_factor: Option<u32>, pub ef: Option<u32>, pub oversampling: Option<f32>,
+                      pub distance: Option<Distance> /* metric override, exact search only (ES script_score) (A7) */ }
 pub enum Fusion { Rrf { k: u32 /* default 60 */ }, Dbsf, WeightedSum { weights: Vec<f32> } }
+// Rrf: score(d) = Σ_lists 1 / (k + rank(d)), rank 1-based (ES convention; Qdrant's 0-based k=2 is sent as k = 1).
+// Dbsf: Qdrant's distribution-based score fusion: each list's scores normalised with (s − (μ − 3σ)) / 6σ, clamped to [0, 1], then summed.
+// WeightedSum: Σ weight_i · score_i over the lists a document appears in (ES query + knn semantics, boosts as weights).
 pub enum Query {  // scoring when used by Retriever::Text, a bitmap when used as a filter
     MatchAll, MatchNone,
     Match { field: String, text: String, operator: BoolOperator, minimum_should_match: Option<String>, fuzziness: Option<Fuzziness>, analyzer: Option<String> },
     MatchPhrase { field: String, text: String, slop: u32 },
-    MultiMatch { fields: Vec<(String, f32)>, text: String, kind: MultiMatchKind, operator: BoolOperator },
+    MultiMatch { fields: Vec<(String, f32)>, text: String, kind: MultiMatchKind, operator: BoolOperator, tie_breaker: Option<f32> /* A8 */ },
     Term { field: String, value: FieldValue }, Terms { field: String, values: Vec<FieldValue> },
     Range { field: String, gt: Option<FieldValue>, gte: Option<FieldValue>, lt: Option<FieldValue>, lte: Option<FieldValue> },
     Exists { field: String }, IsNull { field: String }, IsEmpty { field: String },
@@ -232,17 +246,20 @@ pub struct Hit { pub pk: PrimaryKey, pub score: f32, pub sort_values: Vec<SortVa
                  pub vectors: BTreeMap<String, Vec<f32>>, pub highlight: BTreeMap<String, Vec<String>> }
 ```
 
+`R4` exception (A9): a gateway may move mapped vector values out of `_source` into `Document.vectors` on write and restore them into `_source` on read (ES `dense_vector` fields).
+
 Score convention: larger is better. A vector retriever's score is cosine similarity (Cosine), dot product (Dot), or the negated distance (Euclid, Manhattan); gateways convert to their protocol's convention. Equal scores are ordered by canonical PK bytes ascending, on every path.
 
 ### 6.7 `CollectionService` (M1.2, `operon-query`) — the one facade every gateway uses
 
 ```rust
 impl CollectionService {
-    pub async fn create_collection(&self, ns: &str, name: &str, schema: CollectionSchema, partitions: Option<u32>) -> Result<CollectionInfo, ServiceError>;
+    pub async fn ensure_namespace(&self, ns: &str) -> Result<(), ServiceError>;    // creates the namespace if absent (§6.9) (A10)
+    pub async fn create_collection(&self, ns: &str, name: &str, schema: CollectionSchema, partitions: Option<u32>) -> Result<CollectionInfo, ServiceError>;  // creates a missing namespace
     pub async fn drop_collection(&self, ns: &str, name: &str) -> Result<bool, ServiceError>;
     pub async fn get_collection(&self, ns: &str, name_or_alias: &str) -> Result<CollectionInfo, ServiceError>;
     pub async fn list_collections(&self, ns: &str) -> Result<Vec<CollectionInfo>, ServiceError>;
-    pub async fn add_fields(&self, ns: &str, name: &str, fields: Vec<FieldSpec>, vectors: Vec<VectorSpec>) -> Result<CollectionSchema, ServiceError>;
+    pub async fn add_fields(&self, ns: &str, name: &str, fields: Vec<FieldSpec>, vectors: Vec<VectorSpec>, annotations: BTreeMap<String, String>) -> Result<CollectionSchema, ServiceError>;  // no backfill (A4)
     pub async fn update_aliases(&self, ns: &str, actions: Vec<AliasAction>) -> Result<(), ServiceError>;
     pub async fn write(&self, ns: &str, name: &str, ops: Vec<DocOp>, opts: WriteOptions /* report_existence */) -> Result<WriteResult /* token, per-op OpResult */, ServiceError>;
     pub async fn get(&self, ns: &str, name: &str, pks: &[PrimaryKey], select: &Projection, consistency: ReadConsistency) -> Result<Vec<Option<StoredDoc>>, ServiceError>;
@@ -252,12 +269,15 @@ impl CollectionService {
     pub async fn versions(&self, ns: &str, name: &str) -> Result<Vec<ManifestInfo>, ServiceError>;   // Qdrant snapshots = manifest versions
     pub fn sql_context(&self, ns: &str) -> datafusion::prelude::SessionContext;
 }
+// StoredDoc carries `seq_no: u64`: the partition offset of the record that last wrote the document (ES `_seq_no`) (A11).
 pub enum ServiceError { NotFound { kind: &'static str, name: String }, AlreadyExists(String), InvalidArgument(String), SchemaViolation { field: String, message: String }, Unavailable(String) /* retryable */, Timeout, Internal(String) }
 ```
 
 ### 6.8 Native API additions (M1.2; routes follow the M0 style `/v1/namespaces/{ns}/…`, JSON error body unchanged)
 
-`POST /v1/namespaces/{ns}/collections` · `GET|DELETE /v1/namespaces/{ns}/collections/{c}` · `POST /v1/namespaces/{ns}/collections/{c}/documents` (ops) · `POST /v1/namespaces/{ns}/collections/{c}/documents/get` · `POST /v1/namespaces/{ns}/query` (the §05 §4 hybrid request) · `POST /v1/namespaces/{ns}/sql` · M1.3 adds `PUT /v1/namespaces/{ns}/collections/{c}/hot` and `POST /v1/namespaces/{ns}/collections/{c}/warm`. Flight SQL listens on `native.flight_sql` (default `0.0.0.0:8082`).
+`POST|GET /v1/namespaces/{ns}/collections` (create, list) · `GET|DELETE /v1/namespaces/{ns}/collections/{c}` · `POST /v1/namespaces/{ns}/collections/{c}/documents` (ops) · `POST /v1/namespaces/{ns}/collections/{c}/documents/get` · `POST /v1/namespaces/{ns}/query` (the §05 §4 hybrid request) · `POST /v1/namespaces/{ns}/sql` · M1.3 adds `PUT /v1/namespaces/{ns}/collections/{c}/hot` and `POST /v1/namespaces/{ns}/collections/{c}/warm`. Flight SQL listens on `native.flight_sql` (default `0.0.0.0:8082`). `PrimaryKey` in JSON: integer → `U64`, string → `Str`, `{"uuid": "…"}` → `Uuid` (A12).
+
+**Hot-tier controls (A13, M1.3).** Request header `Operon-Hot: on|off` (gRPC metadata `operon-hot`) disables every hot structure for one request; responses carry `Operon-Hot-Used: <comma-separated structures used, or none>`; the server flag `--hot=on|off` sets the default and `--hot-pin-all` pins every collection (gates and benchmarks). `GET …/collections/{c}` reports `manifest_version`, `link_lag_records` and the hot status per structure.
 
 ### 6.9 Gateway namespaces
 
@@ -327,4 +347,21 @@ ES and Qdrant have no namespaces. Each gateway serves one namespace, `default` u
 
 ## Amendments
 
-None yet.
+Adopted 2026-09-25 from the M1.4, M1.5, M1.6 and M1.7 plans (their proposals are recorded there); already reflected in the text above.
+
+| # | Change | From |
+|---|---|---|
+| A1 | `CollectionSchema.annotations` and the `annotations` argument of `add_fields` | M1.4 A3, M1.5 A1 |
+| A2 | `FieldSpec.ignore_malformed` | M1.4 A2 |
+| A3 | JSON fields addressable by path; the Qdrant `payload` catch-all field | M1.4 A1 |
+| A4 | Schema additions are not backfilled; `SplitRef.schema_version` | Orchestrator (replaces M1.4 A5's "add_fields waits for indexing") |
+| A5 | Analyzer definitions, `english` = Lucene chain with Porter | M1.7 amendment 2 |
+| A6 | `ReadConsistency::Pinned` without a metastore hold, backed by manifest retention and trimming below the oldest retained manifest | Orchestrator (replaces M1.5 A3's metastore hold) |
+| A7 | `AnnParams.distance` | M1.5 A5 |
+| A8 | `MultiMatch.tie_breaker` | M1.7 amendment 2 |
+| A9 | R4 exception for vectors in `_source` | M1.5 A4 |
+| A10 | `ensure_namespace`; `create_collection` creates a missing namespace | M1.6 A2, M1.4 A5 |
+| A11 | `StoredDoc.seq_no` | M1.5 A2 |
+| A12 | `GET` collections list route; `PrimaryKey` JSON form | M1.6 A1, A3 |
+| A13 | Hot-tier request header, response header, flags and status fields | M1.7 amendment 1 |
+| A14 | Exit-gate wording for sparse/hybrid and `:memory:` tests | M1.4 A4, M1.7 amendment 5 — **owner decision pending**: the alternative is to pull Qdrant sparse vectors (§06 §6) into M1 |
