@@ -6,7 +6,7 @@ use operon_meta::{
     ApplyError, Consistency, Fence, ManualClock, MetaConfig, MetaError, MetaNode, Router, WalChunk,
     WalClass,
 };
-use operon_store::Store;
+use operon_store::{Fault, FaultyStore, Op, Store};
 use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -22,6 +22,16 @@ async fn start(config: MetaConfig) -> MetaNode {
     node.initialize([1]).await.expect("initialize");
     node.wait_for_leader(WAIT).await.expect("leader");
     node
+}
+
+/// A store that fails the operations queued on the returned `FaultyStore`.
+fn faulty_store() -> (Arc<FaultyStore>, Store) {
+    let faulty = Arc::new(FaultyStore::new(Store::in_memory().inner().clone()));
+    (faulty.clone(), Store::new(faulty))
+}
+
+fn namespace_names(state: &operon_meta::MetaState) -> Vec<String> {
+    state.namespaces().map(|n| n.name.clone()).collect()
 }
 
 fn chunk(stream: StreamId, records: u32) -> WalChunk {
@@ -292,4 +302,68 @@ async fn snapshots_are_taken_automatically_every_n_entries() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(found, "no snapshot written after 25 entries");
+}
+
+#[tokio::test]
+async fn a_node_keeps_serving_through_failed_snapshot_uploads() {
+    let dir = TempDir::new().unwrap();
+    let (faulty, store) = faulty_store();
+    let node = start(config(&dir, &store)).await;
+    node.create_namespace("acme").await.unwrap();
+
+    // openraft stops the node for good on a snapshot error; the state machine
+    // must ride out a store that fails for a while.
+    for _ in 0..3 {
+        faulty.inject(Op::Put, Fault::Error);
+    }
+    let snapshot = tokio::spawn({
+        let node = node.clone();
+        async move { node.snapshot().await }
+    });
+    while faulty.calls(Op::Put) == 0 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    // Writes and reads go on while the upload is being retried.
+    node.create_namespace("globex").await.unwrap();
+    snapshot.await.unwrap().unwrap();
+    assert_eq!(faulty.calls(Op::Put), 4);
+    assert_eq!(store.list("meta/snapshots/1/").await.unwrap().len(), 1);
+
+    node.create_namespace("initech").await.unwrap();
+    node.snapshot().await.unwrap();
+    let names = node
+        .read(Consistency::Linearizable, namespace_names)
+        .await
+        .unwrap();
+    assert_eq!(names, ["acme", "globex", "initech"]);
+}
+
+#[tokio::test]
+async fn shutdown_cuts_short_a_snapshot_upload_being_retried() {
+    let dir = TempDir::new().unwrap();
+    let (faulty, store) = faulty_store();
+    let mut cfg = config(&dir, &store);
+    cfg.request_timeout = Duration::from_secs(2);
+    let node = start(cfg.clone()).await;
+    node.create_namespace("acme").await.unwrap();
+
+    for _ in 0..10_000 {
+        faulty.inject(Op::Put, Fault::Error);
+    }
+    let snapshot = tokio::spawn({
+        let node = node.clone();
+        async move { node.snapshot().await }
+    });
+    while faulty.calls(Op::Put) == 0 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    node.shutdown().await.unwrap();
+    assert!(snapshot.await.unwrap().is_err());
+
+    let node = start(cfg).await;
+    let names = node
+        .read(Consistency::Linearizable, namespace_names)
+        .await
+        .unwrap();
+    assert_eq!(names, ["acme"]);
 }

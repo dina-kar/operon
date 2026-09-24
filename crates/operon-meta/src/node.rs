@@ -21,7 +21,7 @@ use crate::log_store::LogStore;
 use crate::network::{MetaRaft, NetworkFactory, Router};
 use crate::raft::NodeId;
 use crate::state::MetaState;
-use crate::state_machine::{StateMachineStore, StateReader};
+use crate::state_machine::{SnapshotIoCloser, StateMachineStore, StateReader};
 use crate::types::{Fence, LeaseGrant, WalChunk, WalClass};
 
 /// How to start a meta node.
@@ -88,6 +88,8 @@ struct Inner {
     state: StateReader,
     /// Lets `shutdown` wait until Raft's tasks have closed the local database.
     db: Weak<Database>,
+    /// Lets `shutdown` cut short snapshot uploads that are being retried.
+    snapshot_io: SnapshotIoCloser,
     router: Router,
     clock: Arc<dyn Clock>,
     request_timeout: Duration,
@@ -139,6 +141,7 @@ impl MetaNode {
         )
         .await?;
         let state = sm.reader();
+        let snapshot_io = sm.closer();
         let network = NetworkFactory::new(router.clone(), config.node_id);
         let raft = Raft::new(
             config.node_id,
@@ -160,6 +163,7 @@ impl MetaNode {
                 raft,
                 state,
                 db: db_handle,
+                snapshot_io,
                 router: router.clone(),
                 clock: config.clock,
                 request_timeout: config.request_timeout,
@@ -411,6 +415,9 @@ impl MetaNode {
     /// closed. The data stays on disk, so [`MetaNode::start`] with the same
     /// config resumes the node.
     pub async fn shutdown(&self) -> Result<(), MetaError> {
+        // First, so a snapshot upload being retried cannot hold up Raft's
+        // shutdown or keep the local database open.
+        self.inner.snapshot_io.close();
         self.inner.router.unregister(self.inner.id);
         self.inner.raft.shutdown().await.map_err(unavailable)?;
         // openraft's state machine and snapshot tasks may still hold storage

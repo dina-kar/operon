@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
+use std::sync::Arc;
 
 use futures::stream;
 use openraft::entry::RaftEntry;
@@ -9,7 +10,7 @@ use openraft::type_config::alias::{EntryOf, LogIdOf};
 use openraft::{BasicNode, LogId, Membership};
 use operon_common::NamespaceId;
 use operon_meta::{Command, LocalDb, SnapshotData, StateMachineStore, TypeConfig, WalClass};
-use operon_store::Store;
+use operon_store::{Fault, FaultyStore, Op, Store};
 use tempfile::TempDir;
 
 const PREFIX: &str = "meta/snapshots";
@@ -279,4 +280,153 @@ async fn opening_fails_if_the_current_snapshot_is_missing() {
             .await
             .is_err()
     );
+}
+
+/// A store that fails the operations queued on the returned `FaultyStore`.
+fn faulty_store() -> (Arc<FaultyStore>, Store) {
+    let faulty = Arc::new(FaultyStore::new(Store::in_memory().inner().clone()));
+    (faulty.clone(), Store::new(faulty))
+}
+
+#[tokio::test]
+async fn failed_snapshot_uploads_are_retried() {
+    let dir = TempDir::new().unwrap();
+    let (faulty, store) = faulty_store();
+    let mut sm = open(1, &dir, &store).await;
+    apply(
+        &mut sm,
+        vec![membership_entry(0), create_namespace(1, "acme")],
+    )
+    .await;
+
+    // openraft stops the node on a snapshot error, so transient store
+    // failures must not surface.
+    for _ in 0..3 {
+        faulty.inject(Op::Put, Fault::Error);
+    }
+    let snapshot = sm.build_snapshot().await.unwrap();
+    assert_eq!(snapshot.meta.last_log_id, Some(log_id(1, 1)));
+    assert_eq!(faulty.calls(Op::Put), 4);
+    assert_eq!(snapshot_paths(&store, 1).await.len(), 1);
+
+    // A lost acknowledgement is retried the same way; the rewrite is harmless.
+    apply(&mut sm, vec![create_namespace(2, "globex")]).await;
+    faulty.inject(Op::Put, Fault::ErrorAfterApply);
+    sm.build_snapshot().await.unwrap();
+    assert_eq!(faulty.calls(Op::Put), 6);
+    drop(sm);
+    assert_eq!(
+        namespace_names(&open(1, &dir, &store).await),
+        ["acme", "globex"]
+    );
+}
+
+#[tokio::test]
+async fn the_current_snapshot_is_served_from_memory() {
+    let dir = TempDir::new().unwrap();
+    let (faulty, store) = faulty_store();
+    let mut sm = open(1, &dir, &store).await;
+    apply(
+        &mut sm,
+        vec![membership_entry(0), create_namespace(1, "acme")],
+    )
+    .await;
+    sm.build_snapshot().await.unwrap();
+    apply(&mut sm, vec![create_namespace(2, "globex")]).await;
+    let built = sm.build_snapshot().await.unwrap();
+    drop(sm);
+    let mut sm = open(1, &dir, &store).await;
+    let gets = faulty.calls(Op::Get);
+
+    // A build that replaces the snapshot deletes its object, possibly while a
+    // follower's request for it is being served. Serving from memory means
+    // the object's absence (or a failing store) cannot fail the request.
+    for path in snapshot_paths(&store, 1).await {
+        store.delete(&path).await.unwrap();
+    }
+    faulty.inject(Op::Get, Fault::Error);
+    let current = sm.get_current_snapshot().await.unwrap().unwrap();
+    assert_eq!(current.meta, built.meta);
+    assert_eq!(current.snapshot.into_inner(), built.snapshot.into_inner());
+    assert_eq!(faulty.calls(Op::Get), gets);
+}
+
+#[tokio::test]
+async fn installing_a_snapshot_older_than_the_current_one_fails_and_changes_nothing() {
+    let store = Store::in_memory();
+    let (dir1, dir2) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let mut leader = open(1, &dir1, &store).await;
+    apply(
+        &mut leader,
+        vec![membership_entry(0), create_namespace(1, "acme")],
+    )
+    .await;
+    let older = leader.build_snapshot().await.unwrap();
+    apply(&mut leader, vec![create_namespace(2, "globex")]).await;
+    let newer = leader.build_snapshot().await.unwrap();
+
+    let mut follower = open(2, &dir2, &store).await;
+    follower
+        .install_snapshot(&newer.meta, newer.snapshot)
+        .await
+        .unwrap();
+    let paths = snapshot_paths(&store, 2).await;
+    let err = follower
+        .install_snapshot(&older.meta, older.snapshot)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{err}");
+
+    assert_eq!(namespace_names(&follower), ["acme", "globex"]);
+    assert_eq!(
+        follower.applied_state().await.unwrap().0,
+        Some(log_id(1, 2))
+    );
+    assert_eq!(snapshot_paths(&store, 2).await, paths);
+    let current = follower.get_current_snapshot().await.unwrap().unwrap();
+    assert_eq!(current.meta, newer.meta);
+    drop(follower);
+    assert_eq!(
+        namespace_names(&open(2, &dir2, &store).await),
+        ["acme", "globex"]
+    );
+}
+
+#[tokio::test]
+async fn opening_fails_if_the_current_snapshot_is_not_the_one_the_pointer_names() {
+    let store = Store::in_memory();
+    let (dir1, dir2) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let mut sm = open(1, &dir1, &store).await;
+    apply(
+        &mut sm,
+        vec![membership_entry(0), create_namespace(1, "acme")],
+    )
+    .await;
+    sm.build_snapshot().await.unwrap();
+    drop(sm);
+
+    // A valid, checksummed snapshot of another log position at the pointer's
+    // path, as a second cluster sharing the bucket could write.
+    let mut other = open(2, &dir2, &Store::in_memory()).await;
+    apply(
+        &mut other,
+        vec![
+            membership_entry(0),
+            create_namespace(1, "other"),
+            create_namespace(2, "cluster"),
+        ],
+    )
+    .await;
+    let foreign = other.build_snapshot().await.unwrap();
+    let path = snapshot_paths(&store, 1).await.remove(0);
+    store
+        .put(&path, foreign.snapshot.into_inner().into())
+        .await
+        .unwrap();
+
+    let db = LocalDb::open(dir1.path()).unwrap();
+    let err = StateMachineStore::open(1, store.clone(), PREFIX, db)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
 }
