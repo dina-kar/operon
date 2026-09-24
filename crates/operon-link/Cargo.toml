@@ -1,0 +1,44 @@
+[package]
+name = "operon-link"
+description = "Operon's link framework: exactly-once apply of streams into targets, and the CounterTable test target."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+crc32c.workspace = true
+fail = { workspace = true, optional = true }
+futures.workspace = true
+operon-common.workspace = true
+operon-log.workspace = true
+operon-meta.workspace = true
+operon-store.workspace = true
+operon-worker.workspace = true
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+ulid.workspace = true
+
+[features]
+# Test hooks (pausing a commit at a step). Not part of the stable API.
+test-util = []
+# Named failpoints for the crash gate (M0.4 Task 5). Off by default: without
+# it the failpoints compile to nothing.
+failpoints = ["dep:fail", "fail/failpoints", "operon-log/failpoints", "operon-meta/failpoints"]
+
+[dev-dependencies]
+operon-cache.workspace = true
+operon-link = { path = ".", features = ["test-util"] }
+operon-meta = { workspace = true, features = ["test-util"] }
+operon-worker = { workspace = true, features = ["test-util"] }
+proptest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

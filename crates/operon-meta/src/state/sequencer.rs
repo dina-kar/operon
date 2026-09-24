@@ -45,17 +45,14 @@ impl MetaState {
                 })?;
             let base_offset = partition.next_offset;
             partition.next_offset += u64::from(chunk.records);
-            partition.index.insert(
+            partition.insert_entry(IndexEntry {
+                kind: EntryKind::Wal,
                 base_offset,
-                IndexEntry {
-                    kind: EntryKind::Wal,
-                    base_offset,
-                    records: chunk.records,
-                    object: object.clone(),
-                    byte_range: chunk.byte_range,
-                    max_timestamp_ms: chunk.max_timestamp_ms,
-                },
-            );
+                records: chunk.records,
+                object: object.clone(),
+                byte_range: chunk.byte_range,
+                max_timestamp_ms: chunk.max_timestamp_ms,
+            });
             base_offsets.push(base_offset);
         }
         self.wal_live_chunks.insert(object.clone(), live_chunks);

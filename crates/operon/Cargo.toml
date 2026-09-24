@@ -16,11 +16,14 @@ axum.workspace = true
 base64.workspace = true
 bytes.workspace = true
 clap.workspace = true
+fail = { workspace = true, optional = true }
 operon-cache.workspace = true
 operon-common.workspace = true
+operon-link.workspace = true
 operon-log.workspace = true
 operon-meta.workspace = true
 operon-store.workspace = true
+operon-worker.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -30,7 +33,20 @@ tracing-subscriber.workspace = true
 ulid.workspace = true
 url.workspace = true
 
+[features]
+# Named failpoints for the crash gate (M0.4 Task 5): with it, the binary
+# reads OPERON_FAILPOINTS and OPERON_FAILPOINT_HIT. Off by default, so release
+# builds contain no failpoints.
+failpoints = [
+    "dep:fail",
+    "fail/failpoints",
+    "operon-link/failpoints",
+    "operon-log/failpoints",
+    "operon-meta/failpoints",
+]
+
 [dev-dependencies]
+object_store.workspace = true
 reqwest.workspace = true
 tempfile.workspace = true
 

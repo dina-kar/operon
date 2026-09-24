@@ -155,6 +155,9 @@ struct Inner {
     /// The snapshot the local pointer names. Written only with `snapshot_lock` held.
     current: std::sync::Mutex<Option<CurrentSnapshot>>,
     closed: Arc<watch::Sender<bool>>,
+    /// Total time a snapshot upload or download may take, in ms (default
+    /// [`STORE_RETRY_BUDGET`]).
+    io_budget_ms: std::sync::atomic::AtomicU64,
 }
 
 /// Whether a store error may clear up on its own: only backend errors (network,
@@ -199,13 +202,16 @@ impl StateMachineStore {
                 snapshot_lock: Mutex::new(()),
                 current: std::sync::Mutex::new(None),
                 closed: Arc::new(watch::Sender::new(false)),
+                io_budget_ms: std::sync::atomic::AtomicU64::new(
+                    u64::try_from(STORE_RETRY_BUDGET.as_millis()).unwrap_or(u64::MAX),
+                ),
             }),
         };
         if let Some(raw) = sm.inner.db.get_meta(SNAPSHOT_POINTER_KEY).await? {
             let pointer: SnapshotPointer = codec::decode(&raw)?;
             let store = &sm.inner.store;
             let (data, _) = sm
-                .retry(STORE_RETRY_BUDGET, "read snapshot", &pointer.path, || {
+                .retry(sm.io_budget(), "read snapshot", &pointer.path, || {
                     store.get(&pointer.path)
                 })
                 .await?;
@@ -249,6 +255,24 @@ impl StateMachineStore {
         }
     }
 
+    /// Sets the total time a snapshot upload or download may take, retries
+    /// included (default 60 s). When it runs out the operation fails, and
+    /// openraft stops the node, rather than wait on the store forever.
+    pub fn set_io_budget(&self, budget: Duration) {
+        self.inner.io_budget_ms.store(
+            u64::try_from(budget.as_millis()).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+
+    fn io_budget(&self) -> Duration {
+        Duration::from_millis(
+            self.inner
+                .io_budget_ms
+                .load(std::sync::atomic::Ordering::SeqCst),
+        )
+    }
+
     fn current(&self) -> Option<CurrentSnapshot> {
         let current = self
             .inner
@@ -267,8 +291,10 @@ impl StateMachineStore {
     }
 
     /// Runs the object-store operation `op`, retrying transient failures with
-    /// exponential backoff for up to `budget`. Fails at once if the state
-    /// machine is closed (the node is shutting down).
+    /// exponential backoff, for at most `budget` in total: each attempt is cut
+    /// off at the deadline too (M0.2 re-review N2), so a store that hangs
+    /// cannot stretch it. Fails at once if the state machine is closed (the
+    /// node is shutting down).
     async fn retry<T, F, Fut>(
         &self,
         budget: Duration,
@@ -289,9 +315,19 @@ impl StateMachineStore {
                 format!("{what} {path}: the node is shutting down"),
             )
         };
+        let timed_out = || {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("{what} {path}: gave up after {budget:?}"),
+            )
+        };
         loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
             let result = tokio::select! {
-                result = op() => result,
+                result = tokio::time::timeout(remaining, op()) => match result {
+                    Ok(result) => result,
+                    Err(_) => return Err(timed_out()),
+                },
                 _ = closed.wait_for(|closed| *closed) => return Err(closed_err()),
             };
             let err = match result {
@@ -340,10 +376,11 @@ impl StateMachineStore {
         let path = self.snapshot_path(meta.last_log_id.as_ref());
         let store = &self.inner.store;
         let data = Bytes::from_owner(bytes.clone());
-        self.retry(STORE_RETRY_BUDGET, "write snapshot", &path, || {
+        self.retry(self.io_budget(), "write snapshot", &path, || {
             store.put(&path, data.clone())
         })
         .await?;
+        crate::failpoint!("meta.snapshot.after_put");
         let pointer = SnapshotPointer {
             path: path.clone(),
             last_log_id: meta.last_log_id,
@@ -352,6 +389,7 @@ impl StateMachineStore {
             .db
             .put_meta(SNAPSHOT_POINTER_KEY, codec::encode(&pointer)?)
             .await?;
+        crate::failpoint!("meta.snapshot.after_pointer");
         self.set_current(Some(CurrentSnapshot {
             path: path.clone(),
             meta: meta.clone(),

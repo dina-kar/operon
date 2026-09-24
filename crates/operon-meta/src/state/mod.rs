@@ -1,5 +1,7 @@
 mod catalog;
+mod invariants;
 mod leases;
+mod links;
 mod pointers;
 mod retention;
 mod segments;
@@ -11,7 +13,9 @@ use operon_common::{NamespaceId, StreamId};
 use serde::{Deserialize, Serialize};
 
 use crate::command::{ApplyError, Command, Reply};
-use crate::types::{Lease, Namespace, PartitionState, Pointer, Stream, WalCommitRecord};
+use crate::types::{
+    Lease, Link, LinkId, Namespace, PartitionState, Pointer, Stream, WalCommitRecord,
+};
 
 /// Longest namespace or stream name, in bytes.
 pub const MAX_NAME_LEN: usize = 255;
@@ -54,6 +58,9 @@ pub struct MetaState {
     retired: BTreeMap<String, u64>,
     leases: BTreeMap<String, Lease>,
     pointers: BTreeMap<(NamespaceId, String), Pointer>,
+    last_link_id: u64,
+    links: BTreeMap<LinkId, Link>,
+    link_names: BTreeMap<(NamespaceId, String), LinkId>,
 }
 
 impl MetaState {
@@ -68,6 +75,13 @@ impl MetaState {
                 class,
                 retention,
             } => self.create_stream(namespace, name, partitions, class, retention),
+            Command::CreateLink {
+                namespace,
+                name,
+                source,
+                target,
+                options,
+            } => self.create_link(namespace, name, source, target, options),
             Command::CommitWal {
                 object,
                 created_at_ms,
@@ -83,6 +97,7 @@ impl MetaState {
                 max_timestamp_ms,
                 fence,
                 now_ms,
+                fresh,
             } => self.swap_segment(
                 stream,
                 partition,
@@ -92,15 +107,17 @@ impl MetaState {
                 max_timestamp_ms,
                 fence,
                 now_ms,
+                fresh,
             ),
             Command::TrimPartition {
                 stream,
                 partition,
                 before_offset,
+                fence,
                 now_ms,
-            } => self.trim_partition(stream, partition, before_offset, now_ms),
-            Command::PruneWalCommits { now_ms } => self.prune_wal_commits(now_ms),
-            Command::ForgetObjects { objects } => self.forget_objects(objects),
+            } => self.trim_partition(stream, partition, before_offset, fence, now_ms),
+            Command::PruneWalCommits { fence, now_ms } => self.prune_wal_commits(fence, now_ms),
+            Command::ForgetObjects { objects, fence } => self.forget_objects(objects, fence),
             Command::AcquireLease {
                 key,
                 owner,
@@ -114,6 +131,13 @@ impl MetaState {
                 ttl_ms,
                 now_ms,
             } => self.renew_lease(key, owner, epoch, ttl_ms, now_ms),
+            Command::ReacquireLease {
+                key,
+                owner,
+                epoch,
+                ttl_ms,
+                now_ms,
+            } => self.reacquire_lease(key, owner, epoch, ttl_ms, now_ms),
             Command::ReleaseLease { key, owner, epoch } => self.release_lease(key, owner, epoch),
             Command::CasPointer {
                 namespace,
@@ -121,7 +145,8 @@ impl MetaState {
                 expected,
                 value,
                 fence,
-            } => self.cas_pointer(namespace, key, expected, value, fence),
+                fresh,
+            } => self.cas_pointer(namespace, key, expected, value, fence, fresh),
         }
     }
 

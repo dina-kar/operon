@@ -21,7 +21,7 @@ Build order follows the pain point: **search + vector first (ES + Qdrant), then 
 
 ## 2. Testing strategy
 
-1. **Deterministic simulation testing (DST)** for meta, sequencer, journals, link apply and manifest commits — simulated network, clock, disk and object store (evaluate `madsim` vs `turmoil`; Iggy and FoundationDB/TigerBeetle as practice references). Every merged PR runs a DST seed sweep.
+1. **Deterministic simulation testing (DST)** for meta, sequencer, journals, link apply and manifest commits — simulated network, clock, disk and object store (evaluate `madsim` vs `turmoil`; Iggy and FoundationDB/TigerBeetle as practice references). Every merged PR runs a DST seed sweep. *As built in M0 (D28):* a **seeded in-process simulation** (`operon-sim`), not a bit-exact deterministic one: seeded workloads, network partitions (`Router`), worker crashes and object-store faults (`FaultyStore::random`) on a single-threaded runtime, with real time and real I/O underneath, and a Wing–Gong–Lowe linearizability check of the recorded histories. A failing seed reports its full schedule but may not replay exactly; a full DST port stays an option.
 2. **Object-store fault injection:** an `object_store` wrapper injecting latency, 5xx, throttling (503 SlowDown), 412/409 on conditional writes, partial reads, and crashes between PUT and commit.
 3. **Crash-consistency tests:** kill -9 at instrumented failpoints (`fail` crate) across write, segment, commit, compaction and GC paths.
 4. **Property-based tests (`proptest`):** WAL/segment encode/decode, offset index, manifest evolution, deletion bitmap algebra, CSR build vs. naive adjacency, tail merge vs. full rebuild.

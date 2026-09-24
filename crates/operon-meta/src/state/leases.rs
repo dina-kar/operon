@@ -77,6 +77,31 @@ impl MetaState {
         Ok(Reply::Lease(grant))
     }
 
+    pub(super) fn reacquire_lease(
+        &mut self,
+        key: String,
+        owner: String,
+        epoch: u64,
+        ttl_ms: u64,
+        now_ms: u64,
+    ) -> Result<Reply, ApplyError> {
+        validate_lease_args(&key, &owner, ttl_ms)?;
+        let now = self.clock_ms.max(now_ms);
+        let Some(lease) = self.leases.get_mut(&key) else {
+            return Err(ApplyError::LeaseLost { key });
+        };
+        if lease.epoch != epoch || lease.owner.as_deref() != Some(owner.as_str()) {
+            return Err(ApplyError::LeaseLost { key });
+        }
+        lease.deadline_ms = now.saturating_add(ttl_ms);
+        let grant = LeaseGrant {
+            epoch,
+            deadline_ms: lease.deadline_ms,
+        };
+        self.clock_ms = now;
+        Ok(Reply::Lease(grant))
+    }
+
     pub(super) fn release_lease(
         &mut self,
         key: String,

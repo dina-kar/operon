@@ -307,14 +307,18 @@ async fn failed_snapshot_uploads_are_retried() {
     }
     let snapshot = sm.build_snapshot().await.unwrap();
     assert_eq!(snapshot.meta.last_log_id, Some(log_id(1, 1)));
-    assert_eq!(faulty.calls(Op::Put), 4);
+    // At least the three failures and the success (M0.2 re-review N3: the
+    // exact count is not the point; the outcome is).
+    assert!(faulty.calls(Op::Put) >= 4);
     assert_eq!(snapshot_paths(&store, 1).await.len(), 1);
 
     // A lost acknowledgement is retried the same way; the rewrite is harmless.
     apply(&mut sm, vec![create_namespace(2, "globex")]).await;
     faulty.inject(Op::Put, Fault::ErrorAfterApply);
-    sm.build_snapshot().await.unwrap();
-    assert_eq!(faulty.calls(Op::Put), 6);
+    let snapshot = sm.build_snapshot().await.unwrap();
+    assert_eq!(snapshot.meta.last_log_id, Some(log_id(1, 2)));
+    assert!(faulty.calls(Op::Put) >= 6);
+    assert_eq!(snapshot_paths(&store, 1).await.len(), 1);
     drop(sm);
     assert_eq!(
         namespace_names(&open(1, &dir, &store).await),
@@ -430,4 +434,26 @@ async fn opening_fails_if_the_current_snapshot_is_not_the_one_the_pointer_names(
         .await
         .unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+}
+
+/// M0.2 re-review N2: the retry budget bounds the whole upload, not just the
+/// sleeps between attempts, so a store that hangs cannot stall a snapshot
+/// (and, through it, the node) for longer than the budget.
+#[tokio::test]
+async fn a_hanging_snapshot_upload_gives_up_at_the_budget() {
+    let dir = TempDir::new().unwrap();
+    let (faulty, store) = faulty_store();
+    let mut sm = open(1, &dir, &store).await;
+    sm.set_io_budget(std::time::Duration::from_millis(300));
+    apply(
+        &mut sm,
+        vec![membership_entry(0), create_namespace(1, "acme")],
+    )
+    .await;
+    faulty.inject(Op::Put, Fault::Delay(std::time::Duration::from_secs(5)));
+    let started = std::time::Instant::now();
+    let err = sm.build_snapshot().await.unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::TimedOut, "{err}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    assert!(snapshot_paths(&store, 1).await.is_empty());
 }

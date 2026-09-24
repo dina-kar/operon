@@ -220,7 +220,7 @@ async fn a_rejected_commit_fails_its_appends_with_the_rejection() {
     let clock = Arc::new(ManualClock::new(10 * WAL_COMMIT_WINDOW_MS));
     let meta = Meta::start_with(clock.clone(), MetaClientConfig::default()).await;
     let (_, stream) = meta.stream("acme", "events", 1).await;
-    meta.client.prune_wal_commits().await.unwrap();
+    meta.client.prune_wal_commits(None).await.unwrap();
     clock.set(10 * WAL_COMMIT_WINDOW_MS - 2 * WAL_COMMIT_WINDOW_MS);
     let writer = LogWriter::start(meta.client.clone(), Store::in_memory(), fast_config())
         .expect("start writer");
@@ -425,7 +425,7 @@ async fn a_stale_rejection_of_a_retried_commit_is_commit_unknown() {
     })
     .await;
     clock.advance(Duration::from_millis(2 * WAL_COMMIT_WINDOW_MS + 10));
-    assert_eq!(pruner.prune_wal_commits().await.unwrap(), 1);
+    assert_eq!(pruner.prune_wal_commits(None).await.unwrap(), 1);
 
     let err = append.await.unwrap().unwrap_err();
     assert!(matches!(err, LogError::CommitUnknown(_)), "{err:?}");

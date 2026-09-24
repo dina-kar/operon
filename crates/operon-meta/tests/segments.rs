@@ -3,8 +3,8 @@
 
 use operon_common::{NamespaceId, StreamId};
 use operon_meta::{
-    ApplyError, Command, EntryKind, Fence, MetaState, Reply, Retention, WAL_COMMIT_WINDOW_MS,
-    WalChunk, WalClass,
+    ApplyError, Command, EntryKind, Fence, Freshness, MetaState, Reply, Retention,
+    WAL_COMMIT_WINDOW_MS, WalChunk, WalClass,
 };
 use proptest::prelude::*;
 
@@ -77,14 +77,22 @@ fn swap(
         max_timestamp_ms: 2_000,
         fence,
         now_ms,
+        fresh: FRESH,
     }
 }
+
+/// Never stale in these tests (the segment was just written).
+const FRESH: Freshness = Freshness {
+    created_at_ms: 0,
+    max_age_ms: u64::MAX,
+};
 
 fn trim(partition: u32, before_offset: u64, now_ms: u64) -> Command {
     Command::TrimPartition {
         stream: S,
         partition,
         before_offset,
+        fence: None,
         now_ms,
     }
 }
@@ -92,7 +100,10 @@ fn trim(partition: u32, before_offset: u64, now_ms: u64) -> Command {
 /// Advances the metastore clock to `now_ms` with a command that only moves time.
 fn set_clock(state: &mut MetaState, now_ms: u64) {
     state
-        .apply(Command::PruneWalCommits { now_ms })
+        .apply(Command::PruneWalCommits {
+            fence: None,
+            now_ms,
+        })
         .expect("prune");
 }
 
@@ -187,6 +198,7 @@ fn a_retried_commit_is_deduplicated_until_pruned_and_then_rejected() {
     set_clock(&mut state, t0 + 2 * WAL_COMMIT_WINDOW_MS);
     assert_eq!(
         state.apply(Command::PruneWalCommits {
+            fence: None,
             now_ms: t0 + 2 * WAL_COMMIT_WINDOW_MS
         }),
         Ok(Reply::Pruned { removed: 0 })
@@ -200,6 +212,7 @@ fn a_retried_commit_is_deduplicated_until_pruned_and_then_rejected() {
     // never committed again as new offsets.
     assert_eq!(
         state.apply(Command::PruneWalCommits {
+            fence: None,
             now_ms: t0 + 2 * WAL_COMMIT_WINDOW_MS + 1
         }),
         Ok(Reply::Pruned { removed: 1 })
@@ -259,6 +272,42 @@ fn a_retried_swap_succeeds_and_changes_nothing() {
     }
     assert_eq!(state.apply(retry), Ok(Reply::SegmentSwapped));
     assert_eq!(state, before);
+}
+
+/// M0.4 review I1: a swap of a segment older than its freshness bound, by
+/// the metastore clock or its own stamp, is refused and changes nothing
+/// (not even the clock); within the bound it applies.
+#[test]
+fn a_swap_past_its_freshness_is_refused_and_changes_nothing() {
+    let mut state = three_wal_entries();
+    set_clock(&mut state, 10_000);
+    let before = state.clone();
+    let fresh = Freshness {
+        created_at_ms: 5_000,
+        max_age_ms: 4_999,
+    };
+    for now_ms in [9_000, 12_000] {
+        let mut command = swap(0, &[(0, "w1")], "seg-a", None, now_ms);
+        if let Command::SwapSegment { fresh: f, .. } = &mut command {
+            *f = fresh;
+        }
+        assert!(
+            matches!(
+                state.apply(command),
+                Err(ApplyError::StaleObject { clock_ms, .. }) if clock_ms == now_ms.max(10_000)
+            ),
+            "now {now_ms}"
+        );
+        assert_eq!(state, before);
+    }
+    let mut command = swap(0, &[(0, "w1")], "seg-a", None, 9_000);
+    if let Command::SwapSegment { fresh: f, .. } = &mut command {
+        *f = Freshness {
+            max_age_ms: 5_000,
+            ..fresh
+        };
+    }
+    assert_eq!(state.apply(command), Ok(Reply::SegmentSwapped));
 }
 
 #[test]
@@ -497,6 +546,7 @@ fn forgetting_removes_retired_objects_and_ignores_unknown_ones() {
     state.apply(trim(0, 5, 3_000)).unwrap();
     let forget = Command::ForgetObjects {
         objects: vec!["w1".to_string(), "unknown".to_string()],
+        fence: None,
     };
     assert_eq!(
         state.apply(forget.clone()),
@@ -552,6 +602,7 @@ fn rejected_commands_leave_the_state_and_clock_unchanged() {
             stream: StreamId(9),
             partition: 0,
             before_offset: 1,
+            fence: None,
             now_ms: 99_000,
         },
         trim(7, 1, 99_000),
@@ -682,6 +733,7 @@ proptest! {
                         max_timestamp_ms: 0,
                         fence: None,
                         now_ms: now,
+                        fresh: FRESH,
                     };
                     // Runs of WAL entries split by a segment are not contiguous:
                     // those swaps must fail as mismatches and change nothing.
@@ -737,6 +789,84 @@ proptest! {
                 .map(|o| u64::from(state.wal_live_chunks(o).unwrap_or(0)))
                 .sum();
             prop_assert_eq!(live, wal_entries);
+            // The same, plus the incremental byte counts (M0.3 re-review M13)
+            // and retired objects never referenced, as the crash gate and the
+            // simulation check them.
+            let violations = state.check_invariants();
+            prop_assert!(violations.is_empty(), "{:?}", violations);
+            for p in 0..2 {
+                let partition = state.partition(S, p).unwrap();
+                let bytes: u64 = partition
+                    .entries()
+                    .map(|e| e.byte_range.end - e.byte_range.start)
+                    .sum();
+                prop_assert_eq!(partition.bytes(), bytes);
+            }
         }
     }
+}
+
+/// M0.4: trims, WAL-commit pruning and forgetting objects can be fenced by a
+/// worker task's lease; a stale epoch changes nothing, not even the clock.
+#[test]
+fn fenced_trims_prunes_and_forgets_need_the_lease_at_its_epoch() {
+    let mut state = three_wal_entries();
+    let acquire = |owner: &str, now_ms: u64| Command::AcquireLease {
+        key: "task/retention".to_string(),
+        owner: owner.to_string(),
+        ttl_ms: 1_000,
+        now_ms,
+    };
+    state.apply(acquire("a", 100)).unwrap();
+    state.apply(acquire("b", 5_000)).unwrap();
+    let fence = |epoch| {
+        Some(Fence {
+            lease: "task/retention".to_string(),
+            epoch,
+        })
+    };
+    let fenced = Err(ApplyError::Fenced {
+        lease: "task/retention".to_string(),
+    });
+    let before = state.clone();
+    let stale = [
+        Command::TrimPartition {
+            stream: S,
+            partition: 0,
+            before_offset: 5,
+            fence: fence(1),
+            now_ms: 9_000,
+        },
+        Command::PruneWalCommits {
+            fence: fence(1),
+            now_ms: 9_000,
+        },
+        Command::ForgetObjects {
+            objects: vec!["w1".to_string()],
+            fence: fence(1),
+        },
+    ];
+    for command in stale {
+        assert_eq!(state.apply(command.clone()), fenced, "{command:?}");
+        assert_eq!(state, before, "{command:?}");
+    }
+    assert_eq!(
+        state.apply(Command::TrimPartition {
+            stream: S,
+            partition: 0,
+            before_offset: 5,
+            fence: fence(2),
+            now_ms: 9_000,
+        }),
+        Ok(Reply::Trimmed {
+            log_start_offset: 5
+        })
+    );
+    assert_eq!(
+        state.apply(Command::PruneWalCommits {
+            fence: fence(2),
+            now_ms: 9_000,
+        }),
+        Ok(Reply::Pruned { removed: 0 })
+    );
 }

@@ -15,7 +15,9 @@ use crate::error::MetaError;
 use crate::node::{Consistency, MetaNode};
 use crate::raft::NodeId;
 use crate::state::MetaState;
-use crate::types::{Fence, LeaseGrant, Retention, WalChunk, WalClass};
+use crate::types::{
+    Fence, Freshness, LeaseGrant, LinkId, Retention, TargetRef, WalChunk, WalClass,
+};
 
 /// The longest wait between two attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(1);
@@ -315,6 +317,30 @@ impl MetaClient {
         }
     }
 
+    /// Declares a link from `source` into `target` ([`Command::CreateLink`]).
+    /// A retry after a lost acknowledgement reports
+    /// [`ApplyError::LinkExists`](crate::ApplyError::LinkExists) with the id.
+    pub async fn create_link(
+        &self,
+        namespace: NamespaceId,
+        name: &str,
+        source: StreamId,
+        target: TargetRef,
+        options: std::collections::BTreeMap<String, String>,
+    ) -> Result<LinkId, MetaError> {
+        let command = Command::CreateLink {
+            namespace,
+            name: name.to_string(),
+            source,
+            target,
+            options,
+        };
+        match self.write(command).await? {
+            Reply::LinkCreated(id) => Ok(id),
+            other => Err(MetaError::UnexpectedReply(other)),
+        }
+    }
+
     /// Commits a durable WAL object created at `created_at_ms` (its ULID
     /// time); returns each chunk's base offset.
     pub async fn commit_wal(
@@ -346,6 +372,7 @@ impl MetaClient {
         byte_range: Range<u64>,
         max_timestamp_ms: i64,
         fence: Option<Fence>,
+        fresh: Freshness,
     ) -> Result<(), MetaError> {
         let command = Command::SwapSegment {
             stream,
@@ -356,6 +383,7 @@ impl MetaClient {
             max_timestamp_ms,
             fence,
             now_ms: self.now_ms(),
+            fresh,
         };
         match self.write(command).await? {
             Reply::SegmentSwapped => Ok(()),
@@ -363,17 +391,20 @@ impl MetaClient {
         }
     }
 
-    /// Trims a partition below `before_offset`; returns the new log start.
+    /// Trims a partition below `before_offset`, fenced by `fence` if given;
+    /// returns the new log start.
     pub async fn trim_partition(
         &self,
         stream: StreamId,
         partition: u32,
         before_offset: u64,
+        fence: Option<Fence>,
     ) -> Result<u64, MetaError> {
         let command = Command::TrimPartition {
             stream,
             partition,
             before_offset,
+            fence,
             now_ms: self.now_ms(),
         };
         match self.write(command).await? {
@@ -396,9 +427,11 @@ impl MetaClient {
         }
     }
 
-    /// Prunes old WAL commit records; returns how many were removed.
-    pub async fn prune_wal_commits(&self) -> Result<u32, MetaError> {
+    /// Prunes old WAL commit records, fenced by `fence` if given; returns how
+    /// many were removed.
+    pub async fn prune_wal_commits(&self, fence: Option<Fence>) -> Result<u32, MetaError> {
         let command = Command::PruneWalCommits {
+            fence,
             now_ms: self.now_ms(),
         };
         match self.write(command).await? {
@@ -407,9 +440,17 @@ impl MetaClient {
         }
     }
 
-    /// Removes collected objects from the retired set; returns how many were there.
-    pub async fn forget_objects(&self, objects: Vec<String>) -> Result<u32, MetaError> {
-        match self.write(Command::ForgetObjects { objects }).await? {
+    /// Removes collected objects from the retired set, fenced by `fence` if
+    /// given; returns how many were there.
+    pub async fn forget_objects(
+        &self,
+        objects: Vec<String>,
+        fence: Option<Fence>,
+    ) -> Result<u32, MetaError> {
+        match self
+            .write(Command::ForgetObjects { objects, fence })
+            .await?
+        {
             Reply::Forgotten { removed } => Ok(removed),
             other => Err(MetaError::UnexpectedReply(other)),
         }
@@ -453,6 +494,28 @@ impl MetaClient {
         }
     }
 
+    /// Extends a lease `owner` still holds at `epoch`, even if it expired,
+    /// as long as nobody else took it ([`Command::ReacquireLease`]).
+    pub async fn reacquire_lease(
+        &self,
+        key: &str,
+        owner: &str,
+        epoch: u64,
+        ttl: Duration,
+    ) -> Result<LeaseGrant, MetaError> {
+        let command = Command::ReacquireLease {
+            key: key.to_string(),
+            owner: owner.to_string(),
+            epoch,
+            ttl_ms: millis(ttl),
+            now_ms: self.now_ms(),
+        };
+        match self.write(command).await? {
+            Reply::Lease(grant) => Ok(grant),
+            other => Err(MetaError::UnexpectedReply(other)),
+        }
+    }
+
     pub async fn release_lease(&self, key: &str, owner: &str, epoch: u64) -> Result<(), MetaError> {
         let command = Command::ReleaseLease {
             key: key.to_string(),
@@ -474,12 +537,29 @@ impl MetaClient {
         value: &str,
         fence: Option<Fence>,
     ) -> Result<u64, MetaError> {
+        self.cas_pointer_fresh(namespace, key, expected, value, fence, None)
+            .await
+    }
+
+    /// [`MetaClient::cas_pointer`], refused with
+    /// [`ApplyError::StaleObject`](crate::ApplyError::StaleObject) once the
+    /// objects the value references are no longer `fresh`.
+    pub async fn cas_pointer_fresh(
+        &self,
+        namespace: NamespaceId,
+        key: &str,
+        expected: Option<u64>,
+        value: &str,
+        fence: Option<Fence>,
+        fresh: Option<Freshness>,
+    ) -> Result<u64, MetaError> {
         let command = Command::CasPointer {
             namespace,
             key: key.to_string(),
             expected,
             value: value.to_string(),
             fence,
+            fresh,
         };
         match self.write(command).await? {
             Reply::PointerSet { version } => Ok(version),

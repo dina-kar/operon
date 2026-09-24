@@ -10,5 +10,5 @@ mod fault;
 mod store;
 
 pub use error::StoreError;
-pub use fault::{Fault, FaultyStore, Op};
+pub use fault::{Fault, FaultRates, FaultyStore, Op};
 pub use store::{ObjectInfo, ObjectVersion, Store};

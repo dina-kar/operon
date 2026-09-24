@@ -3,7 +3,11 @@ use std::ops::Range;
 use operon_common::{NamespaceId, StreamId};
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Fence, LeaseGrant, Pointer, Retention, WalChunk, WalClass};
+use std::collections::BTreeMap;
+
+use crate::types::{
+    Fence, Freshness, LeaseGrant, LinkId, Pointer, Retention, TargetRef, WalChunk, WalClass,
+};
 
 /// A change to the metastore. Commands are replicated through the Raft log and
 /// applied in log order by [`crate::MetaState::apply`].
@@ -23,6 +27,17 @@ pub enum Command {
         partitions: u32,
         class: WalClass,
         retention: Retention,
+    },
+    /// Declares a link from stream `source` (in `namespace`) into `target`.
+    /// Names are unique within the namespace. A retry after a lost
+    /// acknowledgement fails with [`ApplyError::LinkExists`], which carries
+    /// the id the first attempt created.
+    CreateLink {
+        namespace: NamespaceId,
+        name: String,
+        source: StreamId,
+        target: TargetRef,
+        options: BTreeMap<String, String>,
     },
     /// Assigns offsets to every chunk of a durable WAL object and appends the
     /// chunks to their partitions' offset indexes, atomically. Committing the
@@ -62,7 +77,10 @@ pub enum Command {
     /// segment path contains a ULID, so it names one swap). Otherwise the fence
     /// is checked, and every replaced entry must still be a WAL entry of the
     /// named object ([`ApplyError::IndexMismatch`] if a concurrent swap or trim
-    /// moved it).
+    /// moved it), and the segment must still be fresh: once the metastore
+    /// clock (or `now_ms`) is past `fresh`, the swap is refused with
+    /// [`ApplyError::StaleObject`], because garbage collection may already
+    /// have deleted the segment.
     SwapSegment {
         stream: StreamId,
         partition: u32,
@@ -72,23 +90,32 @@ pub enum Command {
         max_timestamp_ms: i64,
         fence: Option<Fence>,
         now_ms: u64,
+        fresh: Freshness,
     },
     /// Makes offsets below `before_offset` (capped at the high watermark)
     /// unreadable and drops the index entries wholly below it. The log start
     /// only moves forward, so a retry is a no-op that returns the same log
-    /// start.
+    /// start. With a `fence`, the trim is applied only while the fencing lease
+    /// is at the fence's epoch ([`ApplyError::Fenced`] otherwise, and nothing
+    /// changes); a retry whose fence was broken after the first attempt
+    /// applied is rejected, but the first attempt's trim stays.
     TrimPartition {
         stream: StreamId,
         partition: u32,
         before_offset: u64,
+        fence: Option<Fence>,
         now_ms: u64,
     },
     /// Forgets WAL commit records older than twice the commit window. A retry
-    /// removes nothing more.
-    PruneWalCommits { now_ms: u64 },
+    /// removes nothing more. Fenced like [`Command::TrimPartition`].
+    PruneWalCommits { fence: Option<Fence>, now_ms: u64 },
     /// Removes collected objects from the retired set. Unknown paths are
-    /// ignored, so a retry is safe.
-    ForgetObjects { objects: Vec<String> },
+    /// ignored, so a retry is safe. Fenced like [`Command::TrimPartition`]:
+    /// garbage collection forgets objects under its task lease.
+    ForgetObjects {
+        objects: Vec<String>,
+        fence: Option<Fence>,
+    },
     /// Takes a free or expired lease for `ttl_ms`, bumping its epoch. If
     /// `owner` already holds the lease, extends it to `now_ms + ttl_ms` and
     /// keeps the epoch, so a retry after a lost acknowledgement gets the same
@@ -117,6 +144,22 @@ pub enum Command {
         ttl_ms: u64,
         now_ms: u64,
     },
+    /// Re-takes an expired lease that nobody else took: if `owner` still
+    /// holds the lease at `epoch` (not released and not taken over), its
+    /// deadline becomes `now_ms + ttl_ms` and the epoch stays, whether or not
+    /// it had expired. Otherwise it fails with [`ApplyError::LeaseLost`] and
+    /// changes nothing. Fences at `epoch` stay valid throughout, because
+    /// expiry alone never broke them. A retry after a lost acknowledgement
+    /// extends the deadline again (or fails the same way if someone took the
+    /// lease in between), so it is safe. Worker tasks use it to keep running
+    /// after a renewal came too late (M0.3 re-review N3).
+    ReacquireLease {
+        key: String,
+        owner: String,
+        epoch: u64,
+        ttl_ms: u64,
+        now_ms: u64,
+    },
     /// Releases a lease. Releasing an already-released lease at the same
     /// epoch succeeds, so the command is safe to retry.
     ReleaseLease {
@@ -132,13 +175,16 @@ pub enum Command {
     /// caller's value at `expected + 1` means the first attempt *may* have
     /// succeeded: another writer may have written the same value. Callers
     /// that must know write a unique value (for example a manifest path
-    /// containing a ULID).
+    /// containing a ULID). With `fresh`, the objects the new value makes
+    /// reachable must still be fresh at the metastore clock
+    /// ([`ApplyError::StaleObject`] otherwise).
     CasPointer {
         namespace: NamespaceId,
         key: String,
         expected: Option<u64>,
         value: String,
         fence: Option<Fence>,
+        fresh: Option<Freshness>,
     },
 }
 
@@ -147,6 +193,7 @@ pub enum Command {
 pub enum Reply {
     NamespaceCreated(NamespaceId),
     StreamCreated(StreamId),
+    LinkCreated(LinkId),
     /// The base offset of each chunk, in the order the chunks were given.
     WalCommitted {
         base_offsets: Vec<u64>,
@@ -186,6 +233,10 @@ pub enum ApplyError {
     StreamExists(StreamId),
     #[error("stream not found: {0}")]
     StreamNotFound(StreamId),
+    /// Carries the existing id, so a retry after a lost acknowledgement can
+    /// recover it.
+    #[error("link already exists: {0}")]
+    LinkExists(LinkId),
     #[error("partition not found: stream {stream} partition {partition}")]
     PartitionNotFound { stream: StreamId, partition: u32 },
     #[error("lease is held by {owner} until {deadline_ms}")]
@@ -211,6 +262,18 @@ pub enum ApplyError {
     /// been pruned: the outcome is still unknown.
     #[error("stale WAL commit: {object}")]
     StaleCommit { object: String },
+    /// A command would reference an object created too long ago
+    /// ([`Freshness`]): garbage collection may already have deleted it.
+    /// Nothing changed; the object is left to garbage collection.
+    #[error(
+        "stale object {object}: created at {created_at_ms} ms, max age {max_age_ms} ms, metastore clock {clock_ms} ms"
+    )]
+    StaleObject {
+        object: String,
+        created_at_ms: u64,
+        max_age_ms: u64,
+        clock_ms: u64,
+    },
 }
 
 impl std::fmt::Display for Command {
@@ -221,6 +284,9 @@ impl std::fmt::Display for Command {
             Command::CreateStream {
                 namespace, name, ..
             } => write!(f, "CreateStream({namespace}/{name})"),
+            Command::CreateLink {
+                namespace, name, ..
+            } => write!(f, "CreateLink({namespace}/{name})"),
             Command::CommitWal { object, chunks, .. } => {
                 write!(f, "CommitWal({object}, {} chunks)", chunks.len())
             }
@@ -246,13 +312,16 @@ impl std::fmt::Display for Command {
                 "TrimPartition({stream}/{partition}, before {before_offset})"
             ),
             Command::PruneWalCommits { .. } => write!(f, "PruneWalCommits"),
-            Command::ForgetObjects { objects } => {
+            Command::ForgetObjects { objects, .. } => {
                 write!(f, "ForgetObjects({} objects)", objects.len())
             }
             Command::AcquireLease { key, owner, .. } => write!(f, "AcquireLease({key}, {owner})"),
             Command::RenewLease {
                 key, owner, epoch, ..
             } => write!(f, "RenewLease({key}, {owner}, epoch {epoch})"),
+            Command::ReacquireLease {
+                key, owner, epoch, ..
+            } => write!(f, "ReacquireLease({key}, {owner}, epoch {epoch})"),
             Command::ReleaseLease { key, owner, epoch } => {
                 write!(f, "ReleaseLease({key}, {owner}, epoch {epoch})")
             }

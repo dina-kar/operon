@@ -5,7 +5,7 @@ use operon_common::StreamId;
 
 use super::MetaState;
 use crate::command::{ApplyError, Reply};
-use crate::types::{Retention, WAL_COMMIT_WINDOW_MS};
+use crate::types::{Fence, Retention, WAL_COMMIT_WINDOW_MS};
 
 impl MetaState {
     pub(super) fn set_retention(
@@ -21,7 +21,14 @@ impl MetaState {
         Ok(Reply::RetentionSet)
     }
 
-    pub(super) fn prune_wal_commits(&mut self, now_ms: u64) -> Result<Reply, ApplyError> {
+    pub(super) fn prune_wal_commits(
+        &mut self,
+        fence: Option<Fence>,
+        now_ms: u64,
+    ) -> Result<Reply, ApplyError> {
+        if let Some(fence) = &fence {
+            self.check_fence(fence)?;
+        }
         self.clock_ms = self.clock_ms.max(now_ms);
         let clock_ms = self.clock_ms;
         let before = self.wal_commits.len();
@@ -37,7 +44,14 @@ impl MetaState {
         })
     }
 
-    pub(super) fn forget_objects(&mut self, objects: Vec<String>) -> Result<Reply, ApplyError> {
+    pub(super) fn forget_objects(
+        &mut self,
+        objects: Vec<String>,
+        fence: Option<Fence>,
+    ) -> Result<Reply, ApplyError> {
+        if let Some(fence) = &fence {
+            self.check_fence(fence)?;
+        }
         let mut removed: u32 = 0;
         for object in objects {
             if self.retired.remove(&object).is_some() {

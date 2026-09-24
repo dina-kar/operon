@@ -19,15 +19,13 @@ fn config(dir: &TempDir, segmenter: SegmenterConfig) -> ServerConfig {
     config.listen = SocketAddr::from(([127, 0, 0, 1], 0));
     config.log.flush_interval = Duration::from_millis(20);
     config.segmenter = segmenter;
+    config.worker_poll_interval = Duration::from_millis(50);
     config
 }
 
-/// Segments only when asked to, in practice.
+/// Never segments small test data (64 MiB or 10 minutes).
 fn lazy_segmenter() -> SegmenterConfig {
-    SegmenterConfig {
-        interval: Duration::from_secs(3600),
-        ..SegmenterConfig::default()
-    }
+    SegmenterConfig::default()
 }
 
 /// Segments everything, often.
@@ -35,7 +33,6 @@ fn eager_segmenter() -> SegmenterConfig {
     SegmenterConfig {
         min_bytes: 1,
         target_bytes: 400,
-        interval: Duration::from_millis(50),
         ..SegmenterConfig::default()
     }
 }
@@ -345,7 +342,11 @@ async fn out_of_range_offsets_get_416_with_both_bounds() {
         })
         .await
         .unwrap();
-    server.meta().trim_partition(stream, 0, 2).await.unwrap();
+    server
+        .meta()
+        .trim_partition(stream, 0, 2, None)
+        .await
+        .unwrap();
     let (status, body) = api
         .get("/v1/namespaces/acme/streams/events/partitions/0/records?offset=1")
         .await;
@@ -502,6 +503,35 @@ async fn framework_rejections_use_the_json_error_body() {
         assert!(body["message"].as_str().is_some(), "{path}: {body}");
     }
 
+    // M0.3 re-review M3: a known route with the wrong method is a 405 with
+    // the JSON error body too.
+    for (method, path) in [
+        (reqwest::Method::GET, "/v1/namespaces"),
+        (
+            reqwest::Method::DELETE,
+            "/v1/namespaces/acme/streams/events",
+        ),
+        (reqwest::Method::PUT, "/v1/namespaces/acme/links"),
+    ] {
+        let response = api
+            .http
+            .request(method.clone(), format!("{}{path}", api.base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "{method} {path}"
+        );
+        let body: Value = response.json().await.expect("a JSON error body");
+        assert_eq!(body["error"], "invalid_argument", "{method} {path}");
+        assert!(
+            body["message"].as_str().is_some(),
+            "{method} {path}: {body}"
+        );
+    }
+
     let (status, body) = api
         .get(&format!(
             "/v1/namespaces/acme/streams/events/partitions/0/records?offset=0&max_bytes={}",
@@ -614,4 +644,86 @@ async fn acknowledged_records_survive_a_crash() {
     let base = api.produce(0, &["after-crash"]).await;
     assert_eq!(base, model.len() as u64);
     dev.kill();
+}
+
+/// M0.4: links are declared and read over HTTP; a link sums its source.
+#[tokio::test]
+async fn a_link_is_created_once_and_sums_its_stream() {
+    let dir = TempDir::new().unwrap();
+    let mut cfg = config(&dir, lazy_segmenter());
+    cfg.link.batch_interval = Duration::ZERO;
+    let server = Server::start(cfg).await.unwrap();
+    let api = Api::new(&server);
+    api.setup(2).await;
+    let (status, body) = api
+        .post(
+            "/v1/namespaces/acme/links",
+            json!({"name": "counts", "source": "events"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_u64().unwrap();
+    let (status, body) = api
+        .post(
+            "/v1/namespaces/acme/links",
+            json!({"name": "counts", "source": "events"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["id"].as_u64(), Some(id));
+    let (status, _) = api
+        .post(
+            "/v1/namespaces/acme/links",
+            json!({"name": "other", "source": "missing"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    for (p, key, delta) in [(0, "a", "5"), (1, "a", "-2"), (0, "b", "10"), (1, "b", "x")] {
+        let (status, body) = api
+            .post(
+                &format!("/v1/namespaces/acme/streams/events/partitions/{p}/records"),
+                json!({"records": [{"key": BASE64.encode(key), "value": BASE64.encode(delta)}]}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let deadline = Instant::now() + WAIT;
+    let body = loop {
+        let (status, body) = api.get("/v1/namespaces/acme/links/counts").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        if body["applied"] == json!([{"partition": 0, "offset": 2}, {"partition": 1, "offset": 2}])
+        {
+            break body;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the link never caught up: {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(body["counters"], json!({"a": 3, "b": 10}));
+    assert_eq!(body["skipped"], json!(1));
+    assert_eq!(body["target"], json!({"kind": "counter", "name": "counts"}));
+    let (status, _) = api.get("/v1/namespaces/acme/links/missing").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    server.shutdown().await.unwrap();
+}
+
+/// Failpoints exist only in builds with the `failpoints` feature; a normal
+/// build refuses to run with them requested rather than ignoring them.
+#[cfg(not(feature = "failpoints"))]
+#[test]
+fn a_build_without_failpoints_refuses_to_arm_them() {
+    let dir = TempDir::new().unwrap();
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_operon"))
+        .args(["dev", "--listen", "127.0.0.1:0"])
+        .arg("--data-dir")
+        .arg(dir.path())
+        .env("OPERON_FAILPOINTS", "wal.after_put")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("run operon");
+    assert!(!status.success());
 }

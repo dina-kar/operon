@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d1e4c466bfc3303733fa8538a5d722a57c2eed19b2afe9252e207c7787f56985 # shrinks to w = Workload { partitions: 2, rounds: 20, value_len: 43 }
+cc 5bd1c96292f9fbe9d068e8df04bd12e86e3a98064b89974a9ef6673730afef6d # shrinks to w = Workload { partitions: 2, rounds: 24, value_len: 44 }
+cc 799959bdb5dd2b313413669460d28668cb1ce8a6fa9917943c1eb93a368f8fed # shrinks to w = Workload { partitions: 3, rounds: 23, value_len: 21 }
+cc d265b647ea007cb7101b45a2b42e30acc09433751b44433ee6820588f1d96b5c # shrinks to w = Workload { partitions: 3, rounds: 25, value_len: 16 }
+cc de1facc2e3333fef13fc155dab60f4c2409abeda6c96a2a25655cf5dee08510a # shrinks to w = Workload { partitions: 2, rounds: 36, value_len: 50 }
+cc 55a5d065267b305d59e3e1953c4c1ff43d0f0a2f6bc875354e407c9ea8e677ab # shrinks to w = Workload { partitions: 3, rounds: 34, value_len: 54 }

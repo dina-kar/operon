@@ -16,6 +16,7 @@ base64 = "0.22"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
 crc32c = "0.6"
+fail = "0.5"
 foyer = "0.22"
 futures = "0.3"
 kafka-protocol = { version = "0.18", default-features = false }
@@ -24,22 +25,29 @@ object_store = { version = "0.14", features = ["aws", "gcp", "azure", "fs"] }
 openraft = { version = "=0.10.0-alpha.34", default-features = false, features = ["serde", "tokio-rt"] }
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 proptest = "1"
+rand = "0.9"
+rand_chacha = "0.9"
 redb = "4"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 serde = { version = "1", features = ["derive"] }
+slatedb = { version = "0.16", default-features = false }
 serde_json = "1"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ulid = "3"
 url = "2"
 operon-cache = { path = "crates/operon-cache", version = "0.0.1" }
 operon-common = { path = "crates/operon-common", version = "0.0.1" }
+operon-link = { path = "crates/operon-link", version = "0.0.1" }
 operon-log = { path = "crates/operon-log", version = "0.0.1" }
 operon-meta = { path = "crates/operon-meta", version = "0.0.1" }
+operon-pk = { path = "crates/operon-pk", version = "0.0.1" }
 operon-store = { path = "crates/operon-store", version = "0.0.1" }
+operon-worker = { path = "crates/operon-worker", version = "0.0.1" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

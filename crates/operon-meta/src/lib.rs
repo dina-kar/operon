@@ -31,6 +31,18 @@ pub use raft::{EntryReply, NodeId, SnapshotData, TypeConfig};
 pub use state::{MAX_KEY_LEN, MAX_LEASE_TTL_MS, MAX_NAME_LEN, MAX_PARTITIONS, MetaState};
 pub use state_machine::StateMachineStore;
 pub use types::{
-    EntryKind, Fence, IndexEntry, Lease, LeaseGrant, Namespace, PartitionState, Pointer, Retention,
-    Stream, WAL_COMMIT_WINDOW_MS, WalChunk, WalClass, WalCommitRecord,
+    EntryKind, Fence, Freshness, IndexEntry, Lease, LeaseGrant, Link, LinkId, Namespace,
+    PartitionState, Pointer, Retention, Stream, TargetRef, WAL_COMMIT_WINDOW_MS, WalChunk,
+    WalClass, WalCommitRecord,
 };
+
+/// Evaluates a named failpoint (M0.4 Task 5). With the `failpoints` feature
+/// the `fail` crate may act on it (the crash gate aborts the process there);
+/// without it, this expands to nothing.
+macro_rules! failpoint {
+    ($name:literal) => {
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!($name);
+    };
+}
+pub(crate) use failpoint;

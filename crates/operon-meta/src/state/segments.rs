@@ -7,7 +7,7 @@ use operon_common::StreamId;
 
 use super::{MetaState, validate_key};
 use crate::command::{ApplyError, Reply};
-use crate::types::{EntryKind, Fence, IndexEntry, PartitionState};
+use crate::types::{EntryKind, Fence, Freshness, IndexEntry, PartitionState};
 
 impl MetaState {
     #[allow(clippy::too_many_arguments)]
@@ -21,6 +21,7 @@ impl MetaState {
         max_timestamp_ms: i64,
         fence: Option<Fence>,
         now_ms: u64,
+        fresh: Freshness,
     ) -> Result<Reply, ApplyError> {
         validate_key("segment path", &segment)?;
         let state = self.partition_state(stream, partition)?;
@@ -44,6 +45,15 @@ impl MetaState {
                 "a segment needs a non-empty byte range, got {byte_range:?}"
             )));
         }
+        let clock_ms = self.clock_ms.max(now_ms);
+        if fresh.expired_at(clock_ms) {
+            return Err(ApplyError::StaleObject {
+                object: segment,
+                created_at_ms: fresh.created_at_ms,
+                max_age_ms: fresh.max_age_ms,
+                clock_ms,
+            });
+        }
         let mismatch = || ApplyError::IndexMismatch { stream, partition };
         let mut expected_base = *first_base;
         let mut records: u32 = 0;
@@ -63,21 +73,18 @@ impl MetaState {
         let state = self.partition_state_mut(stream, partition)?;
         let mut removed = Vec::with_capacity(replaces.len());
         for (base, _) in &replaces {
-            if let Some(entry) = state.index.remove(base) {
+            if let Some(entry) = state.remove_entry(*base) {
                 removed.push(entry);
             }
         }
-        state.index.insert(
-            *first_base,
-            IndexEntry {
-                kind: EntryKind::Segment,
-                base_offset: *first_base,
-                records,
-                object: segment,
-                byte_range,
-                max_timestamp_ms,
-            },
-        );
+        state.insert_entry(IndexEntry {
+            kind: EntryKind::Segment,
+            base_offset: *first_base,
+            records,
+            object: segment,
+            byte_range,
+            max_timestamp_ms,
+        });
         for entry in removed {
             self.release_entry(entry);
         }
@@ -89,18 +96,19 @@ impl MetaState {
         stream: StreamId,
         partition: u32,
         before_offset: u64,
+        fence: Option<Fence>,
         now_ms: u64,
     ) -> Result<Reply, ApplyError> {
         self.partition_state(stream, partition)?;
+        if let Some(fence) = &fence {
+            self.check_fence(fence)?;
+        }
         self.clock_ms = self.clock_ms.max(now_ms);
         let state = self.partition_state_mut(stream, partition)?;
         let before = before_offset.min(state.next_offset);
         let mut removed = Vec::new();
-        while let Some(entry) = state.index.first_entry() {
-            if entry.get().end_offset() > before {
-                break;
-            }
-            removed.push(entry.remove());
+        while let Some(entry) = state.pop_first_before(before) {
+            removed.push(entry);
         }
         state.log_start_offset = state.log_start_offset.max(before);
         let log_start_offset = state.log_start_offset;

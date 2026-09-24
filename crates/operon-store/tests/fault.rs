@@ -85,3 +85,156 @@ async fn delete_and_list_faults() {
         StoreError::NotFound { .. }
     ));
 }
+
+#[tokio::test]
+async fn put_faults_can_target_one_mode() {
+    let (faults, store) = faulty();
+    faults.inject(Op::PutIfMatch, Fault::Error);
+    // A create-only PUT is not a compare-and-swap PUT: it passes.
+    let version = store
+        .put_if_absent("a", Bytes::from_static(b"1"))
+        .await
+        .unwrap();
+    let err = store
+        .put_if_match("a", Bytes::from_static(b"2"), &version)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StoreError::Backend(_)), "{err:?}");
+    assert_eq!(store.get("a").await.unwrap().0, Bytes::from_static(b"1"));
+    // `Put` counts and targets every mode.
+    assert_eq!(faults.calls(Op::Put), 2);
+    assert_eq!(faults.calls(Op::PutCreate), 1);
+    assert_eq!(faults.calls(Op::PutIfMatch), 1);
+    faults.inject(Op::Put, Fault::Error);
+    assert!(
+        store
+            .put_if_absent("b", Bytes::from_static(b"x"))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn precondition_faults_do_not_apply() {
+    let (faults, store) = faulty();
+    faults.inject(Op::PutCreate, Fault::Precondition);
+    let err = store
+        .put_if_absent("a", Bytes::from_static(b"1"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StoreError::AlreadyExists { .. }), "{err:?}");
+    assert!(matches!(
+        store.head("a").await.unwrap_err(),
+        StoreError::NotFound { .. }
+    ));
+    let version = store
+        .put_if_absent("a", Bytes::from_static(b"1"))
+        .await
+        .unwrap();
+    faults.inject(Op::PutIfMatch, Fault::Precondition);
+    let err = store
+        .put_if_match("a", Bytes::from_static(b"2"), &version)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, StoreError::PreconditionFailed { .. }),
+        "{err:?}"
+    );
+    assert_eq!(store.get("a").await.unwrap().0, Bytes::from_static(b"1"));
+    // The next attempt, without a fault, succeeds.
+    store
+        .put_if_match("a", Bytes::from_static(b"2"), &version)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn delay_faults_wait_and_then_apply() {
+    let (faults, store) = faulty();
+    faults.inject(Op::Put, Fault::Delay(std::time::Duration::from_millis(200)));
+    let started = std::time::Instant::now();
+    store.put("a", Bytes::from_static(b"1")).await.unwrap();
+    assert!(started.elapsed() >= std::time::Duration::from_millis(200));
+    faults.inject(Op::Get, Fault::Delay(std::time::Duration::from_millis(100)));
+    assert_eq!(store.get("a").await.unwrap().0, Bytes::from_static(b"1"));
+    faults.inject(
+        Op::Delete,
+        Fault::Delay(std::time::Duration::from_millis(50)),
+    );
+    store.delete("a").await.unwrap();
+    assert!(store.head("a").await.is_err());
+}
+
+#[tokio::test]
+async fn random_faults_follow_their_rates_and_seed() {
+    use operon_store::FaultRates;
+    let draw = |seed| async move {
+        let faults = Arc::new(FaultyStore::random(
+            Arc::new(InMemory::new()),
+            seed,
+            FaultRates {
+                error: 0.3,
+                precondition: 0.2,
+                ..FaultRates::none()
+            },
+        ));
+        let store = Store::new(faults.clone());
+        let mut outcomes = Vec::new();
+        for i in 0..200 {
+            outcomes.push(
+                store
+                    .put_if_absent(&format!("k{i}"), Bytes::from_static(b"x"))
+                    .await
+                    .is_ok(),
+            );
+        }
+        faults.set_rates(FaultRates::none());
+        for i in 200..210 {
+            outcomes.push(
+                store
+                    .put_if_absent(&format!("k{i}"), Bytes::from_static(b"x"))
+                    .await
+                    .is_ok(),
+            );
+        }
+        outcomes
+    };
+    let a = draw(7).await;
+    assert_eq!(a, draw(7).await, "same seed, same faults");
+    assert_ne!(a, draw(8).await);
+    let failed = a[..200].iter().filter(|ok| !**ok).count();
+    assert!((60..=140).contains(&failed), "{failed} of 200 failed");
+    assert!(
+        a[200..].iter().all(|ok| *ok),
+        "no faults after the rates drop"
+    );
+}
+
+#[tokio::test]
+async fn a_fault_can_target_a_later_call() {
+    let (faults, store) = faulty();
+    faults.inject_nth(Op::PutCreate, 2, Fault::Error);
+    assert_eq!(faults.pending(Op::PutCreate), 2);
+    store
+        .put_if_absent("a", Bytes::from_static(b"1"))
+        .await
+        .unwrap();
+    assert_eq!(faults.pending(Op::PutCreate), 1);
+    // Other operations do not consume it.
+    store.put("x", Bytes::from_static(b"1")).await.unwrap();
+    assert!(
+        store
+            .put_if_absent("b", Bytes::from_static(b"1"))
+            .await
+            .is_err()
+    );
+    assert_eq!(faults.pending(Op::PutCreate), 0);
+    store
+        .put_if_absent("b", Bytes::from_static(b"1"))
+        .await
+        .unwrap();
+    faults.inject(Op::Get, Fault::Error);
+    faults.clear();
+    assert_eq!(faults.pending(Op::Get), 0);
+    store.get("a").await.unwrap();
+}

@@ -234,6 +234,10 @@ pub async fn segment_now(
             footer.data,
             max_ts,
             None,
+            operon_meta::Freshness {
+                created_at_ms: meta.now_ms(),
+                max_age_ms: 600_000,
+            },
         )
         .await
     {

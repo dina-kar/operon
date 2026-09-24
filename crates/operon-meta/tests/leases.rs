@@ -154,3 +154,53 @@ fn a_far_future_clock_saturates_instead_of_overflowing() {
         grant(1, u64::MAX)
     );
 }
+
+fn reacquire(
+    state: &mut MetaState,
+    owner: &str,
+    epoch: u64,
+    now_ms: u64,
+) -> Result<Reply, ApplyError> {
+    state.apply(Command::ReacquireLease {
+        key: KEY.to_string(),
+        owner: owner.to_string(),
+        epoch,
+        ttl_ms: 1_000,
+        now_ms,
+    })
+}
+
+/// M0.3 re-review N3: a holder whose renewal came too late re-takes its
+/// expired lease at the same epoch, as long as nobody else took it.
+#[test]
+fn an_expired_lease_nobody_took_is_reacquired_at_the_same_epoch() {
+    let mut state = MetaState::default();
+    acquire(&mut state, "w1", 1_000, 5_000).unwrap();
+    assert_eq!(renew(&mut state, "w1", 1, 6_500), lost(), "expired");
+    assert_eq!(reacquire(&mut state, "w1", 1, 6_500), grant(1, 7_500));
+    // A retry extends it again.
+    assert_eq!(reacquire(&mut state, "w1", 1, 6_600), grant(1, 7_600));
+    // It is held again, so renewals work and others are kept out.
+    assert_eq!(renew(&mut state, "w1", 1, 7_000), grant(1, 8_000));
+    assert!(matches!(
+        acquire(&mut state, "w2", 1_000, 7_100),
+        Err(ApplyError::LeaseHeld { .. })
+    ));
+}
+
+#[test]
+fn a_lease_taken_over_or_released_cannot_be_reacquired() {
+    let mut state = MetaState::default();
+    acquire(&mut state, "w1", 1_000, 5_000).unwrap();
+    acquire(&mut state, "w2", 1_000, 6_500).unwrap();
+    let before = state.clone();
+    assert_eq!(reacquire(&mut state, "w1", 1, 6_600), lost(), "taken over");
+    assert_eq!(reacquire(&mut state, "w2", 1, 6_600), lost(), "wrong epoch");
+    assert_eq!(state, before, "a rejected reacquire changes nothing");
+
+    release(&mut state, "w2", 2).unwrap();
+    assert_eq!(reacquire(&mut state, "w2", 2, 6_700), lost(), "released");
+    let mut fresh = MetaState::default();
+    assert_eq!(reacquire(&mut fresh, "w1", 1, 1), lost(), "never taken");
+    assert_eq!(fresh, MetaState::default());
+}

@@ -84,6 +84,11 @@ CREATE LINK tickets_search
 - **Autoscaling signals:** total link lag (seconds), compaction debt (bytes), queue age per priority.
 - **Resource budgets:** CPU/memory per task class; object-store request budgets (PUT/GET rate) per node to stay under prefix limits.
 
+**As built in M0 (`operon-worker`, M0.4):**
+- A *task source* proposes task keys with work (the segmenter one per partition with a due WAL run, retention and GC one singleton each, link apply one per link, D30). Every node runs one `Worker`, which polls its sources (default every 1 s), orders the candidates by priority, then round-robin across namespaces within a priority, and starts what fits under `max_concurrent` (16) and `max_per_namespace` (4).
+- A task runs under the metastore lease `task/<key>` (TTL 30 s) with a fence at the lease's epoch and a cancellation token. The worker renews every third of the TTL; a renewal that finds the lease expired re-takes it at the same epoch if nobody else took it (`ReacquireLease`), so a slow run keeps its fence; a lease someone else took cancels the run, and every metastore commit it attempts with its fence is rejected. Leases are released when a run ends; a crashed worker's leases expire.
+- Weights, byte-rate caps, autoscaling signals and per-class resource budgets are not built yet.
+
 ## 7. Backpressure
 
 - If link lag exceeds `max_lag`, the source stream can be configured to **throttle producers** (Kafka quota semantics) or to keep accepting (log absorbs, tail grows).

@@ -4,7 +4,7 @@ use operon_common::NamespaceId;
 
 use super::{MetaState, validate_key};
 use crate::command::{ApplyError, Reply};
-use crate::types::{Fence, Pointer};
+use crate::types::{Fence, Freshness, Pointer};
 
 impl MetaState {
     pub(super) fn cas_pointer(
@@ -14,6 +14,7 @@ impl MetaState {
         expected: Option<u64>,
         value: String,
         fence: Option<Fence>,
+        fresh: Option<Freshness>,
     ) -> Result<Reply, ApplyError> {
         validate_key("pointer key", &key)?;
         validate_key("pointer value", &value)?;
@@ -34,6 +35,18 @@ impl MetaState {
                 });
             }
         };
+        // After the version check, so a retry of an applied CAS still sees
+        // its own value in the mismatch.
+        if let Some(fresh) = fresh
+            && fresh.expired_at(self.clock_ms)
+        {
+            return Err(ApplyError::StaleObject {
+                object: value,
+                created_at_ms: fresh.created_at_ms,
+                max_age_ms: fresh.max_age_ms,
+                clock_ms: self.clock_ms,
+            });
+        }
         self.pointers.insert(slot, Pointer { version, value });
         Ok(Reply::PointerSet { version })
     }

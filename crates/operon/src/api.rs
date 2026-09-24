@@ -14,8 +14,10 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::Bytes;
 use operon_common::{NamespaceId, StreamId};
+use operon_link::{COUNTER_KIND, CounterTable, LinkError};
 use operon_log::{FetchRequest, LogError, LogReader, LogWriter, Record};
-use operon_meta::{ApplyError, Consistency, MetaClient, MetaError, Retention, WalClass};
+use operon_meta::{ApplyError, Consistency, MetaClient, MetaError, Retention, TargetRef, WalClass};
+use operon_store::Store;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -36,6 +38,8 @@ pub struct AppState {
     pub meta: MetaClient,
     pub writer: LogWriter,
     pub reader: LogReader,
+    /// For reading link targets.
+    pub store: Store,
 }
 
 /// The API's routes.
@@ -50,13 +54,26 @@ pub fn router(state: AppState) -> Router {
             "/v1/namespaces/{ns}/streams/{stream}/partitions/{partition}/records",
             post(produce).get(fetch),
         )
+        .route("/v1/namespaces/{ns}/links", post(create_link))
+        .route("/v1/namespaces/{ns}/links/{link}", get(describe_link))
         .fallback(no_route)
+        .method_not_allowed_fallback(method_not_allowed)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
 
 async fn no_route() -> ApiError {
     ApiError::not_found("no such route")
+}
+
+/// A known route with a method it does not serve: `405` with the usual JSON
+/// error body (M0.3 re-review M3), not axum's empty one.
+async fn method_not_allowed(method: axum::http::Method) -> ApiError {
+    ApiError::new(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "invalid_argument",
+        format!("{method} is not allowed on this route"),
+    )
 }
 
 /// Turns an axum extractor rejection (a bad path segment, query, or body,
@@ -152,6 +169,9 @@ impl From<MetaError> for ApiError {
                 ApplyError::StreamExists(id) => {
                     ApiError::new(StatusCode::CONFLICT, "already_exists", message).with("id", id.0)
                 }
+                ApplyError::LinkExists(id) => {
+                    ApiError::new(StatusCode::CONFLICT, "already_exists", message).with("id", id.0)
+                }
                 ApplyError::NamespaceNotFound(_)
                 | ApplyError::StreamNotFound(_)
                 | ApplyError::PartitionNotFound { .. } => ApiError::not_found(message),
@@ -194,6 +214,7 @@ impl From<LogError> for ApiError {
             | LogError::Store(_)
             | LogError::Cache(_) => unavailable(message),
             LogError::Meta(meta) => meta.into(),
+            LogError::Task(_) => internal(message),
             LogError::Corrupt(_) | LogError::UnsupportedEncoding(_) => internal(message),
         }
     }
@@ -464,4 +485,99 @@ async fn fetch(
         "log_start_offset": response.log_start_offset,
     }))
     .into_response())
+}
+
+impl From<LinkError> for ApiError {
+    fn from(err: LinkError) -> Self {
+        let message = err.to_string();
+        match err {
+            LinkError::Meta(meta) => meta.into(),
+            LinkError::Log(log) => log.into(),
+            LinkError::NotFound(_) => ApiError::not_found(message),
+            LinkError::Store(_) | LinkError::Blocked(_) => unavailable(message),
+            LinkError::Corrupt(_) => internal(message),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct TargetBody {
+    kind: String,
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct CreateLink {
+    name: String,
+    /// The source stream's name, in the same namespace.
+    source: String,
+    /// Default: a `counter` target named like the link.
+    target: Option<TargetBody>,
+    #[serde(default)]
+    options: std::collections::BTreeMap<String, String>,
+}
+
+async fn create_link(
+    State(state): State<AppState>,
+    ns: Result<Path<String>, PathRejection>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult {
+    let (Path(ns), body) = (ns?, body?);
+    let request: CreateLink = parse_json(&body)?;
+    let namespace = namespace_id(&state.meta, &ns).await?;
+    let source = stream_id(&state.meta, &ns, &request.source).await?;
+    let target = request.target.map_or_else(
+        || TargetRef {
+            kind: COUNTER_KIND.to_string(),
+            name: request.name.clone(),
+        },
+        |t| TargetRef {
+            kind: t.kind,
+            name: t.name,
+        },
+    );
+    let id = state
+        .meta
+        .create_link(namespace, &request.name, source, target, request.options)
+        .await?;
+    Ok((StatusCode::CREATED, axum::Json(json!({ "id": id.0 }))).into_response())
+}
+
+async fn describe_link(
+    State(state): State<AppState>,
+    path: Result<Path<(String, String)>, PathRejection>,
+) -> ApiResult {
+    let Path((ns, name)) = path?;
+    let namespace = namespace_id(&state.meta, &ns).await?;
+    let link = state
+        .meta
+        .read(Consistency::Local, |s| {
+            let link = s.link_by_name(namespace, &name)?.clone();
+            let source = s.stream(link.source).map(|st| st.name.clone())?;
+            Some((link, source))
+        })
+        .await?
+        .ok_or_else(|| ApiError::not_found(format!("link {ns}/{name} not found")))?;
+    let (link, source) = link;
+    let mut body = json!({
+        "id": link.id.0,
+        "name": link.name,
+        "source": source,
+        "target": { "kind": link.target.kind, "name": link.target.name },
+        "options": link.options,
+    });
+    if link.target.kind == COUNTER_KIND {
+        let table = CounterTable::for_link(state.meta.clone(), state.store.clone(), &link);
+        let snapshot = table.snapshot().await?;
+        let applied: Vec<Value> = snapshot
+            .applied
+            .iter()
+            .map(|(partition, offset)| json!({ "partition": partition, "offset": offset }))
+            .collect();
+        body["version"] = json!(snapshot.version);
+        body["applied"] = Value::from(applied);
+        body["counters"] = json!(snapshot.counters);
+        body["skipped"] = json!(snapshot.skipped);
+    }
+    Ok(axum::Json(body).into_response())
 }
