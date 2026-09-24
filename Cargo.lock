@@ -1958,6 +1958,7 @@ dependencies = [
  "bytes",
  "clap",
  "fail",
+ "object_store",
  "operon-cache",
  "operon-common",
  "operon-link",
