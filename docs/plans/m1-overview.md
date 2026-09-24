@@ -171,7 +171,7 @@ ns/<ns>/collections/<cid>/
   manifests/<version:020>-<ulid>.pb                         # immutable collection manifest
   pkdelta/<version:020>-<ulid>.pkd                          # the keys one commit changed; PK-index repair (R8)
   deadletters/<version:020>-<ulid>.dlq                      # records one commit dead-lettered
-  hot/<kind>/<manifest_version:020>-<ulid>/…               # derived hot artifacts (M1.3)
+  hot/hnsw/<column>/<source_version:020>-<ulid>/{descriptor.bin,covered.bin,files/…}  # derived HNSW artifacts (M1.3)
 ns/<ns>/pk/collection-<cid>/                                # PkIndex (SlateDB)
 ```
 
@@ -281,7 +281,7 @@ pub enum ServiceError { NotFound { kind: &'static str, name: String }, AlreadyEx
 
 `POST|GET /v1/namespaces/{ns}/collections` (create, list) · `GET|DELETE /v1/namespaces/{ns}/collections/{c}` · `POST /v1/namespaces/{ns}/collections/{c}/documents` (ops) · `POST /v1/namespaces/{ns}/collections/{c}/documents/get` · `POST /v1/namespaces/{ns}/query` (the §05 §4 hybrid request) · `POST /v1/namespaces/{ns}/sql` · M1.3 adds `PUT /v1/namespaces/{ns}/collections/{c}/hot` and `POST /v1/namespaces/{ns}/collections/{c}/warm`. Flight SQL listens on `native.flight_sql` (default `0.0.0.0:8082`). `PrimaryKey` in JSON: integer → `U64`, string → `Str`, `{"uuid": "…"}` → `Uuid` (A12).
 
-**Hot-tier controls (A13, M1.3).** Request header `Operon-Hot: on|off` (gRPC metadata `operon-hot`) disables every hot structure for one request; responses carry `Operon-Hot-Used: <comma-separated structures used, or none>`; the server flag `--hot=on|off` sets the default and `--hot-pin-all` pins every collection (gates and benchmarks). `GET …/collections/{c}` reports `manifest_version`, `link_lag_records` and the hot status per structure.
+**Hot-tier controls (A13, M1.3).** Request header `Operon-Hot: on|off` (gRPC metadata `operon-hot`) disables every hot structure for one request; responses carry `Operon-Hot-Used: <comma-separated subset of hnsw, splits; or none>` (fragment prefetch only fills the H1 cache and is never reported or bypassed); the server flag `--hot=on|off` sets the default and `--hot-pin-all` pins every collection (gates and benchmarks). `PUT …/hot` takes `{vectors, text, fragments}`. `GET …/collections/{c}` reports `manifest_version`, `link_lag_records` and the hot status per structure.
 
 ### 6.9 Gateway namespaces
 
@@ -303,7 +303,7 @@ ES and Qdrant have no namespaces. Each gateway serves one namespace, `default` u
 | R10 | Deterministic ordering everywhere: score desc, then canonical PK asc | Required by hot on/off identity and by paging (`search_after`, `scroll`) | None |
 | R11 | Strong consistency is the default for every read on every surface (§01 §4.2); `eventual` is opt-in | ES `refresh`/Qdrant `wait` semantics become free, and conformance tests that write then read pass | One linearizable metastore read per request |
 | R12 | **Hot on/off identity** (§04 §6 rule 1) is enforced exactly for text search, filters, aggregations, fetch, scroll, counts and exact vector search (`AnnParams.exact`, and any ANN whose candidate set falls under the brute-force threshold). Approximate ANN on the hot tier (HNSW) and on the durable tier (Lance IVF) are different approximations, so for them the gate is: every returned score is exact (rescored with full vectors), and Recall@10 against exact search is within the §12 bound on both tiers | Two approximate indexes cannot return identical top-k on every query; pretending otherwise would force brute force | If the user wants bit-identical ANN, hot HNSW must be restricted to exact rescoring of a durable-tier candidate set |
-| R13 | The metastore over the network (openraft RPCs over HTTP, a remote `MetaClient`) and `operon --roles …` cluster mode are pulled from M5 into M1.3 | Affinity routing needs more than one process; the in-process `Router` cannot run a real multi-node deployment | M1.3 grows by one task; M5 keeps meta sharding |
+| R13 | The metastore over the network (openraft RPCs over HTTP; non-meta nodes run a non-voting learner replica, and `MetaClient` forwards writes and read-index requests to the leader) and `operon --roles …` cluster mode are pulled from M5 into M1.3 | Affinity routing needs more than one process; the in-process `Router` cannot run a real multi-node deployment | M1.3 grows by one task; M5 keeps meta sharding |
 | R14 | Qdrant and Elasticsearch servers are used only as external test oracles (Docker images in M1.7); no code, spec tests or resources from Elastic are vendored (Q10 resolved: not in M1) | License policy (D11) | Conformance relies on client-library and framework suites |
 | R15 | Every gateway returns its protocol's error body; `ServiceError` maps to one status per variant, fixed in each gateway plan | Clients branch on those errors | — |
 | R16 | Dropping a collection frees its name at once; re-creating it gets a new id and new prefixes | ES and Qdrant test suites drop and re-create names back to back | Old objects wait for GC's grace |
@@ -321,7 +321,7 @@ ES and Qdrant have no namespaces. Each gateway serves one namespace, `default` u
 - Every new object a GC root can reference is named with a ULID (or has a `LastModified`) and is referenced only through a freshness-carrying CAS or command.
 - No dependency with AGPL, SSPL, BSL or ELv2 licenses; vendored code keeps its license header and is listed in `NOTICE`.
 - Gateways never reach storage directly: they call `CollectionService` (Rule §01 §1.6).
-- Commit areas add `collection`, `text`, `query`, `hot`, `qdrant`, `es`, `mcp`, `sdk`, `conformance`, `bench`.
+- Commit areas add `collection`, `text`, `query`, `hot`, `qdrant`, `es`, `mcp`, `sdk`, `conformance`, `bench`, `hnsw`.
 
 ## 9. Carried in from M0
 
@@ -373,3 +373,4 @@ Adopted 2026-09-25 from the M1.4, M1.5, M1.6 and M1.7 plans (their proposals are
 | A16 | `ApplyError::SchemaVersionMismatch` | M1.1 A2 |
 | A17 | Schema types in `operon_common::schema`; `VectorIndexSpec`, `HnswParams`, `Quantization` defined by M1.1; collection names ≤ 222 bytes | M1.1 A5 |
 | A18 | Layout: `pkdelta/` and `deadletters/`; `lance_version` is a detached id; R7's mechanism. Vector indexes grow by delta index segments with periodic full rebuilds (`optimize_indices` commits to the mainline and is not used) | M1.1 A3, A4 |
+| A19 | M1.3: HNSW artifact path, `Operon-Hot-Used` values (`hnsw`, `splits`), `PUT …/hot` body, learner replicas on non-meta nodes (R13), commit area `hnsw` | M1.3 amendments 1–4 |
