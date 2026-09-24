@@ -140,7 +140,16 @@ CREATE STREAM tickets_changes AS CHANGELOG OF COLLECTION tickets
 - **Who writes it:** the link-apply worker that resolves upserts and deletes through the PK index already knows the old row, so it appends the batch's change records to the changelog stream before it commits the target.
 - **Exactly-once:** the sequencer records, per changelog partition, the highest source offset already appended (`source_upto`). The append is **fenced**: it is accepted only if the worker's lease epoch is current and the batch covers source offsets starting at `source_upto + 1`. The changelog commits before the target, so a crash between the two re-runs the apply; the retried worker reads `source_upto`, appends only changes beyond it, and then commits the target. No change is lost or duplicated.
 - **Ordering:** per key, changelog order equals commit order of the source partition. The changelog is partitioned like its source.
-- **Uses:** syncing agent memory to caches and external systems, CDC out of Operon (the Kafka surface makes it consumable by any Kafka client), and incremental consumers inside Operon (graph links, rollups) that need deletes and before images.
+- **Uses:** syncing agent memory to caches and external systems, CDC out of Operon (the Kafka surface makes it consumable by any Kafka client), incremental consumers inside Operon (graph links, rollups) that need deletes and before images, and stream processors such as RisingWave (§09 §8).
+- **Wire formats** on the Kafka surface, chosen per changelog so external processors read it with their built-in formats:
+
+  | `format` | Kafka record | Read by |
+  |---|---|---|
+  | `upsert` (default for `mode = 'upsert'`) | key = primary key; value = after image, or a tombstone (null value) for a delete | RisingWave `FORMAT UPSERT ENCODE JSON`, Flink `upsert-kafka`, compacted-topic consumers |
+  | `debezium-json` (default for `mode = 'full'`) | key = primary key; value = Debezium envelope `{before, after, op: c\|u\|d, source, ts_ms}` | RisingWave `FORMAT DEBEZIUM ENCODE JSON`, Flink `debezium-json`, Debezium-aware sinks |
+  | `native` | Arrow or JSON rows with a row-kind column (`+I`, `-U`, `+U`, `-D`) | Operon native API, links |
+
+  Avro/Protobuf encodings follow the schema registry (M5).
 - Phase: M3 (collections and keyed tables), with the Kafka surface.
 
 ## 9. Capacity and cost sketch

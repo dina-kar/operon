@@ -107,4 +107,4 @@ Targets: ClickBench (hot, on hot projections) within 2–3× of ClickHouse OSS o
 
 ## 8. External engine access
 
-Every table is a standard Iceberg table in Lakekeeper: Spark, Trino, DuckDB, Snowflake, StarRocks, PyIceberg read it (and may write it; Operon's T0 cache detects external snapshots via Lakekeeper events/polling). External writers bypass Operon's tail and links; Operon treats their commits as new snapshots.
+Every table is a standard Iceberg table in Lakekeeper: Spark, Trino, DuckDB, Snowflake, StarRocks, PyIceberg read it (and may write it; Operon's T0 cache detects external snapshots via Lakekeeper events/polling). External writers bypass Operon's tail and links; Operon treats their commits as new snapshots. A table has one writer class (§03 §2.3): tables written by an external engine, such as RisingWave's results (§09 §8), are not Operon link targets. They still get the Iceberg hot tier and the ClickHouse surface, with freshness equal to the external engine's commit cadence.

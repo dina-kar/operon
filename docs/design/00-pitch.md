@@ -90,7 +90,7 @@ Primary buyer: platform teams at companies running AI apps at scale who are payi
 
 - **Not an OLTP database.** No multi-statement interactive transactions with millisecond commits over mutable rows. Keep a Postgres for application state; stream its CDC into Operon.
 - **Not a full Elasticsearch/Neo4j/ClickHouse clone.** Compatibility is scoped by external conformance suites (client libraries, framework integrations), not by feature parity. No Kibana, Painless, APOC-at-large, or ClickHouse Native TCP in v1.
-- **Not a stream processor.** Stateless transforms and mergeable aggregates in links, yes; windowed joins with checkpointed state, no (use RisingWave/Arroyo/Flink against the Kafka surface).
+- **Not a stream processor.** Stateless transforms and mergeable aggregates in links, yes; windowed joins with checkpointed state, no. **RisingWave is the supported companion** (§09 §8): it reads Operon topics and changelog streams over the Kafka surface and writes results back as Iceberg tables through Lakekeeper or as topics. Arroyo and Flink work the same way.
 
 ## 8. Governance and business model (recommendation)
 

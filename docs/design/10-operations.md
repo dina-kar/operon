@@ -13,6 +13,8 @@ Status: **Approved** · 2026-09-22
 | Cluster | `operon --roles gateway,query,…` | Cloud object storage | 3 or 5 `meta` nodes across AZs | Production |
 | Kubernetes | Helm chart + `operon-operator` | Cloud object storage | StatefulSet (meta only) | Production |
 
+Companions are deployed next to Operon, not inside it: Lakekeeper (bundled), and optionally **RisingWave** for stateful stream processing (§09 §8), enabled in the Helm chart and the `docker-compose` examples.
+
 All roles ship in one binary. Kubernetes: `meta` is the only StatefulSet (small PVCs for Raft log); every other role is a Deployment with local NVMe (ephemeral) for cache, autoscaled by HPA/KEDA on role-specific signals (§3.1 of 01).
 
 ## 2. Configuration surface (essentials)

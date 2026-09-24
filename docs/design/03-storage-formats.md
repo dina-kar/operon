@@ -34,6 +34,7 @@ The durable tier is the **only source of truth**. It consists of open formats on
 - Keyed tables maintain a **PK index**: SlateDB instance mapping `pk → (data_file, row_position)`, updated by the worker that writes each data file (it knows positions).
 - Upsert = write new row + add old position to the **deletion vector** of its data file (Iceberg v3 Puffin DV). This keeps reads merge-on-read-cheap.
 - Fallback for engines/versions without v3: equality deletes, converted to DVs/rewrites by compaction.
+- **External upsert writers** (e.g., RisingWave's Iceberg upsert sink) commit equality deletes and bypass the PK index. A keyed table therefore has **one writer class**: either Operon links or an external engine. Externally written tables are read with equality-delete support and are never targets of Operon links; compaction converts their equality deletes to DVs without building a PK index.
 - **Changelog:** because the PK index locates the old row, the apply worker can emit before/after images to the table's changelog stream (§02 §8.1) at the cost of one cached read per update.
 - **Gap:** apache/iceberg-rust cannot yet write DVs or RowDelta commits (open PRs as of 2026-09). Plan: start from the **RisingWave iceberg-rust fork** (equality/position deletes, RewriteFiles), build the DV writer, and upstream it.
 

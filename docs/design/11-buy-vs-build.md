@@ -67,7 +67,15 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | Vortex | Apache-2.0 (LF AI & Data) | Future local/hot encoding option |
 | Apache Iggy | Apache-2.0 | Thread-per-core io_uring design, VSR clustering, DST practices |
 
-## 4. Avoid
+## 4. Companions (run alongside, not embedded)
+
+| System | License | Role next to Operon | Integration surface | Why not embed |
+|---|---|---|---|---|
+| **RisingWave** | Apache-2.0 (Rust) | Stateful stream processing: joins, windows, incremental materialized views (§09 §8) | Reads Operon topics and changelog streams (`upsert` / `debezium-json`) over Kafka; writes Iceberg tables via Lakekeeper or Kafka topics | Complete distributed system (frontend, meta, compute, compactor, Hummock); would duplicate Operon's metastore, cache and storage. v3.1.0 (2026-09-21), very active |
+| Lakekeeper | Apache-2.0 (Rust) | Iceberg REST catalog (bundled) | Iceberg REST | Already listed in §1; separate process by design |
+| Arroyo, Apache Flink | Apache-2.0 | Alternative stream processors | Kafka surface | Same reasoning as RisingWave |
+
+## 5. Avoid
 
 | Project | License | Reason |
 |---|---|---|
@@ -86,7 +94,7 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | S3 Vectors | AWS service | Top-k ≤ 100, ~1k writes/s per index, no hybrid search — cold tier at best |
 | ClickHouse OSS text index | Apache-2.0 | No BM25/positions — filter, not relevance |
 
-## 5. Build (the moat)
+## 6. Build (the moat)
 
 These are what turbopuffer, LanceDB Enterprise, AutoMQ commercial and ClickHouse Cloud keep closed — and what Operon ships open:
 
@@ -101,7 +109,7 @@ These are what turbopuffer, LanceDB Enterprise, AutoMQ commercial and ClickHouse
 9. **Iceberg DV writer / RowDelta** — contributed upstream to iceberg-rust.
 10. **Durable-execution integration**: the Resonate surface on Operon's store, auth and routing; in Phase B the change stream, search index, execution graph and cluster-wide timer shards (§14).
 
-## 6. Key sources
+## 7. Key sources
 
 - Lance: github.com/lance-format/lance · lance.org/format/table/transaction · lance.org/format/table/mem_wal · docs.lancedb.com/enterprise
 - Tantivy/Quickwit: github.com/quickwit-oss/tantivy · github.com/quickwit-oss/quickwit/releases/tag/v0.9.0 · quickwit.io/blog/quickwit-joins-datadog
