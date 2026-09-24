@@ -10,7 +10,8 @@ use common::{Meta, fast_config, faulty_store, read_direct, records, value};
 use operon_common::StreamId;
 use operon_log::{LogConfig, LogError, LogWriter, Record};
 use operon_meta::{
-    ApplyError, Consistency, ManualClock, MetaClientConfig, MetaError, WAL_COMMIT_WINDOW_MS,
+    ApplyError, Clock, Consistency, ManualClock, MetaClient, MetaClientConfig, MetaError,
+    WAL_COMMIT_WINDOW_MS,
 };
 use operon_store::{Fault, Op, Store};
 
@@ -21,7 +22,8 @@ async fn acks_are_dense_and_ordered_per_partition() {
     let meta = Meta::start().await;
     let (_, stream) = meta.stream("acme", "events", 4).await;
     let store = Store::in_memory();
-    let writer = LogWriter::start(meta.client.clone(), store.clone(), fast_config());
+    let writer =
+        LogWriter::start(meta.client.clone(), store.clone(), fast_config()).expect("start writer");
 
     let mut tasks = Vec::new();
     for task in 0..8 {
@@ -87,7 +89,8 @@ async fn one_flush_writes_one_object_for_many_streams_and_partitions() {
         flush_interval: Duration::from_secs(3600),
         ..LogConfig::new(1)
     };
-    let writer = LogWriter::start(meta.client.clone(), store.clone(), config);
+    let writer =
+        LogWriter::start(meta.client.clone(), store.clone(), config).expect("start writer");
 
     let mut appends = Vec::new();
     for (stream, partition) in [(a, 0), (a, 1), (b, 0), (b, 1), (a, 0)] {
@@ -132,7 +135,8 @@ async fn a_failed_put_fails_its_appends_and_commits_nothing() {
     let meta = Meta::start().await;
     let (_, stream) = meta.stream("acme", "events", 1).await;
     let (faulty, store) = faulty_store();
-    let writer = LogWriter::start(meta.client.clone(), store.clone(), fast_config());
+    let writer =
+        LogWriter::start(meta.client.clone(), store.clone(), fast_config()).expect("start writer");
 
     for fault in [Fault::Error, Fault::ErrorAfterApply] {
         faulty.inject(Op::Put, fault);
@@ -168,7 +172,8 @@ async fn a_lost_commit_acknowledgement_is_retried_without_duplicates() {
     let meta = Meta::start_with(Arc::new(operon_meta::SystemClock), no_retry).await;
     let (_, stream) = meta.stream("acme", "events", 1).await;
     let store = Store::in_memory();
-    let writer = LogWriter::start(meta.client.clone(), store.clone(), fast_config());
+    let writer =
+        LogWriter::start(meta.client.clone(), store.clone(), fast_config()).expect("start writer");
 
     meta.client.inject_lost_ack();
     let first = writer.append(stream, 0, records("a", 3)).await.unwrap();
@@ -198,7 +203,8 @@ async fn a_commit_that_never_lands_fails_with_commit_unknown() {
         commit_retry_deadline: Duration::from_millis(300),
         ..fast_config()
     };
-    let writer = LogWriter::start(meta.client.clone(), Store::in_memory(), config);
+    let writer =
+        LogWriter::start(meta.client.clone(), Store::in_memory(), config).expect("start writer");
     // Local reads keep working, but no write can commit any more.
     meta.shutdown().await;
     let started = Instant::now();
@@ -216,7 +222,8 @@ async fn a_rejected_commit_fails_its_appends_with_the_rejection() {
     let (_, stream) = meta.stream("acme", "events", 1).await;
     meta.client.prune_wal_commits().await.unwrap();
     clock.set(10 * WAL_COMMIT_WINDOW_MS - 2 * WAL_COMMIT_WINDOW_MS);
-    let writer = LogWriter::start(meta.client.clone(), Store::in_memory(), fast_config());
+    let writer = LogWriter::start(meta.client.clone(), Store::in_memory(), fast_config())
+        .expect("start writer");
     let err = writer.append(stream, 0, records("x", 1)).await.unwrap_err();
     assert!(
         matches!(
@@ -240,7 +247,8 @@ async fn appends_beyond_the_buffer_limit_are_refused() {
         max_buffered_bytes: batch_len * 3 / 2,
         ..LogConfig::new(1)
     };
-    let writer = LogWriter::start(meta.client.clone(), Store::in_memory(), config);
+    let writer =
+        LogWriter::start(meta.client.clone(), Store::in_memory(), config).expect("start writer");
 
     let buffered = {
         let writer = writer.clone();
@@ -285,7 +293,8 @@ async fn shutdown_flushes_buffered_appends_and_then_refuses_new_ones() {
         ..LogConfig::new(1)
     };
     let store = Store::in_memory();
-    let writer = LogWriter::start(meta.client.clone(), store.clone(), config);
+    let writer =
+        LogWriter::start(meta.client.clone(), store.clone(), config).expect("start writer");
     let mut appends = Vec::new();
     for i in 0..3 {
         let writer = writer.clone();
@@ -322,7 +331,8 @@ async fn invalid_appends_are_rejected() {
         max_batch_records: 5,
         ..fast_config()
     };
-    let writer = LogWriter::start(meta.client.clone(), Store::in_memory(), config);
+    let writer =
+        LogWriter::start(meta.client.clone(), Store::in_memory(), config).expect("start writer");
 
     let err = writer
         .append(StreamId(99), 0, records("x", 1))
@@ -351,7 +361,8 @@ async fn negative_timestamps_get_the_writers_clock() {
     let meta = Meta::start_with(clock, MetaClientConfig::default()).await;
     let (_, stream) = meta.stream("acme", "events", 1).await;
     let store = Store::in_memory();
-    let writer = LogWriter::start(meta.client.clone(), store.clone(), fast_config());
+    let writer =
+        LogWriter::start(meta.client.clone(), store.clone(), fast_config()).expect("start writer");
     let mut batch = records("t", 2);
     batch[0].timestamp_ms = -1;
     writer.append(stream, 0, batch).await.unwrap();
@@ -370,12 +381,153 @@ async fn buffered_appends_flush_on_the_interval() {
         flush_interval: Duration::from_millis(100),
         ..LogConfig::new(1)
     };
-    let writer = LogWriter::start(meta.client.clone(), Store::in_memory(), config);
+    let writer =
+        LogWriter::start(meta.client.clone(), Store::in_memory(), config).expect("start writer");
     let started = Instant::now();
     writer.append(stream, 0, records("x", 1)).await.unwrap();
     let elapsed = started.elapsed();
     assert!(elapsed >= Duration::from_millis(100), "{elapsed:?}");
     assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
     writer.shutdown().await.unwrap();
+    meta.shutdown().await;
+}
+
+/// Review I1: the first commit attempt is applied but its acknowledgement is
+/// lost; before the retry lands, the commit record is pruned. The retry is
+/// rejected as stale, but the records are committed, so the append must fail
+/// with `CommitUnknown`, never as a definite rejection.
+#[tokio::test]
+async fn a_stale_rejection_of_a_retried_commit_is_commit_unknown() {
+    let clock = Arc::new(ManualClock::new(1_700_000_000_000));
+    let slow_retries = MetaClientConfig {
+        backoff: Duration::from_secs(2),
+        ..MetaClientConfig::default()
+    };
+    let meta = Meta::start_with(clock.clone(), slow_retries).await;
+    let (_, stream) = meta.stream("acme", "events", 1).await;
+    let writer = LogWriter::start(meta.client.clone(), Store::in_memory(), fast_config())
+        .expect("start writer");
+    let pruner = MetaClient::new(
+        meta.node.clone(),
+        vec![],
+        clock.clone(),
+        MetaClientConfig::default(),
+    );
+
+    meta.client.inject_lost_ack();
+    let append = {
+        let writer = writer.clone();
+        tokio::spawn(async move { writer.append(stream, 0, records("x", 3)).await })
+    };
+    // The first attempt is applied; the client now backs off for 2 s.
+    common::eventually("the first attempt to apply", || async {
+        meta.high_watermark(stream, 0).await == 3
+    })
+    .await;
+    clock.advance(Duration::from_millis(2 * WAL_COMMIT_WINDOW_MS + 10));
+    assert_eq!(pruner.prune_wal_commits().await.unwrap(), 1);
+
+    let err = append.await.unwrap().unwrap_err();
+    assert!(matches!(err, LogError::CommitUnknown(_)), "{err:?}");
+    // The records are committed, once.
+    assert_eq!(meta.high_watermark(stream, 0).await, 3);
+    writer.shutdown().await.unwrap();
+    meta.shutdown().await;
+}
+
+/// Review I2: a writer whose clock is far ahead is refused before anything is
+/// proposed (a definite failure), and appends from a correct clock keep working.
+#[tokio::test]
+async fn a_writer_with_a_skewed_clock_is_refused_and_others_keep_working() {
+    let meta = Meta::start().await;
+    let (_, stream) = meta.stream("acme", "events", 1).await;
+    let store = Store::in_memory();
+    let ahead = MetaClient::new(
+        meta.node.clone(),
+        vec![],
+        Arc::new(ManualClock::new(
+            operon_meta::SystemClock.now_ms() + 86_400_000,
+        )),
+        MetaClientConfig::default(),
+    );
+    let skewed = LogWriter::start(ahead, store.clone(), fast_config()).expect("start writer");
+    let err = skewed
+        .append(stream, 0, records("future", 1))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, LogError::Meta(MetaError::ClockSkew { .. })),
+        "{err:?}"
+    );
+    skewed.shutdown().await.unwrap();
+
+    let writer =
+        LogWriter::start(meta.client.clone(), store.clone(), fast_config()).expect("start writer");
+    for i in 0..3 {
+        let ack = writer.append(stream, 0, records("now", 2)).await.unwrap();
+        assert_eq!(ack.base_offset, 2 * i);
+    }
+    writer.shutdown().await.unwrap();
+    meta.shutdown().await;
+}
+
+/// Review M5: a flush or shutdown that waits for the flush in flight gets
+/// that flush's error.
+#[tokio::test]
+async fn shutdown_reports_the_error_of_the_flush_in_flight() {
+    let no_retry = MetaClientConfig {
+        retry_deadline: Duration::ZERO,
+        ..MetaClientConfig::default()
+    };
+    let meta = Meta::start_with(Arc::new(operon_meta::SystemClock), no_retry).await;
+    let (_, stream) = meta.stream("acme", "events", 1).await;
+    let config = LogConfig {
+        commit_retry_deadline: Duration::from_secs(2),
+        flush_interval: Duration::from_millis(200),
+        ..LogConfig::new(1)
+    };
+    let writer =
+        LogWriter::start(meta.client.clone(), Store::in_memory(), config).expect("start writer");
+    meta.shutdown().await;
+    let append = {
+        let writer = writer.clone();
+        tokio::spawn(async move { writer.append(stream, 0, records("x", 1)).await })
+    };
+    common::eventually("the append to be buffered", || async {
+        writer.buffered_appends() == 1
+    })
+    .await;
+    // The flush takes it; its commit then fails for 2 s.
+    common::eventually("the flush to start", || async {
+        writer.buffered_appends() == 0
+    })
+    .await;
+    assert!(!append.is_finished());
+    let err = writer.shutdown().await.unwrap_err();
+    assert!(matches!(err, LogError::CommitUnknown(_)), "{err:?}");
+    let err = append.await.unwrap().unwrap_err();
+    assert!(matches!(err, LogError::CommitUnknown(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn invalid_configs_are_rejected() {
+    let meta = Meta::start().await;
+    for config in [
+        LogConfig {
+            commit_retry_deadline: Duration::from_secs(301),
+            ..LogConfig::new(1)
+        },
+        LogConfig {
+            max_batch_records: 0,
+            ..LogConfig::new(1)
+        },
+        LogConfig {
+            flush_bytes: 0,
+            ..LogConfig::new(1)
+        },
+    ] {
+        let err = LogWriter::start(meta.client.clone(), Store::in_memory(), config).unwrap_err();
+        assert!(matches!(err, LogError::InvalidArgument(_)), "{err:?}");
+    }
     meta.shutdown().await;
 }

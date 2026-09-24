@@ -12,7 +12,10 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use operon_common::StreamId;
-use operon_meta::{ApplyError, Consistency, MetaClient, MetaError, WalChunk, WalClass};
+use operon_meta::{
+    ApplyError, Command, Consistency, MetaClient, MetaError, Reply, WAL_COMMIT_WINDOW_MS, WalChunk,
+    WalClass,
+};
 use operon_store::{Store, StoreError};
 use tokio::sync::{Notify, oneshot};
 use tokio::task::JoinHandle;
@@ -37,9 +40,14 @@ pub struct LogConfig {
     /// Buffered plus in-flight bytes beyond which `append` fails with
     /// [`LogError::Backpressure`]. Default 64 MiB.
     pub max_buffered_bytes: usize,
-    /// How long a WAL commit is retried before its appends fail with
-    /// [`LogError::CommitUnknown`]. Must stay well below
-    /// [`operon_meta::WAL_COMMIT_WINDOW_MS`]. Default 60 s.
+    /// How long the writer keeps starting new attempts to commit a WAL
+    /// object before its appends fail with [`LogError::CommitUnknown`].
+    /// Default 60 s, at most a third of
+    /// [`WAL_COMMIT_WINDOW_MS`] (5 min). Each attempt is a
+    /// [`MetaClient`] write, which retries on its own for up to its
+    /// `retry_deadline` plus one request timeout, so a commit is given up
+    /// after at most `commit_retry_deadline` + the client's `retry_deadline`
+    /// + one request timeout (about 75 s with the defaults).
     pub commit_retry_deadline: Duration,
     /// Most records one append may carry. Default 10 000.
     pub max_batch_records: usize,
@@ -62,6 +70,31 @@ impl LogConfig {
 impl Default for LogConfig {
     fn default() -> Self {
         Self::new(1)
+    }
+}
+
+/// The longest `commit_retry_deadline`: a third of the commit window, leaving
+/// the rest for the metastore client's own retries and request timeouts.
+const MAX_COMMIT_RETRY_DEADLINE: Duration = Duration::from_millis(WAL_COMMIT_WINDOW_MS / 3);
+
+impl LogConfig {
+    /// Checks the settings: at least one record per append and one buffered
+    /// byte, and a commit retry deadline of at most 5 minutes.
+    pub fn validate(&self) -> Result<(), LogError> {
+        let invalid = |what: String| Err(LogError::InvalidArgument(what));
+        if self.max_batch_records == 0 || self.flush_bytes == 0 || self.max_buffered_bytes == 0 {
+            return invalid(
+                "max_batch_records, flush_bytes and max_buffered_bytes must be at least 1"
+                    .to_string(),
+            );
+        }
+        if self.commit_retry_deadline > MAX_COMMIT_RETRY_DEADLINE {
+            return invalid(format!(
+                "commit_retry_deadline must be at most {MAX_COMMIT_RETRY_DEADLINE:?}, got {:?}",
+                self.commit_retry_deadline
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -96,9 +129,26 @@ struct State {
     /// When the buffer became non-empty.
     opened_at: Option<Instant>,
     flush_waiters: Vec<oneshot::Sender<Result<(), LogError>>>,
+    /// Whether a flush is in flight.
+    flushing: bool,
+    /// Flush callers that arrived while a flush was in flight and nothing
+    /// else was buffered: they get that flush's result.
+    inflight_waiters: Vec<oneshot::Sender<Result<(), LogError>>>,
     closed: bool,
     /// The flush task has exited; nobody will answer new flush waiters.
     stopped: bool,
+}
+
+impl State {
+    /// Registers a flush caller: it waits for the next flush if anything is
+    /// buffered, else for the flush in flight, if any.
+    fn add_waiter(&mut self, waiter: oneshot::Sender<Result<(), LogError>>) {
+        if self.pending.is_empty() && self.flushing {
+            self.inflight_waiters.push(waiter);
+        } else {
+            self.flush_waiters.push(waiter);
+        }
+    }
 }
 
 struct Shared {
@@ -126,6 +176,11 @@ impl Shared {
 enum FlushFailure {
     Store(Arc<StoreError>),
     Rejected(ApplyError),
+    /// The leader refused the first commit attempt: nothing was committed.
+    ClockSkew {
+        stamped_ms: u64,
+        leader_ms: u64,
+    },
     Unknown(String),
 }
 
@@ -134,6 +189,13 @@ impl FlushFailure {
         match self {
             FlushFailure::Store(err) => LogError::Store(err.clone()),
             FlushFailure::Rejected(err) => LogError::Meta(MetaError::Rejected(err.clone())),
+            FlushFailure::ClockSkew {
+                stamped_ms,
+                leader_ms,
+            } => LogError::Meta(MetaError::ClockSkew {
+                stamped_ms: *stamped_ms,
+                leader_ms: *leader_ms,
+            }),
             FlushFailure::Unknown(message) => LogError::CommitUnknown(message.clone()),
         }
     }
@@ -158,7 +220,10 @@ impl Drop for Handle {
 /// An acknowledged append is durable: its WAL object was written and its
 /// commit applied by the metastore before the acknowledgement. Failed appends
 /// were not committed, except those failing with [`LogError::CommitUnknown`],
-/// which may have been.
+/// which may have been. A commit rejection is reported as such only when it
+/// answered the first attempt; a rejection of a retry after an attempt whose
+/// outcome was unknown (for example `StaleCommit` after the first attempt's
+/// commit record was pruned) is `CommitUnknown`.
 #[derive(Clone)]
 pub struct LogWriter {
     handle: Arc<Handle>,
@@ -173,8 +238,11 @@ impl std::fmt::Debug for LogWriter {
 }
 
 impl LogWriter {
-    /// Starts the writer and its flush task.
-    pub fn start(meta: MetaClient, store: Store, config: LogConfig) -> Self {
+    /// Starts the writer and its flush task. Fails with
+    /// [`LogError::InvalidArgument`] if the config is invalid
+    /// ([`LogConfig::validate`]).
+    pub fn start(meta: MetaClient, store: Store, config: LogConfig) -> Result<Self, LogError> {
+        config.validate()?;
         let shared = Arc::new(Shared {
             meta,
             store,
@@ -183,12 +251,12 @@ impl LogWriter {
             wake: Notify::new(),
         });
         let task = tokio::spawn(run(shared.clone()));
-        Self {
+        Ok(Self {
             handle: Arc::new(Handle {
                 shared,
                 task: tokio::sync::Mutex::new(Some(task)),
             }),
-        }
+        })
     }
 
     fn shared(&self) -> &Shared {
@@ -295,7 +363,7 @@ impl LogWriter {
                 // Closed, with everything flushed.
                 return Ok(());
             }
-            state.flush_waiters.push(tx);
+            state.add_waiter(tx);
         }
         self.shared().wake.notify_one();
         rx.await.unwrap_or(Ok(()))
@@ -310,7 +378,7 @@ impl LogWriter {
             let mut state = self.shared().state();
             state.closed = true;
             if !state.stopped {
-                state.flush_waiters.push(tx);
+                state.add_waiter(tx);
             }
             state.stopped
         };
@@ -368,6 +436,7 @@ fn next(shared: &Shared) -> Next {
     let bytes = mem::take(&mut state.pending_bytes);
     state.inflight_bytes += bytes;
     state.opened_at = None;
+    state.flushing = true;
     Next::Flush(Job {
         pending: mem::take(&mut state.pending),
         bytes,
@@ -398,8 +467,13 @@ async fn run(shared: Arc<Shared>) {
             waiters,
         } = job;
         let result = flush(&shared, pending).await;
-        shared.state().inflight_bytes -= bytes;
-        for waiter in waiters {
+        let late_waiters = {
+            let mut state = shared.state();
+            state.inflight_bytes -= bytes;
+            state.flushing = false;
+            mem::take(&mut state.inflight_waiters)
+        };
+        for waiter in waiters.into_iter().chain(late_waiters) {
             let _ = waiter.send(result.clone().map_err(|f| f.to_error()));
         }
     }
@@ -491,6 +565,12 @@ async fn write_and_commit(
 }
 
 /// Commits a written WAL object, retrying until `commit_retry_deadline`.
+///
+/// A rejection or a clock-skew refusal is definite only if no earlier
+/// attempt (here or inside the metastore client) ended with an unknown
+/// outcome. Otherwise the first attempt may have committed the object and
+/// its commit record may since have been pruned, so a `StaleCommit` for the
+/// retry proves nothing: the outcome is unknown.
 async fn commit(
     shared: &Shared,
     path: &str,
@@ -499,20 +579,52 @@ async fn commit(
 ) -> Result<Vec<u64>, FlushFailure> {
     let deadline = Instant::now() + shared.config.commit_retry_deadline;
     let mut backoff = COMMIT_BACKOFF;
+    let mut outcome_unknown = false;
     loop {
-        let err = match shared
-            .meta
-            .commit_wal(path, created_at_ms, chunks.clone())
-            .await
-        {
-            Ok(offsets) => return Ok(offsets),
+        let command = Command::CommitWal {
+            object: path.to_string(),
+            created_at_ms,
+            chunks: chunks.clone(),
+        };
+        let (result, earlier_unknown) = shared.meta.write_tracked(command).await;
+        outcome_unknown |= earlier_unknown;
+        let unknown = |why: String| {
+            FlushFailure::Unknown(format!(
+                "committing {path}: {why}, after an attempt whose outcome is unknown; \
+                 the records may be committed"
+            ))
+        };
+        let err = match result {
+            Ok(Reply::WalCommitted { base_offsets }) => return Ok(base_offsets),
+            Ok(other) => {
+                return Err(FlushFailure::Unknown(format!(
+                    "committing {path}: unexpected reply {other:?}"
+                )));
+            }
+            Err(MetaError::Rejected(err)) if outcome_unknown => {
+                return Err(unknown(format!("rejected: {err}")));
+            }
             Err(MetaError::Rejected(err)) => return Err(FlushFailure::Rejected(err)),
+            Err(err @ MetaError::ClockSkew { .. }) if outcome_unknown => {
+                return Err(unknown(err.to_string()));
+            }
+            Err(MetaError::ClockSkew {
+                stamped_ms,
+                leader_ms,
+            }) => {
+                return Err(FlushFailure::ClockSkew {
+                    stamped_ms,
+                    leader_ms,
+                });
+            }
             Err(err) => err,
         };
         let retryable = matches!(
             err,
             MetaError::NotLeader { .. } | MetaError::Timeout | MetaError::Unavailable(_)
         );
+        // This attempt may have been applied.
+        outcome_unknown = true;
         let remaining = deadline.saturating_duration_since(Instant::now());
         if !retryable || remaining.is_zero() {
             return Err(FlushFailure::Unknown(format!(

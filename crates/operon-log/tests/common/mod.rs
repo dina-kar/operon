@@ -271,6 +271,7 @@ pub struct PausingStore {
 
 pub struct Gate {
     prefix: std::sync::Mutex<Option<String>>,
+    held: std::sync::Mutex<Option<String>>,
     paused: tokio::sync::Notify,
     release: tokio::sync::Semaphore,
 }
@@ -279,6 +280,7 @@ impl Default for Gate {
     fn default() -> Self {
         Self {
             prefix: std::sync::Mutex::new(None),
+            held: std::sync::Mutex::new(None),
             paused: tokio::sync::Notify::new(),
             release: tokio::sync::Semaphore::new(0),
         }
@@ -303,10 +305,20 @@ impl Gate {
         self.release.add_permits(1);
     }
 
+    /// The path of the PUT that was held.
+    pub fn held_path(&self) -> String {
+        self.held
+            .lock()
+            .expect("lock")
+            .clone()
+            .expect("a PUT was held")
+    }
+
     fn take(&self, path: &str) -> bool {
         let mut prefix = self.prefix.lock().expect("lock");
         if prefix.as_deref().is_some_and(|p| path.starts_with(p)) {
             *prefix = None;
+            *self.held.lock().expect("lock") = Some(path.to_string());
             true
         } else {
             false

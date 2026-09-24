@@ -62,11 +62,15 @@ fn trim_point(
             .find(|e| e.max_timestamp_ms >= cutoff)
             .map_or(state.high_watermark(), |e| e.base_offset)
     });
+    // Like Kafka, which never deletes the active segment, the newest entry is
+    // always kept, even when it alone exceeds the limit: otherwise a
+    // partition could be emptied right after an acknowledged append.
     let by_bytes = max_bytes.map(|limit| {
         let mut bytes = state.bytes();
         let mut before = state.log_start_offset();
-        for entry in state.entries() {
-            if bytes <= limit {
+        let mut entries = state.entries().peekable();
+        while let Some(entry) = entries.next() {
+            if bytes <= limit || entries.peek().is_none() {
                 break;
             }
             bytes -= entry.byte_range.end - entry.byte_range.start;
@@ -112,33 +116,35 @@ impl Retention {
             Err(err) => return Err(err.into()),
         }
         let now = self.meta.now_ms();
-        let trims: Vec<(StreamId, u32, u64)> = self
+        // One short read for the policies, then one per partition, so the
+        // scan never holds the state lock for long.
+        let policies: Vec<(StreamId, u32, operon_meta::Retention)> = self
             .meta
             .read(Consistency::Local, |s| {
-                let mut trims = Vec::new();
-                for stream in s.all_streams() {
-                    let policy = stream.retention;
-                    if policy.max_age_ms.is_none() && policy.max_bytes.is_none() {
-                        continue;
-                    }
-                    for partition in 0..stream.partitions {
-                        let Some(state) = s.partition(stream.id, partition) else {
-                            continue;
-                        };
-                        if let Some(before) =
-                            trim_point(state, policy.max_age_ms, policy.max_bytes, now)
-                        {
-                            trims.push((stream.id, partition, before));
-                        }
-                    }
-                }
-                trims
+                s.all_streams()
+                    .filter(|st| {
+                        st.retention.max_age_ms.is_some() || st.retention.max_bytes.is_some()
+                    })
+                    .map(|st| (st.id, st.partitions, st.retention))
+                    .collect()
             })
             .await?;
         let mut report = RetentionReport::default();
-        for (stream, partition, before) in trims {
-            self.meta.trim_partition(stream, partition, before).await?;
-            report.trimmed += 1;
+        for (stream, partitions, policy) in policies {
+            for partition in 0..partitions {
+                let before = self
+                    .meta
+                    .read(Consistency::Local, |s| {
+                        s.partition(stream, partition).and_then(|state| {
+                            trim_point(state, policy.max_age_ms, policy.max_bytes, now)
+                        })
+                    })
+                    .await?;
+                if let Some(before) = before {
+                    self.meta.trim_partition(stream, partition, before).await?;
+                    report.trimmed += 1;
+                }
+            }
         }
         report.pruned = self.meta.prune_wal_commits().await?;
         Ok(report)

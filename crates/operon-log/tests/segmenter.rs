@@ -88,7 +88,8 @@ async fn segments_hold_contiguous_offsets_and_correct_footers() {
     let meta = Meta::start().await;
     let (_, stream) = meta.stream("acme", "events", 2).await;
     let store = Store::in_memory();
-    let writer = LogWriter::start(meta.client.clone(), store.clone(), fast_config());
+    let writer =
+        LogWriter::start(meta.client.clone(), store.clone(), fast_config()).expect("start writer");
     let mut model: BTreeMap<u32, Vec<(u64, String)>> = BTreeMap::new();
     for i in 0..24 {
         let partition = i % 2;
@@ -168,7 +169,8 @@ async fn runs_wait_for_enough_bytes_or_enough_age() {
     let meta = Meta::start_with(clock.clone(), MetaClientConfig::default()).await;
     let (_, stream) = meta.stream("acme", "events", 1).await;
     let store = Store::in_memory();
-    let writer = LogWriter::start(meta.client.clone(), store.clone(), fast_config());
+    let writer =
+        LogWriter::start(meta.client.clone(), store.clone(), fast_config()).expect("start writer");
     let mut batch = records("young", 3);
     for record in &mut batch {
         record.timestamp_ms = 1_000_000;
@@ -206,7 +208,8 @@ async fn a_zombie_segmenter_is_fenced_and_changes_nothing() {
     let meta = Meta::start_with(clock.clone(), MetaClientConfig::default()).await;
     let (_, stream) = meta.stream("acme", "events", 1).await;
     let (gate, store) = PausingStore::create();
-    let writer = LogWriter::start(meta.client.clone(), store.clone(), fast_config());
+    let writer =
+        LogWriter::start(meta.client.clone(), store.clone(), fast_config()).expect("start writer");
     writer.append(stream, 0, records("a", 3)).await.unwrap();
     let before = entries(&meta, stream, 0).await;
 
@@ -257,7 +260,8 @@ async fn an_index_mismatch_deletes_the_new_segment() {
     let meta = Meta::start().await;
     let (_, stream) = meta.stream("acme", "events", 1).await;
     let (gate, store) = PausingStore::create();
-    let writer = LogWriter::start(meta.client.clone(), store.clone(), fast_config());
+    let writer =
+        LogWriter::start(meta.client.clone(), store.clone(), fast_config()).expect("start writer");
     writer.append(stream, 0, records("a", 3)).await.unwrap();
     writer.append(stream, 0, records("b", 2)).await.unwrap();
 
@@ -318,7 +322,8 @@ async fn differential(steps: Vec<Step>, max_bytes: usize) {
     let meta = Meta::start().await;
     let (_, stream) = meta.stream("acme", "events", 2).await;
     let store = Store::in_memory();
-    let writer = LogWriter::start(meta.client.clone(), store.clone(), fast_config());
+    let writer =
+        LogWriter::start(meta.client.clone(), store.clone(), fast_config()).expect("start writer");
     let cache = small_cache(&store).await;
     let reader = LogReader::new(meta.client.clone(), cache.clone());
     let mut model: BTreeMap<u32, Vec<(u64, String)>> = BTreeMap::new();
@@ -404,4 +409,99 @@ proptest! {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(differential(steps, max_bytes));
     }
+}
+
+/// Review M7: a swap applied by an earlier attempt (whose acknowledgement was
+/// lost) and then trimmed makes the retry an index mismatch. The segment is
+/// retired in the metastore, so the segmenter must leave it to garbage
+/// collection instead of deleting it.
+#[tokio::test]
+async fn a_segment_the_metastore_retired_is_not_deleted_on_mismatch() {
+    let meta = Meta::start().await;
+    let (_, stream) = meta.stream("acme", "events", 1).await;
+    let (gate, store) = PausingStore::create();
+    let writer =
+        LogWriter::start(meta.client.clone(), store.clone(), fast_config()).expect("start writer");
+    writer.append(stream, 0, records("a", 3)).await.unwrap();
+    let wal = entries(&meta, stream, 0).await;
+
+    let segmenter = Segmenter::new(
+        meta.client.clone(),
+        store.clone(),
+        small_cache(&store).await,
+        "seg-a",
+        eager(1 << 20),
+    );
+    gate.arm("ns/");
+    let run = tokio::spawn(async move { segmenter.run_once().await });
+    gate.paused().await;
+    // As if an earlier attempt of this swap had been applied, then trimmed.
+    let path = gate.held_path();
+    meta.client
+        .swap_segment(
+            stream,
+            0,
+            vec![(0, wal[0].object.clone())],
+            &path,
+            40..41,
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+    meta.client.trim_partition(stream, 0, 3).await.unwrap();
+    assert!(retired(&meta).await.contains(&path));
+    gate.release();
+
+    let report = run.await.unwrap().unwrap();
+    assert_eq!(report.skipped, 1);
+    store
+        .head(&path)
+        .await
+        .expect("the retired segment is kept");
+    writer.shutdown().await.unwrap();
+    meta.shutdown().await;
+}
+
+/// Review M10: the segmenter renews its partition lease before the swap, so a
+/// long run is not fenced by its own lease expiring.
+#[tokio::test]
+async fn the_segmenter_renews_its_lease_before_swapping() {
+    let clock = Arc::new(ManualClock::new(1_000_000));
+    let meta = Meta::start_with(clock.clone(), MetaClientConfig::default()).await;
+    let (_, stream) = meta.stream("acme", "events", 1).await;
+    let (gate, store) = PausingStore::create();
+    let writer =
+        LogWriter::start(meta.client.clone(), store.clone(), fast_config()).expect("start writer");
+    writer.append(stream, 0, records("a", 3)).await.unwrap();
+
+    let config = SegmenterConfig {
+        lease_ttl: Duration::from_secs(30),
+        ..eager(1 << 20)
+    };
+    let segmenter = Segmenter::new(
+        meta.client.clone(),
+        store.clone(),
+        small_cache(&store).await,
+        "seg-a",
+        config,
+    );
+    gate.arm("ns/");
+    let run = tokio::spawn(async move { segmenter.run_once().await });
+    gate.paused().await;
+    clock.advance(Duration::from_secs(20));
+    gate.release();
+    assert_eq!(run.await.unwrap().unwrap().segments, 1);
+    let deadline = meta
+        .client
+        .read(Consistency::Local, move |s| {
+            s.lease(&format!("segmenter/{stream}/0"))
+                .unwrap()
+                .deadline_ms
+        })
+        .await
+        .unwrap();
+    assert_eq!(deadline, 1_000_000 + 20_000 + 30_000);
+    writer.shutdown().await.unwrap();
+    meta.shutdown().await;
 }

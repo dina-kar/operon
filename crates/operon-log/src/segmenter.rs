@@ -8,7 +8,8 @@ use bytes::Bytes;
 use operon_cache::RangeCache;
 use operon_common::{NamespaceId, StreamId};
 use operon_meta::{
-    ApplyError, Consistency, EntryKind, Fence, IndexEntry, MetaClient, MetaError, WalClass,
+    ApplyError, Consistency, EntryKind, Fence, IndexEntry, MetaClient, MetaError, PartitionState,
+    WalClass,
 };
 use operon_store::Store;
 use tokio::sync::watch;
@@ -104,6 +105,30 @@ impl BackgroundTask {
     }
 }
 
+/// The leading run of WAL entries of a partition (after its segments), up to
+/// `target_bytes`, if it is due: it holds `min_bytes`, or its oldest entry's
+/// newest timestamp is older than `cutoff`. Empty if nothing is due.
+fn due_run(state: &PartitionState, config: &SegmenterConfig, cutoff: i64) -> Vec<IndexEntry> {
+    let mut entries = Vec::new();
+    let mut bytes = 0;
+    for entry in state
+        .entries()
+        .skip_while(|e| e.kind == EntryKind::Segment)
+        .take_while(|e| e.kind == EntryKind::Wal)
+    {
+        let len = entry.byte_range.end - entry.byte_range.start;
+        if !entries.is_empty() && bytes + len > config.target_bytes {
+            break;
+        }
+        bytes += len;
+        entries.push(entry.clone());
+    }
+    match entries.first() {
+        Some(first) if bytes >= config.min_bytes || first.max_timestamp_ms < cutoff => entries,
+        _ => Vec::new(),
+    }
+}
+
 /// A run of WAL entries of one partition to segment.
 struct Candidate {
     namespace: NamespaceId,
@@ -151,45 +176,38 @@ impl Segmenter {
         let cutoff =
             i64::try_from(now.saturating_sub(millis(self.config.max_wal_age))).unwrap_or(i64::MAX);
         let config = &self.config;
-        let candidates = self
+        // One short read for the streams, then one per partition, so the scan
+        // never holds the state lock for long.
+        let streams: Vec<(NamespaceId, StreamId, u32)> = self
             .meta
             .read(Consistency::Local, |s| {
-                let mut out = Vec::new();
-                for stream in s.all_streams().filter(|st| st.class == WalClass::Standard) {
-                    for partition in 0..stream.partitions {
-                        let Some(state) = s.partition(stream.id, partition) else {
-                            continue;
-                        };
-                        let mut entries = Vec::new();
-                        let mut bytes = 0;
-                        for entry in state
-                            .entries()
-                            .skip_while(|e| e.kind == EntryKind::Segment)
-                            .take_while(|e| e.kind == EntryKind::Wal)
-                        {
-                            let len = entry.byte_range.end - entry.byte_range.start;
-                            if !entries.is_empty() && bytes + len > config.target_bytes {
-                                break;
-                            }
-                            bytes += len;
-                            entries.push(entry.clone());
-                        }
-                        let Some(first) = entries.first() else {
-                            continue;
-                        };
-                        if bytes >= config.min_bytes || first.max_timestamp_ms < cutoff {
-                            out.push(Candidate {
-                                namespace: stream.namespace,
-                                stream: stream.id,
-                                partition,
-                                entries,
-                            });
-                        }
-                    }
-                }
-                out
+                s.all_streams()
+                    .filter(|st| st.class == WalClass::Standard)
+                    .map(|st| (st.namespace, st.id, st.partitions))
+                    .collect()
             })
             .await?;
+        let mut candidates = Vec::new();
+        for (namespace, stream, partitions) in streams {
+            for partition in 0..partitions {
+                let entries = self
+                    .meta
+                    .read(Consistency::Local, |s| {
+                        s.partition(stream, partition)
+                            .map(|state| due_run(state, config, cutoff))
+                            .unwrap_or_default()
+                    })
+                    .await?;
+                if !entries.is_empty() {
+                    candidates.push(Candidate {
+                        namespace,
+                        stream,
+                        partition,
+                        entries,
+                    });
+                }
+            }
+        }
 
         let mut report = SegmenterReport::default();
         for candidate in candidates {
@@ -264,6 +282,21 @@ impl Segmenter {
         let path = paths::segment(*namespace, stream, partition, base_offset, ulid);
         self.store.put_if_absent(&path, bytes).await?;
 
+        // Reading and writing a large run can take a while: renew the lease
+        // before the swap, so another node does not take the partition over
+        // and fence it (review M10). A lost lease skips the swap.
+        match self
+            .meta
+            .renew_lease(&lease, &self.owner, grant.epoch, self.config.lease_ttl)
+            .await
+        {
+            Ok(_) => {}
+            Err(MetaError::Rejected(ApplyError::LeaseLost { .. })) => {
+                self.delete_unused(stream, partition, &path).await;
+                return Ok(false);
+            }
+            Err(err) => return Err(err.into()),
+        }
         let replaces = entries
             .iter()
             .map(|e| (e.base_offset, e.object.clone()))
@@ -291,14 +324,36 @@ impl Segmenter {
             Err(MetaError::Rejected(
                 ApplyError::IndexMismatch { .. } | ApplyError::Fenced { .. },
             )) => {
-                if let Err(err) = self.store.delete(&path).await {
-                    tracing::warn!(%path, %err, "could not delete an unused segment");
-                }
+                self.delete_unused(stream, partition, &path).await;
                 Ok(false)
             }
             // The outcome may be unknown: leave the object for garbage
             // collection if the swap did not land.
             Err(err) => Err(err.into()),
+        }
+    }
+
+    /// Deletes a segment this run wrote, unless the metastore references or
+    /// has retired it. A swap whose acknowledgement was lost can be applied
+    /// and then trimmed before its retry is rejected; that segment belongs to
+    /// garbage collection and its grace period, not to this run (review M7).
+    async fn delete_unused(&self, stream: StreamId, partition: u32, path: &str) {
+        let known = self
+            .meta
+            .read(Consistency::Local, |s| {
+                s.retired().any(|(p, _)| p == path)
+                    || s.partition(stream, partition)
+                        .is_some_and(|state| state.entries().any(|e| e.object == path))
+            })
+            .await;
+        match known {
+            Ok(false) => {
+                if let Err(err) = self.store.delete(path).await {
+                    tracing::warn!(%path, %err, "could not delete an unused segment");
+                }
+            }
+            Ok(true) => tracing::debug!(%path, "segment is known to the metastore; not deleting"),
+            Err(err) => tracing::warn!(%path, %err, "could not check a segment; not deleting"),
         }
     }
 

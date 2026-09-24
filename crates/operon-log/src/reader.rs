@@ -143,7 +143,8 @@ impl LogReader {
     /// garbage collection), the fetch re-plans once from fresh metastore
     /// state.
     pub async fn fetch(&self, request: FetchRequest) -> Result<FetchResponse, LogError> {
-        let deadline = Instant::now() + request.max_wait;
+        // A wait too long to represent is a wait without a deadline.
+        let deadline = Instant::now().checked_add(request.max_wait);
         let mut timed_out = request.max_wait.is_zero();
         let mut replanned = false;
         loop {
@@ -169,6 +170,12 @@ impl LogReader {
                         log_start_offset: plan.log_start_offset,
                     });
                 }
+                let sleep = async {
+                    match deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+                        None => std::future::pending().await,
+                    }
+                };
                 tokio::select! {
                     changed = applied.changed() => {
                         if changed.is_err() {
@@ -176,7 +183,7 @@ impl LogReader {
                             timed_out = true;
                         }
                     }
-                    () = tokio::time::sleep_until(deadline.into()) => timed_out = true,
+                    () = sleep => timed_out = true,
                 }
                 continue;
             }

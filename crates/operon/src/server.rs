@@ -71,6 +71,8 @@ pub enum ServerError {
     Meta(#[from] operon_meta::MetaError),
     #[error("cache: {0}")]
     Cache(#[from] operon_cache::CacheError),
+    #[error("log: {0}")]
+    Log(#[from] operon_log::LogError),
     #[error("listen on {addr}: {source}")]
     Listen {
         addr: SocketAddr,
@@ -131,7 +133,7 @@ impl Server {
         );
 
         let cache = RangeCache::new(store.clone(), config.cache.clone()).await?;
-        let writer = LogWriter::start(meta.clone(), store.clone(), config.log.clone());
+        let writer = LogWriter::start(meta.clone(), store.clone(), config.log.clone())?;
         let reader = LogReader::new(meta.clone(), cache.clone());
         // Unique per process incarnation, as leases require.
         let owner = format!("node-{NODE_ID}-{}", Ulid::generate());

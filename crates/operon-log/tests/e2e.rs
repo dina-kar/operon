@@ -330,8 +330,10 @@ async fn acknowledged_appends_survive_a_meta_leader_failover() {
     }
 
     let data = Store::in_memory();
-    let writer_a = LogWriter::start(cluster.client(1), data.clone(), log_config(1));
-    let writer_b = LogWriter::start(cluster.client(2), data.clone(), log_config(2));
+    let writer_a =
+        LogWriter::start(cluster.client(1), data.clone(), log_config(1)).expect("start writer");
+    let writer_b =
+        LogWriter::start(cluster.client(2), data.clone(), log_config(2)).expect("start writer");
     let segmenter = Segmenter::new(
         cluster.client(3),
         data.clone(),
@@ -391,7 +393,8 @@ async fn intermittent_store_faults_never_corrupt_reads() {
     let (_, stream) = meta.stream("acme", "events", PARTITIONS).await;
     let faulty = Arc::new(FaultyStore::new(Store::in_memory().inner().clone()));
     let data = Store::new(faulty.clone());
-    let writer = LogWriter::start(meta.client.clone(), data.clone(), log_config(1));
+    let writer =
+        LogWriter::start(meta.client.clone(), data.clone(), log_config(1)).expect("start writer");
     let segmenter = Segmenter::new(
         meta.client.clone(),
         data.clone(),

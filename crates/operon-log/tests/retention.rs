@@ -40,7 +40,8 @@ impl Fixture {
         let meta = Meta::start_with(clock.clone(), MetaClientConfig::default()).await;
         let (ns, stream) = meta.stream("acme", "events", 1).await;
         let store = Store::in_memory();
-        let writer = LogWriter::start(meta.client.clone(), store.clone(), fast_config());
+        let writer = LogWriter::start(meta.client.clone(), store.clone(), fast_config())
+            .expect("start writer");
         Self {
             clock,
             meta,
@@ -298,5 +299,30 @@ async fn background_loops_run_until_stopped() {
     .spawn();
     common::eventually("the loop trims", || async { f.log_start().await == 2 }).await;
     task.stop().await;
+    f.shutdown().await;
+}
+
+/// Review M4: like Kafka's active segment, the newest entry is kept even when
+/// it alone exceeds `max_bytes`, so an acknowledged append stays readable.
+#[tokio::test]
+async fn retention_by_bytes_keeps_the_newest_entry() {
+    let f = Fixture::start().await;
+    f.meta
+        .client
+        .set_retention(
+            f.stream,
+            operon_meta::Retention {
+                max_age_ms: None,
+                max_bytes: Some(100),
+            },
+        )
+        .await
+        .unwrap();
+    f.writer.append(f.stream, 0, at(NOW, 20)).await.unwrap();
+    assert_eq!(f.retention().run_once().await.unwrap().trimmed, 0);
+    assert_eq!(f.log_start().await, 0);
+    f.writer.append(f.stream, 0, at(NOW, 20)).await.unwrap();
+    assert_eq!(f.retention().run_once().await.unwrap().trimmed, 1);
+    assert_eq!(f.log_start().await, 20);
     f.shutdown().await;
 }

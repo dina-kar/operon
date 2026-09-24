@@ -27,7 +27,8 @@ impl Fixture {
         let meta = Meta::start().await;
         let (ns, stream) = meta.stream("acme", "events", 1).await;
         let store = Store::in_memory();
-        let writer = LogWriter::start(meta.client.clone(), store.clone(), config);
+        let writer =
+            LogWriter::start(meta.client.clone(), store.clone(), config).expect("start writer");
         let reader = LogReader::new(meta.client.clone(), small_cache(&store).await);
         Self {
             meta,
@@ -430,5 +431,41 @@ async fn a_corrupt_object_fails_the_fetch_as_corrupt() {
     f.store.put(&segment, corrupted.into()).await.unwrap();
     let err = f.fetch(0, 1000).await.unwrap_err();
     assert!(matches!(err, LogError::Corrupt(_)), "{err:?}");
+    f.shutdown().await;
+}
+
+/// Review M1: a wait too long to add to `Instant::now()` does not panic.
+#[tokio::test]
+async fn an_unrepresentable_max_wait_does_not_panic() {
+    let f = Fixture::start(fast_config()).await;
+    f.append_batches(&[2]).await;
+    let response = f
+        .reader
+        .fetch(FetchRequest {
+            stream: f.stream,
+            partition: 0,
+            offset: 0,
+            max_bytes: 100,
+            max_wait: Duration::MAX,
+        })
+        .await
+        .unwrap();
+    assert_eq!(response.records.len(), 2);
+    // At the high watermark, the wait ends with the next commit.
+    let reader = f.reader.clone();
+    let stream = f.stream;
+    let poll = tokio::spawn(async move {
+        reader
+            .fetch(FetchRequest {
+                stream,
+                partition: 0,
+                offset: 2,
+                max_bytes: 100,
+                max_wait: Duration::MAX,
+            })
+            .await
+    });
+    f.append_batches(&[1]).await;
+    assert_eq!(poll.await.unwrap().unwrap().records.len(), 1);
     f.shutdown().await;
 }
