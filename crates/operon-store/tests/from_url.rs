@@ -24,6 +24,21 @@ async fn file_url_opens_local_directory_with_create_only_writes() {
     assert!(dir.path().join("bucket/wal/0001.wal").exists());
 }
 
+#[test]
+fn file_url_stores_fsync_their_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("file://{}", dir.path().join("bucket").display());
+    let store = Store::from_url(&url, NO_OPTIONS).unwrap();
+
+    // `LocalFileSystem` does not expose its fsync setting except through
+    // `Debug`. Without fsync, a write that returned can vanish on power loss.
+    let debug = format!("{store:?}");
+    assert!(
+        debug.contains("LocalFileSystem") && debug.contains("fsync: true"),
+        "expected a LocalFileSystem with fsync enabled, got {debug}"
+    );
+}
+
 #[tokio::test]
 async fn memory_url_opens_in_memory_store() {
     let store = Store::from_url("memory:///", NO_OPTIONS).unwrap();

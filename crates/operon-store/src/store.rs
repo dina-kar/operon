@@ -47,6 +47,11 @@ impl Store {
     }
 
     /// An in-memory store, for tests and `operon dev`.
+    ///
+    /// Its contents vanish with the process. A component that keeps durable
+    /// local state pointing into the store (such as a metastore's snapshot
+    /// pointer) will find those objects missing after a restart; use a
+    /// `file://` store where state must survive restarts.
     pub fn in_memory() -> Self {
         Self::new(Arc::new(InMemory::new()))
     }
@@ -56,6 +61,10 @@ impl Store {
     ///
     /// `options` are backend-specific keys (for example `aws_region`); credentials
     /// not given here are read from the environment by the backend.
+    ///
+    /// Every backend is durable once a write returns: `file://` stores fsync the
+    /// written file and its directory before `put` returns, as S3, GCS and Azure
+    /// do implicitly. Callers such as the metastore rely on this.
     pub fn from_url<I, K, V>(url: &str, options: I) -> Result<Self, StoreError>
     where
         I: IntoIterator<Item = (K, V)>,
@@ -70,7 +79,8 @@ impl Store {
             std::fs::create_dir_all(&dir)
                 .map_err(|e| StoreError::InvalidUrl(format!("{url}: {e}")))?;
             let fs = object_store::local::LocalFileSystem::new_with_prefix(&dir)
-                .map_err(|e| map_err(url, e))?;
+                .map_err(|e| map_err(url, e))?
+                .with_fsync(true);
             return Ok(Self::new(Arc::new(fs)));
         }
         let (store, prefix) =
