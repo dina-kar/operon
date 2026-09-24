@@ -4,18 +4,25 @@
 //! retention trim, link commit, GC pass, meta snapshot) is crossed with every
 //! `(Op, Fault)` pair, the fault hitting the operation's first or its second
 //! call of that store operation. Each cell runs on a fresh in-process setup
-//! and ends up in one of three outcomes:
-//! - `Retried`: the fault took effect and the operation still completed
-//!   (retrying internally, riding out a delay, or, for GC, leaving a failed
-//!   delete for its next pass);
-//! - `SurfacedRetryable`: the caller saw an error, and nothing was
-//!   acknowledged that is not durable;
+//! and ends up in one of four outcomes:
+//! - `Retried`: the fault was reached and the operation still completed
+//!   (retrying internally or riding out a delay);
+//! - `Deferred`: GC only: the fault was reached, the pass completed and left
+//!   the object it could not handle for its next pass;
+//! - `SurfacedRetryable`: the fault was reached and the caller saw a
+//!   *retryable* error (store, cache, metastore unavailability, unknown
+//!   commit outcome, a blocked link commit), and nothing was acknowledged
+//!   that is not durable;
 //! - `NoEffect`: the operation never reached the faulted call.
 //!
-//! After every cell, with faults off and the components run once more, the
-//! invariants must hold: no acknowledged data loss, no torn state (meta
-//! invariants, and reads equal to the model), and the link's `CounterTable`
-//! exact. The matrix is written to `target/fault-matrix.md`.
+//! An error without the fault being reached, or a non-retryable error
+//! (corrupt data, an unexpected reply), fails the gate. Every cell's outcome
+//! must equal the committed table `tests/fault_matrix.expected.md`
+//! (`FAULT_MATRIX_BLESS=1` rewrites it; review the diff). After every cell,
+//! with faults off and the components run once more, the invariants must
+//! hold: the segmenter runs without failures, no acknowledged data loss, no
+//! torn state (meta invariants, and reads equal to the model), and the link's
+//! `CounterTable` exact. The matrix is written to `target/fault-matrix.md`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -24,20 +31,20 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use object_store::memory::InMemory;
-use operon_cache::{RangeCache, RangeCacheConfig};
+use operon_cache::{CacheError, RangeCache, RangeCacheConfig};
 use operon_common::{NamespaceId, StreamId};
-use operon_link::{CounterTable, LinkApplySource, LinkConfig, LinkGcRoots};
+use operon_link::{CounterTable, LinkApplySource, LinkConfig, LinkError, LinkGcRoots};
 use operon_log::gc::{GcConfig, GcSource};
 use operon_log::{
     FetchRequest, LogConfig, LogError, LogReader, LogWriter, Record, Retention, RetentionConfig,
     Segmenter, SegmenterConfig,
 };
 use operon_meta::{
-    Consistency, MetaClient, MetaClientConfig, MetaConfig, MetaNode, Router, SystemClock,
-    TargetRef, WalClass,
+    Consistency, MetaClient, MetaClientConfig, MetaConfig, MetaError, MetaNode, Router,
+    SystemClock, TargetRef, WalClass,
 };
 use operon_store::{Fault, FaultyStore, Op, Store};
-use operon_worker::{RunResult, run_once};
+use operon_worker::{RunResult, TaskError, run_once};
 use tempfile::TempDir;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -84,6 +91,7 @@ fn faults() -> [Fault; 4] {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Outcome {
     Retried,
+    Deferred,
     SurfacedRetryable,
     NoEffect,
 }
@@ -92,9 +100,101 @@ impl fmt::Display for Outcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Outcome::Retried => "Retried",
+            Outcome::Deferred => "Deferred",
             Outcome::SurfacedRetryable => "SurfacedRetryable",
             Outcome::NoEffect => "NoEffect",
         })
+    }
+}
+
+/// Why a component operation failed.
+#[derive(Debug)]
+enum Failure {
+    Log(LogError),
+    Meta(MetaError),
+    Task(TaskError),
+    /// Not an error of the component (a wrong result): never retryable.
+    Other(String),
+}
+
+impl From<LogError> for Failure {
+    fn from(err: LogError) -> Self {
+        Failure::Log(err)
+    }
+}
+
+impl From<MetaError> for Failure {
+    fn from(err: MetaError) -> Self {
+        Failure::Meta(err)
+    }
+}
+
+fn meta_retryable(err: &MetaError) -> bool {
+    matches!(
+        err,
+        MetaError::NotLeader { .. }
+            | MetaError::Timeout
+            | MetaError::Unavailable(_)
+            | MetaError::Storage(_)
+    )
+}
+
+fn log_retryable(err: &LogError) -> bool {
+    match err {
+        LogError::Store(_)
+        | LogError::Cache(CacheError::Store(_))
+        | LogError::CommitUnknown(_)
+        | LogError::Backpressure => true,
+        LogError::Meta(err) => meta_retryable(err),
+        LogError::Task(err) => task_retryable(err),
+        _ => false,
+    }
+}
+
+fn link_retryable(err: &LinkError) -> bool {
+    match err {
+        LinkError::Store(_) | LinkError::Blocked(_) => true,
+        LinkError::Meta(err) => meta_retryable(err),
+        LinkError::Log(err) => log_retryable(err),
+        LinkError::Corrupt(_) | LinkError::NotFound(_) => false,
+    }
+}
+
+fn task_retryable(err: &TaskError) -> bool {
+    match err {
+        TaskError::Fenced => true,
+        TaskError::Meta(err) => meta_retryable(err),
+        TaskError::Failed(err) => {
+            if let Some(err) = err.downcast_ref::<LogError>() {
+                log_retryable(err)
+            } else if let Some(err) = err.downcast_ref::<LinkError>() {
+                link_retryable(err)
+            } else {
+                err.downcast_ref::<operon_store::StoreError>().is_some()
+            }
+        }
+    }
+}
+
+impl Failure {
+    fn retryable(&self) -> bool {
+        match self {
+            Failure::Log(err) => log_retryable(err),
+            Failure::Meta(err) => meta_retryable(err),
+            Failure::Task(err) => task_retryable(err),
+            Failure::Other(_) => false,
+        }
+    }
+}
+
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Failure::Log(err) => write!(f, "log: {err}"),
+            Failure::Meta(err) => write!(f, "meta: {err}"),
+            Failure::Task(err) => write!(f, "task: {err}"),
+            Failure::Other(err) => f.write_str(err),
+        }
     }
 }
 
@@ -351,16 +451,12 @@ impl Fixture {
     }
 
     /// Runs one component operation; `Ok` if it succeeded.
-    async fn operate(&self, component: Component) -> Result<(), String> {
+    async fn operate(&self, component: Component) -> Result<(), Failure> {
         match component {
             // Two flushes, so a fault can hit the second WAL PUT too.
             Component::WriterFlush => {
-                self.append(self.events, 1, 3)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                self.append(self.events, 0, 2)
-                    .await
-                    .map_err(|e| e.to_string())
+                self.append(self.events, 1, 3).await?;
+                Ok(self.append(self.events, 0, 2).await?)
             }
             Component::ReaderFetch => {
                 let reader = self.reader().await;
@@ -384,48 +480,60 @@ impl Fixture {
                 Ok(())
             }
             Component::SegmenterSwap => {
-                let report = segmenter(self, self.cache().await)
-                    .run_once()
-                    .await
-                    .map_err(|e| e.to_string())?;
-                if report.failed > 0 || report.segments == 0 {
-                    Err(format!("{report:?}"))
-                } else {
-                    Ok(())
+                // Through the worker directly, to see each task's error.
+                let segmenter = segmenter(self, self.cache().await);
+                let before = segmenter.source().report();
+                let results = run_once(
+                    &self.meta,
+                    "matrix-segmenter",
+                    Duration::from_secs(30),
+                    segmenter.source(),
+                )
+                .await
+                .map_err(Failure::Task)?;
+                for (_, result) in results {
+                    match result {
+                        RunResult::Ran(Ok(_)) => {}
+                        RunResult::Ran(Err(err)) => return Err(Failure::Task(err)),
+                        RunResult::LeaseHeld => {
+                            return Err(Failure::Other("segmenter lease held".to_string()));
+                        }
+                    }
                 }
+                let report = segmenter.source().report();
+                if report.segments == before.segments {
+                    return Err(Failure::Other(format!("nothing segmented: {report:?}")));
+                }
+                Ok(())
             }
-            Component::RetentionTrim => Retention::new(
+            Component::RetentionTrim => Ok(Retention::new(
                 self.meta.clone(),
                 "matrix-retention",
                 RetentionConfig::default(),
             )
             .run_once()
             .await
-            .map(|_| ())
-            .map_err(|e| e.to_string()),
+            .map(|_| ())?),
             Component::LinkCommit => {
                 let source = link_source(self, self.reader().await);
                 let results = run_once(&self.meta, "matrix-link", Duration::from_secs(30), &source)
                     .await
-                    .map_err(|e| e.to_string())?;
-                match &results[..] {
-                    [(_, RunResult::Ran(Ok(_)))] => Ok(()),
-                    other => Err(format!("{other:?}")),
+                    .map_err(Failure::Task)?;
+                match results.into_iter().next() {
+                    Some((_, RunResult::Ran(Ok(_)))) => Ok(()),
+                    Some((_, RunResult::Ran(Err(err)))) => Err(Failure::Task(err)),
+                    other => Err(Failure::Other(format!("{other:?}"))),
                 }
             }
-            Component::GcPass => gc(self)
-                .run_once(&self.meta, "matrix-gc")
-                .await
-                .map_err(|e| e.to_string())
-                .and_then(|r| r.map(|_| ()).ok_or_else(|| "lease held".to_string())),
+            Component::GcPass => match gc(self).run_once(&self.meta, "matrix-gc").await? {
+                Some(_) => Ok(()),
+                None => Err(Failure::Other("gc lease held".to_string())),
+            },
             // Two snapshots: the second replaces (and deletes) the first.
             Component::MetaSnapshot => {
-                self.node.snapshot().await.map_err(|e| e.to_string())?;
-                self.meta
-                    .create_namespace("snapshotted-again")
-                    .await
-                    .map_err(|e| e.to_string())?;
-                self.node.snapshot().await.map_err(|e| e.to_string())
+                self.node.snapshot().await?;
+                self.meta.create_namespace("snapshotted-again").await?;
+                Ok(self.node.snapshot().await?)
             }
         }
     }
@@ -461,10 +569,14 @@ impl Fixture {
     /// once more so that retries complete.
     async fn check(&self, what: &str) {
         self.faults.clear();
-        segmenter(self, self.cache().await)
+        let report = segmenter(self, self.cache().await)
             .run_once()
             .await
             .unwrap_or_else(|e| panic!("{what}: segmenter after the cell: {e}"));
+        assert_eq!(
+            report.failed, 0,
+            "{what}: segmenter after the cell: {report:?}"
+        );
         self.apply_link().await;
         gc(self)
             .run_once(&self.meta, "matrix-gc")
@@ -537,7 +649,7 @@ async fn read_all(
     stream: StreamId,
     partition: u32,
     from: u64,
-) -> Result<BTreeMap<u64, String>, String> {
+) -> Result<BTreeMap<u64, String>, LogError> {
     let mut out = BTreeMap::new();
     let mut offset = from;
     loop {
@@ -549,8 +661,7 @@ async fn read_all(
                 max_bytes: 1 << 16,
                 max_wait: Duration::ZERO,
             })
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
         if response.records.is_empty() {
             return Ok(out);
         }
@@ -575,8 +686,13 @@ async fn cell(component: Component, op: Op, fault: Fault, nth: u64) -> Outcome {
     let consumed = f.faults.pending(op) == 0;
     let outcome = match (result, consumed) {
         (Ok(()), false) => Outcome::NoEffect,
+        (Ok(()), true) if component == Component::GcPass && !matches!(fault, Fault::Delay(_)) => {
+            Outcome::Deferred
+        }
         (Ok(()), true) => Outcome::Retried,
-        (Err(_), _) => Outcome::SurfacedRetryable,
+        (Err(err), true) if err.retryable() => Outcome::SurfacedRetryable,
+        (Err(err), true) => panic!("{what}: a non-retryable error surfaced: {err}"),
+        (Err(err), false) => panic!("{what}: failed without reaching the fault: {err}"),
     };
     f.check(&what).await;
     f.shutdown().await;
@@ -668,10 +784,54 @@ fn every_component_survives_every_store_fault() {
             }
         }
     }
+    let rows = table.clone();
     table.push_str(&format!("\nCells: {} ({counts:?}).\n", 2 * results.len()));
     let target = std::env::var("CARGO_TARGET_DIR")
         .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../target").to_string());
     let path = std::path::Path::new(&target).join("fault-matrix.md");
     std::fs::write(&path, &table).expect("write the fault matrix");
     eprintln!("fault matrix written to {}", path.display());
+
+    // Every cell must have the committed outcome (review I2).
+    let expected_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fault_matrix.expected.md"
+    );
+    if std::env::var_os("FAULT_MATRIX_BLESS").is_some() {
+        std::fs::write(expected_path, &rows).expect("write the expected matrix");
+        return;
+    }
+    let expected = std::fs::read_to_string(expected_path).expect("read the expected matrix");
+    let mismatches: Vec<String> = diff_rows(&expected, &rows);
+    assert!(
+        mismatches.is_empty(),
+        "cells differ from {expected_path} (expected => actual):\n{}",
+        mismatches.join("\n")
+    );
+}
+
+/// The rows of `actual` that differ from `expected`, by (component, op,
+/// fault), and rows only one of them has.
+fn diff_rows(expected: &str, actual: &str) -> Vec<String> {
+    fn rows(table: &str) -> BTreeMap<String, String> {
+        table
+            .lines()
+            .filter(|l| l.starts_with("| ") && !l.starts_with("| Component"))
+            .filter_map(|l| {
+                let cells: Vec<&str> = l.split('|').map(str::trim).collect();
+                (cells.len() >= 6).then(|| {
+                    (
+                        format!("{} x {} {}", cells[1], cells[2], cells[3]),
+                        format!("{} / {}", cells[4], cells[5]),
+                    )
+                })
+            })
+            .collect()
+    }
+    let (expected, actual) = (rows(expected), rows(actual));
+    let keys: BTreeSet<&String> = expected.keys().chain(actual.keys()).collect();
+    keys.into_iter()
+        .filter(|k| expected.get(*k) != actual.get(*k))
+        .map(|k| format!("{k}: {:?} => {:?}", expected.get(k), actual.get(k)))
+        .collect()
 }
