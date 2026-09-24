@@ -75,6 +75,20 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | Lakekeeper | Apache-2.0 (Rust) | Iceberg REST catalog (bundled) | Iceberg REST | Already listed in §1; separate process by design |
 | Arroyo, Apache Flink | Apache-2.0 | Alternative stream processors | Kafka surface | Same reasoning as RisingWave |
 
+### 4.1 Candidates for agent workspaces (§15, proposed)
+
+| Component | Project | License | Role | Notes |
+|---|---|---|---|---|
+| Git objects and packs | **gitoxide** (`gix-*`) | Apache-2.0 / MIT | Pack parsing, indexes, protocol, SHA-1/SHA-256 | Server-side upload-pack/receive-pack not implemented upstream → build the server loop |
+| Lazy, deduplicated images | **nydus** (Dragonfly) | Apache-2.0 (Rust) | Environment images (RAFS v6 / EROFS), chunk dedup, lazy fetch | Verify its storage backend can use Operon's bucket or cache |
+| Chunking / hashing | fastcdc, BLAKE3 | MIT / Apache-2.0 | Content-defined chunks for the namespace CAS | — |
+| FUSE | fuser | MIT | Userspace mounts where virtiofs/EROFS are unavailable | — |
+| Code parsing | tree-sitter | MIT | Symbol chunks and code graphs | — |
+| MCP | Rust MCP SDK (`rmcp`) | verify | MCP server surface | — |
+| Build cache | sccache, bazel-remote | Apache-2.0 | Point at the bucket; no Operon code | — |
+| Sandbox runtimes | microsandbox, Firecracker, gVisor, E2B, Anthropic `sandbox-runtime`, Codex | Apache-2.0 | Integration targets, never embedded | — |
+| References | git-remote-object-store, awslabs/git-remote-s3, AgentFS, Jujutsu, mountpoint-s3, JuiceFS | Apache-2.0 / MIT | Designs to learn from | — |
+
 ## 5. Avoid
 
 | Project | License | Reason |
@@ -85,6 +99,7 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | SurrealDB | BSL 1.1 | Blocks hosted offerings until 2030 |
 | Memgraph | BSL 1.1 + enterprise | License |
 | FalkorDB | SSPL | License |
+| Daytona | AGPL-3.0 | License; open-source repo reported unmaintained (2026-06) |
 | Moonlink (Mooncake) | BSL 1.1 | License; abandoned after Databricks acquisition |
 | Databend `ee/` directories | ELv2 | License (Apache core is fine to study) |
 | Bufstream, WarpStream | Proprietary | Closed |

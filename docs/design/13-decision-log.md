@@ -28,6 +28,7 @@ Living document. Newest decisions at the bottom of each table.
 | D20 | 2026-09-24 | **`arrow` segment encoding** for schema'd streams (idea from Apache Fluss); the `encoding` field is reserved in the first WAL/segment format (M0.3), `arrow` ships in M4 | Column pruning and no decode for links and tails; reserving the field now avoids a format break | Approved (user) |
 | D21 | 2026-09-24 | **Changelog streams** from keyed tables and collections (`upsert` / `full` with before images; idea from Apache Fluss), written by link apply with fenced appends; M3 | CDC out of Operon and incremental consumers that need deletes; the PK index already locates before images | Approved (user) |
 | D22 | 2026-09-24 | **RisingWave is the supported companion stream processor**, run alongside Operon (not embedded): it reads topics and changelog streams (`upsert` / `debezium-json` wire formats) and writes Iceberg tables via Lakekeeper or Kafka topics; externally written keyed tables have one writer class | Keeps Operon out of stateful stream processing (§00 §7) while giving users joins/windows/MVs; RisingWave is Apache-2.0 Rust and already speaks Kafka + Iceberg REST | Approved (user) |
+| D23 | 2026-09-24 | Operon as the **state plane for agent sandboxes** (§15): Git on the bucket with O(1) forks, copy-on-write environment images (nydus), package caches, registry proxy, MCP server; runtimes are integrated, never built | Sandboxes are stateless compute; their state (code, deps, checkpoints, memory, traces) fits Operon's bucket model, and agents already speak Git | **Proposed** |
 
 ## Open questions
 
@@ -46,3 +47,5 @@ Living document. Newest decisions at the bottom of each table.
 | Q11 | Resonate SDKs: per-namespace auth headers vs. base paths; S3 Express/GCS Rapid/Azure `If-Match` support for low-latency durable namespaces | Eng | M2 |
 | Q12 | Contribute the Operon Resonate server plugin upstream, or keep it in-tree | Founder | M2 |
 | Q13 | `arrow` encoding layout (IPC per chunk vs. per-segment file with column index) and whether the WAL writes it directly | Eng | M0.3 (field), M4 (layout) |
+| Q14 | Approve §15 agent workspaces, and when: W0 (MCP) with M1, W1 after M2? | Founder | Before M1 plan |
+| Q15 | Repos as a sixth object kind (with an implicit stream) or a service like durable execution | Eng | W1 design |
