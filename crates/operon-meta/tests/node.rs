@@ -451,6 +451,30 @@ async fn shutdown_cuts_short_a_snapshot_upload_being_retried() {
     assert_eq!(names, ["acme"]);
 }
 
+/// M0.2 review N4: a node whose Raft stopped with a fatal error (here a
+/// snapshot build that failed past its I/O budget) reports it, so a harness
+/// can tell it from one that is merely unavailable.
+#[tokio::test]
+async fn a_fatal_raft_error_is_reported() {
+    let dir = TempDir::new().unwrap();
+    let (faulty, store) = faulty_store();
+    let mut cfg = config(&dir, &store);
+    cfg.snapshot_io_budget = Duration::from_millis(500);
+    let node = start(cfg).await;
+    node.create_namespace("acme").await.unwrap();
+    assert_eq!(node.fatal_error(), None);
+
+    for _ in 0..10_000 {
+        faulty.inject(Op::Put, Fault::Error);
+    }
+    assert!(node.snapshot().await.is_err());
+    let deadline = Instant::now() + WAIT;
+    while node.fatal_error().is_none() {
+        assert!(Instant::now() < deadline, "no fatal error reported");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 #[tokio::test]
 async fn a_node_without_local_state_refuses_to_start_over_existing_snapshots() {
     let store = Store::in_memory();
@@ -595,6 +619,47 @@ async fn the_leader_refuses_commands_stamped_too_far_ahead() {
     let err = skewed_client.prune_wal_commits(None).await.unwrap_err();
     assert!(matches!(err, MetaError::ClockSkew { .. }), "{err:?}");
     assert!(started.elapsed() < Duration::from_secs(2));
+    node.shutdown().await.unwrap();
+}
+
+/// M0.3 re-review N1: with the default `max_clock_skew` (5 min), a leader
+/// whose clock is minutes behind still accepts writers with correct clocks.
+#[tokio::test]
+async fn a_leader_minutes_behind_accepts_correct_writers_by_default() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    let clock = Arc::new(ManualClock::new(1_700_000_000_000));
+    let mut cfg = config(&dir, &store);
+    assert_eq!(cfg.max_clock_skew, Duration::from_secs(300));
+    cfg.clock = clock.clone();
+    let node = start(cfg).await;
+    let ns = node.create_namespace("acme").await.unwrap();
+    let stream = node
+        .create_stream(ns, "events", 1, WalClass::Standard)
+        .await
+        .unwrap();
+    // The writers' clock is 4 min ahead of the leader's.
+    let now = clock.now_ms() + 240_000;
+    node.write(Command::PruneWalCommits {
+        fence: None,
+        now_ms: now,
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        node.commit_wal("wal/ahead.wal", now, vec![chunk(stream, 1)])
+            .await
+            .unwrap(),
+        [0]
+    );
+    // Past the default it is refused.
+    let err = node
+        .write(Command::PruneWalCommits {
+            fence: None,
+            now_ms: clock.now_ms() + 301_000,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, MetaError::ClockSkew { .. }), "{err:?}");
     node.shutdown().await.unwrap();
 }
 
