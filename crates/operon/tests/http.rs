@@ -459,3 +459,159 @@ fn the_dev_command_prints_help() {
             .contains("--bucket")
     );
 }
+
+/// Review M2 and M3: framework-level rejections use the API's JSON error
+/// body, oversized bodies get 413, and `max_bytes` is capped instead of
+/// letting one request read a whole partition.
+#[tokio::test]
+async fn framework_rejections_use_the_json_error_body() {
+    let dir = TempDir::new().unwrap();
+    let server = Server::start(config(&dir, lazy_segmenter())).await.unwrap();
+    let api = Api::new(&server);
+    api.setup(1).await;
+    api.produce(0, &["a", "b"]).await;
+
+    let big = "x".repeat(operon::api::MAX_BODY_BYTES + 1);
+    let response = api
+        .http
+        .post(format!("{}/v1/namespaces", api.base))
+        .body(big)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["error"], "invalid_argument");
+    assert!(body["message"].as_str().is_some());
+
+    for path in [
+        "/v1/namespaces/%FF/streams/events",
+        "/v1/namespaces/acme/streams/events/partitions/0/records?offset=%FF%FE",
+        "/no/such/route",
+    ] {
+        let response = api
+            .http
+            .get(format!("{}{path}", api.base))
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        assert!(status.is_client_error(), "{path}: {status}");
+        let body: Value = response.json().await.expect("a JSON error body");
+        assert!(body["error"].as_str().is_some(), "{path}: {body}");
+        assert!(body["message"].as_str().is_some(), "{path}: {body}");
+    }
+
+    let (status, body) = api
+        .get(&format!(
+            "/v1/namespaces/acme/streams/events/partitions/0/records?offset=0&max_bytes={}",
+            u64::MAX
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["records"].as_array().unwrap().len(), 2);
+    server.shutdown().await.unwrap();
+}
+
+/// Review M11: a failed start stops what it started, so the same data
+/// directory can be opened again in the same process.
+#[tokio::test]
+async fn a_failed_start_releases_the_data_directory() {
+    let dir = TempDir::new().unwrap();
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut busy = config(&dir, lazy_segmenter());
+    busy.listen = taken.local_addr().unwrap();
+    let err = Server::start(busy).await.unwrap_err();
+    assert!(matches!(err, operon::ServerError::Listen { .. }), "{err}");
+
+    let server = Server::start(config(&dir, lazy_segmenter())).await.unwrap();
+    let (status, _) = Api::new(&server).get("/ready").await;
+    assert_eq!(status, StatusCode::OK);
+    server.shutdown().await.unwrap();
+}
+
+/// A running `operon dev` process.
+struct Dev {
+    child: std::process::Child,
+    base: String,
+}
+
+impl Dev {
+    fn start(dir: &TempDir) -> Self {
+        use std::io::BufRead;
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_operon"))
+            .args([
+                "dev",
+                "--listen",
+                "127.0.0.1:0",
+                "--flush-interval-ms",
+                "20",
+            ])
+            .arg("--data-dir")
+            .arg(dir.path())
+            .env("RUST_LOG", "warn")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn operon");
+        let stdout = child.stdout.take().expect("stdout");
+        let mut lines = std::io::BufReader::new(stdout).lines();
+        let base = loop {
+            let line = lines
+                .next()
+                .expect("operon exited before listening")
+                .expect("read stdout");
+            if let Some(url) = line.strip_prefix("operon listening on ") {
+                break url.trim().to_string();
+            }
+        };
+        // Keep draining stdout so the process never blocks on a full pipe.
+        std::thread::spawn(move || for _ in lines {});
+        Self { child, base }
+    }
+
+    fn api(&self) -> Api {
+        Api {
+            base: self.base.clone(),
+            http: reqwest::Client::new(),
+        }
+    }
+
+    /// SIGKILL: no flush, no shutdown, no final snapshot.
+    fn kill(self) {
+        drop(self);
+    }
+}
+
+impl Drop for Dev {
+    /// Also kills the process when a test fails, so none is left behind.
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Review M12 / Review Focus 5: every acknowledged record survives a crash
+/// (SIGKILL of `operon dev`), not only a graceful shutdown.
+#[tokio::test]
+async fn acknowledged_records_survive_a_crash() {
+    let dir = TempDir::new().unwrap();
+    let dev = Dev::start(&dir);
+    let api = dev.api();
+    api.setup(1).await;
+    let mut model = Vec::new();
+    for i in 0..10 {
+        let values: Vec<String> = (0..2).map(|j| format!("c{i}-{j}")).collect();
+        let refs: Vec<&str> = values.iter().map(String::as_str).collect();
+        let base = api.produce(0, &refs).await;
+        model.extend((base..).zip(values));
+    }
+    dev.kill();
+
+    let dev = Dev::start(&dir);
+    let api = dev.api();
+    assert_eq!(api.fetch_all(0, 0).await, model);
+    let base = api.produce(0, &["after-crash"]).await;
+    assert_eq!(base, model.len() as u64);
+    dev.kill();
+}

@@ -118,10 +118,34 @@ fn bucket_url(config: &ServerConfig) -> Result<String, ServerError> {
 impl Server {
     /// Opens (or creates) the data directory, starts the metastore, the log
     /// and its background loops, and serves the HTTP API.
+    ///
+    /// On failure, everything already started is stopped again (the
+    /// metastore releases its local database), so a retry in the same process
+    /// can succeed.
     pub async fn start(config: ServerConfig) -> Result<Self, ServerError> {
+        config.log.validate()?;
         let store = Store::from_url(&bucket_url(&config)?, Vec::<(String, String)>::new())?;
         let meta_config = MetaConfig::new(NODE_ID, config.data_dir.join("meta"), store.clone());
         let node = MetaNode::start(meta_config, &Router::new()).await?;
+        match Self::start_on(node.clone(), store, config).await {
+            Ok(server) => Ok(server),
+            Err(err) => {
+                if let Err(shutdown) = node.shutdown().await {
+                    tracing::warn!(%shutdown, "stopping the metastore after a failed start");
+                }
+                Err(err)
+            }
+        }
+    }
+
+    /// Everything after the meta node started. Every fallible step runs
+    /// before any task is spawned, so a failure leaves only the meta node
+    /// (and the cache, closed here) to stop.
+    async fn start_on(
+        node: MetaNode,
+        store: Store,
+        config: ServerConfig,
+    ) -> Result<Self, ServerError> {
         // A no-op once the node is initialized, so restarts keep their state.
         node.initialize([NODE_ID]).await?;
         node.wait_for_leader(LEADER_WAIT).await?;
@@ -131,8 +155,27 @@ impl Server {
             Arc::new(SystemClock),
             MetaClientConfig::default(),
         );
-
         let cache = RangeCache::new(store.clone(), config.cache.clone()).await?;
+        let bound = async {
+            let listener = tokio::net::TcpListener::bind(config.listen).await?;
+            let local_addr = listener.local_addr()?;
+            Ok::<_, std::io::Error>((listener, local_addr))
+        }
+        .await;
+        let (listener, local_addr) = match bound {
+            Ok(bound) => bound,
+            Err(source) => {
+                if let Err(err) = cache.close().await {
+                    tracing::warn!(%err, "closing the cache after a failed start");
+                }
+                return Err(ServerError::Listen {
+                    addr: config.listen,
+                    source,
+                });
+            }
+        };
+
+        // Validated above, so this cannot fail.
         let writer = LogWriter::start(meta.clone(), store.clone(), config.log.clone())?;
         let reader = LogReader::new(meta.clone(), cache.clone());
         // Unique per process incarnation, as leases require.
@@ -146,19 +189,6 @@ impl Server {
         )
         .spawn();
         let retention = Retention::new(meta.clone(), owner, config.retention.clone()).spawn();
-
-        let listener = tokio::net::TcpListener::bind(config.listen)
-            .await
-            .map_err(|source| ServerError::Listen {
-                addr: config.listen,
-                source,
-            })?;
-        let local_addr = listener
-            .local_addr()
-            .map_err(|source| ServerError::Listen {
-                addr: config.listen,
-                source,
-            })?;
         let app = api::router(AppState {
             meta: meta.clone(),
             writer: writer.clone(),

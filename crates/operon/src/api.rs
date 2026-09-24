@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::{Path, Query, State};
+use axum::extract::rejection::{BytesRejection, PathRejection, QueryRejection};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -20,6 +21,12 @@ use serde_json::{Value, json};
 
 /// The default `max_bytes` of a fetch: 1 MiB.
 const DEFAULT_MAX_BYTES: usize = 1024 * 1024;
+/// The largest `max_bytes` a fetch may ask for: 16 MiB. Larger values are
+/// lowered to it, so one request cannot read a whole partition into memory.
+pub const MAX_FETCH_BYTES: usize = 16 * 1024 * 1024;
+/// The largest request body: 16 MiB. Larger bodies get `413` with the usual
+/// JSON error body.
+pub const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 /// The longest a fetch may long-poll.
 const MAX_WAIT: Duration = Duration::from_secs(60);
 
@@ -43,7 +50,43 @@ pub fn router(state: AppState) -> Router {
             "/v1/namespaces/{ns}/streams/{stream}/partitions/{partition}/records",
             post(produce).get(fetch),
         )
+        .fallback(no_route)
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
+}
+
+async fn no_route() -> ApiError {
+    ApiError::not_found("no such route")
+}
+
+/// Turns an axum extractor rejection (a bad path segment, query, or body,
+/// including a body over the limit) into the API's JSON error body, keeping
+/// its status.
+fn rejected(status: StatusCode, message: String) -> ApiError {
+    let code = if status.is_server_error() {
+        "internal"
+    } else {
+        "invalid_argument"
+    };
+    ApiError::new(status, code, message)
+}
+
+impl From<PathRejection> for ApiError {
+    fn from(err: PathRejection) -> Self {
+        rejected(err.status(), err.body_text())
+    }
+}
+
+impl From<QueryRejection> for ApiError {
+    fn from(err: QueryRejection) -> Self {
+        rejected(err.status(), err.body_text())
+    }
+}
+
+impl From<BytesRejection> for ApiError {
+    fn from(err: BytesRejection) -> Self {
+        rejected(err.status(), err.body_text())
+    }
 }
 
 /// An error response: `{"error": code, "message": ...}` plus any extra fields.
@@ -179,7 +222,11 @@ struct CreateNamespace {
     name: String,
 }
 
-async fn create_namespace(State(state): State<AppState>, body: Bytes) -> ApiResult {
+async fn create_namespace(
+    State(state): State<AppState>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult {
+    let body = body?;
     let request: CreateNamespace = parse_json(&body)?;
     let id = state.meta.create_namespace(&request.name).await?;
     Ok((StatusCode::CREATED, axum::Json(json!({ "id": id.0 }))).into_response())
@@ -217,9 +264,10 @@ async fn stream_id(meta: &MetaClient, ns: &str, stream: &str) -> Result<StreamId
 
 async fn create_stream(
     State(state): State<AppState>,
-    Path(ns): Path<String>,
-    body: Bytes,
+    ns: Result<Path<String>, PathRejection>,
+    body: Result<Bytes, BytesRejection>,
 ) -> ApiResult {
+    let (Path(ns), body) = (ns?, body?);
     let request: CreateStream = parse_json(&body)?;
     let namespace = namespace_id(&state.meta, &ns).await?;
     let retention = request
@@ -244,8 +292,9 @@ async fn create_stream(
 
 async fn describe_stream(
     State(state): State<AppState>,
-    Path((ns, stream)): Path<(String, String)>,
+    path: Result<Path<(String, String)>, PathRejection>,
 ) -> ApiResult {
+    let Path((ns, stream)) = path?;
     let id = stream_id(&state.meta, &ns, &stream).await?;
     let body = state
         .meta
@@ -320,9 +369,10 @@ struct Produce {
 
 async fn produce(
     State(state): State<AppState>,
-    Path((ns, stream, partition)): Path<(String, String, String)>,
-    body: Bytes,
+    path: Result<Path<(String, String, String)>, PathRejection>,
+    body: Result<Bytes, BytesRejection>,
 ) -> ApiResult {
+    let (Path((ns, stream, partition)), body) = (path?, body?);
     let partition = parse_partition(&partition)?;
     let request: Produce = parse_json(&body)?;
     let id = stream_id(&state.meta, &ns, &stream).await?;
@@ -364,13 +414,16 @@ fn query_number<T: std::str::FromStr>(
 
 async fn fetch(
     State(state): State<AppState>,
-    Path((ns, stream, partition)): Path<(String, String, String)>,
-    Query(query): Query<HashMap<String, String>>,
+    path: Result<Path<(String, String, String)>, PathRejection>,
+    query: Result<Query<HashMap<String, String>>, QueryRejection>,
 ) -> ApiResult {
+    let (Path((ns, stream, partition)), Query(query)) = (path?, query?);
     let partition = parse_partition(&partition)?;
     let offset = query_number::<u64>(&query, "offset")?
         .ok_or_else(|| ApiError::invalid("the offset query parameter is required"))?;
-    let max_bytes = query_number::<usize>(&query, "max_bytes")?.unwrap_or(DEFAULT_MAX_BYTES);
+    let max_bytes = query_number::<usize>(&query, "max_bytes")?
+        .unwrap_or(DEFAULT_MAX_BYTES)
+        .min(MAX_FETCH_BYTES);
     let max_wait = query_number::<u64>(&query, "max_wait_ms")?
         .map_or(Duration::ZERO, Duration::from_millis)
         .min(MAX_WAIT);
