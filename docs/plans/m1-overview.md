@@ -191,7 +191,7 @@ CollectionManifest {
 
 Commit (§03 §3.3, exact order): write new Lance data/deletion files and the Lance version → write the new split and the changed delete bitmaps → write the manifest → `cas_pointer(ns, "collection/<cid>", expected = parent, fence = task lease, freshness = the oldest new object's creation time with max age = link `max_commit_delay`)`. Readers load the pointer, then the manifest, and read only the Lance version, splits and bitmaps it names.
 
-**Retention for pinned reads (A6).** GC keeps every manifest younger than the collection's time-travel retention (default 24 h, §03 §7) plus the last `keep_manifests`, with everything they reference, and an implicit stream is trimmed only below the `applied` offsets of the oldest retained manifest. So a `Pinned` read (§6.5) stays valid for as long as its manifest is retained, with no metastore hold.
+**Retention for pinned reads (A6).** GC keeps every manifest superseded less than the collection's time-travel retention ago (A21: measured from the child manifest's `created_at_ms`, so a pin on a long-lived manifest does not expire at once) (default 24 h, §03 §7) plus the last `keep_manifests`, with everything they reference, and an implicit stream is trimmed only below the `applied` offsets of the oldest retained manifest. So a `Pinned` read (§6.5) stays valid for as long as its manifest is retained, with no metastore hold.
 
 ### 6.5 Consistency tokens and read consistency (M1.2)
 
@@ -227,7 +227,7 @@ pub struct AnnParams { pub exact: bool, pub nprobes: Option<u32>, pub refine_fac
                       pub distance: Option<Distance> /* metric override, exact search only (ES script_score) (A7) */ }
 pub enum Fusion { Rrf { k: u32 /* default 60 */ }, Dbsf, WeightedSum { weights: Vec<f32> } }
 // Rrf: score(d) = Σ_lists 1 / (k + rank(d)), rank 1-based (ES convention; Qdrant's 0-based k=2 is sent as k = 1).
-// Dbsf: Qdrant's distribution-based score fusion: each list's scores normalised with (s − (μ − 3σ)) / 6σ, clamped to [0, 1], then summed.
+// Dbsf: Qdrant's distribution-based score fusion: each list's scores normalised with Qdrant's `distr_norm`, (s − (μ − 3σ)) / 6σ with f32 Welford mean and sample σ (a one-hit list or σ = 0 scores 0.5), not clamped, then summed (A20).
 // WeightedSum: Σ weight_i · score_i over the lists a document appears in (ES query + knn semantics, boosts as weights).
 pub enum Query {  // scoring when used by Retriever::Text, a bitmap when used as a filter
     MatchAll, MatchNone,
@@ -279,7 +279,7 @@ pub enum ServiceError { NotFound { kind: &'static str, name: String }, AlreadyEx
 
 ### 6.8 Native API additions (M1.2; routes follow the M0 style `/v1/namespaces/{ns}/…`, JSON error body unchanged)
 
-`POST|GET /v1/namespaces/{ns}/collections` (create, list) · `GET|DELETE /v1/namespaces/{ns}/collections/{c}` · `POST /v1/namespaces/{ns}/collections/{c}/documents` (ops) · `POST /v1/namespaces/{ns}/collections/{c}/documents/get` · `POST /v1/namespaces/{ns}/query` (the §05 §4 hybrid request) · `POST /v1/namespaces/{ns}/sql` · M1.3 adds `PUT /v1/namespaces/{ns}/collections/{c}/hot` and `POST /v1/namespaces/{ns}/collections/{c}/warm`. Flight SQL listens on `native.flight_sql` (default `0.0.0.0:8082`). `PrimaryKey` in JSON: integer → `U64`, string → `Str`, `{"uuid": "…"}` → `Uuid` (A12).
+`POST|GET /v1/namespaces/{ns}/collections` (create, list) · `GET|DELETE /v1/namespaces/{ns}/collections/{c}` · `POST /v1/namespaces/{ns}/collections/{c}/documents` (ops) · `POST /v1/namespaces/{ns}/collections/{c}/documents/get` · `POST /v1/namespaces/{ns}/query` (the §05 §4 hybrid request) · `POST /v1/namespaces/{ns}/sql` · M1.3 adds `PUT /v1/namespaces/{ns}/collections/{c}/hot` and `POST /v1/namespaces/{ns}/collections/{c}/warm`. Flight SQL listens on `native.flight_sql` (default `0.0.0.0:8082`). M1.2 also serves `…/collections/{c}/fields`, `…/versions`, `/v1/namespaces/{ns}/aliases`, `…/documents/scroll` and `…/documents/count`; `operon dev` binds Flight SQL on `127.0.0.1:8082` (A22). `PrimaryKey` in JSON: integer → `U64`, string → `Str`, `{"uuid": "…"}` → `Uuid` (A12).
 
 **Hot-tier controls (A13, M1.3).** Request header `Operon-Hot: on|off` (gRPC metadata `operon-hot`) disables every hot structure for one request; responses carry `Operon-Hot-Used: <comma-separated subset of hnsw, splits; or none>` (fragment prefetch only fills the H1 cache and is never reported or bypassed); the server flag `--hot=on|off` sets the default and `--hot-pin-all` pins every collection (gates and benchmarks). `PUT …/hot` takes `{vectors, text, fragments}`. `GET …/collections/{c}` reports `manifest_version`, `link_lag_records` and the hot status per structure.
 
@@ -374,3 +374,6 @@ Adopted 2026-09-25 from the M1.4, M1.5, M1.6 and M1.7 plans (their proposals are
 | A17 | Schema types in `operon_common::schema`; `VectorIndexSpec`, `HnswParams`, `Quantization` defined by M1.1; collection names ≤ 222 bytes | M1.1 A5 |
 | A18 | Layout: `pkdelta/` and `deadletters/`; `lance_version` is a detached id; R7's mechanism. Vector indexes grow by delta index segments with periodic full rebuilds (`optimize_indices` commits to the mainline and is not used) | M1.1 A3, A4 |
 | A19 | M1.3: HNSW artifact path, `Operon-Hot-Used` values (`hnsw`, `splits`), `PUT …/hot` body, learner replicas on non-meta nodes (R13), commit area `hnsw` | M1.3 amendments 1–4 |
+| A20 | DBSF exactly as Qdrant's `distr_norm` (no clamping) | M1.2 A19 |
+| A21 | Manifest retention measured from supersession, not creation | M1.2 A20 |
+| A22 | Extra native routes; Flight SQL bind address in `operon dev` | M1.2 A21 |
