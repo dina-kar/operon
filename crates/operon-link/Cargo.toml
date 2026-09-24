@@ -33,6 +33,7 @@ operon-cache.workspace = true
 operon-link = { path = ".", features = ["test-util"] }
 operon-meta = { workspace = true, features = ["test-util"] }
 operon-worker = { workspace = true, features = ["test-util"] }
+proptest.workspace = true
 tempfile.workspace = true
 
 [lints]

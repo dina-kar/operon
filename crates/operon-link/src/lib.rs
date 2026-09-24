@@ -18,12 +18,15 @@
 mod apply;
 mod counter;
 mod error;
+mod gc;
 mod target;
 
 pub use apply::{LinkApplySource, LinkConfig};
 pub use counter::{COUNTER_KIND, CounterSnapshot, CounterTable, MAX_COMMIT_DELAY};
 pub use error::LinkError;
+pub use gc::LinkGcRoots;
 pub use target::{ApplyBatch, CommitError, CommitStep, LinkTarget, TargetState};
 
 #[cfg(feature = "test-util")]
 pub use target::CommitHook;
+

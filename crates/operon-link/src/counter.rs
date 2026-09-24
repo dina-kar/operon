@@ -89,6 +89,11 @@ fn decode<T: DeserializeOwned>(magic: &[u8; 8], path: &str, bytes: &[u8]) -> Res
     Ok(value)
 }
 
+/// Decodes a manifest object.
+pub(crate) fn decode_manifest(path: &str, bytes: &[u8]) -> Result<Manifest, LinkError> {
+    decode(MANIFEST_MAGIC, path, bytes)
+}
+
 /// `ns/<ns>/links/<link_id>/`.
 pub(crate) fn link_prefix(namespace: NamespaceId, link: LinkId) -> String {
     format!("ns/{namespace}/links/{link}/")
