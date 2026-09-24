@@ -125,7 +125,8 @@ pub enum DocOp {
     Delete(PrimaryKey),
     Patch { pk: PrimaryKey, mode: PatchMode, source: serde_json::Map<String, serde_json::Value>,
             delete_keys: Vec<String> /* JSON paths, dot-separated */, vectors: BTreeMap<String, Option<Vec<f32>>> /* None = delete vector */,
-            upsert: Option<Document> /* used when the key does not exist; otherwise a patch of a missing key is a no-op */ },
+            upsert: Option<Document> /* used when the key does not exist; otherwise a patch of a missing key changes nothing at apply time,
+                                       and CollectionService reports it as OpResult::NotFound (A24) */ },
 }
 ```
 
@@ -265,7 +266,7 @@ impl CollectionService {
     pub async fn list_collections(&self, ns: &str) -> Result<Vec<CollectionInfo>, ServiceError>;
     pub async fn add_fields(&self, ns: &str, name: &str, fields: Vec<FieldSpec>, vectors: Vec<VectorSpec>, annotations: BTreeMap<String, String>) -> Result<CollectionSchema, ServiceError>;  // no backfill (A4)
     pub async fn update_aliases(&self, ns: &str, actions: Vec<AliasAction>) -> Result<(), ServiceError>;
-    pub async fn write(&self, ns: &str, name: &str, ops: Vec<DocOp>, opts: WriteOptions /* report_existence */) -> Result<WriteResult /* token, per-op OpResult */, ServiceError>;
+    pub async fn write(&self, ns: &str, name: &str, ops: Vec<DocOp>, opts: WriteOptions /* report_existence, atomic (A24) */) -> Result<WriteResult /* token, per-op OpResult and position (A24) */, ServiceError>;
     pub async fn get(&self, ns: &str, name: &str, pks: &[PrimaryKey], select: &Projection, consistency: ReadConsistency) -> Result<Vec<Option<StoredDoc>>, ServiceError>;
     pub async fn search(&self, ns: &str, request: SearchRequest) -> Result<SearchResponse, ServiceError>;
     pub async fn count(&self, ns: &str, name: &str, filter: Option<Query>, consistency: ReadConsistency) -> Result<u64, ServiceError>;
@@ -281,7 +282,7 @@ pub enum ServiceError { NotFound { kind: &'static str, name: String }, AlreadyEx
 
 `POST|GET /v1/namespaces/{ns}/collections` (create, list) · `GET|DELETE /v1/namespaces/{ns}/collections/{c}` · `POST /v1/namespaces/{ns}/collections/{c}/documents` (ops) · `POST /v1/namespaces/{ns}/collections/{c}/documents/get` · `POST /v1/namespaces/{ns}/query` (the §05 §4 hybrid request) · `POST /v1/namespaces/{ns}/sql` · M1.3 adds `PUT /v1/namespaces/{ns}/collections/{c}/hot` and `POST /v1/namespaces/{ns}/collections/{c}/warm`. Flight SQL listens on `native.flight_sql` (default `0.0.0.0:8082`). M1.2 also serves `…/collections/{c}/fields`, `…/versions`, `/v1/namespaces/{ns}/aliases`, `…/documents/scroll` and `…/documents/count`; `operon dev` binds Flight SQL on `127.0.0.1:8082` (A22). `PrimaryKey` in JSON: integer → `U64`, string → `Str`, `{"uuid": "…"}` → `Uuid` (A12).
 
-**Hot-tier controls (A13, M1.3).** Request header `Operon-Hot: on|off` (gRPC metadata `operon-hot`) disables every hot structure for one request; responses carry `Operon-Hot-Used: <comma-separated subset of hnsw, splits; or none>` (fragment prefetch only fills the H1 cache and is never reported or bypassed); the server flag `--hot=on|off` sets the default and `--hot-pin-all` pins every collection (gates and benchmarks). `PUT …/hot` takes `{vectors, text, fragments}`. `GET …/collections/{c}` reports `manifest_version`, `link_lag_records` and the hot status per structure.
+**Hot-tier controls (A13, A23).** M1.2 owns the per-request switch (`operon_query::hot::HotLayer`: the request header and metadata, `Operon-Hot-Used`) and the `--hot` flag; M1.3 owns the hot tier behind it, `PUT …/hot`, `POST …/warm`, the full hot status and `--hot-pin-all`. Every read listener (native REST with `/mcp`, Flight SQL, Qdrant REST and gRPC, Elasticsearch) is wrapped in `HotLayer`, and gRPC responses carry `operon-hot-used` as response metadata (A23). Request header `Operon-Hot: on|off` (gRPC metadata `operon-hot`) disables every hot structure for one request; responses carry `Operon-Hot-Used: <comma-separated subset of hnsw, splits; or none>` (fragment prefetch only fills the H1 cache and is never reported or bypassed); the server flag `--hot=on|off` sets the default and `--hot-pin-all` pins every collection (gates and benchmarks). `PUT …/hot` takes `{vectors, text, fragments}`. `GET …/collections/{c}` reports `manifest_version`, `link_lag_records` and the hot status per structure.
 
 ### 6.9 Gateway namespaces
 
@@ -321,7 +322,7 @@ ES and Qdrant have no namespaces. Each gateway serves one namespace, `default` u
 - Every new object a GC root can reference is named with a ULID (or has a `LastModified`) and is referenced only through a freshness-carrying CAS or command.
 - No dependency with AGPL, SSPL, BSL or ELv2 licenses; vendored code keeps its license header and is listed in `NOTICE`.
 - Gateways never reach storage directly: they call `CollectionService` (Rule §01 §1.6).
-- Commit areas add `collection`, `text`, `query`, `hot`, `qdrant`, `es`, `mcp`, `sdk`, `conformance`, `bench`, `hnsw`.
+- Commit areas add `common`, `quickwit`, `collection`, `text`, `query`, `hot`, `qdrant`, `es`, `mcp`, `sdk`, `conformance`, `bench`, `hnsw` (A25).
 
 ## 9. Carried in from M0
 
@@ -351,7 +352,7 @@ ES and Qdrant have no namespaces. Each gateway serves one namespace, `default` u
 
 ## Amendments
 
-Adopted 2026-09-25 from the M1.4, M1.5, M1.6 and M1.7 plans (their proposals are recorded there); already reflected in the text above.
+Adopted 2026-09-25 from the M1.4, M1.5, M1.6 and M1.7 plans (their proposals are recorded there); already reflected in the text above. A23–A25 come from the cross-plan consistency review of the seven plans (2026-09-25).
 
 | # | Change | From |
 |---|---|---|
@@ -377,3 +378,6 @@ Adopted 2026-09-25 from the M1.4, M1.5, M1.6 and M1.7 plans (their proposals are
 | A20 | DBSF exactly as Qdrant's `distr_norm` (no clamping) | M1.2 A19 |
 | A21 | Manifest retention measured from supersession, not creation | M1.2 A20 |
 | A22 | Extra native routes; Flight SQL bind address in `operon dev` | M1.2 A21 |
+| A23 | §6.8: the per-request hot switch, `Operon-Hot-Used` and `--hot` are M1.2's (`HotLayer`, M1.2 Ruling 11); M1.3 owns the tier, the hot routes, the status and `--hot-pin-all`; every read listener, the Qdrant and ES gateways included, is wrapped in `HotLayer`; on gRPC `operon-hot-used` is response metadata, not a trailer | Consistency review (M1.2 Task 1 and M1.3 Task 8 both built on this split; the §6.8 text named M1.3 only) |
+| A24 | §6.2/§6.7: `WriteOptions { report_existence, atomic }`, `WriteResult { token, results, positions }`, `OpResult` is an enum; a patch of a missing key without `upsert` changes nothing at apply time and is reported as `OpResult::NotFound` at request time | Consistency review (M1.2 Rulings 10, 16 are the producer's definition) |
+| A25 | §8: commit areas `common` (M1.1's `operon_common::schema`) and `quickwit` (`operon-quickwit`) | Consistency review (M1.1 uses both) |
