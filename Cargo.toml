@@ -25,6 +25,8 @@ object_store = { version = "0.14", features = ["aws", "gcp", "azure", "fs"] }
 openraft = { version = "=0.10.0-alpha.34", default-features = false, features = ["serde", "tokio-rt"] }
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 proptest = "1"
+rand = "0.9"
+rand_chacha = "0.9"
 redb = "4"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 serde = { version = "1", features = ["derive"] }
