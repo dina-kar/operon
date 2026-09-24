@@ -19,4 +19,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Changed
 - `operon-store`: `file://` stores fsync each written file and its directory before a write returns, so a write that returned survives power loss.
 - `operon-meta`: the snapshot envelope is format version 2; version-1 snapshots are rejected. `CommitWal` carries the WAL object's creation time.
+- `operon-meta`: the leader refuses commands stamped more than `MetaConfig::max_clock_skew` (default 60 s) ahead of its own clock (`MetaError::ClockSkew`). `CreateStream` carries the stream's retention. `MetaClient::inject_lost_ack` needs the `test-util` feature.
+- `operon-log`: a commit rejected after an attempt whose outcome was unknown fails its appends with `CommitUnknown` (they may be committed). `LogWriter::start` validates its config and returns a `Result`. Size retention keeps each partition's newest entry. The segmenter renews its lease before swapping and never deletes a segment the metastore references or retired.
+- `operon`: every error, including malformed paths and queries and bodies over 16 MiB (413), uses the JSON error body; fetch `max_bytes` is capped at 16 MiB.
 - `operon-meta`: a node with no local state refuses to start when the snapshot store already holds metastore snapshots, since its data directory was most likely lost (override with `MetaConfig::allow_fresh_start_with_existing_snapshots`). Transient object-storage failures while writing or reading a snapshot are retried instead of stopping the node.
