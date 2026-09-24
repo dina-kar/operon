@@ -45,7 +45,9 @@ producer ──► log node (same AZ, via zone-aware Metadata)
                │ 4. ack each produce with its base offset (+ consistency token)
 ```
 
-**WAL object format:** `header(magic, version, node_id, ulid, class) | chunk* | chunk_index | footer(crc32c, index_offset)`. Each chunk holds one partition's record batches and names its `encoding` (§5): Kafka `RecordBatch` v2 by default, so fetch can serve bytes without re-encoding. Chunks are sorted by `(namespace, stream, partition)`.
+**WAL object format:** `header(magic, version, node_id, ulid, class) | chunk* | chunk_index | footer(crc32c, index_offset)`. Each chunk holds one partition's record batches and names its `encoding` (§5): Kafka `RecordBatch` v2 by default, so fetch can serve bytes without re-encoding. Chunks are sorted by `(stream, partition)` (stream ids are cluster-unique). WAL objects live at the cluster level, `wal/<class>/<node_id>/<ulid>.wal`, since one object holds many namespaces (D25). The exact byte layout (format version 1) is in the [M0.3 plan](../plans/2026-09-24-m0.3-log-engine.md#task-2-records-kafka-recordbatch-v2-and-the-wal-object-format).
+
+**Commit window:** `CommitWal` carries the WAL object's creation time (its ULID time). The sequencer dedupes a retried commit by object path, rejects a first commit more than 15 minutes older than its clock (`StaleCommit`), and prunes dedupe records after 30 minutes; writers stop retrying a commit after 60 s. A retried commit therefore returns the first commit's offsets or is rejected, never committed twice (D27).
 
 **Sequencer (in meta):** per partition keeps `next_offset`, high watermark, producer-state table (last 5 batch sequences per producer id, as Kafka does), and an **offset index**: `(base_offset, count, object_ref, byte_range, max_timestamp)`. One Raft proposal per node flush (batched across partitions) keeps meta load proportional to *nodes × flush rate*, not partitions.
 
@@ -78,14 +80,14 @@ producer ──► journal leader (log node)
 
 ## 5. Segmenting and storage
 
-- **Segmenter** (worker task) rewrites WAL chunks into per-partition **segments** (64–256 MiB target), with a footer holding a sparse offset index and timestamp index. Commit = atomic swap of index entries in meta; WAL objects deleted after grace period.
+- **Segmenter** (worker task) rewrites WAL chunks into per-partition **segments** (64–256 MiB target), with a footer holding a per-batch offset and timestamp index. Commit = atomic, lease-fenced swap of index entries in meta: a segment becomes **one** index entry covering its data region (D26). The metastore retires WAL objects once no index entry references them, and GC deletes them after a grace period (D27). The segment byte layout (format version 1) is in the [M0.3 plan](../plans/2026-09-24-m0.3-log-engine.md#task-3-segment-format).
 - `quorum` journals write segments directly on seal.
 - Segment format keeps Kafka `RecordBatch` v2 bytes verbatim ⇒ zero re-encoding on fetch, zero-copy into responses.
 - **Segment encodings** (idea from Apache Fluss's columnar log tables). WAL chunks and segments carry an `encoding` field:
   - `kafka` (default): Kafka `RecordBatch` v2, as above. Explicit topics use it.
   - `arrow`: Arrow IPC record batches, for streams with a registered schema, which includes the implicit streams of tables and collections. The footer adds per-column byte ranges, so link apply and tail readers fetch only the columns they project (column pruning on the log itself) and skip JSON decoding. Kafka fetches of an `arrow` stream re-encode to `RecordBatch` on the fly, so the encoding is chosen per stream by who reads it most.
   - The field is reserved from the first format version (M0.3); `arrow` ships with stream → table links (M4), with an earlier evaluation for collection implicit streams (M1).
-- **Retention:** time/size policies delete segments metadata-first, objects after grace.
+- **Retention:** time/size policies trim partitions metadata-first (the log start moves forward; wholly trimmed index entries are dropped and their objects retired), objects are deleted after grace.
 - **Compacted streams:** a compaction task per partition range keeps the latest record per key, honoring tombstone retention (`delete.retention.ms`), producing new segments and swapping index entries.
 
 ## 6. Read path
