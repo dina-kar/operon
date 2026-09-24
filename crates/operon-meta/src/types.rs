@@ -19,6 +19,18 @@ pub enum WalClass {
     Quorum,
 }
 
+/// How long a stream keeps its records (design §02 §5). `None` means no limit
+/// of that kind; with both `None` (the default) records are kept forever.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Retention {
+    /// Records whose index entry's newest timestamp is older than this are
+    /// trimmed.
+    pub max_age_ms: Option<u64>,
+    /// Whole oldest index entries are trimmed while a partition holds more
+    /// bytes than this.
+    pub max_bytes: Option<u64>,
+}
+
 /// A partitioned, offset-addressed stream (design §01 §2.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Stream {
@@ -27,6 +39,7 @@ pub struct Stream {
     pub name: String,
     pub partitions: u32,
     pub class: WalClass,
+    pub retention: Retention,
 }
 
 /// One partition's records inside a WAL object, as reported by the log node
@@ -42,10 +55,22 @@ pub struct WalChunk {
     pub max_timestamp_ms: i64,
 }
 
+/// What kind of object an offset index entry points into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EntryKind {
+    /// One partition's chunk inside a multi-partition WAL object; `byte_range`
+    /// holds the chunk's record batches.
+    Wal,
+    /// A per-partition segment; `byte_range` is the segment's data region, and
+    /// the segment's footer indexes its batches.
+    Segment,
+}
+
 /// An offset index entry: records `[base_offset, base_offset + records)` of a
 /// partition live at `byte_range` inside `object`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexEntry {
+    pub kind: EntryKind,
     pub base_offset: u64,
     pub records: u32,
     pub object: String,
@@ -60,11 +85,37 @@ impl IndexEntry {
     }
 }
 
-/// Sequencer state of one stream partition: the next offset to assign and the
-/// offset index, keyed by base offset.
+/// How long the metastore remembers a WAL commit for deduplication, and how
+/// old a WAL object may be when it is first committed: 15 minutes (M0.3 plan,
+/// ruling 6).
+///
+/// A commit whose `created_at_ms` is older than this relative to the
+/// metastore clock is rejected with `StaleCommit`, and commit records are
+/// pruned once they are twice this old. So a retried commit either finds its
+/// record (and gets the first commit's offsets) or is rejected; it is never
+/// committed twice.
+pub const WAL_COMMIT_WINDOW_MS: u64 = 900_000;
+
+/// What the metastore remembers about a committed WAL object, so a retried
+/// commit returns the first commit's offsets.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WalCommitRecord {
+    /// The base offset of each chunk, in the order the chunks were given.
+    pub base_offsets: Vec<u64>,
+    /// When the WAL object was created (its ULID time), in ms since the epoch.
+    pub created_at_ms: u64,
+}
+
+/// Sequencer state of one stream partition: the next offset to assign, the
+/// first readable offset, and the offset index, keyed by base offset.
+///
+/// The index entries tile `[first entry's base, next_offset)` without gaps; the
+/// first entry may start below `log_start_offset` when a trim cut it in the
+/// middle.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartitionState {
     pub(crate) next_offset: u64,
+    pub(crate) log_start_offset: u64,
     pub(crate) index: BTreeMap<u64, IndexEntry>,
 }
 
@@ -75,8 +126,32 @@ impl PartitionState {
         self.next_offset
     }
 
-    /// The index entry holding `offset`, if that offset has been committed.
+    /// The first readable offset. Offsets below it were trimmed by retention.
+    pub fn log_start_offset(&self) -> u64 {
+        self.log_start_offset
+    }
+
+    /// One past the last readable offset. For `standard` streams it equals
+    /// [`PartitionState::next_offset`].
+    pub fn high_watermark(&self) -> u64 {
+        self.next_offset
+    }
+
+    /// The bytes the partition's index entries cover: the sum of their byte
+    /// range lengths.
+    pub fn bytes(&self) -> u64 {
+        self.index
+            .values()
+            .map(|entry| entry.byte_range.end - entry.byte_range.start)
+            .sum()
+    }
+
+    /// The index entry holding `offset`, if that offset is committed and not
+    /// trimmed.
     pub fn lookup(&self, offset: u64) -> Option<&IndexEntry> {
+        if offset < self.log_start_offset {
+            return None;
+        }
         self.index
             .range(..=offset)
             .next_back()
@@ -85,12 +160,19 @@ impl PartitionState {
     }
 
     /// Index entries in offset order, starting with the one holding `offset`
-    /// (or the first one after it).
+    /// (or the first one after it). Offsets below the log start are treated as
+    /// the log start, so trimmed entries are never returned.
     pub fn entries_from(&self, offset: u64) -> impl Iterator<Item = &IndexEntry> {
+        let offset = offset.max(self.log_start_offset);
         let start = self
             .lookup(offset)
             .map_or(offset, |entry| entry.base_offset);
         self.index.range(start..).map(|(_, entry)| entry)
+    }
+
+    /// Every index entry, in offset order.
+    pub fn entries(&self) -> impl Iterator<Item = &IndexEntry> {
+        self.index.values()
     }
 }
 

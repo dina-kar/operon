@@ -37,6 +37,7 @@ fn chunk(stream: u64, partition: u32, records: u32, start: u64) -> WalChunk {
 fn commit(state: &mut MetaState, object: &str, chunks: Vec<WalChunk>) -> Result<Reply, ApplyError> {
     state.apply(Command::CommitWal {
         object: object.to_string(),
+        created_at_ms: 0,
         chunks,
     })
 }

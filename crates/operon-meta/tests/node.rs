@@ -72,20 +72,20 @@ async fn a_single_node_serves_writes_and_reads() {
         .await
         .unwrap();
     assert_eq!(
-        node.commit_wal("wal/1.wal", vec![chunk(stream, 10)])
+        node.commit_wal("wal/1.wal", 0, vec![chunk(stream, 10)])
             .await
             .unwrap(),
         [0]
     );
     assert_eq!(
-        node.commit_wal("wal/2.wal", vec![chunk(stream, 5)])
+        node.commit_wal("wal/2.wal", 0, vec![chunk(stream, 5)])
             .await
             .unwrap(),
         [10]
     );
     // A retried commit gets its original offsets.
     assert_eq!(
-        node.commit_wal("wal/1.wal", vec![chunk(stream, 10)])
+        node.commit_wal("wal/1.wal", 0, vec![chunk(stream, 10)])
             .await
             .unwrap(),
         [0]
@@ -278,7 +278,7 @@ async fn state_survives_a_restart_after_snapshot_and_log_purge() {
         .create_stream(ns, "events", 1, WalClass::Standard)
         .await
         .unwrap();
-    node.commit_wal("wal/1.wal", vec![chunk(stream, 7)])
+    node.commit_wal("wal/1.wal", 0, vec![chunk(stream, 7)])
         .await
         .unwrap();
     node.snapshot().await.unwrap();
@@ -289,7 +289,7 @@ async fn state_survives_a_restart_after_snapshot_and_log_purge() {
     let snapshotted = wait_for_status(&node, |s| s.purged >= s.snapshot).await;
     assert_eq!(snapshotted.purged, status.snapshot);
     // Entries after the snapshot are recovered from the log.
-    node.commit_wal("wal/2.wal", vec![chunk(stream, 3)])
+    node.commit_wal("wal/2.wal", 0, vec![chunk(stream, 3)])
         .await
         .unwrap();
 
@@ -325,7 +325,7 @@ async fn state_survives_a_restart_after_snapshot_and_log_purge() {
         Some(10)
     );
     assert_eq!(
-        node.commit_wal("wal/3.wal", vec![chunk(stream, 1)])
+        node.commit_wal("wal/3.wal", 0, vec![chunk(stream, 1)])
             .await
             .unwrap(),
         [10]

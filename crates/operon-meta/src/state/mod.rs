@@ -1,6 +1,8 @@
 mod catalog;
 mod leases;
 mod pointers;
+mod retention;
+mod segments;
 mod sequencer;
 
 use std::collections::BTreeMap;
@@ -9,7 +11,7 @@ use operon_common::{NamespaceId, StreamId};
 use serde::{Deserialize, Serialize};
 
 use crate::command::{ApplyError, Command, Reply};
-use crate::types::{Lease, Namespace, PartitionState, Pointer, Stream};
+use crate::types::{Lease, Namespace, PartitionState, Pointer, Stream, WalCommitRecord};
 
 /// Longest namespace or stream name, in bytes.
 pub const MAX_NAME_LEN: usize = 255;
@@ -38,9 +40,18 @@ pub struct MetaState {
     streams: BTreeMap<StreamId, Stream>,
     stream_names: BTreeMap<(NamespaceId, String), StreamId>,
     partitions: BTreeMap<(StreamId, u32), PartitionState>,
-    /// Base offsets assigned to each committed WAL object, for idempotent retries.
-    /// Entries are removed when the segmenter retires the object (M0.3).
-    wal_commits: BTreeMap<String, Vec<u64>>,
+    /// Base offsets assigned to each committed WAL object, for idempotent
+    /// retries. Pruned by `PruneWalCommits` once older than twice the commit
+    /// window.
+    wal_commits: BTreeMap<String, WalCommitRecord>,
+    /// Per WAL object, how many of its chunks are still `Wal` index entries.
+    /// An object leaves this map (for `retired`) when the count reaches zero.
+    wal_live_chunks: BTreeMap<String, u32>,
+    /// Objects no index entry references any more (WAL objects whose chunks
+    /// were all segmented or trimmed, and trimmed segments), with the
+    /// metastore clock when they were retired. Garbage collection deletes
+    /// them after a grace period and then forgets them.
+    retired: BTreeMap<String, u64>,
     leases: BTreeMap<String, Lease>,
     pointers: BTreeMap<(NamespaceId, String), Pointer>,
 }
@@ -56,7 +67,39 @@ impl MetaState {
                 partitions,
                 class,
             } => self.create_stream(namespace, name, partitions, class),
-            Command::CommitWal { object, chunks } => self.commit_wal(object, chunks),
+            Command::CommitWal {
+                object,
+                created_at_ms,
+                chunks,
+            } => self.commit_wal(object, created_at_ms, chunks),
+            Command::SetRetention { stream, retention } => self.set_retention(stream, retention),
+            Command::SwapSegment {
+                stream,
+                partition,
+                replaces,
+                segment,
+                byte_range,
+                max_timestamp_ms,
+                fence,
+                now_ms,
+            } => self.swap_segment(
+                stream,
+                partition,
+                replaces,
+                segment,
+                byte_range,
+                max_timestamp_ms,
+                fence,
+                now_ms,
+            ),
+            Command::TrimPartition {
+                stream,
+                partition,
+                before_offset,
+                now_ms,
+            } => self.trim_partition(stream, partition, before_offset, now_ms),
+            Command::PruneWalCommits { now_ms } => self.prune_wal_commits(now_ms),
+            Command::ForgetObjects { objects } => self.forget_objects(objects),
             Command::AcquireLease {
                 key,
                 owner,

@@ -405,14 +405,17 @@ impl MetaNode {
         }
     }
 
-    /// Commits a durable WAL object; returns each chunk's base offset.
+    /// Commits a durable WAL object created at `created_at_ms`; returns each
+    /// chunk's base offset.
     pub async fn commit_wal(
         &self,
         object: &str,
+        created_at_ms: u64,
         chunks: Vec<WalChunk>,
     ) -> Result<Vec<u64>, MetaError> {
         let command = Command::CommitWal {
             object: object.to_string(),
+            created_at_ms,
             chunks,
         };
         match self.write(command).await? {

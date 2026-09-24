@@ -4,7 +4,7 @@ use operon_common::{NamespaceId, StreamId};
 
 use super::{MAX_PARTITIONS, MetaState, validate_name};
 use crate::command::{ApplyError, Reply};
-use crate::types::{Namespace, PartitionState, Stream, WalClass};
+use crate::types::{Namespace, PartitionState, Retention, Stream, WalClass};
 
 impl MetaState {
     pub(super) fn create_namespace(&mut self, name: String) -> Result<Reply, ApplyError> {
@@ -55,6 +55,7 @@ impl MetaState {
                 name,
                 partitions,
                 class,
+                retention: Retention::default(),
             },
         );
         Ok(Reply::StreamCreated(id))
