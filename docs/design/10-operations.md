@@ -13,6 +13,8 @@ Status: **Approved** · 2026-09-22
 | Cluster | `operon --roles gateway,query,…` | Cloud object storage | 3 or 5 `meta` nodes across AZs | Production |
 | Kubernetes | Helm chart + `operon-operator` | Cloud object storage | StatefulSet (meta only) | Production |
 
+Companions are deployed next to Operon, not inside it: Lakekeeper (bundled), and optionally **RisingWave** for stateful stream processing (§09 §8), enabled in the Helm chart and the `docker-compose` examples.
+
 All roles ship in one binary. Kubernetes: `meta` is the only StatefulSet (small PVCs for Raft log); every other role is a Deployment with local NVMe (ephemeral) for cache, autoscaled by HPA/KEDA on role-specific signals (§3.1 of 01).
 
 ## 2. Configuration surface (essentials)
@@ -46,6 +48,7 @@ elasticsearch = { listen = "0.0.0.0:9200" }
 qdrant = { rest = "0.0.0.0:6333", grpc = "0.0.0.0:6334" }
 bolt = { listen = "0.0.0.0:7687" }
 clickhouse_http = { listen = "0.0.0.0:8123" }
+resonate = { listen = "0.0.0.0:8001" }   # durable execution (§14); Resonate SDK default port
 native = { rest = "0.0.0.0:8080", grpc = "0.0.0.0:8081", flight_sql = "0.0.0.0:8082" }
 ```
 
@@ -69,8 +72,8 @@ Each gateway is individually enabled; disabled gateways load no code paths (feat
 ## 5. Observability
 
 - OpenTelemetry traces (gateway → query operators → object-store calls), Prometheus metrics endpoint, structured JSON logs.
-- Key metrics: produce/fetch latency per WAL class, link lag, compaction debt, cache hit ratio per layer (H0–H3) per namespace, S3 requests/bytes per namespace (cost attribution), hot-tier memory per object, query latency by surface.
-- System tables: `system.queries`, `system.links`, `system.tasks`, `system.streams`, `system.collections`, `system.tables`, `system.parts`, `system.cache`, `system.namespaces`.
+- Key metrics: produce/fetch latency per WAL class, link lag, compaction debt, cache hit ratio per layer (H0–H3) per namespace, S3 requests/bytes per namespace (cost attribution), hot-tier memory per object, query latency by surface, changelog lag, durable-execution transitions/s, conditional-write conflicts (412/409) and timer lag per namespace.
+- System tables: `system.queries`, `system.links`, `system.tasks`, `system.streams`, `system.collections`, `system.tables`, `system.parts`, `system.cache`, `system.namespaces`; from §14 Phase B, `system.durable_promises` and `system.durable_tasks` (`system.tasks` stays the worker task table).
 - Per-query profiles (DataFusion metrics tree) retrievable by query id.
 
 ## 6. Backup, DR and time travel
@@ -94,6 +97,7 @@ Each gateway is individually enabled; disabled gateways load no code paths (feat
 | Writes | PUTs ($0.005/1k) | Batched: WAL flushes, large segments, large Iceberg/Lance files |
 | Reads | GETs ($0.0004/1k) | Cache hit ratio is the lever; range reads coalesced |
 | Express WAL | Storage $0.11/GB-month (seconds-lived), PUT $0.00113/1k, upload $0.0032/GB | Per `express` stream |
+| Durable execution | One conditional PUT per origin transition batch, plus timer PUT/DELETEs | ≈ $10–15 per million workflow steps before group commit (§14 §6) |
 | Cross-AZ | ≈ $0.01/GB each direction | ~0 for `standard`/`express` with zone-aware routing; `quorum` pays for 2 replica copies |
 | Compute | Stateless, autoscaled, spot-friendly (except meta) | Scale to zero per namespace for idle tenants |
 

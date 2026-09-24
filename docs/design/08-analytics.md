@@ -60,6 +60,10 @@ TTL ts + INTERVAL 180 DAY;
 3. **Materialized views** (§4) from other tables/streams.
 4. **Bulk load**: register existing Parquet files into the Iceberg table (add-files) or `INSERT … SELECT` from `s3()`/`url()` table functions (Phase B).
 
+Implicit streams of tables use the `arrow` segment encoding (§02 §5): the link reads only the columns it writes and skips JSON decoding, and the T3 tail holds the same Arrow batches.
+
+**CDC out:** keyed tables (`ReplacingMergeTree`) can expose a changelog stream (§02 §8.1), so downstream consumers and rollups see updates and deletes, not just inserts.
+
 ## 4. Materialized views
 
 ClickHouse MVs are insert-triggered transforms; Operon implements them as links with a SQL transform:
@@ -103,4 +107,4 @@ Targets: ClickBench (hot, on hot projections) within 2–3× of ClickHouse OSS o
 
 ## 8. External engine access
 
-Every table is a standard Iceberg table in Lakekeeper: Spark, Trino, DuckDB, Snowflake, StarRocks, PyIceberg read it (and may write it; Operon's T0 cache detects external snapshots via Lakekeeper events/polling). External writers bypass Operon's tail and links; Operon treats their commits as new snapshots.
+Every table is a standard Iceberg table in Lakekeeper: Spark, Trino, DuckDB, Snowflake, StarRocks, PyIceberg read it (and may write it; Operon's T0 cache detects external snapshots via Lakekeeper events/polling). External writers bypass Operon's tail and links; Operon treats their commits as new snapshots. A table has one writer class (§03 §2.3): tables written by an external engine, such as RisingWave's results (§09 §8), are not Operon link targets. They still get the Iceberg hot tier and the ClickHouse surface, with freshness equal to the external engine's commit cadence.

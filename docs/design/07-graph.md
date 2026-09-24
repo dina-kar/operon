@@ -97,6 +97,7 @@ Conformance: openCypher TCK (Apache-2.0) subset tracked as a pass-rate metric; G
 - **Seed-and-expand:** hybrid search on entity/document collection → `graph_expand` 2 hops → fetch → rerank (single native query, §05 §4).
 - **Community summaries:** `leiden` table function → write `community_id` → LLM summaries stored in a collection → retrievable by vector/text.
 - **Temporal edges:** `valid_from`/`valid_to` edge properties with pushed-down time filters in `ExpandExec` (Graphiti-style bi-temporal memory).
+- **Agent execution graphs (Phase B of §14):** durable promises as vertices and awaits as edges, so an agent run's call tree is a Cypher path next to the memory graph it read and wrote.
 
 ## 9. Benchmarks and gates
 - LDBC SNB Interactive short reads (IS1–IS7) and selected complex reads (IC1, IC2, IC9 bounded) on SF1/SF10.

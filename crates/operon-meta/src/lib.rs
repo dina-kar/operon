@@ -1,0 +1,34 @@
+//! The Operon metastore.
+//!
+//! [`MetaState`] is the deterministic state machine: namespaces, streams, the
+//! stream sequencer and offset index, leases, and manifest pointers. Every change
+//! is a [`Command`] applied in Raft log order, so every replica computes the same
+//! state (design §01 §3.2, §02 §3).
+
+mod clock;
+mod codec;
+mod command;
+mod db;
+mod error;
+mod log_store;
+mod network;
+mod node;
+mod raft;
+mod state;
+mod state_machine;
+mod types;
+
+pub use clock::{Clock, ManualClock, SystemClock};
+pub use command::{ApplyError, Command, Reply};
+pub use db::LocalDb;
+pub use error::MetaError;
+pub use log_store::LogStore;
+pub use network::Router;
+pub use node::{Consistency, MetaConfig, MetaNode, RaftStatus};
+pub use raft::{EntryReply, NodeId, SnapshotData, TypeConfig};
+pub use state::{MAX_KEY_LEN, MAX_LEASE_TTL_MS, MAX_NAME_LEN, MAX_PARTITIONS, MetaState};
+pub use state_machine::StateMachineStore;
+pub use types::{
+    Fence, IndexEntry, Lease, LeaseGrant, Namespace, PartitionState, Pointer, Stream, WalChunk,
+    WalClass,
+};

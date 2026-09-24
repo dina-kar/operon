@@ -10,11 +10,11 @@ Design references: [01 Architecture](../design/01-architecture.md), [02 Stream e
 
 | Plan | Scope | Status |
 |---|---|---|
-| [M0.1: Workspace & storage primitives](2026-09-23-m0.1-storage-primitives.md) | Cargo workspace, CI, license policy; `operon-store` (conditional writes, range reads, URL backends, fault injection); `operon-cache` (RAM + NVMe range cache with checksums) | **Ready** |
-| M0.2: Metastore | `operon-common` ids; `operon-meta` on openraft: namespaces, streams, sequencer, leases, manifest-pointer CAS; single-node and 3-node in-process clusters; snapshots to object storage | Next, written after M0.1 lands |
-| M0.3: Log engine | WAL object and segment formats; leaderless `standard` write path; fetch path; segmenter; native produce/fetch API; `operon dev` binary | Planned |
+| [M0.1: Workspace & storage primitives](2026-09-23-m0.1-storage-primitives.md) | Cargo workspace, CI, license policy; `operon-store` (conditional writes, range reads, URL backends, fault injection); `operon-cache` (RAM + NVMe range cache with checksums) | **Done** |
+| [M0.2: Metastore](2026-09-23-m0.2-metastore.md) | `operon-common` ids; `operon-meta` on openraft: namespaces, streams, sequencer and offset index, leases with epochs, fenced manifest-pointer CAS; Raft log in redb, snapshots in object storage; single-node and in-process 3-node clusters | **Done** |
+| M0.3: Log engine | WAL object and segment formats (with the `encoding` field reserved, D20); leaderless `standard` write path; fetch path; segmenter; native produce/fetch API; `operon dev` binary. In meta: segment index swap, WAL-commit pruning, retention trim, offset watch for long-poll | Next, written after M0.2 lands |
 | M0.4: Workers, links & M0 gates | Worker leases and task framework; link framework with exactly-once apply; `PkIndex` on SlateDB; GC; deterministic simulation harness; M0 crash and fault exit gates | Planned |
 
 ## Later milestones
 
-Plans for M1 (collections), M2 (graph), M3 (Kafka), M4 (analytics) and M5 (scale) will be written once M0 is done. Their scope and exit gates are in [12-roadmap-testing-risks.md](../design/12-roadmap-testing-risks.md).
+Plans for M1 (collections), M2 (graph and the Resonate durable-execution surface), M3 (Kafka and changelog streams), M4 (analytics) and M5 (scale) will be written once M0 is done. Their scope and exit gates are in [12-roadmap-testing-risks.md](../design/12-roadmap-testing-risks.md).

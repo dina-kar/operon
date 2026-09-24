@@ -1,7 +1,7 @@
 # 00 — Pitch
 
 > **Operon: one bucket, every index.**
-> The open-source, S3-native data engine for AI apps — streams, search, vectors, graph and analytics over open formats in *your* bucket, with stateless compute.
+> The open-source, S3-native data engine for AI apps — streams, search, vectors, graph, analytics and durable agent workflows over open formats in *your* bucket, with stateless compute.
 
 Status: **Approved** · 2026-09-22
 
@@ -9,7 +9,7 @@ Status: **Approved** · 2026-09-22
 
 ## 1. The problem
 
-A production AI application today typically runs five stateful systems, each with its own cluster, replicas, upgrade cadence, security model and on-call burden:
+A production AI application today typically runs five stateful systems — six, once agent runs need a workflow engine — each with its own cluster, replicas, upgrade cadence, security model and on-call burden:
 
 | Need | Typical system | What it holds |
 |---|---|---|
@@ -18,6 +18,7 @@ A production AI application today typically runs five stateful systems, each wit
 | Semantic retrieval | **Qdrant** | Copy #3 (embeddings + payload) |
 | Knowledge graph / GraphRAG / agent memory | **Neo4j** | Copy #4 (entities, relations) |
 | Product analytics, evals, cost/usage dashboards | **ClickHouse** | Copy #5 |
+| Durable agent runs: retries, long waits, human-in-the-loop, fan-out | **Temporal**, or a queue + cron + Postgres | Workflow state, in yet another database |
 
 The consequences:
 
@@ -25,6 +26,7 @@ The consequences:
 2. **Copies and drift.** The same entity lives in four stores glued by connectors and CDC jobs. When they drift, agents retrieve stale or contradictory context — a correctness bug, not just an ops annoyance.
 3. **Retrieval glue lives in app code.** A single "hybrid GraphRAG" retrieval is BM25 (ES) + ANN (Qdrant) + k-hop expansion (Neo4j) + fusion in Python across three network hops. Nothing can plan or optimize it as a whole.
 4. **No cross-store consistency.** "I just wrote this memory; can the next agent step see it in search, vectors and graph?" has no answer in a five-store stack.
+5. **Agent runs are not durable.** A crash in step 7 of a 10-step agent run repeats paid model calls or loses the run, unless a sixth system tracks workflow state.
 
 ## 2. What Operon is
 
@@ -37,9 +39,12 @@ A single Rust engine with **five first-class objects** — *streams, tables, col
 | Qdrant | Collection (vectors) | Lance | Qdrant REST + gRPC |
 | Neo4j | Graph | CSR sidecars over tables/collections | Bolt + Cypher subset |
 | ClickHouse | Table | **Apache Iceberg** (via Lakekeeper) | ClickHouse HTTP interface + dialect |
-| Connectors/CDC glue | Link | — | Declarative DDL |
+| Connectors/CDC glue | Link, changelog stream | — | Declarative DDL; changelogs readable as Kafka topics |
+| Temporal / queue + cron for agent runs | Durable promises (a service, §14) | One document per workflow origin on S3 | **Resonate protocol** (TS, Python, Rust, Go, Java SDKs) |
 
 Plus a **native API/SDK** where one request does vector + BM25 + filter + graph expansion + fusion as a single planned query.
+
+Agent code uses the Resonate SDKs unmodified: every step of an agent run is a durable promise stored in the same bucket as the agent's memory, so a crashed run resumes where it stopped and a step's result can carry the consistency token of the memory it wrote.
 
 ## 3. Three core ideas
 
@@ -55,13 +60,14 @@ Plus a **native API/SDK** where one request does vector + BM25 + filter + graph 
 | Low-latency object storage | S3 Express One Zone (single-digit ms, append support), GCS Rapid (zonal, appendable) |
 | Rust data stack maturity | DataFusion 55, Lance 12, Tantivy 0.26, SlateDB 0.16, openraft, iceberg-rust 0.10, kafka-protocol 0.18, foyer |
 | Iceberg as the lakehouse lingua franca | v3 (deletion vectors, variant, row lineage) shipping in Snowflake, Databricks, AWS |
+| Durable execution as an open protocol | Resonate (Apache-2.0, 2025–26): formally specified distributed async/await, with a server that runs on nothing but a bucket |
 | The best designs are closed | turbopuffer (closed), WarpStream (proprietary), Bufstream (acquired by CoreWeave), LanceDB Enterprise serving layer (closed), AutoMQ low-latency WAL (commercial-only), Kuzu (archived after Apple acquisition), Neon (public repo dormant after Databricks acquisition) |
 
 The architecture has been **proven in production by closed products** (turbopuffer, WarpStream, ClickHouse Cloud's stateless compute). No open-source project combines it across models. That is the slot.
 
 ## 5. Positioning
 
-**"The open-source turbopuffer + WarpStream + ClickHouse Cloud — in one engine, on open formats, with drop-in compatibility for your existing Kafka, Qdrant, Elasticsearch, Neo4j and ClickHouse clients."**
+**"The open-source turbopuffer + WarpStream + ClickHouse Cloud — in one engine, on open formats, with drop-in compatibility for your existing Kafka, Qdrant, Elasticsearch, Neo4j and ClickHouse clients, and durable agent workflows through the Resonate SDKs."**
 
 Primary buyer: platform teams at companies running AI apps at scale who are paying for (and operating) 4–5 data systems. Primary user: application engineers building RAG, agents, GraphRAG and eval/observability pipelines.
 
@@ -78,12 +84,13 @@ Primary buyer: platform teams at companies running AI apps at scale who are payi
 | Elastic Serverless | Proprietary | Search on object storage | Closed, expensive, search only |
 | ClickHouse Cloud | Proprietary (engine OSS) | Stateless analytics on S3 | SharedMergeTree/distributed cache closed; text index has no BM25 |
 | Qdrant | Apache-2.0 | Vector | Local-disk architecture; vector only |
+| Apache Fluss | Apache-2.0 (Java, incubating) | Streaming storage for the lakehouse: columnar Arrow log, primary-key tables with changelogs, tiering to Iceberg/Paimon/Lance | JVM + ZooKeeper, data on tablet-server disks with S3 as a tier; no search, vector serving or graph; Flink-centric |
 
 ## 7. What Operon is *not* (non-goals)
 
 - **Not an OLTP database.** No multi-statement interactive transactions with millisecond commits over mutable rows. Keep a Postgres for application state; stream its CDC into Operon.
 - **Not a full Elasticsearch/Neo4j/ClickHouse clone.** Compatibility is scoped by external conformance suites (client libraries, framework integrations), not by feature parity. No Kibana, Painless, APOC-at-large, or ClickHouse Native TCP in v1.
-- **Not a stream processor.** Stateless transforms and mergeable aggregates in links, yes; windowed joins with checkpointed state, no (use RisingWave/Arroyo/Flink against the Kafka surface).
+- **Not a stream processor.** Stateless transforms and mergeable aggregates in links, yes; windowed joins with checkpointed state, no. **RisingWave is the supported companion** (§09 §8): it reads Operon topics and changelog streams over the Kafka surface and writes results back as Iceberg tables through Lakekeeper or as topics. Arroyo and Flink work the same way.
 
 ## 8. Governance and business model (recommendation)
 
@@ -93,4 +100,4 @@ Primary buyer: platform teams at companies running AI apps at scale who are payi
 
 ## 9. Launch demo
 
-A GraphRAG agent stack (e.g., Graphiti or LightRAG + LangChain) running unmodified against **one `operon` binary and one bucket**, side-by-side with the usual docker-compose of Kafka + Elasticsearch + Qdrant + Neo4j + ClickHouse — same answers, one-fifth the moving parts, a fraction of the storage cost, and a consistency token proving read-your-writes across search, vectors and graph.
+A GraphRAG agent stack (e.g., Graphiti or LightRAG + LangChain) running unmodified against **one `operon` binary and one bucket**, side-by-side with the usual docker-compose of Kafka + Elasticsearch + Qdrant + Neo4j + ClickHouse — same answers, one-fifth the moving parts, a fraction of the storage cost, and a consistency token proving read-your-writes across search, vectors and graph. The agent's run loop is a Resonate workflow: `kill -9` the agent mid-run and it resumes at the step it was on, without repeating model calls.

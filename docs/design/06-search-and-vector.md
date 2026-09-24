@@ -31,6 +31,7 @@ Dynamic mapping follows ES defaults for unknown fields (string → text + keywor
 2. Collection-link worker consumes batches (target 16–128 MiB or 1–5 s):
    - Resolves upserts/deletes via the PK index.
    - Writes a Lance fragment + a Tantivy split from the same batch; updates deletion bitmaps for superseded docs.
+   - If the collection has a changelog stream (§02 §8.1), appends the batch's change records with a fenced append first.
    - Commits Lance version → writes manifest → CAS pointer in meta (§03 §3.3).
 3. Background: split merges, Lance compaction, vector index optimization (incremental add to IVF; periodic re-clustering when centroid drift exceeds threshold).
 

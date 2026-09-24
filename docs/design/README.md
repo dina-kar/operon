@@ -1,9 +1,9 @@
 # Operon — Design Documents
 
-**Operon** is an open-source (Apache-2.0), object-storage-native, multi-model data engine for AI applications. One system, one bucket, one catalog, one log — replacing the **Kafka + Elasticsearch + Qdrant + Neo4j + ClickHouse** stack that AI apps deploy today.
+**Operon** is an open-source (Apache-2.0), object-storage-native, multi-model data engine for AI applications. One system, one bucket, one catalog, one log — replacing the **Kafka + Elasticsearch + Qdrant + Neo4j + ClickHouse** stack that AI apps deploy today, plus durable execution for agent runs through the Resonate protocol.
 
 - **Status:** v0.1 — 2026-09-23
-- **Approved:** all documents (§00–§13), 2026-09-23
+- **Approved:** all documents (§00–§13), 2026-09-23; §14–§16, the Fluss-derived stream features (§02 §5, §02 §8.1) and the RisingWave integration (§09 §8), 2026-09-24
 
 ## Reading order
 
@@ -23,6 +23,9 @@
 | 11 | [Buy vs build](11-buy-vs-build.md) | Every dependency with license, version, verdict; avoid list; what we build (the moat) | **Approved** |
 | 12 | [Roadmap, testing, risks](12-roadmap-testing-risks.md) | Milestones and exit gates, testing strategy, risk register | **Approved** |
 | 13 | [Decision log](13-decision-log.md) | Decisions made so far and open questions | Living |
+| 14 | [Durable execution](14-durable-execution.md) | Resonate protocol surface: durable promises, tasks and schedules on the bucket; phases, consistency, cost | **Approved** (direction) |
+| 15 | [Agent workspaces](15-agent-workspaces.md) | Operon as the state plane for coding-agent sandboxes: Git on the bucket, copy-on-write environments, registry proxy, caches, sandbox runtimes, sessions as durable executions, MCP gateway with tool retrieval | **Approved** |
+| 16 | [Agent fleet demo](16-agent-fleet-demo.md) | 100 Claude Code / Codex / opencode sessions on one host and one bucket: density, durability, tool-retrieval savings, analytics with tokscale parity | **Approved** |
 
 ## Glossary
 
@@ -44,6 +47,10 @@
 | **Journal** | A 3-replica Raft group (one node per AZ) that hosts the `quorum` WAL for a set of partitions. |
 | **Manifest** | Immutable description of an object's durable state at a version; the pointer to the current manifest lives in the metastore. |
 | **Split** | Immutable Tantivy index bundle with a hotcache footer (Quickwit design). |
+| **Segment encoding** | How a stream's records are stored in WAL chunks and segments: `kafka` (RecordBatch v2) or `arrow` (columnar, for schema'd streams). |
+| **Changelog stream** | A stream of row-level changes (`+I`, `-U`, `+U`, `-D`) of a keyed table or collection. |
+| **Durable promise** | Resonate's unit of durable execution: a promise, keyed by a deterministic id, that survives process restarts and records a step's result. |
+| **Origin** | The part of a Resonate id before the first `:`; all of one origin's promises and tasks are one document, committed atomically. |
 
 ## Conventions
 

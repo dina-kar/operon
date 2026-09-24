@@ -45,7 +45,7 @@ producer ──► log node (same AZ, via zone-aware Metadata)
                │ 4. ack each produce with its base offset (+ consistency token)
 ```
 
-**WAL object format:** `header(magic, version, node_id, ulid, class) | chunk* | chunk_index | footer(crc32c, index_offset)`. Each chunk holds one partition's record batches in Kafka `RecordBatch` v2 encoding (so fetch can serve bytes without re-encoding). Chunks are sorted by `(namespace, stream, partition)`.
+**WAL object format:** `header(magic, version, node_id, ulid, class) | chunk* | chunk_index | footer(crc32c, index_offset)`. Each chunk holds one partition's record batches and names its `encoding` (§5): Kafka `RecordBatch` v2 by default, so fetch can serve bytes without re-encoding. Chunks are sorted by `(namespace, stream, partition)`.
 
 **Sequencer (in meta):** per partition keeps `next_offset`, high watermark, producer-state table (last 5 batch sequences per producer id, as Kafka does), and an **offset index**: `(base_offset, count, object_ref, byte_range, max_timestamp)`. One Raft proposal per node flush (batched across partitions) keeps meta load proportional to *nodes × flush rate*, not partitions.
 
@@ -81,6 +81,10 @@ producer ──► journal leader (log node)
 - **Segmenter** (worker task) rewrites WAL chunks into per-partition **segments** (64–256 MiB target), with a footer holding a sparse offset index and timestamp index. Commit = atomic swap of index entries in meta; WAL objects deleted after grace period.
 - `quorum` journals write segments directly on seal.
 - Segment format keeps Kafka `RecordBatch` v2 bytes verbatim ⇒ zero re-encoding on fetch, zero-copy into responses.
+- **Segment encodings** (idea from Apache Fluss's columnar log tables). WAL chunks and segments carry an `encoding` field:
+  - `kafka` (default): Kafka `RecordBatch` v2, as above. Explicit topics use it.
+  - `arrow`: Arrow IPC record batches, for streams with a registered schema, which includes the implicit streams of tables and collections. The footer adds per-column byte ranges, so link apply and tail readers fetch only the columns they project (column pruning on the log itself) and skip JSON decoding. Kafka fetches of an `arrow` stream re-encode to `RecordBatch` on the fly, so the encoding is chosen per stream by who reads it most.
+  - The field is reserved from the first format version (M0.3); `arrow` ships with stream → table links (M4), with an earlier evaluation for collection implicit streams (M1).
 - **Retention:** time/size policies delete segments metadata-first, objects after grace.
 - **Compacted streams:** a compaction task per partition range keeps the latest record per key, honoring tombstone retention (`delete.retention.ms`), producing new segments and swapping index entries.
 
@@ -119,6 +123,35 @@ Wire encoding/decoding uses the **`kafka-protocol`** crate (generated from Kafka
 - Explicit Kafka topics can be linked to tables/collections, so a topic *is* queryable without connectors.
 - Offsets returned to writers form **consistency tokens** (§01 §5).
 
+### 8.1 Changelog streams (idea from Apache Fluss)
+
+Every keyed table and collection can expose a **changelog stream**: one record per row-level change, readable through the native API and (from M3) as a Kafka topic.
+
+```sql
+CREATE STREAM tickets_changes AS CHANGELOG OF COLLECTION tickets
+  WITH (mode = 'full');          -- or 'upsert'
+```
+
+| Mode | Records | Cost |
+|---|---|---|
+| `upsert` | `+U` (new row) and `-D` (key) | No extra reads |
+| `full` | `+I`, `-U` (before image), `+U` (after image), `-D` (before image) | One read of the old row per update, located through the PK index (§03 §5) and usually cached |
+
+- **Who writes it:** the link-apply worker that resolves upserts and deletes through the PK index already knows the old row, so it appends the batch's change records to the changelog stream before it commits the target.
+- **Exactly-once:** the sequencer records, per changelog partition, the highest source offset already appended (`source_upto`). The append is **fenced**: it is accepted only if the worker's lease epoch is current and the batch covers source offsets starting at `source_upto + 1`. The changelog commits before the target, so a crash between the two re-runs the apply; the retried worker reads `source_upto`, appends only changes beyond it, and then commits the target. No change is lost or duplicated.
+- **Ordering:** per key, changelog order equals commit order of the source partition. The changelog is partitioned like its source.
+- **Uses:** syncing agent memory to caches and external systems, CDC out of Operon (the Kafka surface makes it consumable by any Kafka client), incremental consumers inside Operon (graph links, rollups) that need deletes and before images, and stream processors such as RisingWave (§09 §8).
+- **Wire formats** on the Kafka surface, chosen per changelog so external processors read it with their built-in formats:
+
+  | `format` | Kafka record | Read by |
+  |---|---|---|
+  | `upsert` (default for `mode = 'upsert'`) | key = primary key; value = after image, or a tombstone (null value) for a delete | RisingWave `FORMAT UPSERT ENCODE JSON`, Flink `upsert-kafka`, compacted-topic consumers |
+  | `debezium-json` (default for `mode = 'full'`) | key = primary key; value = Debezium envelope `{before, after, op: c\|u\|d, source, ts_ms}` | RisingWave `FORMAT DEBEZIUM ENCODE JSON`, Flink `debezium-json`, Debezium-aware sinks |
+  | `native` | Arrow or JSON rows with a row-kind column (`+I`, `-U`, `+U`, `-D`) | Operon native API, links |
+
+  Avro/Protobuf encodings follow the schema registry (M5).
+- Phase: M3 (collections and keyed tables), with the Kafka surface.
+
 ## 9. Capacity and cost sketch
 
 Example: 1 GiB/s ingest, 20 `log` nodes, `standard` class, 250 ms flush.
@@ -138,3 +171,5 @@ Tuning `flush_interval` trades PUT cost against latency; `express` trades storag
 2. `express` on GCS Rapid and Azure: confirm conditional-write and append semantics per provider.
 3. Transactions depth required by target users (Flink exactly-once sinks need it; many AI pipelines don't).
 4. Whether to vendor Nisshi as a starting point or only borrow patterns (bus factor 1 upstream).
+5. `arrow` encoding: Arrow IPC per chunk vs. one Arrow file per segment with a column index; and whether the WAL writes `arrow` directly or the segmenter converts.
+6. Changelog retention default (same as the source's implicit stream, or shorter) and whether `full` mode is allowed on collections with large documents.
