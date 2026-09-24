@@ -15,6 +15,8 @@ pub mod paths;
 mod record;
 pub mod segment;
 pub mod wal;
+mod writer;
 
 pub use error::LogError;
 pub use record::{Encoding, OffsetRecord, Record};
+pub use writer::{AppendAck, LogConfig, LogWriter};

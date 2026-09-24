@@ -205,11 +205,12 @@ impl MetaClient {
             }
             target = hinted.unwrap_or((target + 1) % count);
             followed_hint = false;
-            if Instant::now() + backoff > deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
                 return Err(err);
             }
             tracing::debug!(%err, ?backoff, "metastore request failed; retrying");
-            tokio::time::sleep(backoff).await;
+            tokio::time::sleep(backoff.min(remaining)).await;
             backoff = (backoff * 2).min(MAX_BACKOFF);
         }
     }
