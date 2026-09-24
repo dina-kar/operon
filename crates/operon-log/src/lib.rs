@@ -13,6 +13,7 @@ pub mod batch;
 mod error;
 pub mod paths;
 mod record;
+pub mod segment;
 pub mod wal;
 
 pub use error::LogError;
