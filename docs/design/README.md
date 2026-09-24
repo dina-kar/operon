@@ -24,7 +24,8 @@
 | 12 | [Roadmap, testing, risks](12-roadmap-testing-risks.md) | Milestones and exit gates, testing strategy, risk register | **Approved** |
 | 13 | [Decision log](13-decision-log.md) | Decisions made so far and open questions | Living |
 | 14 | [Durable execution](14-durable-execution.md) | Resonate protocol surface: durable promises, tasks and schedules on the bucket; phases, consistency, cost | **Approved** (direction) |
-| 15 | [Agent workspaces](15-agent-workspaces.md) | Operon as the state plane for coding-agent sandboxes: Git on the bucket, copy-on-write environments, registry proxy, caches, MCP server | Proposed |
+| 15 | [Agent workspaces](15-agent-workspaces.md) | Operon as the state plane for coding-agent sandboxes: Git on the bucket, copy-on-write environments, registry proxy, caches, sandbox runtimes, sessions as durable executions, MCP gateway with tool retrieval | Proposed |
+| 16 | [Agent fleet demo](16-agent-fleet-demo.md) | 100 Claude Code / Codex / opencode sessions on one host and one bucket: density, durability, tool-retrieval savings, analytics with tokscale parity | Proposed |
 
 ## Glossary
 

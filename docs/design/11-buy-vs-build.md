@@ -84,9 +84,10 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | Chunking / hashing | fastcdc, BLAKE3 | MIT / Apache-2.0 | Content-defined chunks for the namespace CAS | — |
 | FUSE | fuser | MIT | Userspace mounts where virtiofs/EROFS are unavailable | — |
 | Code parsing | tree-sitter | MIT | Symbol chunks and code graphs | — |
-| MCP | Rust MCP SDK (`rmcp`) | verify | MCP server surface | — |
+| MCP | Rust MCP SDK (`rmcp`) | verify | MCP server and gateway on the 2026-07-28 stateless spec | Verify 2026-07-28 support |
+| Session parsing and pricing | **tokscale-core** (tokscale) | MIT (Rust) | Parse Claude Code, Codex, opencode (and ~30 other harnesses') session files into `token_usage` (§16 §6) | Library crate of the tokscale CLI; parity check against the CLI |
 | Build cache | sccache, bazel-remote | Apache-2.0 | Point at the bucket; no Operon code | — |
-| Sandbox runtimes | microsandbox, Firecracker, gVisor, E2B, Anthropic `sandbox-runtime`, Codex | Apache-2.0 | Integration targets, never embedded | — |
+| Sandbox runtimes | microsandbox (libkrun), Firecracker, Cloud Hypervisor, Kata, gVisor, E2B, Anthropic `sandbox-runtime`, Codex | Apache-2.0 | `operon-sandbox` backends: microsandbox (default), Firecracker (fleet), gVisor (Kubernetes without KVM), process (dev only) (§15 §8) | Integrated through a `Runtime` trait, never forked |
 | References | git-remote-object-store, awslabs/git-remote-s3, AgentFS, Jujutsu, mountpoint-s3, JuiceFS | Apache-2.0 / MIT | Designs to learn from | — |
 
 ## 5. Avoid
