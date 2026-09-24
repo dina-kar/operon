@@ -9,7 +9,7 @@ M0 (Foundation, design [§12 §1](../design/12-roadmap-testing-risks.md)) is don
 | Exit gate (design §12 §1) | What proves it | Result |
 |---|---|---|
 | **kill -9 at every step of the write, commit and segment paths**: no acknowledged-data loss, no torn state | `crates/operon/tests/crash.rs` (`cargo test -p operon --features failpoints --test crash`). One test per failpoint aborts a child `operon dev` process at that point (`std::process::abort()`, D29): `wal.after_put`, `wal.after_commit`, `seg.after_put`, `seg.after_swap`, `link.after_data_put`, `link.after_manifest_put`, `link.after_cas`, `gc.after_delete`, `meta.snapshot.after_put`, `meta.snapshot.after_pointer`, `retention.after_trim`. `random_sigkills_under_load_lose_nothing` adds 20 SIGKILLs at random times under load (`CRASH_KILLS`). After each restart the test checks: offsets are dense; every acknowledged record is readable exactly once at its offset; `CounterTable` sums match the log exactly once; and `MetaState::check_invariants` holds | **Pass.** 3 runs × 12 tests: 36/36 passed, 33 failpoint aborts and 60 random SIGKILLs |
-| **Object-store PUT/GET/412/409 fault matrix passes** | `crates/operon/tests/fault_matrix.rs`. It crosses 7 component operations (writer flush, reader fetch, segmenter swap, retention trim, link commit, GC pass, meta snapshot) with every pair of `Put`/`PutCreate`/`PutIfMatch`/`Get`/`Delete`/`List` × `Error`/`ErrorAfterApply`/`Precondition` (409 create-only, 412 CAS)/`Delay(2 s)`, on the first and the second call. After every cell the test checks: no acknowledged record lost or changed; no definitely failed value visible; meta invariants hold; `CounterTable` exact | **Pass.** 336 cells: 44 `Retried`, 60 `SurfacedRetryable`, 232 `NoEffect`. Table below |
+| **Object-store PUT/GET/412/409 fault matrix passes** | `crates/operon/tests/fault_matrix.rs`. It crosses 7 component operations (writer flush, reader fetch, segmenter swap, retention trim, link commit, GC pass, meta snapshot) with every pair of `Put`/`PutCreate`/`PutIfMatch`/`Get`/`Delete`/`List` × `Error`/`ErrorAfterApply`/`Precondition` (409 create-only, 412 CAS)/`Delay(2 s)`, on the first and the second call. Every cell's outcome must equal the committed table `crates/operon/tests/fault_matrix.expected.md`; a surfaced error must be a retryable kind, and an error that never reached the fault fails the gate. After every cell the test checks: the segmenter runs without failures; no acknowledged record lost or changed; no definitely failed value visible; meta invariants hold; `CounterTable` exact | **Pass.** 336 cells, all asserted: 35 `Retried`, 9 `Deferred`, 60 `SurfacedRetryable`, 232 `NoEffect`. Table below |
 | **Linearizability check on the sequencer and the manifest-pointer CAS** | `operon-sim`. `tests/checker.rs` runs 12 hand-written histories through the Wing–Gong–Lowe checker: linearizable ones, a stale read, a lost update, a duplicate offset, a gap, and indeterminate operations taken as applied or as not applied. `tests/sim.rs` runs the seeded cluster simulation (D28): 3 meta nodes over `Router`, 2 writers, a reader, a worker with the segmenter, retention, link apply and GC, `FaultyStore::random`, node isolation and healing, and worker crashes. It checks linearizability per partition sequencer and per CAS register, that every acknowledged append is readable, that `CounterTable` equals the model, meta invariants on every node, and that no node has a fatal Raft error | **Pass.** Checker 12/12. CI default sweep: 32 seeds × 300 steps. Extra sweep: 64 seeds × 300 steps with 5 849 acknowledged appends and 79 indeterminate operations, 0 violations. The implementer's earlier 128-seed sweep: 11 582 appends and 179 indeterminate operations, 0 violations |
 
 ## M0 scope items
@@ -24,7 +24,7 @@ M0 (Foundation, design [§12 §1](../design/12-roadmap-testing-risks.md)) is don
 | Worker leases + task framework | `crates/operon-worker/tests/worker.rs` (7): mutual exclusion, takeover cancels and fences, an expired lease re-taken at the same epoch, priority order, namespace fair share, a dropped worker's lease expiring, `run_once` |
 | Link framework (exactly-once apply) | `crates/operon-link/tests/link.rs` (6): exactly once across crashes at every commit step, a zombie task cannot double-apply, stale-version conflicts, apply over a stream being segmented and trimmed, dead letters |
 | PkIndex on SlateDB | `crates/operon-pk/tests/pk.rs` (7): a second open fences the first writer, lost PUT acknowledgements, reader refresh, 100 000 keys in the time budget |
-| GC | `crates/operon-log/tests/gc.rs` (4); `crates/operon-link/tests/gc.rs` (2), including the property test `gc_never_breaks_reads_links_or_the_index` |
+| GC | `crates/operon-log/tests/gc.rs` (5, including the review I1 reproduction `a_swap_delayed_past_its_deadline_is_refused_after_gc_deleted_the_segment`); `crates/operon-link/tests/gc.rs` (2), including the property test `gc_never_breaks_reads_links_or_the_index` |
 | DST harness | `operon-sim`, a seeded simulation (D28, see Known limitations) |
 
 ## Gate runs
@@ -34,19 +34,21 @@ M0 (Foundation, design [§12 §1](../design/12-roadmap-testing-risks.md)) is don
 | `cargo fmt --all -- --check` | pass |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | pass |
 | `cargo clippy -p operon -p operon-link -p operon-log -p operon-meta --all-targets --features failpoints --locked -- -D warnings` | pass |
-| `cargo test --workspace --locked` | pass: 251 tests, 0 failed |
-| `cargo test -p operon --features failpoints --test crash --locked` | pass, 3 of 3 runs (12 tests each) |
+| `cargo test --workspace --locked` | pass: 254 tests, 0 failed (after the review fixes) |
+| `cargo test -p operon --features failpoints --test crash --locked` | pass: 3 of 3 runs before the review fixes and 2 of 2 after (12 tests each) |
 | `cargo test -p operon-sim --release --locked` (32 seeds) | pass |
-| `SIM_SEEDS=64 cargo test -p operon-sim --release --locked --test sim` | pass, 64 of 64 seeds |
+| `SIM_SEEDS=64 cargo test -p operon-sim --release --locked --test sim` | pass, 64 of 64 seeds (after the fixes: 5 898 acknowledged appends, 76 indeterminate operations; the sweep now also checks that no index entry or link pointer dangles) |
 | `cargo deny check` | advisories, bans, licenses, sources ok |
 | Stress: 3 rounds × 4 parallel copies of the `operon-worker` worker, `operon-link` link and gc, `operon-log` gc and e2e, and `operon` http test binaries (24 processes per round) | 72 of 72 processes exited 0 (384 tests) |
+| Stress after the review fixes: 2 rounds × the same 6 binaries × 4 copies | 48 of 48 processes exited 0 (264 tests) |
 
 The GC property test's `gc.proptest-regressions` holds 6 workloads, all from one earlier stress loop that failed with "a young WAL orphan was deleted". The machine suspended for 1 h 57 min in the middle of that loop (systemd-logind, 19:01 to 20:58). The wall clock jumped past the orphan's age limit (twice the 15-minute commit window plus the grace period), so GC was right to delete it. The same loop's two link "never caught up" failures and its one cluster "log was never purged" failure have the same cause. It was not a GC bug. The six seeds pass alone, under 4 and 12 parallel copies, and in the stress loop above.
 
 ## Fault matrix
 
-As written by `fault_matrix.rs` to `target/fault-matrix.md`. A cell's outcome:
-- `Retried`: the operation succeeds after a retry.
+As asserted by `fault_matrix.rs` against `crates/operon/tests/fault_matrix.expected.md` (and written to `target/fault-matrix.md`). A cell's outcome:
+- `Retried`: the fault was reached and the operation succeeds after a retry or rides out the delay.
+- `Deferred`: GC only: the fault was reached, the pass completed and left that object for the next pass.
 - `SurfacedRetryable`: the caller gets a retryable error and nothing is acknowledged.
 - `NoEffect`: the operation never issues that store call, or the call's failure changes nothing.
 
@@ -186,13 +188,13 @@ As written by `fault_matrix.rs` to `target/fault-matrix.md`. A cell's outcome:
 | GcPass | PutIfMatch | ErrorAfterApply | NoEffect | NoEffect |
 | GcPass | PutIfMatch | Precondition | NoEffect | NoEffect |
 | GcPass | PutIfMatch | Delay(2s) | NoEffect | NoEffect |
-| GcPass | Get | Error | Retried | NoEffect |
-| GcPass | Get | ErrorAfterApply | Retried | NoEffect |
-| GcPass | Get | Precondition | Retried | NoEffect |
+| GcPass | Get | Error | Deferred | NoEffect |
+| GcPass | Get | ErrorAfterApply | Deferred | NoEffect |
+| GcPass | Get | Precondition | Deferred | NoEffect |
 | GcPass | Get | Delay(2s) | Retried | NoEffect |
-| GcPass | Delete | Error | Retried | Retried |
-| GcPass | Delete | ErrorAfterApply | Retried | Retried |
-| GcPass | Delete | Precondition | Retried | Retried |
+| GcPass | Delete | Error | Deferred | Deferred |
+| GcPass | Delete | ErrorAfterApply | Deferred | Deferred |
+| GcPass | Delete | Precondition | Deferred | Deferred |
 | GcPass | Delete | Delay(2s) | Retried | Retried |
 | GcPass | List | Error | SurfacedRetryable | SurfacedRetryable |
 | GcPass | List | ErrorAfterApply | SurfacedRetryable | SurfacedRetryable |
@@ -223,7 +225,7 @@ As written by `fault_matrix.rs` to `target/fault-matrix.md`. A cell's outcome:
 | MetaSnapshot | List | Precondition | NoEffect | NoEffect |
 | MetaSnapshot | List | Delay(2s) | NoEffect | NoEffect |
 
-Cells: 336 ({"NoEffect": 232, "Retried": 44, "SurfacedRetryable": 60}).
+Cells: 336 ({"Deferred": 9, "NoEffect": 232, "Retried": 35, "SurfacedRetryable": 60}).
 
 </details>
 
@@ -232,11 +234,14 @@ Cells: 336 ({"NoEffect": 232, "Retried": 44, "SurfacedRetryable": 60}).
 - **The simulation is seeded, not deterministic (D28).** openraft, redb and `object_store` do real I/O on real time. A failing seed prints its full schedule but may not replay exactly. A madsim/turmoil port stays an option.
 - **The crash gate kills a single-node `operon dev`.** Multi-node metastore failures (isolation, restarts) are covered by the in-process simulation, not by kill -9 of separate processes.
 - **The fault matrix injects one fault per cell.** The fault kinds are `Error`, `ErrorAfterApply`, `Precondition` and a 2 s `Delay`. Partial reads and a distinct 503 SlowDown kind (§12 §2 item 2) are not modelled separately: a 503 is an `Error`. Combined and random faults come from the simulation (`FaultyStore::random`).
-- **GC safety depends on time bounds.** The grace period (default 1 h) must be longer than the longest read, the segmenter's `swap_deadline` and the link's `max_commit_delay`; the server clamps both to half the grace. Both deadlines are checked before the metastore command is proposed, so a command delayed longer than the grace between that check and the apply (by client retries or Raft) could reference an object GC deleted. With the defaults this needs a metastore stall of about 50 min.
-- **Everything is timed by the wall clock.** GC ages objects, and leases, retention and the WAL commit window use the wall clock. A clock jump, such as a host suspend, ages objects and expires leases at once. It cannot make GC delete a referenced object. Timing-based tests fail if the host sleeps mid-run.
+- **GC safety depends on time bounds, now enforced by the metastore.** After the M0.4 review (I1), `SwapSegment` and a link's pointer CAS carry the new object's creation time and deadline, and the metastore refuses them once its clock is past the deadline. GC measures ages against the metastore clock. So the only requirement left is configuration: the segmenter's `swap_deadline` and the link's `max_commit_delay` must be below GC's `grace`. The server clamps both to half the grace; `GcConfig` does not check it. The metastore clock is the latest stamped time, so a proposer whose clock is behind other nodes' (within the 5-minute skew bound) gets its swaps and commits refused sooner. Collection manifests in M1 must follow the same rule: a ULID in the name and a fresh CAS.
+- **Time comes from wall clocks.** Leases, retention, the WAL commit window and object ages use proposers' wall-clock stamps, which the metastore clock takes the maximum of. A host suspend makes objects old and leases expire all at once. That cannot make GC delete a referenced object, but timing-based tests fail if the host sleeps mid-run.
 - **GC lists whole prefixes on every run.** `wal/`, `ns/<ns>/streams/` and `ns/<ns>/links/` are listed in full each time; `list_page` bounds deletes per pass, not the listing.
 - **Scheduling is minimal (§09 §6 as built).** Priority order plus round-robin across namespaces, under global and per-namespace caps. There are no weights, byte-rate caps, autoscaling signals or per-class resource budgets.
 - **One link task per link (D30).** A link does not split into partition ranges yet.
 - **The toy target is the only link target.** `CounterTable` is a test target. `PkIndex` has no production user until M1 keyed collections.
 - **Carried from M0.3.** Segmenting by age uses client-supplied record timestamps. The segmenter and retention scan every partition on each run. Fetches read a whole WAL chunk even for a small range.
 - **Leader clock bound.** `max_clock_skew` (5 min) bounds proposers against the leader's clock. A leader whose own clock is wrong by more than that refuses correct writers. The race-free bound (the leader stamps each entry) is planned for M5.
+- **One `target/debug/operon` for two feature sets.** `cargo test -p operon --features failpoints` rebuilds the shared `target/debug/operon` with failpoints. Running the `http` test binary directly after that hangs `a_build_without_failpoints_refuses_to_arm_them`, until `cargo build -p operon` rebuilds it. CI runs the two in separate jobs, and `cargo test` rebuilds the binary itself.
+- **Simulation gaps (review M4).** One worker runs at a time, so takeover by a live successor is covered only by the worker and link unit tests, and the simulated `events` stream has no retention.
+- **`CounterTable` cost (review M9).** Every manifest lists every data file, and `snapshot()` reads all of them. That is fine for a test target, but not a design for M1 targets.
