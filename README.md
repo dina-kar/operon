@@ -4,7 +4,7 @@
 
 Operon is an open-source, object-storage-native, multi-model data engine for AI applications. It combines **streams (Kafka), full-text search (Elasticsearch), vector search (Qdrant), graph (Neo4j) and analytics (ClickHouse)** in one Rust engine over open formats — Apache Iceberg, Lance and Tantivy — stored in *your* S3/GCS/Azure bucket, with stateless, independently scalable compute. Agent runs get **durable execution** through the [Resonate](https://github.com/resonatehq/resonate) protocol, in the same bucket.
 
-> **Status: design phase.** Operon has no usable release yet. The architecture is specified in [`docs/design`](docs/design/README.md), and implementation plans are being written in [`docs/plans`](docs/plans/). Expect breaking changes everywhere.
+> **Status: M0 foundation complete.** Operon has no usable release yet: the metastore, the internal log, workers, links, the PK index and garbage collection are built and pass the M0 exit gates ([report](docs/plans/m0-exit-report.md)); the query surfaces start with M1. The architecture is specified in [`docs/design`](docs/design/README.md) and the implementation plans are in [`docs/plans`](docs/plans/). Expect breaking changes everywhere.
 
 ## Why
 
