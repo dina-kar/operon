@@ -521,6 +521,7 @@ async fn write_and_commit(
         .put_if_absent(&path, object)
         .await
         .map_err(|e| FlushFailure::Store(Arc::new(e)))?;
+    crate::failpoint!("wal.after_put");
 
     let chunks: Vec<WalChunk> = metas
         .iter()
@@ -533,6 +534,7 @@ async fn write_and_commit(
         })
         .collect();
     let base_offsets = commit(shared, &path, ulid.timestamp_ms(), chunks).await?;
+    crate::failpoint!("wal.after_commit");
     if base_offsets.len() != metas.len() {
         return Err(FlushFailure::Unknown(format!(
             "the metastore returned {} offsets for {} chunks",

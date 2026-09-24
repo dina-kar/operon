@@ -30,3 +30,13 @@ pub use target::{ApplyBatch, CommitError, CommitStep, LinkTarget, TargetState};
 #[cfg(feature = "test-util")]
 pub use target::CommitHook;
 
+/// Evaluates a named failpoint (M0.4 Task 5). With the `failpoints` feature
+/// the `fail` crate may act on it (the crash gate aborts the process there);
+/// without it, this expands to nothing.
+macro_rules! failpoint {
+    ($name:literal) => {
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!($name);
+    };
+}
+pub(crate) use failpoint;

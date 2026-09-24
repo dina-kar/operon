@@ -616,3 +616,85 @@ async fn acknowledged_records_survive_a_crash() {
     assert_eq!(base, model.len() as u64);
     dev.kill();
 }
+
+/// M0.4: links are declared and read over HTTP; a link sums its source.
+#[tokio::test]
+async fn a_link_is_created_once_and_sums_its_stream() {
+    let dir = TempDir::new().unwrap();
+    let mut cfg = config(&dir, lazy_segmenter());
+    cfg.link.batch_interval = Duration::ZERO;
+    let server = Server::start(cfg).await.unwrap();
+    let api = Api::new(&server);
+    api.setup(2).await;
+    let (status, body) = api
+        .post(
+            "/v1/namespaces/acme/links",
+            json!({"name": "counts", "source": "events"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_u64().unwrap();
+    let (status, body) = api
+        .post(
+            "/v1/namespaces/acme/links",
+            json!({"name": "counts", "source": "events"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["id"].as_u64(), Some(id));
+    let (status, _) = api
+        .post(
+            "/v1/namespaces/acme/links",
+            json!({"name": "other", "source": "missing"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    for (p, key, delta) in [(0, "a", "5"), (1, "a", "-2"), (0, "b", "10"), (1, "b", "x")] {
+        let (status, body) = api
+            .post(
+                &format!("/v1/namespaces/acme/streams/events/partitions/{p}/records"),
+                json!({"records": [{"key": BASE64.encode(key), "value": BASE64.encode(delta)}]}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let deadline = Instant::now() + WAIT;
+    let body = loop {
+        let (status, body) = api.get("/v1/namespaces/acme/links/counts").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        if body["applied"] == json!([{"partition": 0, "offset": 2}, {"partition": 1, "offset": 2}])
+        {
+            break body;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the link never caught up: {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(body["counters"], json!({"a": 3, "b": 10}));
+    assert_eq!(body["skipped"], json!(1));
+    assert_eq!(body["target"], json!({"kind": "counter", "name": "counts"}));
+    let (status, _) = api.get("/v1/namespaces/acme/links/missing").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    server.shutdown().await.unwrap();
+}
+
+/// Failpoints exist only in builds with the `failpoints` feature; a normal
+/// build refuses to run with them requested rather than ignoring them.
+#[cfg(not(feature = "failpoints"))]
+#[test]
+fn a_build_without_failpoints_refuses_to_arm_them() {
+    let dir = TempDir::new().unwrap();
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_operon"))
+        .args(["dev", "--listen", "127.0.0.1:0"])
+        .arg("--data-dir")
+        .arg(dir.path())
+        .env("OPERON_FAILPOINTS", "wal.after_put")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("run operon");
+    assert!(!status.success());
+}

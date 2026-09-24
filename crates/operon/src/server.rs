@@ -8,6 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use operon_cache::{RangeCache, RangeCacheConfig};
+use operon_link::{LinkApplySource, LinkConfig, LinkGcRoots};
+use operon_log::gc::{GcConfig, GcSource};
 use operon_log::{
     LogConfig, LogReader, LogWriter, RetentionConfig, RetentionSource, SegmenterConfig,
     SegmenterSource,
@@ -42,6 +44,11 @@ pub struct ServerConfig {
     pub segmenter: SegmenterConfig,
     pub retention: RetentionConfig,
     pub cache: RangeCacheConfig,
+    pub link: LinkConfig,
+    pub gc: GcConfig,
+    /// The metastore builds a snapshot after this many log entries. Default
+    /// 10 000.
+    pub snapshot_every: u64,
     /// How often the worker polls its task sources. Default 1 s.
     pub worker_poll_interval: Duration,
     /// The worker's task lease TTL. Default 30 s.
@@ -59,6 +66,9 @@ impl ServerConfig {
             segmenter: SegmenterConfig::default(),
             retention: RetentionConfig::default(),
             cache: RangeCacheConfig::default(),
+            link: LinkConfig::default(),
+            gc: GcConfig::default(),
+            snapshot_every: 10_000,
             worker_poll_interval: Duration::from_secs(1),
             worker_lease_ttl: Duration::from_secs(30),
         }
@@ -129,10 +139,17 @@ impl Server {
     /// On failure, everything already started is stopped again (the
     /// metastore releases its local database), so a retry in the same process
     /// can succeed.
-    pub async fn start(config: ServerConfig) -> Result<Self, ServerError> {
+    pub async fn start(mut config: ServerConfig) -> Result<Self, ServerError> {
         config.log.validate()?;
+        // Garbage collection deletes unreferenced objects older than its
+        // grace period, so a segment or link commit must reference its new
+        // objects well within it (M0.4 ruling E7).
+        let half_grace = config.gc.grace / 2;
+        config.segmenter.swap_deadline = config.segmenter.swap_deadline.min(half_grace);
+        config.link.max_commit_delay = config.link.max_commit_delay.min(half_grace);
         let store = Store::from_url(&bucket_url(&config)?, Vec::<(String, String)>::new())?;
-        let meta_config = MetaConfig::new(NODE_ID, config.data_dir.join("meta"), store.clone());
+        let mut meta_config = MetaConfig::new(NODE_ID, config.data_dir.join("meta"), store.clone());
+        meta_config.snapshot_every = config.snapshot_every;
         let node = MetaNode::start(meta_config, &Router::new()).await?;
         match Self::start_on(node.clone(), store, config).await {
             Ok(server) => Ok(server),
@@ -195,17 +212,28 @@ impl Server {
                 ..WorkerConfig::new(owner)
             },
         );
+        worker.add_source(Arc::new(LinkApplySource::new(
+            reader.clone(),
+            store.clone(),
+            config.link.clone(),
+        )));
         worker.add_source(Arc::new(SegmenterSource::new(
             store.clone(),
             cache.clone(),
             config.segmenter.clone(),
         )));
         worker.add_source(Arc::new(RetentionSource::new(config.retention.clone())));
+        worker.add_source(Arc::new(GcSource::with_roots(
+            store.clone(),
+            config.gc.clone(),
+            vec![Arc::new(LinkGcRoots)],
+        )));
         let worker = worker.start();
         let app = api::router(AppState {
             meta: meta.clone(),
             writer: writer.clone(),
             reader,
+            store: store.clone(),
         });
         let (stop_http, stopped) = oneshot::channel::<()>();
         let http = tokio::spawn(async move {

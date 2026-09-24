@@ -12,7 +12,7 @@ use operon_worker::{
     Candidate, Priority, Task, TaskContext, TaskError, TaskKey, TaskOutcome, TaskSource,
 };
 
-use crate::counter::{COUNTER_KIND, CounterTable};
+use crate::counter::{COUNTER_KIND, CounterTable, MAX_COMMIT_DELAY};
 use crate::error::LinkError;
 use crate::target::{ApplyBatch, CommitError, LinkTarget, TargetState};
 
@@ -27,6 +27,10 @@ pub struct LinkConfig {
     /// Most record bytes (keys, values and headers) one commit applies.
     /// Default 64 MiB.
     pub max_batch_bytes: usize,
+    /// The longest a commit may take from its data PUT to its CAS, and the
+    /// oldest orphaned manifest a commit adopts; garbage collection's grace
+    /// must be longer. Default [`MAX_COMMIT_DELAY`] (10 min).
+    pub max_commit_delay: Duration,
 }
 
 impl Default for LinkConfig {
@@ -35,6 +39,7 @@ impl Default for LinkConfig {
             batch_records: 10_000,
             batch_interval: Duration::from_secs(2),
             max_batch_bytes: 64 * 1024 * 1024,
+            max_commit_delay: MAX_COMMIT_DELAY,
         }
     }
 }
@@ -105,7 +110,8 @@ impl LinkApplySource {
     }
 
     fn target(&self, meta: &MetaClient, link: &Link) -> CounterTable {
-        let table = CounterTable::for_link(meta.clone(), self.shared.store.clone(), link);
+        let table = CounterTable::for_link(meta.clone(), self.shared.store.clone(), link)
+            .with_max_commit_delay(self.shared.config.max_commit_delay);
         #[cfg(feature = "test-util")]
         let table = table.with_hook(self.shared.hook.clone());
         table

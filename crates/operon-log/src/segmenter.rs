@@ -333,6 +333,7 @@ impl SegmentTask {
             .put_if_absent(&path, bytes)
             .await
             .map_err(|e| TaskError::failed(LogError::from(e)))?;
+        crate::failpoint!("seg.after_put");
 
         // Never swapped in, so safe to delete: the run was cancelled (its
         // lease is being lost) or took so long that GC could delete it.
@@ -357,7 +358,10 @@ impl SegmentTask {
         };
         let (result, earlier_unknown) = ctx.meta.write_tracked(command).await;
         match result {
-            Ok(Reply::SegmentSwapped) => Ok(Attempt::Swapped),
+            Ok(Reply::SegmentSwapped) => {
+                crate::failpoint!("seg.after_swap");
+                Ok(Attempt::Swapped)
+            }
             Ok(other) => Err(MetaError::UnexpectedReply(other).into()),
             // A rejection of the first attempt means the swap was never
             // applied (a retry of an applied swap succeeds), so the segment

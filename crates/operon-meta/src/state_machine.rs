@@ -344,6 +344,7 @@ impl StateMachineStore {
             store.put(&path, data.clone())
         })
         .await?;
+        crate::failpoint!("meta.snapshot.after_put");
         let pointer = SnapshotPointer {
             path: path.clone(),
             last_log_id: meta.last_log_id,
@@ -352,6 +353,7 @@ impl StateMachineStore {
             .db
             .put_meta(SNAPSHOT_POINTER_KEY, codec::encode(&pointer)?)
             .await?;
+        crate::failpoint!("meta.snapshot.after_pointer");
         self.set_current(Some(CurrentSnapshot {
             path: path.clone(),
             meta: meta.clone(),

@@ -113,6 +113,7 @@ async fn apply(meta: &MetaClient, fence: &Fence) -> Result<RetentionReport, Task
                 meta.trim_partition(stream, partition, before, Some(fence.clone()))
                     .await
                     .map_err(fenced)?;
+                crate::failpoint!("retention.after_trim");
                 report.trimmed += 1;
             }
         }

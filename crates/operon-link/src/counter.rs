@@ -143,6 +143,7 @@ pub struct CounterTable {
     link: LinkId,
     /// The manifest the last `load` or commit saw, to build the next commit on.
     last: Mutex<Option<Arc<Manifest>>>,
+    max_commit_delay: Duration,
     #[cfg(feature = "test-util")]
     hook: Option<crate::target::CommitHook>,
 }
@@ -181,6 +182,7 @@ impl CounterTable {
             namespace: link.namespace,
             link: link.id,
             last: Mutex::default(),
+            max_commit_delay: MAX_COMMIT_DELAY,
             #[cfg(feature = "test-util")]
             hook: None,
         }
@@ -193,11 +195,30 @@ impl CounterTable {
         self
     }
 
+    /// The longest a commit may take from its data PUT to its CAS, and the
+    /// oldest orphaned manifest it adopts (default [`MAX_COMMIT_DELAY`]).
+    /// Garbage collection's grace must be longer.
+    pub fn with_max_commit_delay(mut self, delay: Duration) -> Self {
+        self.max_commit_delay = delay;
+        self
+    }
+
     pub fn link(&self) -> LinkId {
         self.link
     }
 
     async fn step(&self, step: CommitStep, fence: &Fence) {
+        match step {
+            CommitStep::AfterDataPut => {
+                crate::failpoint!("link.after_data_put");
+            }
+            CommitStep::AfterManifestPut => {
+                crate::failpoint!("link.after_manifest_put");
+            }
+            CommitStep::AfterCas => {
+                crate::failpoint!("link.after_cas");
+            }
+        }
         #[cfg(feature = "test-util")]
         if let Some(hook) = &self.hook {
             hook(step, fence.clone()).await;
@@ -312,7 +333,7 @@ impl CounterTable {
             ))));
         }
         let now = self.meta.now_ms();
-        let max_age = millis(MAX_COMMIT_DELAY);
+        let max_age = millis(self.max_commit_delay);
         let info = self.store.head(path).await.map_err(LinkError::from)?;
         if now.saturating_sub(info.last_modified_ms) > max_age {
             return Err(blocked(format!(
@@ -481,9 +502,10 @@ impl LinkTarget for CounterTable {
 
         // Too slow: garbage collection could delete the new data file around
         // the time the pointer starts referencing it. Leave it unreferenced.
-        if self.meta.now_ms().saturating_sub(started) > millis(MAX_COMMIT_DELAY) {
+        if self.meta.now_ms().saturating_sub(started) > millis(self.max_commit_delay) {
             return Err(CommitError::Other(LinkError::Blocked(format!(
-                "the commit of {path} took longer than {MAX_COMMIT_DELAY:?}"
+                "the commit of {path} took longer than {:?}",
+                self.max_commit_delay
             ))));
         }
         let expected = (expected_version > 0).then_some(expected_version);

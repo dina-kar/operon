@@ -35,3 +35,14 @@ pub use types::{
     Pointer, Retention, Stream, TargetRef, WAL_COMMIT_WINDOW_MS, WalChunk, WalClass,
     WalCommitRecord,
 };
+
+/// Evaluates a named failpoint (M0.4 Task 5). With the `failpoints` feature
+/// the `fail` crate may act on it (the crash gate aborts the process there);
+/// without it, this expands to nothing.
+macro_rules! failpoint {
+    ($name:literal) => {
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!($name);
+    };
+}
+pub(crate) use failpoint;

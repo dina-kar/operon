@@ -28,7 +28,7 @@ ulid.workspace = true
 [features]
 # Named failpoints for the crash gate (M0.4 Task 5). Off by default: without
 # it the failpoints compile to nothing.
-failpoints = ["dep:fail", "fail/failpoints"]
+failpoints = ["dep:fail", "fail/failpoints", "operon-meta/failpoints"]
 
 [dev-dependencies]
 crc32c.workspace = true
