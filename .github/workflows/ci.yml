@@ -25,6 +25,17 @@ jobs:
       - name: test
         run: cargo test --workspace --locked
 
+  crash-gate:
+    name: kill -9 crash gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy with failpoints
+        run: cargo clippy -p operon --all-targets --features failpoints --locked -- -D warnings
+      - name: crash gate
+        run: cargo test -p operon --features failpoints --test crash --locked
+
   deny:
     name: licenses, advisories, sources
     runs-on: ubuntu-latest
