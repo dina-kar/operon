@@ -51,14 +51,16 @@ fn batch(values: &[String]) -> Vec<Record> {
         .collect()
 }
 
-/// Fetches a whole partition, retrying failed fetches (injected faults).
+/// Fetches a whole partition from its log start, retrying failed fetches
+/// (injected faults). Returns the log start and the records.
 async fn read_partition(
     reader: &LogReader,
     stream: StreamId,
     partition: u32,
-) -> Vec<(u64, String)> {
+) -> (u64, Vec<(u64, String)>) {
     let mut out = Vec::new();
     let mut offset = 0;
+    let mut log_start = 0;
     let deadline = Instant::now() + WAIT;
     loop {
         let fetched = reader
@@ -77,32 +79,46 @@ async fn read_partition(
                 tokio::time::sleep(Duration::from_millis(5)).await;
                 continue;
             }
+            Err(LogError::OffsetOutOfRange {
+                log_start_offset, ..
+            }) if out.is_empty() && offset < log_start_offset => {
+                offset = log_start_offset;
+                log_start = log_start_offset;
+                continue;
+            }
             Err(err) => panic!("fetch {partition}@{offset}: {err:?}"),
         };
         if response.records.is_empty() {
-            return out;
+            return (log_start, out);
         }
         for record in response.records {
             let value =
                 String::from_utf8(record.record.value.expect("value").to_vec()).expect("utf-8");
             out.push((record.offset, value));
         }
-        offset = out.last().map_or(0, |(o, _)| o + 1);
+        offset = out.last().map_or(offset, |(o, _)| o + 1);
     }
 }
 
-/// Checks the log against the outcomes: dense offsets, every acknowledged
-/// append at its offsets, no duplicates, nothing from a definitely failed
-/// append.
-async fn verify(reader: &LogReader, stream: StreamId, outcomes: &[Outcome]) {
+/// Checks the log against the outcomes: dense offsets from each partition's
+/// log start, every acknowledged append at its offsets (unless trimmed), no
+/// duplicates, nothing from a definitely failed append. Returns the log
+/// starts.
+async fn verify(reader: &LogReader, stream: StreamId, outcomes: &[Outcome]) -> Vec<u64> {
     let mut acked = 0;
     let mut logs: BTreeMap<u32, Vec<(u64, String)>> = BTreeMap::new();
+    let mut starts = BTreeMap::new();
     for partition in 0..PARTITIONS {
-        let log = read_partition(reader, stream, partition).await;
+        let (start, log) = read_partition(reader, stream, partition).await;
         for (i, (offset, _)) in log.iter().enumerate() {
-            assert_eq!(*offset, i as u64, "partition {partition} is not dense");
+            assert_eq!(
+                *offset,
+                start + i as u64,
+                "partition {partition} is not dense"
+            );
         }
         logs.insert(partition, log);
+        starts.insert(partition, start);
     }
     let mut seen = BTreeSet::new();
     for log in logs.values() {
@@ -119,9 +135,12 @@ async fn verify(reader: &LogReader, stream: StreamId, outcomes: &[Outcome]) {
                 values,
             } => {
                 acked += 1;
-                let log = &logs[partition];
+                let (log, start) = (&logs[partition], starts[partition]);
                 for (offset, value) in (*base..).zip(values) {
-                    let got = log.get(offset as usize).map(|(_, v)| v);
+                    if offset < start {
+                        continue; // trimmed by retention
+                    }
+                    let got = log.get((offset - start) as usize).map(|(_, v)| v);
                     assert_eq!(got, Some(value), "partition {partition} offset {offset}");
                 }
                 allowed.extend(values.iter().cloned());
@@ -138,6 +157,7 @@ async fn verify(reader: &LogReader, stream: StreamId, outcomes: &[Outcome]) {
         assert!(allowed.contains(value), "{value} came from nowhere");
     }
     assert!(acked > 0);
+    starts.into_values().collect()
 }
 
 struct Cluster {
@@ -207,20 +227,26 @@ impl Cluster {
     /// Waits until every node has applied what the leader has.
     async fn converge(&self, stream: StreamId) {
         let leader = self.client(self.leader().await);
-        let expected: Vec<u64> = leader
+        let expected: Vec<(u64, u64)> = leader
             .read(Consistency::Linearizable, |s| {
                 (0..PARTITIONS)
-                    .map(|p| s.partition(stream, p).expect("partition").high_watermark())
+                    .map(|p| {
+                        let state = s.partition(stream, p).expect("partition");
+                        (state.log_start_offset(), state.high_watermark())
+                    })
                     .collect()
             })
             .await
             .expect("linearizable read");
         for node in &self.nodes {
             common::eventually("a node to catch up", || async {
-                let local: Vec<u64> = node
+                let local: Vec<(u64, u64)> = node
                     .read(Consistency::Local, |s| {
                         (0..PARTITIONS)
-                            .map(|p| s.partition(stream, p).expect("partition").high_watermark())
+                            .map(|p| {
+                                let state = s.partition(stream, p).expect("partition");
+                                (state.log_start_offset(), state.high_watermark())
+                            })
                             .collect()
                     })
                     .await
@@ -317,7 +343,17 @@ async fn acknowledged_appends_survive_a_meta_leader_failover() {
     let admin = cluster.client(1);
     let ns = admin.create_namespace("acme").await.unwrap();
     let stream = admin
-        .create_stream(ns, "events", PARTITIONS, WalClass::Standard)
+        .create_stream_with_retention(
+            ns,
+            "events",
+            PARTITIONS,
+            WalClass::Standard,
+            // Small enough that retention trims during the run.
+            operon_meta::Retention {
+                max_age_ms: None,
+                max_bytes: Some(1024),
+            },
+        )
         .await
         .unwrap();
     for node in &cluster.nodes {
@@ -382,7 +418,11 @@ async fn acknowledged_appends_survive_a_meta_leader_failover() {
     // Every node serves the same, correct log.
     for id in 1..=3 {
         let reader = LogReader::new(cluster.client(id), small_cache(&data).await);
-        verify(&reader, stream, &outcomes).await;
+        let starts = verify(&reader, stream, &outcomes).await;
+        assert!(
+            starts.iter().any(|s| *s > 0),
+            "retention never trimmed: {starts:?}"
+        );
     }
     cluster.shutdown().await;
 }
