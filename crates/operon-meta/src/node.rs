@@ -61,6 +61,10 @@ pub struct MetaConfig {
     /// clock is behind by more than this refuses correct proposers (M0.3
     /// re-review N1; design §10 §2).
     pub max_clock_skew: Duration,
+    /// The longest one snapshot upload may take, retries of transient store
+    /// errors included (M0.2 re-review N2). openraft stops the node if a
+    /// snapshot build fails, so it is generous. Default 60 s.
+    pub snapshot_io_budget: Duration,
 }
 
 impl MetaConfig {
@@ -76,6 +80,7 @@ impl MetaConfig {
             clock: Arc::new(SystemClock),
             allow_fresh_start_with_existing_snapshots: false,
             max_clock_skew: Duration::from_secs(300),
+            snapshot_io_budget: Duration::from_secs(60),
         }
     }
 }
@@ -207,6 +212,7 @@ impl MetaNode {
             db.clone(),
         )
         .await?;
+        sm.set_io_budget(config.snapshot_io_budget);
         let state = sm.reader();
         let snapshot_io = sm.closer();
         let network = NetworkFactory::new(router.clone(), config.node_id);
