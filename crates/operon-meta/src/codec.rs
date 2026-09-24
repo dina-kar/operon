@@ -10,7 +10,12 @@ use crate::raft::SnapshotMeta;
 use crate::state::MetaState;
 
 const SNAPSHOT_MAGIC: &[u8; 8] = b"OPNMETA\0";
-const SNAPSHOT_FORMAT_VERSION: u32 = 1;
+/// Version 2 (M0.3) added the log engine's state: entry kinds, log start
+/// offsets, retention, WAL commit times, live chunk counts and retired objects.
+/// Version 3 (M0.4) added the link catalog, and version 4 the per-partition
+/// byte counts. Older snapshots are rejected (M0.3 plan, ruling 9: nothing is
+/// deployed yet).
+const SNAPSHOT_FORMAT_VERSION: u32 = 4;
 /// Magic, then the format version.
 const HEADER_LEN: usize = 12;
 /// The crc32c trailer.
@@ -75,4 +80,121 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> io::Result<(SnapshotMeta, MetaSta
 
 fn invalid_data(err: impl ToString) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::Command;
+    use crate::types::{Retention, WalChunk, WalClass};
+    use operon_common::{NamespaceId, StreamId};
+
+    /// A state that uses every field the log engine added.
+    fn log_state() -> MetaState {
+        let mut state = MetaState::default();
+        let commands = [
+            Command::CreateNamespace {
+                name: "acme".to_string(),
+            },
+            Command::CreateStream {
+                namespace: NamespaceId(1),
+                name: "events".to_string(),
+                partitions: 1,
+                class: WalClass::Standard,
+                retention: Retention::default(),
+            },
+            Command::SetRetention {
+                stream: StreamId(1),
+                retention: Retention {
+                    max_age_ms: Some(10),
+                    max_bytes: Some(20),
+                },
+            },
+            Command::CreateLink {
+                namespace: NamespaceId(1),
+                name: "counts".to_string(),
+                source: StreamId(1),
+                target: crate::types::TargetRef {
+                    kind: "counter".to_string(),
+                    name: "counts".to_string(),
+                },
+                options: [("batch_interval".to_string(), "2s".to_string())].into(),
+            },
+        ];
+        for command in commands {
+            state.apply(command).expect("setup");
+        }
+        for (i, object) in ["w1", "w2", "w3"].iter().enumerate() {
+            state
+                .apply(Command::CommitWal {
+                    object: object.to_string(),
+                    created_at_ms: 100 + i as u64,
+                    chunks: vec![WalChunk {
+                        stream: StreamId(1),
+                        partition: 0,
+                        records: 2,
+                        byte_range: 0..10,
+                        max_timestamp_ms: 5,
+                    }],
+                })
+                .expect("commit");
+        }
+        state
+            .apply(Command::SwapSegment {
+                stream: StreamId(1),
+                partition: 0,
+                replaces: vec![(2, "w2".to_string())],
+                segment: "seg".to_string(),
+                byte_range: 40..50,
+                max_timestamp_ms: 5,
+                fence: None,
+                now_ms: 1_000,
+                fresh: crate::types::Freshness {
+                    created_at_ms: 1_000,
+                    max_age_ms: 60_000,
+                },
+            })
+            .expect("swap");
+        state
+            .apply(Command::TrimPartition {
+                stream: StreamId(1),
+                partition: 0,
+                before_offset: 3,
+                fence: None,
+                now_ms: 2_000,
+            })
+            .expect("trim");
+        state
+    }
+
+    #[test]
+    fn snapshots_round_trip_the_log_engine_state() {
+        let state = log_state();
+        assert_eq!(
+            state.partition(StreamId(1), 0).unwrap().log_start_offset(),
+            3
+        );
+        assert_eq!(state.retired().count(), 2);
+        assert_eq!(state.wal_live_chunks("w3"), Some(1));
+        assert_eq!(state.all_links().count(), 1);
+        let meta = SnapshotMeta::default();
+        let bytes = encode_snapshot(&meta, &state).unwrap();
+        assert_eq!(&bytes[8..12], &4u32.to_le_bytes());
+        let (decoded_meta, decoded) = decode_snapshot(&bytes).unwrap();
+        assert_eq!(decoded_meta, meta);
+        assert_eq!(decoded, state);
+    }
+
+    #[test]
+    fn older_snapshot_versions_are_rejected() {
+        for version in [1u32, 2, 3] {
+            let mut bytes = encode_snapshot(&SnapshotMeta::default(), &log_state()).unwrap();
+            bytes.truncate(bytes.len() - TRAILER_LEN);
+            bytes[8..12].copy_from_slice(&version.to_le_bytes());
+            let crc = crc32c::crc32c(&bytes);
+            bytes.extend_from_slice(&crc.to_le_bytes());
+            let err = decode_snapshot(&bytes).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::Unsupported, "{err}");
+        }
+    }
 }

@@ -1,5 +1,5 @@
 use operon_common::NamespaceId;
-use operon_meta::{ApplyError, Command, Fence, MetaState, Pointer, Reply};
+use operon_meta::{ApplyError, Command, Fence, Freshness, MetaState, Pointer, Reply};
 
 const NS: NamespaceId = NamespaceId(1);
 const KEY: &str = "collections/7/manifest";
@@ -26,6 +26,7 @@ fn cas(
         expected,
         value: value.to_string(),
         fence,
+        fresh: None,
     })
 }
 
@@ -96,6 +97,7 @@ fn pointers_need_an_existing_namespace_and_valid_keys() {
             expected: None,
             value: "m/1.pb".to_string(),
             fence: None,
+            fresh: None,
         })
         .unwrap_err();
     assert!(matches!(err, ApplyError::InvalidArgument(_)), "{err:?}");
@@ -153,4 +155,55 @@ fn a_fenced_write_needs_the_lease_at_the_fence_epoch() {
         .unwrap();
     assert_eq!(cas(&mut state, Some(2), "m/3.pb", fence(2)), fenced());
     assert_eq!(state.pointer(NS, KEY), Some(&pointer(2, "m/2.pb")));
+}
+
+/// M0.4 review I1: a CAS carrying a freshness bound the metastore clock has
+/// passed is refused and changes nothing; a retry of an applied CAS still
+/// gets the mismatch carrying its own value.
+#[test]
+fn a_cas_past_its_freshness_is_refused_and_changes_nothing() {
+    let mut state = state_with_namespace();
+    state
+        .apply(Command::PruneWalCommits {
+            fence: None,
+            now_ms: 10_000,
+        })
+        .unwrap();
+    let cas_fresh = |state: &mut MetaState, expected, value: &str, max_age_ms| {
+        state.apply(Command::CasPointer {
+            namespace: NS,
+            key: KEY.to_string(),
+            expected,
+            value: value.to_string(),
+            fence: None,
+            fresh: Some(Freshness {
+                created_at_ms: 5_000,
+                max_age_ms,
+            }),
+        })
+    };
+    let before = state.clone();
+    let err = cas_fresh(&mut state, None, "m/1.pb", 4_999).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ApplyError::StaleObject {
+                clock_ms: 10_000,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert_eq!(state, before);
+    assert_eq!(
+        cas_fresh(&mut state, None, "m/1.pb", 5_000),
+        Ok(Reply::PointerSet { version: 1 })
+    );
+    let err = cas_fresh(&mut state, None, "m/1.pb", 0).unwrap_err();
+    assert_eq!(
+        err,
+        ApplyError::VersionMismatch {
+            current: Some(pointer(1, "m/1.pb"))
+        }
+    );
 }

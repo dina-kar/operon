@@ -48,3 +48,29 @@ async fn relative_path_segments_are_rejected() {
     let err = store.put("d/./e", b("x")).await.unwrap_err();
     assert!(matches!(err, StoreError::InvalidPath(_)), "got {err:?}");
 }
+
+#[tokio::test]
+async fn object_info_reports_the_modification_time() {
+    let now_ms = || {
+        u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap()
+    };
+    let before = now_ms();
+    let store = Store::in_memory();
+    store.put("a", b("x")).await.unwrap();
+    let after = now_ms();
+    for info in [
+        store.head("a").await.unwrap(),
+        store.list("").await.unwrap()[0].clone(),
+    ] {
+        assert!(
+            (before.saturating_sub(1_000)..=after + 1_000).contains(&info.last_modified_ms),
+            "{info:?}"
+        );
+    }
+}

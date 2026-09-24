@@ -54,6 +54,8 @@ native = { rest = "0.0.0.0:8080", grpc = "0.0.0.0:8081", flight_sql = "0.0.0.0:8
 
 Each gateway is individually enabled; disabled gateways load no code paths (feature-gated at build time as well).
 
+**Clocks.** Every node must run NTP. Leases, retention, the segmenter and the WAL commit window (§02 §3) use wall-clock time stamped by the proposing node, and the metastore clock never goes back. The meta leader therefore refuses any command stamped more than `max_clock_skew` (default 5 min) ahead of its own clock (`ClockSkew`): a node whose clock runs ahead cannot write until its clock is fixed, but it cannot stop the other nodes' writes either. The bound works in both directions: a leader whose own clock is more than `max_clock_skew` *behind* refuses correct proposers too, which is why the default is generous. The leader's own clock must be right: a leader far ahead of real time would make WAL commits from correct clocks stale, and one far behind refuses them. (A race-free bound, with the leader stamping its own time into each entry, is planned for M5.)
+
 ## 3. Multi-tenancy
 
 - **Namespace isolation:** separate key prefixes, manifests, PK/ID-map instances, caches keyed by namespace; no cross-namespace reads without explicit grants.

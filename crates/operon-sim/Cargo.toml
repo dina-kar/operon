@@ -1,0 +1,28 @@
+[package]
+name = "operon-sim"
+description = "Operon's seeded cluster simulation and linearizability checker (test-only)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+bytes.workspace = true
+object_store.workspace = true
+operon-cache.workspace = true
+operon-common.workspace = true
+operon-link.workspace = true
+operon-log.workspace = true
+operon-meta.workspace = true
+operon-store.workspace = true
+operon-worker.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

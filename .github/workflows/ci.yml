@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Nightly: the long simulation sweep (M0.4 plan Task 6).
+    - cron: "17 2 * * *"
 
 permissions:
   contents: read
@@ -24,6 +27,32 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: test
         run: cargo test --workspace --locked
+
+  crash-gate:
+    name: kill -9 crash gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy with failpoints
+        run: cargo clippy -p operon --all-targets --features failpoints --locked -- -D warnings
+      - name: crash gate
+        run: cargo test -p operon --features failpoints --test crash --locked
+
+  sim:
+    name: simulation seed sweep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: simulation (32 seeds x 300 steps)
+        if: github.event_name != 'schedule'
+        run: cargo test -p operon-sim --release --locked
+      - name: simulation (1000 seeds x 300 steps, nightly)
+        if: github.event_name == 'schedule'
+        run: cargo test -p operon-sim --release --locked --test sim
+        env:
+          SIM_SEEDS: "1000"
 
   deny:
     name: licenses, advisories, sources

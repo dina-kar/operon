@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use openraft::async_runtime::WatchReceiver;
@@ -12,7 +12,6 @@ use openraft::metrics::WaitError;
 use openraft::{BasicNode, Raft, ReadPolicy, SnapshotPolicy};
 use operon_common::{NamespaceId, StreamId};
 use operon_store::Store;
-use redb::Database;
 
 use crate::clock::{Clock, SystemClock};
 use crate::command::{Command, Reply};
@@ -25,7 +24,7 @@ use crate::state::MetaState;
 use crate::state_machine::{
     SNAPSHOT_POINTER_KEY, SnapshotIoCloser, StateMachineStore, StateReader,
 };
-use crate::types::{Fence, LeaseGrant, WalChunk, WalClass};
+use crate::types::{Fence, LeaseGrant, Retention, WalChunk, WalClass};
 
 /// How to start a meta node.
 #[derive(Clone, Debug)]
@@ -53,6 +52,19 @@ pub struct MetaConfig {
     /// metastore and later overwrite the snapshots it should be restored
     /// from. Set it only when those snapshots are known to be stale.
     pub allow_fresh_start_with_existing_snapshots: bool,
+    /// How far ahead of the leader's own clock a command's time stamp
+    /// (`now_ms`, or a WAL commit's `created_at_ms`) may be. The leader
+    /// refuses to propose a command stamped further ahead, with
+    /// [`MetaError::ClockSkew`]: the metastore clock never goes back, so one
+    /// such stamp would otherwise make every later WAL commit stale until real
+    /// time caught up. Default 5 min: generous, because a leader whose own
+    /// clock is behind by more than this refuses correct proposers (M0.3
+    /// re-review N1; design §10 §2).
+    pub max_clock_skew: Duration,
+    /// The longest one snapshot upload may take, retries of transient store
+    /// errors included (M0.2 re-review N2). openraft stops the node if a
+    /// snapshot build fails, so it is generous. Default 60 s.
+    pub snapshot_io_budget: Duration,
 }
 
 impl MetaConfig {
@@ -67,6 +79,8 @@ impl MetaConfig {
             request_timeout: Duration::from_secs(5),
             clock: Arc::new(SystemClock),
             allow_fresh_start_with_existing_snapshots: false,
+            max_clock_skew: Duration::from_secs(300),
+            snapshot_io_budget: Duration::from_secs(60),
         }
     }
 }
@@ -98,12 +112,13 @@ struct Inner {
     raft: MetaRaft,
     state: StateReader,
     /// Lets `shutdown` wait until Raft's tasks have closed the local database.
-    db: Weak<Database>,
+    db_closed: tokio::sync::watch::Receiver<bool>,
     /// Lets `shutdown` cut short snapshot uploads that are being retried.
     snapshot_io: SnapshotIoCloser,
     router: Router,
     clock: Arc<dyn Clock>,
     request_timeout: Duration,
+    max_clock_skew: Duration,
 }
 
 /// A running meta node. Cheap to clone; clones share the node.
@@ -189,7 +204,7 @@ impl MetaNode {
 
         let db = LocalDb::open(&config.data_dir)?;
         check_fresh_start(&config, &db).await?;
-        let db_handle = db.downgrade();
+        let db_closed = db.closed();
         let sm = StateMachineStore::open(
             config.node_id,
             config.store.clone(),
@@ -197,6 +212,7 @@ impl MetaNode {
             db.clone(),
         )
         .await?;
+        sm.set_io_budget(config.snapshot_io_budget);
         let state = sm.reader();
         let snapshot_io = sm.closer();
         let network = NetworkFactory::new(router.clone(), config.node_id);
@@ -228,11 +244,12 @@ impl MetaNode {
                 id: config.node_id,
                 raft,
                 state,
-                db: db_handle,
+                db_closed,
                 snapshot_io,
                 router: router.clone(),
                 clock: config.clock,
                 request_timeout: config.request_timeout,
+                max_clock_skew: config.max_clock_skew,
             }),
         })
     }
@@ -289,6 +306,14 @@ impl MetaNode {
         self.inner.id
     }
 
+    /// Watches the index of the last log entry this node has applied (0 before
+    /// any). It changes after every applied entry, once the entry's effect is
+    /// visible to [`Consistency::Local`] reads, so a reader waiting for a
+    /// state change subscribes, reads, and then waits for a change.
+    pub fn watch_applied(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.state.watch_applied()
+    }
+
     /// The leader this node currently knows of.
     pub async fn current_leader(&self) -> Option<NodeId> {
         self.inner.raft.current_leader().await
@@ -304,6 +329,20 @@ impl MetaNode {
             last_applied: m.last_applied.map(|id| id.index),
             snapshot: m.snapshot.map(|id| id.index),
             purged: m.purged.map(|id| id.index),
+        }
+    }
+
+    /// The fatal error that stopped this node's Raft, if any (M0.2 review
+    /// N4: a retrying client cannot tell a fatally failed leader from one
+    /// that is merely unavailable). `None` while Raft runs, and after a
+    /// clean [`MetaNode::shutdown`].
+    pub fn fatal_error(&self) -> Option<String> {
+        let metrics = self.inner.raft.metrics();
+        let m = metrics.borrow_watched();
+        match &m.running_state {
+            Ok(()) => None,
+            Err(openraft::error::Fatal::Stopped) => None,
+            Err(fatal) => Some(fatal.to_string()),
         }
     }
 
@@ -330,7 +369,12 @@ impl MetaNode {
     /// id the first attempt created.
     ///
     /// [`ApplyError::NamespaceExists`]: crate::ApplyError::NamespaceExists
+    ///
+    /// A leader refuses a command stamped more than
+    /// [`MetaConfig::max_clock_skew`] ahead of its own clock with
+    /// [`MetaError::ClockSkew`], before proposing it.
     pub async fn write(&self, command: Command) -> Result<Reply, MetaError> {
+        self.check_clock(&command)?;
         let write = self.inner.raft.client_write(command);
         let result = tokio::time::timeout(self.inner.request_timeout, write)
             .await
@@ -350,6 +394,35 @@ impl MetaNode {
             }
             Err(e) => Err(unavailable(e)),
         }
+    }
+
+    /// Refuses a command whose time stamp is too far ahead of this node's
+    /// clock, if this node is the leader (a follower answers `NotLeader`
+    /// anyway, and the leader checks). The check runs before proposing, so
+    /// `MetaState::apply` stays deterministic.
+    fn check_clock(&self, command: &Command) -> Result<(), MetaError> {
+        let stamped_ms = match command {
+            Command::AcquireLease { now_ms, .. }
+            | Command::RenewLease { now_ms, .. }
+            | Command::ReacquireLease { now_ms, .. }
+            | Command::SwapSegment { now_ms, .. }
+            | Command::TrimPartition { now_ms, .. }
+            | Command::PruneWalCommits { now_ms, .. } => *now_ms,
+            Command::CommitWal { created_at_ms, .. } => *created_at_ms,
+            _ => return Ok(()),
+        };
+        let leader = self.inner.raft.metrics().borrow_watched().current_leader;
+        if leader != Some(self.inner.id) {
+            return Ok(());
+        }
+        let leader_ms = self.inner.clock.now_ms();
+        if stamped_ms > leader_ms.saturating_add(millis(self.inner.max_clock_skew)) {
+            return Err(MetaError::ClockSkew {
+                stamped_ms,
+                leader_ms,
+            });
+        }
+        Ok(())
     }
 
     /// Runs `f` against the state machine at the requested consistency.
@@ -398,6 +471,7 @@ impl MetaNode {
             name: name.to_string(),
             partitions,
             class,
+            retention: Retention::default(),
         };
         match self.write(command).await? {
             Reply::StreamCreated(id) => Ok(id),
@@ -405,14 +479,17 @@ impl MetaNode {
         }
     }
 
-    /// Commits a durable WAL object; returns each chunk's base offset.
+    /// Commits a durable WAL object created at `created_at_ms`; returns each
+    /// chunk's base offset.
     pub async fn commit_wal(
         &self,
         object: &str,
+        created_at_ms: u64,
         chunks: Vec<WalChunk>,
     ) -> Result<Vec<u64>, MetaError> {
         let command = Command::CommitWal {
             object: object.to_string(),
+            created_at_ms,
             chunks,
         };
         match self.write(command).await? {
@@ -486,6 +563,7 @@ impl MetaNode {
             expected,
             value: value.to_string(),
             fence,
+            fresh: None,
         };
         match self.write(command).await? {
             Reply::PointerSet { version } => Ok(version),
@@ -537,13 +615,13 @@ impl MetaNode {
         self.inner.raft.shutdown().await.map_err(unavailable)?;
         // openraft's state machine and snapshot tasks may still hold storage
         // handles for a moment after the core stops.
-        let deadline = Instant::now() + self.inner.request_timeout;
-        while self.inner.db.strong_count() > 0 {
-            if Instant::now() >= deadline {
-                return Err(unavailable("local database still in use after shutdown"));
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+        // Waits for the file to be closed, not just for the last handle to go
+        // (M0.3 re-review N4), so a restart in the same process can open it.
+        let mut closed = self.inner.db_closed.clone();
+        match tokio::time::timeout(self.inner.request_timeout, closed.wait_for(|c| *c)).await {
+            // A dropped sender also means the database is closed.
+            Ok(_) => Ok(()),
+            Err(_) => Err(unavailable("local database still in use after shutdown")),
         }
-        Ok(())
     }
 }

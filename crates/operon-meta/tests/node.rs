@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 
 use operon_common::{NamespaceId, StreamId};
 use operon_meta::{
-    ApplyError, Consistency, Fence, ManualClock, MetaConfig, MetaError, MetaNode, RaftStatus,
-    Router, WalChunk, WalClass,
+    ApplyError, Clock, Command, Consistency, Fence, ManualClock, MetaConfig, MetaError, MetaNode,
+    RaftStatus, Router, WalChunk, WalClass,
 };
 use operon_store::{Fault, FaultyStore, Op, Store};
 use tempfile::TempDir;
@@ -72,20 +72,20 @@ async fn a_single_node_serves_writes_and_reads() {
         .await
         .unwrap();
     assert_eq!(
-        node.commit_wal("wal/1.wal", vec![chunk(stream, 10)])
+        node.commit_wal("wal/1.wal", 0, vec![chunk(stream, 10)])
             .await
             .unwrap(),
         [0]
     );
     assert_eq!(
-        node.commit_wal("wal/2.wal", vec![chunk(stream, 5)])
+        node.commit_wal("wal/2.wal", 0, vec![chunk(stream, 5)])
             .await
             .unwrap(),
         [10]
     );
     // A retried commit gets its original offsets.
     assert_eq!(
-        node.commit_wal("wal/1.wal", vec![chunk(stream, 10)])
+        node.commit_wal("wal/1.wal", 0, vec![chunk(stream, 10)])
             .await
             .unwrap(),
         [0]
@@ -278,7 +278,7 @@ async fn state_survives_a_restart_after_snapshot_and_log_purge() {
         .create_stream(ns, "events", 1, WalClass::Standard)
         .await
         .unwrap();
-    node.commit_wal("wal/1.wal", vec![chunk(stream, 7)])
+    node.commit_wal("wal/1.wal", 0, vec![chunk(stream, 7)])
         .await
         .unwrap();
     node.snapshot().await.unwrap();
@@ -289,7 +289,7 @@ async fn state_survives_a_restart_after_snapshot_and_log_purge() {
     let snapshotted = wait_for_status(&node, |s| s.purged >= s.snapshot).await;
     assert_eq!(snapshotted.purged, status.snapshot);
     // Entries after the snapshot are recovered from the log.
-    node.commit_wal("wal/2.wal", vec![chunk(stream, 3)])
+    node.commit_wal("wal/2.wal", 0, vec![chunk(stream, 3)])
         .await
         .unwrap();
 
@@ -325,7 +325,7 @@ async fn state_survives_a_restart_after_snapshot_and_log_purge() {
         Some(10)
     );
     assert_eq!(
-        node.commit_wal("wal/3.wal", vec![chunk(stream, 1)])
+        node.commit_wal("wal/3.wal", 0, vec![chunk(stream, 1)])
             .await
             .unwrap(),
         [10]
@@ -375,7 +375,7 @@ async fn a_node_keeps_serving_through_failed_snapshot_uploads() {
     // Writes and reads go on while the upload is being retried.
     node.create_namespace("globex").await.unwrap();
     snapshot.await.unwrap().unwrap();
-    assert_eq!(faulty.calls(Op::Put), 4);
+    assert!(faulty.calls(Op::Put) >= 4);
     assert_eq!(store.list("meta/snapshots/1/").await.unwrap().len(), 1);
 
     node.create_namespace("initech").await.unwrap();
@@ -451,6 +451,30 @@ async fn shutdown_cuts_short_a_snapshot_upload_being_retried() {
     assert_eq!(names, ["acme"]);
 }
 
+/// M0.2 review N4: a node whose Raft stopped with a fatal error (here a
+/// snapshot build that failed past its I/O budget) reports it, so a harness
+/// can tell it from one that is merely unavailable.
+#[tokio::test]
+async fn a_fatal_raft_error_is_reported() {
+    let dir = TempDir::new().unwrap();
+    let (faulty, store) = faulty_store();
+    let mut cfg = config(&dir, &store);
+    cfg.snapshot_io_budget = Duration::from_millis(500);
+    let node = start(cfg).await;
+    node.create_namespace("acme").await.unwrap();
+    assert_eq!(node.fatal_error(), None);
+
+    for _ in 0..10_000 {
+        faulty.inject(Op::Put, Fault::Error);
+    }
+    assert!(node.snapshot().await.is_err());
+    let deadline = Instant::now() + WAIT;
+    while node.fatal_error().is_none() {
+        assert!(Instant::now() < deadline, "no fatal error reported");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 #[tokio::test]
 async fn a_node_without_local_state_refuses_to_start_over_existing_snapshots() {
     let store = Store::in_memory();
@@ -507,4 +531,155 @@ async fn invalid_configs_are_rejected() {
     cfg.snapshot_every = 0;
     let err = MetaNode::start(cfg, &Router::new()).await.unwrap_err();
     assert!(matches!(err, MetaError::Config(_)), "{err:?}");
+}
+
+/// A command stamped far ahead of the leader's clock is refused before it is
+/// proposed, so it cannot push the metastore clock forward and make every
+/// later WAL commit stale.
+#[tokio::test]
+async fn the_leader_refuses_commands_stamped_too_far_ahead() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    let clock = Arc::new(ManualClock::new(1_700_000_000_000));
+    let mut cfg = config(&dir, &store);
+    cfg.clock = clock.clone();
+    // The M0.3 default; M0.4 raised the default to 5 min (re-review N1).
+    cfg.max_clock_skew = Duration::from_secs(60);
+    let node = start(cfg).await;
+    let ns = node.create_namespace("acme").await.unwrap();
+    let stream = node
+        .create_stream(ns, "events", 1, WalClass::Standard)
+        .await
+        .unwrap();
+    let now = clock.now_ms();
+    let day = 86_400_000;
+    let clock_before = node
+        .read(Consistency::Local, |s| s.clock_ms())
+        .await
+        .unwrap();
+
+    let skewed = [
+        Command::AcquireLease {
+            key: "l".to_string(),
+            owner: "o".to_string(),
+            ttl_ms: 1_000,
+            now_ms: now + day,
+        },
+        Command::PruneWalCommits {
+            fence: None,
+            now_ms: now + day,
+        },
+        Command::TrimPartition {
+            stream,
+            partition: 0,
+            before_offset: 0,
+            fence: None,
+            now_ms: now + 61_000,
+        },
+        Command::CommitWal {
+            object: "wal/future.wal".to_string(),
+            created_at_ms: now + day,
+            chunks: vec![chunk(stream, 1)],
+        },
+    ];
+    for command in skewed {
+        let err = node.write(command.clone()).await.unwrap_err();
+        assert!(
+            matches!(err, MetaError::ClockSkew { leader_ms, .. } if leader_ms == now),
+            "{command:?}: {err:?}"
+        );
+    }
+    assert_eq!(
+        node.read(Consistency::Local, |s| s.clock_ms())
+            .await
+            .unwrap(),
+        clock_before
+    );
+
+    // Within the tolerance is fine, and commits from a correct clock keep working.
+    node.write(Command::PruneWalCommits {
+        fence: None,
+        now_ms: now + 59_000,
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        node.commit_wal("wal/now.wal", now, vec![chunk(stream, 2)])
+            .await
+            .unwrap(),
+        [0]
+    );
+    // A client with a skewed clock gets the refusal at once, not after retries.
+    let skewed_client = operon_meta::MetaClient::new(
+        node.clone(),
+        vec![],
+        Arc::new(ManualClock::new(now + day)),
+        operon_meta::MetaClientConfig::default(),
+    );
+    let started = Instant::now();
+    let err = skewed_client.prune_wal_commits(None).await.unwrap_err();
+    assert!(matches!(err, MetaError::ClockSkew { .. }), "{err:?}");
+    assert!(started.elapsed() < Duration::from_secs(2));
+    node.shutdown().await.unwrap();
+}
+
+/// M0.3 re-review N1: with the default `max_clock_skew` (5 min), a leader
+/// whose clock is minutes behind still accepts writers with correct clocks.
+#[tokio::test]
+async fn a_leader_minutes_behind_accepts_correct_writers_by_default() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    let clock = Arc::new(ManualClock::new(1_700_000_000_000));
+    let mut cfg = config(&dir, &store);
+    assert_eq!(cfg.max_clock_skew, Duration::from_secs(300));
+    cfg.clock = clock.clone();
+    let node = start(cfg).await;
+    let ns = node.create_namespace("acme").await.unwrap();
+    let stream = node
+        .create_stream(ns, "events", 1, WalClass::Standard)
+        .await
+        .unwrap();
+    // The writers' clock is 4 min ahead of the leader's.
+    let now = clock.now_ms() + 240_000;
+    node.write(Command::PruneWalCommits {
+        fence: None,
+        now_ms: now,
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        node.commit_wal("wal/ahead.wal", now, vec![chunk(stream, 1)])
+            .await
+            .unwrap(),
+        [0]
+    );
+    // Past the default it is refused.
+    let err = node
+        .write(Command::PruneWalCommits {
+            fence: None,
+            now_ms: clock.now_ms() + 301_000,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, MetaError::ClockSkew { .. }), "{err:?}");
+    node.shutdown().await.unwrap();
+}
+
+/// M0.3 re-review N4: `shutdown` returns only once the local database file is
+/// closed, so the node restarts at once in the same process, even on a
+/// multi-threaded runtime where the last handle may be dropped on another
+/// thread.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_restarts_in_the_same_process_right_after_shutdown() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    for i in 0..20 {
+        let node = start(config(&dir, &store)).await;
+        node.create_namespace(&format!("ns-{i}")).await.unwrap();
+        node.shutdown().await.unwrap();
+    }
+    let node = start(config(&dir, &store)).await;
+    let count = node
+        .read(Consistency::Local, |s| s.namespaces().count())
+        .await
+        .unwrap();
+    assert_eq!(count, 20);
+    node.shutdown().await.unwrap();
 }

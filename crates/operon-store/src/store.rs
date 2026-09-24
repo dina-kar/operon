@@ -32,6 +32,9 @@ pub struct ObjectInfo {
     pub path: String,
     pub size: u64,
     pub version: ObjectVersion,
+    /// When the object was last written, in ms since the Unix epoch, as the
+    /// backend reports it.
+    pub last_modified_ms: u64,
 }
 
 /// Handle to an object store. Cheap to clone.
@@ -224,5 +227,6 @@ fn to_info(meta: &object_store::ObjectMeta) -> ObjectInfo {
             e_tag: meta.e_tag.clone(),
             version: meta.version.clone(),
         },
+        last_modified_ms: u64::try_from(meta.last_modified.timestamp_millis()).unwrap_or(0),
     }
 }
