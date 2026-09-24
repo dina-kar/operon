@@ -1,0 +1,412 @@
+//! The native HTTP/JSON API (M0.3 plan, Task 7). Namespaces and streams are
+//! addressed by name; record keys and values are base64.
+
+use std::collections::HashMap;
+use std::time::Duration;
+
+use axum::Router;
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use bytes::Bytes;
+use operon_common::{NamespaceId, StreamId};
+use operon_log::{FetchRequest, LogError, LogReader, LogWriter, Record};
+use operon_meta::{ApplyError, Consistency, MetaClient, MetaError, Retention, WalClass};
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+/// The default `max_bytes` of a fetch: 1 MiB.
+const DEFAULT_MAX_BYTES: usize = 1024 * 1024;
+/// The longest a fetch may long-poll.
+const MAX_WAIT: Duration = Duration::from_secs(60);
+
+/// What the handlers share.
+#[derive(Clone, Debug)]
+pub struct AppState {
+    pub meta: MetaClient,
+    pub writer: LogWriter,
+    pub reader: LogReader,
+}
+
+/// The API's routes.
+pub fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/ready", get(ready))
+        .route("/v1/namespaces", post(create_namespace))
+        .route("/v1/namespaces/{ns}/streams", post(create_stream))
+        .route("/v1/namespaces/{ns}/streams/{stream}", get(describe_stream))
+        .route(
+            "/v1/namespaces/{ns}/streams/{stream}/partitions/{partition}/records",
+            post(produce).get(fetch),
+        )
+        .with_state(state)
+}
+
+/// An error response: `{"error": code, "message": ...}` plus any extra fields.
+#[derive(Debug)]
+pub struct ApiError {
+    status: StatusCode,
+    code: &'static str,
+    message: String,
+    extra: serde_json::Map<String, Value>,
+}
+
+impl ApiError {
+    fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            code,
+            message: message.into(),
+            extra: serde_json::Map::new(),
+        }
+    }
+
+    fn invalid(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, "invalid_argument", message)
+    }
+
+    fn not_found(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::NOT_FOUND, "not_found", message)
+    }
+
+    fn with(mut self, key: &str, value: impl Into<Value>) -> Self {
+        self.extra.insert(key.to_string(), value.into());
+        self
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let mut body = serde_json::Map::new();
+        body.insert("error".to_string(), Value::from(self.code));
+        body.insert("message".to_string(), Value::from(self.message));
+        body.extend(self.extra);
+        (self.status, axum::Json(Value::Object(body))).into_response()
+    }
+}
+
+fn unavailable(message: impl Into<String>) -> ApiError {
+    ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "unavailable", message)
+}
+
+fn internal(message: impl Into<String>) -> ApiError {
+    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", message)
+}
+
+impl From<MetaError> for ApiError {
+    fn from(err: MetaError) -> Self {
+        let message = err.to_string();
+        match err {
+            MetaError::Rejected(apply) => match apply {
+                ApplyError::InvalidArgument(_) => ApiError::invalid(message),
+                ApplyError::NamespaceExists(id) => {
+                    ApiError::new(StatusCode::CONFLICT, "already_exists", message).with("id", id.0)
+                }
+                ApplyError::StreamExists(id) => {
+                    ApiError::new(StatusCode::CONFLICT, "already_exists", message).with("id", id.0)
+                }
+                ApplyError::NamespaceNotFound(_)
+                | ApplyError::StreamNotFound(_)
+                | ApplyError::PartitionNotFound { .. } => ApiError::not_found(message),
+                _ => internal(message),
+            },
+            MetaError::NotLeader { .. } | MetaError::Timeout | MetaError::Unavailable(_) => {
+                unavailable(message)
+            }
+            _ => internal(message),
+        }
+    }
+}
+
+impl From<LogError> for ApiError {
+    fn from(err: LogError) -> Self {
+        let message = err.to_string();
+        match err {
+            LogError::InvalidArgument(_) => ApiError::invalid(message),
+            LogError::UnknownStream(_) | LogError::UnknownPartition { .. } => {
+                ApiError::not_found(message)
+            }
+            LogError::OffsetOutOfRange {
+                requested,
+                log_start_offset,
+                high_watermark,
+            } => ApiError::new(
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                "offset_out_of_range",
+                message,
+            )
+            .with("offset", requested)
+            .with("log_start_offset", log_start_offset)
+            .with("high_watermark", high_watermark),
+            // Nothing (or possibly something) was committed; a retry is the
+            // caller's call, and the condition is transient.
+            LogError::Backpressure
+            | LogError::CommitUnknown(_)
+            | LogError::Closed
+            | LogError::Store(_)
+            | LogError::Cache(_) => unavailable(message),
+            LogError::Meta(meta) => meta.into(),
+            LogError::Corrupt(_) | LogError::UnsupportedEncoding(_) => internal(message),
+        }
+    }
+}
+
+type ApiResult = Result<Response, ApiError>;
+
+fn parse_json<T: serde::de::DeserializeOwned>(body: &Bytes) -> Result<T, ApiError> {
+    serde_json::from_slice(body).map_err(|e| ApiError::invalid(format!("bad request body: {e}")))
+}
+
+async fn health() -> StatusCode {
+    StatusCode::OK
+}
+
+async fn ready(State(state): State<AppState>) -> StatusCode {
+    if state.meta.local().status().leader.is_some() {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
+}
+
+#[derive(Deserialize)]
+struct CreateNamespace {
+    name: String,
+}
+
+async fn create_namespace(State(state): State<AppState>, body: Bytes) -> ApiResult {
+    let request: CreateNamespace = parse_json(&body)?;
+    let id = state.meta.create_namespace(&request.name).await?;
+    Ok((StatusCode::CREATED, axum::Json(json!({ "id": id.0 }))).into_response())
+}
+
+#[derive(Deserialize)]
+struct RetentionBody {
+    max_age_ms: Option<u64>,
+    max_bytes: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct CreateStream {
+    name: String,
+    partitions: u32,
+    retention: Option<RetentionBody>,
+}
+
+async fn namespace_id(meta: &MetaClient, name: &str) -> Result<NamespaceId, ApiError> {
+    meta.read(Consistency::Local, |s| {
+        s.namespace_by_name(name).map(|n| n.id)
+    })
+    .await?
+    .ok_or_else(|| ApiError::not_found(format!("namespace {name:?} not found")))
+}
+
+async fn stream_id(meta: &MetaClient, ns: &str, stream: &str) -> Result<StreamId, ApiError> {
+    let namespace = namespace_id(meta, ns).await?;
+    meta.read(Consistency::Local, |s| {
+        s.stream_by_name(namespace, stream).map(|st| st.id)
+    })
+    .await?
+    .ok_or_else(|| ApiError::not_found(format!("stream {ns}/{stream} not found")))
+}
+
+async fn create_stream(
+    State(state): State<AppState>,
+    Path(ns): Path<String>,
+    body: Bytes,
+) -> ApiResult {
+    let request: CreateStream = parse_json(&body)?;
+    let namespace = namespace_id(&state.meta, &ns).await?;
+    let id = state
+        .meta
+        .create_stream(
+            namespace,
+            &request.name,
+            request.partitions,
+            WalClass::Standard,
+        )
+        .await?;
+    if let Some(retention) = request.retention {
+        let retention = Retention {
+            max_age_ms: retention.max_age_ms,
+            max_bytes: retention.max_bytes,
+        };
+        state.meta.set_retention(id, retention).await?;
+    }
+    Ok((StatusCode::CREATED, axum::Json(json!({ "id": id.0 }))).into_response())
+}
+
+async fn describe_stream(
+    State(state): State<AppState>,
+    Path((ns, stream)): Path<(String, String)>,
+) -> ApiResult {
+    let id = stream_id(&state.meta, &ns, &stream).await?;
+    let body = state
+        .meta
+        .read(Consistency::Local, |s| {
+            let stream = s.stream(id)?;
+            let partitions: Vec<Value> = (0..stream.partitions)
+                .filter_map(|p| {
+                    let state = s.partition(id, p)?;
+                    Some(json!({
+                        "partition": p,
+                        "log_start_offset": state.log_start_offset(),
+                        "high_watermark": state.high_watermark(),
+                    }))
+                })
+                .collect();
+            Some(json!({
+                "id": id.0,
+                "partitions": partitions,
+                "retention": {
+                    "max_age_ms": stream.retention.max_age_ms,
+                    "max_bytes": stream.retention.max_bytes,
+                },
+            }))
+        })
+        .await?
+        .ok_or_else(|| ApiError::not_found(format!("stream {ns}/{stream} not found")))?;
+    Ok(axum::Json(body).into_response())
+}
+
+fn parse_partition(partition: &str) -> Result<u32, ApiError> {
+    partition
+        .parse()
+        .map_err(|_| ApiError::invalid(format!("bad partition {partition:?}")))
+}
+
+fn decode_b64(what: &str, value: Option<String>) -> Result<Option<Bytes>, ApiError> {
+    value
+        .map(|v| {
+            BASE64
+                .decode(v.as_bytes())
+                .map(Bytes::from)
+                .map_err(|e| ApiError::invalid(format!("{what} is not base64: {e}")))
+        })
+        .transpose()
+}
+
+fn encode_b64(value: &Option<Bytes>) -> Value {
+    value
+        .as_ref()
+        .map_or(Value::Null, |v| Value::from(BASE64.encode(v)))
+}
+
+#[derive(Deserialize)]
+struct HeaderBody {
+    key: String,
+    value: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RecordBody {
+    key: Option<String>,
+    value: Option<String>,
+    #[serde(default)]
+    headers: Vec<HeaderBody>,
+    timestamp_ms: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct Produce {
+    records: Vec<RecordBody>,
+}
+
+async fn produce(
+    State(state): State<AppState>,
+    Path((ns, stream, partition)): Path<(String, String, String)>,
+    body: Bytes,
+) -> ApiResult {
+    let partition = parse_partition(&partition)?;
+    let request: Produce = parse_json(&body)?;
+    let id = stream_id(&state.meta, &ns, &stream).await?;
+    let mut records = Vec::with_capacity(request.records.len());
+    for record in request.records {
+        let mut headers = Vec::with_capacity(record.headers.len());
+        for header in record.headers {
+            headers.push((header.key, decode_b64("header value", header.value)?));
+        }
+        records.push(Record {
+            key: decode_b64("key", record.key)?,
+            value: decode_b64("value", record.value)?,
+            headers,
+            // A negative timestamp gets the writer's clock.
+            timestamp_ms: record.timestamp_ms.unwrap_or(-1),
+        });
+    }
+    let ack = state.writer.append(id, partition, records).await?;
+    Ok(axum::Json(json!({
+        "base_offset": ack.base_offset,
+        "last_offset": ack.last_offset,
+        "token": [{ "stream": id.0, "partition": partition, "offset": ack.last_offset }],
+    }))
+    .into_response())
+}
+
+fn query_number<T: std::str::FromStr>(
+    query: &HashMap<String, String>,
+    name: &str,
+) -> Result<Option<T>, ApiError> {
+    query
+        .get(name)
+        .map(|v| {
+            v.parse()
+                .map_err(|_| ApiError::invalid(format!("bad {name} {v:?}")))
+        })
+        .transpose()
+}
+
+async fn fetch(
+    State(state): State<AppState>,
+    Path((ns, stream, partition)): Path<(String, String, String)>,
+    Query(query): Query<HashMap<String, String>>,
+) -> ApiResult {
+    let partition = parse_partition(&partition)?;
+    let offset = query_number::<u64>(&query, "offset")?
+        .ok_or_else(|| ApiError::invalid("the offset query parameter is required"))?;
+    let max_bytes = query_number::<usize>(&query, "max_bytes")?.unwrap_or(DEFAULT_MAX_BYTES);
+    let max_wait = query_number::<u64>(&query, "max_wait_ms")?
+        .map_or(Duration::ZERO, Duration::from_millis)
+        .min(MAX_WAIT);
+    let id = stream_id(&state.meta, &ns, &stream).await?;
+    let response = state
+        .reader
+        .fetch(FetchRequest {
+            stream: id,
+            partition,
+            offset,
+            max_bytes,
+            max_wait,
+        })
+        .await?;
+    let records: Vec<Value> = response
+        .records
+        .iter()
+        .map(|r| {
+            let headers: Vec<Value> = r
+                .record
+                .headers
+                .iter()
+                .map(|(key, value)| json!({ "key": key, "value": encode_b64(value) }))
+                .collect();
+            json!({
+                "offset": r.offset,
+                "key": encode_b64(&r.record.key),
+                "value": encode_b64(&r.record.value),
+                "headers": headers,
+                "timestamp_ms": r.record.timestamp_ms,
+            })
+        })
+        .collect();
+    Ok(axum::Json(json!({
+        "records": records,
+        "next_offset": response.next_offset,
+        "high_watermark": response.high_watermark,
+        "log_start_offset": response.log_start_offset,
+    }))
+    .into_response())
+}

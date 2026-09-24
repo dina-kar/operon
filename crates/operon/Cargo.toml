@@ -1,0 +1,38 @@
+[package]
+name = "operon"
+description = "The Operon server: the native HTTP API and the dev and standalone commands."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "operon"
+path = "src/main.rs"
+
+[dependencies]
+axum.workspace = true
+base64.workspace = true
+bytes.workspace = true
+clap.workspace = true
+operon-cache.workspace = true
+operon-common.workspace = true
+operon-log.workspace = true
+operon-meta.workspace = true
+operon-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+ulid.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
