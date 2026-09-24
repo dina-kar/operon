@@ -1,6 +1,6 @@
 # 15 — Agent Workspaces (Sandboxes on Operon)
 
-Status: **Proposed** · 2026-09-24. Research and design direction; needs approval before it enters the roadmap. Items marked (verify) are unconfirmed.
+Status: **Approved** (user) · 2026-09-24. Items marked (verify) are unconfirmed and are resolved in the W-phase plans.
 
 Coding agents such as Claude Code and Codex run inside **sandboxes**: an isolated process or microVM, a checkout of a repository, installed dependencies and a network policy. The runtime (the VM or namespace jail) is compute. Everything else — code, branches, checkpoints, dependencies, caches, transcripts, memory — is state that must be fast to materialize, cheap to fork and must survive the sandbox. That is Operon's model: stateless compute over a bucket.
 
@@ -244,7 +244,7 @@ GC: reachability from `refs` documents and env manifests (env images retained by
 | Checkpoint | Upload of changed files only, as one pack + one `refs` CAS |
 | Small files | Never one object per file |
 
-## 13. Phasing (proposed)
+## 13. Phasing
 
 | Phase | When | Scope | Exit gates |
 |---|---|---|---|

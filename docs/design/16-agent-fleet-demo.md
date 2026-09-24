@@ -1,6 +1,6 @@
 # 16 — Demo: 100 Coding Agents on Operon
 
-Status: **Proposed** · 2026-09-24. Builds on §14 (durable execution) and §15 (agent workspaces). Every number below is a design target to be measured, not a result.
+Status: **Approved** (user) · 2026-09-24; the launch demo for the agent track. Builds on §14 (durable execution) and §15 (agent workspaces). Every number below is a design target to be measured, not a result.
 
 **The claim:** one host and one bucket run 100 concurrent coding-agent sessions (Claude Code, Codex and opencode), each in its own microVM. Every session is a Resonate durable execution stored in Operon. Every MCP server speaks the stateless 2026-07-28 spec through Operon's gateway, which sends each model only the tool definitions it needs. Every trace, token and dollar lands in Operon's analytics, cross-checked against tokscale.
 
