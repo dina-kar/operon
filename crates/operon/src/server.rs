@@ -1,5 +1,6 @@
 //! One Operon process: a single-node metastore, the log, the range cache,
-//! the background loops and the native HTTP API (design §10 §1).
+//! a worker running the background tasks, and the native HTTP API (design
+//! §10 §1).
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -8,11 +9,12 @@ use std::time::Duration;
 
 use operon_cache::{RangeCache, RangeCacheConfig};
 use operon_log::{
-    BackgroundTask, LogConfig, LogReader, LogWriter, Retention, RetentionConfig, Segmenter,
-    SegmenterConfig,
+    LogConfig, LogReader, LogWriter, RetentionConfig, RetentionSource, SegmenterConfig,
+    SegmenterSource,
 };
 use operon_meta::{MetaClient, MetaClientConfig, MetaConfig, MetaNode, Router, SystemClock};
 use operon_store::Store;
+use operon_worker::{Worker, WorkerConfig, WorkerHandle};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use ulid::Ulid;
@@ -40,6 +42,10 @@ pub struct ServerConfig {
     pub segmenter: SegmenterConfig,
     pub retention: RetentionConfig,
     pub cache: RangeCacheConfig,
+    /// How often the worker polls its task sources. Default 1 s.
+    pub worker_poll_interval: Duration,
+    /// The worker's task lease TTL. Default 30 s.
+    pub worker_lease_ttl: Duration,
 }
 
 impl ServerConfig {
@@ -53,6 +59,8 @@ impl ServerConfig {
             segmenter: SegmenterConfig::default(),
             retention: RetentionConfig::default(),
             cache: RangeCacheConfig::default(),
+            worker_poll_interval: Duration::from_secs(1),
+            worker_lease_ttl: Duration::from_secs(30),
         }
     }
 }
@@ -88,8 +96,7 @@ pub struct Server {
     meta: MetaClient,
     writer: LogWriter,
     cache: RangeCache,
-    segmenter: BackgroundTask,
-    retention: BackgroundTask,
+    worker: WorkerHandle,
     http: JoinHandle<()>,
     stop_http: oneshot::Sender<()>,
 }
@@ -180,15 +187,21 @@ impl Server {
         let reader = LogReader::new(meta.clone(), cache.clone());
         // Unique per process incarnation, as leases require.
         let owner = format!("node-{NODE_ID}-{}", Ulid::generate());
-        let segmenter = Segmenter::new(
+        let mut worker = Worker::new(
             meta.clone(),
+            WorkerConfig {
+                poll_interval: config.worker_poll_interval,
+                lease_ttl: config.worker_lease_ttl,
+                ..WorkerConfig::new(owner)
+            },
+        );
+        worker.add_source(Arc::new(SegmenterSource::new(
             store.clone(),
             cache.clone(),
-            owner.clone(),
             config.segmenter.clone(),
-        )
-        .spawn();
-        let retention = Retention::new(meta.clone(), owner, config.retention.clone()).spawn();
+        )));
+        worker.add_source(Arc::new(RetentionSource::new(config.retention.clone())));
+        let worker = worker.start();
         let app = api::router(AppState {
             meta: meta.clone(),
             writer: writer.clone(),
@@ -210,8 +223,7 @@ impl Server {
             meta,
             writer,
             cache,
-            segmenter,
-            retention,
+            worker,
             http,
             stop_http,
         })
@@ -228,15 +240,14 @@ impl Server {
     }
 
     /// Stops accepting requests, flushes the writer (buffered appends are
-    /// acknowledged), stops the background loops, waits for in-flight
-    /// requests (up to 10 s), and shuts the metastore down.
+    /// acknowledged), stops the worker (releasing its task leases), waits for
+    /// in-flight requests (up to 10 s), and shuts the metastore down.
     pub async fn shutdown(self) -> Result<(), ServerError> {
         let _ = self.stop_http.send(());
         if let Err(err) = self.writer.shutdown().await {
             tracing::warn!(%err, "the final flush failed");
         }
-        self.segmenter.stop().await;
-        self.retention.stop().await;
+        self.worker.stop().await;
         let mut http = self.http;
         if tokio::time::timeout(HTTP_GRACE, &mut http).await.is_err() {
             tracing::warn!("in-flight requests did not finish; aborting them");

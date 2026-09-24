@@ -229,7 +229,7 @@ async fn a_zombie_segmenter_is_fenced_and_changes_nothing() {
     gate.paused().await;
     // The zombie stalls past its lease; someone else takes the partition.
     clock.advance(Duration::from_secs(31));
-    let key = format!("segmenter/{stream}/0");
+    let key = format!("task/segmenter/{stream}/0");
     let grant = meta
         .client
         .acquire_lease(&key, "successor", Duration::from_secs(30))
@@ -469,12 +469,12 @@ async fn a_segment_the_metastore_retired_is_not_deleted_on_mismatch() {
     meta.shutdown().await;
 }
 
-/// Review M10: the segmenter renews its partition lease before the swap, so a
-/// long run is not fenced by its own lease expiring.
+/// Review M10, M0.4: the worker framework renews the task lease while a run
+/// takes longer than the lease TTL, so the run's own lease expiring does not
+/// fence its swap.
 #[tokio::test]
-async fn the_segmenter_renews_its_lease_before_swapping() {
-    let clock = Arc::new(ManualClock::new(1_000_000));
-    let meta = Meta::start_with(clock.clone(), MetaClientConfig::default()).await;
+async fn a_run_longer_than_its_lease_still_swaps() {
+    let meta = Meta::start().await;
     let (_, stream) = meta.stream("acme", "events", 1).await;
     let (gate, store) = PausingStore::create();
     let writer =
@@ -482,7 +482,7 @@ async fn the_segmenter_renews_its_lease_before_swapping() {
     writer.append(stream, 0, records("a", 3)).await.unwrap();
 
     let config = SegmenterConfig {
-        lease_ttl: Duration::from_secs(30),
+        lease_ttl: Duration::from_millis(300),
         ..eager(1 << 20)
     };
     let segmenter = Segmenter::new(
@@ -495,19 +495,21 @@ async fn the_segmenter_renews_its_lease_before_swapping() {
     gate.arm("ns/");
     let run = tokio::spawn(async move { segmenter.run_once().await });
     gate.paused().await;
-    clock.advance(Duration::from_secs(20));
+    // Hold the segment PUT for several lease TTLs.
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
     gate.release();
     assert_eq!(run.await.unwrap().unwrap().segments, 1);
-    let deadline = meta
+    let epoch = meta
         .client
         .read(Consistency::Local, move |s| {
-            s.lease(&format!("segmenter/{stream}/0"))
+            s.lease(&format!("task/segmenter/{stream}/0"))
                 .unwrap()
-                .deadline_ms
+                .epoch
         })
         .await
         .unwrap();
-    assert_eq!(deadline, 1_000_000 + 20_000 + 30_000);
+    assert_eq!(epoch, 1);
+    assert_eq!(entries(&meta, stream, 0).await[0].kind, EntryKind::Segment);
     writer.shutdown().await.unwrap();
     meta.shutdown().await;
 }

@@ -6,8 +6,9 @@
 //!   one multi-partition WAL object per flush, committed to the metastore's
 //!   sequencer, and only then acknowledged with their offsets.
 //! - [`LogReader`]: fetch by offset through the range cache, with long-poll.
-//! - [`Segmenter`] and [`Retention`]: background loops that rewrite WAL chunks
-//!   into per-partition segments and trim old records.
+//! - [`SegmenterSource`] and [`RetentionSource`]: worker task sources
+//!   (`operon-worker`) that rewrite WAL chunks into per-partition segments and
+//!   trim old records; [`Segmenter`] and [`Retention`] run them once.
 
 pub mod batch;
 mod error;
@@ -23,6 +24,6 @@ mod writer;
 pub use error::LogError;
 pub use reader::{FetchRequest, FetchResponse, LogReader};
 pub use record::{Encoding, OffsetRecord, Record};
-pub use retention::{Retention, RetentionConfig, RetentionReport};
-pub use segmenter::{BackgroundTask, Segmenter, SegmenterConfig, SegmenterReport};
+pub use retention::{RETENTION_TASK, Retention, RetentionConfig, RetentionReport, RetentionSource};
+pub use segmenter::{Segmenter, SegmenterConfig, SegmenterReport, SegmenterSource};
 pub use writer::{AppendAck, LogConfig, LogWriter};

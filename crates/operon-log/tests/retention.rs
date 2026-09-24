@@ -8,9 +8,10 @@ use std::time::Duration;
 use bytes::Bytes;
 use common::{Meta, fast_config, records, segment_now};
 use operon_common::StreamId;
-use operon_log::{LogWriter, Record, Retention, RetentionConfig, RetentionReport};
+use operon_log::{LogWriter, Record, Retention, RetentionConfig, RetentionReport, RetentionSource};
 use operon_meta::{Consistency, ManualClock, MetaClientConfig, WAL_COMMIT_WINDOW_MS};
 use operon_store::Store;
+use operon_worker::{Worker, WorkerConfig};
 
 const NOW: u64 = 1_700_000_000_000;
 
@@ -259,20 +260,21 @@ async fn each_run_prunes_old_wal_commit_records() {
 }
 
 #[tokio::test]
-async fn only_one_retention_loop_works_at_a_time() {
+async fn only_one_retention_task_works_at_a_time() {
     let f = Fixture::start().await;
     f.retention().run_once().await.unwrap();
-    let other = Retention::new(
-        f.meta.client.clone(),
-        "retention-b",
-        RetentionConfig::default(),
-    );
-    assert!(other.run_once().await.unwrap().skipped);
+    // Another worker holds the task lease: this one skips the run.
+    f.meta
+        .client
+        .acquire_lease("task/retention", "retention-b", Duration::from_secs(30))
+        .await
+        .unwrap();
+    assert!(f.retention().run_once().await.unwrap().skipped);
     f.shutdown().await;
 }
 
 #[tokio::test]
-async fn background_loops_run_until_stopped() {
+async fn a_worker_runs_retention_until_stopped() {
     let f = Fixture::start().await;
     f.writer
         .append(f.stream, 0, at(NOW - 60_000, 2))
@@ -289,16 +291,19 @@ async fn background_loops_run_until_stopped() {
         )
         .await
         .unwrap();
-    let task = Retention::new(
+    let mut worker = Worker::new(
         f.meta.client.clone(),
-        "retention-a",
-        RetentionConfig {
-            interval: Duration::from_millis(20),
+        WorkerConfig {
+            poll_interval: Duration::from_millis(20),
+            ..WorkerConfig::new("worker-a")
         },
-    )
-    .spawn();
-    common::eventually("the loop trims", || async { f.log_start().await == 2 }).await;
-    task.stop().await;
+    );
+    worker.add_source(Arc::new(RetentionSource::new(RetentionConfig {
+        interval: Duration::from_millis(20),
+    })));
+    let worker = worker.start();
+    common::eventually("the task trims", || async { f.log_start().await == 2 }).await;
+    worker.stop().await;
     f.shutdown().await;
 }
 

@@ -1,23 +1,27 @@
 //! Retention (design §02 §5): trims partitions by age and size,
 //! metadata-first. Trimmed objects are retired in the metastore and deleted
-//! later by garbage collection.
+//! later by garbage collection. It runs as the singleton worker task
+//! `retention` (M0.4), and every trim is fenced by the task lease.
 
-use std::time::Duration;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use operon_common::StreamId;
-use operon_meta::{ApplyError, Consistency, MetaClient, MetaError, PartitionState};
+use operon_meta::{ApplyError, Consistency, Fence, MetaClient, MetaError, PartitionState};
+use operon_worker::{
+    Candidate, Priority, RunResult, Task, TaskContext, TaskError, TaskKey, TaskOutcome, TaskSource,
+};
 
 use crate::error::LogError;
-use crate::segmenter::BackgroundTask;
 
-/// The lease that keeps one retention loop active at a time. Trims are
-/// idempotent, so the lease only avoids duplicate work.
-const LEASE: &str = "retention";
+/// The key of the retention task; its lease is `task/retention`.
+pub const RETENTION_TASK: &str = "retention";
 
 /// How often retention runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RetentionConfig {
-    /// Default 30 s.
+    /// The shortest time between two runs started by one source. Default 30 s.
     pub interval: Duration,
 }
 
@@ -29,7 +33,7 @@ impl Default for RetentionConfig {
     }
 }
 
-/// What one retention run did.
+/// What retention runs did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RetentionReport {
     /// Partitions whose log start moved.
@@ -38,14 +42,6 @@ pub struct RetentionReport {
     pub pruned: u32,
     /// Whether another holder had the retention lease, so nothing was done.
     pub skipped: bool,
-}
-
-/// Applies stream retention policies and prunes old WAL commit records.
-#[derive(Clone, Debug)]
-pub struct Retention {
-    meta: MetaClient,
-    owner: String,
-    config: RetentionConfig,
 }
 
 /// Where retention would move one partition's log start, if anywhere.
@@ -82,90 +78,204 @@ fn trim_point(
     (before > state.log_start_offset()).then_some(before)
 }
 
+fn fenced(err: MetaError) -> TaskError {
+    match err {
+        MetaError::Rejected(ApplyError::Fenced { .. }) => TaskError::Fenced,
+        other => TaskError::Meta(other),
+    }
+}
+
+/// Trims every partition whose policy says so, then prunes WAL commit
+/// records older than twice the commit window, all fenced by `fence`.
+async fn apply(meta: &MetaClient, fence: &Fence) -> Result<RetentionReport, TaskError> {
+    let now = meta.now_ms();
+    // One short read for the policies, then one per partition, so the scan
+    // never holds the state lock for long.
+    let policies: Vec<(StreamId, u32, operon_meta::Retention)> = meta
+        .read(Consistency::Local, |s| {
+            s.all_streams()
+                .filter(|st| st.retention.max_age_ms.is_some() || st.retention.max_bytes.is_some())
+                .map(|st| (st.id, st.partitions, st.retention))
+                .collect()
+        })
+        .await?;
+    let mut report = RetentionReport::default();
+    for (stream, partitions, policy) in policies {
+        for partition in 0..partitions {
+            let before = meta
+                .read(Consistency::Local, |s| {
+                    s.partition(stream, partition).and_then(|state| {
+                        trim_point(state, policy.max_age_ms, policy.max_bytes, now)
+                    })
+                })
+                .await?;
+            if let Some(before) = before {
+                meta.trim_partition(stream, partition, before, Some(fence.clone()))
+                    .await
+                    .map_err(fenced)?;
+                report.trimmed += 1;
+            }
+        }
+    }
+    report.pruned = meta
+        .prune_wal_commits(Some(fence.clone()))
+        .await
+        .map_err(fenced)?;
+    Ok(report)
+}
+
+struct Shared {
+    config: RetentionConfig,
+    /// When a task of this source last started, to keep runs `interval` apart.
+    last_run: Mutex<Option<Instant>>,
+    report: Mutex<RetentionReport>,
+}
+
+/// Proposes the singleton retention task ([`RETENTION_TASK`], at
+/// [`Priority::Maintenance`]) at most once per `interval`.
+#[derive(Clone)]
+pub struct RetentionSource {
+    shared: Arc<Shared>,
+}
+
+impl std::fmt::Debug for RetentionSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RetentionSource")
+            .field("config", &self.shared.config)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RetentionSource {
+    pub fn new(config: RetentionConfig) -> Self {
+        Self {
+            shared: Arc::new(Shared {
+                config,
+                last_run: Mutex::default(),
+                report: Mutex::default(),
+            }),
+        }
+    }
+
+    /// Totals over every run of this source's task.
+    pub fn report(&self) -> RetentionReport {
+        *self
+            .shared
+            .report
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn task(&self) -> Candidate {
+        let task: Arc<dyn Task> = Arc::new(RetentionTask {
+            shared: self.shared.clone(),
+        });
+        (TaskKey::cluster(RETENTION_TASK), task)
+    }
+}
+
+#[async_trait]
+impl TaskSource for RetentionSource {
+    fn priority(&self) -> Priority {
+        Priority::Maintenance
+    }
+
+    async fn candidates(&self, _meta: &MetaClient) -> Result<Vec<Candidate>, TaskError> {
+        let due = self
+            .shared
+            .last_run
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_none_or(|last| last.elapsed() >= self.shared.config.interval);
+        Ok(if due { vec![self.task()] } else { Vec::new() })
+    }
+}
+
+struct RetentionTask {
+    shared: Arc<Shared>,
+}
+
+#[async_trait]
+impl Task for RetentionTask {
+    async fn run(&self, ctx: TaskContext) -> Result<TaskOutcome, TaskError> {
+        *self
+            .shared
+            .last_run
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
+        let report = apply(&ctx.meta, &ctx.fence).await?;
+        if report.trimmed > 0 || report.pruned > 0 {
+            tracing::debug!(?report, "retention run");
+        }
+        let mut total = self
+            .shared
+            .report
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        total.trimmed += report.trimmed;
+        total.pruned += report.pruned;
+        Ok(TaskOutcome::Done)
+    }
+}
+
+/// Runs the retention task once, through the worker framework, for tests and
+/// tools.
+#[derive(Clone, Debug)]
+pub struct Retention {
+    meta: MetaClient,
+    owner: String,
+    source: RetentionSource,
+}
+
 impl Retention {
-    /// `owner` names this process incarnation in the retention lease.
+    /// `owner` names this process incarnation in the task lease.
     pub fn new(meta: MetaClient, owner: impl Into<String>, config: RetentionConfig) -> Self {
         Self {
             meta,
             owner: owner.into(),
-            config,
+            source: RetentionSource::new(config),
         }
     }
 
-    fn lease_ttl(&self) -> Duration {
-        (self.config.interval * 3)
-            .max(Duration::from_secs(1))
-            .min(Duration::from_secs(3600))
+    /// The task source, to add to a [`Worker`](operon_worker::Worker).
+    pub fn source(&self) -> &RetentionSource {
+        &self.source
     }
 
-    /// Trims every partition whose policy says so, then prunes WAL commit
-    /// records older than twice the commit window.
+    /// Runs retention now (ignoring `interval`) under the task lease;
+    /// `skipped` if another owner holds it.
     pub async fn run_once(&self) -> Result<RetentionReport, LogError> {
-        match self
-            .meta
-            .acquire_lease(LEASE, &self.owner, self.lease_ttl())
-            .await
-        {
-            Ok(_) => {}
-            Err(MetaError::Rejected(ApplyError::LeaseHeld { .. })) => {
-                return Ok(RetentionReport {
-                    skipped: true,
-                    ..RetentionReport::default()
-                });
+        struct Once(Candidate);
+        #[async_trait]
+        impl TaskSource for Once {
+            fn priority(&self) -> Priority {
+                Priority::Maintenance
             }
-            Err(err) => return Err(err.into()),
-        }
-        let now = self.meta.now_ms();
-        // One short read for the policies, then one per partition, so the
-        // scan never holds the state lock for long.
-        let policies: Vec<(StreamId, u32, operon_meta::Retention)> = self
-            .meta
-            .read(Consistency::Local, |s| {
-                s.all_streams()
-                    .filter(|st| {
-                        st.retention.max_age_ms.is_some() || st.retention.max_bytes.is_some()
-                    })
-                    .map(|st| (st.id, st.partitions, st.retention))
-                    .collect()
-            })
-            .await?;
-        let mut report = RetentionReport::default();
-        for (stream, partitions, policy) in policies {
-            for partition in 0..partitions {
-                let before = self
-                    .meta
-                    .read(Consistency::Local, |s| {
-                        s.partition(stream, partition).and_then(|state| {
-                            trim_point(state, policy.max_age_ms, policy.max_bytes, now)
-                        })
-                    })
-                    .await?;
-                if let Some(before) = before {
-                    self.meta
-                        .trim_partition(stream, partition, before, None)
-                        .await?;
-                    report.trimmed += 1;
-                }
+            async fn candidates(&self, _meta: &MetaClient) -> Result<Vec<Candidate>, TaskError> {
+                Ok(vec![self.0.clone()])
             }
         }
-        report.pruned = self.meta.prune_wal_commits(None).await?;
+        let before = self.source.report();
+        let ttl = (self.source.shared.config.interval * 3)
+            .clamp(Duration::from_secs(1), Duration::from_secs(3600));
+        let results =
+            operon_worker::run_once(&self.meta, &self.owner, ttl, &Once(self.source.task()))
+                .await
+                .map_err(LogError::Task)?;
+        let after = self.source.report();
+        let mut report = RetentionReport {
+            trimmed: after.trimmed - before.trimmed,
+            pruned: after.pruned - before.pruned,
+            skipped: false,
+        };
+        for (_, result) in results {
+            match result {
+                RunResult::LeaseHeld => report.skipped = true,
+                RunResult::Ran(Ok(_)) => {}
+                RunResult::Ran(Err(TaskError::Meta(err))) => return Err(LogError::Meta(err)),
+                RunResult::Ran(Err(err)) => return Err(LogError::Task(err)),
+            }
+        }
         Ok(report)
-    }
-
-    /// Runs retention every `interval` until the task is stopped.
-    pub fn spawn(self) -> BackgroundTask {
-        let interval = self.config.interval;
-        BackgroundTask::spawn("retention", interval, move || {
-            let retention = self.clone();
-            async move {
-                match retention.run_once().await {
-                    Ok(report) if report.trimmed > 0 || report.pruned > 0 => {
-                        tracing::debug!(?report, "retention run");
-                    }
-                    Ok(_) => {}
-                    Err(err) => tracing::warn!(%err, "retention run failed"),
-                }
-            }
-        })
     }
 }

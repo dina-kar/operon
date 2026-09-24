@@ -1,19 +1,23 @@
 //! The segmenter (design §02 §5): rewrites runs of WAL chunks into
-//! per-partition segments and swaps them into the offset index.
+//! per-partition segments and swaps them into the offset index. It runs as
+//! worker tasks (M0.4): [`SegmenterSource`] proposes one task per partition
+//! with a due run, keyed `segmenter/<stream>/<partition>`.
 
-use std::future::Future;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use operon_cache::RangeCache;
 use operon_common::{NamespaceId, StreamId};
 use operon_meta::{
-    ApplyError, Consistency, EntryKind, Fence, IndexEntry, MetaClient, MetaError, PartitionState,
-    WalClass,
+    ApplyError, Command, Consistency, EntryKind, IndexEntry, MetaClient, MetaError, PartitionState,
+    Reply, WalClass,
 };
 use operon_store::Store;
-use tokio::sync::watch;
-use tokio::task::JoinHandle;
+use operon_worker::{
+    Candidate, Priority, RunResult, Task, TaskContext, TaskError, TaskKey, TaskOutcome, TaskSource,
+};
 use ulid::Ulid;
 
 use crate::batch;
@@ -22,7 +26,7 @@ use crate::paths;
 use crate::record::Encoding;
 use crate::segment::SegmentBuilder;
 
-/// When and how the segmenter runs.
+/// When the segmenter segments.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SegmenterConfig {
     /// A run of WAL entries is segmented once it holds this many bytes.
@@ -34,10 +38,16 @@ pub struct SegmenterConfig {
     /// A run is segmented regardless of size once its oldest entry's newest
     /// record timestamp is this old. Default 10 min.
     pub max_wal_age: Duration,
-    /// Time between runs. Default 5 s.
-    pub interval: Duration,
-    /// The per-partition lease the segmenter takes. Default 30 s.
+    /// The lease TTL [`Segmenter::run_once`] uses. A [`Worker`] uses its own
+    /// (`WorkerConfig::lease_ttl`). Default 30 s.
+    ///
+    /// [`Worker`]: operon_worker::Worker
     pub lease_ttl: Duration,
+    /// A segment not swapped in within this long of its PUT is abandoned
+    /// (left for garbage collection), so it can never be swapped in after
+    /// garbage collection could have deleted it: GC's grace must be longer.
+    /// Default 10 min.
+    pub swap_deadline: Duration,
 }
 
 impl Default for SegmenterConfig {
@@ -46,63 +56,36 @@ impl Default for SegmenterConfig {
             min_bytes: 64 * 1024 * 1024,
             target_bytes: 256 * 1024 * 1024,
             max_wal_age: Duration::from_secs(600),
-            interval: Duration::from_secs(5),
             lease_ttl: Duration::from_secs(30),
+            swap_deadline: Duration::from_secs(600),
         }
     }
 }
 
-/// What one segmenter run did.
+/// What segmenter runs did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SegmenterReport {
     /// Segments written and swapped in.
     pub segments: u32,
     /// Partitions skipped because another holder had the lease, or because
-    /// the index changed under the run (the new segment was deleted).
+    /// the index changed under the run, or the run's lease was taken over.
     pub skipped: u32,
-    /// Partitions whose attempt failed (logged; retried next run).
+    /// Partitions whose attempt failed (logged; retried later).
     pub failed: u32,
+}
+
+impl SegmenterReport {
+    fn minus(self, earlier: SegmenterReport) -> SegmenterReport {
+        SegmenterReport {
+            segments: self.segments - earlier.segments,
+            skipped: self.skipped - earlier.skipped,
+            failed: self.failed - earlier.failed,
+        }
+    }
 }
 
 fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-}
-
-/// A background loop started with `spawn`.
-#[derive(Debug)]
-pub struct BackgroundTask {
-    stop: watch::Sender<bool>,
-    handle: JoinHandle<()>,
-}
-
-impl BackgroundTask {
-    /// Runs `run` now and then every `interval`, until stopped.
-    pub(crate) fn spawn<F, Fut>(name: &'static str, interval: Duration, run: F) -> Self
-    where
-        F: Fn() -> Fut + Send + 'static,
-        Fut: Future<Output = ()> + Send,
-    {
-        let (stop, mut stopped) = watch::channel(false);
-        let handle = tokio::spawn(async move {
-            loop {
-                run().await;
-                tokio::select! {
-                    _ = stopped.wait_for(|s| *s) => break,
-                    () = tokio::time::sleep(interval) => {}
-                }
-            }
-            tracing::debug!(task = name, "background task stopped");
-        });
-        Self { stop, handle }
-    }
-
-    /// Stops the loop after its current run, and waits for it.
-    pub async fn stop(self) {
-        self.stop.send_replace(true);
-        if let Err(err) = self.handle.await {
-            tracing::error!(%err, "background task failed");
-        }
-    }
 }
 
 /// The leading run of WAL entries of a partition (after its segments), up to
@@ -129,26 +112,308 @@ fn due_run(state: &PartitionState, config: &SegmenterConfig, cutoff: i64) -> Vec
     }
 }
 
-/// A run of WAL entries of one partition to segment.
-struct Candidate {
+struct Shared {
+    store: Store,
+    cache: RangeCache,
+    config: SegmenterConfig,
+    report: Mutex<SegmenterReport>,
+}
+
+impl Shared {
+    fn record(&self, f: impl FnOnce(&mut SegmenterReport)) {
+        f(&mut self.report.lock().unwrap_or_else(PoisonError::into_inner));
+    }
+}
+
+/// Proposes a segmenting task for every `standard` partition with a due run
+/// of WAL entries, at [`Priority::Segmenting`]. Each task's swap is fenced
+/// by its task lease, so a run whose lease was taken over cannot change the
+/// index. Replaced WAL objects are not deleted: the metastore retires them,
+/// and garbage collection deletes them later.
+#[derive(Clone)]
+pub struct SegmenterSource {
+    shared: Arc<Shared>,
+}
+
+impl std::fmt::Debug for SegmenterSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SegmenterSource")
+            .field("config", &self.shared.config)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SegmenterSource {
+    pub fn new(store: Store, cache: RangeCache, config: SegmenterConfig) -> Self {
+        Self {
+            shared: Arc::new(Shared {
+                store,
+                cache,
+                config,
+                report: Mutex::default(),
+            }),
+        }
+    }
+
+    /// Totals over every task this source's tasks ran.
+    pub fn report(&self) -> SegmenterReport {
+        *self
+            .shared
+            .report
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// The due run of one partition, as of a local read.
+async fn due(
+    meta: &MetaClient,
+    config: &SegmenterConfig,
+    stream: StreamId,
+    partition: u32,
+) -> Result<Vec<IndexEntry>, MetaError> {
+    let cutoff =
+        i64::try_from(meta.now_ms().saturating_sub(millis(config.max_wal_age))).unwrap_or(i64::MAX);
+    meta.read(Consistency::Local, |s| {
+        s.partition(stream, partition)
+            .map(|state| due_run(state, config, cutoff))
+            .unwrap_or_default()
+    })
+    .await
+}
+
+#[async_trait]
+impl TaskSource for SegmenterSource {
+    fn priority(&self) -> Priority {
+        Priority::Segmenting
+    }
+
+    async fn candidates(&self, meta: &MetaClient) -> Result<Vec<Candidate>, TaskError> {
+        // One short read for the streams, then one per partition, so the scan
+        // never holds the state lock for long.
+        let streams: Vec<(NamespaceId, StreamId, u32)> = meta
+            .read(Consistency::Local, |s| {
+                s.all_streams()
+                    .filter(|st| st.class == WalClass::Standard)
+                    .map(|st| (st.namespace, st.id, st.partitions))
+                    .collect()
+            })
+            .await?;
+        let mut candidates = Vec::new();
+        for (namespace, stream, partitions) in streams {
+            for partition in 0..partitions {
+                if due(meta, &self.shared.config, stream, partition)
+                    .await?
+                    .is_empty()
+                {
+                    continue;
+                }
+                let task: Arc<dyn Task> = Arc::new(SegmentTask {
+                    shared: self.shared.clone(),
+                    namespace,
+                    stream,
+                    partition,
+                });
+                candidates.push((
+                    TaskKey::new(namespace, format!("segmenter/{stream}/{partition}")),
+                    task,
+                ));
+            }
+        }
+        Ok(candidates)
+    }
+}
+
+/// Segments one partition's due run.
+struct SegmentTask {
+    shared: Arc<Shared>,
     namespace: NamespaceId,
     stream: StreamId,
     partition: u32,
-    entries: Vec<IndexEntry>,
 }
 
-/// Rewrites WAL chunks into segments. Each partition is guarded by the lease
-/// `segmenter/<stream>/<partition>`, and the swap is fenced by it, so a
-/// segmenter that lost its lease cannot change the index. Replaced WAL
-/// objects are not deleted: the metastore retires them, and garbage
-/// collection deletes them later.
+/// How one segmenting attempt ended.
+enum Attempt {
+    Swapped,
+    /// The index changed under the run, or the run was cancelled.
+    Skipped,
+}
+
+#[async_trait]
+impl Task for SegmentTask {
+    async fn run(&self, ctx: TaskContext) -> Result<TaskOutcome, TaskError> {
+        let config = &self.shared.config;
+        // Plan again: the candidate was computed at poll time.
+        let entries = due(&ctx.meta, config, self.stream, self.partition).await?;
+        if entries.is_empty() {
+            return Ok(TaskOutcome::Idle);
+        }
+        match self.segment(&ctx, &entries).await {
+            Ok(Attempt::Swapped) => {
+                self.shared.record(|r| r.segments += 1);
+                // Another run may be due already (a backlog longer than
+                // `target_bytes`).
+                let more = !due(&ctx.meta, config, self.stream, self.partition)
+                    .await?
+                    .is_empty();
+                Ok(if more {
+                    TaskOutcome::MoreWork
+                } else {
+                    TaskOutcome::Done
+                })
+            }
+            Ok(Attempt::Skipped) => {
+                self.shared.record(|r| r.skipped += 1);
+                Ok(TaskOutcome::Done)
+            }
+            Err(TaskError::Fenced) => {
+                self.shared.record(|r| r.skipped += 1);
+                Err(TaskError::Fenced)
+            }
+            Err(err) => {
+                tracing::warn!(
+                    stream = %self.stream,
+                    partition = self.partition,
+                    %err,
+                    "segmenting failed"
+                );
+                self.shared.record(|r| r.failed += 1);
+                Err(err)
+            }
+        }
+    }
+}
+
+impl SegmentTask {
+    /// Writes and swaps in one segment under the task's fence.
+    async fn segment(
+        &self,
+        ctx: &TaskContext,
+        entries: &[IndexEntry],
+    ) -> Result<Attempt, TaskError> {
+        let (stream, partition) = (self.stream, self.partition);
+        let store = &self.shared.store;
+        let base_offset = entries[0].base_offset;
+        let mut builder = SegmentBuilder::new(stream, partition, base_offset, Encoding::Kafka);
+        let mut max_timestamp_ms = i64::MIN;
+        for entry in entries {
+            let bytes = self
+                .shared
+                .cache
+                .read(&entry.object, entry.byte_range.clone())
+                .await
+                .map_err(|e| TaskError::failed(LogError::from(e)))?;
+            for batch in batch::batches(&bytes) {
+                let batch = batch.map_err(TaskError::failed)?;
+                builder
+                    .push_batch(
+                        Bytes::copy_from_slice(batch.bytes),
+                        batch.record_count,
+                        batch.max_timestamp_ms,
+                    )
+                    .map_err(|e| {
+                        TaskError::failed(corrupt(format!("WAL chunk in {}: {e}", entry.object)))
+                    })?;
+            }
+            if builder.next_offset() != entry.end_offset() {
+                return Err(TaskError::failed(corrupt(format!(
+                    "WAL chunk in {} holds records up to {}, its index entry up to {}",
+                    entry.object,
+                    builder.next_offset(),
+                    entry.end_offset()
+                ))));
+            }
+            max_timestamp_ms = max_timestamp_ms.max(entry.max_timestamp_ms);
+        }
+        let (bytes, footer) = builder.finish();
+        let written_at = ctx.meta.now_ms();
+        let ulid = Ulid::from_parts(written_at, Ulid::generate().random());
+        let path = paths::segment(self.namespace, stream, partition, base_offset, ulid);
+        store
+            .put_if_absent(&path, bytes)
+            .await
+            .map_err(|e| TaskError::failed(LogError::from(e)))?;
+
+        // Never swapped in, so safe to delete: the run was cancelled (its
+        // lease is being lost) or took so long that GC could delete it.
+        let late =
+            ctx.meta.now_ms().saturating_sub(written_at) > millis(self.shared.config.swap_deadline);
+        if ctx.cancel.is_cancelled() || late {
+            self.delete_unused(ctx, &path).await;
+            return Ok(Attempt::Skipped);
+        }
+        let command = Command::SwapSegment {
+            stream,
+            partition,
+            replaces: entries
+                .iter()
+                .map(|e| (e.base_offset, e.object.clone()))
+                .collect(),
+            segment: path.clone(),
+            byte_range: footer.data,
+            max_timestamp_ms,
+            fence: Some(ctx.fence.clone()),
+            now_ms: ctx.meta.now_ms(),
+        };
+        let (result, earlier_unknown) = ctx.meta.write_tracked(command).await;
+        match result {
+            Ok(Reply::SegmentSwapped) => Ok(Attempt::Swapped),
+            Ok(other) => Err(MetaError::UnexpectedReply(other).into()),
+            // A rejection of the first attempt means the swap was never
+            // applied (a retry of an applied swap succeeds), so the segment
+            // is unreferenced. After an attempt with an unknown outcome the
+            // swap may have been applied and then trimmed: leave the segment
+            // to garbage collection (M0.3 re-review M7).
+            Err(MetaError::Rejected(
+                rejection @ (ApplyError::IndexMismatch { .. } | ApplyError::Fenced { .. }),
+            )) => {
+                if !earlier_unknown {
+                    self.delete_unused(ctx, &path).await;
+                }
+                if matches!(rejection, ApplyError::Fenced { .. }) {
+                    Err(TaskError::Fenced)
+                } else {
+                    Ok(Attempt::Skipped)
+                }
+            }
+            // The outcome may be unknown: leave the object for garbage
+            // collection if the swap did not land.
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    /// Deletes a segment this run wrote and never swapped in. As a second
+    /// guard, it checks with a linearizable read that the metastore neither
+    /// references nor retired the path.
+    async fn delete_unused(&self, ctx: &TaskContext, path: &str) {
+        let (stream, partition) = (self.stream, self.partition);
+        let known = ctx
+            .meta
+            .read(Consistency::Linearizable, |s| {
+                s.retired().any(|(p, _)| p == path)
+                    || s.partition(stream, partition)
+                        .is_some_and(|state| state.entries().any(|e| e.object == path))
+            })
+            .await;
+        match known {
+            Ok(false) => {
+                if let Err(err) = self.shared.store.delete(path).await {
+                    tracing::warn!(%path, %err, "could not delete an unused segment");
+                }
+            }
+            Ok(true) => tracing::debug!(%path, "segment is known to the metastore; not deleting"),
+            Err(err) => tracing::warn!(%path, %err, "could not check a segment; not deleting"),
+        }
+    }
+}
+
+/// Runs the segmenter's tasks once, through the worker framework
+/// ([`operon_worker::run_once`]), for tests and tools.
 #[derive(Clone, Debug)]
 pub struct Segmenter {
     meta: MetaClient,
-    store: Store,
-    cache: RangeCache,
     owner: String,
-    config: SegmenterConfig,
+    source: SegmenterSource,
 }
 
 impl Segmenter {
@@ -163,214 +428,39 @@ impl Segmenter {
     ) -> Self {
         Self {
             meta,
-            store,
-            cache,
             owner: owner.into(),
-            config,
+            source: SegmenterSource::new(store, cache, config),
         }
     }
 
-    /// Segments one run of WAL entries in every partition that is due.
+    /// The task source, to add to a [`Worker`](operon_worker::Worker).
+    pub fn source(&self) -> &SegmenterSource {
+        &self.source
+    }
+
+    /// Segments one run of WAL entries in every partition that is due, each
+    /// under its task lease.
     pub async fn run_once(&self) -> Result<SegmenterReport, LogError> {
-        let now = self.meta.now_ms();
-        let cutoff =
-            i64::try_from(now.saturating_sub(millis(self.config.max_wal_age))).unwrap_or(i64::MAX);
-        let config = &self.config;
-        // One short read for the streams, then one per partition, so the scan
-        // never holds the state lock for long.
-        let streams: Vec<(NamespaceId, StreamId, u32)> = self
-            .meta
-            .read(Consistency::Local, |s| {
-                s.all_streams()
-                    .filter(|st| st.class == WalClass::Standard)
-                    .map(|st| (st.namespace, st.id, st.partitions))
-                    .collect()
-            })
-            .await?;
-        let mut candidates = Vec::new();
-        for (namespace, stream, partitions) in streams {
-            for partition in 0..partitions {
-                let entries = self
-                    .meta
-                    .read(Consistency::Local, |s| {
-                        s.partition(stream, partition)
-                            .map(|state| due_run(state, config, cutoff))
-                            .unwrap_or_default()
-                    })
-                    .await?;
-                if !entries.is_empty() {
-                    candidates.push(Candidate {
-                        namespace,
-                        stream,
-                        partition,
-                        entries,
-                    });
-                }
-            }
-        }
-
-        let mut report = SegmenterReport::default();
-        for candidate in candidates {
-            match self.segment(&candidate).await {
-                Ok(true) => report.segments += 1,
-                Ok(false) => report.skipped += 1,
-                Err(err) => {
-                    tracing::warn!(
-                        stream = %candidate.stream,
-                        partition = candidate.partition,
-                        %err,
-                        "segmenting failed"
-                    );
-                    report.failed += 1;
-                }
-            }
-        }
+        let before = self.source.report();
+        let results = operon_worker::run_once(
+            &self.meta,
+            &self.owner,
+            self.source.shared.config.lease_ttl,
+            &self.source,
+        )
+        .await
+        .map_err(|e| match e {
+            TaskError::Meta(meta) => LogError::Meta(meta),
+            other => LogError::Task(other),
+        })?;
+        let mut report = self.source.report().minus(before);
+        report.skipped += u32::try_from(
+            results
+                .iter()
+                .filter(|(_, r)| matches!(r, RunResult::LeaseHeld))
+                .count(),
+        )
+        .unwrap_or(u32::MAX);
         Ok(report)
-    }
-
-    /// Writes and swaps in one segment. `Ok(false)` if the partition was
-    /// skipped.
-    async fn segment(&self, candidate: &Candidate) -> Result<bool, LogError> {
-        let Candidate {
-            namespace,
-            stream,
-            partition,
-            entries,
-        } = candidate;
-        let (stream, partition) = (*stream, *partition);
-        let lease = format!("segmenter/{stream}/{partition}");
-        let grant = match self
-            .meta
-            .acquire_lease(&lease, &self.owner, self.config.lease_ttl)
-            .await
-        {
-            Ok(grant) => grant,
-            Err(MetaError::Rejected(ApplyError::LeaseHeld { .. })) => return Ok(false),
-            Err(err) => return Err(err.into()),
-        };
-
-        let base_offset = entries[0].base_offset;
-        let mut builder = SegmentBuilder::new(stream, partition, base_offset, Encoding::Kafka);
-        let mut max_timestamp_ms = i64::MIN;
-        for entry in entries {
-            let bytes = self
-                .cache
-                .read(&entry.object, entry.byte_range.clone())
-                .await?;
-            for batch in batch::batches(&bytes) {
-                let batch = batch?;
-                builder
-                    .push_batch(
-                        Bytes::copy_from_slice(batch.bytes),
-                        batch.record_count,
-                        batch.max_timestamp_ms,
-                    )
-                    .map_err(|e| corrupt(format!("WAL chunk in {}: {e}", entry.object)))?;
-            }
-            if builder.next_offset() != entry.end_offset() {
-                return Err(corrupt(format!(
-                    "WAL chunk in {} holds records up to {}, its index entry up to {}",
-                    entry.object,
-                    builder.next_offset(),
-                    entry.end_offset()
-                )));
-            }
-            max_timestamp_ms = max_timestamp_ms.max(entry.max_timestamp_ms);
-        }
-        let (bytes, footer) = builder.finish();
-        let ulid = Ulid::from_parts(self.meta.now_ms(), Ulid::generate().random());
-        let path = paths::segment(*namespace, stream, partition, base_offset, ulid);
-        self.store.put_if_absent(&path, bytes).await?;
-
-        // Reading and writing a large run can take a while: renew the lease
-        // before the swap, so another node does not take the partition over
-        // and fence it (review M10). A lost lease skips the swap.
-        match self
-            .meta
-            .renew_lease(&lease, &self.owner, grant.epoch, self.config.lease_ttl)
-            .await
-        {
-            Ok(_) => {}
-            Err(MetaError::Rejected(ApplyError::LeaseLost { .. })) => {
-                self.delete_unused(stream, partition, &path).await;
-                return Ok(false);
-            }
-            Err(err) => return Err(err.into()),
-        }
-        let replaces = entries
-            .iter()
-            .map(|e| (e.base_offset, e.object.clone()))
-            .collect();
-        let fence = Fence {
-            lease,
-            epoch: grant.epoch,
-        };
-        let swapped = self
-            .meta
-            .swap_segment(
-                stream,
-                partition,
-                replaces,
-                &path,
-                footer.data,
-                max_timestamp_ms,
-                Some(fence),
-            )
-            .await;
-        match swapped {
-            Ok(()) => Ok(true),
-            // Definitely not applied (a retry of an applied swap succeeds), so
-            // the new segment is unreferenced.
-            Err(MetaError::Rejected(
-                ApplyError::IndexMismatch { .. } | ApplyError::Fenced { .. },
-            )) => {
-                self.delete_unused(stream, partition, &path).await;
-                Ok(false)
-            }
-            // The outcome may be unknown: leave the object for garbage
-            // collection if the swap did not land.
-            Err(err) => Err(err.into()),
-        }
-    }
-
-    /// Deletes a segment this run wrote, unless the metastore references or
-    /// has retired it. A swap whose acknowledgement was lost can be applied
-    /// and then trimmed before its retry is rejected; that segment belongs to
-    /// garbage collection and its grace period, not to this run (review M7).
-    async fn delete_unused(&self, stream: StreamId, partition: u32, path: &str) {
-        let known = self
-            .meta
-            .read(Consistency::Local, |s| {
-                s.retired().any(|(p, _)| p == path)
-                    || s.partition(stream, partition)
-                        .is_some_and(|state| state.entries().any(|e| e.object == path))
-            })
-            .await;
-        match known {
-            Ok(false) => {
-                if let Err(err) = self.store.delete(path).await {
-                    tracing::warn!(%path, %err, "could not delete an unused segment");
-                }
-            }
-            Ok(true) => tracing::debug!(%path, "segment is known to the metastore; not deleting"),
-            Err(err) => tracing::warn!(%path, %err, "could not check a segment; not deleting"),
-        }
-    }
-
-    /// Runs the segmenter every `interval` until the task is stopped.
-    pub fn spawn(self) -> BackgroundTask {
-        let interval = self.config.interval;
-        BackgroundTask::spawn("segmenter", interval, move || {
-            let segmenter = self.clone();
-            async move {
-                match segmenter.run_once().await {
-                    Ok(report) if report != SegmenterReport::default() => {
-                        tracing::debug!(?report, "segmenter run");
-                    }
-                    Ok(_) => {}
-                    Err(err) => tracing::warn!(%err, "segmenter run failed"),
-                }
-            }
-        })
     }
 }

@@ -8,6 +8,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 bytes.workspace = true
 crc32c.workspace = true
 moka.workspace = true
@@ -15,6 +16,7 @@ operon-cache.workspace = true
 operon-common.workspace = true
 operon-meta.workspace = true
 operon-store.workspace = true
+operon-worker.workspace = true
 postcard.workspace = true
 serde.workspace = true
 thiserror.workspace = true
@@ -23,11 +25,11 @@ tracing.workspace = true
 ulid.workspace = true
 
 [dev-dependencies]
-async-trait.workspace = true
 crc32c.workspace = true
 futures.workspace = true
 kafka-protocol.workspace = true
 operon-meta = { workspace = true, features = ["test-util"] }
+operon-worker = { workspace = true, features = ["test-util"] }
 object_store.workspace = true
 proptest.workspace = true
 tempfile.workspace = true

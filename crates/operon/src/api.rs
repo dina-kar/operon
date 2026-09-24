@@ -194,6 +194,7 @@ impl From<LogError> for ApiError {
             | LogError::Store(_)
             | LogError::Cache(_) => unavailable(message),
             LogError::Meta(meta) => meta.into(),
+            LogError::Task(_) => internal(message),
             LogError::Corrupt(_) | LogError::UnsupportedEncoding(_) => internal(message),
         }
     }

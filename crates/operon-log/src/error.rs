@@ -50,6 +50,9 @@ pub enum LogError {
     Cache(#[from] CacheError),
     #[error("metastore: {0}")]
     Meta(#[from] MetaError),
+    /// A worker task failed (see [`operon_worker::TaskError`]).
+    #[error("task: {0}")]
+    Task(operon_worker::TaskError),
 }
 
 impl From<StoreError> for LogError {

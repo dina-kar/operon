@@ -15,12 +15,13 @@ use common::{Meta, WAIT, small_cache};
 use operon_common::StreamId;
 use operon_log::{
     FetchRequest, LogConfig, LogError, LogReader, LogWriter, Record, Retention, RetentionConfig,
-    Segmenter, SegmenterConfig,
+    RetentionSource, SegmenterConfig, SegmenterSource,
 };
 use operon_meta::{
     Consistency, MetaClient, MetaClientConfig, MetaConfig, MetaNode, Router, SystemClock, WalClass,
 };
 use operon_store::{Fault, FaultyStore, Op, Store};
+use operon_worker::{TaskSource, Worker, WorkerConfig, WorkerHandle};
 use tempfile::TempDir;
 
 const PARTITIONS: u32 = 8;
@@ -332,9 +333,25 @@ fn segmenter_config() -> SegmenterConfig {
     SegmenterConfig {
         min_bytes: 1,
         target_bytes: 2048,
-        interval: Duration::from_millis(50),
         ..SegmenterConfig::default()
     }
+}
+
+/// A worker polling every 50 ms with one task source.
+fn start_worker(
+    meta: operon_meta::MetaClient,
+    owner: &str,
+    source: Arc<dyn TaskSource>,
+) -> WorkerHandle {
+    let mut worker = Worker::new(
+        meta,
+        WorkerConfig {
+            poll_interval: Duration::from_millis(50),
+            ..WorkerConfig::new(owner)
+        },
+    );
+    worker.add_source(source);
+    worker.start()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -370,22 +387,22 @@ async fn acknowledged_appends_survive_a_meta_leader_failover() {
         LogWriter::start(cluster.client(1), data.clone(), log_config(1)).expect("start writer");
     let writer_b =
         LogWriter::start(cluster.client(2), data.clone(), log_config(2)).expect("start writer");
-    let segmenter = Segmenter::new(
+    let segmenter = start_worker(
         cluster.client(3),
-        data.clone(),
-        small_cache(&data).await,
-        "segmenter-3",
-        segmenter_config(),
-    )
-    .spawn();
-    let retention = Retention::new(
+        "worker-3",
+        Arc::new(SegmenterSource::new(
+            data.clone(),
+            small_cache(&data).await,
+            segmenter_config(),
+        )),
+    );
+    let retention = start_worker(
         cluster.client(1),
-        "retention-1",
-        RetentionConfig {
+        "worker-1",
+        Arc::new(RetentionSource::new(RetentionConfig {
             interval: Duration::from_millis(100),
-        },
-    )
-    .spawn();
+        })),
+    );
 
     let acks = Arc::new(AtomicUsize::new(0));
     let mut appenders = spawn_appenders("a", &writer_a, stream, 4, 30, &acks);
@@ -447,14 +464,15 @@ async fn intermittent_store_faults_never_corrupt_reads() {
     let data = Store::new(faulty.clone());
     let writer =
         LogWriter::start(meta.client.clone(), data.clone(), log_config(1)).expect("start writer");
-    let segmenter = Segmenter::new(
+    let segmenter = start_worker(
         meta.client.clone(),
-        data.clone(),
-        small_cache(&data).await,
-        "segmenter-1",
-        segmenter_config(),
-    )
-    .spawn();
+        "worker-1",
+        Arc::new(SegmenterSource::new(
+            data.clone(),
+            small_cache(&data).await,
+            segmenter_config(),
+        )),
+    );
     let reader = LogReader::new(meta.client.clone(), small_cache(&data).await);
 
     let stop = Arc::new(AtomicBool::new(false));

@@ -19,15 +19,13 @@ fn config(dir: &TempDir, segmenter: SegmenterConfig) -> ServerConfig {
     config.listen = SocketAddr::from(([127, 0, 0, 1], 0));
     config.log.flush_interval = Duration::from_millis(20);
     config.segmenter = segmenter;
+    config.worker_poll_interval = Duration::from_millis(50);
     config
 }
 
-/// Segments only when asked to, in practice.
+/// Never segments small test data (64 MiB or 10 minutes).
 fn lazy_segmenter() -> SegmenterConfig {
-    SegmenterConfig {
-        interval: Duration::from_secs(3600),
-        ..SegmenterConfig::default()
-    }
+    SegmenterConfig::default()
 }
 
 /// Segments everything, often.
@@ -35,7 +33,6 @@ fn eager_segmenter() -> SegmenterConfig {
     SegmenterConfig {
         min_bytes: 1,
         target_bytes: 400,
-        interval: Duration::from_millis(50),
         ..SegmenterConfig::default()
     }
 }
