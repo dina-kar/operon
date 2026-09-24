@@ -1991,6 +1991,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "operon-link"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "crc32c",
+ "futures",
+ "operon-cache",
+ "operon-common",
+ "operon-link",
+ "operon-log",
+ "operon-meta",
+ "operon-store",
+ "operon-worker",
+ "postcard",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "ulid 3.0.0",
+]
+
+[[package]]
 name = "operon-log"
 version = "0.0.1"
 dependencies = [

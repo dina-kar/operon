@@ -39,6 +39,7 @@ ulid = "3"
 url = "2"
 operon-cache = { path = "crates/operon-cache", version = "0.0.1" }
 operon-common = { path = "crates/operon-common", version = "0.0.1" }
+operon-link = { path = "crates/operon-link", version = "0.0.1" }
 operon-log = { path = "crates/operon-log", version = "0.0.1" }
 operon-meta = { path = "crates/operon-meta", version = "0.0.1" }
 operon-pk = { path = "crates/operon-pk", version = "0.0.1" }

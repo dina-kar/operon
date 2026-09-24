@@ -1,0 +1,39 @@
+[package]
+name = "operon-link"
+description = "Operon's link framework: exactly-once apply of streams into targets, and the CounterTable test target."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+crc32c.workspace = true
+futures.workspace = true
+operon-common.workspace = true
+operon-log.workspace = true
+operon-meta.workspace = true
+operon-store.workspace = true
+operon-worker.workspace = true
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+ulid.workspace = true
+
+[features]
+# Test hooks (pausing a commit at a step). Not part of the stable API.
+test-util = []
+
+[dev-dependencies]
+operon-cache.workspace = true
+operon-link = { path = ".", features = ["test-util"] }
+operon-meta = { workspace = true, features = ["test-util"] }
+operon-worker = { workspace = true, features = ["test-util"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true
