@@ -294,15 +294,24 @@ async fn a_zombie_task_cannot_double_apply() {
     f.append(20).await;
     let release = Arc::new(tokio::sync::Notify::new());
     let reached = Arc::new(AtomicBool::new(false));
+    // The held commit's fence, and the steps the zombie took under it after
+    // it resumed (review M6: prove it tried and was refused).
+    let zombie_fence: Arc<Mutex<Option<Fence>>> = Arc::default();
+    let zombie_steps: Arc<Mutex<Vec<CommitStep>>> = Arc::default();
     let hook: CommitHook = {
         let (release, reached) = (release.clone(), reached.clone());
+        let (zombie_fence, zombie_steps) = (zombie_fence.clone(), zombie_steps.clone());
         let first = Arc::new(AtomicBool::new(true));
-        Arc::new(move |at, _fence| {
+        Arc::new(move |at, fence| {
             if at == CommitStep::AfterDataPut && first.swap(false, Ordering::SeqCst) {
+                *zombie_fence.lock().unwrap() = Some(fence);
                 reached.store(true, Ordering::SeqCst);
                 let release = release.clone();
                 async move { release.notified().await }.boxed()
             } else {
+                if zombie_fence.lock().unwrap().as_ref() == Some(&fence) {
+                    zombie_steps.lock().unwrap().push(at);
+                }
                 futures::future::ready(()).boxed()
             }
         })
@@ -339,8 +348,21 @@ async fn a_zombie_task_cannot_double_apply() {
         assert!(Instant::now() < deadline, "the successor never caught up");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    // Give the zombie time to try its commits.
+    // The zombie resumed its held commit (it wrote the manifest), and its
+    // fenced CAS was refused: it never reached the step after the CAS.
+    wait_for("the zombie's manifest PUT", || {
+        zombie_steps
+            .lock()
+            .unwrap()
+            .contains(&CommitStep::AfterManifestPut)
+    })
+    .await;
     tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !zombie_steps.lock().unwrap().contains(&CommitStep::AfterCas),
+        "{:?}",
+        zombie_steps.lock().unwrap()
+    );
     f.check().await;
     zombie.stop().await;
     successor.stop().await;
