@@ -75,7 +75,8 @@ impl FaultRates {
 
 #[derive(Debug)]
 struct Rules {
-    queued: HashMap<Op, VecDeque<Fault>>,
+    /// `None` entries let one call pass (see [`FaultyStore::inject_nth`]).
+    queued: HashMap<Op, VecDeque<Option<Fault>>>,
     calls: HashMap<Op, u64>,
     rates: FaultRates,
     rng: ChaCha8Rng,
@@ -123,7 +124,28 @@ impl FaultyStore {
 
     /// Queues `fault` for the next call of `op`.
     pub fn inject(&self, op: Op, fault: Fault) {
-        self.rules().queued.entry(op).or_default().push_back(fault);
+        self.rules()
+            .queued
+            .entry(op)
+            .or_default()
+            .push_back(Some(fault));
+    }
+
+    /// Queues `fault` for the `nth` call of `op` from now (1 is the next
+    /// call); the calls before it pass.
+    pub fn inject_nth(&self, op: Op, nth: u64, fault: Fault) {
+        let mut rules = self.rules();
+        let queue = rules.queued.entry(op).or_default();
+        for _ in 1..nth {
+            queue.push_back(None);
+        }
+        queue.push_back(Some(fault));
+    }
+
+    /// How many queued faults (and passes before them) have not been
+    /// consumed yet for `op`.
+    pub fn pending(&self, op: Op) -> usize {
+        self.rules().queued.get(&op).map_or(0, VecDeque::len)
     }
 
     /// Drops every queued fault.
@@ -145,8 +167,9 @@ impl FaultyStore {
             *rules.calls.entry(*op).or_default() += 1;
         }
         for op in ops {
-            if let Some(fault) = rules.queued.get_mut(op).and_then(VecDeque::pop_front) {
-                return Some(fault);
+            if let Some(queued) = rules.queued.get_mut(op).and_then(VecDeque::pop_front) {
+                // A queued pass lets this call through, with no random fault.
+                return queued;
             }
         }
         let rates = rules.rates;

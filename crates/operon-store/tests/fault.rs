@@ -209,3 +209,32 @@ async fn random_faults_follow_their_rates_and_seed() {
         "no faults after the rates drop"
     );
 }
+
+#[tokio::test]
+async fn a_fault_can_target_a_later_call() {
+    let (faults, store) = faulty();
+    faults.inject_nth(Op::PutCreate, 2, Fault::Error);
+    assert_eq!(faults.pending(Op::PutCreate), 2);
+    store
+        .put_if_absent("a", Bytes::from_static(b"1"))
+        .await
+        .unwrap();
+    assert_eq!(faults.pending(Op::PutCreate), 1);
+    // Other operations do not consume it.
+    store.put("x", Bytes::from_static(b"1")).await.unwrap();
+    assert!(
+        store
+            .put_if_absent("b", Bytes::from_static(b"1"))
+            .await
+            .is_err()
+    );
+    assert_eq!(faults.pending(Op::PutCreate), 0);
+    store
+        .put_if_absent("b", Bytes::from_static(b"1"))
+        .await
+        .unwrap();
+    faults.inject(Op::Get, Fault::Error);
+    faults.clear();
+    assert_eq!(faults.pending(Op::Get), 0);
+    store.get("a").await.unwrap();
+}
