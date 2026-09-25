@@ -100,6 +100,9 @@ impl ObjectStoreProvider for OperonStoreProvider {
             None,
             None,
             false,
+            // Claimed even for stores whose listings are not ordered: the
+            // mainline only ever has version 1 (Ruling 1), so Lance's
+            // latest-version listing never has to pick among several.
             true,
             self.io_parallelism,
             DOWNLOAD_RETRIES,

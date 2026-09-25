@@ -299,6 +299,9 @@ async fn a_creator_that_finds_version_one_late_commits_nothing() {
         0,
         "the slow creator never probed"
     );
+    // The slow creator wrote nothing, so it took the late-probe path.
+    assert_eq!(slow_faults.calls(Op::PutCreate), 0);
+    assert_eq!(slow_faults.calls(Op::Put), 0);
     assert_eq!(slow_v1.expect("slow creator").manifest.version, 1);
     assert_eq!(fast_v1.expect("fast creator").manifest.version, 1);
     assert_eq!(
@@ -691,6 +694,67 @@ async fn lance_io_goes_through_the_faulty_store() {
         .await
         .expect("reopen");
     assert_eq!(reopened.manifest.version, landed.manifest.version);
+}
+
+#[tokio::test]
+async fn an_unverifiable_commit_is_retryable() {
+    let (faulty, _, env) = env();
+    let schema = plain_schema();
+    let v1 = env.ensure_created(NS, CID).await.expect("create");
+    let p_docs = docs("p", 2);
+    let p = append(&env, &v1, &schema, &p_docs).await;
+    let q_docs = docs("q", 1);
+    let fragments = LanceCommitter::write_fragments(&env, &p, batch(&schema, &q_docs))
+        .await
+        .expect("write");
+    // The manifest write fails, and so does every read that could tell
+    // whether it landed: Lance cannot know the outcome.
+    faulty.inject(Op::PutCreate, Fault::Error);
+    for _ in 0..64 {
+        faulty.inject(Op::Get, Fault::Error);
+    }
+    let err = LanceCommitter::commit(
+        &env,
+        &p,
+        Operation::Append {
+            fragments: fragments.clone(),
+        },
+    )
+    .await
+    .expect_err("unverifiable commit");
+    faulty.clear();
+    assert!(
+        matches!(&err, CollectionError::Lance(inner) if inner.is_commit_status_unknown()),
+        "{err}"
+    );
+    assert!(err.is_retryable(), "{err}");
+    // Retrying the whole commit on the same parent is safe.
+    let retried = LanceCommitter::commit(&env, &p, Operation::Append { fragments })
+        .await
+        .expect("retry");
+    assert_eq!(pks(&retried).await, keys(&[&p_docs, &q_docs]));
+}
+
+#[tokio::test]
+async fn a_lance_io_error_is_retryable() {
+    let (faulty, store, env) = env();
+    env.ensure_created(NS, CID).await.expect("create");
+    // A fresh environment has no cached manifest, so opening must read.
+    let cold = LanceEnv::new(store, LanceConfig::default());
+    for _ in 0..16 {
+        faulty.inject(Op::Get, Fault::Error);
+    }
+    let err = cold
+        .open(NS, CID, 1)
+        .await
+        .expect_err("injected read error");
+    faulty.clear();
+    assert!(
+        matches!(&err, CollectionError::Lance(lance::Error::IO { .. })),
+        "{err:?}"
+    );
+    assert!(err.is_retryable(), "{err}");
+    cold.open(NS, CID, 1).await.expect("open after the faults");
 }
 
 #[tokio::test]

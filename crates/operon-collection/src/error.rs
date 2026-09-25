@@ -54,8 +54,11 @@ impl CollectionError {
     /// on, may succeed:
     /// - a store error the store deems retryable (plan M1.1 Ruling 21);
     /// - a metastore that is not the leader, timed out or is unavailable;
-    /// - Lance's own I/O errors, and a Lance create-only write that lost
-    ///   (`DatasetAlreadyExists`), like the store's `AlreadyExists`.
+    /// - Lance's own I/O errors; a Lance create-only write that lost
+    ///   (`DatasetAlreadyExists`), like the store's `AlreadyExists`; a commit
+    ///   whose outcome Lance could not verify, too much write contention, or a
+    ///   timeout. Retrying an ambiguous detached commit is always safe: if the
+    ///   first attempt landed, it is an orphan no manifest references (R7).
     pub fn is_retryable(&self) -> bool {
         match self {
             CollectionError::Store(err) => err.is_retryable(),
@@ -63,10 +66,16 @@ impl CollectionError {
                 err,
                 MetaError::NotLeader { .. } | MetaError::Timeout | MetaError::Unavailable(_)
             ),
-            CollectionError::Lance(err) => matches!(
-                err,
-                lance::Error::IO { .. } | lance::Error::DatasetAlreadyExists { .. }
-            ),
+            CollectionError::Lance(err) => {
+                err.is_commit_status_unknown()
+                    || matches!(
+                        err,
+                        lance::Error::IO { .. }
+                            | lance::Error::DatasetAlreadyExists { .. }
+                            | lance::Error::TooMuchWriteContention { .. }
+                            | lance::Error::Timeout { .. }
+                    )
+            }
             CollectionError::Corrupt(_)
             | CollectionError::NotFound(_)
             | CollectionError::Internal(_) => false,
