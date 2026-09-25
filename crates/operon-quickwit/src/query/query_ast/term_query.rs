@@ -11,14 +11,15 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/query_ast/term_query.rs); modified for Operon: imports rewritten to crate paths; unwrap replaced by expect.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
 use super::{BuildTantivyAst, QueryAst};
-use crate::query_ast::{BuildTantivyAstContext, FullTextParams, TantivyQueryAst};
-use crate::{BooleanOperand, InvalidQuery};
+use crate::query::query_ast::{BuildTantivyAstContext, FullTextParams, TantivyQueryAst};
+use crate::query::{BooleanOperand, InvalidQuery};
 
 /// The TermQuery acts exactly like a FullTextQuery with
 /// a raw tokenizer.
@@ -55,7 +56,7 @@ impl BuildTantivyAst for TermQuery {
             mode: BooleanOperand::Or.into(),
             zero_terms_query: Default::default(),
         };
-        crate::query_ast::utils::full_text_query(
+        crate::query::query_ast::utils::full_text_query(
             &self.field,
             &self.value,
             &full_text_params,
@@ -100,7 +101,9 @@ impl TryFrom<HashMap<String, TermQueryValue>> for TermQuery {
         if map.len() > 1 {
             return Err("TermQuery must have exactly one entry");
         }
-        Ok(TermQuery::from(map.into_iter().next().unwrap())) // unwrap justified by the if
+        Ok(TermQuery::from(
+            map.into_iter().next().expect("map has exactly one entry"),
+        )) // unwrap justified by the if
         // statementabove.
     }
 }
@@ -118,7 +121,7 @@ impl From<TermQuery> for HashMap<String, TermQueryValue> {
 mod tests {
     use tantivy::schema::{INDEXED, Schema};
 
-    use crate::query_ast::{BuildTantivyAst, BuildTantivyAstContext, TermQuery};
+    use crate::query::query_ast::{BuildTantivyAst, BuildTantivyAstContext, TermQuery};
 
     #[test]
     fn test_term_query_with_ipaddr_ipv4() {

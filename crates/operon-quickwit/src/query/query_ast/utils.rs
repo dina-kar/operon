@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/query_ast/utils.rs); modified for Operon: FieldType::Custom arm removed for tantivy 0.26.2; imports rewritten to crate paths.
 
 use tantivy::Term;
 use tantivy::json_utils::convert_to_fast_value_and_append_to_json_term;
@@ -20,12 +21,12 @@ use tantivy::schema::{
     TextFieldIndexing, Type,
 };
 
-use crate::InvalidQuery;
-use crate::MatchAllOrNone::MatchNone as TantivyEmptyQuery;
-use crate::json_literal::InterpretUserInput;
-use crate::query_ast::full_text_query::FullTextParams;
-use crate::query_ast::tantivy_query_ast::{TantivyBoolQuery, TantivyQueryAst};
-use crate::tokenizers::{RAW_TOKENIZER_NAME, TokenizerManager};
+use crate::query::InvalidQuery;
+use crate::query::MatchAllOrNone::MatchNone as TantivyEmptyQuery;
+use crate::query::json_literal::InterpretUserInput;
+use crate::query::query_ast::full_text_query::FullTextParams;
+use crate::query::query_ast::tantivy_query_ast::{TantivyBoolQuery, TantivyQueryAst};
+use crate::query::tokenizers::{RAW_TOKENIZER_NAME, TokenizerManager};
 
 pub(crate) const DYNAMIC_FIELD_NAME: &str = "_dynamic";
 
@@ -186,9 +187,6 @@ fn compute_query_with_field(
         ),
         FieldType::Facet(_) => Err(InvalidQuery::SchemaError(
             "facets are not supported in Quickwit".to_string(),
-        )),
-        FieldType::Custom(_) => Err(InvalidQuery::SchemaError(
-            "custom fields are not supported in Quickwit".to_string(),
         )),
         FieldType::Bytes(_) => {
             let buffer: Vec<u8> = parse_value_from_user_text(value, field_entry.name())?;

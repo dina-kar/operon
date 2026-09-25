@@ -11,14 +11,15 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/elastic_query_dsl/query_string_query.rs); modified for Operon: imports rewritten to crate paths.
 
 use serde::Deserialize;
 
 use super::LeniencyBool;
-use crate::BooleanOperand;
-use crate::elastic_query_dsl::ConvertibleToQueryAst;
-use crate::not_nan_f32::NotNaNf32;
-use crate::query_ast::UserInputQuery;
+use crate::query::BooleanOperand;
+use crate::query::elastic_query_dsl::ConvertibleToQueryAst;
+use crate::query::not_nan_f32::NotNaNf32;
+use crate::query::query_ast::UserInputQuery;
 
 #[derive(Deserialize, Debug, Eq, PartialEq, Clone)]
 #[serde(deny_unknown_fields)]
@@ -41,7 +42,7 @@ pub(crate) struct QueryStringQuery {
 }
 
 impl ConvertibleToQueryAst for QueryStringQuery {
-    fn convert_to_query_ast(self) -> anyhow::Result<crate::query_ast::QueryAst> {
+    fn convert_to_query_ast(self) -> anyhow::Result<crate::query::query_ast::QueryAst> {
         if self.default_field.is_some() && self.fields.is_some() {
             anyhow::bail!("fields and default_field cannot be both set in `query_string` queries");
         }
@@ -61,16 +62,16 @@ impl ConvertibleToQueryAst for QueryStringQuery {
 
 #[cfg(test)]
 mod tests {
-    use crate::BooleanOperand;
-    use crate::elastic_query_dsl::{ConvertibleToQueryAst, QueryStringQuery};
-    use crate::query_ast::{QueryAst, UserInputQuery};
+    use crate::query::BooleanOperand;
+    use crate::query::elastic_query_dsl::{ConvertibleToQueryAst, QueryStringQuery};
+    use crate::query::query_ast::{QueryAst, UserInputQuery};
 
     #[test]
     fn test_build_query_string_query_with_fields_non_empty() {
-        let query_string_query = crate::elastic_query_dsl::QueryStringQuery {
+        let query_string_query = crate::query::elastic_query_dsl::QueryStringQuery {
             query: "hello world".to_string(),
             fields: Some(vec!["hello".to_string()]),
-            default_operator: crate::BooleanOperand::Or,
+            default_operator: crate::query::BooleanOperand::Or,
             default_field: None,
             boost: None,
             lenient: false,
@@ -89,10 +90,10 @@ mod tests {
 
     #[test]
     fn test_build_query_string_query_with_default_field_non_empty() {
-        let query_string_query = crate::elastic_query_dsl::QueryStringQuery {
+        let query_string_query = crate::query::elastic_query_dsl::QueryStringQuery {
             query: "hello world".to_string(),
             fields: None,
-            default_operator: crate::BooleanOperand::Or,
+            default_operator: crate::query::BooleanOperand::Or,
             default_field: Some("hello".to_string()),
             boost: None,
             lenient: false,
@@ -111,10 +112,10 @@ mod tests {
 
     #[test]
     fn test_build_query_string_query_with_both_default_fields_and_field_yield_an_error() {
-        let query_string_query = crate::elastic_query_dsl::QueryStringQuery {
+        let query_string_query = crate::query::elastic_query_dsl::QueryStringQuery {
             query: "hello world".to_string(),
             fields: Some(vec!["hello".to_string()]),
-            default_operator: crate::BooleanOperand::Or,
+            default_operator: crate::query::BooleanOperand::Or,
             default_field: Some("hello".to_string()),
             boost: None,
             lenient: false,
@@ -128,11 +129,11 @@ mod tests {
 
     #[test]
     fn test_build_query_string_query_with_default_operand_and() {
-        let query_string_query = crate::elastic_query_dsl::QueryStringQuery {
+        let query_string_query = crate::query::elastic_query_dsl::QueryStringQuery {
             query: "hello world".to_string(),
             fields: Some(Vec::new()),
             default_field: None,
-            default_operator: crate::BooleanOperand::And,
+            default_operator: crate::query::BooleanOperand::And,
             boost: None,
             lenient: false,
         };
@@ -146,11 +147,11 @@ mod tests {
 
     #[test]
     fn test_build_query_string_query_with_empty_default_field() {
-        let query_string_query = crate::elastic_query_dsl::QueryStringQuery {
+        let query_string_query = crate::query::elastic_query_dsl::QueryStringQuery {
             query: "hello world".to_string(),
             fields: Some(Vec::new()),
             default_field: None,
-            default_operator: crate::BooleanOperand::Or,
+            default_operator: crate::query::BooleanOperand::Or,
             boost: None,
             lenient: false,
         };
@@ -165,11 +166,11 @@ mod tests {
 
     #[test]
     fn test_build_query_string_query_no_default_fields() {
-        let query_string_query = crate::elastic_query_dsl::QueryStringQuery {
+        let query_string_query = crate::query::elastic_query_dsl::QueryStringQuery {
             query: "hello world".to_string(),
             fields: None,
             default_field: None,
-            default_operator: crate::BooleanOperand::Or,
+            default_operator: crate::query::BooleanOperand::Or,
             boost: None,
             lenient: false,
         };

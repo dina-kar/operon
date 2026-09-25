@@ -11,7 +11,11 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-search/src/collector.rs lines 862-914); modified for Operon: tantivy Aggregations in place of QuickwitAggregations, FindTraceIdsAggregation arm and pruning removed; made pub; imports added.
 
+use tantivy::TantivyError;
+use tantivy::aggregation::agg_req::Aggregations;
+use tantivy::aggregation::intermediate_agg_result::IntermediateAggregationResults;
 
 fn map_error(error: postcard::Error) -> TantivyError {
     TantivyError::InternalError(format!(
@@ -20,24 +24,12 @@ fn map_error(error: postcard::Error) -> TantivyError {
 }
 
 /// Merges a set of Leaf Results.
-fn merge_intermediate_aggregation_result<'a>(
-    aggregations_opt: &Option<QuickwitAggregations>,
+pub fn merge_intermediate_aggregation_result<'a>(
+    aggregations_opt: &Option<Aggregations>,
     intermediate_aggregation_results: impl Iterator<Item = &'a [u8]>,
 ) -> tantivy::Result<Option<Vec<u8>>> {
     let merged_intermediate_aggregation_result = match aggregations_opt {
-        Some(QuickwitAggregations::FindTraceIdsAggregation(collector)) => {
-            let fruits: Vec<
-                <<FindTraceIdsCollector as Collector>::Child as SegmentCollector>::Fruit,
-            > = intermediate_aggregation_results
-                .map(|intermediate_aggregation_result| {
-                    postcard::from_bytes(intermediate_aggregation_result).map_err(map_error)
-                })
-                .collect::<Result<_, _>>()?;
-            let merged_fruit: Vec<Span> = collector.merge_fruits(fruits)?;
-            let serialized = postcard::to_allocvec(&merged_fruit).map_err(map_error)?;
-            Some(serialized)
-        }
-        Some(QuickwitAggregations::TantivyAggregations(aggregations)) => {
+        Some(_aggregations) => {
             let merged_opt = intermediate_aggregation_results
                 .map(|bytes| postcard::from_bytes(bytes).map_err(map_error))
                 .try_fold::<_, _, Result<_, TantivyError>>(
@@ -53,10 +45,7 @@ fn merge_intermediate_aggregation_result<'a>(
                         }
                     },
                 )?;
-            let mut merged = merged_opt.unwrap_or_default();
-            // Leaf results can be merged again at the root or by a federated query. Keep the
-            // intermediate candidate set (`segment_size`) rather than applying final pruning.
-            merged.prune_intermediate_results(aggregations, PruneMode::Intermediate)?;
+            let merged = merged_opt.unwrap_or_default();
             let serialized = postcard::to_allocvec(&merged).map_err(map_error)?;
             Some(serialized)
         }

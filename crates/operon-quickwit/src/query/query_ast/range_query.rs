@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/query_ast/range_query.rs); modified for Operon: FieldType::Custom arm removed for tantivy 0.26.2; a bytes range is an error instead of todo!(); imports rewritten to crate paths; unwrap replaced by expect.
 
 use std::ops::Bound;
 
@@ -22,9 +23,9 @@ use tantivy::{DateTime, Term};
 
 use super::QueryAst;
 use super::tantivy_query_ast::TantivyBoolQuery;
-use crate::json_literal::InterpretUserInput;
-use crate::query_ast::{BuildTantivyAst, BuildTantivyAstContext, TantivyQueryAst};
-use crate::{InvalidQuery, JsonLiteral};
+use crate::query::json_literal::InterpretUserInput;
+use crate::query::query_ast::{BuildTantivyAst, BuildTantivyAstContext, TantivyQueryAst};
+use crate::query::{InvalidQuery, JsonLiteral};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct RangeQuery {
@@ -35,7 +36,9 @@ pub struct RangeQuery {
 
 /// Converts a given bound JsonLiteral bound into a bound of type T.
 fn convert_bound<'a, T>(bound: &'a Bound<JsonLiteral>) -> Option<Bound<T>>
-where T: InterpretUserInput<'a> {
+where
+    T: InterpretUserInput<'a>,
+{
     match bound {
         Bound::Included(val) => {
             let val = T::interpret_json(val)?;
@@ -195,13 +198,12 @@ impl BuildTantivyAst for RangeQuery {
                     field_name: field_entry.name().to_string(),
                 });
             }
-            tantivy::schema::FieldType::Custom(_) => {
+            tantivy::schema::FieldType::Bytes(_) => {
                 return Err(InvalidQuery::RangeQueryNotSupportedForField {
-                    value_type: "custom",
+                    value_type: "bytes",
                     field_name: field_entry.name().to_string(),
                 });
             }
-            tantivy::schema::FieldType::Bytes(_) => todo!(),
             tantivy::schema::FieldType::JsonObject(options) => {
                 let mut sub_queries: Vec<TantivyQueryAst> = Vec::new();
                 let empty_term =
@@ -261,7 +263,9 @@ impl BuildTantivyAst for RangeQuery {
                     });
                 }
                 if sub_queries.len() == 1 {
-                    return Ok(sub_queries.pop().unwrap());
+                    return Ok(sub_queries
+                        .pop()
+                        .expect("sub_queries has exactly one element"));
                 }
 
                 let bool_query = TantivyBoolQuery {
@@ -290,8 +294,8 @@ mod tests {
     use tantivy::schema::{DateOptions, DateTimePrecision, FAST, STORED, Schema, TEXT};
 
     use super::RangeQuery;
-    use crate::query_ast::{BuildTantivyAst, BuildTantivyAstContext};
-    use crate::{InvalidQuery, JsonLiteral, MatchAllOrNone};
+    use crate::query::query_ast::{BuildTantivyAst, BuildTantivyAstContext};
+    use crate::query::{InvalidQuery, JsonLiteral, MatchAllOrNone};
 
     fn make_schema(dynamic_mode: bool) -> Schema {
         let mut schema_builder = Schema::builder();

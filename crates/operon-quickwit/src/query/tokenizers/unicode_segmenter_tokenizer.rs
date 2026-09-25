@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/tokenizers/unicode_segmenter_tokenizer.rs); modified for Operon: Debug derives.
 
 use tantivy::tokenizer::{Token, TokenStream, Tokenizer};
 use unicode_segmentation::UnicodeSegmentation;
@@ -20,9 +21,10 @@ use unicode_segmentation::UnicodeSegmentation;
 /// Splits text into tokens at Unicode word boundaries, preserving words that
 /// contain punctuation internally (e.g. "can't", "32.3"). This makes it
 /// well-suited for log messages and natural language text with mixed content.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct UnicodeSegmenterTokenizer;
 
+#[derive(Debug)]
 pub struct UnicodeSegmenterTokenStream<'a> {
     iter: unicode_segmentation::UnicodeWordIndices<'a>,
     token: Token,

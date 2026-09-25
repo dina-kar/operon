@@ -11,6 +11,19 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-search/src/leaf.rs lines 281-600 and test 2933-3018); modified for Operon: warm_up_automatons uses tokio spawn_blocking; the Priority and on_absent parameters removed; warmup made pub; imports added; test adapted.
+
+use std::collections::{HashMap, HashSet};
+
+use anyhow::Context;
+use futures::future::try_join_all;
+use tantivy::fastfield::FastFieldReaders;
+use tantivy::schema::Field;
+use tantivy::{Searcher, Term};
+use tokio_util::sync::CancellationToken;
+use tracing::*;
+
+use crate::doc_mapper::{Automaton, FastFieldWarmupInfo, TermRange, WarmupInfo};
 
 /// Runs `fut`, racing it against `cancel`. If cancellation fires first, the
 /// (possibly in-flight) future is dropped — aborting its downloads — and
@@ -45,25 +58,16 @@ async fn run_cancellable(
 ///   This is e.g. required for term aggregation, since we don't know in advance which terms are
 ///   going to be hit.
 ///
-/// `on_absent` is invoked once for every required term found to have an empty posting list,
-/// with the segment it was missing from. Such a term proves the query empty in this split,
-/// so the remaining warmup downloads are then cancelled; the callback lets the caller record
-/// the (immutable, query-independent) absence — see [`term_absence_cache_key`]. It only ever
-/// fires for a single-segment split, where "absent in the split" is sound.
+/// A required term found to have an empty posting list proves the query empty in this split,
+/// so the remaining warmup downloads are then cancelled. This only happens for a
+/// single-segment split, where "absent in the split" is sound.
 ///
-/// `priority` schedules the CPU-intensive part of warmup. Warmup is mostly IO-bound, but
-/// resolving automatons walks the term dictionary on the search thread pool, so the originating
-/// request's priority has to be forwarded for that work to be scheduled against the rest of the
-/// queue. Callers without a request priority to forward pass [`Priority::default`].
+/// The CPU-intensive part of warmup (resolving automatons walks the term dictionary) runs on
+/// tokio's blocking thread pool.
 ///
-/// Returns whether the query is provably empty in this split (i.e. `on_absent` fired and
-/// warmup was short-circuited).
-pub(crate) async fn warmup(
-    searcher: &Searcher,
-    warmup_info: &WarmupInfo,
-    priority: Priority,
-    on_absent: &(dyn Fn(&Term, SegmentId) + Sync),
-) -> anyhow::Result<bool> {
+/// Returns whether the query is provably empty in this split (i.e. a required term was absent
+/// and warmup was short-circuited).
+pub async fn warmup(searcher: &Searcher, warmup_info: &WarmupInfo) -> anyhow::Result<bool> {
     debug!(warmup_info=?warmup_info);
 
     // Early-abort optimization: the split's downloads can be cancelled as soon as
@@ -84,7 +88,6 @@ pub(crate) async fn warmup(
         &warmup_info.terms_grouped_by_field,
         &warmup_info.required_terms,
         abort_token.as_ref(),
-        on_absent,
     )
     .instrument(debug_span!("warm_up_terms"));
     let warm_up_term_ranges_future = run_cancellable(
@@ -115,7 +118,7 @@ pub(crate) async fn warmup(
     .instrument(debug_span!("warm_up_postings"));
     let warm_up_automatons_future = run_cancellable(
         abort_token.as_ref(),
-        warm_up_automatons(searcher, &warmup_info.automatons_grouped_by_field, priority),
+        warm_up_automatons(searcher, &warmup_info.automatons_grouped_by_field),
     )
     .instrument(debug_span!("warm_up_automatons"));
 
@@ -211,13 +214,11 @@ async fn warm_up_terms(
     terms_grouped_by_field: &HashMap<Field, HashMap<Term, bool>>,
     required_terms: &HashSet<Term>,
     abort_token: Option<&CancellationToken>,
-    on_absent: &(dyn Fn(&Term, SegmentId) + Sync),
 ) -> anyhow::Result<()> {
     let mut warm_up_futures = Vec::new();
     for (field, terms) in terms_grouped_by_field {
         for segment_reader in searcher.segment_readers() {
             let inv_idx = segment_reader.inverted_index(*field)?;
-            let segment_id = segment_reader.segment_id();
             for (term, position_needed) in terms.iter() {
                 let inv_idx_clone = inv_idx.clone();
                 // Only a required term can prove the query empty. When such a
@@ -230,9 +231,8 @@ async fn warm_up_terms(
                 warm_up_futures.push(async move {
                     let found = inv_idx_clone.warm_postings(term, *position_needed).await?;
                     if !found && let Some(abort_token) = cancel_on_empty {
-                        // Report the absence and fire the abort token. Both are synchronous, so
-                        // they run before any cancellation can drop us.
-                        on_absent(term, segment_id);
+                        // Fire the abort token. This is synchronous, so it runs before any
+                        // cancellation can drop us.
                         abort_token.cancel();
                     }
                     anyhow::Ok(())
@@ -275,12 +275,10 @@ async fn warm_up_term_ranges(
 async fn warm_up_automatons(
     searcher: &Searcher,
     terms_grouped_by_field: &HashMap<Field, HashSet<Automaton>>,
-    priority: Priority,
 ) -> anyhow::Result<()> {
     let mut warm_up_futures = Vec::new();
     let cpu_intensive_executor = |task| async move {
-        crate::search_thread_pool()
-            .run_cpu_intensive_with_priority(priority, task)
+        tokio::task::spawn_blocking(task)
             .await
             .map_err(|_| std::io::Error::other("task panicked"))?
     };
@@ -296,7 +294,7 @@ async fn warm_up_automatons(
                                 .context("failed to parse regex during warmup")?;
                             inv_idx_clone
                                 .warm_postings_automaton(
-                                    quickwit_query::query_ast::JsonPathPrefix {
+                                    crate::query::query_ast::JsonPathPrefix {
                                         automaton: regex.into(),
                                         prefix: path.clone().unwrap_or_default(),
                                     },
@@ -332,6 +330,12 @@ async fn warm_up_fieldnorms(searcher: &Searcher, requires_scoring: bool) -> anyh
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use tantivy::schema::Schema;
+    use tantivy::{Index, ReloadPolicy, TantivyDocument};
+
+    use super::*;
 
     /// Builds a single-segment in-RAM searcher with one text field, one document
     /// per provided value.
@@ -376,46 +380,27 @@ async fn warm_up_fieldnorms(searcher: &Searcher, requires_scoring: bool) -> anyh
     #[tokio::test]
     async fn test_warmup_reports_absent_required_terms() {
         let (searcher, body) = ram_searcher_with_text("body", &["hello world"]);
-        // Single segment: the early-abort optimization is armed, so absence is recorded.
+        // Single segment: the early-abort optimization is armed.
         assert_eq!(searcher.segment_readers().len(), 1);
 
         let present = Term::from_field_text(body, "hello");
         let missing = Term::from_field_text(body, "missing");
 
-        // Runs warmup, returning whether the split is provably empty and the terms that
-        // `on_absent` was invoked with.
-        async fn run(searcher: &Searcher, warmup_info: &WarmupInfo) -> (bool, Vec<Term>) {
-            let reported = std::sync::Mutex::new(Vec::new());
-            let provably_empty = warmup(
-                searcher,
-                warmup_info,
-                Priority::default(),
-                &|term: &Term, _segment_id| {
-                    reported.lock().unwrap().push(term.clone());
-                },
-            )
-            .await
-            .unwrap();
-            (provably_empty, reported.into_inner().unwrap())
+        // Runs warmup, returning whether the split is provably empty.
+        async fn run(searcher: &Searcher, warmup_info: &WarmupInfo) -> bool {
+            warmup(searcher, warmup_info).await.unwrap()
         }
 
-        // An absent required term is reported (so the caller can cache it) and proves the
-        // split empty; the present required term is not reported.
+        // An absent required term proves the split empty.
         let warmup_info = warmup_info_with_required(&[&present, &missing], &[&present, &missing]);
-        let (provably_empty, reported) = run(&searcher, &warmup_info).await;
-        assert!(provably_empty);
-        assert_eq!(reported, vec![missing.clone()]);
+        assert!(run(&searcher, &warmup_info).await);
 
-        // All required terms present: nothing reported, so the split must be searched.
+        // All required terms present: the split must be searched.
         let warmup_info = warmup_info_with_required(&[&present], &[&present]);
-        let (provably_empty, reported) = run(&searcher, &warmup_info).await;
-        assert!(!provably_empty);
-        assert!(reported.is_empty());
+        assert!(!run(&searcher, &warmup_info).await);
 
-        // A missing term that is not required is never reported (recording would be unsound
-        // without a required-term proof), so the split must be searched.
+        // A missing term that is not required proves nothing, so the split must be searched.
         let warmup_info = warmup_info_with_required(&[&present, &missing], &[]);
-        let (provably_empty, reported) = run(&searcher, &warmup_info).await;
-        assert!(!provably_empty);
-        assert!(reported.is_empty());
+        assert!(!run(&searcher, &warmup_info).await);
     }
+}

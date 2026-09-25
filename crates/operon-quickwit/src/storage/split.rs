@@ -11,22 +11,18 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-storage/src/split.rs); modified for Operon: hyper, AWS and pin_project code replaced by PutPayload::range_bytes; finalize always writes the footer trailer; finalize_with_footer_trailer made pub; Debug impls.
 
 use std::collections::HashMap;
-use std::io;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 
-use async_trait::async_trait;
-use aws_sdk_s3::primitives::{ByteStream, FsBuilder, Length, SdkBody};
-use futures::{Stream, StreamExt, stream};
-use hyper::body::{Bytes, Frame};
-use pin_project::pin_project;
-use quickwit_common::shared_consts::{SPLIT_FIELDS_FILE_NAME, SPLIT_RECOVERY_METADATA_FILE_NAME};
+use tantivy::directory::OwnedBytes;
 
-use crate::bundle_storage::{BundleFileRangesVersions, serialize_split_footer_trailer};
-use crate::{BundleFileRanges, PutPayload, VersionedComponent};
+use crate::shim::consts::{SPLIT_FIELDS_FILE_NAME, SPLIT_RECOVERY_METADATA_FILE_NAME};
+use crate::storage::bundle_storage::{BundleFileRangesVersions, serialize_split_footer_trailer};
+use crate::storage::{BundleFileRanges, PutPayload, VersionedComponent};
 
 /// Payload of a split which builds the split bundle and hotcache on the fly and streams it to the
 /// storage.
@@ -37,68 +33,42 @@ pub struct SplitPayload {
     pub footer_range: Range<u64>,
 }
 
-async fn range_byte_stream_from_payloads(
+impl std::fmt::Debug for SplitPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SplitPayload")
+            .field("len", &self.len())
+            .field("footer_range", &self.footer_range)
+            .finish()
+    }
+}
+
+fn range_bytes_from_payloads(
     payloads: &[Box<dyn PutPayload>],
     range: Range<u64>,
-) -> io::Result<ByteStream> {
-    let mut bytestreams: Vec<ByteStream> = Vec::new();
+) -> io::Result<OwnedBytes> {
+    let mut bytes: Vec<u8> = Vec::with_capacity((range.end - range.start) as usize);
 
     let payloads_and_ranges =
         chunk_payload_ranges(payloads, range.start as usize..range.end as usize);
 
     for (payload, range) in payloads_and_ranges {
-        bytestreams.push(
+        bytes.extend_from_slice(
             payload
-                .range_byte_stream(range.start as u64..range.end as u64)
-                .await?,
+                .range_bytes(range.start as u64..range.end as u64)?
+                .as_slice(),
         );
     }
 
-    let body = stream::iter(bytestreams)
-        .map(StreamAdaptor)
-        .flatten()
-        .map(|result| result.map(Frame::data));
-    let stream_body = http_body_util::StreamBody::new(body);
-    let concat_stream = ByteStream::new(SdkBody::from_body_1_x(stream_body));
-    Ok(concat_stream)
+    Ok(OwnedBytes::new(bytes))
 }
 
-// With sdk 1.0, ByteStream no longer implement Stream, despite having analogous functions
-// this adaptor is just meant to make it implement Stream for places where we really need it
-#[pin_project]
-struct StreamAdaptor(#[pin] ByteStream);
-
-impl Stream for StreamAdaptor {
-    type Item = Result<Bytes, aws_smithy_types::byte_stream::error::Error>;
-
-    fn poll_next(
-        self: Pin<&mut Self>,
-        ctx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        self.project().0.poll_next(ctx)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let (lower_bound_u64, upper_bound_u64) = self.0.size_hint();
-        // if conversion fails, it means lower_bound is too large to fit in an usize on this
-        // platform. When that's the case, we return usize::MAX as best effort. Any value is valid,
-        // but MAX is the most informative.
-        let lower_bound = lower_bound_u64.try_into().unwrap_or(usize::MAX);
-        // for the upperbound, if conversion fails, we just say the upper bound is unknown
-        let upper_bound =
-            upper_bound_u64.and_then(|upper_bound_u64| upper_bound_u64.try_into().ok());
-        (lower_bound, upper_bound)
-    }
-}
-
-#[async_trait]
 impl PutPayload for SplitPayload {
     fn len(&self) -> u64 {
         self.payloads.iter().map(|payload| payload.len()).sum()
     }
 
-    async fn range_byte_stream(&self, range: Range<u64>) -> io::Result<ByteStream> {
-        range_byte_stream_from_payloads(&self.payloads, range).await
+    fn range_bytes(&self, range: Range<u64>) -> io::Result<OwnedBytes> {
+        range_bytes_from_payloads(&self.payloads, range)
     }
 }
 
@@ -108,28 +78,21 @@ struct FilePayload {
     path: PathBuf,
 }
 
-#[async_trait]
 impl PutPayload for FilePayload {
     fn len(&self) -> u64 {
         self.len
     }
 
-    async fn range_byte_stream(&self, range: Range<u64>) -> io::Result<ByteStream> {
+    fn range_bytes(&self, range: Range<u64>) -> io::Result<OwnedBytes> {
         assert!(!range.is_empty());
         assert!(range.end <= self.len);
 
         let len = range.end - range.start;
-        let mut fs_builder = FsBuilder::new().path(&self.path);
-
-        if range.start > 0 {
-            fs_builder = fs_builder.offset(range.start);
-        }
-        fs_builder = fs_builder.length(Length::Exact(len));
-
-        fs_builder
-            .build()
-            .await
-            .map_err(|error| io::Error::other(format!("failed to create byte stream: {error}")))
+        let mut file = std::fs::File::open(&self.path)?;
+        file.seek(SeekFrom::Start(range.start))?;
+        let mut bytes = vec![0u8; len as usize];
+        file.read_exact(&mut bytes)?;
+        Ok(OwnedBytes::new(bytes))
     }
 }
 
@@ -140,6 +103,20 @@ pub struct SplitPayloadBuilder {
     /// Range could be computed on the fly, and is just kept here for convenience.
     payloads: Vec<(String, Box<dyn PutPayload>, Range<u64>)>,
     current_offset: usize,
+}
+
+impl std::fmt::Debug for SplitPayloadBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let files: Vec<(&str, &Range<u64>)> = self
+            .payloads
+            .iter()
+            .map(|(file_name, _, range)| (file_name.as_str(), range))
+            .collect();
+        f.debug_struct("SplitPayloadBuilder")
+            .field("files", &files)
+            .field("current_offset", &self.current_offset)
+            .finish()
+    }
 }
 
 impl SplitPayloadBuilder {
@@ -201,12 +178,12 @@ impl SplitPayloadBuilder {
 
     /// Writes the bundle file ranges at the end of the bundle file.
     pub fn finalize(self, hotcache: &[u8]) -> anyhow::Result<SplitPayload> {
-        let enable_footer_trailer =
-            quickwit_common::get_bool_from_env_cached!("QW_ENABLE_SPLIT_FOOTER_TRAILER", false);
-        self.finalize_with_footer_trailer(hotcache, enable_footer_trailer)
+        self.finalize_with_footer_trailer(hotcache, true)
     }
 
-    pub(crate) fn finalize_with_footer_trailer(
+    /// Writes the bundle file ranges at the end of the bundle file, followed by the
+    /// 16-byte footer trailer if `enable_footer_trailer` is set.
+    pub fn finalize_with_footer_trailer(
         self,
         hotcache: &[u8],
         enable_footer_trailer: bool,
@@ -318,7 +295,8 @@ mod tests {
             b"abc",
         )?;
 
-        assert_eq!(split_payload.len(), 128);
+        // 128 bytes plus the 16-byte footer trailer, which `finalize` always writes.
+        assert_eq!(split_payload.len(), 144);
 
         Ok(())
     }
@@ -347,16 +325,7 @@ mod tests {
         split_streamer: &SplitPayload,
         range: Range<u64>,
     ) -> anyhow::Result<Vec<u8>> {
-        use tokio::io::AsyncReadExt as _;
-
-        let mut data = Vec::new();
-        split_streamer
-            .range_byte_stream(range)
-            .await?
-            .into_async_read()
-            .read_to_end(&mut data)
-            .await?;
-        Ok(data)
+        Ok(split_streamer.range_bytes(range)?.as_slice().to_vec())
     }
 
     #[test]
@@ -513,7 +482,7 @@ mod tests {
         let all_data = fetch_data(&split_streamer, 0..total_len).await?;
 
         let split_without_trailer =
-            crate::strip_split_footer_trailer(FileSlice::from(all_data))?.read_bytes()?;
+            crate::storage::strip_split_footer_trailer(FileSlice::from(all_data))?.read_bytes()?;
         assert_eq!(
             split_without_trailer[split_without_trailer.len() - 4..],
             3_u32.to_le_bytes()

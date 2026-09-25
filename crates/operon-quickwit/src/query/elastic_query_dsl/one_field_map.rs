@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/elastic_query_dsl/one_field_map.rs); modified for Operon: imports rewritten to crate paths.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -47,7 +48,9 @@ impl<'de, V: Deserialize<'de>> Visitor<'de> for OneFieldMapVisitor<V> {
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where A: serde::de::MapAccess<'de> {
+    where
+        A: serde::de::MapAccess<'de>,
+    {
         if let Some(num_keys) = map.size_hint()
             && num_keys != 1
         {
@@ -74,7 +77,9 @@ impl<'de, V: Deserialize<'de>> Visitor<'de> for OneFieldMapVisitor<V> {
 
 impl<'de, V: Deserialize<'de>> Deserialize<'de> for OneFieldMap<V> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where D: serde::Deserializer<'de> {
+    where
+        D: serde::Deserializer<'de>,
+    {
         deserializer.deserialize_map(OneFieldMapVisitor {
             _data: Default::default(),
         })
@@ -86,7 +91,7 @@ mod tests {
 
     use serde::{Deserialize, Serialize};
 
-    use crate::OneFieldMap;
+    use crate::query::OneFieldMap;
     #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
     struct Property {
         count: usize,

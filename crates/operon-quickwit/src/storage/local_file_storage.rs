@@ -11,28 +11,26 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-storage/src/local_file_storage.rs); modified for Operon: LocalFileStorageFactory, DebouncedStorage, metrics guard and unsafe set_len removed; put writes read_all() through a ULID temp file; tests needing unvendored helpers removed and a put test added.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::io::{ErrorKind, SeekFrom};
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::future::{BoxFuture, FutureExt};
-use quickwit_common::ignore_error_kind;
-use quickwit_common::uri::Uri;
-use quickwit_config::StorageBackend;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tracing::warn;
 
-use crate::metrics::object_storage_get_slice_in_flight_guards;
-use crate::storage::SendableAsync;
-use crate::{
-    BulkDeleteError, DebouncedStorage, DeleteFailure, OwnedBytes, Storage, StorageError,
-    StorageErrorKind, StorageFactory, StorageResolverError, StorageResult,
+use crate::shim::consts::ignore_error_kind;
+use crate::shim::uri::Uri;
+use crate::storage::storage::SendableAsync;
+use crate::storage::{
+    BulkDeleteError, DeleteFailure, OwnedBytes, Storage, StorageError, StorageErrorKind,
+    StorageResolverError, StorageResult,
 };
 
 /// File system compatible storage implementation.
@@ -52,7 +50,7 @@ impl fmt::Debug for LocalFileStorage {
 }
 
 impl LocalFileStorage {
-    fn full_path(&self, relative_path: &Path) -> crate::StorageResult<PathBuf> {
+    fn full_path(&self, relative_path: &Path) -> crate::storage::StorageResult<PathBuf> {
         ensure_valid_relative_path(relative_path)?;
         Ok(self.root.join(relative_path))
     }
@@ -72,7 +70,11 @@ impl LocalFileStorage {
 
     /// Moves a file from a source to a destination.
     /// from here is an external path, and to is an internal path.
-    pub async fn move_into(&self, from_external: &Path, to: &Path) -> crate::StorageResult<()> {
+    pub async fn move_into(
+        &self,
+        from_external: &Path,
+        to: &Path,
+    ) -> crate::storage::StorageResult<()> {
         let to_full_path = self.full_path(to)?;
         tokio::fs::rename(from_external, to_full_path).await?;
         Ok(())
@@ -80,7 +82,11 @@ impl LocalFileStorage {
 
     /// Moves a file from a source to a destination.
     /// from here is an internal path, and to is an external path.
-    pub async fn move_out(&self, from_internal: &Path, to: &Path) -> crate::StorageResult<()> {
+    pub async fn move_out(
+        &self,
+        from_internal: &Path,
+        to: &Path,
+    ) -> crate::storage::StorageResult<()> {
         let from_full_path = self.full_path(from_internal)?;
         tokio::fs::rename(from_full_path, to).await?;
         Ok(())
@@ -175,8 +181,8 @@ impl Storage for LocalFileStorage {
     async fn put(
         &self,
         path: &Path,
-        payload: Box<dyn crate::PutPayload>,
-    ) -> crate::StorageResult<()> {
+        payload: Box<dyn crate::storage::PutPayload>,
+    ) -> crate::storage::StorageResult<()> {
         let full_path = self.full_path(path)?;
         let parent_dir = full_path.parent().ok_or_else(|| {
             let err = anyhow::anyhow!("no parent directory for {full_path:?}");
@@ -184,16 +190,20 @@ impl Storage for LocalFileStorage {
         })?;
 
         tokio::fs::create_dir_all(parent_dir).await?;
-        let mut reader = payload.byte_stream().await?.into_async_read();
-        let named_temp_file = tempfile::NamedTempFile::new_in(parent_dir)?;
-        let (temp_std_file, temp_filepath) = named_temp_file.into_parts();
-        let mut temp_tokio_file = tokio::fs::File::from_std(temp_std_file);
-        tokio::io::copy(&mut reader, &mut temp_tokio_file).await?;
-        temp_tokio_file.flush().await?;
-        temp_tokio_file.sync_data().await?;
-        temp_filepath
-            .persist(&full_path)
-            .map_err(|err| StorageErrorKind::Io.with_error(err))?;
+        let payload_bytes = payload.read_all().await?;
+        let temp_filepath = parent_dir.join(format!(".{}.temp", ulid::Ulid::generate()));
+        let write_result: std::io::Result<()> = async {
+            let mut temp_tokio_file = tokio::fs::File::create(&temp_filepath).await?;
+            temp_tokio_file.write_all(payload_bytes.as_slice()).await?;
+            temp_tokio_file.flush().await?;
+            temp_tokio_file.sync_data().await?;
+            tokio::fs::rename(&temp_filepath, &full_path).await
+        }
+        .await;
+        if let Err(error) = write_result {
+            let _ = tokio::fs::remove_file(&temp_filepath).await;
+            return Err(StorageErrorKind::Io.with_error(error));
+        }
         // We also need to sync the parent directory to ensure it
         // the file move has been persisted on all file systems.
         tokio::fs::File::open(parent_dir).await?.sync_data().await?;
@@ -221,12 +231,7 @@ impl Storage for LocalFileStorage {
             // step, as there would be if using tokio async File.
             let mut file = std::fs::File::open(full_path)?;
             file.seek(SeekFrom::Start(range.start as u64))?;
-            let _in_flight_guards = object_storage_get_slice_in_flight_guards(range.len());
-            let mut content_bytes: Vec<u8> = Vec::with_capacity(range.len());
-            #[allow(clippy::uninit_vec)]
-            unsafe {
-                content_bytes.set_len(range.len());
-            }
+            let mut content_bytes: Vec<u8> = vec![0u8; range.len()];
             file.read_exact(&mut content_bytes)?;
             Ok(OwnedBytes::new(content_bytes))
         })
@@ -364,37 +369,33 @@ impl Storage for LocalFileStorage {
     }
 }
 
-/// A File storage resolver
-#[derive(Clone, Debug, Default)]
-pub struct LocalFileStorageFactory;
-
-#[async_trait]
-impl StorageFactory for LocalFileStorageFactory {
-    fn backend(&self) -> StorageBackend {
-        StorageBackend::File
-    }
-
-    async fn resolve(&self, uri: &Uri) -> Result<Arc<dyn Storage>, StorageResolverError> {
-        let storage = LocalFileStorage::from_uri(uri)?;
-        Ok(Arc::new(DebouncedStorage::new(storage)))
-    }
-}
-
 #[cfg(test)]
 mod tests {
 
     use std::str::FromStr;
 
     use super::*;
-    use crate::test_suite::storage_test_suite;
 
     #[tokio::test]
-    async fn test_local_file_storage() -> anyhow::Result<()> {
-        let temp_dir = tempfile::tempdir()?;
+    async fn test_local_file_storage_put_then_read() {
+        let temp_dir = tempfile::tempdir().unwrap();
         let uri = Uri::from_str(&format!("{}", temp_dir.path().display())).unwrap();
-        let mut local_file_storage = LocalFileStorage::from_uri(&uri)?;
-        storage_test_suite(&mut local_file_storage).await?;
-        Ok(())
+        let local_file_storage = LocalFileStorage::from_uri(&uri).unwrap();
+        let path = Path::new("foo/bar");
+        local_file_storage
+            .put(path, Box::new(b"hello world".to_vec()))
+            .await
+            .unwrap();
+        let all = local_file_storage.get_all(path).await.unwrap();
+        assert_eq!(all.as_slice(), b"hello world");
+        let slice = local_file_storage.get_slice(path, 6..11).await.unwrap();
+        assert_eq!(slice.as_slice(), b"world");
+        // Only the file remains: the temporary file was renamed into place.
+        let entries: Vec<_> = std::fs::read_dir(temp_dir.path().join("foo"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, vec![std::ffi::OsString::from("bar")]);
     }
 
     #[tokio::test]
@@ -414,31 +415,6 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(exist_error.kind(), StorageErrorKind::Unauthorized);
-    }
-
-    #[tokio::test]
-    async fn test_local_file_storage_factory() -> anyhow::Result<()> {
-        let temp_dir = tempfile::tempdir()?;
-        let index_uri =
-            Uri::from_str(&format!("file://{}/foo/bar", temp_dir.path().display())).unwrap();
-        let local_file_storage_factory = LocalFileStorageFactory;
-        let local_file_storage = local_file_storage_factory.resolve(&index_uri).await?;
-        assert_eq!(local_file_storage.uri(), &index_uri);
-
-        let err = local_file_storage_factory
-            .resolve(&Uri::for_test("s3://foo/bar"))
-            .await
-            .err()
-            .unwrap();
-        assert!(matches!(err, StorageResolverError::InvalidUri { .. }));
-
-        let err = local_file_storage_factory
-            .resolve(&Uri::for_test("s3://"))
-            .await
-            .err()
-            .unwrap();
-        assert!(matches!(err, StorageResolverError::InvalidUri { .. }));
-        Ok(())
     }
 
     #[tokio::test]

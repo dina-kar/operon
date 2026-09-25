@@ -11,18 +11,19 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/elastic_query_dsl/range_query.rs); modified for Operon: imports rewritten to crate paths.
 
 use std::ops::Bound;
 
-use quickwit_datetime::StrptimeParser;
 use serde::Deserialize;
 use time::format_description::well_known::Rfc3339;
 
-use crate::JsonLiteral;
-use crate::elastic_query_dsl::ConvertibleToQueryAst;
-use crate::elastic_query_dsl::one_field_map::OneFieldMap;
-use crate::not_nan_f32::NotNaNf32;
-use crate::query_ast::QueryAst;
+use crate::datetime::StrptimeParser;
+use crate::query::JsonLiteral;
+use crate::query::elastic_query_dsl::ConvertibleToQueryAst;
+use crate::query::elastic_query_dsl::one_field_map::OneFieldMap;
+use crate::query::not_nan_f32::NotNaNf32;
+use crate::query::query_ast::QueryAst;
 
 #[derive(Deserialize, Debug, Default, Eq, PartialEq, Clone)]
 #[serde(deny_unknown_fields)]
@@ -102,7 +103,7 @@ impl ConvertibleToQueryAst for RangeQuery {
             (gt, gte, lt, lte)
         };
 
-        let range_query_ast = crate::query_ast::RangeQuery {
+        let range_query_ast = crate::query::query_ast::RangeQuery {
             field,
             lower_bound: match (gt, gte) {
                 (Some(_gt), Some(_gte)) => {
@@ -143,9 +144,9 @@ mod tests {
     use std::ops::Bound;
 
     use super::{RangeQuery as ElasticRangeQuery, RangeQueryParams as ElasticRangeQueryParams};
-    use crate::JsonLiteral;
-    use crate::elastic_query_dsl::ConvertibleToQueryAst;
-    use crate::query_ast::{QueryAst, RangeQuery};
+    use crate::query::JsonLiteral;
+    use crate::query::elastic_query_dsl::ConvertibleToQueryAst;
+    use crate::query::query_ast::{QueryAst, RangeQuery};
 
     #[test]
     fn test_date_range_query_with_format() {

@@ -11,14 +11,15 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/query_ast/visitor.rs); modified for Operon: visit_calc_field and transform_calc_field removed for tantivy 0.26.2; imports rewritten to crate paths.
 
-use crate::not_nan_f32::NotNaNf32;
-use crate::query_ast::cache_node::CacheState;
-use crate::query_ast::field_presence::FieldPresenceQuery;
-use crate::query_ast::user_input_query::UserInputQuery;
-use crate::query_ast::{
-    BoolQuery, CacheNode, CalcFieldQuery, FullTextQuery, PhrasePrefixQuery, QueryAst, RangeQuery,
-    RegexQuery, TermQuery, TermSetQuery, WildcardQuery,
+use crate::query::not_nan_f32::NotNaNf32;
+use crate::query::query_ast::cache_node::CacheState;
+use crate::query::query_ast::field_presence::FieldPresenceQuery;
+use crate::query::query_ast::user_input_query::UserInputQuery;
+use crate::query::query_ast::{
+    BoolQuery, CacheNode, FullTextQuery, PhrasePrefixQuery, QueryAst, RangeQuery, RegexQuery,
+    TermQuery, TermSetQuery, WildcardQuery,
 };
 
 /// Simple trait to implement a Visitor over the QueryAst.
@@ -43,7 +44,6 @@ pub trait QueryAstVisitor<'a> {
             QueryAst::Wildcard(wildcard) => self.visit_wildcard(wildcard),
             QueryAst::Regex(regex) => self.visit_regex(regex),
             QueryAst::Cache(cache_node) => self.visit_cache_node(cache_node),
-            QueryAst::CalcField(calc_field_query) => self.visit_calc_field(calc_field_query),
         }
     }
 
@@ -115,10 +115,6 @@ pub trait QueryAstVisitor<'a> {
         Ok(())
     }
 
-    fn visit_calc_field(&mut self, _calc_field_query: &'a CalcFieldQuery) -> Result<(), Self::Err> {
-        Ok(())
-    }
-
     fn visit_cache_node(&mut self, cache_node: &'a CacheNode) -> Result<(), Self::Err> {
         // this goes a bit again how the rest of the default Visitor behave. The rational is that in
         // practice, on a cache hit, we don't want to do anything with that node.
@@ -155,7 +151,6 @@ pub trait QueryAstTransformer {
             QueryAst::Wildcard(wildcard) => self.transform_wildcard(wildcard),
             QueryAst::Regex(regex) => self.transform_regex(regex),
             QueryAst::Cache(cache_node) => self.transform_cache_node(cache_node),
-            QueryAst::CalcField(calc_field_query) => self.transform_calc_field(calc_field_query),
         }
     }
 
@@ -257,13 +252,6 @@ pub trait QueryAstTransformer {
 
     fn transform_regex(&mut self, regex_query: RegexQuery) -> Result<Option<QueryAst>, Self::Err> {
         Ok(Some(QueryAst::Regex(regex_query)))
-    }
-
-    fn transform_calc_field(
-        &mut self,
-        calc_field_query: CalcFieldQuery,
-    ) -> Result<Option<QueryAst>, Self::Err> {
-        Ok(Some(QueryAst::CalcField(calc_field_query)))
     }
 
     fn transform_cache_node(

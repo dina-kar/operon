@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/tokenizers/tokenizer_manager.rs); modified for Operon: imports rewritten to crate paths; unwrap replaced by expect; Debug for TokenizerManager.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -20,7 +21,7 @@ use tantivy::tokenizer::{
     TokenizerManager as TantivyTokenizerManager,
 };
 
-use crate::DEFAULT_REMOVE_TOKEN_LENGTH;
+use crate::query::DEFAULT_REMOVE_TOKEN_LENGTH;
 
 pub const RAW_TOKENIZER_NAME: &str = "raw";
 const LOWERCASE_TOKENIZER_NAME: &str = "lowercase";
@@ -30,6 +31,12 @@ const RAW_LOWERCASE_TOKENIZER_NAME: &str = "raw_lowercase";
 pub struct TokenizerManager {
     inner: TantivyTokenizerManager,
     is_lowercaser: Arc<RwLock<HashMap<String, bool>>>,
+}
+
+impl std::fmt::Debug for TokenizerManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenizerManager").finish_non_exhaustive()
+    }
 }
 
 impl TokenizerManager {
@@ -62,11 +69,13 @@ impl TokenizerManager {
 
     /// Registers a new tokenizer associated with a given name.
     pub fn register<T>(&self, tokenizer_name: &str, tokenizer: T, does_lowercasing: bool)
-    where TextAnalyzer: From<T> {
+    where
+        TextAnalyzer: From<T>,
+    {
         self.inner.register(tokenizer_name, tokenizer);
         self.is_lowercaser
             .write()
-            .unwrap()
+            .expect("tokenizer manager lock is poisoned")
             .insert(tokenizer_name.to_string(), does_lowercasing);
     }
 
@@ -91,7 +100,7 @@ impl TokenizerManager {
     pub fn tokenizer_does_lowercasing(&self, tokenizer_name: &str) -> Option<bool> {
         self.is_lowercaser
             .read()
-            .unwrap()
+            .expect("tokenizer manager lock is poisoned")
             .get(tokenizer_name)
             .copied()
     }
@@ -110,7 +119,7 @@ impl Default for TokenizerManager {
 
 #[cfg(test)]
 mod tests {
-    use crate::tokenizers::create_default_quickwit_tokenizer_manager;
+    use crate::query::tokenizers::create_default_quickwit_tokenizer_manager;
 
     #[test]
     fn test_tokenizer_does_lowercasing() {

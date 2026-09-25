@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/tokenizers/chinese_compatible.rs); modified for Operon: imports rewritten to crate paths.
 
 use std::str::CharIndices;
 
@@ -129,7 +130,7 @@ mod tests {
     #[test]
     fn test_chinese_tokenizer() {
         let text = "Hello world, 你好世界, bonjour monde";
-        let tokenizer_manager = crate::create_default_quickwit_tokenizer_manager();
+        let tokenizer_manager = crate::query::create_default_quickwit_tokenizer_manager();
         let mut tokenizer = tokenizer_manager
             .get_tokenizer("chinese_compatible")
             .unwrap();
@@ -206,7 +207,7 @@ mod tests {
     #[test]
     fn test_chinese_tokenizer_no_space() {
         let text = "Hello你好bonjour";
-        let tokenizer_manager = crate::create_default_quickwit_tokenizer_manager();
+        let tokenizer_manager = crate::query::create_default_quickwit_tokenizer_manager();
         let mut tokenizer = tokenizer_manager
             .get_tokenizer("chinese_compatible")
             .unwrap();
@@ -254,7 +255,7 @@ mod tests {
     proptest::proptest! {
         #[test]
         fn test_proptest_ascii_default_chinese_equal(text in "[ -~]{0,64}") {
-            let tokenizer_manager = crate::create_default_quickwit_tokenizer_manager();
+            let tokenizer_manager = crate::query::create_default_quickwit_tokenizer_manager();
             let mut cn_tok = tokenizer_manager.get_tokenizer("chinese_compatible").unwrap();
             let mut default_tok = tokenizer_manager.get_tokenizer("default").unwrap();
 

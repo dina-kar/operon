@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-storage/src/prefix_storage.rs); modified for Operon: imports rewritten to crate paths; add_prefix_to_storage made pub; MockStorage tests removed.
 
 use std::fmt;
 use std::ops::Range;
@@ -19,11 +20,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use quickwit_common::uri::Uri;
 use tokio::io::AsyncRead;
 
-use crate::storage::SendableAsync;
-use crate::{
+use crate::shim::uri::Uri;
+use crate::storage::storage::SendableAsync;
+use crate::storage::{
     BulkDeleteError, ListObjectsStream, ObjectMetadata, OwnedBytes, Storage, StorageErrorKind,
     StorageResult,
 };
@@ -54,8 +55,8 @@ impl Storage for PrefixStorage {
     async fn put(
         &self,
         path: &Path,
-        payload: Box<dyn crate::PutPayload>,
-    ) -> crate::StorageResult<()> {
+        payload: Box<dyn crate::storage::PutPayload>,
+    ) -> crate::storage::StorageResult<()> {
         self.storage.put(&self.prefix.join(path), payload).await
     }
 
@@ -63,7 +64,7 @@ impl Storage for PrefixStorage {
         &self,
         path: &Path,
         output: &mut dyn SendableAsync,
-    ) -> crate::StorageResult<()> {
+    ) -> crate::storage::StorageResult<()> {
         self.storage.copy_to(&self.prefix.join(path), output).await
     }
 
@@ -71,11 +72,11 @@ impl Storage for PrefixStorage {
         &self,
         path: &Path,
         range: Range<usize>,
-    ) -> crate::StorageResult<OwnedBytes> {
+    ) -> crate::storage::StorageResult<OwnedBytes> {
         self.storage.get_slice(&self.prefix.join(path), range).await
     }
 
-    async fn get_all(&self, path: &Path) -> crate::StorageResult<OwnedBytes> {
+    async fn get_all(&self, path: &Path) -> crate::storage::StorageResult<OwnedBytes> {
         self.storage.get_all(&self.prefix.join(path)).await
     }
 
@@ -83,13 +84,13 @@ impl Storage for PrefixStorage {
         &self,
         path: &Path,
         range: Range<usize>,
-    ) -> crate::StorageResult<Box<dyn AsyncRead + Send + Unpin>> {
+    ) -> crate::storage::StorageResult<Box<dyn AsyncRead + Send + Unpin>> {
         self.storage
             .get_slice_stream(&self.prefix.join(path), range)
             .await
     }
 
-    async fn delete(&self, path: &Path) -> crate::StorageResult<()> {
+    async fn delete(&self, path: &Path) -> crate::storage::StorageResult<()> {
         self.storage.delete(&self.prefix.join(path)).await
     }
 
@@ -154,7 +155,7 @@ impl Storage for PrefixStorage {
             .boxed()
     }
 
-    async fn exists(&self, path: &Path) -> crate::StorageResult<bool> {
+    async fn exists(&self, path: &Path) -> crate::storage::StorageResult<bool> {
         self.storage.exists(&self.prefix.join(path)).await
     }
 
@@ -162,13 +163,13 @@ impl Storage for PrefixStorage {
         &self.uri
     }
 
-    async fn file_num_bytes(&self, path: &Path) -> crate::StorageResult<u64> {
+    async fn file_num_bytes(&self, path: &Path) -> crate::storage::StorageResult<u64> {
         self.storage.file_num_bytes(&self.prefix.join(path)).await
     }
 }
 
 /// Creates a [`PrefixStorage`] using an underlying storage and a prefix.
-pub(crate) fn add_prefix_to_storage(
+pub fn add_prefix_to_storage(
     storage: Arc<dyn Storage>,
     prefix: PathBuf,
     uri: Uri,
@@ -235,99 +236,9 @@ fn strip_prefix_from_error(error: BulkDeleteError, prefix: &Path) -> BulkDeleteE
 mod tests {
 
     use std::collections::HashMap;
-    use std::time::SystemTime;
-
-    use futures::{TryStreamExt, stream};
 
     use super::*;
-    use crate::{DeleteFailure, MockStorage};
-
-    #[tokio::test]
-    async fn test_prefix_storage_list() {
-        let mut mock_storage = MockStorage::default();
-        mock_storage.expect_list().times(1).returning(|prefix| {
-            assert_eq!(prefix, Path::new("ram:///indexes/splits"));
-            let objects = vec![ObjectMetadata {
-                path: PathBuf::from("ram:///indexes/splits/foo.split"),
-                size: bytesize::ByteSize(11),
-                last_modified: SystemTime::UNIX_EPOCH,
-            }];
-            stream::once(async move { Ok(objects) }).boxed()
-        });
-        let storage = add_prefix_to_storage(
-            Arc::new(mock_storage),
-            PathBuf::from("ram:///indexes"),
-            Uri::for_test("ram:///indexes"),
-        );
-        let pages: Vec<Vec<ObjectMetadata>> = storage
-            .list(Path::new("splits"))
-            .try_collect()
-            .await
-            .unwrap();
-
-        assert_eq!(pages.len(), 1);
-        assert_eq!(pages[0].len(), 1);
-        assert_eq!(pages[0][0].path, Path::new("splits/foo.split"));
-        assert_eq!(pages[0][0].size, bytesize::ByteSize(11));
-    }
-
-    #[tokio::test]
-    async fn test_prefix_storage_list_filters_lexical_siblings() {
-        let mut mock_storage = MockStorage::default();
-        mock_storage.expect_list().times(1).returning(|prefix| {
-            assert_eq!(prefix, Path::new("ram:///indexes"));
-            let objects = vec![
-                ObjectMetadata {
-                    path: PathBuf::from("ram:///indexes/foo.split"),
-                    size: bytesize::ByteSize(11),
-                    last_modified: SystemTime::UNIX_EPOCH,
-                },
-                ObjectMetadata {
-                    path: PathBuf::from("ram:///indexes-old/unrelated.split"),
-                    size: bytesize::ByteSize(13),
-                    last_modified: SystemTime::UNIX_EPOCH,
-                },
-            ];
-            stream::once(async move { Ok(objects) }).boxed()
-        });
-        let storage = add_prefix_to_storage(
-            Arc::new(mock_storage),
-            PathBuf::from("ram:///indexes"),
-            Uri::for_test("ram:///indexes"),
-        );
-        let pages: Vec<Vec<ObjectMetadata>> =
-            storage.list(Path::new("")).try_collect().await.unwrap();
-
-        assert_eq!(pages.len(), 1);
-        assert_eq!(pages[0].len(), 1);
-        assert_eq!(pages[0][0].path, Path::new("foo.split"));
-    }
-
-    #[tokio::test]
-    async fn test_prefix_storage_list_rejects_unrelated_paths() {
-        let mut mock_storage = MockStorage::default();
-        mock_storage.expect_list().times(1).returning(|prefix| {
-            assert_eq!(prefix, Path::new("ram:///indexes"));
-            let objects = vec![ObjectMetadata {
-                path: PathBuf::from("ram:///unrelated/foo.split"),
-                size: bytesize::ByteSize(11),
-                last_modified: SystemTime::UNIX_EPOCH,
-            }];
-            stream::once(async move { Ok(objects) }).boxed()
-        });
-        let storage = add_prefix_to_storage(
-            Arc::new(mock_storage),
-            PathBuf::from("ram:///indexes"),
-            Uri::for_test("ram:///indexes"),
-        );
-        let error = storage
-            .list(Path::new(""))
-            .try_collect::<Vec<Vec<ObjectMetadata>>>()
-            .await
-            .unwrap_err();
-
-        assert_eq!(error.kind(), StorageErrorKind::Internal);
-    }
+    use crate::storage::DeleteFailure;
 
     #[test]
     fn test_strip_prefix_from_error() {

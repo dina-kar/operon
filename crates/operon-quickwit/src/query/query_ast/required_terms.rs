@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/query_ast/required_terms.rs); modified for Operon: imports rewritten to crate paths.
 
 //! Extraction of *required terms*: terms that must all be present in a split for
 //! the query to match any document.
@@ -37,8 +38,8 @@ use tantivy::Term;
 use tantivy::query::TermQuery as TantivyTermQuery;
 use tantivy::schema::Schema;
 
-use crate::query_ast::cache_node::CacheFillerQuery;
-use crate::query_ast::tantivy_query_ast::{TantivyBoolQuery, TantivyQueryAst};
+use crate::query::query_ast::cache_node::CacheFillerQuery;
+use crate::query::query_ast::tantivy_query_ast::{TantivyBoolQuery, TantivyQueryAst};
 
 /// Collects the terms that must be present for the (already simplified) query to
 /// match any document. See the module docs for the conservative contract.
@@ -89,7 +90,7 @@ mod tests {
     use tantivy::schema::{Field, STORED, Schema, TEXT};
 
     use super::collect_required_terms;
-    use crate::query_ast::tantivy_query_ast::{TantivyBoolQuery, TantivyQueryAst};
+    use crate::query::query_ast::tantivy_query_ast::{TantivyBoolQuery, TantivyQueryAst};
 
     fn term(field: Field, value: &str) -> Term {
         Term::from_field_text(field, value)

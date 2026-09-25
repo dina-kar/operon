@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-directories/src/union_directory.rs); modified for Operon: imports rewritten to crate paths.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -128,7 +129,7 @@ mod tests {
 
     use tantivy::directory::{Directory, RamDirectory};
 
-    use crate::UnionDirectory;
+    use crate::directories::UnionDirectory;
 
     #[test]
     fn test_union_directory_atomic_simple() -> anyhow::Result<()> {

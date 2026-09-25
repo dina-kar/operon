@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-datetime/src/date_time_format.rs); modified for Operon: imports rewritten to crate paths.
 
 use std::fmt::Display;
 use std::str::FromStr;
@@ -21,8 +22,8 @@ use serde_json::Value as JsonValue;
 use time::Month;
 use time::format_description::well_known::{Iso8601, Rfc2822, Rfc3339};
 
-use crate::java_date_time_format::is_strftime_formatting;
-use crate::{StrptimeParser, TantivyDateTime};
+use crate::datetime::java_date_time_format::is_strftime_formatting;
+use crate::datetime::{StrptimeParser, TantivyDateTime};
 
 /// Specifies the datetime and unix timestamp formats to use when parsing date strings.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Default)]
@@ -78,14 +79,18 @@ impl FromStr for DateTimeInputFormat {
 
 impl Serialize for DateTimeInputFormat {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where S: serde::Serializer {
+    where
+        S: serde::Serializer,
+    {
         serializer.serialize_str(self.as_str())
     }
 }
 
 impl<'de> Deserialize<'de> for DateTimeInputFormat {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where D: Deserializer<'de> {
+    where
+        D: Deserializer<'de>,
+    {
         let date_time_format_str: String = Deserialize::deserialize(deserializer)?;
         let date_time_format = date_time_format_str.parse().map_err(D::Error::custom)?;
         Ok(date_time_format)
@@ -180,14 +185,18 @@ impl FromStr for DateTimeOutputFormat {
 
 impl Serialize for DateTimeOutputFormat {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where S: serde::Serializer {
+    where
+        S: serde::Serializer,
+    {
         serializer.serialize_str(self.as_str())
     }
 }
 
 impl<'de> Deserialize<'de> for DateTimeOutputFormat {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where D: Deserializer<'de> {
+    where
+        D: Deserializer<'de>,
+    {
         let date_time_format_str: String = Deserialize::deserialize(deserializer)?;
         let date_time_format = date_time_format_str.parse().map_err(D::Error::custom)?;
         Ok(date_time_format)

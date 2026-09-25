@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/query_ast/user_input_query.rs); modified for Operon: imports rewritten to crate paths; unwrap replaced by expect; redundant borrow removed.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
@@ -21,12 +22,12 @@ use tantivy::query_grammar::{
     Delimiter, Occur, UserInputAst, UserInputBound, UserInputLeaf, UserInputLiteral,
 };
 
-use crate::not_nan_f32::NotNaNf32;
-use crate::query_ast::{
+use crate::query::not_nan_f32::NotNaNf32;
+use crate::query::query_ast::{
     self, BuildTantivyAst, BuildTantivyAstContext, FieldPresenceQuery, FullTextMode,
     FullTextParams, QueryAst, TantivyQueryAst,
 };
-use crate::{BooleanOperand, InvalidQuery, JsonLiteral};
+use crate::query::{BooleanOperand, InvalidQuery, JsonLiteral};
 
 const DEFAULT_PHRASE_QUERY_MAX_EXPANSION: u32 = 50;
 
@@ -63,7 +64,7 @@ impl UserInputQuery {
             .map(|search_fields| &search_fields[..])
             .unwrap_or(default_search_fields);
         let user_input_ast = tantivy::query_grammar::parse_query(&self.user_text)
-            .map_err(|_| anyhow::anyhow!("failed to parse query: `{}`", &self.user_text))?;
+            .map_err(|_| anyhow::anyhow!("failed to parse query: `{}`", self.user_text))?;
         let default_occur = match self.default_operator {
             BooleanOperand::And => Occur::Must,
             BooleanOperand::Or => Occur::Should,
@@ -87,7 +88,7 @@ impl BuildTantivyAst for UserInputQuery {
     fn build_tantivy_ast_impl(
         &self,
         _context: &BuildTantivyAstContext,
-    ) -> Result<TantivyQueryAst, crate::InvalidQuery> {
+    ) -> Result<TantivyQueryAst, crate::query::InvalidQuery> {
         Err(InvalidQuery::UserQueryNotParsed)
     }
 }
@@ -268,7 +269,7 @@ fn convert_user_input_literal(
     let full_text_params = FullTextParams {
         tokenizer: None,
         mode,
-        zero_terms_query: crate::MatchAllOrNone::MatchNone,
+        zero_terms_query: crate::query::MatchAllOrNone::MatchNone,
     };
     let wildcard = delimiter == Delimiter::None && is_wildcard(&phrase);
     let mut phrase_queries: Vec<QueryAst> = field_names
@@ -305,7 +306,9 @@ fn convert_user_input_literal(
     if phrase_queries.is_empty() {
         Ok(QueryAst::MatchNone)
     } else if phrase_queries.len() == 1 {
-        Ok(phrase_queries.pop().unwrap())
+        Ok(phrase_queries
+            .pop()
+            .expect("phrase_queries has exactly one element"))
     } else {
         Ok(query_ast::BoolQuery {
             should: phrase_queries,
@@ -317,11 +320,11 @@ fn convert_user_input_literal(
 
 #[cfg(test)]
 mod tests {
-    use crate::query_ast::{
+    use crate::query::query_ast::{
         BoolQuery, BuildTantivyAst, BuildTantivyAstContext, FullTextMode, FullTextQuery, QueryAst,
         UserInputQuery,
     };
-    use crate::{BooleanOperand, InvalidQuery};
+    use crate::query::{BooleanOperand, InvalidQuery};
 
     #[test]
     fn test_user_input_query_not_parsed_error() {

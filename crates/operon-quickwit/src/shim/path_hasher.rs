@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-common/src/path_hasher.rs); modified for Operon: Debug impl; testsuite cfg narrowed to test (hashing unchanged).
 
 use std::hash::Hasher;
 
@@ -33,6 +34,14 @@ pub struct PathHasher {
     hasher: fnv::FnvHasher,
 }
 
+impl std::fmt::Debug for PathHasher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PathHasher")
+            .field("hash", &self.hasher.finish())
+            .finish()
+    }
+}
+
 impl Clone for PathHasher {
     #[inline(always)]
     fn clone(&self) -> PathHasher {
@@ -43,7 +52,7 @@ impl Clone for PathHasher {
 }
 
 impl PathHasher {
-    #[cfg(any(test, feature = "testsuite"))]
+    #[cfg(test)]
     pub fn hash_path(segments: &[&[u8]]) -> u64 {
         let mut hasher = Self::default();
         for segment in segments {

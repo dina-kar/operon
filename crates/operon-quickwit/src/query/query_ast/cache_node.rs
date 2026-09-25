@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/query_ast/cache_node.rs); modified for Operon: imports rewritten to crate paths; unwrap replaced by expect; Debug for PredicateCacheInjector.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -19,8 +20,8 @@ use bitpacking::{BitPacker, BitPacker1x};
 use serde::{Deserialize, Serialize};
 
 use super::{BuildTantivyAst, BuildTantivyAstContext, TantivyQueryAst};
-use crate::InvalidQuery;
-use crate::query_ast::QueryAst;
+use crate::query::InvalidQuery;
+use crate::query::query_ast::QueryAst;
 
 /// A node caching the result of an inner query.
 ///
@@ -303,7 +304,11 @@ impl DocSet for HitSet {
     }
 
     fn size_hint(&self) -> u32 {
-        u32::from_ne_bytes(self.buffer[0..4].try_into().unwrap())
+        u32::from_ne_bytes(
+            self.buffer[0..4]
+                .try_into()
+                .expect("a 4-byte slice converts to [u8; 4]"),
+        )
     }
 }
 
@@ -475,7 +480,15 @@ pub struct PredicateCacheInjector {
     pub split_id: String,
 }
 
-impl crate::query_ast::QueryAstTransformer for PredicateCacheInjector {
+impl std::fmt::Debug for PredicateCacheInjector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PredicateCacheInjector")
+            .field("split_id", &self.split_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl crate::query::query_ast::QueryAstTransformer for PredicateCacheInjector {
     type Err = std::convert::Infallible;
 
     fn transform_cache_node(
@@ -511,7 +524,7 @@ mod tests {
     use tantivy::schema::{Schema, TEXT};
 
     use super::*;
-    use crate::query_ast::{
+    use crate::query::query_ast::{
         BuildTantivyAstContext, QueryAstTransformer, QueryAstVisitor, TermQuery,
     };
 

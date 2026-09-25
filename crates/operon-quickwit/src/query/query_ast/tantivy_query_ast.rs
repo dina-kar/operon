@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/query_ast/tantivy_query_ast.rs); modified for Operon: imports rewritten to crate paths; dbg! removed from a test.
 
 use tantivy::query::{
     AllQuery as TantivyAllQuery, BooleanQuery, ConstScoreQuery as TantivyConstScoreQuery,
@@ -18,7 +19,7 @@ use tantivy::query::{
 };
 use tantivy::query_grammar::Occur;
 
-use crate::{BooleanOperand, MatchAllOrNone, TantivyQuery};
+use crate::query::{BooleanOperand, MatchAllOrNone, TantivyQuery};
 
 /// This AST point, is only to make it easier to simplify the generated Tantivy query.
 /// when we convert a QueryAst into a TantivyQueryAst.
@@ -383,7 +384,9 @@ mod tests {
     use tantivy::query::{EmptyQuery, TermQuery};
 
     use super::TantivyBoolQuery;
-    use crate::query_ast::tantivy_query_ast::{MatchAllOrNone, TantivyQueryAst, remove_with_guard};
+    use crate::query::query_ast::tantivy_query_ast::{
+        MatchAllOrNone, TantivyQueryAst, remove_with_guard,
+    };
 
     fn term(val: &str) -> TantivyQueryAst {
         use tantivy::schema::{Field, Term};
@@ -966,7 +969,7 @@ mod tests {
     #[track_caller]
     fn test_aux_simplify_never_change_result(ast: TantivyQueryAst) {
         let simplified_ast = ast.clone().simplify();
-        assert_eq!(dbg!(simplified_ast).evaluate_test(), ast.evaluate_test());
+        assert_eq!(simplified_ast.evaluate_test(), ast.evaluate_test());
     }
 
     proptest::proptest! {

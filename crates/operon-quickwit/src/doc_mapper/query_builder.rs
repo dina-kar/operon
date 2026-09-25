@@ -11,26 +11,25 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-doc-mapper/src/query_builder.rs); modified for Operon: CalcFieldQuery and visit_calc_field removed with their tests; build_query made pub; imports rewritten to crate paths; unwrap replaced by expect.
 
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::ops::Bound;
 use std::sync::Arc;
 
-use quickwit_query::query_ast::{
-    BuildTantivyAstContext, CalcFieldQuery, FieldPresenceQuery, FullTextQuery, PhrasePrefixQuery,
-    QueryAst, QueryAstTransformer, QueryAstVisitor, RangeQuery, RegexQuery, TermSetQuery,
-    WildcardQuery,
-};
-use quickwit_query::tokenizers::TokenizerManager;
-use quickwit_query::{InvalidQuery, find_field_or_hit_dynamic};
 use tantivy::Term;
 use tantivy::query::Query;
 use tantivy::schema::{Field, Schema};
 use tracing::error;
 
-use crate::doc_mapper::FastFieldWarmupInfo;
-use crate::{Automaton, QueryParserError, TermRange, WarmupInfo};
+use crate::doc_mapper::{Automaton, FastFieldWarmupInfo, QueryParserError, TermRange, WarmupInfo};
+use crate::query::query_ast::{
+    BuildTantivyAstContext, FieldPresenceQuery, FullTextQuery, PhrasePrefixQuery, QueryAst,
+    QueryAstTransformer, QueryAstVisitor, RangeQuery, RegexQuery, TermSetQuery, WildcardQuery,
+};
+use crate::query::tokenizers::TokenizerManager;
+use crate::query::{InvalidQuery, find_field_or_hit_dynamic};
 
 /// Collects fast fields needed to evaluate the query, including optional and negated clauses.
 /// Unlike `WarmupInfo::required_terms`, these are not logically required matches.
@@ -80,7 +79,7 @@ impl<'a> QueryAstVisitor<'a> for GetRequiredFastFieldsVisitor<'_> {
 
     fn visit_term(
         &mut self,
-        term_query: &'a quickwit_query::query_ast::TermQuery,
+        term_query: &'a crate::query::query_ast::TermQuery,
     ) -> Result<(), Infallible> {
         self.add_field_if_not_indexed(&term_query.field);
         Ok(())
@@ -124,30 +123,16 @@ impl<'a> QueryAstVisitor<'a> for GetRequiredFastFieldsVisitor<'_> {
         }
         Ok(())
     }
-
-    fn visit_calc_field(&mut self, query: &'a CalcFieldQuery) -> Result<(), Infallible> {
-        let Ok(inferred_types) = tantivy::jitexpr::ast::infer_types(&query.expression) else {
-            // Query construction handles invalid expressions after warmup collection.
-            return Ok(());
-        };
-        for (field_name, _inferred_type_set) in inferred_types {
-            self.fields.insert(FastFieldWarmupInfo {
-                name: field_name.to_string(),
-                with_subfields: false,
-            });
-        }
-        Ok(())
-    }
 }
 
 /// Build a `Query` with field resolution & forbidding range clauses.
-pub(crate) fn build_query(
+pub fn build_query(
     query_ast: QueryAst,
     context: &BuildTantivyAstContext,
-    cache_context: Option<(Arc<dyn quickwit_query::query_ast::PredicateCache>, String)>,
+    cache_context: Option<(Arc<dyn crate::query::query_ast::PredicateCache>, String)>,
 ) -> Result<(Box<dyn Query>, WarmupInfo), QueryParserError> {
     let query_ast = if let Some((cache, split_id)) = cache_context {
-        let Ok(query_ast) = quickwit_query::query_ast::PredicateCacheInjector { cache, split_id }
+        let Ok(query_ast) = crate::query::query_ast::PredicateCacheInjector { cache, split_id }
             .transform(query_ast);
         // this transformer isn't supposed to ever remove a node
         query_ast.unwrap_or(QueryAst::MatchAll)
@@ -254,7 +239,9 @@ fn prefix_term_to_range(prefix: Term) -> (Bound<Term>, Bound<Term>) {
     let mut end_bound = prefix.clone();
     let mut end_bound_value_bytes = prefix.serialized_value_bytes().to_vec();
     while !end_bound_value_bytes.is_empty() {
-        let last_byte = end_bound_value_bytes.last_mut().unwrap();
+        let last_byte = end_bound_value_bytes
+            .last_mut()
+            .expect("the loop condition checked that the bytes are not empty");
         if *last_byte != u8::MAX {
             *last_byte += 1;
             // The last non-`u8::MAX` byte incremented
@@ -403,29 +390,21 @@ mod test {
     use std::collections::HashSet;
     use std::ops::Bound;
 
-    use quickwit_common::shared_consts::FIELD_PRESENCE_FIELD_NAME;
-    use quickwit_query::query_ast::{
-        BoolQuery, BuildTantivyAstContext, CacheNode, CalcFieldQuery, FullTextMode, FullTextParams,
-        PhrasePrefixQuery, QueryAst, QueryAstVisitor, UserInputQuery, query_ast_from_user_text,
-    };
-    use quickwit_query::{
-        BooleanOperand, MatchAllOrNone, create_default_quickwit_tokenizer_manager,
-    };
     use tantivy::Term;
-    use tantivy::jitexpr::ast::deserialize;
     use tantivy::schema::{DateOptions, DateTimePrecision, FAST, INDEXED, STORED, Schema, TEXT};
 
     use super::{ExtractPrefixTermRanges, build_query};
-    use crate::{
-        DYNAMIC_FIELD_NAME, FastFieldWarmupInfo, SOURCE_FIELD_NAME, TermRange, WarmupInfo,
+    use crate::doc_mapper::{FastFieldWarmupInfo, TermRange};
+    use crate::query::query_ast::{
+        BoolQuery, BuildTantivyAstContext, FullTextMode, FullTextParams, PhrasePrefixQuery,
+        QueryAst, QueryAstVisitor, UserInputQuery, query_ast_from_user_text,
     };
+    use crate::query::{BooleanOperand, MatchAllOrNone, create_default_quickwit_tokenizer_manager};
+    use crate::shim::consts::FIELD_PRESENCE_FIELD_NAME;
 
-    fn calc_field(expression: &str) -> QueryAst {
-        CalcFieldQuery {
-            expression: deserialize(expression).unwrap(),
-        }
-        .into()
-    }
+    // `quickwit-doc-mapper`'s field names (its `lib.rs`), which these tests use.
+    const DYNAMIC_FIELD_NAME: &str = "_dynamic";
+    const SOURCE_FIELD_NAME: &str = "_source";
 
     fn expected_fast_fields(names: &[&str]) -> HashSet<FastFieldWarmupInfo> {
         let mut fields = HashSet::with_capacity(names.len());
@@ -438,58 +417,8 @@ mod test {
         fields
     }
 
-    fn warmup_info(query: QueryAst) -> WarmupInfo {
-        // Input names are resolved per segment by Tantivy, not filtered by the builder's schema.
-        let schema = Schema::builder().build();
-        let context = BuildTantivyAstContext::for_test(&schema);
-        build_query(query, &context, None).unwrap().1
-    }
-
-    #[test]
-    fn test_calc_field_warmup_collects_nested_inputs_and_deduplicates() {
-        let query = calc_field(
-            "(AND (GT (ADD duration duration) #computed) (EQ (LOWER custom.label) \
-             \"ignored.field\"))",
-        );
-        assert_eq!(
-            warmup_info(query),
-            WarmupInfo {
-                fast_fields: expected_fast_fields(&["duration", "#computed", "custom.label"]),
-                ..Default::default()
-            }
-        );
-    }
-
-    #[test]
-    fn test_calc_field_warmup_constants_need_no_fields() {
-        for expression in ["true", "false", "(EQ 1i64 1i64)"] {
-            assert_eq!(warmup_info(calc_field(expression)), WarmupInfo::default());
-        }
-    }
-
-    #[test]
-    fn test_calc_field_warmup_visits_boolean_boost_and_uninitialized_cache_nodes() {
-        let query: QueryAst = BoolQuery {
-            must: vec![calc_field("must_field")],
-            must_not: vec![calc_field("must_not_field")],
-            should: vec![calc_field("should_field").boost(Some(2.0f32.try_into().unwrap()))],
-            filter: vec![CacheNode::new(calc_field("filter_field")).into()],
-            ..Default::default()
-        }
-        .into();
-        assert_eq!(
-            warmup_info(query).fast_fields,
-            expected_fast_fields(&[
-                "must_field",
-                "must_not_field",
-                "should_field",
-                "filter_field"
-            ])
-        );
-    }
-
     fn full_text_query_for_warmup(field: &str, tokenizer: Option<&str>) -> QueryAst {
-        quickwit_query::query_ast::FullTextQuery {
+        crate::query::query_ast::FullTextQuery {
             field: field.to_string(),
             text: "keep".to_string(),
             params: FullTextParams {
@@ -508,7 +437,7 @@ mod test {
     fn test_required_fast_fields_mixed_query() {
         use std::collections::{BTreeMap, BTreeSet};
 
-        use quickwit_query::query_ast::{FieldPresenceQuery, RangeQuery, TermQuery, TermSetQuery};
+        use crate::query::query_ast::{FieldPresenceQuery, RangeQuery, TermQuery, TermSetQuery};
 
         let mut schema_builder = Schema::builder();
         schema_builder.add_i64_field(FIELD_PRESENCE_FIELD_NAME, INDEXED);
@@ -557,8 +486,6 @@ mod test {
                     ]),
                 }
                 .into(),
-                QueryAst::from(CacheNode::new(calc_field("(GT value 0i64)")))
-                    .boost(Some(2.0f32.try_into().unwrap())),
             ],
             ..Default::default()
         }
@@ -580,9 +507,8 @@ mod test {
 
     #[test]
     fn test_required_fast_fields_skips_ineligible_queries_and_preserves_existing_fields() {
-        use quickwit_query::query_ast::{FieldPresenceQuery, TermQuery};
-
         use super::GetRequiredFastFieldsVisitor;
+        use crate::query::query_ast::{FieldPresenceQuery, TermQuery};
 
         let mut schema_builder = Schema::builder();
         schema_builder.add_text_field("columnar_text", FAST);

@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-storage/src/versioned_component.rs); modified for Operon: unwrap replaced by expect.
 
 use std::io::Read;
 
@@ -95,11 +96,19 @@ fn try_read_version<V: VersionedComponent>(bytes: &mut OwnedBytes) -> anyhow::Re
 ///
 /// (This function is not part of the trait to make it private.)
 fn try_deserialize_from_bytes<V: VersionedComponent>(header_bytes: [u8; 8]) -> anyhow::Result<V> {
-    let magic_number = u32::from_le_bytes(header_bytes[0..4].try_into().unwrap());
+    let magic_number = u32::from_le_bytes(
+        header_bytes[0..4]
+            .try_into()
+            .expect("a 4-byte slice converts to [u8; 4]"),
+    );
     if magic_number != V::MAGIC_NUMBER {
         anyhow::bail!("hot directory metadata's magic number does not match");
     }
-    let version_code: u32 = u32::from_le_bytes(header_bytes[4..8].try_into().unwrap());
+    let version_code: u32 = u32::from_le_bytes(
+        header_bytes[4..8]
+            .try_into()
+            .expect("a 4-byte slice converts to [u8; 4]"),
+    );
     V::try_from_version_code_impl(version_code).with_context(|| {
         format!(
             "version code {} is not supported for {}",
@@ -113,7 +122,7 @@ fn try_deserialize_from_bytes<V: VersionedComponent>(header_bytes: [u8; 8]) -> a
 mod tests {
     use tantivy::directory::OwnedBytes;
 
-    use crate::VersionedComponent;
+    use crate::storage::VersionedComponent;
 
     #[derive(Copy, Clone, Default)]
     #[repr(u32)]

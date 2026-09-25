@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/lib.rs); modified for Operon: unmodified.
 
 //! QueryDSL partially compatible with Elasticsearch/Opensearch QueryDSL.
 //! See documentation here:

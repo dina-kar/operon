@@ -11,6 +11,13 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-doc-mapper/src/doc_mapper/mod.rs lines 65-183 and tests 619-827); modified for Operon: cut into a module of its own, with its imports and a test module.
+
+use std::collections::{HashMap, HashSet};
+use std::ops::Bound;
+
+use tantivy::Term;
+use tantivy::schema::Field;
 
 /// Bounds for a range of terms, with an optional max count of terms being matched.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -63,7 +70,7 @@ pub struct WarmupInfo {
     /// If any of these terms has an empty posting list in a split, the query
     /// provably matches nothing there, so the leaf search can abort warmup
     /// early. This is a conservative subset (see
-    /// `quickwit_query::query_ast::required_terms`).
+    /// `crate::query::query_ast::required_terms`).
     pub required_terms: HashSet<Term>,
 }
 
@@ -131,6 +138,10 @@ impl WarmupInfo {
         // term_ranges_grouped_by_field
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     fn hashset_fast(elements: &[&str]) -> HashSet<FastFieldWarmupInfo> {
         elements
@@ -341,3 +352,4 @@ impl WarmupInfo {
         warmup_info.simplify();
         assert_eq!(warmup_info, expected);
     }
+}

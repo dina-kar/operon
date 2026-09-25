@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/tokenizers/code_tokenizer.rs); modified for Operon: imports rewritten to crate paths; Debug for CodeTokenizer and CodeTokenStream.
 
 use std::ops::Range;
 use std::str::CharIndices;
@@ -25,7 +26,7 @@ use tantivy::tokenizer::{Token, TokenStream, Tokenizer};
 ///
 /// Optionally, it can keep sequences of hexadecimal chars together, which can be useful when
 /// dealing with ids encoded in that way, such as UUIDs.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct CodeTokenizer {
     token: Token,
     enable_hex: bool,
@@ -63,6 +64,16 @@ pub struct CodeTokenStream<'a> {
     token: &'a mut Token,
     state: CodeTokenStreamState,
     enable_hex: bool,
+}
+
+impl std::fmt::Debug for CodeTokenStream<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodeTokenStream")
+            .field("text", &self.text)
+            .field("token", &self.token)
+            .field("enable_hex", &self.enable_hex)
+            .finish_non_exhaustive()
+    }
 }
 
 enum AdvanceResult {

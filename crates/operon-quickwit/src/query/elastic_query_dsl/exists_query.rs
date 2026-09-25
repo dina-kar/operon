@@ -11,11 +11,12 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/elastic_query_dsl/exists_query.rs); modified for Operon: imports rewritten to crate paths.
 
 use serde::Deserialize;
 
-use crate::elastic_query_dsl::ConvertibleToQueryAst;
-use crate::query_ast::{self, QueryAst};
+use crate::query::elastic_query_dsl::ConvertibleToQueryAst;
+use crate::query::query_ast::{self, QueryAst};
 
 #[derive(Deserialize, Clone, Eq, PartialEq, Debug)]
 pub struct ExistsQuery {
@@ -32,7 +33,7 @@ impl ConvertibleToQueryAst for ExistsQuery {
 
 #[cfg(test)]
 mod tests {
-    use crate::elastic_query_dsl::exists_query::ExistsQuery;
+    use crate::query::elastic_query_dsl::exists_query::ExistsQuery;
 
     #[test]
     fn test_dsl_exists_query_deserialize_simple() {

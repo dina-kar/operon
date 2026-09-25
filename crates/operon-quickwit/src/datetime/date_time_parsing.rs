@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-datetime/src/date_time_parsing.rs); modified for Operon: imports rewritten to crate paths.
 
 use std::time::Duration;
 
@@ -19,7 +20,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::{Iso8601, Rfc2822, Rfc3339};
 
 use super::date_time_format::DateTimeInputFormat;
-use crate::TantivyDateTime;
+use crate::datetime::TantivyDateTime;
 
 // Minimum supported timestamp value in seconds (13 Apr 1972 23:59:55 GMT).
 const MIN_TIMESTAMP_SECONDS: i64 = 72_057_595;
@@ -197,8 +198,8 @@ mod tests {
     use time::macros::datetime;
 
     use super::*;
-    use crate::StrptimeParser;
-    use crate::date_time_format::infer_year;
+    use crate::datetime::StrptimeParser;
+    use crate::datetime::date_time_format::infer_year;
 
     #[test]
     fn test_parse_iso8601() {

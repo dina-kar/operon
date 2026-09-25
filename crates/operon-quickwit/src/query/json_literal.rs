@@ -11,15 +11,17 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/json_literal.rs); modified for Operon: imports rewritten to crate paths; unwrap replaced by expect.
 
 use std::net::{IpAddr, Ipv6Addr};
 use std::str::FromStr;
 use std::sync::LazyLock;
 
 use base64::Engine;
-use quickwit_datetime::{DateTimeInputFormat, parse_date_time_str, parse_timestamp};
 use serde::{Deserialize, Serialize};
 use tantivy::schema::IntoIpv6Addr;
+
+use crate::datetime::{DateTimeInputFormat, parse_date_time_str, parse_timestamp};
 
 fn get_default_date_time_format() -> &'static [DateTimeInputFormat] {
     static DEFAULT_DATE_TIME_FORMATS: LazyLock<Vec<DateTimeInputFormat>> = LazyLock::new(|| {
@@ -27,11 +29,11 @@ fn get_default_date_time_format() -> &'static [DateTimeInputFormat] {
             DateTimeInputFormat::Rfc3339,
             DateTimeInputFormat::Rfc2822,
             DateTimeInputFormat::Timestamp,
-            DateTimeInputFormat::from_str("%Y-%m-%dT%H:%M:%S").unwrap(),
-            DateTimeInputFormat::from_str("%Y-%m-%d %H:%M:%S.%f").unwrap(),
-            DateTimeInputFormat::from_str("%Y-%m-%d %H:%M:%S").unwrap(),
-            DateTimeInputFormat::from_str("%Y-%m-%d").unwrap(),
-            DateTimeInputFormat::from_str("%Y/%m/%d").unwrap(),
+            DateTimeInputFormat::from_str("%Y-%m-%dT%H:%M:%S").expect("valid strptime format"),
+            DateTimeInputFormat::from_str("%Y-%m-%d %H:%M:%S.%f").expect("valid strptime format"),
+            DateTimeInputFormat::from_str("%Y-%m-%d %H:%M:%S").expect("valid strptime format"),
+            DateTimeInputFormat::from_str("%Y-%m-%d").expect("valid strptime format"),
+            DateTimeInputFormat::from_str("%Y/%m/%d").expect("valid strptime format"),
         ]
     });
     DEFAULT_DATE_TIME_FORMATS.as_slice()
@@ -214,8 +216,8 @@ mod tests {
     use tantivy::DateTime;
     use time::macros::datetime;
 
-    use crate::JsonLiteral;
-    use crate::json_literal::InterpretUserInput;
+    use crate::query::JsonLiteral;
+    use crate::query::json_literal::InterpretUserInput;
 
     #[test]
     fn test_interpret_str_u64() {

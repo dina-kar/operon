@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-common/src/uri.rs); modified for Operon: home::home_dir replaced by std::env::home_dir; unwrap replaced by expect.
 
 use std::borrow::Cow;
 use std::env;
@@ -120,7 +121,7 @@ impl Uri {
     /// This is only used for test. We artificially restrict the lifetime to 'static
     /// to avoid misuses.
     pub fn for_test(uri: &'static str) -> Self {
-        Uri::from_str(uri).unwrap()
+        Uri::from_str(uri).expect("invalid test URI")
     }
 
     /// Returns the extension of the URI.
@@ -274,7 +275,7 @@ impl Uri {
                     bail!("failed to normalize URI: tilde expansion is only partially supported");
                 }
 
-                let home_dir_path = home::home_dir()
+                let home_dir_path = std::env::home_dir()
                     .context("failed to normalize URI: could not resolve home directory")?
                     .to_string_lossy()
                     .to_string();
@@ -342,7 +343,9 @@ impl PartialEq<String> for Uri {
 
 impl<'de> Deserialize<'de> for Uri {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where D: serde::Deserializer<'de> {
+    where
+        D: serde::Deserializer<'de>,
+    {
         let uri_str: Cow<'de, str> = Deserialize::deserialize(deserializer)?;
         let uri = Uri::from_str(&uri_str).map_err(D::Error::custom)?;
         Ok(uri)
@@ -351,7 +354,9 @@ impl<'de> Deserialize<'de> for Uri {
 
 impl Serialize for Uri {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where S: Serializer {
+    where
+        S: Serializer,
+    {
         serializer.serialize_str(&self.uri)
     }
 }
@@ -397,7 +402,7 @@ mod tests {
     fn test_try_new_uri() {
         Uri::from_str("").unwrap_err();
 
-        let home_dir = home::home_dir().unwrap();
+        let home_dir = std::env::home_dir().unwrap();
         let current_dir = env::current_dir().unwrap();
 
         let uri = Uri::from_str("file:///home/foo/bar").unwrap();

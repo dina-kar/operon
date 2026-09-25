@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-storage/src/ram_storage.rs); modified for Operon: RamStorageFactory removed with tests needing unvendored helpers; RamStorageBuilder derives Debug.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -20,17 +21,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use quickwit_common::uri::{Protocol, Uri};
-use quickwit_config::StorageBackend;
 use tokio::io::{AsyncRead, AsyncWriteExt};
 use tokio::sync::RwLock;
 
-use crate::prefix_storage::add_prefix_to_storage;
-use crate::storage::SendableAsync;
-use crate::{
-    BulkDeleteError, OwnedBytes, Storage, StorageErrorKind, StorageFactory, StorageResolverError,
-    StorageResult,
-};
+use crate::shim::uri::Uri;
+use crate::storage::storage::SendableAsync;
+use crate::storage::{BulkDeleteError, OwnedBytes, Storage, StorageErrorKind, StorageResult};
 
 /// In Ram implementation of quickwit's storage.
 ///
@@ -88,8 +84,8 @@ impl Storage for RamStorage {
     async fn put(
         &self,
         path: &Path,
-        payload: Box<dyn crate::PutPayload>,
-    ) -> crate::StorageResult<()> {
+        payload: Box<dyn crate::storage::PutPayload>,
+    ) -> crate::storage::StorageResult<()> {
         let payload_bytes = payload.read_all().await?;
         self.put_data(path, payload_bytes).await;
         Ok(())
@@ -158,7 +154,7 @@ impl Storage for RamStorage {
 }
 
 /// Builder to create a prepopulated [`RamStorage`]. This is mostly useful for tests.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct RamStorageBuilder {
     files: HashMap<PathBuf, OwnedBytes>,
 }
@@ -180,69 +176,10 @@ impl RamStorageBuilder {
     }
 }
 
-/// Storage resolver for [`RamStorage`].
-pub struct RamStorageFactory {
-    ram_storage: Arc<dyn Storage>,
-}
-
-impl Default for RamStorageFactory {
-    fn default() -> Self {
-        RamStorageFactory {
-            ram_storage: Arc::new(RamStorage::default()),
-        }
-    }
-}
-
-#[async_trait]
-impl StorageFactory for RamStorageFactory {
-    fn backend(&self) -> StorageBackend {
-        StorageBackend::Ram
-    }
-
-    async fn resolve(&self, uri: &Uri) -> Result<Arc<dyn Storage>, StorageResolverError> {
-        match uri.filepath() {
-            Some(prefix) if uri.protocol() == Protocol::Ram => Ok(add_prefix_to_storage(
-                self.ram_storage.clone(),
-                prefix.to_path_buf(),
-                uri.clone(),
-            )),
-            _ => {
-                let message = format!("URI `{uri}` is not a valid RAM URI");
-                Err(StorageResolverError::InvalidUri(message))
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
 
     use super::*;
-    use crate::test_suite::storage_test_suite;
-
-    #[tokio::test]
-    async fn test_storage() -> anyhow::Result<()> {
-        let mut ram_storage = RamStorage::default();
-        storage_test_suite(&mut ram_storage).await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_ram_storage_factory() {
-        let ram_storage_factory = RamStorageFactory::default();
-        let ram_uri = Uri::for_test("s3:///foo");
-        let err = ram_storage_factory.resolve(&ram_uri).await.err().unwrap();
-        assert!(matches!(err, StorageResolverError::InvalidUri { .. }));
-
-        let data_uri = Uri::for_test("ram:///data");
-        let data_storage = ram_storage_factory.resolve(&data_uri).await.ok().unwrap();
-        let home_uri = Uri::for_test("ram:///home");
-        let home_storage = ram_storage_factory.resolve(&home_uri).await.ok().unwrap();
-        assert_ne!(data_storage.uri(), home_storage.uri());
-
-        let data_storage_two = ram_storage_factory.resolve(&data_uri).await.ok().unwrap();
-        assert_eq!(data_storage.uri(), data_storage_two.uri());
-    }
 
     #[tokio::test]
     async fn test_ram_storage_builder() -> anyhow::Result<()> {

@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-directories/src/storage_directory.rs); modified for Operon: imports rewritten to crate paths; redundant borrow removed.
 
 use std::fmt::Debug;
 use std::ops::Range;
@@ -19,12 +20,13 @@ use std::sync::Arc;
 use std::{fmt, io};
 
 use async_trait::async_trait;
-use quickwit_common::uri::Uri;
-use quickwit_storage::{OwnedBytes, Storage};
 use tantivy::directory::FileHandle;
 use tantivy::directory::error::OpenReadError;
 use tantivy::{Directory, HasLen};
 use tracing::{error, instrument};
+
+use crate::shim::uri::Uri;
+use crate::storage::{OwnedBytes, Storage};
 
 struct StorageDirectoryFileHandle {
     storage_directory: StorageDirectory,
@@ -42,7 +44,7 @@ impl fmt::Debug for StorageDirectoryFileHandle {
         write!(
             f,
             "StorageDirectoryFileHandle({:?}, dir={:?})",
-            &self.path, self.storage_directory
+            self.path, self.storage_directory
         )
     }
 }
@@ -138,5 +140,5 @@ impl Directory for StorageDirectory {
         ))
     }
 
-    crate::read_only_directory!();
+    crate::directories::read_only_directory!();
 }

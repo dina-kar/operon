@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-storage/src/storage.rs); modified for Operon: imports rewritten to crate paths; mockall attributes and the MockStorage test removed; tempfile persist replaced by fs::rename.
 
 use std::fmt;
 use std::io::{self};
@@ -22,13 +23,12 @@ use async_trait::async_trait;
 use bytesize::ByteSize;
 use futures::StreamExt;
 use futures::stream::{self, BoxStream};
-use quickwit_common::uri::Uri;
-use tempfile::TempPath;
 use tokio::fs::File;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::error;
 
-use crate::{BulkDeleteError, OwnedBytes, PutPayload, StorageErrorKind, StorageResult};
+use crate::shim::uri::Uri;
+use crate::storage::{BulkDeleteError, OwnedBytes, PutPayload, StorageErrorKind, StorageResult};
 
 /// Metadata for an object listed from storage.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -59,11 +59,6 @@ impl<W: AsyncWrite + Send + Unpin> SendableAsync for W {}
 /// object storage treat them. This means when directory separators a present
 /// in the storage operation path, the storage implementation should create and remove transparently
 /// these intermediate directories.
-#[cfg_attr(
-    any(test, feature = "testsuite"),
-    allow(clippy::result_large_err), // BulkDeleteError is large but only in mock/test code
-    mockall::automock
-)]
 #[async_trait]
 pub trait Storage: fmt::Debug + Send + Sync + 'static {
     /// Check storage connection if applicable
@@ -215,7 +210,7 @@ impl DownloadTempFile {
     }
 
     pub async fn persist(mut self) -> io::Result<u64> {
-        TempPath::try_from_path(&self.temp_filepath)?.persist(&self.target_filepath)?;
+        std::fs::rename(&self.temp_filepath, &self.target_filepath)?;
         self.has_attempted_deletion = true;
         let num_bytes = std::fs::metadata(&self.target_filepath)?.len();
         Ok(num_bytes)
@@ -245,10 +240,8 @@ impl AsMut<File> for DownloadTempFile {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
-    use crate::{RamStorage, StorageError};
+    use crate::storage::RamStorage;
 
     const CONTENT: &[u8] = b"hello world";
 
@@ -269,31 +262,5 @@ mod tests {
         assert_eq!(num_bytes, 11);
         let content = std::fs::read(&dest_filepath).unwrap();
         assert_eq!(&content, CONTENT);
-    }
-
-    #[tokio::test]
-    async fn test_copy_to_file_deletes_tempfile_on_failure() {
-        let mut storage = MockStorage::default();
-        storage.expect_copy_to().return_once(|_, _| {
-            Box::pin(futures::future::err(StorageError::from(io::Error::other(
-                "fake storage error",
-            ))))
-        });
-        let path = Path::new("foo/bar");
-        let temp_dir = tempfile::tempdir().unwrap();
-        let dest_filepath = temp_dir.path().join("bar");
-        default_copy_to_file(&storage, path, &dest_filepath)
-            .await
-            .unwrap_err();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let mut read_dir = tokio::fs::read_dir(dest_filepath.parent().unwrap())
-            .await
-            .unwrap();
-        let entry_opt = read_dir
-            .next_entry()
-            .await
-            .unwrap()
-            .map(|dir_entry| dir_entry.path());
-        assert_eq!(entry_opt, None);
     }
 }

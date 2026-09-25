@@ -11,17 +11,18 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-indexing/src/merge_policy/stable_log_merge_policy.rs); modified for Operon: default split_num_docs_target from shim::consts; imports rewritten to crate paths; actor-based simulation tests removed.
 
 use std::cmp::Ordering;
 use std::ops::Range;
 
-use quickwit_config::IndexingSettings;
-use quickwit_config::merge_policy_config::StableLogMergePolicyConfig;
-use quickwit_metastore::{SplitMaturity, SplitMetadata};
 use time::OffsetDateTime;
 use tracing::debug;
 
+use crate::merge_policy::config::StableLogMergePolicyConfig;
 use crate::merge_policy::{MergeOperation, MergePolicy, splits_short_debug};
+use crate::shim::consts::DEFAULT_SPLIT_NUM_DOCS_TARGET;
+use crate::shim::{SplitMaturity, SplitMetadata};
 
 /// `StableLogMergePolicy` is a rather naive implementation optimized
 /// for splits produced by a rather stable stream of splits,
@@ -65,7 +66,7 @@ impl Default for StableLogMergePolicy {
     fn default() -> Self {
         StableLogMergePolicy {
             config: Default::default(),
-            split_num_docs_target: IndexingSettings::default_split_num_docs_target(),
+            split_num_docs_target: DEFAULT_SPLIT_NUM_DOCS_TARGET,
         }
     }
 }
@@ -357,11 +358,10 @@ impl StableLogMergePolicy {
 #[cfg(test)]
 mod tests {
 
-    use std::sync::Arc;
     use std::time::Duration;
 
     use super::*;
-    use crate::merge_policy::tests::{aux_test_simulate_merge_planner_num_docs, create_splits};
+    use crate::merge_policy::tests::create_splits;
 
     #[test]
     fn test_split_is_mature() {
@@ -436,7 +436,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "All splits are expected to be smaller than `split_num_docs_target`.")]
+    #[should_panic(
+        expected = "All splits are expected to be smaller than `split_num_docs_target`."
+    )]
     fn test_stable_log_merge_policy_build_split_panics_if_exceeding_split_num_docs_target() {
         let merge_policy = StableLogMergePolicy::default();
         let splits = create_splits(&merge_policy, vec![11_000_000]);
@@ -645,98 +647,5 @@ mod tests {
         };
         let merge_policy = StableLogMergePolicy::new(config, 10_000_000);
         crate::merge_policy::tests::proptest_merge_policy(&merge_policy);
-    }
-
-    #[tokio::test]
-    #[cfg_attr(not(feature = "ci-test"), ignore)]
-    async fn test_simulate_stable_log_merge_policy_constant_case() -> anyhow::Result<()> {
-        let merge_policy = StableLogMergePolicy::default();
-        aux_test_simulate_merge_planner_num_docs(
-            Arc::new(merge_policy.clone()),
-            &vec![10_000; 100_000],
-            &|splits| {
-                let num_docs = splits.iter().map(|split| split.num_docs as u64).sum();
-                assert!(splits.len() <= merge_policy.max_num_splits_ideal_case(num_docs))
-            },
-        )
-        .await?;
-        Ok(())
-    }
-
-    use proptest::prelude::*;
-    use proptest::sample::select;
-    use tokio::runtime::Runtime;
-
-    fn proptest_config() -> ProptestConfig {
-        let mut proptest_config = ProptestConfig::with_cases(20);
-        proptest_config.max_shrink_iters = 600;
-        proptest_config
-    }
-
-    proptest! {
-        #![proptest_config(proptest_config())]
-        #[test]
-        fn test_proptest_simulate_stable_log_merge_planner_adversarial(batch_num_docs in proptest::collection::vec(select(&[11, 1_990, 10_000, 50_000, 310_000][..]), 1..1_000)) {
-            let merge_policy = StableLogMergePolicy::default();
-            let rt = Runtime::new().unwrap();
-            rt.block_on(
-            aux_test_simulate_merge_planner_num_docs(
-                Arc::new(merge_policy.clone()),
-                &batch_num_docs,
-                &|splits| {
-                    let num_docs = splits.iter().map(|split| split.num_docs as u64).sum();
-                    assert!(splits.len() <= merge_policy.max_num_splits_worst_case(num_docs));
-                },
-            )).unwrap();
-        }
-    }
-
-    #[tokio::test]
-    async fn test_simulate_stable_log_merge_planner_edge_case() {
-        let merge_policy = StableLogMergePolicy::default();
-        let batch_num_docs = vec![
-            11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11,
-        ];
-        aux_test_simulate_merge_planner_num_docs(
-            Arc::new(merge_policy.clone()),
-            &batch_num_docs,
-            &|splits| {
-                let num_docs = splits.iter().map(|split| split.num_docs as u64).sum();
-                assert!(splits.len() <= merge_policy.max_num_splits_worst_case(num_docs));
-            },
-        )
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_simulate_stable_log_merge_planner_ideal_case() -> anyhow::Result<()> {
-        let merge_policy = StableLogMergePolicy::default();
-        aux_test_simulate_merge_planner_num_docs(
-            Arc::new(merge_policy.clone()),
-            &vec![10_000; 1_000],
-            &|splits| {
-                let num_docs = splits.iter().map(|split| split.num_docs as u64).sum();
-                assert!(splits.len() <= merge_policy.max_num_splits_ideal_case(num_docs));
-            },
-        )
-        .await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_simulate_stable_log_merge_planner_bug() -> anyhow::Result<()> {
-        let merge_policy = StableLogMergePolicy::default();
-        let vals = &[11, 11, 11, 11, 11, 11, 310000, 11, 11, 11, 11, 11, 11, 11];
-        aux_test_simulate_merge_planner_num_docs(
-            Arc::new(merge_policy.clone()),
-            &vals[..],
-            &|splits| {
-                let num_docs = splits.iter().map(|split| split.num_docs as u64).sum();
-                assert!(splits.len() <= merge_policy.max_num_splits_worst_case(num_docs));
-            },
-        )
-        .await?;
-        Ok(())
     }
 }

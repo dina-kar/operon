@@ -11,12 +11,13 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/query_ast/bool_query.rs); modified for Operon: imports rewritten to crate paths.
 
 use serde::{Deserialize, Serialize};
 
 use super::{BuildTantivyAst, BuildTantivyAstContext, TantivyQueryAst};
-use crate::InvalidQuery;
-use crate::query_ast::QueryAst;
+use crate::query::InvalidQuery;
+use crate::query::query_ast::QueryAst;
 
 /// # Unsupported features
 /// - named queries

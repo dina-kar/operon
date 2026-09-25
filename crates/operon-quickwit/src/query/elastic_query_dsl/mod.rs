@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/elastic_query_dsl/mod.rs); modified for Operon: imports rewritten to crate paths.
 
 use serde::{Deserialize, Serialize};
 
@@ -40,16 +41,16 @@ use range_query::RangeQuery;
 pub(crate) use string_or_struct::StringOrStructForSerialization;
 use term_query::TermQuery;
 
-use crate::elastic_query_dsl::exists_query::ExistsQuery;
-use crate::elastic_query_dsl::match_bool_prefix::MatchBoolPrefixQuery;
-use crate::elastic_query_dsl::match_phrase_query::MatchPhraseQuery;
-use crate::elastic_query_dsl::match_query::MatchQuery;
-use crate::elastic_query_dsl::multi_match::MultiMatchQuery;
-use crate::elastic_query_dsl::regex_query::RegexQuery;
-use crate::elastic_query_dsl::terms_query::TermsQuery;
-use crate::elastic_query_dsl::wildcard_query::WildcardQuery;
-use crate::not_nan_f32::NotNaNf32;
-use crate::query_ast::QueryAst;
+use crate::query::elastic_query_dsl::exists_query::ExistsQuery;
+use crate::query::elastic_query_dsl::match_bool_prefix::MatchBoolPrefixQuery;
+use crate::query::elastic_query_dsl::match_phrase_query::MatchPhraseQuery;
+use crate::query::elastic_query_dsl::match_query::MatchQuery;
+use crate::query::elastic_query_dsl::multi_match::MultiMatchQuery;
+use crate::query::elastic_query_dsl::regex_query::RegexQuery;
+use crate::query::elastic_query_dsl::terms_query::TermsQuery;
+use crate::query::elastic_query_dsl::wildcard_query::WildcardQuery;
+use crate::query::not_nan_f32::NotNaNf32;
+use crate::query::query_ast::QueryAst;
 
 /// Quickwit and Elasticsearch have different interpretations of leniency:
 /// - In Quickwit, lenient mode allows ignoring parts of the query that reference non-existing
@@ -148,7 +149,7 @@ impl ConvertibleToQueryAst for ElasticQueryDslInner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::elastic_query_dsl::term_query::term_query_from_field_value;
+    use crate::query::elastic_query_dsl::term_query::term_query_from_field_value;
 
     #[test]
     fn test_query_dsl_deserialize_simple() {

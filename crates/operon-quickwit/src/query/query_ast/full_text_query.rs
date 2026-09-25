@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/query_ast/full_text_query.rs); modified for Operon: imports rewritten to crate paths; unwrap replaced by expect.
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -25,11 +26,11 @@ use tantivy::schema::{
 };
 use tantivy::tokenizer::{TextAnalyzer, TokenStream};
 
-use crate::query_ast::tantivy_query_ast::{TantivyBoolQuery, TantivyQueryAst};
-use crate::query_ast::utils::full_text_query;
-use crate::query_ast::{BuildTantivyAst, BuildTantivyAstContext, QueryAst};
-use crate::tokenizers::TokenizerManager;
-use crate::{BooleanOperand, InvalidQuery, MatchAllOrNone, find_field_or_hit_dynamic};
+use crate::query::query_ast::tantivy_query_ast::{TantivyBoolQuery, TantivyQueryAst};
+use crate::query::query_ast::utils::full_text_query;
+use crate::query::query_ast::{BuildTantivyAst, BuildTantivyAstContext, QueryAst};
+use crate::query::tokenizers::TokenizerManager;
+use crate::query::{BooleanOperand, InvalidQuery, MatchAllOrNone, find_field_or_hit_dynamic};
 
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Clone)]
 #[serde(deny_unknown_fields)]
@@ -109,7 +110,7 @@ impl FullTextParams {
             return Ok(self.zero_terms_query.into());
         }
         if terms.len() == 1 {
-            let term = terms.pop().unwrap().1;
+            let term = terms.pop().expect("terms has exactly one element").1;
             return Ok(TantivyTermQuery::new(term, IndexRecordOption::WithFreqs).into());
         }
         match self.mode {
@@ -303,9 +304,11 @@ impl FullTextQuery {
 mod tests {
     use tantivy::schema::{DateOptions, DateTimePrecision, Schema, TEXT};
 
-    use crate::BooleanOperand;
-    use crate::query_ast::tantivy_query_ast::TantivyQueryAst;
-    use crate::query_ast::{BuildTantivyAst, BuildTantivyAstContext, FullTextMode, FullTextQuery};
+    use crate::query::BooleanOperand;
+    use crate::query::query_ast::tantivy_query_ast::TantivyQueryAst;
+    use crate::query::query_ast::{
+        BuildTantivyAst, BuildTantivyAstContext, FullTextMode, FullTextQuery,
+    };
 
     #[test]
     fn test_zero_terms() {
@@ -315,7 +318,7 @@ mod tests {
             params: super::FullTextParams {
                 tokenizer: None,
                 mode: BooleanOperand::And.into(),
-                zero_terms_query: crate::MatchAllOrNone::MatchAll,
+                zero_terms_query: crate::query::MatchAllOrNone::MatchAll,
             },
             lenient: false,
         };
@@ -325,7 +328,10 @@ mod tests {
         let ast: TantivyQueryAst = full_text_query
             .build_tantivy_ast_call(&BuildTantivyAstContext::for_test(&schema))
             .unwrap();
-        assert_eq!(ast.const_predicate(), Some(crate::MatchAllOrNone::MatchAll));
+        assert_eq!(
+            ast.const_predicate(),
+            Some(crate::query::MatchAllOrNone::MatchAll)
+        );
     }
 
     #[test]
@@ -336,7 +342,7 @@ mod tests {
             params: super::FullTextParams {
                 tokenizer: None,
                 mode: FullTextMode::Phrase { slop: 1 },
-                zero_terms_query: crate::MatchAllOrNone::MatchAll,
+                zero_terms_query: crate::query::MatchAllOrNone::MatchAll,
             },
             lenient: false,
         };
@@ -362,7 +368,7 @@ mod tests {
             params: super::FullTextParams {
                 tokenizer: Some("raw".to_string()),
                 mode: FullTextMode::Phrase { slop: 1 },
-                zero_terms_query: crate::MatchAllOrNone::MatchAll,
+                zero_terms_query: crate::query::MatchAllOrNone::MatchAll,
             },
             lenient: false,
         };
@@ -387,7 +393,7 @@ mod tests {
             params: super::FullTextParams {
                 tokenizer: Some("raw".to_string()),
                 mode: FullTextMode::Phrase { slop: 1 },
-                zero_terms_query: crate::MatchAllOrNone::MatchAll,
+                zero_terms_query: crate::query::MatchAllOrNone::MatchAll,
             },
             lenient: false,
         };
@@ -440,7 +446,7 @@ mod tests {
             params: super::FullTextParams {
                 tokenizer: None,
                 mode: BooleanOperand::And.into(),
-                zero_terms_query: crate::MatchAllOrNone::MatchAll,
+                zero_terms_query: crate::query::MatchAllOrNone::MatchAll,
             },
             lenient: false,
         };

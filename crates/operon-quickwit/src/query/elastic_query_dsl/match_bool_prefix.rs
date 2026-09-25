@@ -11,14 +11,15 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/elastic_query_dsl/match_bool_prefix.rs); modified for Operon: imports rewritten to crate paths.
 
 use serde::Deserialize;
 
 use super::{ElasticQueryDslInner, StringOrStructForSerialization};
-use crate::OneFieldMap;
-use crate::elastic_query_dsl::match_query::MatchQueryParams;
-use crate::elastic_query_dsl::{ConvertibleToQueryAst, default_max_expansions};
-use crate::query_ast::{FullTextParams, FullTextQuery, QueryAst};
+use crate::query::OneFieldMap;
+use crate::query::elastic_query_dsl::match_query::MatchQueryParams;
+use crate::query::elastic_query_dsl::{ConvertibleToQueryAst, default_max_expansions};
+use crate::query::query_ast::{FullTextParams, FullTextQuery, QueryAst};
 
 /// `MatchBoolPrefixQuery` as defined in
 /// <https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-match-bool-prefix-query.html>
@@ -33,7 +34,7 @@ impl ConvertibleToQueryAst for MatchBoolPrefixQuery {
     fn convert_to_query_ast(self) -> anyhow::Result<QueryAst> {
         let full_text_params = FullTextParams {
             tokenizer: None,
-            mode: crate::query_ast::FullTextMode::BoolPrefix {
+            mode: crate::query::query_ast::FullTextMode::BoolPrefix {
                 operator: self.params.operator,
                 max_expansions: default_max_expansions(),
             },

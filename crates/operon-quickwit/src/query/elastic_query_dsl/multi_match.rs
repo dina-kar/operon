@@ -11,20 +11,23 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/elastic_query_dsl/multi_match.rs); modified for Operon: imports rewritten to crate paths.
 
 use serde::Deserialize;
 use serde_with::formats::PreferMany;
 use serde_with::{OneOrMany, serde_as};
 
 use super::LeniencyBool;
-use crate::elastic_query_dsl::bool_query::BoolQuery;
-use crate::elastic_query_dsl::match_bool_prefix::MatchBoolPrefixQuery;
-use crate::elastic_query_dsl::match_phrase_query::{MatchPhraseQuery, MatchPhraseQueryParams};
-use crate::elastic_query_dsl::match_query::{MatchQuery, MatchQueryParams};
-use crate::elastic_query_dsl::phrase_prefix_query::{
+use crate::query::elastic_query_dsl::bool_query::BoolQuery;
+use crate::query::elastic_query_dsl::match_bool_prefix::MatchBoolPrefixQuery;
+use crate::query::elastic_query_dsl::match_phrase_query::{
+    MatchPhraseQuery, MatchPhraseQueryParams,
+};
+use crate::query::elastic_query_dsl::match_query::{MatchQuery, MatchQueryParams};
+use crate::query::elastic_query_dsl::phrase_prefix_query::{
     MatchPhrasePrefixQuery, MatchPhrasePrefixQueryParams,
 };
-use crate::elastic_query_dsl::{ConvertibleToQueryAst, ElasticQueryDslInner};
+use crate::query::elastic_query_dsl::{ConvertibleToQueryAst, ElasticQueryDslInner};
 
 /// Multi match queries are a bit odd. They end up being expanded into another type of query.
 /// In Quickwit, we operate this expansion in generic way at the time of deserialization.
@@ -150,7 +153,7 @@ pub enum MatchType {
 }
 
 impl ConvertibleToQueryAst for MultiMatchQuery {
-    fn convert_to_query_ast(self) -> anyhow::Result<crate::query_ast::QueryAst> {
+    fn convert_to_query_ast(self) -> anyhow::Result<crate::query::query_ast::QueryAst> {
         self.0.convert_to_query_ast()
     }
 }
@@ -158,7 +161,7 @@ impl ConvertibleToQueryAst for MultiMatchQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::elastic_query_dsl::default_max_expansions;
+    use crate::query::elastic_query_dsl::default_max_expansions;
 
     #[track_caller]
     fn test_multimatch_query_ok_aux<T: Into<ElasticQueryDslInner>>(json: &str, expected: T) {
@@ -189,7 +192,7 @@ mod tests {
                     field: "title".to_string(),
                     params: MatchQueryParams {
                         query: "quick brown fox".to_string(),
-                        operator: crate::BooleanOperand::Or,
+                        operator: crate::query::BooleanOperand::Or,
                         zero_terms_query: Default::default(),
                         lenient: false,
                     },
@@ -199,7 +202,7 @@ mod tests {
                     field: "body".to_string(),
                     params: MatchQueryParams {
                         query: "quick brown fox".to_string(),
-                        operator: crate::BooleanOperand::Or,
+                        operator: crate::query::BooleanOperand::Or,
                         zero_terms_query: Default::default(),
                         lenient: false,
                     },
@@ -219,7 +222,7 @@ mod tests {
                     field: "title".to_string(),
                     params: MatchQueryParams {
                         query: "quick brown fox".to_string(),
-                        operator: crate::BooleanOperand::Or,
+                        operator: crate::query::BooleanOperand::Or,
                         zero_terms_query: Default::default(),
                         lenient: false,
                     },
@@ -229,7 +232,7 @@ mod tests {
                     field: "body".to_string(),
                     params: MatchQueryParams {
                         query: "quick brown fox".to_string(),
-                        operator: crate::BooleanOperand::Or,
+                        operator: crate::query::BooleanOperand::Or,
                         zero_terms_query: Default::default(),
                         lenient: false,
                     },
@@ -249,7 +252,7 @@ mod tests {
                     field: "title".to_string(),
                     params: MatchQueryParams {
                         query: "quick brown fox".to_string(),
-                        operator: crate::BooleanOperand::Or,
+                        operator: crate::query::BooleanOperand::Or,
                         zero_terms_query: Default::default(),
                         lenient: false,
                     },
@@ -259,7 +262,7 @@ mod tests {
                     field: "body".to_string(),
                     params: MatchQueryParams {
                         query: "quick brown fox".to_string(),
-                        operator: crate::BooleanOperand::Or,
+                        operator: crate::query::BooleanOperand::Or,
                         zero_terms_query: Default::default(),
                         lenient: false,
                     },
@@ -341,7 +344,7 @@ mod tests {
                     field: "title".to_string(),
                     params: MatchQueryParams {
                         query: "quick brown".to_string(),
-                        operator: crate::BooleanOperand::Or,
+                        operator: crate::query::BooleanOperand::Or,
                         zero_terms_query: Default::default(),
                         lenient: false,
                     },
@@ -351,7 +354,7 @@ mod tests {
                     field: "body".to_string(),
                     params: MatchQueryParams {
                         query: "quick brown".to_string(),
-                        operator: crate::BooleanOperand::Or,
+                        operator: crate::query::BooleanOperand::Or,
                         zero_terms_query: Default::default(),
                         lenient: false,
                     },

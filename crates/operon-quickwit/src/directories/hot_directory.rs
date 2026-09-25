@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-directories/src/hot_directory.rs); modified for Operon: list_segment_files replaced for tantivy 0.26.2; imports rewritten to crate paths; unwrap replaced by expect; redundant borrow removed.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -20,14 +21,14 @@ use std::{fmt, io};
 
 use anyhow::{Context, bail};
 use async_trait::async_trait;
-use quickwit_storage::VersionedComponent;
 use serde::{Deserialize, Serialize};
 use tantivy::directory::error::OpenReadError;
 use tantivy::directory::{FileHandle, FileSlice, OwnedBytes};
 use tantivy::error::DataCorruption;
 use tantivy::{Directory, HasLen, Index, IndexReader, ReloadPolicy, TantivyError};
 
-use crate::{CachingDirectory, DebugProxyDirectory};
+use crate::directories::{CachingDirectory, DebugProxyDirectory};
+use crate::storage::VersionedComponent;
 
 #[derive(Clone, Copy, Default)]
 #[repr(u32)]
@@ -67,7 +68,8 @@ impl VersionedComponent for HotDirectoryVersions {
     }
 
     fn serialize_impl(component: &Self::Component, output: &mut Vec<u8>) {
-        let buf = postcard::to_stdvec(component).unwrap();
+        let buf =
+            postcard::to_stdvec(component).expect("postcard serialization to a Vec cannot fail");
         output.extend_from_slice(&(buf.len() as u32).to_le_bytes());
         output.extend_from_slice(&buf[..]);
     }
@@ -399,7 +401,7 @@ impl FileHandle for FileSliceWithCache {
 
 impl fmt::Debug for FileSliceWithCache {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "FileSliceWithCache({:?})", &self.underlying)
+        write!(f, "FileSliceWithCache({:?})", self.underlying)
     }
 }
 
@@ -454,12 +456,16 @@ impl Directory for HotDirectory {
         self.inner.underlying.atomic_read(path)
     }
 
-    crate::read_only_directory!();
+    crate::directories::read_only_directory!();
 }
 
 fn list_index_files(index: &Index) -> tantivy::Result<HashSet<PathBuf>> {
     let index_meta = index.load_metas()?;
-    let mut files = index_meta.list_segment_files();
+    let mut files = index_meta
+        .segments
+        .iter()
+        .flat_map(|s| s.list_files())
+        .collect::<HashSet<_>>();
     files.insert(Path::new("meta.json").to_path_buf());
     files.insert(Path::new(".managed.json").to_path_buf());
     Ok(files)

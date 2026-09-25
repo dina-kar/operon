@@ -11,14 +11,15 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/elastic_query_dsl/match_phrase_query.rs); modified for Operon: imports rewritten to crate paths.
 
 use serde::Deserialize;
 
-use crate::elastic_query_dsl::{
+use crate::query::elastic_query_dsl::{
     ConvertibleToQueryAst, ElasticQueryDslInner, StringOrStructForSerialization,
 };
-use crate::query_ast::{FullTextMode, FullTextParams, FullTextQuery, QueryAst};
-use crate::{MatchAllOrNone, OneFieldMap};
+use crate::query::query_ast::{FullTextMode, FullTextParams, FullTextQuery, QueryAst};
+use crate::query::{MatchAllOrNone, OneFieldMap};
 
 /// `MatchPhraseQuery` as defined in
 /// <https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-match-query-phrase.html>
@@ -149,7 +150,7 @@ mod tests {
                 analyzer: Some("whitespace".to_string()),
                 query: "hello".to_string(),
                 slop: 2u32,
-                zero_terms_query: crate::MatchAllOrNone::MatchAll,
+                zero_terms_query: crate::query::MatchAllOrNone::MatchAll,
             },
         };
         let ast = match_query.convert_to_query_ast().unwrap();

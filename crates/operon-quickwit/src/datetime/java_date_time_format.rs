@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-datetime/src/java_date_time_format.rs); modified for Operon: imports rewritten to crate paths; unwrap replaced by expect.
 
 use std::collections::HashMap;
 use std::num::NonZeroU8;
@@ -26,7 +27,7 @@ use time::parsing::Parsed;
 use time::{Month, OffsetDateTime, PrimitiveDateTime, UtcOffset};
 use time_fmt::parse::time_format_item::parse_to_format_item;
 
-use crate::date_time_format;
+use crate::datetime::date_time_format;
 
 const JAVA_DATE_FORMAT_TOKENS: &[&str] = &[
     "yyyy",
@@ -352,7 +353,7 @@ impl StrptimeParser {
         }
 
         if parsed.day().is_none() && parsed.monday_week_number().is_none() {
-            parsed.set_day(NonZeroU8::try_from(1u8).unwrap());
+            parsed.set_day(NonZeroU8::try_from(1u8).expect("1 is non-zero"));
         }
 
         if parsed.month().is_none() && parsed.monday_week_number().is_none() {
@@ -444,7 +445,7 @@ mod tests {
     use time::macros::datetime;
 
     use super::*;
-    use crate::java_date_time_format::parse_java_datetime_format_items;
+    use crate::datetime::java_date_time_format::parse_java_datetime_format_items;
 
     #[test]
     fn test_parse_datetime_format_missing_time() {

@@ -11,15 +11,16 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/elastic_query_dsl/terms_query.rs); modified for Operon: imports rewritten to crate paths.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 
-use crate::elastic_query_dsl::one_field_map::OneFieldMap;
-use crate::elastic_query_dsl::{ConvertibleToQueryAst, ElasticQueryDslInner};
-use crate::not_nan_f32::NotNaNf32;
-use crate::query_ast::{QueryAst, TermSetQuery};
+use crate::query::elastic_query_dsl::one_field_map::OneFieldMap;
+use crate::query::elastic_query_dsl::{ConvertibleToQueryAst, ElasticQueryDslInner};
+use crate::query::not_nan_f32::NotNaNf32;
+use crate::query::query_ast::{QueryAst, TermSetQuery};
 
 #[derive(PartialEq, Eq, Debug, Deserialize, Clone)]
 #[serde(try_from = "TermsQueryForSerialization")]

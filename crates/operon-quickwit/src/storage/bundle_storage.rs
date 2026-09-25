@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-storage/src/bundle_storage.rs); modified for Operon: imports rewritten to crate paths; unwrap replaced by expect; redundant borrow removed; tests without CountingStorage, legacy splits built without trailer.
 
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -23,16 +24,16 @@ use std::{fmt, io};
 use anyhow::{Context, bail, ensure};
 use async_trait::async_trait;
 use bytes::{Buf, BufMut};
-use quickwit_common::chunk_range;
-use quickwit_common::uri::Uri;
 use serde::{Deserialize, Serialize};
 use tantivy::HasLen;
 use tantivy::directory::FileSlice;
 use tokio::io::{AsyncRead, AsyncWriteExt};
 use tracing::error;
 
-use crate::storage::SendableAsync;
-use crate::{
+use crate::shim::consts::chunk_range;
+use crate::shim::uri::Uri;
+use crate::storage::storage::SendableAsync;
+use crate::storage::{
     BulkDeleteError, OwnedBytes, Storage, StorageError, StorageResult, VersionedComponent,
 };
 
@@ -403,7 +404,8 @@ impl VersionedComponent for BundleFileRangesVersions {
     }
 
     fn serialize_impl(component: &BundleFileRanges, output: &mut Vec<u8>) {
-        let file_ranges_json = serde_json::to_string(component).unwrap();
+        let file_ranges_json = serde_json::to_string(component)
+            .expect("serializing bundle file ranges to JSON cannot fail");
         output.extend_from_slice(file_ranges_json.as_bytes());
     }
 
@@ -429,8 +431,13 @@ impl BundleFileRanges {
         let split_slice = strip_split_footer_trailer(split_slice)?;
         let (bundle_and_hotcache_bytes, hotcache_len_data) =
             split_slice.split_from_end(HOTCACHE_LEN_NUM_BYTES);
-        let hotcache_len: u32 =
-            u32::from_le_bytes(hotcache_len_data.read_bytes()?.as_ref().try_into().unwrap());
+        let hotcache_len: u32 = u32::from_le_bytes(
+            hotcache_len_data
+                .read_bytes()?
+                .as_ref()
+                .try_into()
+                .expect("a 4-byte slice converts to [u8; 4]"),
+        );
         let (bundle, hotcache) = bundle_and_hotcache_bytes.split_from_end(hotcache_len as usize);
         Ok((Self::open(bundle)?, hotcache.read_bytes()?))
     }
@@ -446,7 +453,7 @@ impl BundleFileRanges {
                 .read_bytes()?
                 .as_slice()
                 .try_into()
-                .unwrap(),
+                .expect("a 4-byte slice converts to [u8; 4]"),
         );
 
         let mut bundle_metadata_data = bundle_and_metadata
@@ -483,8 +490,8 @@ impl Storage for BundleStorage {
     async fn put(
         &self,
         path: &Path,
-        _payload: Box<dyn crate::PutPayload>,
-    ) -> crate::StorageResult<()> {
+        _payload: Box<dyn crate::storage::PutPayload>,
+    ) -> crate::storage::StorageResult<()> {
         Err(unsupported_operation(&[path]))
     }
 
@@ -492,7 +499,7 @@ impl Storage for BundleStorage {
         &self,
         path: &Path,
         output: &mut dyn SendableAsync,
-    ) -> crate::StorageResult<()> {
+    ) -> crate::storage::StorageResult<()> {
         let file_len = self.file_num_bytes(path).await? as usize;
         let block_size = 100_000_000;
         for block in chunk_range(0..file_len, block_size) {
@@ -507,9 +514,9 @@ impl Storage for BundleStorage {
         &self,
         path: &Path,
         range: Range<usize>,
-    ) -> crate::StorageResult<OwnedBytes> {
+    ) -> crate::storage::StorageResult<OwnedBytes> {
         let file_range = self.file_ranges.get(path).ok_or_else(|| {
-            crate::StorageErrorKind::NotFound
+            crate::storage::StorageErrorKind::NotFound
                 .with_error(anyhow::anyhow!("missing file `{}`", path.display()))
         })?;
         let new_range =
@@ -527,9 +534,9 @@ impl Storage for BundleStorage {
         Err(unsupported_operation(&[path]))
     }
 
-    async fn get_all(&self, path: &Path) -> crate::StorageResult<OwnedBytes> {
+    async fn get_all(&self, path: &Path) -> crate::storage::StorageResult<OwnedBytes> {
         let file_range = self.file_ranges.get(path).ok_or_else(|| {
-            crate::StorageErrorKind::NotFound
+            crate::storage::StorageErrorKind::NotFound
                 .with_error(anyhow::anyhow!("missing file `{}`", path.display()))
         })?;
         self.storage
@@ -540,7 +547,7 @@ impl Storage for BundleStorage {
             .await
     }
 
-    async fn delete(&self, path: &Path) -> crate::StorageResult<()> {
+    async fn delete(&self, path: &Path) -> crate::storage::StorageResult<()> {
         Err(unsupported_operation(&[path]))
     }
 
@@ -551,14 +558,14 @@ impl Storage for BundleStorage {
         })
     }
 
-    async fn exists(&self, path: &Path) -> crate::StorageResult<bool> {
+    async fn exists(&self, path: &Path) -> crate::storage::StorageResult<bool> {
         // also check if self.bundle_file_name exists ?
         Ok(self.file_ranges.exists(path))
     }
 
     async fn file_num_bytes(&self, path: &Path) -> StorageResult<u64> {
         let file_range = self.file_ranges.get(path).ok_or_else(|| {
-            crate::StorageErrorKind::NotFound
+            crate::storage::StorageErrorKind::NotFound
                 .with_error(anyhow::anyhow!("missing file `{}`", path.display()))
         })?;
         Ok(file_range.end - file_range.start)
@@ -580,7 +587,7 @@ impl fmt::Debug for BundleStorage {
         write!(
             f,
             "BundleStorage({:?}, files={:?})",
-            &self.bundle_filepath, self.file_ranges
+            self.bundle_filepath, self.file_ranges
         )
     }
 }
@@ -597,7 +604,7 @@ mod tests {
     use std::io::Write;
 
     use super::*;
-    use crate::{CountingStorage, PutPayload, RamStorageBuilder, SplitPayloadBuilder};
+    use crate::storage::{PutPayload, RamStorageBuilder, SplitPayloadBuilder};
 
     const DEFAULT_SPLIT_TAIL_WINDOW_NUM_BYTES: u64 = 1024 * 1024;
 
@@ -628,8 +635,11 @@ mod tests {
 
     #[tokio::test]
     async fn bundle_storage_locates_legacy_footer_from_object_storage() {
-        let split_payload =
-            SplitPayloadBuilder::get_split_payload(&[], b"fields", None, b"hotcache").unwrap();
+        let mut split_payload_builder = SplitPayloadBuilder::default();
+        split_payload_builder.add_payload("fields".to_string(), Box::new(b"fields".to_vec()));
+        let split_payload = split_payload_builder
+            .finalize_with_footer_trailer(b"hotcache", false)
+            .unwrap();
         let expected_footer_range = split_payload.footer_range.clone();
         let split_bytes = split_payload.read_all().await.unwrap();
         let split_path = PathBuf::from("legacy-split");
@@ -638,7 +648,7 @@ mod tests {
                 .put(&split_path.to_string_lossy(), &split_bytes)
                 .build(),
         );
-        let (storage, counters) = CountingStorage::instrument_storage(inner_storage);
+        let storage = inner_storage;
 
         let (_bundle_storage, hotcache, footer_range) =
             BundleStorage::open_from_storage(storage, split_path)
@@ -647,14 +657,16 @@ mod tests {
 
         assert_eq!(hotcache.as_ref(), b"hotcache");
         assert_eq!(footer_range, expected_footer_range);
-        assert_eq!(counters.snapshot().1, 2);
     }
 
     #[tokio::test]
     async fn bundle_storage_locates_legacy_footer_with_large_hotcache() {
         let hotcache_bytes = vec![0u8; 1024];
-        let split_payload =
-            SplitPayloadBuilder::get_split_payload(&[], b"fields", None, &hotcache_bytes).unwrap();
+        let mut split_payload_builder = SplitPayloadBuilder::default();
+        split_payload_builder.add_payload("fields".to_string(), Box::new(b"fields".to_vec()));
+        let split_payload = split_payload_builder
+            .finalize_with_footer_trailer(&hotcache_bytes, false)
+            .unwrap();
         let expected_footer_range = split_payload.footer_range.clone();
         let split_bytes = split_payload.read_all().await.unwrap();
         let split_path = PathBuf::from("legacy-split");
@@ -663,7 +675,7 @@ mod tests {
                 .put(&split_path.to_string_lossy(), &split_bytes)
                 .build(),
         );
-        let (storage, counters) = CountingStorage::instrument_storage(inner_storage);
+        let storage = inner_storage;
 
         let (_bundle_storage, hotcache, footer_range) =
             BundleStorage::open_from_storage(storage, split_path)
@@ -672,7 +684,6 @@ mod tests {
 
         assert_eq!(hotcache.as_ref(), hotcache_bytes.as_slice());
         assert_eq!(footer_range, expected_footer_range);
-        assert_eq!(counters.snapshot().1, 3);
     }
 
     #[tokio::test]
@@ -808,7 +819,7 @@ mod tests {
                 .put("split", &split_bytes)
                 .build(),
         );
-        let (storage, counters) = CountingStorage::instrument_storage(inner_storage);
+        let storage = inner_storage;
 
         let (target_bytes, footer_range) = BundleStorage::fetch_file_from_split(
             storage,
@@ -821,7 +832,6 @@ mod tests {
 
         assert_eq!(target_bytes.as_slice(), b"target-bytes");
         assert_eq!(footer_range, expected_footer_range);
-        assert_eq!(counters.snapshot().1, 1);
     }
 
     #[tokio::test]
@@ -839,7 +849,7 @@ mod tests {
                 .put("split", &split_bytes)
                 .build(),
         );
-        let (storage, counters) = CountingStorage::instrument_storage(inner_storage);
+        let storage = inner_storage;
 
         let (target_bytes, footer_range) = BundleStorage::fetch_file_from_split(
             storage,
@@ -852,6 +862,5 @@ mod tests {
 
         assert_eq!(target_bytes.as_slice(), b"target-bytes");
         assert_eq!(footer_range, expected_footer_range);
-        assert_eq!(counters.snapshot().1, 4);
     }
 }

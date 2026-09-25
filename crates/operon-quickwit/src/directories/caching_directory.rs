@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-directories/src/caching_directory.rs); modified for Operon: imports rewritten to crate paths; redundant borrow removed.
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -18,10 +19,11 @@ use std::sync::Arc;
 use std::{fmt, io};
 
 use async_trait::async_trait;
-use quickwit_storage::{ByteRangeCache, FileByteRangeCache};
 use tantivy::directory::error::OpenReadError;
 use tantivy::directory::{FileHandle, OwnedBytes};
 use tantivy::{Directory, HasLen};
+
+use crate::storage::{ByteRangeCache, FileByteRangeCache};
 
 /// The caching directory is a simple cache that wraps another directory.
 #[derive(Clone)]
@@ -67,7 +69,7 @@ impl fmt::Debug for CachingFileHandle {
         write!(
             f,
             "CachingFileHandle(path={:?}, underlying={:?})",
-            &self.path,
+            self.path,
             self.underlying_filehandle.as_ref()
         )
     }
@@ -130,7 +132,7 @@ impl Directory for CachingDirectory {
         Ok(owned_bytes.as_slice().to_vec())
     }
 
-    crate::read_only_directory!();
+    crate::directories::read_only_directory!();
 }
 
 #[cfg(test)]
@@ -143,7 +145,7 @@ mod tests {
     use tantivy::directory::RamDirectory;
 
     use super::CachingDirectory;
-    use crate::DebugProxyDirectory;
+    use crate::directories::DebugProxyDirectory;
 
     #[test]
     fn test_caching_directory() -> tantivy::Result<()> {

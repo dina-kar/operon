@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-directories/src/bundle_directory.rs); modified for Operon: imports rewritten to crate paths.
 
 use std::convert::TryInto;
 use std::fmt::Debug;
@@ -18,13 +19,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::{fmt, io};
 
-use quickwit_storage::{
-    BundleFileRanges, OwnedBytes, Storage, StorageErrorKind, StorageResult,
-    locate_split_footer_range, strip_split_footer_trailer,
-};
 use tantivy::directory::error::OpenReadError;
 use tantivy::directory::{FileHandle, FileSlice};
 use tantivy::{Directory, HasLen};
+
+use crate::storage::{
+    BundleFileRanges, OwnedBytes, Storage, StorageErrorKind, StorageResult,
+    locate_split_footer_range, strip_split_footer_trailer,
+};
 
 /// `BundleDirectory` is a read-only directory that opens a "split bundle" and serves its files
 /// through Tantivy's [`Directory`] interface.
@@ -201,7 +203,7 @@ impl Directory for BundleDirectory {
         Ok(self.file_ranges.exists(path))
     }
 
-    crate::read_only_directory!();
+    crate::directories::read_only_directory!();
 }
 
 #[cfg(test)]
@@ -209,10 +211,9 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
 
-    use quickwit_common::shared_consts::SPLIT_FIELDS_FILE_NAME;
-    use quickwit_storage::{PutPayload, SplitPayloadBuilder};
-
     use super::*;
+    use crate::shim::consts::SPLIT_FIELDS_FILE_NAME;
+    use crate::storage::{PutPayload, SplitPayloadBuilder};
 
     #[tokio::test]
     async fn test_bundle_directory_stats() -> anyhow::Result<()> {

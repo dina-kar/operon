@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/query_ast/regex_query.rs); modified for Operon: imports rewritten to crate paths; Debug for ResolvedRegex and JsonPathPrefix.
 
 use std::sync::Arc;
 
@@ -21,13 +22,14 @@ use tantivy::Term;
 use tantivy::schema::{Field, FieldType, Schema as TantivySchema};
 
 use super::{BuildTantivyAst, BuildTantivyAstContext, QueryAst};
-use crate::query_ast::TantivyQueryAst;
-use crate::tokenizers::TokenizerManager;
-use crate::{InvalidQuery, find_field_or_hit_dynamic};
+use crate::query::query_ast::TantivyQueryAst;
+use crate::query::tokenizers::TokenizerManager;
+use crate::query::{InvalidQuery, find_field_or_hit_dynamic};
 
 /// Result of resolving a `RegexQuery` against a schema.
 /// When a `TokenizerManager` is provided during resolution, the regex is
 /// automatically made case-insensitive if the field's tokenizer lowercases.
+#[derive(Debug)]
 pub struct ResolvedRegex {
     pub field: Field,
     pub json_path: Option<Vec<u8>>,
@@ -184,6 +186,14 @@ mod prefix {
         pub automaton: Arc<A>,
     }
 
+    impl<A> std::fmt::Debug for JsonPathPrefix<A> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("JsonPathPrefix")
+                .field("prefix", &self.prefix)
+                .finish_non_exhaustive()
+        }
+    }
+
     // we need to implement manually because the std adds an unnecessary bound `A: Clone`
     impl<A> Clone for JsonPathPrefix<A> {
         fn clone(&self) -> Self {
@@ -287,7 +297,8 @@ mod prefix {
     }
 
     impl<A: Automaton + Send + Sync + 'static> Query for AutomatonQuery<A>
-    where A::State: Clone
+    where
+        A::State: Clone,
     {
         fn weight(&self, _enabled_scoring: EnableScoring<'_>) -> tantivy::Result<Box<dyn Weight>> {
             Ok(Box::new(AutomatonWeight::<A>::new(
@@ -307,7 +318,7 @@ mod tests {
 
     use super::prefix::JsonPathPrefixState;
     use super::{JsonPathPrefix, RegexQuery, regex_has_case_insensitive_flag};
-    use crate::tokenizers::create_default_quickwit_tokenizer_manager;
+    use crate::query::tokenizers::create_default_quickwit_tokenizer_manager;
 
     #[test]
     fn test_regex_has_case_insensitive_flag() {

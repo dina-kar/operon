@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-storage/src/error.rs); modified for Operon: imports rewritten to crate paths.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -61,7 +62,7 @@ pub enum StorageResolverError {
     /// internal error in third party, etc.
     #[error("failed to open storage {kind:?}: {message}")]
     FailedToOpenStorage {
-        kind: crate::StorageErrorKind,
+        kind: crate::storage::StorageErrorKind,
         message: String,
     },
 }
@@ -106,7 +107,9 @@ pub type StorageResult<T> = Result<T, StorageError>;
 impl StorageError {
     /// Add some context to the wrapper error.
     pub fn add_context<C>(self, ctx: C) -> Self
-    where C: fmt::Display + Send + Sync + 'static {
+    where
+        C: fmt::Display + Send + Sync + 'static,
+    {
         StorageError {
             kind: self.kind,
             source: Arc::new(anyhow::anyhow!("{ctx}").context(self.source)),

@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/elastic_query_dsl/string_or_struct.rs); modified for Operon: reformatted only.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -69,22 +70,30 @@ where
     }
 
     fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
-    where E: de::Error {
+    where
+        E: de::Error,
+    {
         self.visit_str(&v.to_string())
     }
 
     fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
-    where E: de::Error {
+    where
+        E: de::Error,
+    {
         self.visit_str(&v.to_string())
     }
 
     fn visit_str<E>(self, query: &str) -> Result<Self::Value, E>
-    where E: serde::de::Error {
+    where
+        E: serde::de::Error,
+    {
         Ok(T::from(query.to_string()))
     }
 
     fn visit_map<M>(self, map: M) -> Result<T, M::Error>
-    where M: MapAccess<'de> {
+    where
+        M: MapAccess<'de>,
+    {
         Deserialize::deserialize(de::value::MapAccessDeserializer::new(map))
     }
 }

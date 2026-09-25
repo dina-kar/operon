@@ -11,17 +11,19 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/query_ast/phrase_prefix_query.rs); modified for Operon: imports rewritten to crate paths; PhrasePrefixTerms derives Debug.
 
 use serde::{Deserialize, Serialize};
 use tantivy::Term;
 use tantivy::query::PhrasePrefixQuery as TantivyPhrasePrefixQuery;
 use tantivy::schema::{Field, FieldType, Schema as TantivySchema};
 
-use crate::query_ast::tantivy_query_ast::TantivyQueryAst;
-use crate::query_ast::{BuildTantivyAst, BuildTantivyAstContext, FullTextParams, QueryAst};
-use crate::tokenizers::TokenizerManager;
-use crate::{InvalidQuery, find_field_or_hit_dynamic};
+use crate::query::query_ast::tantivy_query_ast::TantivyQueryAst;
+use crate::query::query_ast::{BuildTantivyAst, BuildTantivyAstContext, FullTextParams, QueryAst};
+use crate::query::tokenizers::TokenizerManager;
+use crate::query::{InvalidQuery, find_field_or_hit_dynamic};
 
+#[derive(Debug)]
 pub struct PhrasePrefixTerms {
     pub field: Field,
     pub term_positions: Vec<(usize, Term)>,
@@ -163,8 +165,8 @@ mod tests {
     use tantivy::{Index, doc};
 
     use super::*;
-    use crate::MatchAllOrNone;
-    use crate::query_ast::{BuildTantivyAstContext, FullTextMode};
+    use crate::query::MatchAllOrNone;
+    use crate::query::query_ast::{BuildTantivyAstContext, FullTextMode};
 
     fn raw_text_options() -> TextOptions {
         TextOptions::default()

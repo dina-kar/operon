@@ -11,10 +11,12 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-doc-mapper/src/error.rs); modified for Operon: imports rewritten to crate paths.
 
-use quickwit_query::InvalidQuery;
 use tantivy::schema::DocParsingError as TantivyDocParsingError;
 use thiserror::Error;
+
+use crate::query::InvalidQuery;
 
 /// Failed to parse query.
 #[derive(Error, Debug)]

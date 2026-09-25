@@ -11,18 +11,19 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/query_ast/field_presence.rs); modified for Operon: imports rewritten to crate paths.
 
-use quickwit_common::PathHasher;
-use quickwit_common::shared_consts::FIELD_PRESENCE_FIELD_NAME;
 use serde::{Deserialize, Serialize};
 use tantivy::Term;
 use tantivy::schema::{Field, FieldEntry, IndexRecordOption, Schema as TantivySchema};
 
 use super::tantivy_query_ast::TantivyBoolQuery;
 use super::utils::{DYNAMIC_FIELD_NAME, find_subfields};
-use crate::query_ast::tantivy_query_ast::TantivyQueryAst;
-use crate::query_ast::{BuildTantivyAst, BuildTantivyAstContext, QueryAst};
-use crate::{BooleanOperand, InvalidQuery, find_field_or_hit_dynamic};
+use crate::query::query_ast::tantivy_query_ast::TantivyQueryAst;
+use crate::query::query_ast::{BuildTantivyAst, BuildTantivyAstContext, QueryAst};
+use crate::query::{BooleanOperand, InvalidQuery, find_field_or_hit_dynamic};
+use crate::shim::PathHasher;
+use crate::shim::consts::FIELD_PRESENCE_FIELD_NAME;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct FieldPresenceQuery {

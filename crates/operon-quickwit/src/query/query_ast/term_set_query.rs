@@ -11,14 +11,15 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/query_ast/term_set_query.rs); modified for Operon: imports rewritten to crate paths.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
 use tantivy::Term;
 
-use crate::InvalidQuery;
-use crate::query_ast::{
+use crate::query::InvalidQuery;
+use crate::query::query_ast::{
     BoolQuery, BuildTantivyAst, BuildTantivyAstContext, QueryAst, TantivyQueryAst, TermQuery,
 };
 
@@ -99,7 +100,7 @@ impl TermSetQuery {
                     value: value.to_string(),
                 };
                 let ast = term_query.build_tantivy_ast_call(context)?;
-                let tantivy_query: Box<dyn crate::TantivyQuery> = ast.simplify().into();
+                let tantivy_query: Box<dyn crate::query::TantivyQuery> = ast.simplify().into();
                 tantivy_query.query_terms(&mut |term, _| {
                     terms.insert(term.clone());
                 });
@@ -135,7 +136,7 @@ mod tests {
     use tantivy::schema::{FAST, INDEXED, Schema};
 
     use super::TermSetQuery;
-    use crate::query_ast::{BuildTantivyAst, BuildTantivyAstContext};
+    use crate::query::query_ast::{BuildTantivyAst, BuildTantivyAstContext};
 
     #[test]
     fn test_term_set_query_with_fast_only_field_returns_bool_query() {

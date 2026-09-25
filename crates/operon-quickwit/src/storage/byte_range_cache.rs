@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-storage/src/cache/byte_range_cache.rs); modified for Operon: Debug impls.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -195,6 +196,12 @@ pub struct FileByteRangeCache {
     total_num_stored_bytes: Arc<AtomicU64>,
 }
 
+impl std::fmt::Debug for FileByteRangeCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileByteRangeCache").finish_non_exhaustive()
+    }
+}
+
 impl FileByteRangeCache {
     fn with_total_num_stored_bytes(total_num_stored_bytes: Arc<AtomicU64>) -> Self {
         FileByteRangeCache {
@@ -254,6 +261,14 @@ struct Inner {
     file_caches: Mutex<FxHashMap<PathBuf, FileByteRangeCache>>,
 }
 
+impl std::fmt::Debug for ByteRangeCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ByteRangeCache")
+            .field("num_bytes", &self.get_num_bytes())
+            .finish()
+    }
+}
+
 impl ByteRangeCache {
     /// Creates a slice cache that never removes any entry.
     pub fn with_infinite_capacity() -> Self {
@@ -300,7 +315,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::ByteRangeCache;
-    use crate::OwnedBytes;
+    use crate::storage::OwnedBytes;
 
     #[derive(Debug)]
     enum Operation {

@@ -11,14 +11,15 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/elastic_query_dsl/bool_query.rs); modified for Operon: imports rewritten to crate paths.
 
 use serde::Deserialize;
 use serde_with::formats::PreferMany;
 use serde_with::{DefaultOnNull, OneOrMany, serde_as};
 
-use crate::elastic_query_dsl::{ConvertibleToQueryAst, ElasticQueryDslInner};
-use crate::not_nan_f32::NotNaNf32;
-use crate::query_ast::{self, QueryAst};
+use crate::query::elastic_query_dsl::{ConvertibleToQueryAst, ElasticQueryDslInner};
+use crate::query::not_nan_f32::NotNaNf32;
+use crate::query::query_ast::{self, QueryAst};
 
 /// # Unsupported features
 /// - named queries
@@ -178,12 +179,12 @@ impl From<BoolQuery> for ElasticQueryDslInner {
 #[cfg(test)]
 mod tests {
     use super::parse_percentage;
-    use crate::elastic_query_dsl::ConvertibleToQueryAst;
-    use crate::elastic_query_dsl::bool_query::{
+    use crate::query::elastic_query_dsl::ConvertibleToQueryAst;
+    use crate::query::elastic_query_dsl::bool_query::{
         BoolQuery, MinimumShouldMatch, MinimumShouldMatchResolved,
     };
-    use crate::elastic_query_dsl::term_query::term_query_from_field_value;
-    use crate::query_ast::QueryAst;
+    use crate::query::elastic_query_dsl::term_query::term_query_from_field_value;
+    use crate::query::query_ast::QueryAst;
 
     #[test]
     fn test_dsl_bool_query_deserialize_simple() {

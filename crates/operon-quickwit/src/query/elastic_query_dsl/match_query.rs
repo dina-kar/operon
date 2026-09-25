@@ -11,15 +11,16 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/elastic_query_dsl/match_query.rs); modified for Operon: imports rewritten to crate paths.
 
 use serde::Deserialize;
 
 use super::LeniencyBool;
-use crate::elastic_query_dsl::{
+use crate::query::elastic_query_dsl::{
     ConvertibleToQueryAst, ElasticQueryDslInner, StringOrStructForSerialization,
 };
-use crate::query_ast::{FullTextParams, FullTextQuery, QueryAst};
-use crate::{BooleanOperand, MatchAllOrNone, OneFieldMap};
+use crate::query::query_ast::{FullTextParams, FullTextQuery, QueryAst};
+use crate::query::{BooleanOperand, MatchAllOrNone, OneFieldMap};
 
 /// `MatchQuery` as defined in
 /// <https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-match-query.html>
@@ -90,7 +91,7 @@ impl From<String> for MatchQueryParams {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query_ast::FullTextMode;
+    use crate::query::query_ast::FullTextMode;
 
     #[test]
     fn test_deserialize_match_query_string() {
@@ -132,7 +133,7 @@ mod tests {
             params: MatchQueryParams {
                 query: "hello".to_string(),
                 operator: BooleanOperand::And,
-                zero_terms_query: crate::MatchAllOrNone::MatchAll,
+                zero_terms_query: crate::query::MatchAllOrNone::MatchAll,
                 lenient: false,
             },
         };

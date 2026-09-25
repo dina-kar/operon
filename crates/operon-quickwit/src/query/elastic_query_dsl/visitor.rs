@@ -11,13 +11,14 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/elastic_query_dsl/visitor.rs); modified for Operon: imports rewritten to crate paths.
 
-use crate::match_all::MatchAllQuery;
-use crate::match_none::MatchNoneQuery;
-use crate::query_string_query::QueryStringQuery;
-use crate::range_query::RangeQuery;
-use crate::term_query::TermQuery;
-use crate::QueryDsl;
+use crate::query::match_all::MatchAllQuery;
+use crate::query::match_none::MatchNoneQuery;
+use crate::query::query_string_query::QueryStringQuery;
+use crate::query::range_query::RangeQuery;
+use crate::query::term_query::TermQuery;
+use crate::query::QueryDsl;
 
 pub trait QueryDslVisitor<'a> {
     type Err;

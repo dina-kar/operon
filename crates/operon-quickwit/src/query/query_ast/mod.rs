@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/query_ast/mod.rs); modified for Operon: CalcField variant removed for tantivy 0.26.2; BuildTantivyAstContext derives Debug; imports rewritten to crate paths.
 
 use std::collections::HashSet;
 
@@ -19,11 +20,10 @@ use tantivy::Term;
 use tantivy::query::BoostQuery as TantivyBoostQuery;
 use tantivy::schema::Schema as TantivySchema;
 
-use crate::tokenizers::TokenizerManager;
+use crate::query::tokenizers::TokenizerManager;
 
 mod bool_query;
 mod cache_node;
-mod calc_field_query;
 mod field_presence;
 mod full_text_query;
 mod phrase_prefix_query;
@@ -40,7 +40,6 @@ mod wildcard_query;
 
 pub use bool_query::BoolQuery;
 pub use cache_node::{CacheNode, HitSet, PredicateCache, PredicateCacheInjector};
-pub use calc_field_query::CalcFieldQuery;
 pub use field_presence::FieldPresenceQuery;
 pub use full_text_query::{FullTextMode, FullTextParams, FullTextQuery};
 pub use phrase_prefix_query::PhrasePrefixQuery;
@@ -53,7 +52,7 @@ pub use user_input_query::UserInputQuery;
 pub use visitor::{QueryAstTransformer, QueryAstVisitor};
 pub use wildcard_query::WildcardQuery;
 
-use crate::{BooleanOperand, InvalidQuery, NotNaNf32};
+use crate::query::{BooleanOperand, InvalidQuery, NotNaNf32};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type")]
@@ -76,7 +75,6 @@ pub enum QueryAst {
         boost: NotNaNf32,
     },
     Cache(CacheNode),
-    CalcField(CalcFieldQuery),
 }
 
 impl QueryAst {
@@ -114,8 +112,7 @@ impl QueryAst {
             | ast @ QueryAst::FieldPresence(_)
             | ast @ QueryAst::Range(_)
             | ast @ QueryAst::Wildcard(_)
-            | ast @ QueryAst::Regex(_)
-            | ast @ QueryAst::CalcField(_) => Ok(ast),
+            | ast @ QueryAst::Regex(_) => Ok(ast),
             QueryAst::UserInput(user_text_query) => {
                 user_text_query.parse_user_query(default_search_fields)
             }
@@ -180,6 +177,7 @@ impl QueryAst {
 }
 
 /// Context used when building a tantivy ast.
+#[derive(Debug)]
 pub struct BuildTantivyAstContext<'a> {
     pub schema: &'a TantivySchema,
     pub tokenizer_manager: &'a TokenizerManager,
@@ -193,7 +191,7 @@ impl<'a> BuildTantivyAstContext<'a> {
 
         // we do that to have a TokenizerManager with a long enough lifetime
         static DEFAULT_TOKENIZER_MANAGER: LazyLock<TokenizerManager> =
-            LazyLock::new(crate::create_default_quickwit_tokenizer_manager);
+            LazyLock::new(crate::query::create_default_quickwit_tokenizer_manager);
 
         BuildTantivyAstContext {
             schema,
@@ -263,9 +261,6 @@ impl BuildTantivyAst for QueryAst {
             QueryAst::Wildcard(wildcard) => wildcard.build_tantivy_ast_call(context),
             QueryAst::Regex(regex) => regex.build_tantivy_ast_call(context),
             QueryAst::Cache(cache_node) => cache_node.build_tantivy_ast_call(context),
-            QueryAst::CalcField(calc_field_query) => {
-                calc_field_query.build_tantivy_ast_call(context)
-            }
         }
     }
 }
@@ -274,7 +269,7 @@ impl QueryAst {
     pub fn build_tantivy_query(
         &self,
         context: &BuildTantivyAstContext,
-    ) -> Result<Box<dyn crate::TantivyQuery>, InvalidQuery> {
+    ) -> Result<Box<dyn crate::query::TantivyQuery>, InvalidQuery> {
         let tantivy_query_ast = self.build_tantivy_ast_call(context)?;
         Ok(tantivy_query_ast.simplify().into())
     }
@@ -287,7 +282,7 @@ impl QueryAst {
     pub fn build_tantivy_query_and_required_terms(
         &self,
         context: &BuildTantivyAstContext,
-    ) -> Result<(Box<dyn crate::TantivyQuery>, HashSet<Term>), InvalidQuery> {
+    ) -> Result<(Box<dyn crate::query::TantivyQuery>, HashSet<Term>), InvalidQuery> {
         let tantivy_query_ast = self.build_tantivy_ast_call(context)?.simplify();
         let mut required_terms = HashSet::new();
         required_terms::collect_required_terms(
@@ -357,12 +352,12 @@ pub fn query_ast_from_user_text(user_text: &str, default_fields: Option<Vec<Stri
 
 #[cfg(test)]
 mod tests {
-    use crate::query_ast::tantivy_query_ast::TantivyQueryAst;
-    use crate::query_ast::{
+    use crate::query::query_ast::tantivy_query_ast::TantivyQueryAst;
+    use crate::query::query_ast::{
         BoolQuery, BuildTantivyAst, BuildTantivyAstContext, QueryAst, UserInputQuery,
         query_ast_from_user_text,
     };
-    use crate::{BooleanOperand, InvalidQuery};
+    use crate::query::{BooleanOperand, InvalidQuery};
 
     #[test]
     fn test_user_query_not_parsed() {
@@ -435,7 +430,7 @@ mod tests {
         let query_ast: QueryAst = UserInputQuery {
             user_text: "field:hello field:toto".to_string(),
             default_fields: None,
-            default_operator: crate::BooleanOperand::And,
+            default_operator: crate::query::BooleanOperand::And,
             lenient: false,
         }
         .parse_user_query(&[])
@@ -451,7 +446,7 @@ mod tests {
         let query_ast: QueryAst = UserInputQuery {
             user_text: "field:hello field:toto".to_string(),
             default_fields: None,
-            default_operator: crate::BooleanOperand::Or,
+            default_operator: crate::query::BooleanOperand::Or,
             lenient: false,
         }
         .parse_user_query(&[])

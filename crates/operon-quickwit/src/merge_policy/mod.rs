@@ -11,28 +11,20 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-indexing/src/merge_policy/mod.rs); modified for Operon: MergeTask, MergeSource, TrackedObject, MergePermit, the other policies and the settings constructors removed; SplitMetadata and SplitId from crate::shim; actor-based test helpers removed.
 
-mod const_write_amplification;
-mod nop_merge_policy;
+pub mod config;
 mod stable_log_merge_policy;
 
 use std::fmt;
-use std::ops::Deref;
-use std::sync::Arc;
 
-pub(crate) use const_write_amplification::ConstWriteAmplificationMergePolicy;
+pub use config::StableLogMergePolicyConfig;
 use itertools::Itertools;
-pub use nop_merge_policy::NopMergePolicy;
-use quickwit_config::IndexingSettings;
-use quickwit_config::merge_policy_config::MergePolicyConfig;
-use quickwit_metastore::{SplitMaturity, SplitMetadata};
-use quickwit_proto::types::SplitId;
 use serde::Serialize;
-pub(crate) use stable_log_merge_policy::StableLogMergePolicy;
-use tantivy::TrackedObject;
+pub use stable_log_merge_policy::StableLogMergePolicy;
 use tracing::{Span, info_span};
 
-use crate::actors::MergePermit;
+use crate::shim::{SplitId, SplitMaturity, SplitMetadata};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum MergeOperationType {
@@ -43,59 +35,6 @@ pub enum MergeOperationType {
 impl fmt::Display for MergeOperationType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{self:?}")
-    }
-}
-
-pub struct MergeTask {
-    pub merge_operation: TrackedObject<MergeOperation>,
-    pub(crate) _merge_permit: MergePermit,
-}
-
-impl MergeTask {
-    #[cfg(any(test, feature = "testsuite"))]
-    pub fn from_merge_operation_for_test(merge_operation: MergeOperation) -> MergeTask {
-        let inventory = tantivy::Inventory::default();
-        let tracked_merge_operation = inventory.track(merge_operation);
-        MergeTask {
-            merge_operation: tracked_merge_operation,
-            _merge_permit: MergePermit::for_test(),
-        }
-    }
-}
-
-/// Carries either a scheduled merge task (old pipeline, with RAII permit + inventory tracking)
-/// or a bare operation (compactor pipeline, which manages concurrency and dedup independently).
-pub enum MergeSource {
-    Task(MergeTask),
-    Operation(MergeOperation),
-}
-
-impl MergeSource {
-    pub fn as_operation(&self) -> &MergeOperation {
-        match self {
-            MergeSource::Task(task) => task,
-            MergeSource::Operation(op) => op,
-        }
-    }
-}
-
-impl fmt::Debug for MergeSource {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.as_operation().fmt(f)
-    }
-}
-
-impl fmt::Debug for MergeTask {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.merge_operation.as_ref().fmt(f)
-    }
-}
-
-impl Deref for MergeTask {
-    type Target = MergeOperation;
-
-    fn deref(&self) -> &Self::Target {
-        self.merge_operation.as_ref()
     }
 }
 
@@ -218,51 +157,6 @@ pub trait MergePolicy: Send + Sync + fmt::Debug {
     fn check_is_valid(&self, _merge_op: &MergeOperation, _remaining_splits: &[SplitMetadata]) {}
 }
 
-pub fn merge_policy_from_settings(settings: &IndexingSettings) -> Arc<dyn MergePolicy> {
-    match settings.merge_policy.clone() {
-        MergePolicyConfig::Nop => Arc::new(NopMergePolicy),
-        MergePolicyConfig::ConstWriteAmplification(config) => {
-            let merge_policy =
-                ConstWriteAmplificationMergePolicy::new(config, settings.split_num_docs_target);
-            Arc::new(merge_policy)
-        }
-        MergePolicyConfig::StableLog(config) => {
-            let merge_policy = StableLogMergePolicy::new(config, settings.split_num_docs_target);
-            Arc::new(merge_policy)
-        }
-    }
-}
-
-pub fn default_merge_policy() -> Arc<dyn MergePolicy> {
-    let indexing_settings = IndexingSettings::default();
-    merge_policy_from_settings(&indexing_settings)
-}
-
-/// Creates a Parquet merge policy from the index's `ParquetMergePolicyConfig`.
-#[cfg(feature = "metrics")]
-pub fn parquet_merge_policy_from_settings(
-    settings: &IndexingSettings,
-) -> Arc<dyn quickwit_parquet_engine::merge::policy::ParquetMergePolicy> {
-    let config = settings.parquet_merge_policy();
-    let engine_config = quickwit_parquet_engine::merge::policy::ParquetMergePolicyConfig {
-        merge_factor: config.merge_factor,
-        max_merge_factor: config.max_merge_factor,
-        max_merge_ops: config.max_merge_ops,
-        target_split_size_bytes: config.target_split_size_bytes,
-        maturation_period: config.maturation_period,
-        max_finalize_merge_operations: config.max_finalize_merge_operations,
-    };
-    Arc::new(
-        quickwit_parquet_engine::merge::policy::ConstWriteAmplificationParquetMergePolicy::new(
-            engine_config,
-        ),
-    )
-}
-
-pub fn nop_merge_policy() -> Arc<dyn MergePolicy> {
-    Arc::new(NopMergePolicy)
-}
-
 struct SplitShortDebug<'a>(&'a SplitMetadata);
 
 impl fmt::Debug for SplitShortDebug<'_> {
@@ -282,23 +176,14 @@ fn splits_short_debug(splits: &[SplitMetadata]) -> Vec<SplitShortDebug<'_>> {
 pub mod tests {
 
     use std::collections::hash_map::DefaultHasher;
-    use std::collections::{BTreeSet, HashMap};
     use std::hash::{Hash as _, Hasher};
     use std::ops::RangeInclusive;
 
     use proptest::prelude::*;
-    use quickwit_actors::Universe;
-    use quickwit_proto::indexing::{IndexingPipelineId, MergePipelineId};
-    use quickwit_proto::types::{IndexUid, NodeId, PipelineUid};
     use rand::seq::SliceRandom;
     use time::OffsetDateTime;
 
     use super::*;
-    use crate::actors::{
-        MergePlanner, MergeSchedulerService, MergeSplitDownloader, RunFinalizeMergePolicyAndQuit,
-        merge_split_attrs,
-    };
-    use crate::models::{NewSplits, create_split_metadata};
 
     #[test]
     fn test_score() {
@@ -453,154 +338,5 @@ pub mod tests {
                 merge_policy.check_is_valid(merge_op, &splits[..]);
             }
         });
-    }
-
-    fn merge_tags(splits: &[SplitMetadata]) -> BTreeSet<String> {
-        splits
-            .iter()
-            .flat_map(|split| split.tags.iter().cloned())
-            .collect()
-    }
-
-    fn fake_merge(merge_policy: &Arc<dyn MergePolicy>, splits: &[SplitMetadata]) -> SplitMetadata {
-        assert!(!splits.is_empty(), "Split list should not be empty.");
-        let merged_split_id = SplitId::new();
-        let tags = merge_tags(splits);
-        let pipeline_id = MergePipelineId {
-            node_id: NodeId::from_str("test_node"),
-            index_uid: IndexUid::new_with_random_ulid("test_index"),
-            source_id: "test_source".to_string(),
-        };
-        let split_attrs = merge_split_attrs(pipeline_id, merged_split_id, splits).unwrap();
-        create_split_metadata(merge_policy, None, &split_attrs, tags, 0..0)
-    }
-
-    fn apply_merge(
-        merge_policy: &Arc<dyn MergePolicy>,
-        split_index: &mut HashMap<String, SplitMetadata>,
-        merge_op: &MergeOperation,
-    ) -> SplitMetadata {
-        for split in merge_op.splits_as_slice() {
-            assert!(split_index.remove(split.split_id().as_str()).is_some());
-        }
-        let merged_split = fake_merge(merge_policy, merge_op.splits_as_slice());
-        split_index.insert(merged_split.split_id().to_string(), merged_split.clone());
-        merged_split
-    }
-
-    async fn aux_test_simulate_merge_planner(
-        merge_policy: Arc<dyn MergePolicy>,
-        incoming_splits: Vec<SplitMetadata>,
-        check_final_configuration: &dyn Fn(&[SplitMetadata]),
-    ) -> anyhow::Result<Vec<SplitMetadata>> {
-        let universe = Universe::new();
-        let (merge_task_mailbox, merge_task_inbox) =
-            universe.create_test_mailbox::<MergeSplitDownloader>();
-        let pipeline_id = IndexingPipelineId {
-            index_uid: IndexUid::new_with_random_ulid("test-index"),
-            source_id: "test-source".to_string(),
-            node_id: NodeId::from_str("test-node"),
-            pipeline_uid: PipelineUid::default(),
-        };
-        let merge_planner = MergePlanner::new(
-            &pipeline_id.merge_pipeline_id(),
-            Vec::new(),
-            merge_policy.clone(),
-            merge_task_mailbox,
-            universe.get_or_spawn_one::<MergeSchedulerService>(),
-        );
-        let mut split_index: HashMap<String, SplitMetadata> = HashMap::default();
-        let (merge_planner_mailbox, merge_planner_handler) =
-            universe.spawn_builder().spawn(merge_planner);
-
-        for split in incoming_splits {
-            split_index.insert(split.split_id().to_string(), split.clone());
-            merge_planner_mailbox
-                .send_message(NewSplits {
-                    new_splits: vec![split],
-                })
-                .await?;
-            loop {
-                let obs = merge_planner_handler.process_pending_and_observe().await;
-                assert_eq!(obs.obs_type, quickwit_actors::ObservationType::Alive);
-                let merge_sources = merge_task_inbox.drain_for_test_typed::<MergeSource>();
-                if merge_sources.is_empty() {
-                    break;
-                }
-                let new_splits: Vec<SplitMetadata> = merge_sources
-                    .into_iter()
-                    .map(|source| {
-                        apply_merge(&merge_policy, &mut split_index, source.as_operation())
-                    })
-                    .collect();
-                merge_planner_mailbox
-                    .send_message(NewSplits { new_splits })
-                    .await?;
-            }
-            let split_metadatas: Vec<SplitMetadata> = split_index.values().cloned().collect();
-            check_final_configuration(&split_metadatas);
-        }
-
-        merge_planner_mailbox
-            .send_message(RunFinalizeMergePolicyAndQuit)
-            .await
-            .unwrap();
-
-        let obs = merge_planner_handler.process_pending_and_observe().await;
-        assert_eq!(obs.obs_type, quickwit_actors::ObservationType::PostMortem);
-
-        let merge_sources = merge_task_inbox.drain_for_test_typed::<MergeSource>();
-        for source in merge_sources {
-            apply_merge(&merge_policy, &mut split_index, source.as_operation());
-        }
-
-        let split_metadatas: Vec<SplitMetadata> = split_index.values().cloned().collect();
-
-        universe.assert_quit().await;
-        Ok(split_metadatas)
-    }
-
-    /// Mock split meta helper.
-    fn mock_split_meta_from_num_docs(
-        time_range: RangeInclusive<i64>,
-        num_docs: u64,
-        maturity: SplitMaturity,
-    ) -> SplitMetadata {
-        SplitMetadata {
-            split_id: SplitId::new(),
-            partition_id: 3u64,
-            num_docs: num_docs as usize,
-            uncompressed_docs_size_in_bytes: 256u64 * num_docs,
-            time_range: Some(time_range),
-            create_timestamp: OffsetDateTime::now_utc().unix_timestamp(),
-            maturity,
-            tags: BTreeSet::from_iter(vec!["tenant_id:1".to_string(), "tenant_id:2".to_string()]),
-            footer_offsets: 0..100,
-            index_uid: IndexUid::new_with_random_ulid("test-index"),
-            source_id: "test-source".to_string(),
-            node_id: "test-node".to_string(),
-            ..Default::default()
-        }
-    }
-
-    pub async fn aux_test_simulate_merge_planner_num_docs(
-        merge_policy: Arc<dyn MergePolicy>,
-        batch_num_docs: &[usize],
-        check_final_configuration: &dyn Fn(&[SplitMetadata]),
-    ) -> anyhow::Result<Vec<SplitMetadata>> {
-        let split_metadatas: Vec<SplitMetadata> = batch_num_docs
-            .iter()
-            .cloned()
-            .enumerate()
-            .map(|(split_ord, num_docs)| {
-                let time_first = split_ord as i64 * 1_000;
-                let time_last = time_first + 999;
-                let time_range = time_first..=time_last;
-                let time_to_maturity = merge_policy.split_maturity(num_docs, 0);
-                mock_split_meta_from_num_docs(time_range, num_docs as u64, time_to_maturity)
-            })
-            .collect();
-        aux_test_simulate_merge_planner(merge_policy, split_metadatas, check_final_configuration)
-            .await
     }
 }

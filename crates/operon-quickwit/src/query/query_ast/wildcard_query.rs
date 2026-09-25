@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/query_ast/wildcard_query.rs); modified for Operon: imports rewritten to crate paths.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -21,9 +22,11 @@ use tantivy::Term;
 use tantivy::schema::{Field, FieldType, Schema as TantivySchema};
 
 use super::{BuildTantivyAst, QueryAst};
-use crate::query_ast::{AutomatonQuery, BuildTantivyAstContext, JsonPathPrefix, TantivyQueryAst};
-use crate::tokenizers::TokenizerManager;
-use crate::{InvalidQuery, find_field_or_hit_dynamic};
+use crate::query::query_ast::{
+    AutomatonQuery, BuildTantivyAstContext, JsonPathPrefix, TantivyQueryAst,
+};
+use crate::query::tokenizers::TokenizerManager;
+use crate::query::{InvalidQuery, find_field_or_hit_dynamic};
 
 /// A Wildcard query allows to match 'bond' with a query like 'b*d'.
 #[derive(PartialEq, Eq, Debug, Serialize, Deserialize, Clone)]
@@ -211,7 +214,7 @@ mod tests {
     use tantivy::schema::{TextFieldIndexing, TextOptions};
 
     use super::*;
-    use crate::create_default_quickwit_tokenizer_manager;
+    use crate::query::create_default_quickwit_tokenizer_manager;
 
     fn single_text_field_schema(field_name: &str, tokenizer: &str) -> TantivySchema {
         let mut schema_builder = TantivySchema::builder();

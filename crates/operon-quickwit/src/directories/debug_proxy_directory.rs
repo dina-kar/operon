@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-directories/src/debug_proxy_directory.rs); modified for Operon: imports rewritten to crate paths; redundant borrow removed.
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -180,7 +181,7 @@ impl<D: Directory> FileHandle for DebugProxyFileHandle<D> {
 
 impl<D: Directory> fmt::Debug for DebugProxyFileHandle<D> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "DebugProxyFileHandle({:?})", &self.underlying)
+        write!(f, "DebugProxyFileHandle({:?})", self.underlying)
     }
 }
 
@@ -212,7 +213,7 @@ impl<D: Directory> Directory for DebugProxyDirectory<D> {
         Ok(payload.to_vec())
     }
 
-    crate::read_only_directory!();
+    crate::directories::read_only_directory!();
 }
 
 #[cfg(test)]
@@ -243,7 +244,8 @@ mod tests {
         let test_path = Path::new(TEST_PATH);
         let read_data = debug_proxy.atomic_read(test_path)?;
         assert_eq!(&read_data[..], TEST_PAYLOAD);
-        let operations: Vec<crate::ReadOperation> = debug_proxy.drain_read_operations().collect();
+        let operations: Vec<crate::directories::ReadOperation> =
+            debug_proxy.drain_read_operations().collect();
         println!("operations {operations:?}");
         assert_eq!(operations.len(), 1);
         let op0 = &operations[0];
@@ -259,7 +261,8 @@ mod tests {
         let debug_proxy = DebugProxyDirectory::wrap(make_test_directory()?);
         let read_data = debug_proxy.open_read(test_path)?;
         assert_eq!(read_data.read_bytes_slice(1..3)?.as_slice(), b"el");
-        let operations: Vec<crate::ReadOperation> = debug_proxy.drain_read_operations().collect();
+        let operations: Vec<crate::directories::ReadOperation> =
+            debug_proxy.drain_read_operations().collect();
         assert_eq!(operations.len(), 1);
         let op = &operations[0];
         assert_eq!(op.path, test_path);
@@ -281,7 +284,8 @@ mod tests {
                 .as_slice(),
             b"el"
         );
-        let operations: Vec<crate::ReadOperation> = debug_proxy.drain_read_operations().collect();
+        let operations: Vec<crate::directories::ReadOperation> =
+            debug_proxy.drain_read_operations().collect();
         assert_eq!(operations.len(), 1);
         let op = &operations[0];
         assert_eq!(op.path, test_path);
