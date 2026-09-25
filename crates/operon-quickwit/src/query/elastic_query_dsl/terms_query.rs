@@ -1,0 +1,150 @@
+// Copyright 2021-Present Datadog, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::Deserialize;
+
+use crate::elastic_query_dsl::one_field_map::OneFieldMap;
+use crate::elastic_query_dsl::{ConvertibleToQueryAst, ElasticQueryDslInner};
+use crate::not_nan_f32::NotNaNf32;
+use crate::query_ast::{QueryAst, TermSetQuery};
+
+#[derive(PartialEq, Eq, Debug, Deserialize, Clone)]
+#[serde(try_from = "TermsQueryForSerialization")]
+pub struct TermsQuery {
+    pub boost: Option<NotNaNf32>,
+    pub field: String,
+    pub values: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct TermsQueryForSerialization {
+    #[serde(default)]
+    boost: Option<NotNaNf32>,
+    #[serde(flatten)]
+    capture_other: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TermValue {
+    I64(i64),
+    U64(u64),
+    Str(String),
+}
+
+impl From<TermValue> for String {
+    fn from(term_value: TermValue) -> String {
+        match term_value {
+            TermValue::I64(val) => val.to_string(),
+            TermValue::U64(val) => val.to_string(),
+            TermValue::Str(val) => val,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OneOrMany {
+    One(TermValue),
+    Many(Vec<TermValue>),
+}
+
+impl From<OneOrMany> for Vec<String> {
+    fn from(one_or_many: OneOrMany) -> Vec<String> {
+        match one_or_many {
+            OneOrMany::One(one_value) => vec![String::from(one_value)],
+            OneOrMany::Many(values) => values.into_iter().map(String::from).collect(),
+        }
+    }
+}
+
+impl TryFrom<TermsQueryForSerialization> for TermsQuery {
+    type Error = serde_json::Error;
+
+    fn try_from(value: TermsQueryForSerialization) -> serde_json::Result<TermsQuery> {
+        let one_field: OneFieldMap<OneOrMany> = serde_json::from_value(value.capture_other)?;
+        let one_field_values: Vec<String> = one_field.value.into();
+        Ok(TermsQuery {
+            boost: value.boost,
+            field: one_field.field,
+            values: one_field_values,
+        })
+    }
+}
+
+impl ConvertibleToQueryAst for TermsQuery {
+    fn convert_to_query_ast(self) -> anyhow::Result<QueryAst> {
+        let mut terms_per_field = BTreeMap::new();
+        let values_set: BTreeSet<String> = self.values.into_iter().collect();
+        terms_per_field.insert(self.field, values_set);
+
+        let term_set_query = TermSetQuery { terms_per_field };
+        let query_ast: QueryAst = term_set_query.into();
+
+        Ok(query_ast.boost(self.boost))
+    }
+}
+
+impl From<TermsQuery> for ElasticQueryDslInner {
+    fn from(term_query: TermsQuery) -> Self {
+        Self::Terms(term_query)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_terms_query_simple() {
+        let terms_query_json = r#"{ "user.id": ["hello", "happy"] }"#;
+        let terms_query: TermsQuery = serde_json::from_str(terms_query_json).unwrap();
+        assert_eq!(&terms_query.field, "user.id");
+        assert_eq!(
+            &terms_query.values[..],
+            &["hello".to_string(), "happy".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_terms_query_single_term_not_array() {
+        let terms_query_json = r#"{ "user.id": "hello"}"#;
+        let terms_query: TermsQuery = serde_json::from_str(terms_query_json).unwrap();
+        assert_eq!(&terms_query.field, "user.id");
+        assert_eq!(&terms_query.values[..], &["hello".to_string()]);
+    }
+
+    #[test]
+    fn test_terms_query_not_string() {
+        let terms_query_json = r#"{ "user.id": [1, 2] }"#;
+        let terms_query: TermsQuery = serde_json::from_str(terms_query_json).unwrap();
+        assert_eq!(&terms_query.field, "user.id");
+        assert_eq!(&terms_query.values[..], &["1".to_string(), "2".to_string()]);
+    }
+
+    #[test]
+    fn test_terms_query_single_term_boost() {
+        let terms_query_json = r#"{ "user.id": ["hello", "happy"], "boost": 2 }"#;
+        let terms_query: TermsQuery = serde_json::from_str(terms_query_json).unwrap();
+        assert_eq!(&terms_query.field, "user.id");
+        assert_eq!(
+            &terms_query.values[..],
+            &["hello".to_string(), "happy".to_string()]
+        );
+        let boost: f32 = terms_query.boost.unwrap().into();
+        assert!((boost - 2.0f32).abs() < 0.0001f32);
+    }
+}
