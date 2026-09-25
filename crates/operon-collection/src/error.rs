@@ -1,4 +1,6 @@
+use operon_link::LinkError;
 use operon_meta::MetaError;
+use operon_pk::PkError;
 use operon_quickwit::storage::StorageErrorKind;
 use operon_store::StoreError;
 use operon_text::TextError;
@@ -43,6 +45,12 @@ pub enum CollectionError {
     Store(#[from] StoreError),
     #[error("metastore: {0}")]
     Meta(#[from] MetaError),
+    #[error("pk index: {0}")]
+    Pk(#[from] PkError),
+    #[error("text: {0}")]
+    Text(#[from] TextError),
+    #[error("record codec: {0}")]
+    Codec(#[from] CodecError),
     #[error("corrupt collection data: {0}")]
     Corrupt(String),
     #[error("not found: {0}")]
@@ -51,8 +59,10 @@ pub enum CollectionError {
     /// (Ruling 12).
     #[error("collection manifest version {0} is no longer retained")]
     ManifestGone(u64),
-    #[error("text: {0}")]
-    Text(#[from] TextError),
+    /// The operation cannot proceed now, for example a commit that took
+    /// longer than `max_commit_delay`. Retry later.
+    #[error("blocked: {0}")]
+    Blocked(String),
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -67,7 +77,10 @@ impl CollectionError {
     ///   whose outcome Lance could not verify, too much write contention, or a
     ///   timeout. Retrying an ambiguous detached commit is always safe: if the
     ///   first attempt landed, it is an orphan no manifest references (R7);
-    /// - a split or bitmap read that failed with an I/O error.
+    /// - a split or bitmap read that failed with an I/O error;
+    /// - a PK index whose object store failed, or whose handle was closed
+    ///   (the next attempt opens a new one);
+    /// - a blocked operation.
     pub fn is_retryable(&self) -> bool {
         match self {
             CollectionError::Store(err) => err.is_retryable(),
@@ -86,11 +99,32 @@ impl CollectionError {
                     )
             }
             CollectionError::Text(TextError::Storage(err)) => err.kind() == StorageErrorKind::Io,
+            CollectionError::Pk(err) => matches!(err, PkError::Store(_) | PkError::Closed),
+            CollectionError::Blocked(_) => true,
             CollectionError::Text(_)
+            | CollectionError::Codec(_)
             | CollectionError::Corrupt(_)
             | CollectionError::NotFound(_)
             | CollectionError::ManifestGone(_)
             | CollectionError::Internal(_) => false,
+        }
+    }
+}
+
+impl From<CollectionError> for LinkError {
+    /// A metastore error stays one, `NotFound` and `Blocked` become the link
+    /// framework's (a dropped collection, a commit that took too long), and
+    /// every other error is a [`LinkError::Target`] that says whether it is
+    /// retryable.
+    fn from(err: CollectionError) -> Self {
+        match err {
+            CollectionError::Meta(err) => LinkError::Meta(err),
+            CollectionError::NotFound(what) => LinkError::NotFound(what),
+            CollectionError::Blocked(why) => LinkError::Blocked(why),
+            other => LinkError::Target {
+                retryable: other.is_retryable(),
+                source: Box::new(other),
+            },
         }
     }
 }

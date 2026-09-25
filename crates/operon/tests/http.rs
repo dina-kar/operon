@@ -728,6 +728,146 @@ async fn a_link_is_created_once_and_sums_its_stream() {
     server.shutdown().await.unwrap();
 }
 
+/// M1.1 Task 10: the link description of a collection's implicit link shows
+/// its target's version and applied offsets, read through the registry.
+#[tokio::test]
+async fn the_link_endpoint_shows_version_and_applied_for_collections() {
+    use std::sync::Arc;
+
+    use operon_collection::{
+        CollectionConfig, CollectionContext, CollectionSchema, CollectionTargetFactory,
+        CollectionWriter, DocOp, Document, DynamicMapping, LanceConfig, LanceEnv, ManifestCache,
+        PrimaryKey,
+    };
+    use operon_link::{
+        CounterTargetFactory, LinkApplySource, LinkConfig, MAX_COMMIT_DELAY, TargetRegistry,
+    };
+    use operon_log::{LogConfig, LogReader, LogWriter};
+    use operon_meta::{MetaClient, MetaClientConfig, MetaConfig, MetaNode, SystemClock};
+    use operon_store::Store;
+
+    let dir = TempDir::new().unwrap();
+    let store = Store::in_memory();
+    let node = MetaNode::start(
+        MetaConfig::new(1, dir.path().join("meta"), store.clone()),
+        &operon_meta::Router::new(),
+    )
+    .await
+    .unwrap();
+    node.initialize([1]).await.unwrap();
+    node.wait_for_leader(WAIT).await.unwrap();
+    let meta = MetaClient::new(
+        node.clone(),
+        vec![],
+        Arc::new(SystemClock),
+        MetaClientConfig::default(),
+    );
+    let writer = LogWriter::start(
+        meta.clone(),
+        store.clone(),
+        LogConfig {
+            flush_interval: Duration::from_millis(20),
+            ..LogConfig::new(1)
+        },
+    )
+    .unwrap();
+    let cache = operon_cache::RangeCache::new(store.clone(), Default::default())
+        .await
+        .unwrap();
+    let reader = LogReader::new(meta.clone(), cache.clone());
+    let config = CollectionConfig::default();
+    let ctx = CollectionContext {
+        meta: meta.clone(),
+        store: store.clone(),
+        cache: cache.clone(),
+        lance: LanceEnv::new(store.clone(), LanceConfig::default()),
+        manifests: ManifestCache::new(config.manifest_cache_entries),
+        config,
+    };
+    let factory = Arc::new(CollectionTargetFactory::new(ctx));
+    let registry = TargetRegistry::new()
+        .with(Arc::new(CounterTargetFactory::new(
+            store.clone(),
+            MAX_COMMIT_DELAY,
+        )))
+        .with(factory.clone());
+    let app = operon::api::router(operon::api::AppState {
+        meta: meta.clone(),
+        writer: writer.clone(),
+        reader: reader.clone(),
+        store: store.clone(),
+        registry: registry.clone(),
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let http = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let api = Api {
+        base,
+        http: reqwest::Client::new(),
+    };
+
+    let ns = meta.create_namespace("acme").await.unwrap();
+    let schema = CollectionSchema::new(vec![], vec![], DynamicMapping::Ignore);
+    let (cid, stream, _) = meta.create_collection(ns, "docs", schema, 2).await.unwrap();
+    let path = format!(
+        "/v1/namespaces/acme/links/{}",
+        operon_meta::implicit_name("docs", cid)
+    );
+    let (status, body) = api.get(&path).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["target"]["kind"], json!("collection"));
+    assert_eq!(body["version"], json!(0));
+    assert_eq!(body["applied"], json!([]));
+    assert!(body.get("counters").is_none(), "{body}");
+
+    let ops = (0..6)
+        .map(|n| {
+            DocOp::Upsert(Document {
+                pk: PrimaryKey::U64(n),
+                source: serde_json::Map::from_iter([("n".to_string(), json!(n))]),
+                vectors: Default::default(),
+                sparse_vectors: Default::default(),
+            })
+        })
+        .collect();
+    CollectionWriter::new(meta.clone(), writer.clone())
+        .write(ns, cid, ops)
+        .await
+        .unwrap();
+    let source = LinkApplySource::new(
+        reader,
+        registry,
+        LinkConfig {
+            batch_interval: Duration::ZERO,
+            ..LinkConfig::default()
+        },
+    );
+    operon_worker::run_once(&meta, "w1", Duration::from_secs(5), &source)
+        .await
+        .unwrap();
+    let hwms: Vec<Value> = meta
+        .read(Consistency::Linearizable, |s| {
+            (0..2)
+                .filter_map(|p| {
+                    let hwm = s.partition(stream, p)?.high_watermark();
+                    (hwm > 0).then(|| json!({ "partition": p, "offset": hwm }))
+                })
+                .collect()
+        })
+        .await
+        .unwrap();
+    let (status, body) = api.get(&path).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["version"], json!(1));
+    assert_eq!(body["applied"], Value::from(hwms));
+
+    http.abort();
+    writer.shutdown().await.unwrap();
+    factory.close().await;
+    cache.close().await.unwrap();
+    node.shutdown().await.unwrap();
+}
+
 /// Failpoints exist only in builds with the `failpoints` feature; a normal
 /// build refuses to run with them requested rather than ignoring them.
 #[cfg(not(feature = "failpoints"))]

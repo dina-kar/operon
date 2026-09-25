@@ -27,6 +27,12 @@
 //! [`CollectionSnapshot`], the read API over one manifest version, with its
 //! [`CollectionContext`].
 //!
+//! Task 10: the collection link target ([`CollectionTargetFactory`],
+//! [`CollectionTarget`]), which commits link-apply batches under one
+//! manifest by a fenced, freshness-checked CAS; the PK index values and PK
+//! deltas ([`PkWatermark`], [`encode_pk_delta`]); [`DeadLetter`]s; and the
+//! gates' model ([`fold_stream`], [`verify_collection`]).
+//!
 //! The collection schema types live in `operon_common::schema`, because the
 //! metastore's commands carry them (plan M1.1 Ruling 6); they are re-exported
 //! here, both as [`schema`] and at the crate root.
@@ -35,6 +41,7 @@ mod arrow_schema;
 mod chain;
 mod codec;
 mod config;
+mod deadletter;
 mod doc;
 mod dynamic;
 mod error;
@@ -42,11 +49,14 @@ mod lance;
 mod manifest;
 mod paths;
 mod pk;
+mod pkindex;
 mod resolve;
 mod snapshot;
 mod tantivy_schema;
+mod target;
 mod token;
 mod values;
+mod verify;
 mod writer;
 
 pub use operon_common::schema;
@@ -64,6 +74,7 @@ pub use arrow_schema::{
 pub use chain::{ManifestCache, live_manifest, retained_chain};
 pub use codec::{CODEC_VERSION, MAX_RECORD_VALUE_BYTES, decode, encode};
 pub use config::{CollectionConfig, LanceConfig};
+pub use deadletter::{DEAD_LETTERS_MAGIC, DeadLetter, decode_dead_letters, encode_dead_letters};
 pub use doc::{DocOp, Document, PatchMode, SparseVector, apply_patch};
 pub use dynamic::{DynamicMappingError, propose_dynamic_fields};
 pub use error::{CodecError, CollectionError, SparseVectorError};
@@ -77,6 +88,10 @@ pub use paths::{
     pk_delta_path, split_path,
 };
 pub use pk::{MAX_STR_PK_BYTES, PrimaryKey, partition_of};
+pub use pkindex::{
+    PK_DELTA_MAGIC, PkDeltaEntry, PkWatermark, decode_pk_delta, encode_pk_delta, parse_pk_value,
+    pk_value,
+};
 pub use resolve::{fold, needs_current};
 pub use snapshot::{CollectionContext, CollectionSnapshot, StoredDoc};
 pub use tantivy_schema::{
@@ -85,9 +100,15 @@ pub use tantivy_schema::{
     null_companion, sparse_postings_field, sparse_weights_field, tantivy_layout, text_companion,
     to_tantivy_doc,
 };
+#[cfg(feature = "test-util")]
+pub use target::CollectionCommitHook;
+pub use target::{
+    CollectionCommitStep, CollectionTarget, CollectionTargetFactory, PK_WATERMARK_KEY,
+};
 pub use token::{CONSISTENCY_TOKEN_HEADER, ConsistencyToken, TokenParseError};
 pub use values::{
     DocRejection, ExtractedDoc, IndexValue, Violation, check_document, check_patch, coerce,
     extract, parse_date, unmapped_paths,
 };
+pub use verify::{Expected, fold_stream, verify_collection};
 pub use writer::{CollectionWriter, MAX_WRITE_OPS, OpError, OpResult, WriteError, WriteOutcome};

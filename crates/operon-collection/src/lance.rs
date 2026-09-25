@@ -420,38 +420,46 @@ impl LanceCommitter {
         if fragments.is_empty() {
             return Ok(Vec::new());
         }
-        let mut scanner = committed.scan();
-        scanner
-            .with_fragments(fragments)
-            .project(&[PK_COLUMN])?
-            .with_row_id();
-        let batch = scanner.try_into_batch().await?;
-        let column = |name: &str| {
-            batch
-                .column_by_name(name)
-                .ok_or_else(|| CollectionError::Corrupt(format!("the scan has no {name} column")))
-        };
-        let pks = column(PK_COLUMN)?;
-        let pks = pks.as_any().downcast_ref::<BinaryArray>().ok_or_else(|| {
-            CollectionError::Corrupt(format!("{PK_COLUMN} is {}", pks.data_type()))
-        })?;
-        let row_ids = column(ROW_ID)?;
-        let row_ids = row_ids
-            .as_any()
-            .downcast_ref::<UInt64Array>()
-            .ok_or_else(|| {
-                CollectionError::Corrupt(format!("{ROW_ID} is {}", row_ids.data_type()))
-            })?;
-        (0..batch.num_rows())
-            .map(|row| {
-                if pks.is_null(row) {
-                    return Err(CollectionError::Corrupt(format!(
-                        "row id {} has a null {PK_COLUMN}",
-                        row_ids.value(row)
-                    )));
-                }
-                Ok((pks.value(row).to_vec(), row_ids.value(row)))
-            })
-            .collect()
+        pk_row_ids(committed, Some(fragments)).await
     }
+}
+
+/// (canonical pk, row id) of every row of `dataset`, or only of its
+/// `fragments`.
+pub(crate) async fn pk_row_ids(
+    dataset: &Dataset,
+    fragments: Option<Vec<Fragment>>,
+) -> Result<Vec<(Vec<u8>, u64)>, CollectionError> {
+    let mut scanner = dataset.scan();
+    if let Some(fragments) = fragments {
+        scanner.with_fragments(fragments);
+    }
+    scanner.project(&[PK_COLUMN])?.with_row_id();
+    let batch = scanner.try_into_batch().await?;
+    let column = |name: &str| {
+        batch
+            .column_by_name(name)
+            .ok_or_else(|| CollectionError::Corrupt(format!("the scan has no {name} column")))
+    };
+    let pks = column(PK_COLUMN)?;
+    let pks = pks
+        .as_any()
+        .downcast_ref::<BinaryArray>()
+        .ok_or_else(|| CollectionError::Corrupt(format!("{PK_COLUMN} is {}", pks.data_type())))?;
+    let row_ids = column(ROW_ID)?;
+    let row_ids = row_ids
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .ok_or_else(|| CollectionError::Corrupt(format!("{ROW_ID} is {}", row_ids.data_type())))?;
+    (0..batch.num_rows())
+        .map(|row| {
+            if pks.is_null(row) {
+                return Err(CollectionError::Corrupt(format!(
+                    "row id {} has a null {PK_COLUMN}",
+                    row_ids.value(row)
+                )));
+            }
+            Ok((pks.value(row).to_vec(), row_ids.value(row)))
+        })
+        .collect()
 }

@@ -13,6 +13,7 @@ arrow-schema.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 crc32c.workspace = true
+futures.workspace = true
 lance.workspace = true
 lance-file.workspace = true
 lance-io.workspace = true
@@ -20,8 +21,10 @@ lance-table.workspace = true
 moka = { workspace = true, features = ["sync"] }
 operon-cache.workspace = true
 operon-common.workspace = true
+operon-link.workspace = true
 operon-log.workspace = true
 operon-meta.workspace = true
+operon-pk.workspace = true
 operon-quickwit.workspace = true
 operon-store.workspace = true
 operon-text.workspace = true
@@ -32,19 +35,28 @@ serde.workspace = true
 serde_json.workspace = true
 tantivy.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
 ulid.workspace = true
 url.workspace = true
 uuid.workspace = true
 xxhash-rust.workspace = true
+
+[features]
+# Test hooks (holding a commit at a step). Not part of the stable API.
+test-util = []
 
 [build-dependencies]
 prost-build.workspace = true
 
 [dev-dependencies]
 object_store.workspace = true
+operon-collection = { path = ".", features = ["test-util"] }
+operon-link = { workspace = true, features = ["test-util"] }
+operon-meta = { workspace = true, features = ["test-util"] }
+operon-worker = { workspace = true, features = ["test-util"] }
 proptest.workspace = true
 tempfile.workspace = true
-tokio.workspace = true
 
 [lints]
 workspace = true
