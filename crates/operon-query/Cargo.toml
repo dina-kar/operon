@@ -9,7 +9,9 @@ authors.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+bytes.workspace = true
 http.workspace = true
+http-body.workspace = true
 operon-collection.workspace = true
 operon-common.workspace = true
 operon-log.workspace = true
@@ -33,7 +35,6 @@ ulid.workspace = true
 test-util = []
 
 [dev-dependencies]
-bytes.workspace = true
 operon-cache.workspace = true
 operon-link = { workspace = true, features = ["test-util"] }
 operon-meta = { workspace = true, features = ["test-util"] }

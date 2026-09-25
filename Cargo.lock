@@ -4598,6 +4598,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "http",
+ "http-body",
  "operon-cache",
  "operon-collection",
  "operon-common",

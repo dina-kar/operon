@@ -231,14 +231,51 @@ pub struct HotService<S> {
     default_enabled: bool,
 }
 
-/// 400 with the `invalid_argument` body of an invalid header.
-fn bad_header<R: From<String>>(err: &ServiceError) -> http::Response<R> {
+/// Whether `request` is a gRPC call (its content type is `application/grpc…`).
+fn is_grpc<B>(request: &http::Request<B>) -> bool {
+    request
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .is_some_and(|value| value.as_bytes().starts_with(b"application/grpc"))
+}
+
+/// Percent-encodes a `grpc-message` value (gRPC over HTTP/2: every byte
+/// outside printable ASCII, and `%`).
+fn grpc_message(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    for byte in message.bytes() {
+        if (0x20..=0x7e).contains(&byte) && byte != b'%' {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// The response to an invalid `Operon-Hot` header: 400 with the
+/// `invalid_argument` JSON body, or for a gRPC call a trailers-only response
+/// with `grpc-status` 3 (`INVALID_ARGUMENT`).
+fn bad_header<R>(err: &ServiceError, grpc: bool) -> http::Response<HotBody<R>> {
     let message = match err {
         ServiceError::InvalidArgument(message) => message.clone(),
         other => other.to_string(),
     };
+    if grpc {
+        let mut response = http::Response::new(HotBody::rejected(None));
+        let headers = response.headers_mut();
+        headers.insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("application/grpc"),
+        );
+        headers.insert("grpc-status", http::HeaderValue::from_static("3"));
+        if let Ok(value) = http::HeaderValue::from_str(&grpc_message(&message)) {
+            headers.insert("grpc-message", value);
+        }
+        return response;
+    }
     let body = serde_json::json!({"error": "invalid_argument", "message": message}).to_string();
-    let mut response = http::Response::new(R::from(body));
+    let mut response = http::Response::new(HotBody::rejected(Some(bytes::Bytes::from(body))));
     *response.status_mut() = http::StatusCode::BAD_REQUEST;
     response.headers_mut().insert(
         http::header::CONTENT_TYPE,
@@ -247,17 +284,102 @@ fn bad_header<R: From<String>>(err: &ServiceError) -> http::Response<R> {
     response
 }
 
+/// The response body of [`HotService`]: the inner body, polled inside the
+/// request's hot scope so that work a streaming body defers still sees it,
+/// or the rejection of an invalid header.
+///
+/// `Operon-Hot-Used` is a response header, computed when the inner service
+/// returns. A body that ends with trailers (every gRPC response) also gets
+/// the header in its trailers, computed when they are sent, so work done
+/// while the body streams is reported there.
+#[derive(Debug)]
+pub struct HotBody<B> {
+    kind: HotBodyKind<B>,
+}
+
+#[derive(Debug)]
+enum HotBodyKind<B> {
+    Inner { body: B, hot: RequestHot },
+    Rejected(Option<bytes::Bytes>),
+}
+
+impl<B> HotBody<B> {
+    fn inner(body: B, hot: RequestHot) -> Self {
+        Self {
+            kind: HotBodyKind::Inner { body, hot },
+        }
+    }
+
+    fn rejected(body: Option<bytes::Bytes>) -> Self {
+        Self {
+            kind: HotBodyKind::Rejected(body),
+        }
+    }
+}
+
+impl<B> http_body::Body for HotBody<B>
+where
+    B: http_body::Body<Data = bytes::Bytes> + Unpin,
+{
+    type Data = bytes::Bytes;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, B::Error>>> {
+        match &mut self.get_mut().kind {
+            HotBodyKind::Inner { body, hot } => {
+                let polled =
+                    HOT_SCOPE.sync_scope(hot.clone(), || Pin::new(&mut *body).poll_frame(cx));
+                match polled {
+                    Poll::Ready(Some(Ok(mut frame))) => {
+                        if let Some(trailers) = frame.trailers_mut()
+                            && !trailers.contains_key(HOT_USED_HEADER)
+                            && let Ok(value) = http::HeaderValue::from_str(&hot.used.header_value())
+                        {
+                            trailers.insert(HOT_USED_HEADER, value);
+                        }
+                        Poll::Ready(Some(Ok(frame)))
+                    }
+                    other => other,
+                }
+            }
+            HotBodyKind::Rejected(bytes) => {
+                Poll::Ready(bytes.take().map(|b| Ok(http_body::Frame::data(b))))
+            }
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        match &self.kind {
+            HotBodyKind::Inner { body, .. } => body.is_end_stream(),
+            HotBodyKind::Rejected(bytes) => bytes.is_none(),
+        }
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        match &self.kind {
+            HotBodyKind::Inner { body, .. } => body.size_hint(),
+            HotBodyKind::Rejected(bytes) => {
+                http_body::SizeHint::with_exact(bytes.as_ref().map_or(0, |b| b.len() as u64))
+            }
+        }
+    }
+}
+
 impl<S, B, R> tower::Service<http::Request<B>> for HotService<S>
 where
     S: tower::Service<http::Request<B>, Response = http::Response<R>> + Clone + Send + 'static,
     S::Future: Send + 'static,
     S::Error: Send + 'static,
     B: Send + 'static,
-    R: From<String> + Send + 'static,
+    R: Send + 'static,
 {
-    type Response = http::Response<R>;
+    type Response = http::Response<HotBody<R>>;
     type Error = S::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<http::Response<R>, S::Error>> + Send>>;
+    type Future =
+        Pin<Box<dyn Future<Output = Result<http::Response<HotBody<R>>, S::Error>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), S::Error>> {
         self.inner.poll_ready(cx)
@@ -271,7 +393,7 @@ where
         let enabled = match enabled {
             Ok(enabled) => enabled,
             Err(err) => {
-                let response = bad_header(&err);
+                let response = bad_header(&err, is_grpc(&request));
                 return Box::pin(async move { Ok(response) });
             }
         };
@@ -284,7 +406,8 @@ where
             used: used.clone(),
         };
         Box::pin(async move {
-            let mut response = scope(hot, async move { inner.call(request).await }).await?;
+            let response = scope(hot.clone(), async move { inner.call(request).await }).await?;
+            let mut response = response.map(|body| HotBody::inner(body, hot));
             if !response.headers().contains_key(HOT_USED_HEADER)
                 && let Ok(value) = http::HeaderValue::from_str(&used.header_value())
             {

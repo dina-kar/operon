@@ -19,6 +19,9 @@ use crate::types::SourceFilter;
 /// years 0000–9999.
 pub fn format_date(micros: i64) -> Option<String> {
     let at = OffsetDateTime::from_unix_timestamp_nanos(i128::from(micros) * 1000).ok()?;
+    if !(0..=9999).contains(&at.year()) {
+        return None;
+    }
     at.format(format_description!(
         "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:6]Z"
     ))

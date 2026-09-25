@@ -27,7 +27,7 @@ pub enum ServiceError {
 
 /// The kinds a [`ServiceError::NotFound`] names; a body naming another kind
 /// reads back as `"object"`.
-pub const NOT_FOUND_KINDS: [&str; 8] = [
+pub const NOT_FOUND_KINDS: [&str; 9] = [
     "namespace",
     "collection",
     "alias",
@@ -35,6 +35,7 @@ pub const NOT_FOUND_KINDS: [&str; 8] = [
     "document",
     "field",
     "vector",
+    "stream",
     "object",
 ];
 

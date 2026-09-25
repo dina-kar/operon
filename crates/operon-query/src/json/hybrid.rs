@@ -376,6 +376,10 @@ fn date_math(s: &str, now_ms: u64) -> Result<Option<FieldValue>, ServiceError> {
     };
     let micros =
         i64::try_from(ms * 1000).map_err(|_| invalid(format!("date math {s:?} out of range")))?;
+    // The JSON date form holds the years 0000–9999 only.
+    if crate::json::values::format_date(micros).is_none() {
+        return Err(invalid(format!("date math {s:?} out of range")));
+    }
     Ok(Some(FieldValue::Date(micros)))
 }
 

@@ -744,6 +744,19 @@ fn hybrid_body_maps_to_the_ir() {
         json::hybrid::parse_query_body(Value::Object(c1), NOW_MS),
         Err(ServiceError::InvalidArgument(_))
     ));
+    // Date math the JSON date form cannot hold (years 0000–9999) is refused,
+    // so every accepted request round-trips through JSON.
+    for math in ["now-1000000d", "now+4000000d"] {
+        let far = json!({"from": "collections.memories", "limit": 1,
+                         "filter": {"range": {"ts": {"gte": math}}}});
+        assert_eq!(
+            json::hybrid::parse_query_body(far, NOW_MS),
+            Err(ServiceError::InvalidArgument(format!(
+                "date math {math:?} out of range"
+            ))),
+            "{math}"
+        );
+    }
     // Without `from` or `retrieve`, the body is a SearchRequest.
     let plain = json::hybrid::parse_query_body(json!({"collection": "kb", "limit": 2}), NOW_MS)
         .expect("plain request");
@@ -1619,12 +1632,29 @@ mod hooks {
             before,
             "the inner service ran"
         );
-        let body: Value = serde_json::from_str(response.body()).expect("json body");
+        let (data, _) = collect(response.into_body()).await;
+        let body: Value = serde_json::from_slice(&data).expect("json body");
         assert_eq!(
             body,
             json!({"error": "invalid_argument",
                    "message": "invalid Operon-Hot header: maybe (expected on or off)"})
         );
+
+        // A gRPC call gets a trailers-only INVALID_ARGUMENT.
+        let mut grpc = request(Some("maybe"));
+        grpc.headers_mut().insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("application/grpc"),
+        );
+        let response = service.clone().oneshot(grpc).await.expect("call");
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(response.headers()["grpc-status"], "3");
+        assert_eq!(
+            response.headers()["grpc-message"],
+            "invalid Operon-Hot header: maybe (expected on or off)"
+        );
+        let (data, _) = collect(response.into_body()).await;
+        assert!(data.is_empty());
 
         // A gateway that forwarded the request already set the header.
         let mut forwarded = request(None);
@@ -1641,6 +1671,71 @@ mod hooks {
             hot::parse_hot_header("yes"),
             Err(ServiceError::InvalidArgument(_))
         ));
+    }
+
+    /// Every data frame of `body` and its trailers.
+    async fn collect<B>(mut body: B) -> (Vec<u8>, Option<http::HeaderMap>)
+    where
+        B: http_body::Body<Data = bytes::Bytes> + Unpin,
+        B::Error: std::fmt::Debug,
+    {
+        let mut data = Vec::new();
+        let mut trailers = None;
+        while let Some(frame) =
+            std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)).await
+        {
+            let frame = frame.expect("frame");
+            match frame.into_data() {
+                Ok(bytes) => data.extend_from_slice(&bytes),
+                Err(frame) => trailers = frame.into_trailers().ok(),
+            }
+        }
+        (data, trailers)
+    }
+
+    /// A body that records a hot kind when it is polled, then ends with
+    /// trailers, as a streaming gRPC response does.
+    struct Streaming {
+        step: u8,
+    }
+
+    impl http_body::Body for Streaming {
+        type Data = bytes::Bytes;
+        type Error = std::convert::Infallible;
+
+        fn poll_frame(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<http_body::Frame<bytes::Bytes>, Self::Error>>> {
+            self.step += 1;
+            std::task::Poll::Ready(match self.step {
+                1 => {
+                    let current = hot::current().expect("the body is polled in the scope");
+                    current.used.record(HotKind::Splits);
+                    Some(Ok(http_body::Frame::data(bytes::Bytes::from_static(b"x"))))
+                }
+                2 => Some(Ok(http_body::Frame::trailers(http::HeaderMap::new()))),
+                _ => None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_streaming_body_is_polled_in_the_hot_scope_and_reports_in_its_trailers() {
+        let inner = service_fn(|_: http::Request<String>| async {
+            Ok::<_, std::convert::Infallible>(http::Response::new(Streaming { step: 0 }))
+        });
+        let service = HotLayer::new(true).layer(inner);
+        let request = http::Request::builder()
+            .uri("/")
+            .body(String::new())
+            .expect("request");
+        let response = service.oneshot(request).await.expect("call");
+        // Nothing was used when the headers were written.
+        assert_eq!(response.headers()[HOT_USED_HEADER], "none");
+        let (data, trailers) = collect(response.into_body()).await;
+        assert_eq!(data, b"x");
+        assert_eq!(trailers.expect("trailers")[HOT_USED_HEADER], "splits");
     }
 
     #[tokio::test]
