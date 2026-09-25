@@ -1,0 +1,6 @@
+Quickwit (https://github.com/quickwit-oss/quickwit), Apache License 2.0.
+Files under crates/operon-quickwit/ are derived from Quickwit revision
+af0591a36e16831af9a2ad9484e12465f511ef84. Quickwit's NOTICE:
+  Datadog Quickwit
+  Copyright 2021-Present Datadog, Inc.
+  This product includes software developed at Datadog (<https://www.datadoghq.com/).>
