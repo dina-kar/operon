@@ -1,0 +1,13 @@
+[package]
+name = "operon-collection"
+description = "Operon collections: documents, the collection catalog client, Lance and Tantivy storage under one manifest, and the collection link target."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

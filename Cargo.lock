@@ -1996,6 +1996,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "operon-collection"
+version = "0.0.1"
+
+[[package]]
 name = "operon-common"
 version = "0.0.1"
 dependencies = [
@@ -2093,6 +2097,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "operon-quickwit"
+version = "0.0.1"
+
+[[package]]
 name = "operon-sim"
 version = "0.0.1"
 dependencies = [
@@ -2127,6 +2135,10 @@ dependencies = [
  "tokio",
  "url",
 ]
+
+[[package]]
+name = "operon-text"
+version = "0.0.1"
 
 [[package]]
 name = "operon-worker"

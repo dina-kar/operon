@@ -1,0 +1,13 @@
+[package]
+name = "operon-text"
+description = "Operon's Tantivy integration: analyzers, splits on object storage and delete bitmaps."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
