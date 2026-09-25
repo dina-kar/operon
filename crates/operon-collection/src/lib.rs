@@ -23,7 +23,9 @@
 //! Task 9: the collection manifest ([`CollectionManifest`], in the `OPCM`
 //! envelope: [`encode_manifest`], [`decode_manifest`]), the object
 //! [paths](manifest_path), the manifest chain ([`ManifestCache`],
-//! [`live_manifest`], [`retained_chain`]) and the [`CollectionConfig`].
+//! [`live_manifest`], [`retained_chain`]) and the [`CollectionConfig`]; and
+//! [`CollectionSnapshot`], the read API over one manifest version, with its
+//! [`CollectionContext`].
 //!
 //! The collection schema types live in `operon_common::schema`, because the
 //! metastore's commands carry them (plan M1.1 Ruling 6); they are re-exported
@@ -41,6 +43,7 @@ mod manifest;
 mod paths;
 mod pk;
 mod resolve;
+mod snapshot;
 mod tantivy_schema;
 mod token;
 mod values;
@@ -75,6 +78,7 @@ pub use paths::{
 };
 pub use pk::{MAX_STR_PK_BYTES, PrimaryKey, partition_of};
 pub use resolve::{fold, needs_current};
+pub use snapshot::{CollectionContext, CollectionSnapshot, StoredDoc};
 pub use tantivy_schema::{
     FIELD_PRESENCE_FIELD, FieldMap, PK_FIELD, ROWID_FIELD, SPARSE_PRESENT, SparseFieldMap,
     TantivyLayout, count_companion, date_companion, decode_sparse_weights, encode_sparse_weights,
