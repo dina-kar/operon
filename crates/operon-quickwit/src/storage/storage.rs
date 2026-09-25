@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-storage/src/storage.rs); modified for Operon: imports rewritten to crate paths; mockall attributes and the MockStorage test removed; tempfile persist replaced by fs::rename.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-storage/src/storage.rs); modified for Operon: imports rewritten to crate paths; mockall attributes and the MockStorage test removed; tempfile persist replaced by fs::rename; get_slice_with_file_len added.
 
 use std::fmt;
 use std::io::{self};
@@ -114,6 +114,21 @@ pub trait Storage: fmt::Debug + Send + Sync + 'static {
 
     /// Downloads a slice of a file from the storage, and returns an in memory buffer
     async fn get_slice(&self, path: &Path, range: Range<usize>) -> StorageResult<OwnedBytes>;
+
+    /// Downloads a slice of a file whose length the caller already knows (for example from the
+    /// metadata that names the file), so that an implementation can skip a metadata request.
+    /// Operon opens a split with this, in exactly one ranged GET.
+    ///
+    /// Defaults to [`Storage::get_slice`], ignoring `file_len`.
+    async fn get_slice_with_file_len(
+        &self,
+        path: &Path,
+        file_len: u64,
+        range: Range<usize>,
+    ) -> StorageResult<OwnedBytes> {
+        let _ = file_len;
+        self.get_slice(path, range).await
+    }
 
     /// Opens a stream handle on the file from the storage.
     ///

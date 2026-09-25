@@ -162,6 +162,46 @@ impl RangeCache {
     /// Reads bytes `range` of the immutable object at `path`.
     pub async fn read(&self, path: &str, range: Range<u64>) -> Result<Bytes, CacheError> {
         let size = self.size(path).await?;
+        self.read_sized(path, size, range).await
+    }
+
+    /// Reads bytes `range` of the immutable object at `path`, whose `size`
+    /// the caller already knows (for example a split's size from its
+    /// manifest), so a cold read costs no HEAD, only the GETs of its missing
+    /// blocks. On success the size is remembered for later [`Self::size`]
+    /// and [`Self::read`] calls, so the caller vouches for it.
+    ///
+    /// A `size` that contradicts the size already known is a
+    /// [`CacheError::SizeMismatch`] without a request. An object shorter
+    /// than `size` shows up as a short block ([`CacheError::SizeMismatch`])
+    /// or as a store error, and then nothing is remembered.
+    pub async fn read_with_size(
+        &self,
+        path: &str,
+        size: u64,
+        range: Range<u64>,
+    ) -> Result<Bytes, CacheError> {
+        if let Some(known) = self.sizes.get(path).await
+            && known != size
+        {
+            return Err(CacheError::SizeMismatch {
+                path: path.to_string(),
+                expected: size,
+                actual: known,
+            });
+        }
+        let bytes = self.read_sized(path, size, range).await?;
+        self.sizes.insert(path.to_string(), size).await;
+        Ok(bytes)
+    }
+
+    /// Reads bytes `range` of the object at `path`, which is `size` bytes.
+    async fn read_sized(
+        &self,
+        path: &str,
+        size: u64,
+        range: Range<u64>,
+    ) -> Result<Bytes, CacheError> {
         if range.start > range.end || range.end > size {
             return Err(CacheError::OutOfRange {
                 path: path.to_string(),

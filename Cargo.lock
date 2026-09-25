@@ -4634,8 +4634,22 @@ dependencies = [
 name = "operon-text"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "crc32c",
+ "futures",
+ "object_store 0.14.2",
+ "operon-cache",
  "operon-common",
+ "operon-quickwit",
+ "operon-store",
+ "proptest",
+ "roaring",
  "tantivy",
+ "thiserror 2.0.20",
+ "tokio",
+ "ulid 3.0.0",
  "unicode-segmentation",
 ]
 

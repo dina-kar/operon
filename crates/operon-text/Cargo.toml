@@ -8,11 +8,25 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+crc32c.workspace = true
+futures.workspace = true
+operon-cache.workspace = true
+operon-quickwit.workspace = true
+operon-store.workspace = true
+roaring.workspace = true
 tantivy.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+ulid.workspace = true
 unicode-segmentation.workspace = true
 
 [dev-dependencies]
+object_store.workspace = true
 operon-common.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

@@ -323,3 +323,75 @@ async fn multi_block_read_bounds_concurrent_block_fetches() {
         "expected at most 16 concurrent block fetches, saw {max_seen}"
     );
 }
+
+#[tokio::test]
+async fn a_known_size_read_costs_one_get_and_remembers_the_size() {
+    let faulty = Arc::new(FaultyStore::new(Arc::new(InMemory::new())));
+    let store = Store::new(faulty.clone());
+    let body = data(256);
+    store.put("obj", body.clone()).await.unwrap();
+    let cache = cache_over(store, 1024).await;
+
+    let gets = faulty.calls(Op::Get);
+    let got = cache.read_with_size("obj", 256, 200..256).await.unwrap();
+    assert_eq!(got, body.slice(200..256));
+    assert_eq!(faulty.calls(Op::Get), gets + 1, "one GET and no HEAD");
+
+    // The size is remembered: neither `size` nor a later `read` needs a HEAD.
+    faulty.inject(Op::Get, Fault::Error);
+    assert_eq!(cache.size("obj").await.unwrap(), 256);
+    assert_eq!(cache.read("obj", 0..10).await.unwrap(), body.slice(0..10));
+    assert_eq!(faulty.calls(Op::Get), gets + 1);
+}
+
+#[tokio::test]
+async fn a_known_size_read_checks_the_range_and_the_size() {
+    let store = Store::in_memory();
+    store.put("obj", data(256)).await.unwrap();
+    store.put("other", data(256)).await.unwrap();
+    // One block per object, so the short object shows as a short block.
+    let cache = cache_over(store, 1024).await;
+
+    let err = cache.read_with_size("obj", 10, 5..11).await.unwrap_err();
+    assert!(
+        matches!(err, CacheError::OutOfRange { size: 10, .. }),
+        "got {err:?}"
+    );
+
+    // The object is shorter than the caller claims.
+    let err = cache
+        .read_with_size("obj", 300, 250..300)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            CacheError::SizeMismatch {
+                expected: 300,
+                actual: 256,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+    // A failed read remembers nothing.
+    assert_eq!(cache.size("obj").await.unwrap(), 256);
+
+    // A claim that contradicts the size already known is refused.
+    let err = cache.read_with_size("obj", 300, 0..10).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            CacheError::SizeMismatch {
+                expected: 300,
+                actual: 256,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+    assert_eq!(
+        cache.read_with_size("other", 256, 0..4).await.unwrap(),
+        data(4)
+    );
+}
