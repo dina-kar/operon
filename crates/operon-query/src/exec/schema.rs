@@ -1,5 +1,5 @@
 //! The Arrow schemas the operators exchange (plan M1.2 Task 5): ranked
-//! hits and row-id sets.
+//! hits, fetched hits, keyed rows and row-id sets.
 
 use std::sync::{Arc, LazyLock};
 
@@ -16,6 +16,11 @@ pub const ROWID_COLUMN: &str = "_rowid";
 pub const PK_COLUMN: &str = "_pk";
 pub const SCORE_COLUMN: &str = "_score";
 pub const SORT_COLUMN: &str = "_sort";
+pub const SOURCE_COLUMN: &str = "_source";
+pub const VECTORS_COLUMN: &str = "_vectors";
+pub const SPARSE_COLUMN: &str = "_sparse";
+pub const SEQ_NO_COLUMN: &str = "_seq_no";
+pub const PARTITION_COLUMN: &str = "_partition";
 
 static RANKED: LazyLock<SchemaRef> = LazyLock::new(|| {
     Arc::new(Schema::new(vec![
@@ -23,6 +28,27 @@ static RANKED: LazyLock<SchemaRef> = LazyLock::new(|| {
         Field::new(PK_COLUMN, DataType::Binary, false),
         Field::new(SCORE_COLUMN, DataType::Float32, false),
         Field::new(SORT_COLUMN, DataType::Binary, false),
+    ]))
+});
+
+static FETCHED: LazyLock<SchemaRef> = LazyLock::new(|| {
+    Arc::new(Schema::new(vec![
+        Field::new(ROWID_COLUMN, DataType::UInt64, false),
+        Field::new(PK_COLUMN, DataType::Binary, false),
+        Field::new(SCORE_COLUMN, DataType::Float32, false),
+        Field::new(SORT_COLUMN, DataType::Binary, false),
+        Field::new(SOURCE_COLUMN, DataType::Utf8, true),
+        Field::new(VECTORS_COLUMN, DataType::Binary, false),
+        Field::new(SPARSE_COLUMN, DataType::Binary, false),
+        Field::new(SEQ_NO_COLUMN, DataType::UInt64, false),
+        Field::new(PARTITION_COLUMN, DataType::UInt32, false),
+    ]))
+});
+
+static KEYED: LazyLock<SchemaRef> = LazyLock::new(|| {
+    Arc::new(Schema::new(vec![
+        Field::new(ROWID_COLUMN, DataType::UInt64, false),
+        Field::new(PK_COLUMN, DataType::Binary, false),
     ]))
 });
 
@@ -38,6 +64,42 @@ static ROWIDS: LazyLock<SchemaRef> = LazyLock::new(|| {
 /// (postcard Vec<SortValue>)`; all non-null.
 pub fn ranked_schema() -> SchemaRef {
     RANKED.clone()
+}
+
+/// [`ranked_schema`] plus the fetched document (Task 7 `DocFetchExec`):
+/// `_source Utf8` (JSON text, null when not fetched), `_vectors Binary`
+/// (postcard `BTreeMap<String, Vec<f32>>`), `_sparse Binary` (postcard
+/// `BTreeMap<String, SparseVector>`), `_seq_no UInt64`, `_partition UInt32`.
+pub fn fetched_schema() -> SchemaRef {
+    FETCHED.clone()
+}
+
+/// `_rowid UInt64, _pk Binary (canonical)`, in PK order (Task 7
+/// `TailMergeExec`).
+pub fn keyed_schema() -> SchemaRef {
+    KEYED.clone()
+}
+
+/// Keyed rows `(row id, key)` as one batch of [`keyed_schema`].
+pub fn keyed_to_batch(rows: &[(u64, PrimaryKey)]) -> RecordBatch {
+    let row_ids = UInt64Array::from_iter_values(rows.iter().map(|(row, _)| *row));
+    let pks: Vec<Vec<u8>> = rows.iter().map(|(_, pk)| pk.canonical()).collect();
+    let pks = BinaryArray::from_iter_values(pks.iter().map(Vec::as_slice));
+    RecordBatch::try_new(keyed_schema(), vec![Arc::new(row_ids), Arc::new(pks)])
+        .expect("the keyed columns match their schema")
+}
+
+/// The rows of a batch of [`keyed_schema`].
+pub fn batch_to_keyed(batch: &RecordBatch) -> Result<Vec<(u64, PrimaryKey)>, ServiceError> {
+    let row_ids: &UInt64Array = column(batch, ROWID_COLUMN)?;
+    let pks: &BinaryArray = column(batch, PK_COLUMN)?;
+    (0..batch.num_rows())
+        .map(|i| {
+            let pk = PrimaryKey::from_canonical(pks.value(i))
+                .map_err(|err| ServiceError::Internal(format!("keyed _pk: {err}")))?;
+            Ok((row_ids.value(i), pk))
+        })
+        .collect()
 }
 
 /// `_rowid UInt64`, ascending.
@@ -91,19 +153,19 @@ fn from_wire(value: SortWire) -> SortValue {
     }
 }
 
+/// The postcard form of `sort`, as the `_sort` column holds it.
+pub(crate) fn encode_sort(sort: &[SortValue]) -> Vec<u8> {
+    let wire: Vec<SortWire> = sort.iter().map(to_wire).collect();
+    postcard::to_allocvec(&wire).expect("sort values encode")
+}
+
 /// `rows` as one batch of [`ranked_schema`].
 pub fn ranked_to_batch(rows: &[Ranked]) -> RecordBatch {
     let row_ids = UInt64Array::from_iter_values(rows.iter().map(|r| r.row_id));
     let pks: Vec<Vec<u8>> = rows.iter().map(|r| r.pk.canonical()).collect();
     let pks = BinaryArray::from_iter_values(pks.iter().map(Vec::as_slice));
     let scores = Float32Array::from_iter_values(rows.iter().map(|r| r.score));
-    let sorts: Vec<Vec<u8>> = rows
-        .iter()
-        .map(|r| {
-            let wire: Vec<SortWire> = r.sort.iter().map(to_wire).collect();
-            postcard::to_allocvec(&wire).expect("sort values encode")
-        })
-        .collect();
+    let sorts: Vec<Vec<u8>> = rows.iter().map(|r| encode_sort(&r.sort)).collect();
     let sorts = BinaryArray::from_iter_values(sorts.iter().map(Vec::as_slice));
     RecordBatch::try_new(
         ranked_schema(),

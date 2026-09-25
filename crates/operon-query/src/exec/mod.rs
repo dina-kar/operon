@@ -12,14 +12,20 @@
 //! - [`tantivy_search`]: BM25 search over splits and the tail;
 //! - [`filter_bitmap`]: a filter as a row-id set;
 //! - [`ann`]: dense vector search over Lance, the tail and the hot tier;
-//! - [`sparse`]: exact sparse vector search over splits and the tail.
+//! - [`sparse`]: exact sparse vector search over splits and the tail;
+//! - [`fusion`]: RRF, DBSF and weighted sums of ranked lists;
+//! - [`doc_fetch`]: the documents of ranked rows;
+//! - [`tail_merge`]: durable rows and the tail merged in PK order.
 
 pub mod ann;
+pub mod doc_fetch;
 pub mod filter_bitmap;
+pub mod fusion;
 pub mod mask;
 pub mod order;
 pub mod schema;
 pub mod sparse;
+pub mod tail_merge;
 pub mod tantivy_search;
 
 use std::sync::Arc;
@@ -44,11 +50,17 @@ use crate::text::fields::{ResolvedField, resolve_field};
 use crate::text::splits::{OpenSplit, open_splits_with, tail_segment_masks};
 
 pub use ann::AnnExec;
+pub use doc_fetch::{DocFetchExec, FetchColumns, FetchedRow, fetch_rows};
 pub use filter_bitmap::FilterBitmapExec;
+pub use fusion::{FusionExec, fuse};
 pub use mask::{RowSet, SplitMask};
 pub use order::{EffectiveSort, RankMode};
-pub use schema::{Ranked, batch_to_ranked, ranked_schema, ranked_to_batch, rowid_schema};
+pub use schema::{
+    Ranked, batch_to_keyed, batch_to_ranked, fetched_schema, keyed_schema, keyed_to_batch,
+    ranked_schema, ranked_to_batch, rowid_schema,
+};
 pub use sparse::SparseExec;
+pub use tail_merge::TailMergeExec;
 pub use tantivy_search::TantivySearchExec;
 
 /// The plan properties of every operator: one partition, final emission,
@@ -64,6 +76,17 @@ pub(crate) fn plan_properties(schema: SchemaRef) -> Arc<PlanProperties> {
 
 pub(crate) fn df_error(err: ServiceError) -> DataFusionError {
     DataFusionError::External(Box::new(err))
+}
+
+/// A DataFusion error as a service error: an operator's own
+/// [`ServiceError`] comes back as it was raised.
+pub(crate) fn from_df(err: DataFusionError) -> ServiceError {
+    if let DataFusionError::External(inner) = err.find_root()
+        && let Some(service) = inner.downcast_ref::<ServiceError>()
+    {
+        return service.clone();
+    }
+    ServiceError::Internal(format!("datafusion: {err}"))
 }
 
 pub(crate) fn tantivy_error(err: impl std::fmt::Display) -> ServiceError {
