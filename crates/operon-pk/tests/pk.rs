@@ -193,6 +193,26 @@ async fn lost_put_acknowledgements_lose_no_acknowledged_write() {
     reopened.close().await.unwrap();
 }
 
+/// A create-only manifest write that loses (another writer, or a retried
+/// write, created that manifest version first: a `Precondition` fault) is
+/// an object-store race, so `open` reports it as retryable
+/// [`PkError::Store`], not as corruption, and a reopen succeeds (plan M1.1
+/// Task 13, found by the fault matrix).
+#[tokio::test]
+async fn a_lost_manifest_race_at_open_is_a_store_error() {
+    for op in [Op::PutCreate, Op::Put] {
+        let faults = Arc::new(FaultyStore::new(Arc::new(InMemory::new())));
+        let store = Store::new(faults.clone());
+        faults.inject(op, Fault::Precondition);
+        let err = PkIndex::open(&store, PATH, config()).await.unwrap_err();
+        assert!(matches!(err, PkError::Store(_)), "{op:?}: {err:?}");
+        assert_eq!(faults.pending(op), 0, "{op:?}: the fault was reached");
+        let index = PkIndex::open(&store, PATH, config()).await.unwrap();
+        index.write(vec![put("k", "v")]).await.unwrap();
+        index.close().await.unwrap();
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_hundred_thousand_keys_fit_the_time_budget() {
     let store = Store::in_memory();

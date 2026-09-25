@@ -59,7 +59,9 @@ pub enum PkError {
     /// failed writes are not visible.
     #[error("fenced by a newer writer")]
     Fenced,
-    /// The object store failed or is unavailable; retry later.
+    /// The object store failed or is unavailable, or a create-only write
+    /// lost a race (another writer, or an earlier attempt, created that
+    /// manifest version first); retry later.
     #[error("object store: {0}")]
     Store(String),
     /// Stored data failed a check.
@@ -72,12 +74,20 @@ pub enum PkError {
     Other(String),
 }
 
+/// The message of SlateDB's `TransactionalObjectVersionExists`, which its
+/// public error reports only as `ErrorKind::Data` with this text.
+const VERSION_EXISTS: &str = "version already exists";
+
 impl From<slatedb::Error> for PkError {
     fn from(err: slatedb::Error) -> Self {
         match err.kind() {
             ErrorKind::Closed(CloseReason::Fenced) => PkError::Fenced,
             ErrorKind::Closed(CloseReason::Clean) => PkError::Closed,
             ErrorKind::Unavailable => PkError::Store(err.to_string()),
+            // A lost create-only manifest write is a race, not corruption.
+            ErrorKind::Data if err.to_string().contains(VERSION_EXISTS) => {
+                PkError::Store(err.to_string())
+            }
             ErrorKind::Data => PkError::Corrupt(err.to_string()),
             _ => PkError::Other(err.to_string()),
         }
