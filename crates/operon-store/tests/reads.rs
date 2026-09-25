@@ -50,3 +50,20 @@ async fn list_returns_objects_under_prefix_sorted() {
     assert_eq!(paths, vec!["ns/1/a", "ns/1/c"]);
     assert_eq!(store.list("").await.unwrap().len(), 4);
 }
+
+#[tokio::test]
+async fn get_range_with_info_reports_the_whole_object() {
+    let store = Store::in_memory();
+    store.put("obj", b("hello world")).await.unwrap();
+    let (bytes, info) = store.get_range_with_info("obj", 6..11).await.unwrap();
+    assert_eq!(bytes, b("world"));
+    assert_eq!(info.size, 11);
+    assert_eq!(info.path, "obj");
+    // A range past the end is cut at the end.
+    let (bytes, info) = store.get_range_with_info("obj", 6..20).await.unwrap();
+    assert_eq!((bytes, info.size), (b("world"), 11));
+    assert!(matches!(
+        store.get_range_with_info("missing", 0..1).await,
+        Err(StoreError::NotFound { .. })
+    ));
+}

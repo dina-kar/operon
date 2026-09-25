@@ -5,7 +5,10 @@ use bytes::Bytes;
 use futures::TryStreamExt;
 use object_store::memory::InMemory;
 use object_store::path::Path;
-use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
+use object_store::{
+    GetOptions, GetRange, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload,
+    UpdateVersion,
+};
 
 use crate::error::{StoreError, map_err};
 
@@ -178,6 +181,31 @@ impl Store {
             .get_range(&parse_path(path)?, range)
             .await
             .map_err(|e| map_err(path, e))
+    }
+
+    /// Reads bytes `range` of an object in one request, with the metadata
+    /// of the whole object (its size included) from the same response.
+    ///
+    /// `range` must be non-empty: the backend refuses an empty one. A range
+    /// that runs past the end is cut at the end, so a caller that expects a
+    /// length checks it.
+    pub async fn get_range_with_info(
+        &self,
+        path: &str,
+        range: Range<u64>,
+    ) -> Result<(Bytes, ObjectInfo), StoreError> {
+        let options = GetOptions {
+            range: Some(GetRange::Bounded(range)),
+            ..GetOptions::default()
+        };
+        let result = self
+            .inner
+            .get_opts(&parse_path(path)?, options)
+            .await
+            .map_err(|e| map_err(path, e))?;
+        let info = to_info(&result.meta);
+        let bytes = result.bytes().await.map_err(|e| map_err(path, e))?;
+        Ok((bytes, info))
     }
 
     /// Reads object metadata.

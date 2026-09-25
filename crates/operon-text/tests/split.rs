@@ -171,9 +171,15 @@ async fn opening_a_split_is_one_get() {
         .put_if_absent(&format!("{ROOT}{SPLIT}"), split.bytes.clone())
         .await
         .unwrap();
-    // A cold cache whose block holds the whole footer.
-    let block_size = split.bytes.len() as u64;
-    assert!(block_size >= split.footer_range.end - split.footer_range.start);
+    // A cold cache whose blocks are at least as long as the footer, and
+    // where the footer straddles a block boundary.
+    let footer = split.footer_range.clone();
+    let footer_len = footer.end - footer.start;
+    let block_size = (footer_len..)
+        .find(|bs| footer.start / bs != (footer.end - 1) / bs)
+        .expect("a straddling block size");
+    assert!(footer.start % block_size != 0);
+    assert_eq!((footer.end - 1) / block_size, footer.start / block_size + 1);
     let storage = Arc::new(OperonStorage::new(
         store.clone(),
         cache(store, block_size).await,
@@ -184,9 +190,8 @@ async fn opening_a_split_is_one_get() {
     let index = open(storage, &split).await.unwrap();
     assert_eq!(faulty.calls(Op::Get), gets + 1, "one ranged GET, no HEAD");
 
-    // The index is complete: the rest of the split is already in that block.
+    // The index is complete.
     let searcher = warm_up_all(&index).await.unwrap();
-    assert_eq!(faulty.calls(Op::Get), gets + 1);
     assert_eq!(
         matching(&searcher, Term::from_field_text(fields.tag, "t0")).len(),
         (0..NUM_DOCS).filter(|i| i % 7 == 0).count()
@@ -245,7 +250,11 @@ async fn a_bad_footer_range_or_a_truncated_split_is_an_error() {
         Err(other) => panic!("{what}: unexpected error {other:?}"),
         Ok(_) => panic!("{what}: opened"),
     };
+    // One cache for every attempt: a failed open must not poison it.
+    let shared = cache(store.clone(), 4096).await;
     for (what, size, range) in [
+        // First, while the cache knows no size for the split.
+        ("a smaller size", size - 1, footer.start..footer.end - 1),
         (
             "a footer that does not end the split",
             size,
@@ -270,13 +279,17 @@ async fn a_bad_footer_range_or_a_truncated_split_is_an_error() {
             footer.start..footer.end + 1,
         ),
     ] {
-        let storage = Arc::new(OperonStorage::new(
-            store.clone(),
-            cache(store.clone(), 4096).await,
-            ROOT,
-        ));
+        let storage = Arc::new(OperonStorage::new(store.clone(), shared.clone(), ROOT));
         expect_error(open_split(storage, SPLIT, size, range).await, what);
     }
+    let storage = Arc::new(OperonStorage::new(store.clone(), shared, ROOT));
+    let index = open_split(storage, SPLIT, size, footer.clone())
+        .await
+        .expect("the right reference still opens the split");
+    assert_eq!(
+        warm_up_all(&index).await.unwrap().num_docs(),
+        u64::from(NUM_DOCS)
+    );
     let storage = Arc::new(OperonStorage::new(
         store.clone(),
         cache(store.clone(), 4096).await,

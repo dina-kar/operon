@@ -82,7 +82,19 @@ async fn missing_files_are_not_found_and_deletes_are_idempotent() {
 
     let path = Path::new("file");
     storage.put(path, Box::new(payload(10))).await.unwrap();
+    // Cache the size, then delete: the file is gone for `exists` too.
+    assert_eq!(storage.file_num_bytes(path).await.unwrap(), 10);
+    storage.get_slice(path, 0..10).await.unwrap();
     storage.delete(path).await.unwrap();
+    assert!(!storage.exists(path).await.unwrap());
+    assert_eq!(
+        storage.file_num_bytes(path).await.unwrap_err().kind(),
+        StorageErrorKind::NotFound
+    );
+    assert_eq!(
+        storage.get_slice(path, 0..10).await.unwrap_err().kind(),
+        StorageErrorKind::NotFound
+    );
     assert_eq!(
         storage.get_all(path).await.unwrap_err().kind(),
         StorageErrorKind::NotFound

@@ -12,7 +12,7 @@ use operon_quickwit::directories::{HotDirectory, StorageDirectory};
 use operon_quickwit::shim::Uri;
 use operon_quickwit::storage::{
     BulkDeleteError, BundleStorage, OwnedBytes, PutPayload, RamStorage, SendableAsync, Storage,
-    StorageResult,
+    StorageResult, add_prefix_to_storage,
 };
 use tantivy::{Index, ReloadPolicy};
 use tokio::io::AsyncRead;
@@ -23,6 +23,19 @@ struct CountingStorage {
     inner: RamStorage,
     get_slice_calls: AtomicUsize,
     get_all_calls: AtomicUsize,
+    /// Reads that came with the file length (and a path).
+    known_len_calls: std::sync::Mutex<Vec<(PathBuf, u64)>>,
+}
+
+impl CountingStorage {
+    fn new(inner: RamStorage) -> Self {
+        Self {
+            inner,
+            get_slice_calls: AtomicUsize::new(0),
+            get_all_calls: AtomicUsize::new(0),
+            known_len_calls: std::sync::Mutex::default(),
+        }
+    }
 }
 
 #[async_trait]
@@ -42,6 +55,19 @@ impl Storage for CountingStorage {
     async fn get_slice(&self, path: &Path, range: Range<usize>) -> StorageResult<OwnedBytes> {
         self.get_slice_calls.fetch_add(1, Ordering::SeqCst);
         self.inner.get_slice(path, range).await
+    }
+
+    async fn get_slice_with_file_len(
+        &self,
+        path: &Path,
+        file_len: u64,
+        range: Range<usize>,
+    ) -> StorageResult<OwnedBytes> {
+        self.known_len_calls
+            .lock()
+            .expect("lock")
+            .push((path.to_path_buf(), file_len));
+        self.get_slice(path, range).await
     }
 
     async fn get_slice_stream(
@@ -85,11 +111,7 @@ async fn opening_a_split_is_one_get() {
         .put(&split_path, Box::new(split.clone()))
         .await
         .unwrap();
-    let storage = Arc::new(CountingStorage {
-        inner: ram_storage,
-        get_slice_calls: AtomicUsize::new(0),
-        get_all_calls: AtomicUsize::new(0),
-    });
+    let storage = Arc::new(CountingStorage::new(ram_storage));
 
     let footer_bytes = storage
         .get_slice(
@@ -112,4 +134,77 @@ async fn opening_a_split_is_one_get() {
 
     assert_eq!(storage.get_slice_calls.load(Ordering::SeqCst), 1);
     assert_eq!(storage.get_all_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_prefix_storage_forwards_the_known_file_length() {
+    let ram_storage = RamStorage::default();
+    ram_storage
+        .put(Path::new("root/split"), Box::new(b"0123456789".to_vec()))
+        .await
+        .unwrap();
+    let counting = Arc::new(CountingStorage::new(ram_storage));
+    let prefixed = add_prefix_to_storage(
+        counting.clone(),
+        PathBuf::from("root"),
+        Uri::for_test("ram:///root"),
+    );
+    let bytes = prefixed
+        .get_slice_with_file_len(Path::new("split"), 10, 2..5)
+        .await
+        .unwrap();
+    assert_eq!(bytes.as_slice(), b"234");
+    assert_eq!(
+        *counting.known_len_calls.lock().unwrap(),
+        [(PathBuf::from("root/split"), 10)]
+    );
+}
+
+/// The hotcache of `common::build_split()`.
+fn hotcache() -> Vec<u8> {
+    let split = common::build_split();
+    let footer_range = split.footer_range.clone();
+    let footer = split.range_bytes(footer_range).expect("footer bytes");
+    let (_, hotcache) = BundleStorage::open_from_split_bytes(
+        Arc::new(RamStorage::default()),
+        PathBuf::from("s"),
+        footer,
+    )
+    .expect("bundle opens");
+    hotcache.as_slice().to_vec()
+}
+
+fn open_hotcache(bytes: Vec<u8>) -> anyhow::Result<HotDirectory> {
+    HotDirectory::open(
+        tantivy::directory::RamDirectory::create(),
+        OwnedBytes::new(bytes),
+    )
+}
+
+#[test]
+fn a_corrupt_hotcache_is_an_error_not_a_panic() {
+    let good = hotcache();
+    open_hotcache(good.clone()).expect("the real hotcache opens");
+
+    // The meta length (after the 8-byte header) overflows the hotcache.
+    let mut long_meta = good.clone();
+    long_meta[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(open_hotcache(long_meta).is_err());
+    // The last slice cache's body length overflows it.
+    let mut long_body = good.clone();
+    let at = long_body.len() - 8;
+    long_body[at..].copy_from_slice(&u64::MAX.to_le_bytes());
+    assert!(open_hotcache(long_body).is_err());
+    // Truncated hotcaches.
+    for len in [0, 4, 8, 12, good.len() / 2, good.len() - 1] {
+        let _ = open_hotcache(good[..len].to_vec());
+    }
+    // No single corrupt byte panics: every open is `Ok` or `Err`.
+    for at in 0..good.len() {
+        for flip in [0xFF_u8, 0x80] {
+            let mut corrupt = good.clone();
+            corrupt[at] ^= flip;
+            let _ = open_hotcache(corrupt);
+        }
+    }
 }

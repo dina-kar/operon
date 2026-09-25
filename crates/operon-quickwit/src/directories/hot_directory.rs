@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-directories/src/hot_directory.rs); modified for Operon: list_segment_files replaced for tantivy 0.26.2; imports rewritten to crate paths; unwrap replaced by expect; redundant borrow removed.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-directories/src/hot_directory.rs); modified for Operon: list_segment_files replaced for tantivy 0.26.2; imports rewritten to crate paths; unwrap replaced by expect; redundant borrow removed; corrupt lengths and offsets are errors, not panics.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -59,6 +59,12 @@ impl VersionedComponent for HotDirectoryVersions {
                     bail!("data too short (len={})", bytes.len());
                 }
                 let len = bytes.read_u32() as usize;
+                if len > bytes.len() {
+                    bail!(
+                        "hot directory meta of {len} bytes overflows its {} bytes",
+                        bytes.len()
+                    );
+                }
                 let hot_directory_meta = postcard::from_bytes(&bytes.as_slice()[..len])
                     .context("failed to deserialize hot directory meta")?;
                 bytes.advance(len);
@@ -185,6 +191,13 @@ impl StaticDirectoryCache {
                 let path = slice_offsets_window[0].0.clone();
                 let start = slice_offsets_window[0].1 as usize;
                 let end = slice_offsets_window[1].1 as usize;
+                if start > end || end > bytes.len() {
+                    return Err(DataCorruption::comment_only(format!(
+                        "hotcache slice {start}..{end} of {} is out of bounds",
+                        bytes.len()
+                    ))
+                    .into());
+                }
                 StaticSliceCache::open(bytes.slice(start..end)).map(|s| (path, Arc::new(s)))
             })
             .collect::<tantivy::Result<_>>()?;
@@ -231,16 +244,42 @@ impl Default for StaticSliceCache {
 impl StaticSliceCache {
     pub fn open(owned_bytes: OwnedBytes) -> tantivy::Result<Self> {
         let owned_bytes_len = owned_bytes.len();
-        assert!(owned_bytes_len >= 8);
+        if owned_bytes_len < 8 {
+            return Err(DataCorruption::comment_only(format!(
+                "a slice cache of {owned_bytes_len} bytes has no length"
+            ))
+            .into());
+        }
         let (body, len_bytes) = owned_bytes.split(owned_bytes_len - 8);
         let mut body_len_bytes = [0u8; 8];
         body_len_bytes.copy_from_slice(len_bytes.as_slice());
         let body_len = u64::from_le_bytes(body_len_bytes);
+        if body_len > body.len() as u64 {
+            return Err(DataCorruption::comment_only(format!(
+                "a slice cache body of {body_len} bytes overflows its {} bytes",
+                body.len()
+            ))
+            .into());
+        }
         let (body, idx) = body.split(body_len as usize);
         let idx_bytes = idx.as_slice();
         let index: SliceCacheIndex = postcard::from_bytes(idx_bytes).map_err(|err| {
             DataCorruption::comment_only(format!("failed to deserialize the slice index: {err:?}"))
         })?;
+        // Every entry must address bytes of the body: a lookup slices it.
+        let in_bounds = |entry: &SliceCacheIndexEntry| {
+            entry.start <= entry.stop
+                && entry
+                    .addr
+                    .checked_add(entry.stop - entry.start)
+                    .is_some_and(|end| end <= body.len())
+        };
+        if !index.slices.iter().all(in_bounds) {
+            return Err(DataCorruption::comment_only(
+                "a slice cache entry is out of bounds".to_string(),
+            )
+            .into());
+        }
         Ok(StaticSliceCache { bytes: body, index })
     }
 

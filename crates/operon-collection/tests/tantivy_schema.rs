@@ -431,22 +431,35 @@ async fn json_paths_support_every_filter_kind() {
 #[tokio::test]
 async fn exists_via_field_presence_matches_the_vendored_query_ast() {
     let mut schema = CollectionSchema::new(
-        vec![text("title"), field("tag", FieldKind::Keyword)],
+        vec![
+            text("title"),
+            field("tag", FieldKind::Keyword),
+            field("label", FieldKind::Keyword),
+            field("n", FieldKind::I64),
+        ],
         vec![],
         DynamicMapping::Ignore,
     );
+    // `title` and `tag` are not fast (the presence field answers), `label`
+    // and `n` are (Tantivy's `ExistsQuery` on the fast column answers).
     schema.fields[1].fast = false;
+    assert!(schema.fields[2].fast && schema.fields[3].fast);
     schema.validate().expect("valid schema");
     let layout = tantivy_layout(&schema);
     let docs = [
-        doc(pk(0), json!({"title": "a"})),
-        doc(pk(1), json!({"tag": "x"})),
+        doc(pk(0), json!({"title": "a", "label": "l", "n": 1})),
+        doc(pk(1), json!({"tag": "x", "n": [2, 3]})),
         doc(pk(2), json!({"title": ["b", "c"], "tag": "y"})),
-        doc(pk(3), json!({"title": null, "tag": []})),
+        doc(pk(3), json!({"title": null, "tag": [], "label": ["m"]})),
     ];
     let searcher = searcher(&layout, tantivy_docs(&schema, &layout, &docs)).await;
     let context = BuildTantivyAstContext::for_test(&layout.schema);
-    for (field, expected) in [("title", vec![0, 2]), ("tag", vec![1, 2])] {
+    for (field, expected) in [
+        ("title", vec![0, 2]),
+        ("tag", vec![1, 2]),
+        ("label", vec![0, 3]),
+        ("n", vec![0, 1]),
+    ] {
         let ast = QueryAst::FieldPresence(FieldPresenceQuery {
             field: field.to_string(),
         });

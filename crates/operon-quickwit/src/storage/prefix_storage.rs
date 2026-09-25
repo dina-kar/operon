@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-storage/src/prefix_storage.rs); modified for Operon: imports rewritten to crate paths; add_prefix_to_storage made pub; MockStorage tests removed.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-storage/src/prefix_storage.rs); modified for Operon: imports rewritten to crate paths; add_prefix_to_storage made pub; MockStorage tests removed; get_slice_with_file_len forwarded.
 
 use std::fmt;
 use std::ops::Range;
@@ -74,6 +74,17 @@ impl Storage for PrefixStorage {
         range: Range<usize>,
     ) -> crate::storage::StorageResult<OwnedBytes> {
         self.storage.get_slice(&self.prefix.join(path), range).await
+    }
+
+    async fn get_slice_with_file_len(
+        &self,
+        path: &Path,
+        file_len: u64,
+        range: Range<usize>,
+    ) -> crate::storage::StorageResult<OwnedBytes> {
+        self.storage
+            .get_slice_with_file_len(&self.prefix.join(path), file_len, range)
+            .await
     }
 
     async fn get_all(&self, path: &Path) -> crate::storage::StorageResult<OwnedBytes> {

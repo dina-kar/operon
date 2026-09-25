@@ -173,7 +173,10 @@ impl Storage for OperonStorage {
 
     async fn delete(&self, path: &Path) -> StorageResult<()> {
         let key = self.key(path)?;
-        self.store.delete(&key).await.map_err(store_error)
+        self.store.delete(&key).await.map_err(store_error)?;
+        // Otherwise the cached size would still report the file.
+        self.cache.forget(&key).await;
+        Ok(())
     }
 
     async fn bulk_delete<'a>(&self, paths: &[&'a Path]) -> Result<(), BulkDeleteError> {
