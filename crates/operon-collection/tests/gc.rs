@@ -1,5 +1,5 @@
-//! Garbage collection of collections (plan M1.1 Task 12; Rulings 2, 12
-//! and 13; overview A6, A15, A21).
+//! Garbage collection of collections and implicit-stream trimming (plan
+//! M1.1 Task 12; Rulings 2, 12 and 13; overview A6, A15, A21).
 //!
 //! The metastore runs on a `ManualClock` started at the wall clock, so GC's
 //! grace can be passed at once. Objects named with a ULID are dated by that
@@ -21,17 +21,20 @@ use common::{TargetFixture, WAIT, field, patch, schema, upsert};
 use futures::FutureExt;
 use operon_collection::{
     CollectionCommitHook, CollectionCommitStep, CollectionConfig, CollectionContext,
-    CollectionError, CollectionGcRoots, CollectionSchema, CollectionSnapshot, DocOp,
-    DynamicMapping, FieldKind, IndexBuildSource, PkGcRoots, PrimaryKey, StoredDoc, lance_prefix,
-    retained_chain,
+    CollectionError, CollectionGcRoots, CollectionSchema, CollectionSnapshot, CollectionTrimSource,
+    DocOp, DynamicMapping, FieldKind, IndexBuildSource, PkGcRoots, PrimaryKey, StoredDoc,
+    TRIM_TASK_PREFIX, lance_prefix, retained_chain,
 };
+use operon_common::StreamId;
 use operon_link::LinkApplySource;
 use operon_log::gc::{GcConfig, GcReport, GcSource};
 use operon_meta::{
-    Clock, Consistency, ManualClock, SystemClock, collection_pk_prefix, collection_prefix,
+    Clock, Consistency, Fence, ManualClock, SystemClock, collection_pk_prefix, collection_prefix,
 };
 use operon_store::StoreError;
-use operon_worker::{RunResult, run_once};
+use operon_worker::{
+    CancellationToken, RunResult, TaskContext, TaskError, TaskOutcome, TaskSource, run_once,
+};
 use serde_json::json;
 use ulid::Ulid;
 
@@ -851,4 +854,159 @@ async fn gc_racing_commits_and_reads_never_breaks_a_read() {
     // The interleavings both read retained versions and see released ones.
     assert!(total_reads > 50, "{total_reads} pinned reads");
     assert!(total_gone > 0, "no pinned read found its version released");
+}
+
+// ---- Trimming (Ruling 12) ----
+
+/// Log start offsets of the implicit stream's partitions.
+async fn log_starts(env: &Env) -> Vec<u64> {
+    let (stream, partitions) = (env.f.stream, env.f.partitions);
+    env.f
+        .meta
+        .client
+        .read(Consistency::Linearizable, |s| {
+            (0..partitions)
+                .map(|p| s.partition(stream, p).map_or(0, |ps| ps.log_start_offset()))
+                .collect()
+        })
+        .await
+        .expect("read")
+}
+
+async fn fetch(env: &Env, stream: StreamId, partition: u32, offset: u64) -> Result<usize, String> {
+    env.f
+        .reader
+        .fetch(operon_log::FetchRequest {
+            stream,
+            partition,
+            offset,
+            max_bytes: 16 << 20,
+            max_wait: Duration::ZERO,
+        })
+        .await
+        .map(|response| response.records.len())
+        .map_err(|err| err.to_string())
+}
+
+fn trim_config(trim: bool) -> CollectionConfig {
+    CollectionConfig {
+        keep_manifests: 2,
+        time_travel_retention: Duration::ZERO,
+        trim,
+        trim_interval: Duration::ZERO,
+        ..CollectionConfig::default()
+    }
+}
+
+/// The outcome of the one trim task a pass of `source` runs.
+async fn trim_once(env: &Env, source: &CollectionTrimSource) -> Result<TaskOutcome, TaskError> {
+    let results = run_once(&env.f.meta.client, "trimmer", WAIT, source)
+        .await
+        .expect("run");
+    let [(task, RunResult::Ran(result))] = <[_; 1]>::try_from(results).expect("one task") else {
+        panic!("the trim task did not run");
+    };
+    assert_eq!(task.key, format!("{TRIM_TASK_PREFIX}{}", env.f.cid));
+    result
+}
+
+#[tokio::test]
+async fn trim_keeps_the_tail_of_the_oldest_retained_manifest() {
+    let env = Env::start(trim_config(true)).await;
+    let mut applied = BTreeMap::new();
+    for round in 0..5u64 {
+        let (version, _) = env
+            .commit(upserts(round * 4..round * 4 + 6, &format!("r{round}")))
+            .await;
+        applied.insert(version, env.f.applied().await);
+    }
+    let live = *applied.keys().next_back().expect("a version");
+    let oldest = &applied[&(live - 2)];
+    assert_eq!(oldest.len(), 2, "both partitions have records: {oldest:?}");
+    env.clock.advance(Duration::from_secs(1));
+    let source = CollectionTrimSource::new(env.f.ctx.clone());
+    assert_eq!(
+        trim_once(&env, &source).await.expect("trim"),
+        TaskOutcome::Done
+    );
+    let starts = log_starts(&env).await;
+    let high = env.f.high_watermarks().await;
+    for partition in 0..env.f.partitions {
+        let bound = oldest[&partition];
+        assert_eq!(starts[partition as usize], bound, "partition {partition}");
+        // The whole tail of manifest v−2 reads; below it, nothing does.
+        let tail = fetch(&env, env.f.stream, partition, bound).await;
+        let expected = usize::try_from(high[&partition] - bound).expect("fits");
+        assert_eq!(tail.expect("the tail reads"), expected);
+        assert!(
+            fetch(&env, env.f.stream, partition, bound - 1)
+                .await
+                .is_err()
+        );
+    }
+    // Nothing more to trim until the retained set moves.
+    assert_eq!(
+        trim_once(&env, &source).await.expect("trim"),
+        TaskOutcome::Idle
+    );
+    let pinned = env.open_version(live - 2).await.expect("v-2 is retained");
+    assert_eq!(pinned.manifest().applied, *oldest);
+    env.shutdown().await;
+}
+
+#[tokio::test]
+async fn trim_is_off_when_configured() {
+    let env = Env::start(trim_config(false)).await;
+    for round in 0..5u64 {
+        env.commit(upserts(round * 4..round * 4 + 6, "x")).await;
+    }
+    env.clock.advance(Duration::from_secs(1));
+    let source = CollectionTrimSource::new(env.f.ctx.clone());
+    assert_eq!(
+        trim_once(&env, &source).await.expect("trim"),
+        TaskOutcome::Idle
+    );
+    assert_eq!(log_starts(&env).await, vec![0, 0]);
+    env.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_fenced_trim_changes_nothing() {
+    let env = Env::start(trim_config(true)).await;
+    for round in 0..5u64 {
+        env.commit(upserts(round * 4..round * 4 + 6, "x")).await;
+    }
+    let source = CollectionTrimSource::new(env.f.ctx.clone());
+    let [(key, task)] = <[_; 1]>::try_from(
+        source
+            .candidates(&env.f.meta.client)
+            .await
+            .expect("candidates"),
+    )
+    .map_err(|c| c.len())
+    .expect("one candidate");
+    let lease = key.lease();
+    let client = &env.f.meta.client;
+    let stale = client
+        .acquire_lease(&lease, "a", Duration::from_secs(1))
+        .await
+        .expect("lease");
+    env.clock.advance(Duration::from_secs(2));
+    let current = client
+        .acquire_lease(&lease, "b", Duration::from_secs(30))
+        .await
+        .expect("take over");
+    assert!(current.epoch > stale.epoch);
+    let ctx = TaskContext {
+        key,
+        fence: Fence {
+            lease,
+            epoch: stale.epoch,
+        },
+        cancel: CancellationToken::new(),
+        meta: client.clone(),
+    };
+    assert!(matches!(task.run(ctx).await, Err(TaskError::Fenced)));
+    assert_eq!(log_starts(&env).await, vec![0, 0]);
+    env.shutdown().await;
 }

@@ -40,7 +40,8 @@
 //!
 //! Task 12: the GC roots of collections ([`CollectionGcRoots`], with Lance
 //! reachability computed from the retained manifests, Ruling 2) and of PK
-//! indexes ([`PkGcRoots`]).
+//! indexes ([`PkGcRoots`]), and implicit-stream trimming below the oldest
+//! retained manifest ([`CollectionTrimSource`], Ruling 12).
 //!
 //! The collection schema types live in `operon_common::schema`, because the
 //! metastore's commands carry them (plan M1.1 Ruling 6); they are re-exported
@@ -66,6 +67,7 @@ mod snapshot;
 mod tantivy_schema;
 mod target;
 mod token;
+mod trim;
 mod values;
 mod verify;
 mod writer;
@@ -122,6 +124,7 @@ pub use target::{
     CollectionCommitStep, CollectionTarget, CollectionTargetFactory, PK_WATERMARK_KEY,
 };
 pub use token::{CONSISTENCY_TOKEN_HEADER, ConsistencyToken, TokenParseError};
+pub use trim::{CollectionTrimSource, TRIM_TASK_PREFIX};
 pub use values::{
     DocRejection, ExtractedDoc, IndexValue, Violation, check_document, check_patch, coerce,
     extract, parse_date, unmapped_paths,
