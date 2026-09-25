@@ -3,13 +3,14 @@
 //!
 //! This crate holds the search IR of overview §6.6 with its exact JSON form
 //! ([`ir`], [`json`]), the service types and errors ([`types`], [`error`]),
-//! schema-free request validation ([`validate`]) and the hot-tier hooks
-//! ([`hot`]).
+//! schema-free request validation ([`validate`]), and the hot-tier and
+//! placement hooks ([`hot`], [`placement`]).
 
 pub mod error;
 pub mod hot;
 pub mod ir;
 pub mod json;
+pub mod placement;
 pub mod types;
 pub mod validate;
 

@@ -1508,3 +1508,197 @@ fn search_request_defaults_fill_missing_keys() {
         }
     );
 }
+
+// ----- The hot-tier and placement hooks -----
+
+mod hooks {
+    use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use operon_collection::PrimaryKey;
+    use operon_common::{CollectionId, NamespaceId};
+    use operon_query::hot::{
+        self, HOT_HEADER, HOT_USED_HEADER, HotKind, HotLayer, HotStatus, HotTier, HotUsed,
+        NoHotTier, RequestHot,
+    };
+    use operon_query::placement::{
+        FORWARDED_HEADER, LocalOnly, NoRemoteReads, Owner, Placement, RemoteReads,
+    };
+    use operon_query::{Projection, ReadConsistency, SearchRequest, ServiceError};
+    use serde_json::{Value, json};
+    use tower::{Layer, ServiceExt, service_fn};
+
+    #[tokio::test]
+    async fn the_hot_scope_is_task_local() {
+        assert!(hot::current().is_none());
+        let used = HotUsed::default();
+        let request = RequestHot {
+            enabled: true,
+            used: used.clone(),
+        };
+        let seen = hot::scope(request, async {
+            let current = hot::current().expect("inside the scope");
+            current.used.record(HotKind::Splits);
+            current.used.record(HotKind::Hnsw);
+            current.enabled
+        })
+        .await;
+        assert!(seen);
+        assert!(hot::current().is_none());
+        assert_eq!(
+            used.kinds().into_iter().collect::<Vec<_>>(),
+            vec![HotKind::Hnsw, HotKind::Splits]
+        );
+        assert_eq!(used.header_value(), "hnsw,splits");
+        assert_eq!(HotUsed::default().header_value(), "none");
+    }
+
+    #[tokio::test]
+    async fn the_hot_layer_parses_the_header_and_reports_used() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let saw = Arc::new(Mutex::new(None::<bool>));
+        let inner = {
+            let (calls, saw) = (calls.clone(), saw.clone());
+            service_fn(move |request: http::Request<String>| {
+                let (calls, saw) = (calls.clone(), saw.clone());
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    let current = hot::current().expect("the layer sets the scope");
+                    *saw.lock().expect("lock") = Some(current.enabled);
+                    if current.enabled {
+                        current.used.record(HotKind::Hnsw);
+                    }
+                    let mut response = http::Response::new(String::new());
+                    if request.headers().contains_key("x-forwarded-used") {
+                        response
+                            .headers_mut()
+                            .insert(HOT_USED_HEADER, http::HeaderValue::from_static("splits"));
+                    }
+                    Ok::<_, std::convert::Infallible>(response)
+                }
+            })
+        };
+        let service = HotLayer::new(true).layer(inner);
+        let request = |header: Option<&str>| {
+            let mut builder = http::Request::builder().uri("/");
+            if let Some(value) = header {
+                builder = builder.header("Operon-Hot", value);
+            }
+            builder.body(String::new()).expect("request")
+        };
+
+        let response = service.clone().oneshot(request(None)).await.expect("call");
+        assert_eq!(response.headers()[HOT_USED_HEADER], "hnsw");
+        assert_eq!(*saw.lock().expect("lock"), Some(true));
+
+        let response = service
+            .clone()
+            .oneshot(request(Some("OFF")))
+            .await
+            .expect("call");
+        assert_eq!(response.headers()[HOT_USED_HEADER], "none");
+        assert_eq!(*saw.lock().expect("lock"), Some(false));
+
+        let response = service
+            .clone()
+            .oneshot(request(Some("On")))
+            .await
+            .expect("call");
+        assert_eq!(response.headers()[HOT_USED_HEADER], "hnsw");
+
+        let before = calls.load(Ordering::SeqCst);
+        let response = service
+            .clone()
+            .oneshot(request(Some("maybe")))
+            .await
+            .expect("call");
+        assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            before,
+            "the inner service ran"
+        );
+        let body: Value = serde_json::from_str(response.body()).expect("json body");
+        assert_eq!(
+            body,
+            json!({"error": "invalid_argument",
+                   "message": "invalid Operon-Hot header: maybe (expected on or off)"})
+        );
+
+        // A gateway that forwarded the request already set the header.
+        let mut forwarded = request(None);
+        forwarded
+            .headers_mut()
+            .insert("x-forwarded-used", http::HeaderValue::from_static("1"));
+        let response = service.clone().oneshot(forwarded).await.expect("call");
+        assert_eq!(response.headers()[HOT_USED_HEADER], "splits");
+
+        assert_eq!(HOT_HEADER, "operon-hot");
+        assert_eq!(hot::parse_hot_header("oN"), Ok(true));
+        assert_eq!(hot::parse_hot_header("off"), Ok(false));
+        assert!(matches!(
+            hot::parse_hot_header("yes"),
+            Err(ServiceError::InvalidArgument(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn no_hot_tier_and_local_only_are_inert() {
+        let (ns, cid) = (NamespaceId(1), CollectionId(2));
+        let tier = NoHotTier;
+        assert!(tier.ann(ns, cid, "_vector_0", 7).is_none());
+        assert!(tier.split_file(ns, cid, ulid::Ulid::nil()).is_none());
+        tier.record_access(ns, cid);
+        assert_eq!(tier.status(ns, cid), HotStatus::default());
+        assert_eq!(LocalOnly.owner(ns, cid), Owner::Local);
+        assert_eq!(FORWARDED_HEADER, "operon-forwarded");
+
+        let to = Owner::Remote {
+            node_id: 2,
+            addr: SocketAddr::from(([127, 0, 0, 1], 7000)),
+        };
+        let unavailable = |err: ServiceError| matches!(err, ServiceError::Unavailable(_));
+        let reads = NoRemoteReads;
+        assert!(unavailable(
+            reads
+                .search(&to, "ns", SearchRequest::new("c"))
+                .await
+                .expect_err("search")
+        ));
+        assert!(unavailable(
+            reads
+                .get(
+                    &to,
+                    "ns",
+                    "c",
+                    vec![PrimaryKey::U64(1)],
+                    Projection::default(),
+                    ReadConsistency::Strong
+                )
+                .await
+                .expect_err("get")
+        ));
+        assert!(unavailable(
+            reads
+                .count(&to, "ns", "c", None, ReadConsistency::Strong)
+                .await
+                .expect_err("count")
+        ));
+        assert!(unavailable(
+            reads
+                .scroll(
+                    &to,
+                    "ns",
+                    "c",
+                    None,
+                    None,
+                    10,
+                    Projection::default(),
+                    ReadConsistency::Strong
+                )
+                .await
+                .expect_err("scroll")
+        ));
+    }
+}
