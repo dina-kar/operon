@@ -9,7 +9,7 @@
 //!
 //! Task 6: value [`extract`]ion and [`coerce`]ion, document validation
 //! ([`check_document`], [`check_patch`]) and ES dynamic mapping
-//! ([`propose_dynamic_fields`]).
+//! ([`propose_dynamic_fields`]), and the [`CollectionWriter`].
 //!
 //! The collection schema types live in `operon_common::schema`, because the
 //! metastore's commands carry them (plan M1.1 Ruling 6); they are re-exported
@@ -23,6 +23,7 @@ mod pk;
 mod resolve;
 mod token;
 mod values;
+mod writer;
 
 pub use operon_common::schema;
 pub use operon_common::schema::{
@@ -42,3 +43,4 @@ pub use values::{
     DocRejection, ExtractedDoc, IndexValue, Violation, check_document, check_patch, coerce,
     extract, parse_date, unmapped_paths,
 };
+pub use writer::{CollectionWriter, MAX_WRITE_OPS, OpError, OpResult, WriteError, WriteOutcome};
