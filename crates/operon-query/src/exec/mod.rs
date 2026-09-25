@@ -15,15 +15,22 @@
 //! - [`sparse`]: exact sparse vector search over splits and the tail;
 //! - [`fusion`]: RRF, DBSF and weighted sums of ranked lists;
 //! - [`doc_fetch`]: the documents of ranked rows;
-//! - [`tail_merge`]: durable rows and the tail merged in PK order.
+//! - [`tail_merge`]: durable rows and the tail merged in PK order;
+//! - [`planner`]: planning and running searches, get, count and scroll,
+//!   with [`project`], [`groups`], [`get`] and [`scroll`].
 
 pub mod ann;
 pub mod doc_fetch;
 pub mod filter_bitmap;
 pub mod fusion;
+pub mod get;
+pub mod groups;
 pub mod mask;
 pub mod order;
+pub mod planner;
+pub mod project;
 pub mod schema;
+pub mod scroll;
 pub mod sparse;
 pub mod tail_merge;
 pub mod tantivy_search;
@@ -55,6 +62,8 @@ pub use filter_bitmap::FilterBitmapExec;
 pub use fusion::{FusionExec, fuse};
 pub use mask::{RowSet, SplitMask};
 pub use order::{EffectiveSort, RankMode};
+pub use planner::{SearchConfig, SearchPlanner};
+pub use project::{field_values, filter_source};
 pub use schema::{
     Ranked, batch_to_keyed, batch_to_ranked, fetched_schema, keyed_schema, keyed_to_batch,
     ranked_schema, ranked_to_batch, rowid_schema,

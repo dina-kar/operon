@@ -8,6 +8,9 @@
 //! fieldnorm buckets ([`norms`]) and global live-only BM25 statistics
 //! ([`stats`]).
 //!
+//! Task 7: the per-split primary-key dictionaries that scroll walks
+//! ([`pkdict`]).
+//!
 //! Query analysis uses Quickwit's [`TokenizerManager`] ([`query_tokenizers`],
 //! P28, row 0.44); splits and the tail index keep Tantivy's
 //! `operon_text::tokenizer_manager()`.
@@ -16,6 +19,7 @@ pub mod coerce;
 pub mod compile;
 pub mod fields;
 pub mod norms;
+pub mod pkdict;
 pub mod splits;
 pub mod stats;
 
@@ -29,6 +33,7 @@ pub use compile::{
 };
 pub use fields::{ResolvedField, resolve_field};
 pub use norms::{FIELD_NORMS_TABLE, norm_mid2};
+pub use pkdict::{PkCursor, PkDictCache};
 pub use splits::{LocalSplitStorage, OpenSplit, open_splits};
 pub use stats::{GlobalStats, StatsCache};
 
