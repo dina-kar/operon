@@ -83,10 +83,17 @@ Each Operon format below is `magic (4 bytes) ‖ u16 LE format version ‖ body 
 | `OPCM` | collection manifest, `manifests/<version:020>-<ulid>.pb` | protobuf `operon.collection.v1.CollectionManifest` |
 | `OPDB` | delete bitmap, `text/deletes/<split_ulid>/<ulid>.bitmap` | split ULID (u128 BE) ‖ split doc count (u32 LE) ‖ cardinality (u64 LE) ‖ roaring portable serialization |
 | `OPPD` | PK delta, `pkdelta/<version:020>-<ulid>.pkd` | postcard `Vec<(key bytes, Option<row id u64>)>`, keys strictly ascending, `None` = deleted |
-| `OPDL` | dead letters, `deadletters/<version:020>-<ulid>.dlq` | postcard `Vec<DeadLetter { partition, offset, key, value, reason }>` |
+| `OPDL` | dead letters, `deadletters/<version:020>-<ulid>.dlq` | postcard `Vec<DeadLetter { partition: u32, offset: u64, key: Option<bytes>, value: Option<bytes>, reason: String }>` ([`deadletter.rs`](../../crates/operon-collection/src/deadletter.rs)) |
 
 Not enveloped:
-- **Implicit-stream records** (overview §6.2): key = the canonical PK bytes (`0x01` ‖ u64 BE, `0x02` ‖ 16-byte UUID, or `0x03` ‖ UTF-8); value = `0x01` (codec version) ‖ postcard `WireOp` (`Upsert`, `Delete` or `Patch`; sources as UTF-8 JSON bytes), at most 16 MiB. A key's partition is `xxh3_64(canonical) mod partitions`.
+- **Implicit-stream records** (overview §6.2), defined in [`codec.rs`](../../crates/operon-collection/src/codec.rs):
+  - The key is the canonical PK bytes (`0x01` ‖ u64 BE, `0x02` ‖ 16-byte UUID, or `0x03` ‖ UTF-8). A key's partition is `xxh3_64(canonical) mod partitions`.
+  - The value is `0x01` (codec version) ‖ postcard `WireOp`, at most 16 MiB with the version byte. Variant order and field order are the format:
+    - `WireOp`: variant 0 `Upsert(WireDoc)`; variant 1 `Delete(pk)`; variant 2 `Patch { pk, mode, source, delete_keys, vectors, sparse_vectors, upsert: Option<WireDoc> }`.
+    - `WireDoc { pk, source, vectors, sparse_vectors }`.
+    - `source` is a JSON object as UTF-8 bytes, because postcard cannot carry `serde_json::Value`. `vectors` maps a name to `[f32]`, and `sparse_vectors` maps a name to `{ indices: [u32], values: [f32] }`; both maps are in ascending name order. In a `Patch`, each map value is an `Option`, where `None` removes the vector. `mode` is `PatchMode` (0 `MergeDeep`, 1 `MergeTop`, 2 `Replace`), and `delete_keys` is a list of dot-separated paths.
+    - The `pk` inside `WireOp` is `PrimaryKey`'s derived serde enum in postcard (0 `U64` varint, 1 `Uuid` 16 bytes with no length, 2 `Str` varint length ‖ UTF-8). It is not the canonical bytes (M1.1 ruling P23).
+  - The golden test `every_record_variant_has_a_pinned_encoding` in [`tests/codec.rs`](../../crates/operon-collection/tests/codec.rs) pins one byte literal per variant (M1.1 ruling P24).
 - **PK index values** (inside SlateDB, which checksums its blocks): `0x01 ‖ row id u64 BE`; the watermark under the key `0x00 "watermark"` is `0x01 ‖ postcard(PkWatermark { manifest_version, applied })`.
 - **Splits**: Quickwit's bundle: the index files, then the footer = bundle metadata ‖ its length (u32 LE) ‖ hotcache ‖ its length (u32 LE) ‖ the 16-byte trailer (footer start u64 LE ‖ trailer version u32 LE = 1 ‖ `QWFT`). `SplitRef.footer_range` spans the whole footer, trailer included (M1.1 Ruling 9).
 
