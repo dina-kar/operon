@@ -3,12 +3,39 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use operon_common::schema::{
+    CollectionSchema, Distance, DynamicMapping, FieldKind, FieldSpec, HnswParams, VectorElement,
+    VectorIndexSpec, VectorSpec,
+};
 use operon_meta::{
-    Consistency, MetaClient, MetaClientConfig, MetaConfig, MetaNode, MetaState, Router,
-    SystemClock, WalChunk, WalClass,
+    ApplyError, Command, Consistency, MetaClient, MetaClientConfig, MetaConfig, MetaError,
+    MetaNode, MetaState, Router, SystemClock, WalChunk, WalClass,
 };
 use operon_store::Store;
 use tempfile::TempDir;
+
+fn schema() -> CollectionSchema {
+    CollectionSchema::new(
+        vec![FieldSpec {
+            name: "title".to_string(),
+            source_path: "title".to_string(),
+            kind: FieldKind::Keyword,
+            indexed: true,
+            fast: true,
+            ignore_malformed: false,
+        }],
+        vec![VectorSpec {
+            name: String::new(),
+            dim: 4,
+            distance: Distance::Cosine,
+            element: VectorElement::F32,
+            index: VectorIndexSpec::Auto,
+            hnsw: HnswParams::default(),
+            quantization: None,
+        }],
+        DynamicMapping::Ignore,
+    )
+}
 
 const WAIT: Duration = Duration::from_secs(20);
 
@@ -221,5 +248,57 @@ async fn a_lost_acknowledgement_is_retried_and_deduplicated() {
         .await
         .unwrap();
     assert_eq!(next, Some(4));
+    cluster.shutdown().await;
+}
+
+/// A write's first attempt through a follower's client is refused with
+/// `NotLeader`: the follower never appended it to its log, so that attempt
+/// definitely did not apply, and `write_tracked` must not count it as an
+/// attempt of unknown outcome.
+#[tokio::test]
+async fn a_first_write_through_a_followers_client_reports_no_unknown_attempt() {
+    let cluster = Cluster::start().await;
+    let leader = cluster.leader().await.id();
+    let follower = (1..=3).find(|id| *id != leader).unwrap();
+    let client = cluster.client(follower, MetaClientConfig::default());
+
+    let (reply, earlier_unknown) = client
+        .write_tracked(Command::CreateNamespace {
+            name: "acme".to_string(),
+        })
+        .await;
+    reply.expect("create namespace");
+    assert!(
+        !earlier_unknown,
+        "a NotLeader refusal must not be counted as an unknown attempt"
+    );
+    cluster.shutdown().await;
+}
+
+/// With the fix above, a follower's client no longer treats its own
+/// `NotLeader` redirect as an earlier unknown attempt, so a genuine conflict
+/// on an existing name is reported as `CollectionExists`, not silently
+/// mistaken for a retry of a call that already succeeded.
+#[tokio::test]
+async fn create_collection_through_a_followers_client_reports_collection_exists() {
+    let cluster = Cluster::start().await;
+    let leader = cluster.leader().await.id();
+    let follower = (1..=3).find(|id| *id != leader).unwrap();
+    let client = cluster.client(follower, MetaClientConfig::default());
+
+    let ns = client.create_namespace("acme").await.unwrap();
+    client
+        .create_collection(ns, "docs", schema(), 1)
+        .await
+        .unwrap();
+
+    let err = client
+        .create_collection(ns, "docs", schema(), 1)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, MetaError::Rejected(ApplyError::CollectionExists(_))),
+        "expected CollectionExists, got {err:?}"
+    );
     cluster.shutdown().await;
 }

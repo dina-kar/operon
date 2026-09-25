@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use operon_common::meta::{Consistency, MetaStore};
+use operon_common::meta::MetaStore;
 use operon_meta::{MetaClient, MetaClientConfig, MetaConfig, MetaNode, Router, SystemClock};
 use operon_meta_conformance::{Backend, Faults, Instance};
 use operon_store::Store;
@@ -53,16 +53,6 @@ async fn start(count: u64) -> (Router, Vec<MetaNode>, Vec<TempDir>, Vec<MetaClie
             )
         })
         .collect();
-    // One linearizable read per client, so each knows the leader. A client's
-    // first write from a follower is redirected by a `NotLeader`, which the
-    // client counts as an attempt of unknown outcome (`earlier_unknown`, and
-    // a `CollectionExists` taken as its own); the cases assert what a write
-    // with no earlier attempt reports.
-    for client in &clients {
-        MetaStore::clock_ms(client, Consistency::Linearizable)
-            .await
-            .expect("find the leader");
-    }
     (router, nodes, dirs, clients)
 }
 

@@ -194,6 +194,13 @@ impl MetaClient {
                 Err(err) if !is_retryable(&err) => return (Err(err), earlier_unknown),
                 Err(err) => err,
             };
+            // A node that refuses with `NotLeader` refused outright: it was
+            // not the leader, so it never appended the command to its log,
+            // and the attempt definitely did not apply. Only `Timeout` and
+            // `Unavailable` leave an attempt's outcome unknown.
+            if !matches!(err, MetaError::NotLeader { .. }) {
+                earlier_unknown = true;
+            }
             // A fresh hint to another node is followed at once; anything else
             // waits out the backoff first, so two nodes that disagree about the
             // leader cannot make the client spin.
@@ -208,7 +215,6 @@ impl MetaClient {
             {
                 target = next;
                 followed_hint = true;
-                earlier_unknown = true;
                 continue;
             }
             target = hinted.unwrap_or((target + 1) % count);
@@ -217,7 +223,6 @@ impl MetaClient {
             if remaining.is_zero() {
                 return (Err(err), earlier_unknown);
             }
-            earlier_unknown = true;
             tracing::debug!(%err, ?backoff, "metastore request failed; retrying");
             tokio::time::sleep(backoff.min(remaining)).await;
             backoff = (backoff * 2).min(MAX_BACKOFF);
@@ -231,10 +236,13 @@ impl MetaClient {
 
     /// Like [`MetaClient::write`], and also says whether an earlier attempt of
     /// this call failed with an error that leaves its outcome unknown
-    /// (`NotLeader`, `Timeout` or `Unavailable`). When it did, a rejection of
-    /// the final attempt does not prove the command was never applied: for
-    /// example a retried `CommitWal` whose commit record has since been pruned
-    /// is rejected as stale although the first attempt committed it.
+    /// (`Timeout` or `Unavailable`). When it did, a rejection of the final
+    /// attempt does not prove the command was never applied: for example a
+    /// retried `CommitWal` whose commit record has since been pruned is
+    /// rejected as stale although the first attempt committed it. A
+    /// `NotLeader` refusal never sets it: the refusing node was not the
+    /// leader, so it never appended the command to its log, and that attempt
+    /// definitely did not apply.
     pub async fn write_tracked(&self, command: Command) -> (Result<Reply, MetaError>, bool) {
         self.on_leader(|node| {
             let command = command.clone();
