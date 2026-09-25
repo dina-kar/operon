@@ -11,8 +11,8 @@
 //! manifest does not reflect yet ([`tail`], H3). Task 4: read views per
 //! consistency level ([`read`]). Task 5: text search over splits and the
 //! tail, filter bitmaps and global BM25 statistics ([`exec`], [`text`]).
-//! Task 6: dense vector search over Lance, the tail and the hot tier
-//! ([`vector`], [`exec`]).
+//! Task 6: dense vector search over Lance, the tail and the hot tier, and
+//! exact sparse vector search ([`vector`], [`sparse`], [`exec`]).
 
 pub mod error;
 pub mod exec;
@@ -21,6 +21,7 @@ pub mod ir;
 pub mod json;
 pub mod placement;
 pub mod read;
+pub mod sparse;
 pub mod tail;
 pub mod text;
 pub mod types;

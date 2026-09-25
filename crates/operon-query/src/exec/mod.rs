@@ -11,13 +11,15 @@
 //! - [`mask`]: row sets and split masks;
 //! - [`tantivy_search`]: BM25 search over splits and the tail;
 //! - [`filter_bitmap`]: a filter as a row-id set;
-//! - [`ann`]: dense vector search over Lance, the tail and the hot tier.
+//! - [`ann`]: dense vector search over Lance, the tail and the hot tier;
+//! - [`sparse`]: exact sparse vector search over splits and the tail.
 
 pub mod ann;
 pub mod filter_bitmap;
 pub mod mask;
 pub mod order;
 pub mod schema;
+pub mod sparse;
 pub mod tantivy_search;
 
 use std::sync::Arc;
@@ -46,6 +48,7 @@ pub use filter_bitmap::FilterBitmapExec;
 pub use mask::{RowSet, SplitMask};
 pub use order::{EffectiveSort, RankMode};
 pub use schema::{Ranked, batch_to_ranked, ranked_schema, ranked_to_batch, rowid_schema};
+pub use sparse::SparseExec;
 pub use tantivy_search::TantivySearchExec;
 
 /// The plan properties of every operator: one partition, final emission,

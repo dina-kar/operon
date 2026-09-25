@@ -106,6 +106,18 @@ impl TopK {
         }
     }
 
+    /// Whether a hit scoring `score` may enter: `false` only when it is
+    /// certainly worse than the current k-th (the key breaks ties).
+    pub fn may_admit(&self, score: f32) -> bool {
+        match self.heap.peek() {
+            _ if self.k == 0 => false,
+            Some(worst) if self.heap.len() == self.k => {
+                score.total_cmp(&worst.0.score) != Ordering::Less
+            }
+            _ => true,
+        }
+    }
+
     pub fn push(&mut self, hit: Scored) {
         if self.k == 0 {
             return;
