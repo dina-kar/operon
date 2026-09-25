@@ -82,6 +82,13 @@ impl TailSnapshot {
         })
     }
 
+    /// Whether a follower published this snapshot after loading the live
+    /// manifest; `false` for [`TailSnapshot::empty`], which a tail publishes
+    /// before its first start.
+    pub fn is_started(&self) -> bool {
+        self.generation.is_some()
+    }
+
     pub fn manifest(&self) -> &Arc<CollectionManifest> {
         &self.manifest
     }

@@ -1,11 +1,22 @@
-//! Shared test helpers: a single-node metastore, `FaultyStore(InMemory)`, a
-//! log writer with a 20 ms flush, a collection with its context, and M1.1's
-//! link to apply the implicit stream.
+//! Shared test helpers: a single-node (or three-node) metastore,
+//! `FaultyStore(PathStore(InMemory))`, a log writer with a 20 ms flush, a
+//! collection with its context, M1.1's link to apply the implicit stream,
+//! and read views (Task 4).
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashMap};
+use std::fmt;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use async_trait::async_trait;
+use futures::stream::BoxStream;
+use object_store::memory::InMemory;
+use object_store::path::Path;
+use object_store::{
+    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    PutMultipartOptions, PutOptions, PutPayload, PutResult,
+};
 
 use operon_collection::{
     CollectionConfig, CollectionContext, CollectionManifest, CollectionSchema, CollectionSnapshot,
@@ -19,7 +30,10 @@ use operon_log::{FetchRequest, LogConfig, LogReader, LogWriter, OffsetRecord, Re
 use operon_meta::{
     ApplyError, MetaClient, MetaClientConfig, MetaConfig, MetaError, MetaNode, Router, SystemClock,
 };
+use operon_query::hot::{HotTier, NoHotTier, RequestHot};
+use operon_query::read::{ReadConfig, ReadView, Reads};
 use operon_query::tail::{Tail, TailBudget, TailConfig, TailSnapshot};
+use operon_query::{ReadConsistency, ServiceError};
 use operon_store::{FaultyStore, Store};
 use serde_json::{Map, Value};
 use tempfile::TempDir;
@@ -104,32 +118,211 @@ pub fn tail_schema() -> CollectionSchema {
     schema
 }
 
-/// A single-node metastore with a client.
+/// An [`ObjectStore`] over `InMemory` that counts `get`s per path and fails
+/// the `get`s under chosen prefixes (row 0.59).
+#[derive(Default)]
+pub struct PathStore {
+    inner: InMemory,
+    gets: Mutex<HashMap<String, u64>>,
+    failing: Mutex<Vec<String>>,
+}
+
+impl PathStore {
+    /// The `get`s so far of paths starting with `prefix`.
+    pub fn gets_under(&self, prefix: &str) -> u64 {
+        self.gets
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter(|(path, _)| path.starts_with(prefix))
+            .map(|(_, n)| *n)
+            .sum()
+    }
+
+    /// Every `get` of a path under `prefix` fails from now on.
+    pub fn fail_gets_under(&self, prefix: &str) {
+        self.failing.lock().expect("lock").push(prefix.to_string());
+    }
+
+    pub fn clear_failures(&self) {
+        self.failing.lock().expect("lock").clear();
+    }
+
+    /// Every path written so far.
+    pub async fn paths(&self) -> Vec<String> {
+        use futures::StreamExt;
+        self.inner
+            .list(None)
+            .map(|meta| meta.expect("list").location.to_string())
+            .collect()
+            .await
+    }
+}
+
+impl fmt::Debug for PathStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PathStore").finish()
+    }
+}
+
+impl fmt::Display for PathStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PathStore")
+    }
+}
+
+#[async_trait]
+impl ObjectStore for PathStore {
+    async fn put_opts(
+        &self,
+        location: &Path,
+        payload: PutPayload,
+        opts: PutOptions,
+    ) -> object_store::Result<PutResult> {
+        self.inner.put_opts(location, payload, opts).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &Path,
+        opts: PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &Path,
+        options: GetOptions,
+    ) -> object_store::Result<GetResult> {
+        let path = location.to_string();
+        *self
+            .gets
+            .lock()
+            .expect("lock")
+            .entry(path.clone())
+            .or_default() += 1;
+        let failing = self
+            .failing
+            .lock()
+            .expect("lock")
+            .iter()
+            .any(|prefix| path.starts_with(prefix.as_str()));
+        if failing {
+            return Err(object_store::Error::Generic {
+                store: "PathStore",
+                source: format!("injected get failure on {path}").into(),
+            });
+        }
+        self.inner.get_opts(location, options).await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, object_store::Result<Path>>,
+    ) -> BoxStream<'static, object_store::Result<Path>> {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+
+    async fn list_with_delimiter(&self, prefix: Option<&Path>) -> object_store::Result<ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &Path,
+        to: &Path,
+        options: CopyOptions,
+    ) -> object_store::Result<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
+}
+
+/// A metastore: one node, or three (then `node` and `client` are the
+/// leader's and `followers` holds a client per follower).
 pub struct Meta {
     pub node: MetaNode,
     pub client: MetaClient,
-    _dir: TempDir,
+    pub nodes: Vec<MetaNode>,
+    pub followers: Vec<MetaClient>,
+    _router: Router,
+    _dirs: Vec<TempDir>,
 }
 
 impl Meta {
     pub async fn start() -> Self {
-        let dir = TempDir::new().expect("temp dir");
-        let config = MetaConfig::new(1, dir.path(), Store::in_memory());
-        let node = MetaNode::start(config, &Router::new())
-            .await
-            .expect("start meta");
-        node.initialize([1]).await.expect("initialize");
-        node.wait_for_leader(WAIT).await.expect("leader");
-        let client = MetaClient::new(
-            node.clone(),
-            vec![],
-            Arc::new(SystemClock),
-            MetaClientConfig::default(),
-        );
+        Self::start_n(1).await
+    }
+
+    /// `n` nodes over one object store.
+    pub async fn start_n(n: u64) -> Self {
+        let router = Router::new();
+        let store = Store::in_memory();
+        let dirs: Vec<TempDir> = (0..n).map(|_| TempDir::new().expect("temp dir")).collect();
+        let mut nodes = Vec::new();
+        for (id, dir) in (1..=n).zip(&dirs) {
+            let config = MetaConfig::new(id, dir.path(), store.clone());
+            nodes.push(MetaNode::start(config, &router).await.expect("start meta"));
+        }
+        nodes[0].initialize(1..=n).await.expect("initialize");
+        for node in &nodes {
+            node.wait_for_leader(WAIT).await.expect("leader");
+        }
+        let deadline = Instant::now() + WAIT;
+        let leader = loop {
+            let mut seen = Vec::new();
+            for node in &nodes {
+                seen.push(node.current_leader().await);
+            }
+            if let Some(Some(leader)) = seen.first()
+                && seen.iter().all(|s| *s == Some(*leader))
+            {
+                break *leader;
+            }
+            assert!(Instant::now() < deadline, "no agreed leader: {seen:?}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let client_of = |local: &MetaNode| {
+            let peers = nodes
+                .iter()
+                .filter(|n| n.id() != local.id())
+                .cloned()
+                .collect();
+            MetaClient::new(
+                local.clone(),
+                peers,
+                Arc::new(SystemClock),
+                MetaClientConfig::default(),
+            )
+        };
+        let node = nodes
+            .iter()
+            .find(|n| n.id() == leader)
+            .expect("the leader is a node")
+            .clone();
+        let client = client_of(&node);
+        let followers = nodes
+            .iter()
+            .filter(|n| n.id() != leader)
+            .map(client_of)
+            .collect();
         Self {
             node,
             client,
-            _dir: dir,
+            nodes,
+            followers,
+            _router: router,
+            _dirs: dirs,
+        }
+    }
+
+    pub async fn shutdown(&self) {
+        for node in &self.nodes {
+            node.shutdown().await.expect("shutdown meta");
         }
     }
 }
@@ -137,6 +330,7 @@ impl Meta {
 /// The tail fixture (plan M1.2 Task 3 tests).
 pub struct TailFixture {
     pub meta: Meta,
+    pub paths: Arc<PathStore>,
     pub faulty: Arc<FaultyStore>,
     pub store: Store,
     pub writer: LogWriter,
@@ -151,8 +345,17 @@ pub struct TailFixture {
 
 impl TailFixture {
     pub async fn start(schema: CollectionSchema, partitions: u32) -> Self {
-        let meta = Meta::start().await;
-        let faulty = Arc::new(FaultyStore::new(Store::in_memory().inner().clone()));
+        Self::start_with(Meta::start().await, schema, partitions).await
+    }
+
+    /// Over a three-node metastore; writes and the link use the leader.
+    pub async fn start_cluster(schema: CollectionSchema, partitions: u32) -> Self {
+        Self::start_with(Meta::start_n(3).await, schema, partitions).await
+    }
+
+    pub async fn start_with(meta: Meta, schema: CollectionSchema, partitions: u32) -> Self {
+        let paths = Arc::new(PathStore::default());
+        let faulty = Arc::new(FaultyStore::new(paths.clone()));
         let store = Store::new(faulty.clone());
         let ns = match meta.client.create_namespace("acme").await {
             Ok(id) => id,
@@ -195,6 +398,7 @@ impl TailFixture {
         };
         Self {
             meta,
+            paths,
             faulty,
             store,
             writer,
@@ -493,8 +697,52 @@ impl TailFixture {
         }
     }
 
+    /// Read views over this fixture's context and log reader.
+    pub fn reads(&self, tail: TailConfig, read: ReadConfig) -> Reads {
+        Reads::new(self.ctx.clone(), self.reader.clone(), tail, read)
+    }
+
+    /// Read views whose metastore is follower `i`'s client (three-node
+    /// fixtures).
+    pub fn follower_reads(&self, i: usize, tail: TailConfig, read: ReadConfig) -> Reads {
+        let follower = self.meta.followers[i].clone();
+        let ctx = CollectionContext {
+            meta: follower.clone().into(),
+            ..self.ctx.clone()
+        };
+        let reader = LogReader::new(follower, self.ctx.cache.clone());
+        Reads::new(ctx, reader, tail, read)
+    }
+
+    /// The view of `collection` for `consistency`, hot tier off.
+    pub async fn view_of(
+        &self,
+        reads: &Reads,
+        collection: &Collection,
+        consistency: &ReadConsistency,
+    ) -> Result<ReadView, ServiceError> {
+        let hot = RequestHot {
+            enabled: false,
+            used: Default::default(),
+        };
+        let tier: Arc<dyn HotTier> = Arc::new(NoHotTier);
+        reads
+            .view(self.ns, collection, consistency, &hot, tier)
+            .await
+    }
+
+    /// The view of this fixture's collection.
+    pub async fn view(
+        &self,
+        reads: &Reads,
+        consistency: &ReadConsistency,
+    ) -> Result<ReadView, ServiceError> {
+        let collection = self.collection().await;
+        self.view_of(reads, &collection, consistency).await
+    }
+
     pub async fn shutdown(self) {
         self.writer.shutdown().await.expect("log writer");
-        self.meta.node.shutdown().await.expect("shutdown meta");
+        self.meta.shutdown().await;
     }
 }

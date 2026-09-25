@@ -14,13 +14,17 @@
 //!   writer-side overlay state;
 //! - `apply`: folding records, durable resolution, manifest adoption and
 //!   [`build_range_tail`];
-//! - `follower`: [`Tail`], one follower task per collection.
+//! - `follower`: [`Tail`], one follower task per collection;
+//! - [`registry`]: [`TailRegistry`], the tails of this node (Task 4);
+//! - [`range`]: [`RangeTailCache`], the range tails of pinned reads (Task 4).
 //!
 //! Nothing here is persisted: dropping a tail changes only latency.
 
 mod apply;
 mod follower;
 mod index;
+pub mod range;
+pub mod registry;
 pub mod snapshot;
 
 use std::collections::BTreeMap;
@@ -33,6 +37,8 @@ use operon_log::LogError;
 
 pub use apply::build_range_tail;
 pub use follower::Tail;
+pub use range::RangeTailCache;
+pub use registry::TailRegistry;
 pub use snapshot::TailSnapshot;
 
 /// The first tail row id; Lance stable row ids are below it (Ruling 7).

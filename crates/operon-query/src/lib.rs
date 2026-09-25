@@ -8,13 +8,15 @@
 //!
 //! Task 2: the query compiler from the IR to Tantivy queries per split
 //! schema ([`text`]). Task 3: the in-memory tail index of writes the live
-//! manifest does not reflect yet ([`tail`], H3).
+//! manifest does not reflect yet ([`tail`], H3). Task 4: read views per
+//! consistency level ([`read`]).
 
 pub mod error;
 pub mod hot;
 pub mod ir;
 pub mod json;
 pub mod placement;
+pub mod read;
 pub mod tail;
 pub mod text;
 pub mod types;

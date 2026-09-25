@@ -4597,8 +4597,11 @@ version = "0.0.1"
 dependencies = [
  "async-trait",
  "bytes",
+ "futures",
  "http",
  "http-body",
+ "moka",
+ "object_store 0.14.2",
  "operon-cache",
  "operon-collection",
  "operon-common",

@@ -142,8 +142,9 @@ impl Tail {
         self.shared.current()
     }
 
-    /// A snapshot whose head covers `targets` (partition → offset); waits
-    /// for the follower until `deadline` (rule 8).
+    /// A started snapshot (one published after the follower loaded the live
+    /// manifest) whose head covers `targets` (partition → offset); waits for
+    /// the follower until `deadline` (rule 8).
     pub async fn sync(
         &self,
         targets: &BTreeMap<u32, u64>,
@@ -155,7 +156,7 @@ impl Tail {
             self.touch();
             let snapshot = self.shared.current();
             let head_of = |p: &u32| snapshot.head().get(p).copied().unwrap_or(0);
-            if targets.iter().all(|(p, target)| head_of(p) >= *target) {
+            if snapshot.is_started() && targets.iter().all(|(p, target)| head_of(p) >= *target) {
                 return Ok(snapshot);
             }
             if self.shared.stopped.load(Ordering::Acquire) {
