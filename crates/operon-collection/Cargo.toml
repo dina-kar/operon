@@ -8,21 +8,31 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+arrow-array.workspace = true
+arrow-schema.workspace = true
+async-trait.workspace = true
 bytes.workspace = true
+lance.workspace = true
+lance-file.workspace = true
+lance-io.workspace = true
+lance-table.workspace = true
 operon-common.workspace = true
 operon-log.workspace = true
 operon-meta.workspace = true
 operon-quickwit.workspace = true
+operon-store.workspace = true
 postcard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+ulid.workspace = true
+url.workspace = true
 uuid.workspace = true
 xxhash-rust.workspace = true
 
 [dev-dependencies]
+object_store.workspace = true
 operon-cache.workspace = true
-operon-store.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
