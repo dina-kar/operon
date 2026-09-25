@@ -188,7 +188,7 @@ async fn counter_links_apply_through_the_registry() {
     let sums = f.append(12).await;
     let registry = TargetRegistry::new().with(counter_factory(&f.store));
     assert_eq!(registry.kinds(), ["counter"]);
-    let source = LinkApplySource::new(f.reader.clone(), registry, config());
+    let source = LinkApplySource::new(f.meta.clone(), f.reader.clone(), registry, config());
     let table = Arc::new(CounterTable::for_link(
         f.meta.clone(),
         f.store.clone(),
@@ -211,7 +211,7 @@ async fn a_link_of_an_unregistered_kind_is_reported_not_applied() {
     let counter = f.link("counts", "counter").await;
     f.append(4).await;
     let registry = TargetRegistry::new().with(counter_factory(&f.store));
-    let source = LinkApplySource::new(f.reader.clone(), registry, config());
+    let source = LinkApplySource::new(f.meta.clone(), f.reader.clone(), registry, config());
     for _ in 0..2 {
         let candidates = source.candidates(&f.meta).await.expect("candidates");
         let keys: Vec<String> = candidates.iter().map(|(key, _)| key.to_string()).collect();
@@ -291,7 +291,11 @@ impl LinkTargetFactory for MemoryFactory {
         "memory"
     }
 
-    fn open(&self, _meta: &MetaClient, link: &Link) -> Result<Arc<dyn LinkTarget>, LinkError> {
+    fn open(
+        &self,
+        _meta: &Arc<dyn operon_common::meta::MetaStore>,
+        link: &Link,
+    ) -> Result<Arc<dyn LinkTarget>, LinkError> {
         Ok(self.target(link.id))
     }
 }
@@ -312,7 +316,7 @@ async fn two_kinds_apply_side_by_side() {
     // A factory of the same kind replaces the first.
     let registry = registry.with(factory.clone());
     assert_eq!(registry.kinds(), ["counter", "memory"]);
-    let source = LinkApplySource::new(f.reader.clone(), registry, config());
+    let source = LinkApplySource::new(f.meta.clone(), f.reader.clone(), registry, config());
     let table = Arc::new(CounterTable::for_link(
         f.meta.clone(),
         f.store.clone(),

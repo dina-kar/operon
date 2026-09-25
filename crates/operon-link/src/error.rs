@@ -1,5 +1,5 @@
+use operon_common::meta::MetaError;
 use operon_log::LogError;
-use operon_meta::MetaError;
 use operon_store::StoreError;
 
 /// Errors of the link framework and its targets.

@@ -137,7 +137,7 @@ async fn link_objects_are_collected_by_reachability() {
         store.clone(),
         config.max_commit_delay,
     )));
-    let source = LinkApplySource::new(reader, registry, config);
+    let source = LinkApplySource::new(meta.clone(), reader, registry, config);
     let mut sum = 0;
     for i in 0..15i64 {
         writer
@@ -442,6 +442,7 @@ async fn gc_alongside_everything(w: Workload) {
         config.max_commit_delay,
     )));
     worker.add_source(Arc::new(LinkApplySource::new(
+        meta.clone(),
         reader.clone(),
         registry,
         config,

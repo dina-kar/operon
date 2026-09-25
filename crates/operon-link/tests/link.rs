@@ -143,7 +143,7 @@ impl Fixture {
             None => factory,
         };
         let registry = TargetRegistry::new().with(Arc::new(factory));
-        LinkApplySource::new(self.reader.clone(), registry, config)
+        LinkApplySource::new(self.meta.clone(), self.reader.clone(), registry, config)
     }
 
     fn table(&self) -> CounterTable {

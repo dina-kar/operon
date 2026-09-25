@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use operon_meta::{Link, LinkId, MetaClient};
+use operon_common::meta::{Link, LinkId, MetaStore};
 use operon_store::Store;
 
 use crate::counter::{COUNTER_KIND, CounterTable};
@@ -22,7 +22,11 @@ pub trait LinkTargetFactory: Send + Sync + fmt::Debug {
 
     /// A target for `link` (cheap; may return a cached instance). Never
     /// opens writers.
-    fn open(&self, meta: &MetaClient, link: &Link) -> Result<Arc<dyn LinkTarget>, LinkError>;
+    fn open(
+        &self,
+        meta: &Arc<dyn MetaStore>,
+        link: &Link,
+    ) -> Result<Arc<dyn LinkTarget>, LinkError>;
 
     /// `links` are every link of this kind the metastore still has: a
     /// factory that caches per-link state (open writers) drops the state of
@@ -106,7 +110,11 @@ impl LinkTargetFactory for CounterTargetFactory {
         COUNTER_KIND
     }
 
-    fn open(&self, meta: &MetaClient, link: &Link) -> Result<Arc<dyn LinkTarget>, LinkError> {
+    fn open(
+        &self,
+        meta: &Arc<dyn MetaStore>,
+        link: &Link,
+    ) -> Result<Arc<dyn LinkTarget>, LinkError> {
         let table = CounterTable::for_link(meta.clone(), self.store.clone(), link)
             .with_max_commit_delay(self.max_commit_delay);
         #[cfg(feature = "test-util")]
