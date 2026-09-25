@@ -311,19 +311,22 @@ async fn a_creator_that_finds_version_one_late_commits_nothing() {
 }
 
 #[tokio::test]
-async fn a_lost_creation_that_left_nothing_is_retryable() {
+async fn a_lost_acknowledgement_of_the_creation_finds_version_one() {
     let (faulty, store, env) = env();
-    // The create-only write of version 1 reports that it already exists, but
-    // nothing is there (plan ruling P18).
+    // The create-only write of version 1 lands, but the store reports that
+    // it already exists (a lost acknowledgement seen by a retry; plan ruling
+    // P18, fault semantics per controller ruling P39): the creator must
+    // find the version 1 that is there, or fail retryably.
     faulty.inject(Op::PutCreate, Fault::Precondition);
-    let err = env
-        .ensure_created(NS, CID)
-        .await
-        .expect_err("lost creation");
-    assert!(err.is_retryable(), "{err}");
-    assert!(manifests(&store).await.is_empty());
+    match env.ensure_created(NS, CID).await {
+        Ok(v1) => assert_eq!(v1.manifest.version, 1),
+        Err(err) => assert!(err.is_retryable(), "{err}"),
+    }
+    assert_eq!(faulty.pending(Op::PutCreate), 0, "the fault was reached");
+    assert_eq!(manifests(&store).await, vec![version_one_manifest()]);
     let v1 = env.ensure_created(NS, CID).await.expect("retry");
     assert_eq!(v1.manifest.version, 1);
+    assert_eq!(manifests(&store).await, vec![version_one_manifest()]);
 }
 
 #[tokio::test]

@@ -193,23 +193,70 @@ async fn lost_put_acknowledgements_lose_no_acknowledged_write() {
     reopened.close().await.unwrap();
 }
 
-/// A create-only manifest write that loses (another writer, or a retried
-/// write, created that manifest version first: a `Precondition` fault) is
-/// an object-store race, so `open` reports it as retryable
-/// [`PkError::Store`], not as corruption, and a reopen succeeds (plan M1.1
-/// Task 13, found by the fault matrix).
+/// A `Precondition` fault on a create-only PUT at open (the store reports
+/// that the object exists, after writing it: a lost acknowledgement seen by
+/// a retry) is never reported as corruption: the open succeeds, or fails
+/// with the retryable [`PkError::Store`] (SlateDB's lost manifest race,
+/// plan M1.1 Task 13), and a reopen succeeds.
 #[tokio::test]
-async fn a_lost_manifest_race_at_open_is_a_store_error() {
+async fn a_precondition_fault_at_open_is_never_corruption() {
     for op in [Op::PutCreate, Op::Put] {
+        for nth in 1..=3 {
+            let faults = Arc::new(FaultyStore::new(Arc::new(InMemory::new())));
+            let store = Store::new(faults.clone());
+            faults.inject_nth(op, nth, Fault::Precondition);
+            match PkIndex::open(&store, PATH, config()).await {
+                Ok(index) => index.close().await.unwrap(),
+                Err(PkError::Store(_)) => {}
+                Err(err) => panic!("{op:?} call {nth}: {err:?}"),
+            }
+            assert_eq!(
+                faults.pending(op),
+                0,
+                "{op:?} call {nth}: the fault was reached"
+            );
+            let index = PkIndex::open(&store, PATH, config()).await.unwrap();
+            index.write(vec![put("k", "v")]).await.unwrap();
+            index.close().await.unwrap();
+        }
+    }
+}
+
+/// A `Precondition` fault on any of a writer open's create-only PUTs (the
+/// manifest, the WAL fence) never leaves a gap in the WAL: every later
+/// open replays it, and every acknowledged write survives (controller
+/// ruling P39; before it, the fault reported "exists" for an absent WAL
+/// object, the writer skipped that id, and the next open failed forever
+/// with `wal truncated`).
+#[tokio::test]
+async fn a_precondition_fault_during_open_leaves_no_wal_gap() {
+    for nth in 1..=4 {
         let faults = Arc::new(FaultyStore::new(Arc::new(InMemory::new())));
         let store = Store::new(faults.clone());
-        faults.inject(op, Fault::Precondition);
-        let err = PkIndex::open(&store, PATH, config()).await.unwrap_err();
-        assert!(matches!(err, PkError::Store(_)), "{op:?}: {err:?}");
-        assert_eq!(faults.pending(op), 0, "{op:?}: the fault was reached");
-        let index = PkIndex::open(&store, PATH, config()).await.unwrap();
-        index.write(vec![put("k", "v")]).await.unwrap();
-        index.close().await.unwrap();
+        let first = PkIndex::open(&store, PATH, config()).await.unwrap();
+        first.write(vec![put("a", "1")]).await.unwrap();
+        first.close().await.unwrap();
+        faults.inject_nth(Op::PutCreate, nth, Fault::Precondition);
+        let second = match PkIndex::open(&store, PATH, config()).await {
+            Ok(index) => index,
+            // A lost manifest race is retryable: open again.
+            Err(PkError::Store(_)) => PkIndex::open(&store, PATH, config()).await.unwrap(),
+            Err(err) => panic!("call {nth}: {err:?}"),
+        };
+        second.write(vec![put("b", "2")]).await.unwrap();
+        second.close().await.unwrap();
+        for _ in 0..2 {
+            let reopened = PkIndex::open(&store, PATH, config())
+                .await
+                .unwrap_or_else(|err| panic!("call {nth}: reopen: {err:?}"));
+            for key in ["a", "b"] {
+                assert!(
+                    reopened.get(key.as_bytes()).await.unwrap().is_some(),
+                    "call {nth}: {key} was acknowledged but is missing"
+                );
+            }
+            reopened.close().await.unwrap();
+        }
     }
 }
 

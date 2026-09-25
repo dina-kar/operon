@@ -266,3 +266,21 @@ impl PkReader {
         Ok(self.reader.close().await?)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::PkError;
+
+    /// SlateDB reports a lost create-only manifest write
+    /// (`TransactionalObjectVersionExists`) only as a data error with this
+    /// text; it is a race, so it is a retryable store error.
+    #[test]
+    fn a_lost_manifest_race_is_a_store_error() {
+        let lost = slatedb::Error::data(
+            "transactional object (e.g. manifest) version already exists".to_string(),
+        );
+        assert!(matches!(PkError::from(lost), PkError::Store(_)));
+        let corrupt = slatedb::Error::data("checksum mismatch".to_string());
+        assert!(matches!(PkError::from(corrupt), PkError::Corrupt(_)));
+    }
+}

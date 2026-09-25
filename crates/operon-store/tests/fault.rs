@@ -114,8 +114,12 @@ async fn put_faults_can_target_one_mode() {
     );
 }
 
+/// A create-only PUT's precondition fault is a lost acknowledgement seen by
+/// a retry (controller ruling P39): a real store says "exists" only when the
+/// object exists, so an absent object is written, then `AlreadyExists` is
+/// reported.
 #[tokio::test]
-async fn precondition_faults_do_not_apply() {
+async fn a_create_precondition_fault_writes_an_absent_object_then_reports_it_exists() {
     let (faults, store) = faulty();
     faults.inject(Op::PutCreate, Fault::Precondition);
     let err = store
@@ -123,10 +127,21 @@ async fn precondition_faults_do_not_apply() {
         .await
         .unwrap_err();
     assert!(matches!(err, StoreError::AlreadyExists { .. }), "{err:?}");
-    assert!(matches!(
-        store.head("a").await.unwrap_err(),
-        StoreError::NotFound { .. }
-    ));
+    assert_eq!(store.get("a").await.unwrap().0, Bytes::from_static(b"1"));
+    // An object that exists is left as it is.
+    faults.inject(Op::PutCreate, Fault::Precondition);
+    let err = store
+        .put_if_absent("a", Bytes::from_static(b"2"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StoreError::AlreadyExists { .. }), "{err:?}");
+    assert_eq!(store.get("a").await.unwrap().0, Bytes::from_static(b"1"));
+    assert_eq!(faults.pending(Op::PutCreate), 0);
+}
+
+#[tokio::test]
+async fn a_compare_and_swap_precondition_fault_does_not_apply() {
+    let (faults, store) = faulty();
     let version = store
         .put_if_absent("a", Bytes::from_static(b"1"))
         .await

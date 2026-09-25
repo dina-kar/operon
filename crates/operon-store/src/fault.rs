@@ -44,10 +44,18 @@ pub enum Fault {
     /// Models a lost acknowledgement: the write happened, the caller thinks it did not.
     /// For reads and lists it is the same as [`Fault::Error`].
     ErrorAfterApply,
-    /// Report a failed precondition without applying: `412 Precondition
-    /// Failed` for a compare-and-swap PUT, `409`/already-exists for a
-    /// create-only PUT. For other operations it is the same as
-    /// [`Fault::Error`].
+    /// A failed precondition, as a real store reports one:
+    /// - a compare-and-swap PUT is not applied and gets `412 Precondition
+    ///   Failed`;
+    /// - a create-only PUT gets `409`/already-exists, which a real store
+    ///   reports only when the object exists. So an absent object is
+    ///   written first, then already-exists is reported: a lost
+    ///   acknowledgement seen by a retry. An object that exists is left as
+    ///   it is. (Reporting already-exists for an object that does not
+    ///   exist would tell a writer that some other writer owns that name
+    ///   when none does.)
+    ///
+    /// For other operations it is the same as [`Fault::Error`].
     Precondition,
     /// Wait this long, then perform the operation normally.
     Delay(Duration),
@@ -261,6 +269,14 @@ impl ObjectStore for FaultyStore {
         match self.next_fault(ops) {
             None => self.inner.put_opts(location, payload, opts).await,
             Some(Fault::Error) => Err(injected(op)),
+            Some(Fault::Precondition) if op == Op::PutCreate => {
+                match self.inner.put_opts(location, payload, opts).await {
+                    Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => {
+                        Err(precondition(op, location))
+                    }
+                    Err(err) => Err(err),
+                }
+            }
             Some(Fault::Precondition) => Err(precondition(op, location)),
             Some(Fault::Delay(delay)) => {
                 tokio::time::sleep(delay).await;

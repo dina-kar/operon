@@ -98,11 +98,11 @@
 | RetentionTrim | List | Delay(2s) | NoEffect | NoEffect |
 | LinkCommit | Put | Error | SurfacedRetryable | SurfacedRetryable |
 | LinkCommit | Put | ErrorAfterApply | SurfacedRetryable | SurfacedRetryable |
-| LinkCommit | Put | Precondition | SurfacedRetryable | SurfacedRetryable |
+| LinkCommit | Put | Precondition | SurfacedRetryable | Retried |
 | LinkCommit | Put | Delay(2s) | Retried | Retried |
 | LinkCommit | PutCreate | Error | SurfacedRetryable | SurfacedRetryable |
 | LinkCommit | PutCreate | ErrorAfterApply | SurfacedRetryable | SurfacedRetryable |
-| LinkCommit | PutCreate | Precondition | SurfacedRetryable | SurfacedRetryable |
+| LinkCommit | PutCreate | Precondition | SurfacedRetryable | Retried |
 | LinkCommit | PutCreate | Delay(2s) | Retried | Retried |
 | LinkCommit | PutIfMatch | Error | NoEffect | NoEffect |
 | LinkCommit | PutIfMatch | ErrorAfterApply | NoEffect | NoEffect |
@@ -170,11 +170,11 @@
 | MetaSnapshot | List | Delay(2s) | NoEffect | NoEffect |
 | CollectionCommit | Put | Error | Retried | Retried |
 | CollectionCommit | Put | ErrorAfterApply | Retried | Retried |
-| CollectionCommit | Put | Precondition | SurfacedRetryable | Retried |
+| CollectionCommit | Put | Precondition | Retried | Retried |
 | CollectionCommit | Put | Delay(2s) | Retried | Retried |
 | CollectionCommit | PutCreate | Error | Retried | Retried |
 | CollectionCommit | PutCreate | ErrorAfterApply | Retried | Retried |
-| CollectionCommit | PutCreate | Precondition | SurfacedRetryable | Retried |
+| CollectionCommit | PutCreate | Precondition | Retried | Retried |
 | CollectionCommit | PutCreate | Delay(2s) | Retried | Retried |
 | CollectionCommit | PutIfMatch | Error | NoEffect | NoEffect |
 | CollectionCommit | PutIfMatch | ErrorAfterApply | NoEffect | NoEffect |
