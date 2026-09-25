@@ -36,8 +36,8 @@ fn every_seed_passes() {
     let next = AtomicU64::new(first);
     let failures: Mutex<Vec<SimReport>> = Mutex::new(Vec::new());
     let totals: Mutex<(u64, u64, u64)> = Mutex::new((0, 0, 0));
-    // Acknowledged document writes, and the highest collection version.
-    // and dead letters.
+    // Acknowledged document writes, the highest collection version, and
+    // dead letters.
     let collection: Mutex<(u64, u64, u64)> = Mutex::new((0, 0, 0));
     std::thread::scope(|scope| {
         for _ in 0..threads {

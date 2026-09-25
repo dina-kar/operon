@@ -1417,17 +1417,13 @@ async fn settle_collection(cluster: &Cluster, rec: &Recorder) -> bool {
 /// not succeed as the report's diagnosis, so it says why it was stuck.
 async fn diagnose_collection_link(cluster: &Cluster, rec: &Recorder) {
     let diagnose = |line: String| lock(&rec.diagnosis).push(line);
-    let cache = match RangeCache::new(cluster.store.clone(), RangeCacheConfig::default()).await {
-        Ok(cache) => cache,
-        Err(err) => return diagnose(format!("a cache: {err}")),
-    };
     let ctx = match cluster.collection_context(0).await {
         Ok(ctx) => ctx,
         Err(err) => return diagnose(format!("collection context: {err}")),
     };
     let factory = Arc::new(CollectionTargetFactory::new(ctx.clone()));
     let source = LinkApplySource::new(
-        LogReader::new(cluster.clients[0].clone(), cache.clone()),
+        LogReader::new(cluster.clients[0].clone(), ctx.cache.clone()),
         TargetRegistry::new().with(factory.clone()),
         LinkConfig {
             batch_records: 20,
@@ -1451,10 +1447,8 @@ async fn diagnose_collection_link(cluster: &Cluster, rec: &Recorder) {
         }
     }
     factory.close().await;
-    for cache in [cache, ctx.cache] {
-        if let Err(err) = cache.close().await {
-            diagnose(format!("closing a cache: {err}"));
-        }
+    if let Err(err) = ctx.cache.close().await {
+        diagnose(format!("closing the cache: {err}"));
     }
 }
 
