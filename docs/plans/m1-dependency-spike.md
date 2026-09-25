@@ -299,3 +299,20 @@ File paths are under `lance-12.0.0/src/` unless another crate is named.
 7. **Build cost:** 13 GB debug target and a 3 GB debug binary. Ruling: set `[profile.dev] debug = "line-tables-only"` (or `split-debuginfo`) and install `protoc` in CI (Lance build requirement). Do not enable Lance's `protoc` feature, which is a C++ build.
 8. **Quickwit's tantivy rev (0.27-dev) is ahead of crates.io 0.26.2.** Not a blocker: the vendored files build on 0.26.2 with about 12 edits (see (d)). Ruling: stay on crates.io tantivy and own the edits.
 9. **Two `object_store` majors** (0.13 in DataFusion only). This is not a blocker for M1, because Lance, SlateDB and ours all use 0.14. It becomes relevant once DataFusion's ListingTable or Parquet reads Iceberg over our store; that will need a 0.13 adapter or a DF release on 0.14.
+
+## (i) Added 2026-09-25: ADBC test dependencies and `async-trait`
+
+These were not part of the spike run. They are recorded for M1.2 Task 13 (Flight `DoPut` ingest), M1.6 and M1.7 (D49, D47).
+- **ADBC Flight SQL drivers, test-only** (M1.7's exit gate runs them against Operon; M1.6's `flight` extra uses the Python pair):
+  - Python: `adbc-driver-flightsql` and `adbc-driver-manager` (Apache-2.0; M1.6 declares `>=1.12,<2`), with `pyarrow`.
+  - Go: `github.com/apache/arrow-adbc/go/adbc/driver/flightsql` (Apache-2.0), with the arrow-adbc `validation` test package.
+  - None of them is a Rust dependency or ships in the `operon` binary. (verify versions at execution)
+- **`async-trait`** (MIT OR Apache-2.0) is already a workspace dependency (`Task`, `TaskSource`, `LinkTarget`, `GcRoots`, and M1.2's hook traits use it). M1.2a Ruling 2 chooses it for `trait MetaStore`, so that `Arc<dyn MetaStore>` works (native `async fn` in traits is not dyn-compatible on Rust 1.97; verify at execution), which makes it a dependency of `operon-common`. No new crate or version.
+
+## (j) Added 2026-09-25: Python data-ecosystem dependencies (D53, D54)
+
+These were not part of the spike run. They are recorded for M1.2 Task 0 step 5 (Q20) and Task 14 (scan plans), and for M1.6 Tasks 3 and 4 (`to_arrow()`, `to_polars()`, `scan_plan()`).
+- **`polars`** (MIT; Python 1.44.2 on 2026-09-09, 2.0.0-rc.2 on 2026-09-20): M1.6's optional extra `polars` declares `polars>=1.3,<3` with `pyarrow>=18`. 1.3 is the first release that takes Arrow data through the PyCapsule interface without a copy (https://docs.pola.rs/user-guide/misc/arrow/). Only the Python package is used; the Polars Rust crates are not a dependency (D51: `polars-arrow` is a second Arrow implementation). (verify versions at execution)
+- **`pyarrow`** (Apache-2.0): already in M1.6's `flight` extra; the new `arrow` and `polars` extras declare the same `pyarrow>=18`. Its tables implement `__arrow_c_stream__`, which M1.6's results delegate to.
+- **`pylance`** (Apache-2.0), test-only: M1.2 Task 0 step 5 runs it once by hand, and M1.6's `test_scan_plan_opens_with_pylance` runs in CI when it is installed (dev group, not an extra). The release must match the workspace's `lance` crate (12.0.x; verify the pairing on PyPI), so the check exercises the reader users will pair with Operon's writer; an older pylance may not read what a newer writer wrote. The Ray, Polars IO plugin and torch readers that depend on it at run time are M2 (D54).
+- None of them is a Rust dependency or ships in the `operon` binary.
