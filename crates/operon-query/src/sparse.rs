@@ -11,6 +11,7 @@ use tantivy::schema::{Field, IndexRecordOption};
 use tantivy::{DocSet, Searcher, TERMINATED, Term};
 
 use crate::error::ServiceError;
+use crate::exec::blocking;
 use crate::exec::mask::RowSet;
 use crate::read::ReadView;
 use crate::text::splits::{OpenSplit, tail_segment_masks};
@@ -134,7 +135,9 @@ impl SparseStats {
         indices: &[u32],
         corpus: Option<&RowSet>,
         cache: &StatsCache,
+        parallelism: usize,
     ) -> Result<Self, ServiceError> {
+        use futures::StreamExt;
         let postings = sparse_postings_field(field);
         let indices: BTreeSet<u32> = indices.iter().copied().collect();
         let mut values: Vec<u64> = vec![SPARSE_PRESENT];
@@ -145,8 +148,15 @@ impl SparseStats {
                     .iter()
                     .map(|value| (postings.clone(), u64_term_bytes(*value)))
                     .collect();
-                let stats =
-                    GlobalStats::compute(view, splits, &terms, &BTreeSet::new(), cache).await?;
+                let stats = GlobalStats::compute(
+                    view,
+                    splits,
+                    &terms,
+                    &BTreeSet::new(),
+                    cache,
+                    parallelism,
+                )
+                .await?;
                 values
                     .iter()
                     .map(|value| {
@@ -161,29 +171,36 @@ impl SparseStats {
             Some(RowSet::Rows(rows)) => {
                 let rows = Arc::new(rows.clone());
                 let values = Arc::new(values.clone());
-                let mut jobs = Vec::with_capacity(splits.len() + 1);
-                for split in splits {
-                    let searcher = split.searcher.clone();
-                    let masks = split.segment_masks();
-                    let (rows, values, postings) = (rows.clone(), values.clone(), postings.clone());
-                    jobs.push(tokio::task::spawn_blocking(move || {
-                        unit_corpus_counts(&searcher, &masks, &postings, &values, &rows)
-                    }));
-                }
+                let units: Vec<(Searcher, Vec<roaring::RoaringBitmap>)> = splits
+                    .iter()
+                    .map(|split| (split.searcher.clone(), split.segment_masks()))
+                    .collect();
+                let mut parts = futures::stream::iter(units)
+                    .map(|(searcher, masks)| {
+                        let (rows, values, postings) =
+                            (rows.clone(), values.clone(), postings.clone());
+                        blocking(move || {
+                            unit_corpus_counts(&searcher, &masks, &postings, &values, &rows)
+                        })
+                    })
+                    .buffered(parallelism.max(1))
+                    .collect::<Vec<_>>()
+                    .await;
                 if let Some(searcher) = view.tail.searcher() {
                     let searcher = searcher.clone();
                     let live = view.tail.live().clone();
                     let (rows, values, postings) = (rows.clone(), values.clone(), postings.clone());
-                    jobs.push(tokio::task::spawn_blocking(move || {
-                        let masks = tail_segment_masks(&searcher, &live)?;
-                        unit_corpus_counts(&searcher, &masks, &postings, &values, &rows)
-                    }));
+                    parts.push(
+                        blocking(move || {
+                            let masks = tail_segment_masks(&searcher, &live)?;
+                            unit_corpus_counts(&searcher, &masks, &postings, &values, &rows)
+                        })
+                        .await,
+                    );
                 }
                 let mut totals = vec![0u64; values.len()];
-                for job in jobs {
-                    let part = job.await.map_err(|err| {
-                        ServiceError::Internal(format!("statistics task: {err}"))
-                    })??;
+                for part in parts {
+                    let part = part?;
                     for (total, count) in totals.iter_mut().zip(part) {
                         *total += count;
                     }

@@ -210,6 +210,7 @@ impl Inner {
                 &wanted_terms,
                 &wanted_fields,
                 &self.stats,
+                self.parallelism,
             )
             .await?;
             if stats.num_docs == 0 {

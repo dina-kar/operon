@@ -354,9 +354,17 @@ fn warm_sparse(schema: &tantivy::schema::Schema) -> Result<WarmupInfo, ServiceEr
 
 async fn stats_of(view: &ReadView, indices: &[u32], corpus: Option<&RowSet>) -> SparseStats {
     let splits = open_splits(view, &warm_sparse).await.expect("splits");
-    SparseStats::compute(view, &splits, "s", indices, corpus, &StatsCache::new(1_000))
-        .await
-        .expect("stats")
+    SparseStats::compute(
+        view,
+        &splits,
+        "s",
+        indices,
+        corpus,
+        &StatsCache::new(1_000),
+        8,
+    )
+    .await
+    .expect("stats")
 }
 
 // ----- the kernel -----

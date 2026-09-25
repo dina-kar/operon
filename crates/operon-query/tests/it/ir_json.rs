@@ -1653,8 +1653,20 @@ mod hooks {
             response.headers()["grpc-message"],
             "invalid Operon-Hot header: maybe (expected on or off)"
         );
+        assert_eq!(response.headers()["content-type"], "application/grpc");
         let (data, _) = collect(response.into_body()).await;
         assert!(data.is_empty());
+
+        // A gRPC-Web call gets the same answer in its own content type.
+        let mut grpc_web = request(Some("maybe"));
+        grpc_web.headers_mut().insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("application/grpc-web+proto"),
+        );
+        let response = service.clone().oneshot(grpc_web).await.expect("call");
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "application/grpc-web");
+        assert_eq!(response.headers()["grpc-status"], "3");
 
         // A gateway that forwarded the request already set the header.
         let mut forwarded = request(None);

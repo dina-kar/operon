@@ -231,12 +231,24 @@ pub struct HotService<S> {
     default_enabled: bool,
 }
 
-/// Whether `request` is a gRPC call (its content type is `application/grpc…`).
-fn is_grpc<B>(request: &http::Request<B>) -> bool {
-    request
-        .headers()
-        .get(http::header::CONTENT_TYPE)
-        .is_some_and(|value| value.as_bytes().starts_with(b"application/grpc"))
+/// The gRPC content type of `request`'s answer: `application/grpc` for a
+/// native gRPC call (`application/grpc`, `application/grpc+proto`, …),
+/// `application/grpc-web` or `application/grpc-web-text` for gRPC-Web
+/// (whose trailers-only answer also travels in headers); `None` otherwise.
+fn grpc_content_type<B>(request: &http::Request<B>) -> Option<&'static str> {
+    let value = request.headers().get(http::header::CONTENT_TYPE)?;
+    let value = String::from_utf8_lossy(value.as_bytes()).to_ascii_lowercase();
+    let media = value.split(';').next().unwrap_or("").trim();
+    let is = |kind: &str| media == kind || media.starts_with(&format!("{kind}+"));
+    if is("application/grpc-web-text") {
+        Some("application/grpc-web-text")
+    } else if is("application/grpc-web") {
+        Some("application/grpc-web")
+    } else if is("application/grpc") {
+        Some("application/grpc")
+    } else {
+        None
+    }
 }
 
 /// Percent-encodes a `grpc-message` value (gRPC over HTTP/2: every byte
@@ -254,19 +266,20 @@ fn grpc_message(message: &str) -> String {
 }
 
 /// The response to an invalid `Operon-Hot` header: 400 with the
-/// `invalid_argument` JSON body, or for a gRPC call a trailers-only response
-/// with `grpc-status` 3 (`INVALID_ARGUMENT`).
-fn bad_header<R>(err: &ServiceError, grpc: bool) -> http::Response<HotBody<R>> {
+/// `invalid_argument` JSON body, or for a gRPC or gRPC-Web call a
+/// trailers-only response of its content type with `grpc-status` 3
+/// (`INVALID_ARGUMENT`).
+fn bad_header<R>(err: &ServiceError, grpc: Option<&'static str>) -> http::Response<HotBody<R>> {
     let message = match err {
         ServiceError::InvalidArgument(message) => message.clone(),
         other => other.to_string(),
     };
-    if grpc {
+    if let Some(content_type) = grpc {
         let mut response = http::Response::new(HotBody::rejected(None));
         let headers = response.headers_mut();
         headers.insert(
             http::header::CONTENT_TYPE,
-            http::HeaderValue::from_static("application/grpc"),
+            http::HeaderValue::from_static(content_type),
         );
         headers.insert("grpc-status", http::HeaderValue::from_static("3"));
         if let Ok(value) = http::HeaderValue::from_str(&grpc_message(&message)) {
@@ -393,7 +406,7 @@ where
         let enabled = match enabled {
             Ok(enabled) => enabled,
             Err(err) => {
-                let response = bad_header(&err, is_grpc(&request));
+                let response = bad_header(&err, grpc_content_type(&request));
                 return Box::pin(async move { Ok(response) });
             }
         };

@@ -329,6 +329,7 @@ impl Inner {
                     self.query.indices(),
                     corpus.as_ref(),
                     &self.stats,
+                    self.parallelism,
                 )
                 .await?;
                 stats.weigh(&self.query)

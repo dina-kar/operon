@@ -4,8 +4,8 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -121,11 +121,12 @@ fn searcher_of(index: &Index) -> Result<Searcher, ServiceError> {
 
 /// Opens the local file `path` holding the whole split.
 async fn open_local(path: &Path, split: &SplitRef) -> Result<Index, ServiceError> {
-    let len = tokio::fs::metadata(path)
-        .await
+    let storage = LocalSplitStorage::new(path.to_path_buf())?;
+    let len = storage
+        .file
+        .metadata()
         .map_err(|err| ServiceError::Unavailable(format!("{}: {err}", path.display())))?
         .len();
-    let storage = LocalSplitStorage::new(path.to_path_buf())?;
     operon_text::open_split(
         Arc::new(storage),
         &path.to_string_lossy(),
@@ -234,33 +235,53 @@ async fn open_one(
 
 /// A Quickwit [`Storage`] over one local file (a split the hot tier pins):
 /// reads only.
+///
+/// The file is opened once, in [`LocalSplitStorage::new`], and read with
+/// positional reads: an open handle stays readable after the hot tier
+/// demotes the split and unlinks its path, so a split that opened keeps
+/// serving its request (warmup included) until its `Index` is dropped.
 #[derive(Clone, Debug)]
 pub struct LocalSplitStorage {
     pub path: PathBuf,
+    file: Arc<std::fs::File>,
     uri: Uri,
 }
 
 impl LocalSplitStorage {
+    /// Opens `path`; a file that is gone is `Unavailable`.
     pub fn new(path: PathBuf) -> Result<Self, ServiceError> {
         let uri = Uri::from_str(&format!("file://{}", path.display()))
             .map_err(|err| ServiceError::Internal(format!("{}: {err}", path.display())))?;
-        Ok(Self { path, uri })
+        let file = std::fs::File::open(&path)
+            .map_err(|err| ServiceError::Unavailable(format!("{}: {err}", path.display())))?;
+        Ok(Self {
+            path,
+            file: Arc::new(file),
+            uri,
+        })
     }
 
     async fn read(&self, range: Option<Range<usize>>) -> StorageResult<OwnedBytes> {
-        let path = self.path.clone();
+        let file = self.file.clone();
         let bytes = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<u8>> {
-            let mut file = std::fs::File::open(&path)?;
             match range {
                 Some(range) => {
-                    file.seek(SeekFrom::Start(range.start as u64))?;
                     let mut out = vec![0; range.len()];
-                    file.read_exact(&mut out)?;
+                    file.read_exact_at(&mut out, range.start as u64)?;
                     Ok(out)
                 }
                 None => {
                     let mut out = Vec::new();
-                    file.read_to_end(&mut out)?;
+                    let mut offset = 0u64;
+                    let mut chunk = vec![0; 1 << 16];
+                    loop {
+                        let n = file.read_at(&mut chunk, offset)?;
+                        if n == 0 {
+                            break;
+                        }
+                        out.extend_from_slice(&chunk[..n]);
+                        offset += n as u64;
+                    }
                     Ok(out)
                 }
             }
@@ -340,7 +361,11 @@ impl Storage for LocalSplitStorage {
     }
 
     async fn file_num_bytes(&self, _path: &Path) -> StorageResult<u64> {
-        let metadata = tokio::fs::metadata(&self.path).await.map_err(io_error)?;
+        let file = self.file.clone();
+        let metadata = tokio::task::spawn_blocking(move || file.metadata())
+            .await
+            .map_err(|err| StorageErrorKind::Internal.with_error(err))?
+            .map_err(io_error)?;
         Ok(metadata.len())
     }
 

@@ -384,29 +384,37 @@ impl GlobalStats {
     /// - `tokens(field)`: ½ · Σ over live docs of `norm_mid2(fieldnorm id)`,
     ///   summed in halves and divided once;
     /// - `doc_freq(field, term)`: the term's postings over live docs.
+    ///
+    /// At most `parallelism` splits are counted at a time.
     pub async fn compute(
         view: &ReadView,
         splits: &[OpenSplit],
         terms: &BTreeSet<StatsTerm>,
         fields: &BTreeSet<String>,
         cache: &StatsCache,
+        parallelism: usize,
     ) -> Result<Self, ServiceError> {
+        use futures::StreamExt;
         let fields = Arc::new(fields.clone());
         let terms = Arc::new(terms.clone());
-        let mut jobs = Vec::with_capacity(splits.len() + 1);
-        for split in splits {
-            let source = SplitSource {
+        let sources: Vec<SplitSource> = splits
+            .iter()
+            .map(|split| SplitSource {
                 searcher: split.searcher.clone(),
                 ulid: split.split.ulid,
                 bitmap: split.split.delete_bitmap.clone().unwrap_or_default(),
                 deleted: split.mask.deleted.clone(),
                 shadowed: split.mask.shadowed.clone(),
-            };
-            let (fields, terms, cache) = (fields.clone(), terms.clone(), cache.clone());
-            jobs.push(tokio::task::spawn_blocking(move || {
-                split_partial(&source, &fields, &terms, &cache)
-            }));
-        }
+            })
+            .collect();
+        let partials = futures::stream::iter(sources)
+            .map(|source| {
+                let (fields, terms, cache) = (fields.clone(), terms.clone(), cache.clone());
+                blocking(move || split_partial(&source, &fields, &terms, &cache))
+            })
+            .buffered(parallelism.max(1))
+            .collect::<Vec<_>>()
+            .await;
         let mut stats = GlobalStats {
             num_docs: view.live_rows(),
             ..GlobalStats::default()
@@ -420,11 +428,8 @@ impl GlobalStats {
                 *stats.doc_freq.entry(term).or_default() += count;
             }
         };
-        for job in jobs {
-            let partial = job
-                .await
-                .map_err(|err| ServiceError::Internal(format!("statistics task: {err}")))??;
-            add(partial);
+        for partial in partials {
+            add(partial?);
         }
         if let Some(searcher) = view.tail.searcher() {
             let searcher = searcher.clone();

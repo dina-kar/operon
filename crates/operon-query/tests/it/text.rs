@@ -345,6 +345,7 @@ async fn superseded_versions_do_not_count_in_statistics() {
         &BTreeSet::from([key.clone()]),
         &BTreeSet::from(["body".to_string()]),
         &StatsCache::new(1_000),
+        8,
     )
     .await
     .expect("stats");
@@ -410,6 +411,7 @@ async fn a_split_without_the_field_contributes_no_tokens() {
         &BTreeSet::new(),
         &BTreeSet::from(["m".to_string()]),
         &StatsCache::new(1_000),
+        8,
     )
     .await
     .expect("stats");
