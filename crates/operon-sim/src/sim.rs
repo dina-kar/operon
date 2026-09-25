@@ -150,6 +150,8 @@ pub struct SimStats {
     pub doc_writes_failed: u64,
     /// The collection's live manifest version at the end.
     pub collection_version: u64,
+    /// Records the collection dead-lettered (the schema-invalid ops).
+    pub collection_dead_letters: u64,
 }
 
 /// The result of one run.
@@ -159,6 +161,9 @@ pub struct SimReport {
     pub schedule: Vec<Event>,
     pub histories: Histories,
     pub violations: Vec<String>,
+    /// Why a stuck collection link was stuck, when one was (not violations
+    /// themselves).
+    pub diagnosis: Vec<String>,
     pub stats: SimStats,
 }
 
@@ -172,6 +177,9 @@ impl SimReport {
         let mut out = format!("seed {}: {} violations\n", self.seed, self.violations.len());
         for violation in &self.violations {
             let _ = writeln!(out, "  - {violation}");
+        }
+        for line in &self.diagnosis {
+            let _ = writeln!(out, "  diagnosis: {line}");
         }
         let _ = writeln!(out, "stats: {:?}", self.stats);
         let _ = writeln!(out, "schedule ({} events):", self.schedule.len());
@@ -195,6 +203,7 @@ pub fn run(config: SimConfig) -> SimReport {
                 schedule: Vec::new(),
                 histories: Histories::default(),
                 violations: vec![format!("could not build a runtime: {err}")],
+                diagnosis: Vec::new(),
                 stats: SimStats::default(),
             };
         }
@@ -222,6 +231,7 @@ struct Recorder {
     doc_ids_unknown: Mutex<BTreeSet<u64>>,
     doc_ids_failed: Mutex<BTreeSet<u64>>,
     violations: Mutex<Vec<String>>,
+    diagnosis: Mutex<Vec<String>>,
     stats: Mutex<SimStats>,
 }
 
@@ -862,46 +872,125 @@ fn doc_id(op: &DocOp) -> Option<u64> {
     source.get("n").and_then(serde_json::Value::as_u64)
 }
 
-/// Document op number `n` (its id), on a key and of a kind drawn from
-/// `rng`: Upsert 60 %, Patch (`MergeDeep`, with `upsert` half the time)
-/// 20 %, Delete 20 %.
-fn doc_op(rng: &mut ChaCha8Rng, n: u64) -> DocOp {
-    let pk = PrimaryKey::Str(format!("d{}", rng.random_range(0..16)));
-    let document = |pk: PrimaryKey| Document {
+/// Document op number `n` (its id) on a key and of a kind drawn from
+/// `rng`, and whether it bypasses the `CollectionWriter`:
+/// - 55 % Upsert `{tag, n, v}`, whose `tag` depends only on the key;
+/// - 5 % a schema-invalid op appended to the stream directly, bypassing
+///   validation (an upsert whose `v` has the wrong dimension, or a patch
+///   whose result makes `tag` an object): link apply dead-letters it;
+/// - 20 % Patch (`MergeDeep`): three in four set `n`, with `upsert` half
+///   the time; one in four sets `tag` to the value every write of that key
+///   gives it, which changes nothing, so the key keeps its record (P32);
+/// - 20 % Delete.
+fn doc_op(rng: &mut ChaCha8Rng, n: u64) -> (DocOp, bool) {
+    let key = rng.random_range(0..16u64);
+    let pk = PrimaryKey::Str(format!("d{key}"));
+    let tag = serde_json::json!(format!("t{}", key % 4));
+    let document = |pk: PrimaryKey, dim: u64| Document {
         pk,
         source: serde_json::Map::from_iter([
-            ("tag".to_string(), serde_json::json!(format!("t{}", n % 4))),
+            ("tag".to_string(), tag.clone()),
             ("n".to_string(), serde_json::json!(n)),
         ]),
-        vectors: BTreeMap::from([("v".to_string(), vec![(n % 7) as f32, 1.0])]),
+        vectors: BTreeMap::from([(
+            "v".to_string(),
+            (0..dim).map(|i| ((n + i) % 7) as f32 + 1.0).collect(),
+        )]),
         sparse_vectors: BTreeMap::new(),
     };
-    match rng.random_range(0..10u32) {
-        0..6 => DocOp::Upsert(document(pk)),
-        6..8 => {
-            let upsert = rng.random_bool(0.5).then(|| document(pk.clone()));
-            DocOp::Patch {
-                pk,
-                mode: PatchMode::MergeDeep,
-                source: serde_json::Map::from_iter([("n".to_string(), serde_json::json!(n))]),
-                delete_keys: Vec::new(),
-                vectors: BTreeMap::new(),
-                sparse_vectors: BTreeMap::new(),
-                upsert,
-            }
+    let patch =
+        |pk: PrimaryKey, source: serde_json::Map<String, serde_json::Value>, upsert| DocOp::Patch {
+            pk,
+            mode: PatchMode::MergeDeep,
+            source,
+            delete_keys: Vec::new(),
+            vectors: BTreeMap::new(),
+            sparse_vectors: BTreeMap::new(),
+            upsert,
+        };
+    match rng.random_range(0..20u32) {
+        0..11 => (DocOp::Upsert(document(pk, 2)), false),
+        11 => {
+            let invalid = if rng.random_bool(0.5) {
+                DocOp::Upsert(document(pk, 3))
+            } else {
+                let source = serde_json::Map::from_iter([
+                    ("tag".to_string(), serde_json::json!({ "x": n })),
+                    ("n".to_string(), serde_json::json!(n)),
+                ]);
+                patch(pk, source, None)
+            };
+            (invalid, true)
         }
-        _ => DocOp::Delete(pk),
+        12 => (
+            patch(
+                pk,
+                serde_json::Map::from_iter([("tag".to_string(), tag.clone())]),
+                None,
+            ),
+            false,
+        ),
+        13..16 => {
+            let upsert = rng.random_bool(0.5).then(|| document(pk.clone(), 2));
+            let source = serde_json::Map::from_iter([("n".to_string(), serde_json::json!(n))]);
+            (patch(pk, source, upsert), false)
+        }
+        _ => (DocOp::Delete(pk), false),
+    }
+}
+
+/// Appends `op` to its partition of the implicit stream as it is, bypassing
+/// the writer's validation, recorded like a write.
+async fn raw_doc_append(
+    rec: &Recorder,
+    log: &LogWriter,
+    stream: StreamId,
+    partitions: u32,
+    op: &DocOp,
+) {
+    let ids: Vec<u64> = doc_id(op).into_iter().collect();
+    let record = match operon_collection::encode(op) {
+        Ok(record) => record,
+        Err(err) => return rec.violation(format!("encoding a raw op: {err}")),
+    };
+    let value = record
+        .value
+        .as_ref()
+        .map(|v| v.to_vec())
+        .unwrap_or_default();
+    let partition = operon_collection::partition_of(op.pk(), partitions);
+    match log.append(stream, partition, vec![record]).await {
+        Ok(ack) => {
+            lock(&rec.doc_ids_acked).extend(ids);
+            lock(&rec.docs_acked).insert((partition, ack.base_offset), value);
+        }
+        Err(LogError::CommitUnknown(_)) => lock(&rec.doc_ids_unknown).extend(ids),
+        Err(_) => lock(&rec.doc_ids_failed).extend(ids),
     }
 }
 
 /// One `CollectionWriter::write`, recorded as acked, unknown or failed.
+/// The schema-invalid ops go straight to the stream ([`raw_doc_append`]),
+/// the others through `writer`.
+#[allow(clippy::too_many_arguments)]
 async fn doc_write(
     rec: Arc<Recorder>,
     writer: CollectionWriter,
+    log: LogWriter,
     ns: NamespaceId,
     collection: CollectionId,
-    ops: Vec<DocOp>,
+    stream: StreamId,
+    partitions: u32,
+    ops: Vec<(DocOp, bool)>,
 ) {
+    let (raw, ops): (Vec<_>, Vec<_>) = ops.into_iter().partition(|(_, raw)| *raw);
+    for (op, _) in &raw {
+        raw_doc_append(&rec, &log, stream, partitions, op).await;
+    }
+    let ops: Vec<DocOp> = ops.into_iter().map(|(op, _)| op).collect();
+    if ops.is_empty() {
+        return;
+    }
     let ids: Vec<u64> = ops.iter().filter_map(doc_id).collect();
     let values: Vec<Option<Vec<u8>>> = ops
         .iter()
@@ -950,6 +1039,7 @@ async fn simulate(config: SimConfig) -> SimReport {
                 schedule,
                 histories: Histories::default(),
                 violations: vec![format!("setup: {err}")],
+                diagnosis: Vec::new(),
                 stats: SimStats::default(),
             };
         }
@@ -965,12 +1055,14 @@ async fn simulate(config: SimConfig) -> SimReport {
     }
     let histories = lock(&rec.histories).clone();
     let violations = lock(&rec.violations).clone();
+    let diagnosis = lock(&rec.diagnosis).clone();
     let stats = lock(&rec.stats).clone();
     SimReport {
         seed: config.seed,
         schedule,
         histories,
         violations,
+        diagnosis,
         stats,
     }
 }
@@ -1134,8 +1226,11 @@ async fn drive(
                 in_flight.spawn(doc_write(
                     rec.clone(),
                     doc_writers[client].clone(),
+                    writers[client % writers.len()].clone(),
                     cluster.ns,
                     cluster.docs,
+                    cluster.docs_stream,
+                    cluster.partitions,
                     ops,
                 ));
             }
@@ -1318,16 +1413,21 @@ async fn settle_collection(cluster: &Cluster, rec: &Recorder) -> bool {
 }
 
 /// After the collection link failed to settle and the worker stopped: runs
-/// its link apply once more, faults off, and reports how each run ended,
-/// so the failure report says why it was stuck.
+/// its link apply once more, faults off, and records every run that did
+/// not succeed as the report's diagnosis, so it says why it was stuck.
 async fn diagnose_collection_link(cluster: &Cluster, rec: &Recorder) {
-    let (reader, ctx) = match (cluster.reader(0).await, cluster.collection_context(0).await) {
-        (Ok(reader), Ok(ctx)) => (reader, ctx),
-        (Err(err), _) | (_, Err(err)) => return rec.violation(format!("diagnosis: {err}")),
+    let diagnose = |line: String| lock(&rec.diagnosis).push(line);
+    let cache = match RangeCache::new(cluster.store.clone(), RangeCacheConfig::default()).await {
+        Ok(cache) => cache,
+        Err(err) => return diagnose(format!("a cache: {err}")),
     };
-    let factory = Arc::new(CollectionTargetFactory::new(ctx));
+    let ctx = match cluster.collection_context(0).await {
+        Ok(ctx) => ctx,
+        Err(err) => return diagnose(format!("collection context: {err}")),
+    };
+    let factory = Arc::new(CollectionTargetFactory::new(ctx.clone()));
     let source = LinkApplySource::new(
-        reader,
+        LogReader::new(cluster.clients[0].clone(), cache.clone()),
         TargetRegistry::new().with(factory.clone()),
         LinkConfig {
             batch_records: 20,
@@ -1342,13 +1442,20 @@ async fn diagnose_collection_link(cluster: &Cluster, rec: &Recorder) {
         match operon_worker::run_once(&cluster.clients[0], "diagnosis", GRACE, &source).await {
             Ok(results) => {
                 for (key, result) in results {
-                    rec.violation(format!("diagnosis run {attempt}: {key:?}: {result:?}"));
+                    if !matches!(result, operon_worker::RunResult::Ran(Ok(_))) {
+                        diagnose(format!("run {attempt}: {key:?}: {result:?}"));
+                    }
                 }
             }
-            Err(err) => rec.violation(format!("diagnosis run {attempt}: {err}")),
+            Err(err) => diagnose(format!("run {attempt}: {err}")),
         }
     }
     factory.close().await;
+    for cache in [cache, ctx.cache] {
+        if let Err(err) = cache.close().await {
+            diagnose(format!("closing a cache: {err}"));
+        }
+    }
 }
 
 /// Waits until every node holds the same state.
@@ -1659,7 +1766,11 @@ async fn verify_collection_model(cluster: &Cluster, rec: &Recorder) {
         Err(err) => return rec.violation(format!("opening the collection: {err}")),
     };
     let manifest = snapshot.manifest();
-    lock(&rec.stats).collection_version = manifest.version;
+    {
+        let mut stats = lock(&rec.stats);
+        stats.collection_version = manifest.version;
+        stats.collection_dead_letters = manifest.dead_letters_total;
+    }
     let mut objects: Vec<String> = snapshot
         .manifest_path()
         .map(str::to_string)
