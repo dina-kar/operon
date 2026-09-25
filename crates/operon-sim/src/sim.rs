@@ -1224,8 +1224,11 @@ async fn drive(
         }
     };
     settle_link(cluster, rec).await;
-    settle_collection(cluster, rec).await;
+    let settled = settle_collection(cluster, rec).await;
     worker.stop().await;
+    if !settled {
+        diagnose_collection_link(cluster, rec).await;
+    }
     converge(cluster).await?;
     verify(cluster, rec).await;
     Ok(())
@@ -1262,12 +1265,16 @@ async fn settle_link(cluster: &Cluster, rec: &Recorder) {
 }
 
 /// Waits until the collection's link has applied its whole implicit stream.
-async fn settle_collection(cluster: &Cluster, rec: &Recorder) {
+async fn settle_collection(cluster: &Cluster, rec: &Recorder) -> bool {
     let deadline = Instant::now() + WAIT;
     let ctx = match cluster.collection_context(0).await {
         Ok(ctx) => ctx,
-        Err(err) => return rec.violation(format!("collection context: {err}")),
+        Err(err) => {
+            rec.violation(format!("collection context: {err}"));
+            return false;
+        }
     };
+    let mut settled = false;
     let (stream, partitions) = (cluster.docs_stream, cluster.partitions);
     loop {
         let hwms = cluster.clients[0]
@@ -1290,20 +1297,58 @@ async fn settle_collection(cluster: &Cluster, rec: &Recorder) {
         )
         .await
         .map(|live| live.map_or_else(BTreeMap::new, |(_, m)| m.applied.clone()));
-        if let (Ok(hwms), Ok(applied)) = (hwms, applied)
-            && hwms == applied
-        {
-            break;
+        match (hwms, applied) {
+            (Ok(hwms), Ok(applied)) if hwms == applied => {
+                settled = true;
+                break;
+            }
+            (hwms, applied) if Instant::now() >= deadline => {
+                rec.violation(format!(
+                    "the collection link never caught up with its stream: applied {applied:?}, high watermarks {hwms:?}"
+                ));
+                break;
+            }
+            _ => tokio::time::sleep(Duration::from_millis(50)).await,
         }
-        if Instant::now() >= deadline {
-            rec.violation("the collection link never caught up with its stream".to_string());
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     if let Err(err) = ctx.cache.close().await {
         rec.violation(format!("closing a cache: {err}"));
     }
+    settled
+}
+
+/// After the collection link failed to settle and the worker stopped: runs
+/// its link apply once more, faults off, and reports how each run ended,
+/// so the failure report says why it was stuck.
+async fn diagnose_collection_link(cluster: &Cluster, rec: &Recorder) {
+    let (reader, ctx) = match (cluster.reader(0).await, cluster.collection_context(0).await) {
+        (Ok(reader), Ok(ctx)) => (reader, ctx),
+        (Err(err), _) | (_, Err(err)) => return rec.violation(format!("diagnosis: {err}")),
+    };
+    let factory = Arc::new(CollectionTargetFactory::new(ctx));
+    let source = LinkApplySource::new(
+        reader,
+        TargetRegistry::new().with(factory.clone()),
+        LinkConfig {
+            batch_records: 20,
+            batch_interval: Duration::ZERO,
+            max_commit_delay: GRACE / 2,
+            ..LinkConfig::default()
+        },
+    );
+    // Let the stopped workers' leases lapse.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    for attempt in 0..3 {
+        match operon_worker::run_once(&cluster.clients[0], "diagnosis", GRACE, &source).await {
+            Ok(results) => {
+                for (key, result) in results {
+                    rec.violation(format!("diagnosis run {attempt}: {key:?}: {result:?}"));
+                }
+            }
+            Err(err) => rec.violation(format!("diagnosis run {attempt}: {err}")),
+        }
+    }
+    factory.close().await;
 }
 
 /// Waits until every node holds the same state.
