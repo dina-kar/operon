@@ -243,7 +243,19 @@ impl TailIndex {
                     continue;
                 };
                 match ctx.store.get(delta_path).await {
-                    Ok((bytes, _)) => deltas.push(decode_pk_delta(&bytes)?),
+                    Ok((bytes, _)) => {
+                        // Keys are decoded here too, so a malformed one
+                        // fails before anything changes.
+                        let parsed = decode_pk_delta(&bytes)?
+                            .into_iter()
+                            .map(|(key, row)| {
+                                PrimaryKey::from_canonical(&key)
+                                    .map(|pk| (pk, row))
+                                    .map_err(CollectionError::from)
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        deltas.push(parsed);
+                    }
                     Err(StoreError::NotFound { .. }) => {
                         gap = true;
                         break;
@@ -256,8 +268,7 @@ impl TailIndex {
         self.drop_covered(&manifest.applied);
         if !gap {
             for delta in deltas {
-                for (key, row) in delta {
-                    let pk = PrimaryKey::from_canonical(&key).map_err(CollectionError::from)?;
+                for (pk, row) in delta {
                     let Some(slot) = self.shadow_of.get_mut(&pk) else {
                         continue;
                     };

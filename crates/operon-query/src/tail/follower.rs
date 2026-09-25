@@ -123,6 +123,7 @@ impl Tail {
             index: None,
             durable: None,
             adopt_failures: 0,
+            reresolve_pending: false,
             fresh_reset: BTreeSet::new(),
         };
         let task = tokio::spawn(follower.run());
@@ -259,6 +260,11 @@ struct Follower {
     /// M_T's snapshot, for durable lookups.
     durable: Option<CollectionSnapshot>,
     adopt_failures: u32,
+    /// An adoption with a gap committed M_T, but re-resolving the overlay
+    /// keys' shadow rows against it has not succeeded yet (rule 6.4). While
+    /// set, it is retried every iteration and nothing is published, so no
+    /// reader sees M_T with shadow rows of an older manifest.
+    reresolve_pending: bool,
     /// Partitions whose first fetch after a reset has not returned yet.
     fresh_reset: BTreeSet<u32>,
 }
@@ -367,6 +373,7 @@ impl Follower {
         )?);
         self.durable = None;
         self.adopt_failures = 0;
+        self.reresolve_pending = false;
         Ok(())
     }
 
@@ -449,16 +456,12 @@ impl Follower {
             && pointer.version > self.index().manifest.version
         {
             changed = true;
-            match self.adopt(pointer.version, &pointer.value).await {
-                Ok(()) => self.adopt_failures = 0,
-                Err(err) => {
-                    self.adopt_failures += 1;
-                    tracing::warn!(collection = %self.collection.id, %err, failures = self.adopt_failures, "tail: adopting a manifest");
-                    if self.adopt_failures >= 2 {
-                        self.reset().await?;
-                    }
-                }
-            }
+            let adopted = self.adopt(pointer.version, &pointer.value).await;
+            self.adopted(adopted).await?;
+        } else if self.reresolve_pending {
+            changed = true;
+            let resolved = self.reresolve_if_pending().await;
+            self.adopted(resolved).await?;
         }
         // 5. Fetch.
         let mut behind = false;
@@ -499,7 +502,7 @@ impl Follower {
             self.index_mut().compact(&schema)?;
             changed = true;
         }
-        if changed {
+        if changed && !self.reresolve_pending {
             self.publish_checked()?;
         }
         Ok(behind)
@@ -528,16 +531,44 @@ impl Follower {
             .adopt(&ctx, path.to_string(), manifest)
             .await?;
         if gap {
-            let batch = self.config.resolve_batch;
-            let durable = self.durable().await?.cloned();
-            self.index_mut().reresolve(durable.as_ref(), batch).await?;
+            self.reresolve_pending = true;
         }
+        self.reresolve_if_pending().await?;
         // An overflowing tail compacts after every adoption, to get back
         // under its bound.
         if matches!(self.shared.state(), TailState::Overflow { .. }) && self.index().garbage() > 0 {
             let schema = self.collection.schema.clone();
             self.index_mut().compact(&schema)?;
         }
+        Ok(())
+    }
+
+    /// Counts a failed adoption (or re-resolution); the second failure in a
+    /// row resets the tail.
+    async fn adopted(&mut self, result: Result<(), TailError>) -> Result<(), TailError> {
+        match result {
+            Ok(()) => self.adopt_failures = 0,
+            Err(err) => {
+                self.adopt_failures += 1;
+                tracing::warn!(collection = %self.collection.id, %err, failures = self.adopt_failures, "tail: adopting a manifest");
+                if self.adopt_failures >= 2 {
+                    self.reset().await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Re-resolves the overlay keys against M_T when an adoption left that
+    /// pending; the flag clears only on success.
+    async fn reresolve_if_pending(&mut self) -> Result<(), TailError> {
+        if !self.reresolve_pending {
+            return Ok(());
+        }
+        let batch = self.config.resolve_batch;
+        let durable = self.durable().await?.cloned();
+        self.index_mut().reresolve(durable.as_ref(), batch).await?;
+        self.reresolve_pending = false;
         Ok(())
     }
 

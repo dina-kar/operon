@@ -430,6 +430,71 @@ async fn a_missing_pk_delta_reresolves_every_overlay_key() {
     f.shutdown().await;
 }
 
+/// #18 review: an adoption whose re-resolution fails is retried, and its
+/// manifest is never published with the older manifest's shadow rows.
+#[tokio::test]
+async fn a_failed_reresolve_is_retried_before_publishing() {
+    let f = TailFixture::start(tail_schema(), 2).await;
+    let keys: Vec<u64> = (0..6).collect();
+    let first: Vec<DocOp> = keys.iter().map(|n| upsert(*n, json!({"a": 0}))).collect();
+    f.append_all(&first).await;
+    f.apply_link().await;
+    let tail = f.tail(TailConfig::default()).await;
+    f.sync(&tail).await;
+    let upserts: Vec<DocOp> = keys.iter().map(|n| upsert(*n, json!({"a": 1}))).collect();
+    let positions = f.append_all(&upserts).await;
+    let patches: Vec<DocOp> = keys.iter().map(|n| patch(*n, json!({"b": 2}))).collect();
+    f.append_all(&patches).await;
+    let before = f.sync(&tail).await;
+
+    tail.pause_fetch(true);
+    tail.wait_held().await;
+    let mut upto = f.applied().await;
+    for (partition, offset) in positions {
+        let slot = upto.entry(partition).or_insert(0);
+        *slot = (*slot).max(offset + 1);
+    }
+    let version = f.commit_upto(&upto).await;
+    let (_, manifest) = f.manifest().await;
+    let delta = manifest.pk_delta.clone().expect("a pk delta");
+    f.store.delete(&delta).await.expect("delete the pk delta");
+    // Re-resolution reads the new Lance version: fail it until one attempt
+    // has failed.
+    let lance = operon_collection::lance_prefix(f.ns, f.cid);
+    let gets = f.paths.gets_under(&lance);
+    f.paths.fail_gets_under(&lance);
+    tail.pause_fetch(false);
+    let deadline = std::time::Instant::now() + WAIT;
+    while f.paths.gets_under(&lance) == gets {
+        assert!(std::time::Instant::now() < deadline, "no re-resolution");
+        tail.notify();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    f.paths.clear_failures();
+
+    let after = f.adopted(&tail, version).await;
+    let fresh: BTreeSet<u64> = f
+        .snapshot()
+        .await
+        .get_by_pk(&keys.iter().map(|n| PrimaryKey::U64(*n)).collect::<Vec<_>>())
+        .await
+        .expect("get")
+        .into_iter()
+        .map(|stored| stored.expect("durable").row_id)
+        .collect();
+    assert_ne!(fresh, before.shadow().iter().collect::<BTreeSet<u64>>());
+    let after = if after.keys_after(None, 100).len() == keys.len() {
+        after
+    } else {
+        // Two failures in a row reset the tail; it refolds the patches.
+        f.sync(&tail).await
+    };
+    assert_eq!(after.shadow().iter().collect::<BTreeSet<u64>>(), fresh);
+    assert_eq!(after.keys_after(None, 100).len(), keys.len());
+    tail.stop().await;
+    f.shutdown().await;
+}
+
 #[tokio::test]
 async fn the_tail_restarts_from_the_live_manifest() {
     let f = TailFixture::start(tail_schema(), 2).await;
