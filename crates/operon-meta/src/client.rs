@@ -6,17 +6,18 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use operon_common::{NamespaceId, StreamId};
+use operon_common::schema::CollectionSchema;
+use operon_common::{CollectionId, NamespaceId, StreamId};
 use tokio::sync::watch;
 
 use crate::clock::Clock;
-use crate::command::{Command, Reply};
+use crate::command::{ApplyError, Command, Reply};
 use crate::error::MetaError;
 use crate::node::{Consistency, MetaNode};
 use crate::raft::NodeId;
 use crate::state::MetaState;
 use crate::types::{
-    Fence, Freshness, LeaseGrant, LinkId, Retention, TargetRef, WalChunk, WalClass,
+    AliasAction, Fence, Freshness, LeaseGrant, LinkId, Retention, TargetRef, WalChunk, WalClass,
 };
 
 /// The longest wait between two attempts.
@@ -563,6 +564,106 @@ impl MetaClient {
         };
         match self.write(command).await? {
             Reply::PointerSet { version } => Ok(version),
+            other => Err(MetaError::UnexpectedReply(other)),
+        }
+    }
+
+    /// Creates a collection with its implicit stream and link
+    /// ([`Command::CreateCollection`]); returns their ids.
+    ///
+    /// A retry after a lost acknowledgement that finds the collection
+    /// ([`ApplyError::CollectionExists`]) returns the first attempt's ids.
+    /// Without an earlier attempt of unknown outcome, `CollectionExists` means
+    /// the collection was there before this call, and is returned as is.
+    pub async fn create_collection(
+        &self,
+        namespace: NamespaceId,
+        name: &str,
+        schema: CollectionSchema,
+        partitions: u32,
+    ) -> Result<(CollectionId, StreamId, LinkId), MetaError> {
+        let command = Command::CreateCollection {
+            namespace,
+            name: name.to_string(),
+            schema,
+            partitions,
+        };
+        match self.write_tracked(command).await {
+            (Ok(Reply::CollectionCreated { id, stream, link }), _) => Ok((id, stream, link)),
+            (Ok(other), _) => Err(MetaError::UnexpectedReply(other)),
+            (Err(MetaError::Rejected(ApplyError::CollectionExists(id))), true) => {
+                self.created_collection(id).await
+            }
+            (Err(err), _) => Err(err),
+        }
+    }
+
+    /// The ids of collection `id`, which a retried create found. The local
+    /// node may lag the leader that applied the create; the leader then has it.
+    async fn created_collection(
+        &self,
+        id: CollectionId,
+    ) -> Result<(CollectionId, StreamId, LinkId), MetaError> {
+        let ids = |state: &MetaState| state.collection(id).map(|c| (c.id, c.stream, c.link));
+        if let Some(ids) = self.read(Consistency::Local, ids).await? {
+            return Ok(ids);
+        }
+        self.read(Consistency::Linearizable, ids)
+            .await?
+            // Dropped since: report what the metastore said.
+            .ok_or(MetaError::Rejected(ApplyError::CollectionExists(id)))
+    }
+
+    /// Drops a collection ([`Command::DropCollection`]), stamped with the
+    /// client's clock; returns its id, or `None` if there was none of that
+    /// name (also when a retry after a lost acknowledgement finds it
+    /// already dropped).
+    pub async fn drop_collection(
+        &self,
+        namespace: NamespaceId,
+        name: &str,
+    ) -> Result<Option<CollectionId>, MetaError> {
+        let command = Command::DropCollection {
+            namespace,
+            name: name.to_string(),
+            now_ms: self.now_ms(),
+        };
+        match self.write(command).await? {
+            Reply::CollectionDropped(id) => Ok(id),
+            other => Err(MetaError::UnexpectedReply(other)),
+        }
+    }
+
+    /// Replaces a collection's schema at `expected_version` with an additive
+    /// extension ([`Command::UpdateCollectionSchema`]); returns the new version.
+    pub async fn update_collection_schema(
+        &self,
+        collection: CollectionId,
+        expected_version: u64,
+        schema: CollectionSchema,
+    ) -> Result<u64, MetaError> {
+        let command = Command::UpdateCollectionSchema {
+            collection,
+            expected_version,
+            schema,
+        };
+        match self.write(command).await? {
+            Reply::SchemaUpdated { version } => Ok(version),
+            other => Err(MetaError::UnexpectedReply(other)),
+        }
+    }
+
+    /// Applies alias actions atomically ([`Command::UpdateAliases`]).
+    pub async fn update_aliases(
+        &self,
+        namespace: NamespaceId,
+        actions: Vec<AliasAction>,
+    ) -> Result<(), MetaError> {
+        match self
+            .write(Command::UpdateAliases { namespace, actions })
+            .await?
+        {
+            Reply::AliasesUpdated => Ok(()),
             other => Err(MetaError::UnexpectedReply(other)),
         }
     }

@@ -172,9 +172,22 @@ impl From<MetaError> for ApiError {
                 ApplyError::LinkExists(id) => {
                     ApiError::new(StatusCode::CONFLICT, "already_exists", message).with("id", id.0)
                 }
+                ApplyError::CollectionExists(id) => {
+                    ApiError::new(StatusCode::CONFLICT, "already_exists", message).with("id", id.0)
+                }
+                ApplyError::NameTaken(_) => {
+                    ApiError::new(StatusCode::CONFLICT, "already_exists", message)
+                }
                 ApplyError::NamespaceNotFound(_)
                 | ApplyError::StreamNotFound(_)
-                | ApplyError::PartitionNotFound { .. } => ApiError::not_found(message),
+                | ApplyError::PartitionNotFound { .. }
+                | ApplyError::CollectionNotFound(_)
+                | ApplyError::UnknownCollection(_) => ApiError::not_found(message),
+                ApplyError::IncompatibleSchema(_) => ApiError::invalid(message),
+                // The message names the current version.
+                ApplyError::SchemaVersionMismatch { .. } => {
+                    ApiError::new(StatusCode::CONFLICT, "conflict", message)
+                }
                 _ => internal(message),
             },
             MetaError::NotLeader { .. }

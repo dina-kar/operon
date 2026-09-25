@@ -1,10 +1,10 @@
 //! Versioned pointers with compare-and-swap, for manifest commits (design §03 §3.3).
 
-use operon_common::NamespaceId;
+use operon_common::{CollectionId, NamespaceId};
 
 use super::{MetaState, validate_key};
 use crate::command::{ApplyError, Reply};
-use crate::types::{Fence, Freshness, Pointer};
+use crate::types::{COLLECTION_POINTER_PREFIX, Fence, Freshness, Pointer};
 
 impl MetaState {
     pub(super) fn cas_pointer(
@@ -18,6 +18,7 @@ impl MetaState {
     ) -> Result<Reply, ApplyError> {
         validate_key("pointer key", &key)?;
         validate_key("pointer value", &value)?;
+        self.check_collection_pointer(namespace, &key)?;
         if !self.namespaces.contains_key(&namespace) {
             return Err(ApplyError::NamespaceNotFound(namespace));
         }
@@ -49,6 +50,26 @@ impl MetaState {
         }
         self.pointers.insert(slot, Pointer { version, value });
         Ok(Reply::PointerSet { version })
+    }
+
+    /// A `collection/<id>` pointer may only be set while that collection
+    /// exists in `namespace` (plan M1.1 Ruling 14): a task still running for
+    /// a dropped collection must not create a pointer for a dead id.
+    fn check_collection_pointer(
+        &self,
+        namespace: NamespaceId,
+        key: &str,
+    ) -> Result<(), ApplyError> {
+        let Some(id) = key.strip_prefix(COLLECTION_POINTER_PREFIX) else {
+            return Ok(());
+        };
+        let id: CollectionId = id.parse().map_err(|_| {
+            ApplyError::InvalidArgument(format!("invalid collection pointer key {key:?}"))
+        })?;
+        match self.collections.get(&id) {
+            Some(collection) if collection.namespace == namespace => Ok(()),
+            _ => Err(ApplyError::CollectionNotFound(id)),
+        }
     }
 
     /// The pointer `key` in `namespace`, if it has been set.

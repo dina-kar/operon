@@ -1,12 +1,14 @@
 use std::ops::Range;
 
-use operon_common::{NamespaceId, StreamId};
+use operon_common::schema::CollectionSchema;
+use operon_common::{CollectionId, NamespaceId, StreamId};
 use serde::{Deserialize, Serialize};
 
 use std::collections::BTreeMap;
 
 use crate::types::{
-    Fence, Freshness, LeaseGrant, LinkId, Pointer, Retention, TargetRef, WalChunk, WalClass,
+    AliasAction, Fence, Freshness, LeaseGrant, LinkId, Pointer, Retention, TargetRef, WalChunk,
+    WalClass,
 };
 
 /// A change to the metastore. Commands are replicated through the Raft log and
@@ -186,6 +188,55 @@ pub enum Command {
         fence: Option<Fence>,
         fresh: Option<Freshness>,
     },
+    /// Creates a collection with its implicit stream and link, both named
+    /// [`implicit_name`](crate::implicit_name) (class `Standard`, default
+    /// retention, `partitions` partitions; the link's target is
+    /// `collection`/`name`), in one step. Names are unique within the
+    /// namespace across collections and aliases, and never start with `_`.
+    /// `schema` must be valid and at version 1.
+    ///
+    /// A retry after a lost acknowledgement fails with
+    /// [`ApplyError::CollectionExists`], which carries the id the first
+    /// attempt created. A collection of that name with another schema or
+    /// partition count, or an alias of that name, gives
+    /// [`ApplyError::NameTaken`].
+    CreateCollection {
+        namespace: NamespaceId,
+        name: String,
+        schema: CollectionSchema,
+        partitions: u32,
+    },
+    /// Drops the collection `name` (not an alias): removes it, the aliases
+    /// pointing at it, its implicit stream (retiring the objects only its
+    /// index entries referenced), its implicit link and its manifest pointer,
+    /// and retires its object and primary-key prefixes. The name is free at
+    /// once; a new collection of that name gets a new id. Replies `None` when
+    /// there is no such collection, so a retry after a lost acknowledgement
+    /// succeeds with `None`.
+    DropCollection {
+        namespace: NamespaceId,
+        name: String,
+        now_ms: u64,
+    },
+    /// Replaces a collection's schema at `expected_version` with `schema`,
+    /// which must extend it additively
+    /// ([`CollectionSchema::check_additive`]); the new version is
+    /// `expected_version + 1`. A stale `expected_version` fails with
+    /// [`ApplyError::SchemaVersionMismatch`]. A retry after a lost
+    /// acknowledgement finds the same schema at `expected_version + 1` and
+    /// succeeds.
+    UpdateCollectionSchema {
+        collection: CollectionId,
+        expected_version: u64,
+        schema: CollectionSchema,
+    },
+    /// Applies 1..=100 alias actions in order, atomically: if any fails,
+    /// nothing changes. Creating an existing alias re-points it and deleting
+    /// a missing one is a no-op, so a retry succeeds.
+    UpdateAliases {
+        namespace: NamespaceId,
+        actions: Vec<AliasAction>,
+    },
 }
 
 /// The result of successfully applying a [`Command`].
@@ -214,6 +265,17 @@ pub enum Reply {
     Forgotten {
         removed: u32,
     },
+    CollectionCreated {
+        id: CollectionId,
+        stream: StreamId,
+        link: LinkId,
+    },
+    /// The dropped collection, or `None` if there was none of that name.
+    CollectionDropped(Option<CollectionId>),
+    SchemaUpdated {
+        version: u64,
+    },
+    AliasesUpdated,
 }
 
 /// Why a [`Command`] was rejected. A rejected command leaves the state unchanged.
@@ -274,6 +336,26 @@ pub enum ApplyError {
         max_age_ms: u64,
         clock_ms: u64,
     },
+    /// Carries the existing id, so a retry after a lost acknowledgement can
+    /// recover it.
+    #[error("collection already exists: {0}")]
+    CollectionExists(CollectionId),
+    #[error("collection not found: {0}")]
+    CollectionNotFound(CollectionId),
+    /// The name is held by a collection with another schema or partition
+    /// count, or by an alias.
+    #[error("name already taken: {0}")]
+    NameTaken(String),
+    #[error("incompatible schema update: {0}")]
+    IncompatibleSchema(String),
+    #[error("schema version mismatch: collection {collection} is at schema version {current}")]
+    SchemaVersionMismatch {
+        collection: CollectionId,
+        current: u64,
+    },
+    /// An alias action named a collection that does not exist.
+    #[error("unknown collection: {0}")]
+    UnknownCollection(String),
 }
 
 /// How far the proposer's clock lagged the metastore's, for a StaleObject refusal.
@@ -398,6 +480,23 @@ impl std::fmt::Display for Command {
                 expected,
                 ..
             } => write!(f, "CasPointer({namespace}/{key}, expected {expected:?})"),
+            Command::CreateCollection {
+                namespace, name, ..
+            } => write!(f, "CreateCollection({namespace}/{name})"),
+            Command::DropCollection {
+                namespace, name, ..
+            } => write!(f, "DropCollection({namespace}/{name})"),
+            Command::UpdateCollectionSchema {
+                collection,
+                expected_version,
+                ..
+            } => write!(
+                f,
+                "UpdateCollectionSchema({collection}, expected {expected_version})"
+            ),
+            Command::UpdateAliases { namespace, actions } => {
+                write!(f, "UpdateAliases({namespace}, {} actions)", actions.len())
+            }
         }
     }
 }

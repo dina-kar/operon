@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-use operon_common::{NamespaceId, StreamId};
+use operon_common::schema::CollectionSchema;
+use operon_common::{CollectionId, NamespaceId, StreamId};
 use serde::{Deserialize, Serialize};
 
 /// A namespace: the unit of tenancy, quotas and routing (design §01 §1).
@@ -301,4 +302,60 @@ impl Freshness {
 pub struct Pointer {
     pub version: u64,
     pub value: String,
+}
+
+/// The target kind of a collection's implicit link.
+pub const COLLECTION_KIND: &str = "collection";
+
+/// Longest collection name, in bytes: the implicit stream and link name
+/// `_collection.<name>.<id>` must fit [`MAX_NAME_LEN`](crate::MAX_NAME_LEN)
+/// with any id (12 + 222 + 1 + 20 = 255).
+pub const MAX_COLLECTION_NAME_LEN: usize = 222;
+
+/// A collection (M1 overview §6.1): documents under a schema, written through
+/// its implicit stream and materialized by its implicit link. Both are named
+/// [`implicit_name`], and live and die with the collection.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Collection {
+    pub id: CollectionId,
+    pub namespace: NamespaceId,
+    pub name: String,
+    pub schema: CollectionSchema,
+    pub partitions: u32,
+    pub stream: StreamId,
+    pub link: LinkId,
+}
+
+/// One change of [`Command::UpdateAliases`](crate::Command::UpdateAliases).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AliasAction {
+    /// Points `alias` at the collection named `collection` (a collection
+    /// name, not an alias), creating or re-pointing it.
+    Create { alias: String, collection: String },
+    /// Removes `alias`; a missing alias is a no-op.
+    Delete { alias: String },
+}
+
+/// The name of a collection's implicit stream and link:
+/// `_collection.<name>.<id>`.
+pub fn implicit_name(collection: &str, id: CollectionId) -> String {
+    format!("_collection.{collection}.{id}")
+}
+
+/// Pointer keys under this prefix belong to collections.
+pub(crate) const COLLECTION_POINTER_PREFIX: &str = "collection/";
+
+/// The pointer key of a collection's manifest: `collection/<id>`.
+pub fn collection_pointer_key(id: CollectionId) -> String {
+    format!("{COLLECTION_POINTER_PREFIX}{id}")
+}
+
+/// Where a collection's objects live: `ns/<ns>/collections/<id>/`.
+pub fn collection_prefix(ns: NamespaceId, id: CollectionId) -> String {
+    format!("ns/{ns}/collections/{id}/")
+}
+
+/// Where a collection's primary-key index lives: `ns/<ns>/pk/collection-<id>/`.
+pub fn collection_pk_prefix(ns: NamespaceId, id: CollectionId) -> String {
+    format!("ns/{ns}/pk/collection-{id}/")
 }

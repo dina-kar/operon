@@ -1,4 +1,5 @@
 mod catalog;
+mod collections;
 mod invariants;
 mod leases;
 mod links;
@@ -9,12 +10,12 @@ mod sequencer;
 
 use std::collections::BTreeMap;
 
-use operon_common::{NamespaceId, StreamId};
+use operon_common::{CollectionId, NamespaceId, StreamId};
 use serde::{Deserialize, Serialize};
 
 use crate::command::{ApplyError, Command, Reply};
 use crate::types::{
-    Lease, Link, LinkId, Namespace, PartitionState, Pointer, Stream, WalCommitRecord,
+    Collection, Lease, Link, LinkId, Namespace, PartitionState, Pointer, Stream, WalCommitRecord,
 };
 
 /// Longest namespace or stream name, in bytes.
@@ -61,6 +62,12 @@ pub struct MetaState {
     last_link_id: u64,
     links: BTreeMap<LinkId, Link>,
     link_names: BTreeMap<(NamespaceId, String), LinkId>,
+    last_collection_id: u64,
+    collections: BTreeMap<CollectionId, Collection>,
+    collection_names: BTreeMap<(NamespaceId, String), CollectionId>,
+    /// Alias name → the collection it points at. An alias never has the
+    /// name of a collection of its namespace.
+    aliases: BTreeMap<(NamespaceId, String), CollectionId>,
 }
 
 impl MetaState {
@@ -147,6 +154,25 @@ impl MetaState {
                 fence,
                 fresh,
             } => self.cas_pointer(namespace, key, expected, value, fence, fresh),
+            Command::CreateCollection {
+                namespace,
+                name,
+                schema,
+                partitions,
+            } => self.create_collection(namespace, name, schema, partitions),
+            Command::DropCollection {
+                namespace,
+                name,
+                now_ms,
+            } => self.drop_collection(namespace, name, now_ms),
+            Command::UpdateCollectionSchema {
+                collection,
+                expected_version,
+                schema,
+            } => self.update_collection_schema(collection, expected_version, schema),
+            Command::UpdateAliases { namespace, actions } => {
+                self.update_aliases(namespace, actions)
+            }
         }
     }
 
@@ -173,6 +199,17 @@ fn validate_name(kind: &str, name: &str) -> Result<(), ApplyError> {
             "invalid {kind} name {name:?}"
         )))
     }
+}
+
+/// Names starting with `_` belong to implicit objects (a collection's stream
+/// and link); users cannot create them.
+fn refuse_reserved(name: &str) -> Result<(), ApplyError> {
+    if name.starts_with('_') {
+        return Err(ApplyError::InvalidArgument(
+            "names starting with '_' are reserved for implicit objects".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Keys (object paths, lease keys, pointer keys) are 1..=1024 bytes.

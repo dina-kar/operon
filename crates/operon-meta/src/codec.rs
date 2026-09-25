@@ -13,9 +13,9 @@ const SNAPSHOT_MAGIC: &[u8; 8] = b"OPNMETA\0";
 /// Version 2 (M0.3) added the log engine's state: entry kinds, log start
 /// offsets, retention, WAL commit times, live chunk counts and retired objects.
 /// Version 3 (M0.4) added the link catalog, and version 4 the per-partition
-/// byte counts. Older snapshots are rejected (M0.3 plan, ruling 9: nothing is
-/// deployed yet).
-const SNAPSHOT_FORMAT_VERSION: u32 = 4;
+/// byte counts. Version 5 (M1.1) added the collection catalog. Older
+/// snapshots are rejected (M0.3 plan, ruling 9: nothing is deployed yet).
+const SNAPSHOT_FORMAT_VERSION: u32 = 5;
 /// Magic, then the format version.
 const HEADER_LEN: usize = 12;
 /// The crc32c trailer.
@@ -78,6 +78,15 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> io::Result<(SnapshotMeta, MetaSta
     Ok((body.meta, body.state))
 }
 
+/// For tests: encodes `state` as a snapshot and decodes it again, so tests
+/// outside the crate can check that a state survives a snapshot. Only with
+/// the `test-util` feature.
+#[cfg(feature = "test-util")]
+pub fn snapshot_round_trip(state: &MetaState) -> io::Result<MetaState> {
+    let bytes = encode_snapshot(&SnapshotMeta::default(), state)?;
+    decode_snapshot(&bytes).map(|(_, state)| state)
+}
+
 fn invalid_data(err: impl ToString) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, err.to_string())
 }
@@ -86,10 +95,32 @@ fn invalid_data(err: impl ToString) -> io::Error {
 mod tests {
     use super::*;
     use crate::command::Command;
-    use crate::types::{Retention, WalChunk, WalClass};
+    use crate::types::{AliasAction, Retention, WalChunk, WalClass};
+    use operon_common::schema::{CollectionSchema, DynamicMapping, FieldKind, FieldSpec};
     use operon_common::{NamespaceId, StreamId};
 
-    /// A state that uses every field the log engine added.
+    fn collection(name: &str) -> Command {
+        Command::CreateCollection {
+            namespace: NamespaceId(1),
+            name: name.to_string(),
+            schema: CollectionSchema::new(
+                vec![FieldSpec {
+                    name: "title".to_string(),
+                    source_path: "title".to_string(),
+                    kind: FieldKind::Keyword,
+                    indexed: true,
+                    fast: false,
+                    ignore_malformed: false,
+                }],
+                vec![],
+                DynamicMapping::Ignore,
+            ),
+            partitions: 2,
+        }
+    }
+
+    /// A state that uses every field the log engine, the link catalog and the
+    /// collection catalog added.
     fn log_state() -> MetaState {
         let mut state = MetaState::default();
         let commands = [
@@ -119,6 +150,20 @@ mod tests {
                     name: "counts".to_string(),
                 },
                 options: [("batch_interval".to_string(), "2s".to_string())].into(),
+            },
+            collection("docs"),
+            collection("gone"),
+            Command::UpdateAliases {
+                namespace: NamespaceId(1),
+                actions: vec![AliasAction::Create {
+                    alias: "latest".to_string(),
+                    collection: "docs".to_string(),
+                }],
+            },
+            Command::DropCollection {
+                namespace: NamespaceId(1),
+                name: "gone".to_string(),
+                now_ms: 10,
             },
         ];
         for command in commands {
@@ -174,12 +219,15 @@ mod tests {
             state.partition(StreamId(1), 0).unwrap().log_start_offset(),
             3
         );
-        assert_eq!(state.retired().count(), 2);
+        // Two objects and the dropped collection's two prefixes.
+        assert_eq!(state.retired().count(), 4);
+        assert_eq!(state.all_collections().count(), 1);
+        assert_eq!(state.aliases(NamespaceId(1)).count(), 1);
         assert_eq!(state.wal_live_chunks("w3"), Some(1));
-        assert_eq!(state.all_links().count(), 1);
+        assert_eq!(state.all_links().count(), 2);
         let meta = SnapshotMeta::default();
         let bytes = encode_snapshot(&meta, &state).unwrap();
-        assert_eq!(&bytes[8..12], &4u32.to_le_bytes());
+        assert_eq!(&bytes[8..12], &5u32.to_le_bytes());
         let (decoded_meta, decoded) = decode_snapshot(&bytes).unwrap();
         assert_eq!(decoded_meta, meta);
         assert_eq!(decoded, state);
@@ -187,7 +235,7 @@ mod tests {
 
     #[test]
     fn older_snapshot_versions_are_rejected() {
-        for version in [1u32, 2, 3] {
+        for version in [1u32, 2, 3, 4] {
             let mut bytes = encode_snapshot(&SnapshotMeta::default(), &log_state()).unwrap();
             bytes.truncate(bytes.len() - TRAILER_LEN);
             bytes[8..12].copy_from_slice(&version.to_le_bytes());

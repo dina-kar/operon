@@ -2,7 +2,7 @@
 
 use operon_common::{NamespaceId, StreamId};
 
-use super::{MAX_PARTITIONS, MetaState, validate_name};
+use super::{MAX_PARTITIONS, MetaState, refuse_reserved, validate_name};
 use crate::command::{ApplyError, Reply};
 use crate::types::{Namespace, PartitionState, Retention, Stream, WalClass};
 
@@ -28,26 +28,35 @@ impl MetaState {
         retention: Retention,
     ) -> Result<Reply, ApplyError> {
         validate_name("stream", &name)?;
-        if !(1..=MAX_PARTITIONS).contains(&partitions) {
-            return Err(ApplyError::InvalidArgument(format!(
-                "partitions must be 1..={MAX_PARTITIONS}, got {partitions}"
-            )));
-        }
+        refuse_reserved(&name)?;
+        check_partitions(partitions)?;
         if !self.namespaces.contains_key(&namespace) {
             return Err(ApplyError::NamespaceNotFound(namespace));
         }
-        let key = (namespace, name);
-        if let Some(&id) = self.stream_names.get(&key) {
+        if let Some(&id) = self.stream_names.get(&(namespace, name.clone())) {
             return Err(ApplyError::StreamExists(id));
         }
+        let id = self.insert_stream(namespace, name, partitions, class, retention);
+        Ok(Reply::StreamCreated(id))
+    }
+
+    /// Adds a stream, validated by the caller (the namespace exists and the
+    /// name is free), with `partitions` empty partitions.
+    pub(super) fn insert_stream(
+        &mut self,
+        namespace: NamespaceId,
+        name: String,
+        partitions: u32,
+        class: WalClass,
+        retention: Retention,
+    ) -> StreamId {
         self.last_stream_id += 1;
         let id = StreamId(self.last_stream_id);
         for partition in 0..partitions {
             self.partitions
                 .insert((id, partition), PartitionState::default());
         }
-        let (namespace, name) = key.clone();
-        self.stream_names.insert(key, id);
+        self.stream_names.insert((namespace, name.clone()), id);
         self.streams.insert(
             id,
             Stream {
@@ -59,7 +68,24 @@ impl MetaState {
                 retention,
             },
         );
-        Ok(Reply::StreamCreated(id))
+        id
+    }
+
+    /// Removes a stream, its name and its partitions. Every index entry goes
+    /// through `release_entry`, so objects no other entry references retire.
+    pub(super) fn remove_stream(&mut self, id: StreamId) {
+        let Some(stream) = self.streams.remove(&id) else {
+            return;
+        };
+        self.stream_names.remove(&(stream.namespace, stream.name));
+        for partition in 0..stream.partitions {
+            let Some(state) = self.partitions.remove(&(id, partition)) else {
+                continue;
+            };
+            for entry in state.index.into_values() {
+                self.release_entry(entry);
+            }
+        }
     }
 
     /// Looks up a namespace by id.
@@ -107,4 +133,14 @@ impl MetaState {
     pub fn partition(&self, stream: StreamId, partition: u32) -> Option<&PartitionState> {
         self.partitions.get(&(stream, partition))
     }
+}
+
+/// A stream has 1..=[`MAX_PARTITIONS`] partitions.
+pub(super) fn check_partitions(partitions: u32) -> Result<(), ApplyError> {
+    if !(1..=MAX_PARTITIONS).contains(&partitions) {
+        return Err(ApplyError::InvalidArgument(format!(
+            "partitions must be 1..={MAX_PARTITIONS}, got {partitions}"
+        )));
+    }
+    Ok(())
 }
