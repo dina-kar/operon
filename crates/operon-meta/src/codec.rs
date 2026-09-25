@@ -87,6 +87,19 @@ pub fn snapshot_round_trip(state: &MetaState) -> io::Result<MetaState> {
     decode_snapshot(&bytes).map(|(_, state)| state)
 }
 
+/// `encode_snapshot` with `SnapshotMeta::default()`. Only with the
+/// `test-util` feature.
+#[cfg(feature = "test-util")]
+pub fn snapshot_bytes(state: &MetaState) -> io::Result<Vec<u8>> {
+    encode_snapshot(&SnapshotMeta::default(), state)
+}
+
+/// `decode_snapshot`, dropping the meta. Only with the `test-util` feature.
+#[cfg(feature = "test-util")]
+pub fn state_from_snapshot_bytes(bytes: &[u8]) -> io::Result<MetaState> {
+    decode_snapshot(bytes).map(|(_, state)| state)
+}
+
 fn invalid_data(err: impl ToString) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, err.to_string())
 }

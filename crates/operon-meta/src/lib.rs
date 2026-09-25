@@ -22,7 +22,7 @@ mod types;
 pub use client::{MetaClient, MetaClientConfig};
 pub use clock::{Clock, ManualClock, SystemClock};
 #[cfg(feature = "test-util")]
-pub use codec::snapshot_round_trip;
+pub use codec::{snapshot_bytes, snapshot_round_trip, state_from_snapshot_bytes};
 pub use command::{ApplyError, Command, Reply, StaleLag, log_stale_object};
 pub use db::LocalDb;
 pub use error::MetaError;
