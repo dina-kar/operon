@@ -21,7 +21,7 @@ use operon_meta::{
     SystemClock, TargetRef, WalClass,
 };
 use operon_store::Store;
-use operon_worker::{RunResult, TaskOutcome, Worker, WorkerConfig, run_once};
+use operon_worker::{RunResult, TaskKey, TaskOutcome, Worker, WorkerConfig, run_once};
 use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(30);
@@ -357,7 +357,13 @@ async fn a_zombie_task_cannot_double_apply() {
             .contains(&CommitStep::AfterManifestPut)
     })
     .await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Once the zombie's task has ended, its commit attempt has returned, so
+    // it can no longer reach the step after the CAS.
+    let task = TaskKey::new(f.ns, format!("link/{}", f.link));
+    wait_for("the zombie's task to end", || {
+        !zombie.running().contains(&task)
+    })
+    .await;
     assert!(
         !zombie_steps.lock().unwrap().contains(&CommitStep::AfterCas),
         "{:?}",
