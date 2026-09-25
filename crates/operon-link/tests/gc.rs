@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use operon_cache::{RangeCache, RangeCacheConfig};
 use operon_common::{NamespaceId, StreamId};
-use operon_link::{CounterTable, LinkApplySource, LinkConfig, LinkGcRoots};
+use operon_link::{
+    CounterTable, CounterTargetFactory, LinkApplySource, LinkConfig, LinkGcRoots, TargetRegistry,
+};
 use operon_log::gc::{GcConfig, GcSource};
 use operon_log::{
     FetchRequest, LogConfig, LogError, LogReader, LogWriter, Record, RetentionConfig,
@@ -126,15 +128,16 @@ async fn link_objects_are_collected_by_reachability() {
         .await
         .unwrap();
     let reader = LogReader::new(meta.clone(), cache);
-    let source = LinkApplySource::new(
-        reader,
+    let config = LinkConfig {
+        batch_records: 1,
+        batch_interval: Duration::ZERO,
+        ..LinkConfig::default()
+    };
+    let registry = TargetRegistry::new().with(Arc::new(CounterTargetFactory::new(
         store.clone(),
-        LinkConfig {
-            batch_records: 1,
-            batch_interval: Duration::ZERO,
-            ..LinkConfig::default()
-        },
-    );
+        config.max_commit_delay,
+    )));
+    let source = LinkApplySource::new(reader, registry, config);
     let mut sum = 0;
     for i in 0..15i64 {
         writer
@@ -427,16 +430,21 @@ async fn gc_alongside_everything(w: Workload) {
             ..WorkerConfig::new("w1")
         },
     );
+    let config = LinkConfig {
+        batch_records: 5,
+        batch_interval: Duration::ZERO,
+        // Below the grace period, as the server requires (review M3).
+        max_commit_delay: grace / 2,
+        ..LinkConfig::default()
+    };
+    let registry = TargetRegistry::new().with(Arc::new(CounterTargetFactory::new(
+        store.clone(),
+        config.max_commit_delay,
+    )));
     worker.add_source(Arc::new(LinkApplySource::new(
         reader.clone(),
-        store.clone(),
-        LinkConfig {
-            batch_records: 5,
-            batch_interval: Duration::ZERO,
-            // Below the grace period, as the server requires (review M3).
-            max_commit_delay: grace / 2,
-            ..LinkConfig::default()
-        },
+        registry,
+        config,
     )));
     worker.add_source(Arc::new(SegmenterSource::new(
         store.clone(),

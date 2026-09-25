@@ -11,7 +11,9 @@ use bytes::Bytes;
 use object_store::memory::InMemory;
 use operon_cache::{RangeCache, RangeCacheConfig};
 use operon_common::{NamespaceId, StreamId};
-use operon_link::{CounterTable, LinkApplySource, LinkConfig, LinkGcRoots};
+use operon_link::{
+    CounterTable, CounterTargetFactory, LinkApplySource, LinkConfig, LinkGcRoots, TargetRegistry,
+};
 use operon_log::gc::{GcConfig, GcSource};
 use operon_log::{
     FetchRequest, LogConfig, LogError, LogReader, LogWriter, Record, RetentionConfig,
@@ -395,9 +397,13 @@ impl Cluster {
                 ..WorkerConfig::new(owner)
             },
         );
+        let registry = TargetRegistry::new().with(Arc::new(CounterTargetFactory::new(
+            self.store.clone(),
+            GRACE / 2,
+        )));
         worker.add_source(Arc::new(LinkApplySource::new(
             reader,
-            self.store.clone(),
+            registry,
             LinkConfig {
                 batch_records: 20,
                 batch_interval: Duration::ZERO,

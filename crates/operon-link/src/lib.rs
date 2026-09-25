@@ -10,21 +10,25 @@
 //! - [`LinkTarget`]: the target contract ([`LinkTarget::load`],
 //!   [`LinkTarget::commit`]).
 //! - [`LinkApplySource`]: the worker task source, one task per link (plan
-//!   ruling 3), at `Priority::LinkApply`.
+//!   ruling 3), at `Priority::LinkApply`, whose targets come from a
+//!   [`TargetRegistry`] of [`LinkTargetFactory`]s keyed by the link's target
+//!   kind (plan M1.1 Task 10).
 //! - [`CounterTable`]: the M0 test target (plan ruling 4): record keys name
 //!   counters, values are decimal `i64` deltas, and the table holds sums, so
-//!   a double apply is visible.
+//!   a double apply is visible. [`CounterTargetFactory`] serves it.
 
 mod apply;
 mod counter;
 mod error;
 mod gc;
+mod registry;
 mod target;
 
 pub use apply::{LinkApplySource, LinkConfig};
 pub use counter::{COUNTER_KIND, CounterSnapshot, CounterTable, MAX_COMMIT_DELAY};
 pub use error::LinkError;
 pub use gc::LinkGcRoots;
+pub use registry::{CounterTargetFactory, LinkTargetFactory, TargetRegistry};
 pub use target::{ApplyBatch, CommitError, CommitStep, LinkTarget, TargetState};
 
 #[cfg(feature = "test-util")]

@@ -7,13 +7,13 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use operon_log::{FetchRequest, LogError, LogReader};
 use operon_meta::{Consistency, Link, LinkId, MetaClient};
-use operon_store::Store;
 use operon_worker::{
     Candidate, Priority, Task, TaskContext, TaskError, TaskKey, TaskOutcome, TaskSource,
 };
 
-use crate::counter::{COUNTER_KIND, CounterTable, MAX_COMMIT_DELAY};
+use crate::counter::MAX_COMMIT_DELAY;
 use crate::error::LinkError;
+use crate::registry::TargetRegistry;
 use crate::target::{ApplyBatch, CommitError, LinkTarget, TargetState};
 
 /// Batch limits of link apply (design §09 §1 `WITH (...)`).
@@ -29,7 +29,9 @@ pub struct LinkConfig {
     pub max_batch_bytes: usize,
     /// The longest a commit may take from its data PUT to its CAS, enforced
     /// by the metastore when the CAS is applied; garbage collection's grace
-    /// must be longer. Default [`MAX_COMMIT_DELAY`] (10 min).
+    /// must be longer. Default [`MAX_COMMIT_DELAY`] (10 min). The targets
+    /// enforce it: whoever builds the [`TargetRegistry`] hands it to the
+    /// factories.
     pub max_commit_delay: Duration,
 }
 
@@ -49,19 +51,20 @@ const FETCH_BYTES: usize = 1024 * 1024;
 
 struct Shared {
     reader: LogReader,
-    store: Store,
+    registry: TargetRegistry,
     config: LinkConfig,
     /// Per link, the applied offsets last seen, to skip links with no lag.
     applied: Mutex<BTreeMap<LinkId, BTreeMap<u32, u64>>>,
-    #[cfg(feature = "test-util")]
-    hook: Option<crate::target::CommitHook>,
+    /// Links whose target kind has no factory, with that kind.
+    unregistered: Mutex<BTreeMap<LinkId, String>>,
 }
 
-/// Proposes one link-apply task per link with a `counter` target (plan
-/// ruling 3: one task per link, covering every source partition), at
-/// [`Priority::LinkApply`], keyed `link/<link_id>`. A link whose applied
-/// offsets (as last seen by this source) equal its source's high watermarks
-/// is not proposed.
+/// Proposes one link-apply task per link whose target kind has a factory in
+/// its [`TargetRegistry`] (plan ruling 3: one task per link, covering every
+/// source partition), at [`Priority::LinkApply`], keyed `link/<link_id>`. A
+/// link whose applied offsets (as last seen by this source) equal its
+/// source's high watermarks is not proposed. A link of an unregistered kind
+/// is reported ([`LinkApplySource::unregistered`]) and never applied.
 #[derive(Clone)]
 pub struct LinkApplySource {
     shared: Arc<Shared>,
@@ -70,51 +73,52 @@ pub struct LinkApplySource {
 impl std::fmt::Debug for LinkApplySource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LinkApplySource")
+            .field("registry", &self.shared.registry.kinds())
             .field("config", &self.shared.config)
             .finish_non_exhaustive()
     }
 }
 
 impl LinkApplySource {
-    pub fn new(reader: LogReader, store: Store, config: LinkConfig) -> Self {
+    pub fn new(reader: LogReader, registry: TargetRegistry, config: LinkConfig) -> Self {
         Self {
             shared: Arc::new(Shared {
                 reader,
-                store,
+                registry,
                 config,
                 applied: Mutex::default(),
-                #[cfg(feature = "test-util")]
-                hook: None,
+                unregistered: Mutex::default(),
             }),
         }
     }
 
-    /// Test hook: every target this source opens awaits `hook` at each
-    /// commit step. Only with the `test-util` feature.
-    #[cfg(feature = "test-util")]
-    pub fn with_hook(
-        reader: LogReader,
-        store: Store,
-        config: LinkConfig,
-        hook: crate::target::CommitHook,
-    ) -> Self {
-        Self {
-            shared: Arc::new(Shared {
-                reader,
-                store,
-                config,
-                applied: Mutex::default(),
-                hook: Some(hook),
-            }),
-        }
+    /// Links whose target kind has no factory, with that kind: reported,
+    /// never applied. As of the last [`TaskSource::candidates`] call.
+    pub fn unregistered(&self) -> BTreeMap<LinkId, String> {
+        self.shared
+            .unregistered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
-    fn target(&self, meta: &MetaClient, link: &Link) -> CounterTable {
-        let table = CounterTable::for_link(meta.clone(), self.shared.store.clone(), link)
-            .with_max_commit_delay(self.shared.config.max_commit_delay);
-        #[cfg(feature = "test-util")]
-        let table = table.with_hook(self.shared.hook.clone());
-        table
+    /// Records the links of unregistered kinds, logging each link once.
+    fn report_unregistered(&self, links: BTreeMap<LinkId, String>) {
+        let mut reported = self
+            .shared
+            .unregistered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for (link, kind) in &links {
+            if !reported.contains_key(link) {
+                tracing::warn!(
+                    %link,
+                    kind = %kind,
+                    "no target is registered for this link kind; it is not applied"
+                );
+            }
+        }
+        *reported = links;
     }
 }
 
@@ -128,7 +132,6 @@ impl TaskSource for LinkApplySource {
         let links: Vec<(Link, Vec<u64>)> = meta
             .read(Consistency::Local, |s| {
                 s.all_links()
-                    .filter(|l| l.target.kind == COUNTER_KIND)
                     .map(|l| {
                         let hwms = s
                             .stream(l.source)
@@ -152,7 +155,12 @@ impl TaskSource for LinkApplySource {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         let mut candidates = Vec::new();
+        let mut unregistered = BTreeMap::new();
         for (link, hwms) in links {
+            let Some(factory) = self.shared.registry.get(&link.target.kind) else {
+                unregistered.insert(link.id, link.target.kind.clone());
+                continue;
+            };
             let caught_up = seen.get(&link.id).is_some_and(|applied| {
                 hwms.iter().enumerate().all(|(p, hwm)| {
                     let p = u32::try_from(p).unwrap_or(u32::MAX);
@@ -162,9 +170,17 @@ impl TaskSource for LinkApplySource {
             if caught_up {
                 continue;
             }
+            let target = match factory.open(meta, &link) {
+                Ok(target) => target,
+                // One link's target failing to open must not stop the others.
+                Err(err) => {
+                    tracing::warn!(link = %link.id, %err, "opening a link target failed");
+                    continue;
+                }
+            };
             let task: Arc<dyn Task> = Arc::new(ApplyTask {
                 shared: self.shared.clone(),
-                target: Arc::new(self.target(meta, &link)),
+                target,
                 link: link.clone(),
             });
             candidates.push((
@@ -172,6 +188,7 @@ impl TaskSource for LinkApplySource {
                 task,
             ));
         }
+        self.report_unregistered(unregistered);
         Ok(candidates)
     }
 }

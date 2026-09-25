@@ -11,7 +11,7 @@ use operon_cache::{RangeCache, RangeCacheConfig};
 use operon_common::{NamespaceId, StreamId};
 use operon_link::{
     ApplyBatch, CommitError, CommitHook, CommitStep, CounterSnapshot, CounterTable,
-    LinkApplySource, LinkConfig, LinkTarget,
+    CounterTargetFactory, LinkApplySource, LinkConfig, LinkTarget, TargetRegistry,
 };
 use operon_log::{
     FetchRequest, LogConfig, LogReader, LogWriter, Record, SegmenterConfig, SegmenterSource,
@@ -136,15 +136,14 @@ impl Fixture {
     }
 
     fn source(&self, hook: Option<CommitHook>) -> LinkApplySource {
-        match hook {
-            Some(hook) => LinkApplySource::with_hook(
-                self.reader.clone(),
-                self.store.clone(),
-                link_config(),
-                hook,
-            ),
-            None => LinkApplySource::new(self.reader.clone(), self.store.clone(), link_config()),
-        }
+        let config = link_config();
+        let factory = CounterTargetFactory::new(self.store.clone(), config.max_commit_delay);
+        let factory = match hook {
+            Some(hook) => factory.with_hook(hook),
+            None => factory,
+        };
+        let registry = TargetRegistry::new().with(Arc::new(factory));
+        LinkApplySource::new(self.reader.clone(), registry, config)
     }
 
     fn table(&self) -> CounterTable {

@@ -14,7 +14,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::Bytes;
 use operon_common::{NamespaceId, StreamId};
-use operon_link::{COUNTER_KIND, CounterTable, LinkError};
+use operon_link::{COUNTER_KIND, CounterTable, LinkError, TargetRegistry};
 use operon_log::{FetchRequest, LogError, LogReader, LogWriter, Record};
 use operon_meta::{ApplyError, Consistency, MetaClient, MetaError, Retention, TargetRef, WalClass};
 use operon_store::Store;
@@ -38,8 +38,10 @@ pub struct AppState {
     pub meta: MetaClient,
     pub writer: LogWriter,
     pub reader: LogReader,
-    /// For reading link targets.
+    /// For reading counter tables.
     pub store: Store,
+    /// The link targets, by kind: describes every registered link kind.
+    pub registry: TargetRegistry,
 }
 
 /// The API's routes.
@@ -509,6 +511,12 @@ impl From<LinkError> for ApiError {
             LinkError::NotFound(_) => ApiError::not_found(message),
             LinkError::Store(_) | LinkError::Blocked(_) => unavailable(message),
             LinkError::Corrupt(_) => internal(message),
+            LinkError::Target {
+                retryable: true, ..
+            } => unavailable(message),
+            LinkError::Target {
+                retryable: false, ..
+            } => internal(message),
         }
     }
 }
@@ -579,18 +587,24 @@ async fn describe_link(
         "target": { "kind": link.target.kind, "name": link.target.name },
         "options": link.options,
     });
-    if link.target.kind == COUNTER_KIND {
-        let table = CounterTable::for_link(state.meta.clone(), state.store.clone(), &link);
-        let snapshot = table.snapshot().await?;
-        let applied: Vec<Value> = snapshot
-            .applied
+    let applied_json = |applied: &std::collections::BTreeMap<u32, u64>| -> Value {
+        applied
             .iter()
             .map(|(partition, offset)| json!({ "partition": partition, "offset": offset }))
-            .collect();
+            .collect()
+    };
+    if link.target.kind == COUNTER_KIND {
+        // The counters and the version they belong to, in one consistent view.
+        let table = CounterTable::for_link(state.meta.clone(), state.store.clone(), &link);
+        let snapshot = table.snapshot().await?;
         body["version"] = json!(snapshot.version);
-        body["applied"] = Value::from(applied);
+        body["applied"] = applied_json(&snapshot.applied);
         body["counters"] = json!(snapshot.counters);
         body["skipped"] = json!(snapshot.skipped);
+    } else if let Some(factory) = state.registry.get(&link.target.kind) {
+        let loaded = factory.open(&state.meta, &link)?.load().await?;
+        body["version"] = json!(loaded.version);
+        body["applied"] = applied_json(&loaded.applied);
     }
     Ok(axum::Json(body).into_response())
 }

@@ -33,7 +33,10 @@ use bytes::Bytes;
 use object_store::memory::InMemory;
 use operon_cache::{CacheError, RangeCache, RangeCacheConfig};
 use operon_common::{NamespaceId, StreamId};
-use operon_link::{CounterTable, LinkApplySource, LinkConfig, LinkError, LinkGcRoots};
+use operon_link::{
+    CounterTable, CounterTargetFactory, LinkApplySource, LinkConfig, LinkError, LinkGcRoots,
+    TargetRegistry,
+};
 use operon_log::gc::{GcConfig, GcSource};
 use operon_log::{
     FetchRequest, LogConfig, LogError, LogReader, LogWriter, Record, Retention, RetentionConfig,
@@ -156,6 +159,7 @@ fn link_retryable(err: &LinkError) -> bool {
         LinkError::Blocked(_) => true,
         LinkError::Meta(err) => meta_retryable(err),
         LinkError::Log(err) => log_retryable(err),
+        LinkError::Target { retryable, .. } => *retryable,
         LinkError::Corrupt(_) | LinkError::NotFound(_) => false,
     }
 }
@@ -220,15 +224,16 @@ struct Fixture {
 }
 
 fn link_source(f: &Fixture, reader: LogReader) -> LinkApplySource {
-    LinkApplySource::new(
-        reader,
+    let config = LinkConfig {
+        batch_records: 1_000,
+        batch_interval: Duration::ZERO,
+        ..LinkConfig::default()
+    };
+    let registry = TargetRegistry::new().with(Arc::new(CounterTargetFactory::new(
         f.store.clone(),
-        LinkConfig {
-            batch_records: 1_000,
-            batch_interval: Duration::ZERO,
-            ..LinkConfig::default()
-        },
-    )
+        config.max_commit_delay,
+    )));
+    LinkApplySource::new(reader, registry, config)
 }
 
 fn segmenter(f: &Fixture, cache: RangeCache) -> Segmenter {

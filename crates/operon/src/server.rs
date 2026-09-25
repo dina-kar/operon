@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use operon_cache::{RangeCache, RangeCacheConfig};
-use operon_link::{LinkApplySource, LinkConfig, LinkGcRoots};
+use operon_link::{CounterTargetFactory, LinkApplySource, LinkConfig, LinkGcRoots, TargetRegistry};
 use operon_log::gc::{GcConfig, GcSource};
 use operon_log::{
     LogConfig, LogReader, LogWriter, RetentionConfig, RetentionSource, SegmenterConfig,
@@ -225,9 +225,14 @@ impl Server {
                 ..WorkerConfig::new(owner)
             },
         );
+        // The collection target joins in plan M1.1 Task 13.
+        let registry = TargetRegistry::new().with(Arc::new(CounterTargetFactory::new(
+            store.clone(),
+            config.link.max_commit_delay,
+        )));
         worker.add_source(Arc::new(LinkApplySource::new(
             reader.clone(),
-            store.clone(),
+            registry.clone(),
             config.link.clone(),
         )));
         worker.add_source(Arc::new(SegmenterSource::new(
@@ -247,6 +252,7 @@ impl Server {
             writer: writer.clone(),
             reader,
             store: store.clone(),
+            registry,
         });
         let (stop_http, stopped) = oneshot::channel::<()>();
         let http = tokio::spawn(async move {
