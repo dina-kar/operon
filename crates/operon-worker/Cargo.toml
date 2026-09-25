@@ -10,7 +10,6 @@ authors.workspace = true
 [dependencies]
 async-trait.workspace = true
 operon-common.workspace = true
-operon-meta.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

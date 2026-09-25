@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use operon_common::NamespaceId;
-use operon_meta::{ApplyError, MetaClient, MetaError};
+use operon_common::meta::{ApplyError, MetaError, MetaStore};
 use tokio::sync::Notify;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
@@ -52,7 +52,7 @@ impl WorkerConfig {
 /// Polls task sources and runs their tasks under leases. Build it with
 /// [`Worker::new`] and [`Worker::add_source`], then [`Worker::start`] it.
 pub struct Worker {
-    meta: MetaClient,
+    meta: Arc<dyn MetaStore>,
     config: WorkerConfig,
     sources: Vec<Arc<dyn TaskSource>>,
 }
@@ -68,7 +68,7 @@ impl fmt::Debug for Worker {
 
 /// Shared between the scheduler, its runners and the handle.
 struct Shared {
-    meta: MetaClient,
+    meta: Arc<dyn MetaStore>,
     config: WorkerConfig,
     sources: Vec<Arc<dyn TaskSource>>,
     /// Keys running here, with their namespaces.
@@ -104,9 +104,9 @@ impl fmt::Debug for WorkerHandle {
 }
 
 impl Worker {
-    pub fn new(meta: MetaClient, config: WorkerConfig) -> Self {
+    pub fn new(meta: impl Into<Arc<dyn MetaStore>>, config: WorkerConfig) -> Self {
         Self {
-            meta,
+            meta: meta.into(),
             config,
             sources: Vec::new(),
         }
@@ -243,7 +243,7 @@ async fn poll(shared: &Arc<Shared>, runners: &mut JoinSet<()>, round: usize) {
     let mut by_priority: BTreeMap<Priority, Vec<Candidate>> = BTreeMap::new();
     let mut seen = BTreeSet::new();
     for source in &shared.sources {
-        match source.candidates(&shared.meta).await {
+        match source.candidates(&*shared.meta).await {
             Ok(candidates) => {
                 for (key, task) in candidates {
                     if seen.insert(key.clone()) {

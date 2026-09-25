@@ -7,10 +7,8 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use operon_common::NamespaceId;
-use operon_meta::{
-    ApplyError, Consistency, MetaClient, MetaClientConfig, MetaConfig, MetaError, MetaNode, Router,
-    SystemClock,
-};
+use operon_common::meta::{ApplyError, Consistency, MetaError, MetaStore, PointerCas};
+use operon_meta::{MetaClient, MetaClientConfig, MetaConfig, MetaNode, Router, SystemClock};
 use operon_store::Store;
 use operon_worker::{
     Candidate, Priority, RunResult, Task, TaskContext, TaskError, TaskKey, TaskOutcome, TaskSource,
@@ -105,7 +103,7 @@ impl TaskSource for FixedSource {
         self.priority
     }
 
-    async fn candidates(&self, _meta: &MetaClient) -> Result<Vec<Candidate>, TaskError> {
+    async fn candidates(&self, _meta: &dyn MetaStore) -> Result<Vec<Candidate>, TaskError> {
         Ok(self.tasks.lock().expect("lock").clone())
     }
 }
@@ -217,20 +215,21 @@ impl Task for CommitTask {
         // Even a cancelled run tries to commit: the fence must stop it.
         let current = ctx
             .meta
-            .read(Consistency::Linearizable, |s| {
-                s.pointer(self.namespace, "p").map(|p| p.version)
-            })
-            .await?;
+            .pointer(Consistency::Linearizable, self.namespace, "p")
+            .await?
+            .map(|p| p.version);
         let result = ctx
             .meta
-            .cas_pointer(
-                self.namespace,
-                "p",
-                current,
-                &self.value,
-                Some(ctx.fence.clone()),
-            )
-            .await;
+            .cas_pointer(PointerCas {
+                namespace: self.namespace,
+                key: "p".to_string(),
+                expected: current,
+                value: self.value.clone(),
+                fence: Some(ctx.fence.clone()),
+                fresh: None,
+            })
+            .await
+            .into_result();
         *self.result.lock().expect("lock") = Some(result);
         Ok(TaskOutcome::Done)
     }
@@ -627,8 +626,16 @@ impl Task for FenceCheck {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         let expected = (n > 0).then_some(u64::from(n));
         ctx.meta
-            .cas_pointer(self.namespace, "p", expected, "v", Some(ctx.fence.clone()))
-            .await?;
+            .cas_pointer(PointerCas {
+                namespace: self.namespace,
+                key: "p".to_string(),
+                expected,
+                value: "v".to_string(),
+                fence: Some(ctx.fence.clone()),
+                fresh: None,
+            })
+            .await
+            .into_result()?;
         Ok(TaskOutcome::Done)
     }
 }

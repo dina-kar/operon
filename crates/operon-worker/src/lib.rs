@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use operon_common::NamespaceId;
-use operon_meta::{Fence, MetaClient, MetaError};
+use operon_common::meta::{Fence, MetaError, MetaStore};
 pub use tokio_util::sync::CancellationToken;
 
 pub use runner::{RunResult, run_once};
@@ -88,7 +88,7 @@ pub struct TaskContext {
     /// Cancelled when the task must stop: its lease was lost or the worker is
     /// stopping. A task must stop promptly once it is cancelled.
     pub cancel: CancellationToken,
-    pub meta: MetaClient,
+    pub meta: Arc<dyn MetaStore>,
 }
 
 /// How a run ended.
@@ -136,7 +136,7 @@ pub trait TaskSource: Send + Sync {
     fn priority(&self) -> Priority;
     /// The tasks that have work now. Called on every poll; keep it cheap
     /// (metastore reads).
-    async fn candidates(&self, meta: &MetaClient) -> Result<Vec<Candidate>, TaskError>;
+    async fn candidates(&self, meta: &dyn MetaStore) -> Result<Vec<Candidate>, TaskError>;
 }
 
 /// A proposed task.

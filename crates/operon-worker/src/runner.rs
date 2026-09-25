@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use operon_meta::{ApplyError, Fence, MetaClient, MetaError};
+use operon_common::meta::{ApplyError, Fence, MetaError, MetaStore};
 use tokio_util::sync::CancellationToken;
 
 use crate::{Task, TaskContext, TaskError, TaskKey, TaskOutcome, TaskSource};
@@ -24,7 +24,7 @@ pub enum RunResult {
 
 /// A task run's lease, as the runner keeps it.
 pub(crate) struct Leased<'a> {
-    pub meta: &'a MetaClient,
+    pub meta: &'a Arc<dyn MetaStore>,
     pub owner: &'a str,
     pub ttl: Duration,
     pub key: TaskKey,
@@ -124,14 +124,15 @@ impl Leased<'_> {
 /// renewals and release), and reports what happened. For tools and tests
 /// that want one deterministic pass instead of a polling worker.
 pub async fn run_once(
-    meta: &MetaClient,
+    meta: impl Into<Arc<dyn MetaStore>>,
     owner: &str,
     lease_ttl: Duration,
     source: &dyn TaskSource,
 ) -> Result<Vec<(TaskKey, RunResult)>, TaskError> {
+    let meta = meta.into();
     let mut seen = BTreeSet::new();
     let mut results = Vec::new();
-    for (key, task) in source.candidates(meta).await? {
+    for (key, task) in source.candidates(&*meta).await? {
         if !seen.insert(key.clone()) {
             continue;
         }
@@ -147,7 +148,7 @@ pub async fn run_once(
             }
         };
         let leased = Leased {
-            meta,
+            meta: &meta,
             owner,
             ttl: lease_ttl,
             key: key.clone(),
