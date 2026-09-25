@@ -449,6 +449,41 @@ async fn a_cached_pk_handle_is_reopened_after_another_writer_committed() {
     f.shutdown().await;
 }
 
+/// Ruling 7: when the PK delta a repair needs is gone, the index is rebuilt
+/// from the parent's Lance version: its keys are put, and keys it no longer
+/// has (deleted by the commit the index missed) are removed.
+#[tokio::test]
+async fn a_pk_index_whose_delta_is_gone_is_rebuilt_from_lance() {
+    let f = TargetFixture::start(tagged(), 3).await;
+    f.write((0..10).map(|n| upsert(n, json!({ "n": n }))).collect())
+        .await;
+    f.apply_all(&f.source(f.factory()), "w1").await;
+    // The commit that deletes and replaces keys lands, but the PK index is
+    // not written.
+    let mut ops: Vec<DocOp> = (0..4).map(|n| DocOp::Delete(key(n))).collect();
+    ops.extend((4..8).map(|n| upsert(n, json!({ "n": n + 100 }))));
+    f.write(ops).await;
+    crash_run(&f, CollectionCommitStep::AfterCas).await;
+    let manifest = f.manifest().await;
+    assert_eq!(manifest.version, 2);
+    f.store
+        .delete(manifest.pk_delta.as_deref().expect("a pk delta"))
+        .await
+        .expect("delete the pk delta");
+    // More upserts of the replaced keys: a stale index would leave their
+    // old rows live.
+    f.write(
+        (0..10)
+            .map(|n| upsert(n, json!({ "n": n + 200 })))
+            .collect(),
+    )
+    .await;
+    f.apply_all(&f.source(f.factory()), "w2").await;
+    assert_verified(f.verify().await);
+    assert_eq!(f.snapshot().await.scan_all().await.unwrap().len(), 10);
+    f.shutdown().await;
+}
+
 /// One random op over keys 0..12.
 #[derive(Clone, Debug)]
 enum RandomOp {
