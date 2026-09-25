@@ -63,7 +63,7 @@ POST /v1/ns/acme/query
 }
 ```
 
-Plan: `FilterBitmapExec` → (`AnnExec` ‖ `TantivySearchExec`) → `FusionExec(RRF)` → `ExpandExec(2 hops)` → `DocFetchExec` → optional `RerankExec` (UDF calling an external model endpoint; pluggable, off by default) → `Limit`.
+Plan: `FilterBitmapExec` → (`AnnExec` ‖ `TantivySearchExec`) → `FusionExec(RRF)` → `Limit(seeds)` (`expand.seeds`, default 10, §07 §5.2) → `ExpandExec(2 hops)` → `DocFetchExec` → optional `RerankExec` (UDF calling an external model endpoint; pluggable, off by default) → `Limit`.
 
 The `expand` stage is the GraphRAG path (D44): vector/BM25 seeds → 1–2 hops over a mapped graph → rerank, in one planned query.
 

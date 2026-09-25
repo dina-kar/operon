@@ -13,7 +13,7 @@
 > Operon is in active foundational development (**v0.0.1 / Milestone M1.1**). While its storage, log, and consensus primitives are engineered to an exceptionally high standard, it lacks customer-facing query engines, distributed clustering, authentication, and operational telemetry. It should not be deployed in production environments at this stage.
 
 ### Key Blockers for Production Deployment
-1. **Query Engine & Interfaces are Unimplemented:** While data can be appended to internal log streams and materialized into Lance/Tantivy formats, [`operon-query`](./plans/2026-09-24-m1.2-query-engine.md) (DataFusion physical execution operators, hybrid fusion, tail merges) and all external client compatibility gateways (Qdrant, Elasticsearch, Kafka, Arrow Flight SQL) do not yet exist.
+1. **Query Engine & Interfaces are Unimplemented:** While data can be appended to internal log streams and materialized into Lance/Tantivy formats, [`operon-query`](./plans/2026-09-24-m1.2-query-engine.md) (DataFusion physical execution operators, hybrid fusion, tail merges) and all external client compatibility gateways (Qdrant, Elasticsearch, Kafka, Arrow Flight SQL) do not yet exist. *As adopted, v1.0 needs the Qdrant, Elasticsearch-subset and Flight SQL surfaces; the Kafka gateway is deferred past v1.0 (D42, D43).*
 2. **Single-Node Local Topology Only:** The binary currently runs exclusively in `dev` or `standalone` mode with a single-node embedded Raft metastore (`NODE_ID = 1`). Distributed network RPC, node registries, and rendezvous partition routing are scheduled for future milestones.
 3. **No AuthN, AuthZ, or Multi-Tenant Guardrails:** There are currently no authentication mechanisms (TLS, API tokens, mTLS, SASL), authorization frameworks (RBAC / OpenFGA), or tenant quota governors.
 4. **Hot Tier Under Active Construction:** The NVMe-cached HNSW vector index (`operon-hnsw`), split pinning, and real-time in-memory tail indexes are scheduled for milestones M1.2 and M1.3.
@@ -45,14 +45,16 @@ The foundation code built in M0 and M1.1 demonstrates world-class systems progra
 
 ### The Protocol Triage Matrix
 
-| Surface / Protocol | Status in Roadmap | Strategic Recommendation | Rationale |
-|---|---|---|---|
-| **Arrow Flight SQL & Native REST** | M1.2 | **KEEP & EXPAND (Core)** | High-throughput, zero-copy, native Arrow/DataFusion protocol. Cleanest integration for Python, Go, Java, and C++. |
-| **Qdrant REST & gRPC** | M1.4 | **KEEP (Core AI Surface)** | Modern, strictly typed, and the de facto standard for AI vector stores (LangChain, LlamaIndex, Haystack). High adoption value with moderate implementation complexity. |
-| **Elasticsearch REST (Subset)** | M1.5 | **KEEP (Targeted Subset Only)** | Restrict scope to standard BM25 search and vector-store fixtures. Do not attempt full ES DSL parity. |
-| **Kafka Wire Protocol** | M3 | **DROP / DEFER** | Rebuilding a Kafka broker (KIP-848, consumer group rebalancing, heartbeat loops, transactions) is a venture-scale project in itself. Expose native streaming HTTP/gRPC ingest endpoints instead. |
-| **Neo4j Bolt / Cypher** | M2 | **DROP / DEFER** | Cypher parsing and recursive graph execution have a fraction of the market demand of vector/search. Handle graph relations via SQL joins or simple graph expansions in DataFusion. |
-| **ClickHouse HTTP** | M4 | **DROP** | Operon's data is already open Apache Iceberg. Users can query Iceberg tables directly via DuckDB, Trino, or ClickHouse itself. Building a custom ClickHouse server inside Operon is redundant. |
+"Status in Roadmap" is the roadmap as reviewed; "Adopted as" is the decision that superseded it (D42–D46, [§12](./design/12-roadmap-testing-risks.md)).
+
+| Surface / Protocol | Status in Roadmap | Strategic Recommendation | Rationale | Adopted as |
+|---|---|---|---|---|
+| **Arrow Flight SQL & Native REST** | M1.2 | **KEEP & EXPAND (Core)** | High-throughput, zero-copy, native Arrow/DataFusion protocol. Cleanest integration for Python, Go, Java, and C++. | M1 core surface, with `DoPut` bulk ingest (D42, D49) |
+| **Qdrant REST & gRPC** | M1.4 | **KEEP (Core AI Surface)** | Modern, strictly typed, and the de facto standard for AI vector stores (LangChain, LlamaIndex, Haystack). High adoption value with moderate implementation complexity. | M1 (D42) |
+| **Elasticsearch REST (Subset)** | M1.5 | **KEEP (Targeted Subset Only)** | Restrict scope to standard BM25 search and vector-store fixtures. Do not attempt full ES DSL parity. | M1, Phase A trimmed to what the framework suites send (D48) |
+| **Kafka Wire Protocol** | M3 | **DROP / DEFER** | Rebuilding a Kafka broker (KIP-848, consumer group rebalancing, heartbeat loops, transactions) is a venture-scale project in itself. Expose native streaming HTTP/gRPC ingest endpoints instead. | Deferred past v1.0 (Phase C); native streaming API in M5 (D43) |
+| **Neo4j Bolt / Cypher** | M2 | **DROP / DEFER** | Cypher parsing and recursive graph execution have a fraction of the market demand of vector/search. Handle graph relations via SQL joins or simple graph expansions in DataFusion. | Dropped; native graph in M3 (D44) |
+| **ClickHouse HTTP** | M4 | **DROP** | Operon's data is already open Apache Iceberg. Users can query Iceberg tables directly via DuckDB, Trino, or ClickHouse itself. Building a custom ClickHouse server inside Operon is redundant. | Dropped; Iceberg analytics in M4 (D45) |
 
 ---
 

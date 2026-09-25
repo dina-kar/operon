@@ -54,7 +54,7 @@ DataFusion physical operators (§05 §2), vectorized over Arrow batches of verte
 
 | Operator | Semantics |
 |---|---|
-| `ExpandExec` | For each input vertex, emit neighbors via CSR/CSC chunks ∪ overlay, in direction `out`, `in` or `both`, filtered by edge type and pushed-down edge/vertex predicates; 1 or 2 hops, deduplicated per seed at the smallest hop; the edge and the previous vertex are emitted on demand |
+| `ExpandExec` | For each input vertex, emit neighbors via CSR/CSC chunks ∪ overlay, in direction `out`, `in` or `both`, filtered by edge type and pushed-down edge/vertex predicates; 1 or 2 hops, deduplicated per seed at the smallest hop; the edge and the previous vertex are emitted on demand. When several equal-hop paths reach one vertex, the row kept is the one with the smallest canonical key bytes of the previous vertex (`via`), then of the edge, so the emitted `via` and edge never depend on sidecar or overlay iteration order |
 | `ShortestPathExec` | Bidirectional BFS (unweighted) with a depth bound (default 6); Dijkstra for weighted edges (Phase B) |
 | `PatternJoinExec` (Phase C) | Worst-case-optimal intersection for cyclic patterns, factorized intermediates (Kuzu research; §12 Phase C) |
 
