@@ -560,6 +560,24 @@ async fn a_failed_start_releases_the_data_directory() {
     server.shutdown().await.unwrap();
 }
 
+/// M0.4 re-review m1: a freshness deadline at or above GC's grace period is
+/// refused at startup, not clamped. The segmenter's deadline is below grace,
+/// so the error must name the link's.
+#[tokio::test]
+async fn a_config_with_a_deadline_at_grace_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let mut bad = config(&dir, lazy_segmenter());
+    bad.gc.grace = Duration::from_secs(2);
+    bad.segmenter.swap_deadline = Duration::from_secs(1);
+    bad.link.max_commit_delay = Duration::from_secs(2);
+    let err = Server::start(bad).await.unwrap_err();
+    let operon::ServerError::Config(message) = &err else {
+        panic!("expected a config error, got {err:?}");
+    };
+    assert!(message.contains("link.max_commit_delay"), "{message}");
+    assert!(!message.contains("segmenter.swap_deadline"), "{message}");
+}
+
 /// A running `operon dev` process.
 struct Dev {
     child: std::process::Child,
@@ -716,14 +734,32 @@ async fn a_link_is_created_once_and_sums_its_stream() {
 #[test]
 fn a_build_without_failpoints_refuses_to_arm_them() {
     let dir = TempDir::new().unwrap();
-    let status = std::process::Command::new(env!("CARGO_BIN_EXE_operon"))
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_operon"))
         .args(["dev", "--listen", "127.0.0.1:0"])
         .arg("--data-dir")
         .arg(dir.path())
         .env("OPERON_FAILPOINTS", "wal.after_put")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
-        .expect("run operon");
+        .spawn()
+        .expect("spawn operon");
+    // A binary built with failpoints would ignore the variable and serve
+    // forever: bound the wait instead of hanging the test run.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait for operon") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "the operon binary did not exit within 30 s with OPERON_FAILPOINTS set; \
+                 it was probably built with --features failpoints: \
+                 run \"cargo build -p operon\" and retry"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
     assert!(!status.success());
 }

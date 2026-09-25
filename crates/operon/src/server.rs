@@ -73,11 +73,29 @@ impl ServerConfig {
             worker_lease_ttl: Duration::from_secs(30),
         }
     }
+
+    /// Rejects: segmenter.swap_deadline, link.max_commit_delay (and, from Task 13,
+    /// collection.index_commit_delay) >= gc.grace. Called first thing by Server::start.
+    ///
+    /// Garbage collection deletes unreferenced objects older than its grace
+    /// period, so a segment swap or link commit must reference its new
+    /// objects strictly within it (M0.4 ruling E7, re-review m1).
+    pub fn validate(&self) -> Result<(), ServerError> {
+        self.gc
+            .check_deadlines(&[
+                ("segmenter.swap_deadline", self.segmenter.swap_deadline),
+                ("link.max_commit_delay", self.link.max_commit_delay),
+            ])
+            .map_err(|err| ServerError::Config(err.to_string()))
+    }
 }
 
 /// Why the server could not start.
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
+    /// The configuration is inconsistent (see [`ServerConfig::validate`]).
+    #[error("invalid configuration: {0}")]
+    Config(String),
     #[error("data directory {path}: {source}")]
     DataDir {
         path: PathBuf,
@@ -139,14 +157,9 @@ impl Server {
     /// On failure, everything already started is stopped again (the
     /// metastore releases its local database), so a retry in the same process
     /// can succeed.
-    pub async fn start(mut config: ServerConfig) -> Result<Self, ServerError> {
+    pub async fn start(config: ServerConfig) -> Result<Self, ServerError> {
+        config.validate()?;
         config.log.validate()?;
-        // Garbage collection deletes unreferenced objects older than its
-        // grace period, so a segment or link commit must reference its new
-        // objects well within it (M0.4 ruling E7).
-        let half_grace = config.gc.grace / 2;
-        config.segmenter.swap_deadline = config.segmenter.swap_deadline.min(half_grace);
-        config.link.max_commit_delay = config.link.max_commit_delay.min(half_grace);
         let store = Store::from_url(&bucket_url(&config)?, Vec::<(String, String)>::new())?;
         let mut meta_config = MetaConfig::new(NODE_ID, config.data_dir.join("meta"), store.clone());
         meta_config.snapshot_every = config.snapshot_every;

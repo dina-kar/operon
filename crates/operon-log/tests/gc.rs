@@ -339,3 +339,39 @@ async fn a_swap_delayed_past_its_deadline_is_refused_after_gc_deleted_the_segmen
     );
     f.shutdown().await;
 }
+
+/// M0.4 re-review m1: a freshness deadline equal to the grace period is
+/// refused, and the error names that deadline (the other one is below grace).
+#[test]
+fn a_deadline_equal_to_grace_is_rejected() {
+    let gc = GcConfig {
+        grace: Duration::from_secs(10),
+        ..GcConfig::default()
+    };
+    let err = gc
+        .check_deadlines(&[
+            ("segmenter.swap_deadline", Duration::from_millis(9_999)),
+            ("link.max_commit_delay", Duration::from_secs(10)),
+        ])
+        .unwrap_err();
+    assert_eq!(err.name, "link.max_commit_delay");
+    assert_eq!(err.deadline, Duration::from_secs(10));
+    assert_eq!(err.grace, Duration::from_secs(10));
+    assert_eq!(
+        err.to_string(),
+        "link.max_commit_delay (10s) must be strictly below gc.grace (10s)"
+    );
+}
+
+#[test]
+fn deadlines_below_grace_pass() {
+    let gc = GcConfig {
+        grace: Duration::from_secs(10),
+        ..GcConfig::default()
+    };
+    gc.check_deadlines(&[
+        ("segmenter.swap_deadline", Duration::from_millis(9_999)),
+        ("link.max_commit_delay", Duration::from_millis(9_999)),
+    ])
+    .unwrap();
+}

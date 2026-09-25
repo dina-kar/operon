@@ -433,7 +433,7 @@ async fn gc_alongside_everything(w: Workload) {
         LinkConfig {
             batch_records: 5,
             batch_interval: Duration::ZERO,
-            // Below the grace period, as the server clamps it (review M3).
+            // Below the grace period, as the server requires (review M3).
             max_commit_delay: grace / 2,
             ..LinkConfig::default()
         },

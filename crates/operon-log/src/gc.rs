@@ -77,6 +77,40 @@ impl Default for GcConfig {
     }
 }
 
+/// A freshness deadline that is not strictly below GC's grace period, so an
+/// object could be deleted before the command that references it is refused.
+#[derive(Debug, thiserror::Error)]
+#[error("{name} ({deadline:?}) must be strictly below gc.grace ({grace:?})")]
+pub struct DeadlineError {
+    /// The configuration key of the deadline, such as `link.max_commit_delay`.
+    pub name: &'static str,
+    pub deadline: Duration,
+    pub grace: Duration,
+}
+
+impl GcConfig {
+    /// Every freshness deadline must be strictly below `grace` (M0.4 re-review m1).
+    ///
+    /// `deadlines` are `(name, deadline)` pairs; the first one at or above
+    /// `grace` is reported.
+    pub fn check_deadlines(
+        &self,
+        deadlines: &[(&'static str, Duration)],
+    ) -> Result<(), DeadlineError> {
+        match deadlines
+            .iter()
+            .find(|(_, deadline)| *deadline >= self.grace)
+        {
+            Some(&(name, deadline)) => Err(DeadlineError {
+                name,
+                deadline,
+                grace: self.grace,
+            }),
+            None => Ok(()),
+        }
+    }
+}
+
 /// What garbage collection runs deleted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GcReport {

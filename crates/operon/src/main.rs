@@ -38,7 +38,8 @@ struct Tuning {
     /// How often retention runs.
     #[arg(long, hide = true)]
     retention_interval_ms: Option<u64>,
-    /// Garbage collection's grace period.
+    /// Garbage collection's grace period. Also sets the segmenter's swap
+    /// deadline and the link commit delay to half of it.
     #[arg(long, hide = true)]
     gc_grace_ms: Option<u64>,
     /// How often garbage collection runs.
@@ -75,6 +76,10 @@ impl Tuning {
         }
         if let Some(v) = self.gc_grace_ms {
             config.gc.grace = ms(v);
+            // Freshness deadlines must stay strictly below the grace period
+            // (ServerConfig::validate).
+            config.segmenter.swap_deadline = ms(v / 2);
+            config.link.max_commit_delay = ms(v / 2);
         }
         if let Some(v) = self.gc_interval_ms {
             config.gc.interval = ms(v);
