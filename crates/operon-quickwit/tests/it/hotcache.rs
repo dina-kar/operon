@@ -1,7 +1,5 @@
 //! Opening a split through its hotcache costs exactly one ranged GET.
 
-mod common;
-
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -103,7 +101,7 @@ impl Storage for CountingStorage {
 
 #[tokio::test]
 async fn opening_a_split_is_one_get() {
-    let split = common::build_split();
+    let split = crate::common::build_split();
     let footer_range = split.footer_range.clone();
     let split_path = PathBuf::from("split");
     let ram_storage = RamStorage::default();
@@ -130,7 +128,7 @@ async fn opening_a_split_is_one_get() {
         .reload_policy(ReloadPolicy::Manual)
         .try_into()
         .unwrap();
-    assert_eq!(reader.searcher().num_docs(), common::NUM_DOCS);
+    assert_eq!(reader.searcher().num_docs(), crate::common::NUM_DOCS);
 
     assert_eq!(storage.get_slice_calls.load(Ordering::SeqCst), 1);
     assert_eq!(storage.get_all_calls.load(Ordering::SeqCst), 0);
@@ -160,9 +158,9 @@ async fn a_prefix_storage_forwards_the_known_file_length() {
     );
 }
 
-/// The hotcache of `common::build_split()`.
+/// The hotcache of `crate::common::build_split()`.
 fn hotcache() -> Vec<u8> {
-    let split = common::build_split();
+    let split = crate::common::build_split();
     let footer_range = split.footer_range.clone();
     let footer = split.range_bytes(footer_range).expect("footer bytes");
     let (_, hotcache) = BundleStorage::open_from_split_bytes(

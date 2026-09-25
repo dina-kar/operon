@@ -1,7 +1,5 @@
 //! A split bundle round-trips: files, hotcache and the 16-byte footer trailer.
 
-mod common;
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -12,7 +10,7 @@ use tantivy::{Index, ReloadPolicy};
 
 #[tokio::test]
 async fn a_split_bundle_round_trips() {
-    let split = common::build_split();
+    let split = crate::common::build_split();
     let footer_range = split.footer_range.clone();
     let split_bytes = split.read_all().await.unwrap();
     assert_eq!(split_bytes.len() as u64, split.len());
@@ -40,7 +38,7 @@ async fn a_split_bundle_round_trips() {
         .try_into()
         .unwrap();
     let searcher = reader.searcher();
-    assert_eq!(searcher.num_docs(), common::NUM_DOCS);
+    assert_eq!(searcher.num_docs(), crate::common::NUM_DOCS);
 
     let mut values = Vec::new();
     for segment_reader in searcher.segment_readers() {
@@ -50,13 +48,15 @@ async fn a_split_bundle_round_trips() {
         }
     }
     values.sort_unstable();
-    let expected: Vec<u64> = (0..common::NUM_DOCS).map(common::fast_value).collect();
+    let expected: Vec<u64> = (0..crate::common::NUM_DOCS)
+        .map(crate::common::fast_value)
+        .collect();
     assert_eq!(values, expected);
 }
 
 #[tokio::test]
 async fn the_footer_trailer_is_present() {
-    let split = common::build_split();
+    let split = crate::common::build_split();
     let split_bytes = split.read_all().await.unwrap();
     let trailer = &split_bytes.as_slice()[split_bytes.len() - 16..];
 
