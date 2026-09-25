@@ -141,10 +141,9 @@ fn meta_retryable(err: &MetaError) -> bool {
 
 fn log_retryable(err: &LogError) -> bool {
     match err {
-        LogError::Store(_)
-        | LogError::Cache(CacheError::Store(_))
-        | LogError::CommitUnknown(_)
-        | LogError::Backpressure => true,
+        LogError::Store(err) => err.is_retryable(),
+        LogError::Cache(CacheError::Store(err)) => err.is_retryable(),
+        LogError::CommitUnknown(_) | LogError::Backpressure => true,
         LogError::Meta(err) => meta_retryable(err),
         LogError::Task(err) => task_retryable(err),
         _ => false,
@@ -153,7 +152,8 @@ fn log_retryable(err: &LogError) -> bool {
 
 fn link_retryable(err: &LinkError) -> bool {
     match err {
-        LinkError::Store(_) | LinkError::Blocked(_) => true,
+        LinkError::Store(err) => err.is_retryable(),
+        LinkError::Blocked(_) => true,
         LinkError::Meta(err) => meta_retryable(err),
         LinkError::Log(err) => log_retryable(err),
         LinkError::Corrupt(_) | LinkError::NotFound(_) => false,
@@ -170,7 +170,8 @@ fn task_retryable(err: &TaskError) -> bool {
             } else if let Some(err) = err.downcast_ref::<LinkError>() {
                 link_retryable(err)
             } else {
-                err.downcast_ref::<operon_store::StoreError>().is_some()
+                err.downcast_ref::<operon_store::StoreError>()
+                    .is_some_and(operon_store::StoreError::is_retryable)
             }
         }
     }

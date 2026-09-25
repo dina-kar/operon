@@ -441,13 +441,21 @@ impl LinkTarget for CounterTable {
         {
             Ok(_) => {}
             // Only a retry of our own PUT can have created this unique path.
-            Err(StoreError::AlreadyExists { .. }) => {
-                if self.read_manifest(&path).await? != manifest {
+            Err(err @ StoreError::AlreadyExists { .. }) => match self.read_manifest(&path).await {
+                Ok(existing) if existing == manifest => {}
+                Ok(_) => {
                     return Err(CommitError::Other(LinkError::Corrupt(format!(
                         "{path} exists with other content"
                     ))));
                 }
-            }
+                // The store reported a conflict but holds nothing there: the
+                // PUT was not applied. Report the conflict, which is
+                // retryable: the next attempt writes a new path.
+                Err(LinkError::Store(StoreError::NotFound { .. })) => {
+                    return Err(LinkError::from(err).into());
+                }
+                Err(other) => return Err(other.into()),
+            },
             Err(err) => return Err(LinkError::from(err).into()),
         }
         self.step(CommitStep::AfterManifestPut, fence).await;

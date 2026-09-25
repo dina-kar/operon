@@ -17,6 +17,23 @@ pub enum StoreError {
     Backend(#[source] object_store::Error),
 }
 
+impl StoreError {
+    /// Whether retrying the whole operation, after re-reading anything it depends on, may
+    /// succeed (plan M1.1 ruling 21): Backend, AlreadyExists and PreconditionFailed are; NotFound,
+    /// NotSupported, InvalidUrl and InvalidPath are not.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            StoreError::Backend(_)
+            | StoreError::AlreadyExists { .. }
+            | StoreError::PreconditionFailed { .. } => true,
+            StoreError::NotFound { .. }
+            | StoreError::NotSupported(_)
+            | StoreError::InvalidUrl(_)
+            | StoreError::InvalidPath(_) => false,
+        }
+    }
+}
+
 pub(crate) fn map_err(path: &str, err: object_store::Error) -> StoreError {
     use object_store::Error as E;
     match err {
