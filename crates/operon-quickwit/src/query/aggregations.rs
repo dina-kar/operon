@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/aggregations.rs); modified for Operon: MultiTermsBucketEntry and BucketResult::MultiTerms removed for tantivy 0.26.2.
+// Vendored from quickwit-oss/quickwit af0591a3 (quickwit/quickwit-query/src/aggregations.rs); modified for Operon: MultiTermsBucketEntry and BucketResult::MultiTerms removed for tantivy 0.26.2; BucketResult::Filter added in place of unimplemented!() with a round-trip test.
 
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -20,8 +20,8 @@ use tantivy::aggregation::agg_result::{
     AggregationResult as TantivyAggregationResult, AggregationResults as TantivyAggregationResults,
     BucketEntries as TantivyBucketEntries, BucketEntry as TantivyBucketEntry,
     BucketResult as TantivyBucketResult, CompositeBucketEntry as TantivyCompositeBucketEntry,
-    CompositeKey as TantivyCompositeKey, MetricResult as TantivyMetricResult,
-    RangeBucketEntry as TantivyRangeBucketEntry,
+    CompositeKey as TantivyCompositeKey, FilterBucketResult as TantivyFilterBucketResult,
+    MetricResult as TantivyMetricResult, RangeBucketEntry as TantivyRangeBucketEntry,
 };
 use tantivy::aggregation::bucket::AfterKey as TantivyAfterKey;
 use tantivy::aggregation::metric::{
@@ -181,6 +181,13 @@ pub enum BucketResult {
         /// serialization needed for correct pagination round-tripping.
         after_key: FxHashMap<String, TantivyAfterKey>,
     },
+    /// This is the filter aggregation result
+    Filter {
+        /// Number of documents matching the filter.
+        doc_count: u64,
+        /// Sub-aggregations over the matching documents.
+        sub_aggregation: AggregationResults,
+    },
 }
 
 impl From<TantivyBucketResult> for BucketResult {
@@ -201,9 +208,10 @@ impl From<TantivyBucketResult> for BucketResult {
                 sum_other_doc_count,
                 doc_count_error_upper_bound,
             },
-            TantivyBucketResult::Filter(_filter_bucket_result) => {
-                unimplemented!("filter aggregation is not yet supported in quickwit")
-            }
+            TantivyBucketResult::Filter(filter_bucket_result) => BucketResult::Filter {
+                doc_count: filter_bucket_result.doc_count,
+                sub_aggregation: filter_bucket_result.sub_aggregations.into(),
+            },
             TantivyBucketResult::Composite { buckets, after_key } => BucketResult::Composite {
                 buckets: buckets.into_iter().map(Into::into).collect(),
                 after_key,
@@ -234,6 +242,13 @@ impl From<BucketResult> for TantivyBucketResult {
                 buckets: buckets.into_iter().map(Into::into).collect(),
                 after_key,
             },
+            BucketResult::Filter {
+                doc_count,
+                sub_aggregation,
+            } => TantivyBucketResult::Filter(TantivyFilterBucketResult {
+                doc_count,
+                sub_aggregations: sub_aggregation.into(),
+            }),
         }
     }
 }
@@ -505,5 +520,60 @@ impl From<CompositeBucketEntry> for TantivyCompositeBucketEntry {
             doc_count: value.doc_count,
             sub_aggregation: value.sub_aggregation.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tantivy::aggregation::AggregationCollector;
+    use tantivy::aggregation::agg_req::Aggregations;
+    use tantivy::query::AllQuery;
+    use tantivy::schema::{FAST, STRING, Schema};
+    use tantivy::{Index, TantivyDocument};
+
+    use super::*;
+
+    #[test]
+    fn test_filter_aggregation_result_round_trips() {
+        let mut schema_builder = Schema::builder();
+        let tag = schema_builder.add_text_field("tag", STRING);
+        let n = schema_builder.add_u64_field("n", FAST);
+        let index = Index::create_in_ram(schema_builder.build());
+        let mut writer = index.writer_with_num_threads(1, 15_000_000).unwrap();
+        for (doc_tag, doc_n) in [("a", 1u64), ("b", 10), ("a", 2)] {
+            let mut doc = TantivyDocument::default();
+            doc.add_text(tag, doc_tag);
+            doc.add_u64(n, doc_n);
+            writer.add_document(doc).unwrap();
+        }
+        writer.commit().unwrap();
+        let aggregations: Aggregations = serde_json::from_str(
+            r#"{"f":{"filter":"tag:a","aggs":{"n_sum":{"sum":{"field":"n"}}}}}"#,
+        )
+        .unwrap();
+        let collector = AggregationCollector::from_aggs(aggregations, Default::default());
+        let searcher = index.reader().unwrap().searcher();
+        let tantivy_results: TantivyAggregationResults =
+            searcher.search(&AllQuery, &collector).unwrap();
+        let expected_json = serde_json::to_value(&tantivy_results).unwrap();
+
+        let results: AggregationResults = tantivy_results.into();
+        let (name, AggregationResult::BucketResult(BucketResult::Filter { doc_count, .. })) =
+            &results.0[0]
+        else {
+            panic!("expected a filter bucket result, got {results:?}");
+        };
+        assert_eq!(name, "f");
+        assert_eq!(*doc_count, 2);
+
+        // The Quickwit-side type is what travels between nodes.
+        let bytes = postcard::to_allocvec(&results).unwrap();
+        let results: AggregationResults = postcard::from_bytes(&bytes).unwrap();
+
+        let tantivy_results: TantivyAggregationResults = results.into();
+        let json = serde_json::to_value(&tantivy_results).unwrap();
+        assert_eq!(json, expected_json);
+        assert_eq!(json["f"]["doc_count"], 2);
+        assert_eq!(json["f"]["n_sum"]["value"], 3.0);
     }
 }
