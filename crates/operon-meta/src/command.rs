@@ -276,6 +276,73 @@ pub enum ApplyError {
     },
 }
 
+/// How far the proposer's clock lagged the metastore's, for a StaleObject refusal.
+///
+/// A proposer checks an object's deadline against its own clock before it
+/// proposes; the metastore checks it again against its clock when it
+/// applies. A refusal the proposer did not predict means the command took
+/// too long between the two checks, or the proposer's clock lags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StaleLag {
+    /// `created_at_ms + max_age_ms`: the last metastore time the object was
+    /// fresh.
+    pub deadline_ms: u64,
+    /// The metastore clock when it refused the command.
+    pub clock_ms: u64,
+    /// The proposer's clock when it handled the refusal.
+    pub proposer_now_ms: u64,
+    /// `clock_ms - deadline_ms`: how late the command was applied.
+    pub late_by_ms: u64,
+    /// `clock_ms - proposer_now_ms`: how far the proposer's clock is behind
+    /// the metastore's (negative when ahead).
+    pub proposer_lag_ms: i64,
+}
+
+impl ApplyError {
+    /// `Some` for `StaleObject`, else `None`.
+    pub fn stale_lag(&self, proposer_now_ms: u64) -> Option<StaleLag> {
+        let ApplyError::StaleObject {
+            created_at_ms,
+            max_age_ms,
+            clock_ms,
+            ..
+        } = *self
+        else {
+            return None;
+        };
+        let deadline_ms = created_at_ms.saturating_add(max_age_ms);
+        let lag = i128::from(clock_ms) - i128::from(proposer_now_ms);
+        Some(StaleLag {
+            deadline_ms,
+            clock_ms,
+            proposer_now_ms,
+            late_by_ms: clock_ms.saturating_sub(deadline_ms),
+            proposer_lag_ms: i64::try_from(lag).unwrap_or(if lag < 0 {
+                i64::MIN
+            } else {
+                i64::MAX
+            }),
+        })
+    }
+}
+
+/// Logs a StaleObject refusal at WARN with every StaleLag field and the object path; no-op otherwise.
+pub fn log_stale_object(err: &ApplyError, proposer_now_ms: u64) {
+    let (ApplyError::StaleObject { object, .. }, Some(lag)) = (err, err.stale_lag(proposer_now_ms))
+    else {
+        return;
+    };
+    tracing::warn!(
+        %object,
+        deadline_ms = lag.deadline_ms,
+        clock_ms = lag.clock_ms,
+        proposer_now_ms = lag.proposer_now_ms,
+        late_by_ms = lag.late_by_ms,
+        proposer_lag_ms = lag.proposer_lag_ms,
+        "the metastore refused a stale object"
+    );
+}
+
 impl std::fmt::Display for Command {
     /// A short summary for logs; openraft requires log payloads to be `Display`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -332,5 +399,34 @@ impl std::fmt::Display for Command {
                 ..
             } => write!(f, "CasPointer({namespace}/{key}, expected {expected:?})"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_lag_reports_the_proposers_lag() {
+        let stale = ApplyError::StaleObject {
+            object: "ns/1/streams/1/0/seg".to_string(),
+            created_at_ms: 1_000,
+            max_age_ms: 500,
+            clock_ms: 2_000,
+        };
+        assert_eq!(
+            stale.stale_lag(1_900),
+            Some(StaleLag {
+                deadline_ms: 1_500,
+                clock_ms: 2_000,
+                proposer_now_ms: 1_900,
+                late_by_ms: 500,
+                proposer_lag_ms: 100,
+            })
+        );
+        let fenced = ApplyError::Fenced {
+            lease: "task/gc".to_string(),
+        };
+        assert_eq!(fenced.stale_lag(1_900), None);
     }
 }

@@ -27,6 +27,7 @@ use bytes::Bytes;
 use operon_common::NamespaceId;
 use operon_meta::{
     ApplyError, Consistency, Fence, Freshness, Link, LinkId, MetaClient, MetaError, Pointer,
+    log_stale_object,
 };
 use operon_store::{Store, StoreError};
 use serde::de::DeserializeOwned;
@@ -317,13 +318,16 @@ impl CounterTable {
     }
 }
 
-fn cas_error(err: MetaError) -> CommitError {
+/// Maps a refused pointer CAS; `proposer_now_ms` is this node's metastore
+/// clock, logged with a stale-object refusal.
+fn cas_error(err: MetaError, proposer_now_ms: u64) -> CommitError {
     match err {
         MetaError::Rejected(ApplyError::VersionMismatch { .. }) => CommitError::Conflict,
         MetaError::Rejected(ApplyError::Fenced { .. }) => CommitError::Fenced,
         // Too late: the new objects are left to garbage collection and the
         // next run commits the batch again with new ones.
         MetaError::Rejected(err @ ApplyError::StaleObject { .. }) => {
+            log_stale_object(&err, proposer_now_ms);
             CommitError::Other(LinkError::Blocked(err.to_string()))
         }
         other => CommitError::Other(LinkError::Meta(other)),
@@ -492,7 +496,7 @@ impl LinkTarget for CounterTable {
             Err(MetaError::Rejected(ApplyError::VersionMismatch {
                 current: Some(current),
             })) if current.version == manifest.version && current.value == path => current.version,
-            Err(err) => return Err(cas_error(err)),
+            Err(err) => return Err(cas_error(err, self.meta.now_ms())),
         };
         self.step(CommitStep::AfterCas, fence).await;
         self.remember(Arc::new(manifest));

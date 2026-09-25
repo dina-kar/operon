@@ -21,7 +21,7 @@ mod types;
 
 pub use client::{MetaClient, MetaClientConfig};
 pub use clock::{Clock, ManualClock, SystemClock};
-pub use command::{ApplyError, Command, Reply};
+pub use command::{ApplyError, Command, Reply, StaleLag, log_stale_object};
 pub use db::LocalDb;
 pub use error::MetaError;
 pub use log_store::LogStore;
