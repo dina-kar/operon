@@ -15,8 +15,10 @@
 //! exact sparse vector search ([`vector`], [`sparse`], [`exec`]).
 //! Task 7: search assembly, get, count and scroll ([`exec::planner`]).
 //! Task 8: aggregations and highlighting ([`exec::aggs`],
-//! [`text::highlight`]).
+//! [`text::highlight`]). Task 9: [`CollectionService`], the one facade
+//! every gateway uses ([`service`], [`write`], [`catalog_cache`]).
 
+pub mod catalog_cache;
 pub mod error;
 pub mod exec;
 pub mod hot;
@@ -24,13 +26,16 @@ pub mod ir;
 pub mod json;
 pub mod placement;
 pub mod read;
+pub mod service;
 pub mod sparse;
 pub mod tail;
 pub mod text;
 pub mod types;
 pub mod validate;
 pub mod vector;
+pub mod write;
 
+pub use catalog_cache::CatalogCache;
 pub use error::{NOT_FOUND_KINDS, ServiceError};
 pub use ir::{
     AnnParams, BoolOperator, FieldValue, Fusion, Fuzziness, GroupBy, Highlight, HighlightField,
@@ -39,6 +44,7 @@ pub use ir::{
     TotalRelation, TrackTotalHits,
 };
 pub use json::alias_actions_from_json;
+pub use service::{CREATED_AT_ANNOTATION, CollectionService, ServiceConfig, SqlConfig};
 pub use types::{
     AliasAction, CollectionInfo, ManifestInfo, OpPosition, OpResult, PinnedRead, Projection,
     SourceFilter, StoredDoc, WriteOptions, WriteResult,

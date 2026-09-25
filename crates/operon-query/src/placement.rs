@@ -28,6 +28,8 @@ pub enum Owner {
 ///
 /// An implementation forwards `hot::current()`'s `enabled` flag and records
 /// the owner's reported `Operon-Hot-Used` kinds into `current().used`.
+/// `CollectionService` calls it inside the request's hot scope (or one with
+/// the server default when the request has none).
 #[async_trait::async_trait]
 pub trait RemoteReads: Send + Sync + std::fmt::Debug {
     async fn search(

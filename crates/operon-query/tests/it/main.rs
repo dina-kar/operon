@@ -6,6 +6,7 @@ mod compile;
 mod ir_json;
 mod reads;
 mod search;
+mod service;
 mod sparse;
 mod tail;
 mod text;

@@ -1,7 +1,7 @@
 //! Shared test helpers: a single-node (or three-node) metastore,
 //! `FaultyStore(PathStore(InMemory))`, a log writer with a 20 ms flush, a
 //! collection with its context, M1.1's link to apply the implicit stream,
-//! and read views (Task 4).
+//! read views (Task 4), and a `CollectionService` fixture (Task 9).
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, HashMap};
@@ -20,10 +20,10 @@ use object_store::{
 
 use operon_collection::{
     CollectionConfig, CollectionContext, CollectionManifest, CollectionSchema, CollectionSnapshot,
-    DocOp, Document, DynamicMapping, Expected, FieldKind, FieldSpec, LanceConfig, LanceEnv,
-    ManifestCache, PatchMode, PrimaryKey, VectorSpec, encode, fold_stream, partition_of,
+    CollectionWriter, DocOp, Document, DynamicMapping, Expected, FieldKind, FieldSpec, LanceConfig,
+    LanceEnv, ManifestCache, PatchMode, PrimaryKey, VectorSpec, encode, fold_stream, partition_of,
 };
-use operon_common::meta::{Collection, Consistency};
+use operon_common::meta::{Collection, Consistency, MetaStore};
 use operon_common::{CollectionId, NamespaceId, StreamId};
 use operon_link::{ApplyBatch, LinkTargetFactory};
 use operon_log::{FetchRequest, LogConfig, LogReader, LogWriter, OffsetRecord, Record};
@@ -33,7 +33,7 @@ use operon_meta::{
 use operon_query::hot::{HotTier, NoHotTier, RequestHot};
 use operon_query::read::{ReadConfig, ReadView, Reads};
 use operon_query::tail::{Tail, TailBudget, TailConfig, TailSnapshot};
-use operon_query::{ReadConsistency, ServiceError};
+use operon_query::{CollectionService, ReadConsistency, ServiceConfig, ServiceError};
 use operon_store::{FaultyStore, Store};
 use serde_json::{Map, Value};
 use tempfile::TempDir;
@@ -347,6 +347,62 @@ impl Meta {
     }
 }
 
+/// The object store, log and collection context over a metastore.
+pub struct Storage {
+    pub paths: Arc<PathStore>,
+    pub faulty: Arc<FaultyStore>,
+    pub store: Store,
+    pub writer: LogWriter,
+    pub reader: LogReader,
+    pub ctx: CollectionContext,
+}
+
+impl Storage {
+    /// `FaultyStore(PathStore(InMemory))`, a log writer with a 20 ms flush,
+    /// a log reader and a collection context with `config`.
+    pub async fn start(meta: &Meta, config: CollectionConfig) -> Self {
+        let paths = Arc::new(PathStore::default());
+        let faulty = Arc::new(FaultyStore::new(paths.clone()));
+        let store = Store::new(faulty.clone());
+        let writer = LogWriter::start(
+            meta.client.clone(),
+            store.clone(),
+            LogConfig {
+                flush_interval: Duration::from_millis(20),
+                ..LogConfig::new(1)
+            },
+        )
+        .expect("log writer");
+        let cache = operon_cache::RangeCache::new(
+            store.clone(),
+            operon_cache::RangeCacheConfig {
+                block_size: 1 << 20,
+                memory_bytes: 64 << 20,
+                disk: None,
+            },
+        )
+        .await
+        .expect("range cache");
+        let reader = LogReader::new(meta.client.clone(), cache.clone());
+        let ctx = CollectionContext {
+            meta: meta.client.clone().into(),
+            store: store.clone(),
+            cache,
+            lance: LanceEnv::new(store.clone(), LanceConfig::default()),
+            manifests: ManifestCache::new(config.manifest_cache_entries),
+            config,
+        };
+        Self {
+            paths,
+            faulty,
+            store,
+            writer,
+            reader,
+            ctx,
+        }
+    }
+}
+
 /// The tail fixture (plan M1.2 Task 3 tests).
 pub struct TailFixture {
     pub meta: Meta,
@@ -392,9 +448,14 @@ impl TailFixture {
         partitions: u32,
         config: CollectionConfig,
     ) -> Self {
-        let paths = Arc::new(PathStore::default());
-        let faulty = Arc::new(FaultyStore::new(paths.clone()));
-        let store = Store::new(faulty.clone());
+        let Storage {
+            paths,
+            faulty,
+            store,
+            writer,
+            reader,
+            ctx,
+        } = Storage::start(&meta, config).await;
         let ns = match meta.client.create_namespace("acme").await {
             Ok(id) => id,
             Err(MetaError::Rejected(ApplyError::NamespaceExists(id))) => id,
@@ -405,34 +466,6 @@ impl TailFixture {
             .create_collection(ns, "docs", schema, partitions)
             .await
             .expect("create collection");
-        let writer = LogWriter::start(
-            meta.client.clone(),
-            store.clone(),
-            LogConfig {
-                flush_interval: Duration::from_millis(20),
-                ..LogConfig::new(1)
-            },
-        )
-        .expect("log writer");
-        let cache = operon_cache::RangeCache::new(
-            store.clone(),
-            operon_cache::RangeCacheConfig {
-                block_size: 1 << 20,
-                memory_bytes: 64 << 20,
-                disk: None,
-            },
-        )
-        .await
-        .expect("range cache");
-        let reader = LogReader::new(meta.client.clone(), cache.clone());
-        let ctx = CollectionContext {
-            meta: meta.client.clone().into(),
-            store: store.clone(),
-            cache,
-            lance: LanceEnv::new(store.clone(), LanceConfig::default()),
-            manifests: ManifestCache::new(config.manifest_cache_entries),
-            config,
-        };
         Self {
             meta,
             paths,
@@ -806,6 +839,155 @@ impl TailFixture {
 
     pub async fn shutdown(self) {
         self.writer.shutdown().await.expect("log writer");
+        self.meta.shutdown().await;
+    }
+}
+
+/// The service fixture (plan M1.2 Task 9 tests): a one-node metastore, the
+/// storage, M1.1's link and index sources run on demand or continuously,
+/// and a `CollectionService` over them. It creates no namespace and no
+/// collection.
+pub struct Fixture {
+    pub meta: Meta,
+    pub storage: Storage,
+    service: Arc<CollectionService>,
+    worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+/// One run of M1.1's link source over every collection.
+async fn run_link(meta: &MetaClient, ctx: &CollectionContext, reader: &LogReader) {
+    let registry = operon_link::TargetRegistry::new().with(Arc::new(
+        operon_collection::CollectionTargetFactory::new(ctx.clone()),
+    ));
+    let source = operon_link::LinkApplySource::new(
+        ctx.meta.clone(),
+        reader.clone(),
+        registry,
+        operon_link::LinkConfig {
+            batch_records: 10_000,
+            batch_interval: Duration::ZERO,
+            ..operon_link::LinkConfig::default()
+        },
+    );
+    let results = operon_worker::run_once(meta.clone(), "w1", Duration::from_secs(5), &source)
+        .await
+        .expect("run the link");
+    for (_, result) in &results {
+        if let operon_worker::RunResult::Ran(Err(err)) = result {
+            eprintln!("link run: {err}");
+        }
+    }
+}
+
+/// One run of M1.1's index builds over every collection.
+async fn run_indexes(meta: &MetaClient, ctx: &CollectionContext) {
+    let source = operon_collection::IndexBuildSource::new(ctx.clone());
+    let results =
+        operon_worker::run_once(meta.clone(), "indexer", Duration::from_secs(30), &source)
+            .await
+            .expect("run the index builds");
+    for (_, result) in &results {
+        if let operon_worker::RunResult::Ran(Err(err)) = result {
+            eprintln!("index build: {err}");
+        }
+    }
+}
+
+impl Fixture {
+    pub async fn start() -> Self {
+        Self::start_with(ServiceConfig::default()).await
+    }
+
+    pub async fn start_with(config: ServiceConfig) -> Self {
+        let meta = Meta::start().await;
+        let storage = Storage::start(&meta, CollectionConfig::default()).await;
+        let writer = CollectionWriter::new(meta.client.clone(), storage.writer.clone());
+        let service =
+            CollectionService::new(storage.ctx.clone(), writer, storage.reader.clone(), config);
+        Self {
+            meta,
+            storage,
+            service,
+            worker: Mutex::new(None),
+        }
+    }
+
+    pub fn service(&self) -> Arc<CollectionService> {
+        self.service.clone()
+    }
+
+    /// Runs the link source once over every collection.
+    pub async fn apply_link(&self) {
+        run_link(&self.meta.client, &self.storage.ctx, &self.storage.reader).await;
+    }
+
+    /// Runs the index builds once over every collection.
+    pub async fn build_indexes(&self) {
+        run_indexes(&self.meta.client, &self.storage.ctx).await;
+    }
+
+    /// Runs the link and index sources every 20 ms until shutdown.
+    pub fn start_worker(&self) {
+        let meta = self.meta.client.clone();
+        let ctx = self.storage.ctx.clone();
+        let reader = self.storage.reader.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                run_link(&meta, &ctx, &reader).await;
+                run_indexes(&meta, &ctx).await;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        });
+        if let Some(old) = self.worker.lock().expect("lock").replace(task) {
+            old.abort();
+        }
+    }
+
+    /// Σ `link_lag_records` over every collection of every namespace.
+    pub async fn link_lag(&self) -> u64 {
+        let mut lag = 0;
+        let namespaces = self
+            .meta
+            .client
+            .namespaces(Consistency::Linearizable)
+            .await
+            .expect("namespaces");
+        for namespace in namespaces {
+            for info in self
+                .service
+                .list_collections(&namespace.name)
+                .await
+                .expect("list collections")
+            {
+                lag += info.link_lag_records;
+            }
+        }
+        lag
+    }
+
+    /// Runs the link until every collection's `link_lag_records` is 0.
+    pub async fn settle(&self) {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let lag = self.link_lag().await;
+            if lag == 0 {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the link never caught up: {lag} records behind"
+            );
+            self.apply_link().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    pub async fn shutdown(self) {
+        if let Some(worker) = self.worker.lock().expect("lock").take() {
+            worker.abort();
+        }
+        self.service.shutdown().await;
+        self.storage.writer.shutdown().await.expect("log writer");
         self.meta.shutdown().await;
     }
 }

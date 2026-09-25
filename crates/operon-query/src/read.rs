@@ -381,7 +381,7 @@ impl Reads {
 
     /// The snapshot of `manifest`, opened once per (collection, version)
     /// while cached (rule 1).
-    async fn snapshot(
+    pub(crate) async fn snapshot(
         &self,
         ns: NamespaceId,
         collection: &Collection,

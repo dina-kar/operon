@@ -1,6 +1,9 @@
 //! The one error type every `operon-query` operation returns, and its JSON
 //! body (plan M1.2 Task 1 rule 6; overview R15).
 
+use operon_collection::{CollectionError, WriteError};
+use operon_common::meta::{ApplyError, MetaError};
+use operon_log::LogError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value, json};
 
@@ -132,5 +135,102 @@ impl<'de> Deserialize<'de> for ServiceError {
         let body = Value::Object(Map::deserialize(deserializer)?);
         ServiceError::from_body(&body)
             .ok_or_else(|| serde::de::Error::custom(format!("not a service error body: {body}")))
+    }
+}
+
+// ----- Mapping the errors of the layers below (plan M1.2 Task 9 rule 9) -----
+
+impl From<ApplyError> for ServiceError {
+    /// A metastore command's refusal. `NotFound` names the id or name the
+    /// refusal carries; callers that know the requested name replace it.
+    fn from(err: ApplyError) -> Self {
+        match err {
+            ApplyError::InvalidArgument(message) => ServiceError::InvalidArgument(message),
+            err @ ApplyError::IncompatibleSchema(_) => {
+                ServiceError::InvalidArgument(err.to_string())
+            }
+            ApplyError::CollectionExists(id) => ServiceError::AlreadyExists(id.to_string()),
+            ApplyError::NameTaken(name) => ServiceError::AlreadyExists(name),
+            ApplyError::CollectionNotFound(id) => ServiceError::NotFound {
+                kind: "collection",
+                name: id.to_string(),
+            },
+            ApplyError::UnknownCollection(name) => ServiceError::NotFound {
+                kind: "collection",
+                name,
+            },
+            ApplyError::NamespaceNotFound(id) => ServiceError::NotFound {
+                kind: "collection",
+                name: id.to_string(),
+            },
+            // Another writer changed the schema first: the caller retries.
+            err @ ApplyError::SchemaVersionMismatch { .. } => {
+                ServiceError::Unavailable(err.to_string())
+            }
+            other => ServiceError::Internal(other.to_string()),
+        }
+    }
+}
+
+impl From<MetaError> for ServiceError {
+    fn from(err: MetaError) -> Self {
+        match err {
+            MetaError::Rejected(err) => err.into(),
+            err @ (MetaError::NotLeader { .. }
+            | MetaError::Timeout
+            | MetaError::Unavailable(_)
+            | MetaError::ClockSkew { .. }) => ServiceError::Unavailable(err.to_string()),
+            other => ServiceError::Internal(other.to_string()),
+        }
+    }
+}
+
+impl From<LogError> for ServiceError {
+    fn from(err: LogError) -> Self {
+        match err {
+            LogError::CommitUnknown(detail) => ServiceError::Unavailable(format!(
+                "the outcome of the write is unknown ({detail}); retrying keyed ops is safe"
+            )),
+            err @ (LogError::Backpressure
+            | LogError::Closed
+            | LogError::Store(_)
+            | LogError::Cache(_)) => ServiceError::Unavailable(err.to_string()),
+            LogError::InvalidArgument(message) => ServiceError::InvalidArgument(message),
+            other => ServiceError::Internal(other.to_string()),
+        }
+    }
+}
+
+impl From<WriteError> for ServiceError {
+    /// `CollectionNotFound` names the id; callers replace it with the name.
+    fn from(err: WriteError) -> Self {
+        match err {
+            WriteError::CollectionNotFound(id) => ServiceError::NotFound {
+                kind: "collection",
+                name: id.to_string(),
+            },
+            err @ WriteError::TooManyOps(_) => ServiceError::InvalidArgument(err.to_string()),
+            WriteError::Log(err) => err.into(),
+            WriteError::Meta(err) => err.into(),
+        }
+    }
+}
+
+impl From<CollectionError> for ServiceError {
+    fn from(err: CollectionError) -> Self {
+        if err.is_retryable() {
+            return ServiceError::Unavailable(err.to_string());
+        }
+        match err {
+            CollectionError::ManifestGone(version) => ServiceError::NotFound {
+                kind: "pin",
+                name: version.to_string(),
+            },
+            CollectionError::NotFound(name) => ServiceError::NotFound {
+                kind: "collection",
+                name,
+            },
+            other => ServiceError::Internal(other.to_string()),
+        }
     }
 }
