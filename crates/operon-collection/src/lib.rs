@@ -38,6 +38,10 @@
 //! BTREE, planned by [`plan_index_work`] and committed under the manifest by
 //! the same CAS as link apply.
 //!
+//! Task 12: the GC roots of collections ([`CollectionGcRoots`], with Lance
+//! reachability computed from the retained manifests, Ruling 2) and of PK
+//! indexes ([`PkGcRoots`]).
+//!
 //! The collection schema types live in `operon_common::schema`, because the
 //! metastore's commands carry them (plan M1.1 Ruling 6); they are re-exported
 //! here, both as [`schema`] and at the crate root.
@@ -50,6 +54,7 @@ mod deadletter;
 mod doc;
 mod dynamic;
 mod error;
+mod gc;
 mod index_build;
 mod lance;
 mod manifest;
@@ -84,6 +89,7 @@ pub use deadletter::{DEAD_LETTERS_MAGIC, DeadLetter, decode_dead_letters, encode
 pub use doc::{DocOp, Document, PatchMode, SparseVector, apply_patch};
 pub use dynamic::{DynamicMappingError, propose_dynamic_fields};
 pub use error::{CodecError, CollectionError, SparseVectorError};
+pub use gc::{CollectionGcRoots, PkGcRoots};
 pub use index_build::{
     INDEX_TASK_PREFIX, IndexBuildSource, IndexWork, PK_INDEX_NAME, plan_index_work,
     vector_index_name,

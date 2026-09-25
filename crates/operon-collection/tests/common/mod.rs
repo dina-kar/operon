@@ -117,8 +117,12 @@ pub struct Meta {
 
 impl Meta {
     pub async fn start() -> Self {
+        Self::start_with_clock(Arc::new(SystemClock)).await
+    }
+
+    /// A metastore whose node and client read time from `clock`.
+    pub async fn start_with_clock(clock: Arc<dyn Clock>) -> Self {
         let dir = TempDir::new().expect("temp dir");
-        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let mut config = MetaConfig::new(1, dir.path(), Store::in_memory());
         config.clock = clock.clone();
         let node = MetaNode::start(config, &Router::new())
@@ -330,7 +334,18 @@ impl TargetFixture {
         partitions: u32,
         config: operon_collection::CollectionConfig,
     ) -> Self {
-        let meta = Meta::start().await;
+        Self::start_with_clock(schema, partitions, config, Arc::new(SystemClock)).await
+    }
+
+    /// [`TargetFixture::start_with`] over a metastore that reads time from
+    /// `clock`.
+    pub async fn start_with_clock(
+        schema: CollectionSchema,
+        partitions: u32,
+        config: operon_collection::CollectionConfig,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        let meta = Meta::start_with_clock(clock).await;
         let (faulty, store) = faulty_store();
         let ns = namespace(&meta.client, "acme").await;
         let (cid, stream, link) = meta
