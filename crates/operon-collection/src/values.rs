@@ -244,15 +244,28 @@ pub(crate) fn is_epoch_millis(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// A date string in one of the accepted formats, as epoch milliseconds.
+/// The earliest and latest dates, in epoch milliseconds: Tantivy stores a
+/// date as i64 nanoseconds (1677-09-21 to 2262-04-11), so a date outside
+/// is malformed rather than wrapped (plan M1.1 Task 8).
+const DATE_MILLIS: std::ops::RangeInclusive<i64> = i64::MIN / 1_000_000..=i64::MAX / 1_000_000;
+
+/// `millis` if it is in [`DATE_MILLIS`].
+fn in_date_range(millis: i64) -> Option<i64> {
+    DATE_MILLIS.contains(&millis).then_some(millis)
+}
+
+/// A date string in one of the accepted formats, as epoch milliseconds in
+/// [`DATE_MILLIS`].
 pub(crate) fn parse_date_str(s: &str) -> Option<i64> {
-    if is_epoch_millis(s) {
-        return s.parse().ok();
-    }
-    DATE_PARSERS.iter().find_map(|parser| {
-        let date = parser.parse_date_time(s).ok()?;
-        i64::try_from(date.unix_timestamp_nanos().div_euclid(1_000_000)).ok()
-    })
+    let millis = if is_epoch_millis(s) {
+        s.parse().ok()
+    } else {
+        DATE_PARSERS.iter().find_map(|parser| {
+            let date = parser.parse_date_time(s).ok()?;
+            i64::try_from(date.unix_timestamp_nanos().div_euclid(1_000_000)).ok()
+        })
+    };
+    millis.and_then(in_date_range)
 }
 
 /// A date as milliseconds since the epoch (Elasticsearch
@@ -263,10 +276,11 @@ pub(crate) fn parse_date_str(s: &str) -> Option<i64> {
 /// (epoch milliseconds); RFC 3339 (`2024-01-02T03:04:05Z`,
 /// `2024-01-02T03:04:05.123+02:00`); `yyyy-MM-dd'T'HH:mm:ss[.SSS]` without
 /// an offset (UTC); `yyyy-MM-dd`; `yyyy/MM/dd HH:mm:ss`; `yyyy/MM/dd`.
-/// Anything else is malformed.
+/// A date before 1677-09-21 or after 2262-04-11 (beyond Tantivy's i64
+/// nanoseconds) is malformed too, and so is anything else.
 pub fn parse_date(value: &Value) -> Result<i64, String> {
     let millis = match value {
-        Value::Number(n) => n.as_i64(),
+        Value::Number(n) => n.as_i64().and_then(in_date_range),
         Value::String(s) => parse_date_str(s),
         _ => None,
     };

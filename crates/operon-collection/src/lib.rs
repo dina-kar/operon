@@ -16,6 +16,10 @@
 //! object-store provider, version 1) and [`LanceCommitter`], which commits
 //! every later Lance version detached from the mainline (R7, Ruling 1).
 //!
+//! Task 8: the Tantivy schema of a collection's splits
+//! ([`tantivy_layout`]) and the Tantivy document of a row
+//! ([`to_tantivy_doc`]), with Json fields and sparse vectors.
+//!
 //! The collection schema types live in `operon_common::schema`, because the
 //! metastore's commands carry them (plan M1.1 Ruling 6); they are re-exported
 //! here, both as [`schema`] and at the crate root.
@@ -29,6 +33,7 @@ mod error;
 mod lance;
 mod pk;
 mod resolve;
+mod tantivy_schema;
 mod token;
 mod values;
 mod writer;
@@ -52,6 +57,12 @@ pub use dynamic::{DynamicMappingError, propose_dynamic_fields};
 pub use error::{CodecError, CollectionError, SparseVectorError};
 pub use pk::{MAX_STR_PK_BYTES, PrimaryKey, partition_of};
 pub use resolve::{fold, needs_current};
+pub use tantivy_schema::{
+    FIELD_PRESENCE_FIELD, FieldMap, PK_FIELD, ROWID_FIELD, SPARSE_PRESENT, SparseFieldMap,
+    TantivyLayout, count_companion, date_companion, decode_sparse_weights, encode_sparse_weights,
+    null_companion, sparse_postings_field, sparse_weights_field, tantivy_layout, text_companion,
+    to_tantivy_doc,
+};
 pub use token::{CONSISTENCY_TOKEN_HEADER, ConsistencyToken, TokenParseError};
 pub use values::{
     DocRejection, ExtractedDoc, IndexValue, Violation, check_document, check_patch, coerce,

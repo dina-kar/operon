@@ -264,6 +264,49 @@ fn dates_parse_in_every_accepted_format() {
     }
 }
 
+/// Tantivy stores a date as i64 nanoseconds, so only epoch milliseconds in
+/// `i64::MIN / 10^6 ..= i64::MAX / 10^6` (1677-09-21 ..= 2262-04-11) are
+/// dates; anything beyond is malformed, never wrapped.
+#[test]
+fn a_date_beyond_tantivys_range_is_malformed() {
+    const MAX: i64 = i64::MAX / 1_000_000;
+    const MIN: i64 = i64::MIN / 1_000_000;
+    for millis in [MIN, -1, 0, MAX] {
+        assert_eq!(parse_date(&json!(millis)), Ok(millis), "{millis}");
+    }
+    assert_eq!(parse_date(&json!(MAX.to_string())), Ok(MAX));
+    assert_eq!(parse_date(&json!("2262-04-11")), Ok(9_223_286_400_000));
+    assert_eq!(parse_date(&json!("1677-09-22")), Ok(-9_223_286_400_000));
+    for input in [
+        json!(MAX + 1),
+        json!(MIN - 1),
+        json!(i64::MAX),
+        json!(i64::MIN),
+        json!((MAX + 1).to_string()),
+        json!("2262-04-12"),
+        json!("1677-09-21"),
+        json!("9999-12-31T23:59:59Z"),
+        json!("0001-01-01"),
+    ] {
+        assert!(parse_date(&input).is_err(), "{input}");
+    }
+
+    let mut date = field("d", FieldKind::Date);
+    assert!(coerce(&date.kind, &json!("9999-01-01")).is_err());
+    let d = doc(pk(), json!({"d": ["9999-01-01", "2024-01-02"]}));
+    let found = check_document(&schema(vec![date.clone()], DynamicMapping::Strict), &d);
+    assert!(
+        matches!(found, Err(DocRejection::Violations(_))),
+        "{found:?}"
+    );
+    date.ignore_malformed = true;
+    let found = check_document(&schema(vec![date], DynamicMapping::Strict), &d).unwrap();
+    assert_eq!(
+        found.values,
+        [(0, vec![IndexValue::Date(1_704_153_600_000)])]
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Unmapped paths and dynamic modes
 
