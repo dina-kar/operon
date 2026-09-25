@@ -375,3 +375,183 @@ fn deadlines_below_grace_pass() {
     ])
     .unwrap();
 }
+
+/// Plan M1.1 Ruling 13: a dropped collection's prefixes are retired; once
+/// they are `grace` old, pass 1 deletes everything under them, and forgets
+/// each prefix only after a later listing finds it empty.
+#[tokio::test]
+async fn a_retired_prefix_is_deleted_after_grace_then_forgotten() {
+    let f = Fixture::start(Store::in_memory()).await;
+    let schema = operon_common::schema::CollectionSchema::new(
+        vec![],
+        vec![],
+        operon_common::schema::DynamicMapping::Ignore,
+    );
+    let (cid, _, _) = f
+        .meta
+        .client
+        .create_collection(f.ns, "docs", schema, 1)
+        .await
+        .expect("create collection");
+    let prefix = operon_meta::collection_prefix(f.ns, cid);
+    let pk_prefix = operon_meta::collection_pk_prefix(f.ns, cid);
+    let objects: Vec<String> = [
+        "lance/data/a.lance",
+        "manifests/x.pb",
+        "text/splits/y.split",
+    ]
+    .iter()
+    .map(|name| format!("{prefix}{name}"))
+    .collect();
+    for path in &objects {
+        f.store.put(path, Bytes::from_static(b"x")).await.unwrap();
+    }
+    f.meta
+        .client
+        .drop_collection(f.ns, "docs")
+        .await
+        .expect("drop");
+    let retired = f.retired().await;
+    assert!(retired.contains(&prefix), "{retired:?}");
+    assert!(retired.contains(&pk_prefix), "{retired:?}");
+    let source = GcSource::new(f.store.clone(), config());
+
+    // Younger than the grace period: nothing under the prefix is deleted.
+    f.gc(&source).await;
+    for path in &objects {
+        assert!(f.exists(path).await, "{path} was deleted before the grace");
+    }
+    assert!(f.retired().await.contains(&prefix));
+
+    f.clock.advance(GRACE + Duration::from_secs(1));
+    let report = f.gc(&source).await;
+    for path in &objects {
+        assert!(!f.exists(path).await, "{path} was not deleted");
+    }
+    assert!(report.retired >= 3, "{report:?}");
+    // The listing was not empty in this pass, so the prefix is still
+    // retired; the empty pk prefix is forgotten at once.
+    let retired = f.retired().await;
+    assert!(retired.contains(&prefix), "{retired:?}");
+    assert!(!retired.contains(&pk_prefix), "{retired:?}");
+
+    // A later pass lists it empty and forgets it.
+    f.gc(&source).await;
+    let retired = f.retired().await;
+    assert!(!retired.contains(&prefix), "{retired:?}");
+    f.check().await;
+    f.shutdown().await;
+}
+
+/// A root that owns `things/`, reports nothing reachable, keeps
+/// `things/keep/`, and optionally dates objects by their modification time.
+struct TestRoots {
+    kept: Vec<String>,
+    by_last_modified: bool,
+}
+
+#[async_trait::async_trait]
+impl operon_log::gc::GcRoots for TestRoots {
+    fn prefix(&self) -> &str {
+        "things/"
+    }
+
+    async fn reachable(
+        &self,
+        _meta: &operon_meta::MetaClient,
+        _store: &Store,
+        _namespace: operon_common::NamespaceId,
+        _keep_manifests: usize,
+    ) -> Result<std::collections::BTreeSet<String>, operon_log::LogError> {
+        Ok(std::collections::BTreeSet::new())
+    }
+
+    async fn kept_prefixes(
+        &self,
+        _meta: &operon_meta::MetaClient,
+        _store: &Store,
+        _namespace: operon_common::NamespaceId,
+    ) -> Result<Vec<String>, operon_log::LogError> {
+        Ok(self.kept.clone())
+    }
+
+    fn object_time_ms(&self, info: &operon_store::ObjectInfo) -> u64 {
+        if self.by_last_modified {
+            info.last_modified_ms
+        } else {
+            operon_log::gc::object_time_ms(info)
+        }
+    }
+}
+
+#[tokio::test]
+async fn kept_prefixes_are_never_deleted() {
+    let f = Fixture::start(Store::in_memory()).await;
+    let now = f.clock.now_ms();
+    let kept = format!("ns/{}/things/keep/{}.x", f.ns, ulid_at(now));
+    let other = format!("ns/{}/things/other/{}.x", f.ns, ulid_at(now));
+    for path in [&kept, &other] {
+        f.store.put(path, Bytes::from_static(b"x")).await.unwrap();
+    }
+    let roots = TestRoots {
+        kept: vec![format!("ns/{}/things/keep/", f.ns)],
+        by_last_modified: false,
+    };
+    let source = GcSource::with_roots(f.store.clone(), config(), vec![Arc::new(roots)]);
+    f.gc(&source).await;
+    assert!(f.exists(&kept).await && f.exists(&other).await);
+    f.clock.advance(GRACE + Duration::from_secs(1));
+    let report = f.gc(&source).await;
+    assert_eq!(report.orphan_other, 1);
+    assert!(!f.exists(&other).await);
+    f.clock.advance(Duration::from_secs(7_200));
+    f.gc(&source).await;
+    assert!(
+        f.exists(&kept).await,
+        "an object under a kept prefix was deleted"
+    );
+    f.shutdown().await;
+}
+
+/// A name that looks like an old ULID would be old by the default; a root
+/// that dates its objects by modification time keeps it for the grace.
+#[tokio::test]
+async fn a_roots_object_time_overrides_the_default() {
+    let f = Fixture::start(Store::in_memory()).await;
+    // Lance names carry no ULID, but one may parse as one.
+    let path = format!("ns/{}/things/{}.lance", f.ns, ulid_at(1));
+    f.store.put(&path, Bytes::from_static(b"x")).await.unwrap();
+    let by_default = GcSource::with_roots(
+        f.store.clone(),
+        config(),
+        vec![Arc::new(TestRoots {
+            kept: vec![],
+            by_last_modified: false,
+        })],
+    );
+    let by_last_modified = GcSource::with_roots(
+        f.store.clone(),
+        config(),
+        vec![Arc::new(TestRoots {
+            kept: vec![],
+            by_last_modified: true,
+        })],
+    );
+    assert_eq!(f.gc(&by_last_modified).await.orphan_other, 0);
+    assert!(f.exists(&path).await, "a young object was deleted");
+    // The default reads the name's ULID time, 1 ms after the epoch.
+    assert_eq!(f.gc(&by_default).await.orphan_other, 1);
+    assert!(!f.exists(&path).await);
+
+    f.store.put(&path, Bytes::from_static(b"x")).await.unwrap();
+    let modified = f.store.head(&path).await.unwrap().last_modified_ms;
+    f.clock
+        .set(modified.max(f.clock.now_ms()) + millis(GRACE) + 1_000);
+    assert_eq!(f.gc(&by_last_modified).await.orphan_other, 1);
+    assert!(!f.exists(&path).await);
+    f.shutdown().await;
+}
+
+fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).expect("millis fit a u64")
+}

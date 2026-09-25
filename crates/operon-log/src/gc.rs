@@ -6,7 +6,10 @@
 //! 1. **Retired objects.** Objects the metastore retired (WAL objects whose
 //!    chunks were all segmented or trimmed, trimmed segments) at least
 //!    `grace` ago are deleted (a missing object counts as deleted), then
-//!    forgotten with `ForgetObjects`, fenced by the task lease.
+//!    forgotten with `ForgetObjects`, fenced by the task lease. A retired
+//!    path ending in `/` is a prefix (a dropped collection's): everything
+//!    under it is deleted, and the prefix is forgotten once a later listing
+//!    finds it empty.
 //! 2. **Orphan WAL objects.** Objects under `wal/` whose ULID time is at
 //!    least `2 * WAL_COMMIT_WINDOW_MS + grace` old, that have no live chunk
 //!    and are not retired: a WAL PUT whose commit never landed. They can
@@ -14,9 +17,10 @@
 //! 3. **Orphan segments and link objects.** Segments under
 //!    `ns/<ns>/streams/` that no index entry references and that are not
 //!    retired, and objects under the prefixes of registered [`GcRoots`]
-//!    (such as `ns/<ns>/links/`) that the roots do not report reachable, once
-//!    older than `grace` (by the ULID in their name, else their
-//!    modification time).
+//!    (such as `ns/<ns>/links/`) that the roots do not report reachable and
+//!    that are not under a prefix the roots keep, once older than `grace`
+//!    (by the root's [`GcRoots::object_time_ms`]: by default the ULID in
+//!    their name, else their modification time).
 //!
 //! Every decision uses a linearizable metastore read, and ages are measured
 //! against the **metastore clock** (`MetaState::clock_ms`, read in the same
@@ -114,7 +118,8 @@ impl GcConfig {
 /// What garbage collection runs deleted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GcReport {
-    /// Retired objects deleted and forgotten.
+    /// Retired objects deleted and forgotten, retired prefixes forgotten,
+    /// and objects deleted under retired prefixes.
     pub retired: u32,
     /// Orphan WAL objects deleted.
     pub orphan_wal: u32,
@@ -150,6 +155,24 @@ pub trait GcRoots: Send + Sync {
         namespace: NamespaceId,
         keep_manifests: usize,
     ) -> Result<BTreeSet<String>, LogError>;
+
+    /// Prefixes (full paths) under which nothing is deleted this run.
+    /// Default: none. Like [`reachable`](Self::reachable), an error makes
+    /// the run skip this root's prefix.
+    async fn kept_prefixes(
+        &self,
+        _meta: &MetaClient,
+        _store: &Store,
+        _namespace: NamespaceId,
+    ) -> Result<Vec<String>, LogError> {
+        Ok(Vec::new())
+    }
+
+    /// This root's notion of an object's creation time. Default:
+    /// [`object_time_ms`].
+    fn object_time_ms(&self, info: &ObjectInfo) -> u64 {
+        object_time_ms(info)
+    }
 }
 
 fn millis(duration: Duration) -> u64 {
@@ -379,10 +402,14 @@ impl GcTask {
     }
 
     /// Pass 1: retired objects past the grace period.
+    ///
+    /// A retired path ending in `/` is a prefix (a dropped collection's,
+    /// plan M1.1 Ruling 13): everything under it is deleted, up to the
+    /// run's remaining `list_page` budget, and the prefix is forgotten only
+    /// once a later listing finds it empty.
     async fn retired(&self, ctx: &TaskContext, report: &mut GcReport) -> Result<(), TaskError> {
         let config = &self.shared.config;
         let grace = millis(config.grace);
-        let limit = config.list_page;
         let due: Vec<String> = ctx
             .meta
             .read(Consistency::Linearizable, |s| {
@@ -390,18 +417,42 @@ impl GcTask {
                 s.retired()
                     .filter(|(_, at)| at.saturating_add(grace) <= now)
                     .map(|(path, _)| path.to_string())
-                    .take(limit)
                     .collect()
             })
             .await?;
-        let deleted = self.delete(ctx, due).await?;
-        if deleted.is_empty() {
+        let mut budget = config.list_page;
+        let mut objects = Vec::new();
+        let mut empty_prefixes = Vec::new();
+        let mut under_prefixes = Vec::new();
+        for path in due {
+            if budget == 0 {
+                break;
+            }
+            if !path.ends_with('/') {
+                objects.push(path);
+                budget -= 1;
+                continue;
+            }
+            let listed = self.shared.store.list(&path).await.map_err(store_failed)?;
+            if listed.is_empty() {
+                empty_prefixes.push(path);
+                continue;
+            }
+            let take = listed.len().min(budget);
+            budget -= take;
+            under_prefixes.extend(listed.into_iter().take(take).map(|info| info.path));
+        }
+        let deleted = self.delete(ctx, under_prefixes).await?;
+        report.retired += u32::try_from(deleted.len()).unwrap_or(u32::MAX);
+        let mut forget = self.delete(ctx, objects).await?;
+        if forget.is_empty() && empty_prefixes.is_empty() {
             return Ok(());
         }
         crate::failpoint!("gc.after_delete");
+        forget.extend(empty_prefixes);
         let forgotten = ctx
             .meta
-            .forget_objects(deleted, Some(ctx.fence.clone()))
+            .forget_objects(forget, Some(ctx.fence.clone()))
             .await
             .map_err(fenced)?;
         report.retired += forgotten;
@@ -510,31 +561,27 @@ impl GcTask {
                     .meta
                     .read(Consistency::Linearizable, |s| s.clock_ms())
                     .await?;
-                let reachable = match root
-                    .reachable(
-                        &ctx.meta,
-                        &self.shared.store,
-                        namespace,
-                        config.keep_manifests,
-                    )
-                    .await
-                {
-                    Ok(reachable) => reachable,
+                let store = &self.shared.store;
+                let roots = async {
+                    let reachable = root
+                        .reachable(&ctx.meta, store, namespace, config.keep_manifests)
+                        .await?;
+                    let kept = root.kept_prefixes(&ctx.meta, store, namespace).await?;
+                    Ok::<_, LogError>((reachable, kept))
+                };
+                let (reachable, kept) = match roots.await {
+                    Ok(roots) => roots,
                     Err(err) => {
                         tracing::warn!(%prefix, %err, "gc skips a prefix whose roots it cannot read");
                         continue;
                     }
                 };
-                let listed = self
-                    .shared
-                    .store
-                    .list(&prefix)
-                    .await
-                    .map_err(store_failed)?;
+                let listed = store.list(&prefix).await.map_err(store_failed)?;
                 let orphans: Vec<String> = listed
                     .iter()
                     .filter(|info| !reachable.contains(&info.path))
-                    .filter(|info| object_time_ms(info).saturating_add(grace) <= now)
+                    .filter(|info| !kept.iter().any(|p| info.path.starts_with(p.as_str())))
+                    .filter(|info| root.object_time_ms(info).saturating_add(grace) <= now)
                     .map(|info| info.path.clone())
                     .take(config.list_page)
                     .collect();
