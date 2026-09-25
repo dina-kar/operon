@@ -4,8 +4,8 @@ use operon_text::porter_stem;
 
 #[test]
 fn porter_matches_the_reference_vocabulary() {
-    let vocabulary = include_str!("data/porter_voc.txt");
-    let output = include_str!("data/porter_output.txt");
+    let vocabulary = include_str!("../data/porter_voc.txt");
+    let output = include_str!("../data/porter_output.txt");
     assert_eq!(vocabulary.lines().count(), 23_531);
     assert_eq!(output.lines().count(), 23_531);
     let mismatches: Vec<String> = vocabulary
