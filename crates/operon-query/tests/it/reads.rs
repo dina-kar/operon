@@ -7,9 +7,11 @@ use std::time::{Duration, Instant};
 
 use crate::common::{TailFixture, WAIT, tail_schema, upsert};
 use operon_collection::{ConsistencyToken, DocOp, PrimaryKey, lance_prefix};
+use operon_query::exec::{EffectiveSort, TantivySearchExec};
 use operon_query::read::{ReadConfig, ReadView};
 use operon_query::tail::{TailConfig, TailLookup, TailState};
-use operon_query::{ReadConsistency, ServiceError};
+use operon_query::text::StatsCache;
+use operon_query::{BoolOperator, Query, ReadConsistency, ServiceError};
 use serde_json::{Value, json};
 
 /// Every document of `view`: the durable rows that are not shadowed, then
@@ -31,6 +33,36 @@ async fn docs(view: &ReadView) -> BTreeMap<PrimaryKey, Value> {
     }
     assert_eq!(out.len() as u64, view.live_rows(), "live_rows");
     out
+}
+
+/// A text search of `doc` on `t` over `view`: (key, score bits) of the top
+/// 50, and the match count.
+async fn search(view: ReadView) -> (Vec<(PrimaryKey, u32)>, u64) {
+    let exec = TantivySearchExec::new(
+        Arc::new(view),
+        Query::Match {
+            field: "t".to_string(),
+            text: "doc".to_string(),
+            operator: BoolOperator::Or,
+            minimum_should_match: None,
+            fuzziness: None,
+            analyzer: None,
+        },
+        None,
+        50,
+        EffectiveSort::by_score(),
+        None,
+        StatsCache::new(1_000),
+        4,
+    );
+    let hits = exec.search().await.expect("search");
+    let count = exec.count().await.expect("count");
+    (
+        hits.into_iter()
+            .map(|hit| (hit.pk, hit.score.to_bits()))
+            .collect(),
+        count,
+    )
 }
 
 fn delete(pk: u64) -> DocOp {
@@ -237,6 +269,8 @@ async fn pinned_reads_ignore_later_writes() {
     let expected = docs(&at_pin).await;
     assert_eq!(expected.len(), 20);
     assert_eq!(at_pin.read_token, token);
+    let searched = search(at_pin.clone()).await;
+    assert_eq!(searched.1, 20);
 
     // 10 upserts and 5 deletes, committed through the link twice.
     let later: Vec<DocOp> = (0..10)
@@ -255,6 +289,7 @@ async fn pinned_reads_ignore_later_writes() {
     assert_eq!(docs(&view).await, expected);
     assert_eq!(view.live_rows(), at_pin.live_rows());
     assert_eq!(view.snapshot.manifest().version, version);
+    assert_eq!(search(view).await, searched);
     // A fresh node (no cached range tail) reads the same.
     let fresh = fixture.reads(TailConfig::default(), ReadConfig::default());
     let view = fixture
@@ -262,9 +297,11 @@ async fn pinned_reads_ignore_later_writes() {
         .await
         .expect("view");
     assert_eq!(docs(&view).await, expected);
+    assert_eq!(search(view).await, searched);
     // The live state moved on.
     let now = fixture.view(&reads, &strong()).await.expect("view");
     assert_eq!(docs(&now).await.len(), 15);
+    assert_ne!(search(now).await, searched);
     fresh.shutdown().await;
     reads.shutdown().await;
     fixture.shutdown().await;

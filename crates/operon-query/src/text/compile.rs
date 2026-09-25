@@ -10,7 +10,7 @@
 //! indexed, are fast-field ranges `[v, v]`: Tantivy's postings hold dates at
 //! second precision, while the fast column holds the field's milliseconds.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ops::Bound;
 use std::sync::Arc;
 
@@ -32,6 +32,7 @@ use tantivy::query::{
     ExistsQuery, FuzzyTermQuery, Occur, PhrasePrefixQuery, PhraseQuery, Query as TantivyQuery,
     QueryParser, RangeQuery, RegexQuery, TermQuery, TermSetQuery,
 };
+use tantivy::query_grammar::{UserInputAst, UserInputLeaf};
 use tantivy::schema::{Field, FieldType, IndexRecordOption, Schema};
 use tantivy::{DateTime, Term};
 
@@ -239,6 +240,33 @@ fn is_never(bound: &Bound<Coerced>) -> bool {
         bound,
         Bound::Included(Coerced::Never) | Bound::Excluded(Coerced::Never)
     )
+}
+
+/// The fields a `query_string` names in range, set, regex and exists
+/// leaves; `unnamed_range` when such a leaf uses the default fields.
+fn leaf_fields(ast: &UserInputAst, named: &mut BTreeSet<String>, unnamed_range: &mut bool) {
+    match ast {
+        UserInputAst::Clause(clauses) => {
+            for (_, clause) in clauses {
+                leaf_fields(clause, named, unnamed_range);
+            }
+        }
+        UserInputAst::Boost(inner, _) => leaf_fields(inner, named, unnamed_range),
+        UserInputAst::Leaf(leaf) => match leaf.as_ref() {
+            UserInputLeaf::Range { field, .. }
+            | UserInputLeaf::Set { field, .. }
+            | UserInputLeaf::Regex { field, .. } => match field {
+                Some(field) => {
+                    named.insert(field.clone());
+                }
+                None => *unnamed_range = true,
+            },
+            UserInputLeaf::Exists { field } => {
+                named.insert(field.clone());
+            }
+            UserInputLeaf::Literal(_) | UserInputLeaf::All => {}
+        },
+    }
 }
 
 /// The first byte string above every string starting with `prefix`.
@@ -967,6 +995,8 @@ impl<'c, 'a> Build<'c, 'a> {
         for term in &terms {
             self.warm_term(term, false);
         }
+        // A term set walks the dictionary with an automaton.
+        self.warm_dict(pk_field);
         self.constant(Box::new(TermSetQuery::new(terms)))
     }
 
@@ -1059,6 +1089,11 @@ impl<'c, 'a> Build<'c, 'a> {
         if !set.is_empty() {
             for term in &set {
                 self.warm_term(term, false);
+            }
+            // A term set walks the dictionary with an automaton.
+            let fields: HashSet<Field> = set.iter().map(Term::field).collect();
+            for field in fields {
+                self.warm_dict(field);
             }
             others.push(Box::new(TermSetQuery::new(set)));
         }
@@ -1568,8 +1603,8 @@ impl<'c, 'a> Build<'c, 'a> {
         let parsed = parser
             .parse_query(query)
             .map_err(|err| invalid(format!("query_string: {err}")))?;
-        for field in fields {
-            self.warm_dict(field);
+        for field in &fields {
+            self.warm_dict(*field);
         }
         let mut terms: BTreeMap<Term, bool> = BTreeMap::new();
         parsed.query_terms(&mut |term, positions| {
@@ -1578,6 +1613,26 @@ impl<'c, 'a> Build<'c, 'a> {
         for (term, positions) in terms {
             self.warm_dict(term.field());
             self.warm_term(&term, positions);
+        }
+        // Ranges, sets, regexes and exists leaves read dictionaries and fast
+        // columns that `query_terms` does not name.
+        let (ast, _) = tantivy::query_grammar::parse_query_lenient(query);
+        let mut named = BTreeSet::new();
+        let mut unnamed_range = false;
+        leaf_fields(&ast, &mut named, &mut unnamed_range);
+        let mut read: Vec<Field> = named
+            .iter()
+            .filter_map(|name| self.c.split.find_field(name).map(|(field, _)| field))
+            .collect();
+        if unnamed_range {
+            read.extend(&fields);
+        }
+        for field in read {
+            self.warm_dict(field);
+            let entry = self.c.split.get_field_entry(field);
+            if entry.is_fast() {
+                self.warm_fast(entry.name().to_string(), true);
+            }
         }
         Ok(self.scored(parsed))
     }

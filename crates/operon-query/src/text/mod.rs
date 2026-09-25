@@ -1,8 +1,12 @@
 //! Text queries over splits and the tail (plan M1.2 Tasks 2, 5 and 8).
 //!
-//! So far (Task 2): field resolution ([`fields`]), value coercion by field
-//! kind ([`coerce`]) and the compiler from the IR [`Query`](crate::Query)
-//! to a Tantivy query for one split's schema ([`compile`]).
+//! Task 2: field resolution ([`fields`]), value coercion by field kind
+//! ([`coerce`]) and the compiler from the IR [`Query`](crate::Query) to a
+//! Tantivy query for one split's schema ([`compile`]).
+//!
+//! Task 5: opening a view's splits for a request ([`splits`]), Tantivy's
+//! fieldnorm buckets ([`norms`]) and global live-only BM25 statistics
+//! ([`stats`]).
 //!
 //! Query analysis uses Quickwit's [`TokenizerManager`] ([`query_tokenizers`],
 //! P28, row 0.44); splits and the tail index keep Tantivy's
@@ -11,6 +15,9 @@
 pub mod coerce;
 pub mod compile;
 pub mod fields;
+pub mod norms;
+pub mod splits;
+pub mod stats;
 
 use operon_quickwit::query::tokenizers::TokenizerManager;
 use operon_text::{ENGLISH, KEYWORD, SIMPLE, STANDARD, WHITESPACE};
@@ -21,6 +28,9 @@ pub use compile::{
     parse_minimum_should_match,
 };
 pub use fields::{ResolvedField, resolve_field};
+pub use norms::{FIELD_NORMS_TABLE, norm_mid2};
+pub use splits::{LocalSplitStorage, OpenSplit, open_splits};
+pub use stats::{GlobalStats, StatsCache};
 
 /// Quickwit's `TokenizerManager::new()` plus operon-text's five analyzers
 /// (from `operon_text::tokenizer_manager().get(name)`), registered with

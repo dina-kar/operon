@@ -9,9 +9,11 @@
 //! Task 2: the query compiler from the IR to Tantivy queries per split
 //! schema ([`text`]). Task 3: the in-memory tail index of writes the live
 //! manifest does not reflect yet ([`tail`], H3). Task 4: read views per
-//! consistency level ([`read`]).
+//! consistency level ([`read`]). Task 5: text search over splits and the
+//! tail, filter bitmaps and global BM25 statistics ([`exec`], [`text`]).
 
 pub mod error;
+pub mod exec;
 pub mod hot;
 pub mod ir;
 pub mod json;

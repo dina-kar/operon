@@ -4595,8 +4595,10 @@ dependencies = [
 name = "operon-query"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bytes",
+ "datafusion",
  "futures",
  "http",
  "http-body",
@@ -4613,6 +4615,7 @@ dependencies = [
  "operon-store",
  "operon-text",
  "operon-worker",
+ "postcard",
  "proptest",
  "rand 0.9.5",
  "rand_chacha 0.9.0",
