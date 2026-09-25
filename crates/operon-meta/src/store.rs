@@ -525,14 +525,11 @@ impl MetaStore for MetaClient {
     ) -> MetaResult<Vec<String>> {
         self.read(Consistency::Linearizable, |s| {
             let now = s.clock_ms();
-            let retired: BTreeSet<&str> = s.retired().map(|(path, _)| path).collect();
             candidates
                 .iter()
                 .filter(|(_, created)| created.saturating_add(min_age_ms) <= now)
                 .map(|(path, _)| path)
-                .filter(|path| {
-                    s.wal_live_chunks(path).is_none() && !retired.contains(path.as_str())
-                })
+                .filter(|path| s.wal_live_chunks(path).is_none() && !s.is_retired(path))
                 .take(limit)
                 .cloned()
                 .collect()
@@ -549,7 +546,7 @@ impl MetaStore for MetaClient {
     ) -> MetaResult<Vec<String>> {
         self.read(Consistency::Linearizable, |s| {
             let now = s.clock_ms();
-            let mut kept: BTreeSet<&str> = s.retired().map(|(path, _)| path).collect();
+            let mut kept: BTreeSet<&str> = BTreeSet::new();
             for stream in s.streams(namespace) {
                 for partition in 0..stream.partitions {
                     if let Some(state) = s.partition(stream.id, partition) {
@@ -561,7 +558,7 @@ impl MetaStore for MetaClient {
                 .iter()
                 .filter(|(_, created)| created.saturating_add(min_age_ms) <= now)
                 .map(|(path, _)| path)
-                .filter(|path| !kept.contains(path.as_str()))
+                .filter(|path| !kept.contains(path.as_str()) && !s.is_retired(path))
                 .take(limit)
                 .cloned()
                 .collect()
@@ -576,7 +573,7 @@ impl MetaStore for MetaClient {
         object: &str,
     ) -> MetaResult<bool> {
         self.read(Consistency::Linearizable, |s| {
-            s.retired().any(|(path, _)| path == object)
+            s.is_retired(object)
                 || s.partition(stream, partition)
                     .is_some_and(|state| state.entries().any(|e| e.object == object))
         })
