@@ -6,15 +6,13 @@
 //! Lance's 8-bit PQ needs 256 training rows (controller ruling P1), so the
 //! plan's delta sizes (+150 docs) are raised to +300.
 
-mod common;
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::common::{TargetFixture, WAIT, doc, schema, vector};
 use arrow_array::{Array, BinaryArray, Float32Array};
-use common::{TargetFixture, WAIT, doc, schema, vector};
 use futures::FutureExt;
 use lance::Dataset;
 use lance::index::DatasetIndexExt;

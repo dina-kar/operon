@@ -1,10 +1,8 @@
 //! Value extraction, coercion, date parsing and document validation.
 
-mod common;
-
 use std::collections::BTreeMap;
 
-use common::{doc, field, json, obj, patch, schema, sparse, text, vector};
+use crate::common::{doc, field, json, obj, patch, schema, sparse, text, vector};
 use operon_collection::{
     CollectionSchema, DocOp, DocRejection, DynamicMapping, ExtractedDoc, FieldKind, IndexValue,
     PatchMode, PrimaryKey, SparseModifier, SparseVectorSpec, Violation, check_document,
@@ -363,7 +361,7 @@ fn map_mode_reports_dynamic_mapping_required() {
         })
     );
     // A violation wins over a mapping request.
-    let typed = common::schema(vec![field("n", FieldKind::I64)], DynamicMapping::Map);
+    let typed = crate::common::schema(vec![field("n", FieldKind::I64)], DynamicMapping::Map);
     assert_eq!(
         check_document(&typed, &doc(pk(), json!({"n": "x", "z": 1}))),
         Err(violations(&[("n", "cannot index \"x\" as i64")]))

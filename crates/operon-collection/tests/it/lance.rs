@@ -1,13 +1,11 @@
 //! The Lance integration (plan M1.1 Task 7): the object-store provider, the
 //! Arrow schema, and detached commits (R7, Ruling 1).
 
-mod common;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use crate::common::{doc, sparse, vector};
 use arrow_array::{Array, BinaryArray, FixedSizeListArray, RecordBatch};
-use common::{doc, sparse, vector};
 use lance::Dataset;
 use lance::dataset::transaction::Operation;
 use lance_file::version::LanceFileVersion;

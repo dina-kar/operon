@@ -9,15 +9,13 @@
 //! later looks older than it is: the tests create every unreferenced Lance
 //! file they age before jumping.
 
-mod common;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::common::{TargetFixture, WAIT, field, patch, schema, upsert};
 use bytes::Bytes;
-use common::{TargetFixture, WAIT, field, patch, schema, upsert};
 use futures::FutureExt;
 use operon_collection::{
     CollectionCommitHook, CollectionCommitStep, CollectionConfig, CollectionContext,
@@ -211,7 +209,7 @@ impl Env {
     /// A context with no warm caches (manifests, ranges, Lance's session),
     /// so every read after GC goes to the store.
     async fn cold_ctx(&self) -> CollectionContext {
-        common::context(
+        crate::common::context(
             &self.f.meta.client,
             &self.f.store,
             self.f.ctx.config.clone(),

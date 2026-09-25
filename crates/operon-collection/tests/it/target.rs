@@ -2,15 +2,13 @@
 //! collection's implicit stream into Lance, Tantivy splits, delete bitmaps
 //! and the PK index under one manifest.
 
-mod common;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use crate::common::{TargetFixture, doc, field, home, patch, schema, sparse, upsert, vector};
 use bytes::Bytes;
-use common::{TargetFixture, doc, field, home, patch, schema, sparse, upsert, vector};
 use futures::FutureExt;
 use operon_collection::{
     CollectionCommitHook, CollectionCommitStep, CollectionConfig, CollectionSchema, DocOp,
@@ -134,7 +132,7 @@ async fn one_batch_with_upsert_patch_delete_on_one_key_leaves_the_fold_result() 
     let docs = f.snapshot().await.scan_all().await.unwrap();
     assert_eq!(docs.len(), 1, "{docs:?}");
     assert_eq!(docs[0].pk, k);
-    assert_eq!(docs[0].source, common::obj(json!({ "c": 3 })));
+    assert_eq!(docs[0].source, crate::common::obj(json!({ "c": 3 })));
     assert_eq!(f.manifest().await.version, 1);
     assert_verified(f.verify().await);
     f.shutdown().await;
@@ -156,7 +154,7 @@ async fn an_upsert_of_an_existing_key_replaces_its_row() {
     let docs = by_key(second.scan_all().await.unwrap());
     assert_eq!(docs.len(), 5);
     let replaced = &docs[&PrimaryKey::U64(3)];
-    assert_eq!(replaced.source, common::obj(json!({ "n": 33 })));
+    assert_eq!(replaced.source, crate::common::obj(json!({ "n": 33 })));
     assert_ne!(replaced.row_id, old_row);
     // The old row is deleted in Lance …
     assert_eq!(second.take_rows(&[old_row]).await.unwrap(), vec![None]);
@@ -199,7 +197,7 @@ async fn a_patch_with_upsert_inserts_when_missing() {
     f.write(vec![DocOp::Patch {
         pk: k.clone(),
         mode: PatchMode::MergeDeep,
-        source: common::obj(json!({ "a": 1 })),
+        source: crate::common::obj(json!({ "a": 1 })),
         delete_keys: vec![],
         vectors: BTreeMap::new(),
         sparse_vectors: BTreeMap::new(),
@@ -210,7 +208,7 @@ async fn a_patch_with_upsert_inserts_when_missing() {
     assert_ran_ok(f.run_once(&source, "w1").await);
     let docs = f.snapshot().await.scan_all().await.unwrap();
     assert_eq!(docs.len(), 1);
-    assert_eq!(docs[0].source, common::obj(json!({ "u": 1 })));
+    assert_eq!(docs[0].source, crate::common::obj(json!({ "u": 1 })));
     assert_verified(f.verify().await);
     f.shutdown().await;
 }
@@ -229,7 +227,7 @@ async fn a_patch_reads_the_committed_document() {
     assert_eq!(docs.len(), 1);
     assert_eq!(
         docs[0].source,
-        common::obj(json!({ "a": 1, "n": { "x": 1, "y": 2 } }))
+        crate::common::obj(json!({ "a": 1, "n": { "x": 1, "y": 2 } }))
     );
     assert_eq!(f.manifest().await.version, 2);
     assert_verified(f.verify().await);
@@ -300,7 +298,7 @@ async fn a_patch_that_breaks_the_schema_is_dead_lettered() {
         letters[0].reason
     );
     let docs = f.snapshot().await.scan_all().await.unwrap();
-    assert_eq!(docs[0].source, common::obj(json!({ "n": 1 })));
+    assert_eq!(docs[0].source, crate::common::obj(json!({ "n": 1 })));
     assert_verified(f.verify().await);
     f.shutdown().await;
 }
@@ -441,7 +439,7 @@ async fn sparse_vectors_are_committed_to_lance_and_the_split() {
     let sparse_patch = |n: u64, s| DocOp::Patch {
         pk: PrimaryKey::U64(n),
         mode: PatchMode::MergeDeep,
-        source: common::obj(json!({})),
+        source: crate::common::obj(json!({})),
         delete_keys: vec![],
         vectors: BTreeMap::new(),
         sparse_vectors: BTreeMap::from([("s".to_string(), s)]),
@@ -709,7 +707,7 @@ async fn a_record_on_the_wrong_partition_is_dead_lettered() {
         letters[0].reason
     );
     let docs = f.snapshot().await.scan_all().await.unwrap();
-    assert_eq!(docs[0].source, common::obj(json!({ "n": 1 })));
+    assert_eq!(docs[0].source, crate::common::obj(json!({ "n": 1 })));
     assert_verified(f.verify().await);
     f.shutdown().await;
 }

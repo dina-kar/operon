@@ -1,8 +1,6 @@
 //! ES dynamic mapping as a pure function.
 
-mod common;
-
-use common::{field, obj, schema, text, vector};
+use crate::common::{field, obj, schema, text, vector};
 use operon_collection::{
     CollectionSchema, DynamicMapping, DynamicMappingError, FieldKind, FieldSpec, SparseModifier,
     SparseVectorSpec, propose_dynamic_fields,

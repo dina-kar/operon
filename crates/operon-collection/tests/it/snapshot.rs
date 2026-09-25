@@ -1,14 +1,12 @@
 //! `CollectionSnapshot`, the collection read API (plan M1.1 Task 9): manifests
 //! assembled by hand over Task 7 Lance versions and Task 8 splits.
 
-mod common;
-
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{Meta, collection, doc, faulty_store, namespace, sparse, text, vector};
+use crate::common::{Meta, collection, doc, faulty_store, namespace, sparse, text, vector};
 use lance::Dataset;
 use lance::dataset::transaction::Operation;
 use operon_cache::{RangeCache, RangeCacheConfig};

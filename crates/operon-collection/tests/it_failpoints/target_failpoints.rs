@@ -4,11 +4,9 @@
 //! other test running alongside.
 #![cfg(feature = "failpoints")]
 
-mod common;
-
 use std::time::Duration;
 
-use common::{TargetFixture, field, schema, upsert};
+use crate::common::{TargetFixture, field, schema, upsert};
 use operon_collection::{DynamicMapping, FieldKind};
 use operon_worker::run_once;
 use serde_json::json;

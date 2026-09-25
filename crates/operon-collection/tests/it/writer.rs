@@ -1,12 +1,12 @@
 //! `CollectionWriter`: validation, partition routing, one WAL object per
 //! write, and consistency tokens.
 
-mod common;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use common::{Cluster, Meta, collection, faulty_store, field, log_writer, namespace, upsert};
+use crate::common::{
+    Cluster, Meta, collection, faulty_store, field, log_writer, namespace, upsert,
+};
 use operon_cache::{RangeCache, RangeCacheConfig};
 use operon_collection::{
     CollectionSchema, CollectionWriter, ConsistencyToken, DocOp, DynamicMapping, FieldKind,
@@ -19,7 +19,7 @@ use operon_store::{Op, Store};
 use serde_json::json;
 
 fn strict_schema() -> CollectionSchema {
-    common::schema(
+    crate::common::schema(
         vec![field("n", FieldKind::I64), field("tag", FieldKind::Keyword)],
         DynamicMapping::Strict,
     )
@@ -121,18 +121,18 @@ async fn a_write_is_one_wal_object() {
 async fn rejected_ops_are_reported_and_valid_ones_written() {
     let meta = Meta::start().await;
     let ns = namespace(&meta.client, "acme").await;
-    let mapped = common::schema(vec![field("n", FieldKind::I64)], DynamicMapping::Map);
+    let mapped = crate::common::schema(vec![field("n", FieldKind::I64)], DynamicMapping::Map);
     let (cid, stream) = collection(&meta.client, ns, "docs", mapped, 2).await;
     let store = Store::in_memory();
     let writer = CollectionWriter::new(meta.client.clone(), log_writer(&meta.client, &store));
 
-    let mut bad_keys = common::patch(PrimaryKey::U64(6), json!({}));
+    let mut bad_keys = crate::common::patch(PrimaryKey::U64(6), json!({}));
     if let DocOp::Patch { delete_keys, .. } = &mut bad_keys {
         delete_keys.push("a..b".to_string());
     }
-    let mut cross_key = common::patch(PrimaryKey::U64(7), json!({"n": 7}));
+    let mut cross_key = crate::common::patch(PrimaryKey::U64(7), json!({"n": 7}));
     if let DocOp::Patch { upsert: u, .. } = &mut cross_key {
-        *u = Some(common::doc(PrimaryKey::U64(8), json!({"n": 8})));
+        *u = Some(crate::common::doc(PrimaryKey::U64(8), json!({"n": 8})));
     }
     let ops = vec![
         upsert(1, json!({"n": 1})),
@@ -140,7 +140,7 @@ async fn rejected_ops_are_reported_and_valid_ones_written() {
         DocOp::Delete(PrimaryKey::Str(String::new())),
         upsert(3, json!({"n": 3, "extra": true})),
         DocOp::Delete(PrimaryKey::U64(4)),
-        common::patch(PrimaryKey::U64(5), json!({"n": 5})),
+        crate::common::patch(PrimaryKey::U64(5), json!({"n": 5})),
         bad_keys,
         cross_key,
     ];
@@ -225,7 +225,7 @@ async fn a_writer_retries_validation_on_a_linearizable_schema_read() {
 
     let ns = namespace(&leader_client, "acme").await;
     let (cid, stream) = collection(&leader_client, ns, "docs", strict_schema(), 2).await;
-    common::eventually(follower_client.local(), move |s| {
+    crate::common::eventually(follower_client.local(), move |s| {
         s.collection(cid).is_some()
     })
     .await;

@@ -3,14 +3,12 @@
 //! the task there, like a killed process; a fresh factory then re-runs, and
 //! the collection must be the stream's fold, every record applied once.
 
-mod common;
-
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use common::{TargetFixture, WAIT, field, patch, schema, upsert};
+use crate::common::{TargetFixture, WAIT, field, patch, schema, upsert};
 use futures::FutureExt;
 use operon_collection::{
     CollectionCommitHook, CollectionCommitStep, CollectionSchema, CollectionTargetFactory, DocOp,
@@ -418,7 +416,7 @@ async fn an_orphan_lance_version_at_task_start_is_ignored() {
     let schema = f.schema().await;
     let parent = f.ctx.lance.ensure_created(f.ns, f.cid).await.unwrap();
     let bogus: Vec<Document> = (100..103)
-        .map(|n| common::doc(key(n), json!({ "bogus": true })))
+        .map(|n| crate::common::doc(key(n), json!({ "bogus": true })))
         .collect();
     let rows: Vec<NewRow<'_>> = bogus
         .iter()
@@ -734,7 +732,7 @@ impl RandomOp {
                         sparse_vectors,
                         ..
                     } => DocOp::Patch {
-                        upsert: upsert.then(|| common::doc(pk.clone(), json!({ "n": n }))),
+                        upsert: upsert.then(|| crate::common::doc(pk.clone(), json!({ "n": n }))),
                         pk,
                         mode,
                         source,

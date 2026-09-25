@@ -1,12 +1,10 @@
 //! Collection schemas map to Tantivy (plan M1.1 Task 8 rules 3–4, Rulings
 //! 26–27), and every filter kind works on a Json field.
 
-mod common;
-
 use std::ops::Bound;
 use std::sync::Arc;
 
-use common::{doc, field, json, sparse, text};
+use crate::common::{doc, field, json, sparse, text};
 use operon_cache::{RangeCache, RangeCacheConfig};
 use operon_collection::{
     CollectionError, CollectionSchema, DynamicMapping, FIELD_PRESENCE_FIELD, FieldKind, FieldMap,
