@@ -5,12 +5,17 @@
 //! ([`ir`], [`json`]), the service types and errors ([`types`], [`error`]),
 //! schema-free request validation ([`validate`]), and the hot-tier and
 //! placement hooks ([`hot`], [`placement`]).
+//!
+//! Task 2: the query compiler from the IR to Tantivy queries per split
+//! schema ([`text`]). Task 3: the in-memory tail index of writes the live
+//! manifest does not reflect yet ([`tail`], H3).
 
 pub mod error;
 pub mod hot;
 pub mod ir;
 pub mod json;
 pub mod placement;
+pub mod tail;
 pub mod text;
 pub mod types;
 pub mod validate;

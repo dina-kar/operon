@@ -12,7 +12,9 @@ async-trait.workspace = true
 http.workspace = true
 operon-collection.workspace = true
 operon-common.workspace = true
+operon-log.workspace = true
 operon-quickwit.workspace = true
+operon-store.workspace = true
 operon-text.workspace = true
 roaring.workspace = true
 serde.workspace = true
@@ -23,10 +25,24 @@ thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
 tower.workspace = true
+tracing.workspace = true
 ulid.workspace = true
 
+[features]
+# Test hooks (holding a tail's follower). Not part of the stable API.
+test-util = []
+
 [dev-dependencies]
+bytes.workspace = true
+operon-cache.workspace = true
+operon-link = { workspace = true, features = ["test-util"] }
+operon-meta = { workspace = true, features = ["test-util"] }
+operon-query = { path = ".", features = ["test-util"] }
+operon-worker = { workspace = true, features = ["test-util"] }
 proptest.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+tempfile.workspace = true
 tower = { workspace = true, features = ["util"] }
 
 [lints]
