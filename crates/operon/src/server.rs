@@ -12,6 +12,7 @@ use operon_collection::{
     CollectionConfig, CollectionContext, CollectionGcRoots, CollectionTargetFactory,
     CollectionTrimSource, IndexBuildSource, LanceConfig, LanceEnv, ManifestCache, PkGcRoots,
 };
+use operon_common::meta::MetaStore;
 use operon_link::{CounterTargetFactory, LinkApplySource, LinkConfig, LinkGcRoots, TargetRegistry};
 use operon_log::gc::{GcConfig, GcSource};
 use operon_log::{
@@ -142,6 +143,8 @@ pub struct Server {
     local_addr: SocketAddr,
     node: MetaNode,
     meta: MetaClient,
+    /// `meta` as the trait object every component holds.
+    meta_store: Arc<dyn MetaStore>,
     writer: LogWriter,
     cache: RangeCache,
     collections: CollectionContext,
@@ -214,6 +217,7 @@ impl Server {
             Arc::new(SystemClock),
             MetaClientConfig::default(),
         );
+        let meta_store: Arc<dyn MetaStore> = meta.clone().into();
         let cache = RangeCache::new(store.clone(), config.cache.clone()).await?;
         let bound = async {
             let listener = tokio::net::TcpListener::bind(config.listen).await?;
@@ -235,12 +239,12 @@ impl Server {
         };
 
         // Validated above, so this cannot fail.
-        let writer = LogWriter::start(meta.clone(), store.clone(), config.log.clone())?;
-        let reader = LogReader::new(meta.clone(), cache.clone());
+        let writer = LogWriter::start(meta_store.clone(), store.clone(), config.log.clone())?;
+        let reader = LogReader::new(meta_store.clone(), cache.clone());
         // Unique per process incarnation, as leases require.
         let owner = format!("node-{NODE_ID}-{}", Ulid::generate());
         let mut worker = Worker::new(
-            meta.clone(),
+            meta_store.clone(),
             WorkerConfig {
                 poll_interval: config.worker_poll_interval,
                 lease_ttl: config.worker_lease_ttl,
@@ -251,7 +255,7 @@ impl Server {
         collection.max_commit_delay = config.link.max_commit_delay;
         collection.keep_manifests = config.gc.keep_manifests;
         let collections = CollectionContext {
-            meta: meta.clone(),
+            meta: meta_store.clone(),
             store: store.clone(),
             cache: cache.clone(),
             lance: LanceEnv::new(store.clone(), config.lance.clone()),
@@ -266,6 +270,7 @@ impl Server {
             )))
             .with(collection_factory.clone());
         worker.add_source(Arc::new(LinkApplySource::new(
+            meta_store.clone(),
             reader.clone(),
             registry.clone(),
             config.link.clone(),
@@ -289,7 +294,7 @@ impl Server {
         )));
         let worker = worker.start();
         let app = api::router(AppState {
-            meta: meta.clone(),
+            meta: meta_store.clone(),
             writer: writer.clone(),
             reader,
             store: store.clone(),
@@ -309,6 +314,7 @@ impl Server {
             local_addr,
             node,
             meta,
+            meta_store,
             writer,
             cache,
             collections,
@@ -327,6 +333,13 @@ impl Server {
     /// The metastore client, for embedding and tests.
     pub fn meta(&self) -> &MetaClient {
         &self.meta
+    }
+
+    /// The metastore as the trait object the server hands to every
+    /// component (the log, the worker and its sources, collection storage
+    /// and the HTTP API): the same handle each of them holds.
+    pub fn meta_store(&self) -> Arc<dyn MetaStore> {
+        self.meta_store.clone()
     }
 
     /// The collection storage context the server's tasks run on; M1.2 builds

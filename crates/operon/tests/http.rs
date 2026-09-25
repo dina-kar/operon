@@ -899,7 +899,7 @@ async fn the_link_endpoint_shows_version_and_applied_for_collections() {
     let reader = LogReader::new(meta.clone(), cache.clone());
     let config = CollectionConfig::default();
     let ctx = CollectionContext {
-        meta: meta.clone(),
+        meta: meta.clone().into(),
         store: store.clone(),
         cache: cache.clone(),
         lance: LanceEnv::new(store.clone(), LanceConfig::default()),
@@ -914,7 +914,7 @@ async fn the_link_endpoint_shows_version_and_applied_for_collections() {
         )))
         .with(factory.clone());
     let app = operon::api::router(operon::api::AppState {
-        meta: meta.clone(),
+        meta: meta.clone().into(),
         writer: writer.clone(),
         reader: reader.clone(),
         store: store.clone(),
@@ -957,6 +957,7 @@ async fn the_link_endpoint_shows_version_and_applied_for_collections() {
         .await
         .unwrap();
     let source = LinkApplySource::new(
+        meta.clone(),
         reader,
         registry,
         LinkConfig {

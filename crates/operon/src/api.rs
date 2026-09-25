@@ -2,6 +2,7 @@
 //! addressed by name; record keys and values are base64.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
@@ -13,10 +14,12 @@ use axum::routing::{get, post};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::Bytes;
+use operon_common::meta::{
+    ApplyError, Consistency, MetaError, MetaStore, Retention, StreamState, TargetRef, WalClass,
+};
 use operon_common::{NamespaceId, StreamId};
 use operon_link::{COUNTER_KIND, CounterTable, LinkError, TargetRegistry};
 use operon_log::{FetchRequest, LogError, LogReader, LogWriter, Record};
-use operon_meta::{ApplyError, Consistency, MetaClient, MetaError, Retention, TargetRef, WalClass};
 use operon_store::Store;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -35,7 +38,7 @@ const MAX_WAIT: Duration = Duration::from_secs(60);
 /// What the handlers share.
 #[derive(Clone, Debug)]
 pub struct AppState {
-    pub meta: MetaClient,
+    pub meta: Arc<dyn MetaStore>,
     pub writer: LogWriter,
     pub reader: LogReader,
     /// For reading counter tables.
@@ -246,7 +249,7 @@ async fn health() -> StatusCode {
 }
 
 async fn ready(State(state): State<AppState>) -> StatusCode {
-    if state.meta.local().status().leader.is_some() {
+    if state.meta.is_ready() {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
@@ -281,21 +284,19 @@ struct CreateStream {
     retention: Option<RetentionBody>,
 }
 
-async fn namespace_id(meta: &MetaClient, name: &str) -> Result<NamespaceId, ApiError> {
-    meta.read(Consistency::Local, |s| {
-        s.namespace_by_name(name).map(|n| n.id)
-    })
-    .await?
-    .ok_or_else(|| ApiError::not_found(format!("namespace {name:?} not found")))
+async fn namespace_id(meta: &dyn MetaStore, name: &str) -> Result<NamespaceId, ApiError> {
+    meta.namespace_by_name(Consistency::Local, name)
+        .await?
+        .map(|n| n.id)
+        .ok_or_else(|| ApiError::not_found(format!("namespace {name:?} not found")))
 }
 
-async fn stream_id(meta: &MetaClient, ns: &str, stream: &str) -> Result<StreamId, ApiError> {
+async fn stream_id(meta: &dyn MetaStore, ns: &str, stream: &str) -> Result<StreamId, ApiError> {
     let namespace = namespace_id(meta, ns).await?;
-    meta.read(Consistency::Local, |s| {
-        s.stream_by_name(namespace, stream).map(|st| st.id)
-    })
-    .await?
-    .ok_or_else(|| ApiError::not_found(format!("stream {ns}/{stream} not found")))
+    meta.stream_by_name(Consistency::Local, namespace, stream)
+        .await?
+        .map(|st| st.id)
+        .ok_or_else(|| ApiError::not_found(format!("stream {ns}/{stream} not found")))
 }
 
 async fn create_stream(
@@ -305,7 +306,7 @@ async fn create_stream(
 ) -> ApiResult {
     let (Path(ns), body) = (ns?, body?);
     let request: CreateStream = parse_json(&body)?;
-    let namespace = namespace_id(&state.meta, &ns).await?;
+    let namespace = namespace_id(&*state.meta, &ns).await?;
     let retention = request
         .retention
         .map_or(Retention::default(), |r| Retention {
@@ -315,7 +316,7 @@ async fn create_stream(
     // One command, so the stream never exists without its retention.
     let id = state
         .meta
-        .create_stream_with_retention(
+        .create_stream(
             namespace,
             &request.name,
             request.partitions,
@@ -331,31 +332,32 @@ async fn describe_stream(
     path: Result<Path<(String, String)>, PathRejection>,
 ) -> ApiResult {
     let Path((ns, stream)) = path?;
-    let id = stream_id(&state.meta, &ns, &stream).await?;
+    let id = stream_id(&*state.meta, &ns, &stream).await?;
     let body = state
         .meta
-        .read(Consistency::Local, |s| {
-            let stream = s.stream(id)?;
-            let partitions: Vec<Value> = (0..stream.partitions)
-                .filter_map(|p| {
-                    let state = s.partition(id, p)?;
+        .stream_state(Consistency::Local, id)
+        .await?
+        .map(|StreamState { stream, partitions }| {
+            let partitions: Vec<Value> = (0u32..)
+                .zip(partitions)
+                .filter_map(|(p, bounds)| {
+                    let bounds = bounds?;
                     Some(json!({
                         "partition": p,
-                        "log_start_offset": state.log_start_offset(),
-                        "high_watermark": state.high_watermark(),
+                        "log_start_offset": bounds.log_start_offset,
+                        "high_watermark": bounds.high_watermark,
                     }))
                 })
                 .collect();
-            Some(json!({
+            json!({
                 "id": id.0,
                 "partitions": partitions,
                 "retention": {
                     "max_age_ms": stream.retention.max_age_ms,
                     "max_bytes": stream.retention.max_bytes,
                 },
-            }))
+            })
         })
-        .await?
         .ok_or_else(|| ApiError::not_found(format!("stream {ns}/{stream} not found")))?;
     Ok(axum::Json(body).into_response())
 }
@@ -411,7 +413,7 @@ async fn produce(
     let (Path((ns, stream, partition)), body) = (path?, body?);
     let partition = parse_partition(&partition)?;
     let request: Produce = parse_json(&body)?;
-    let id = stream_id(&state.meta, &ns, &stream).await?;
+    let id = stream_id(&*state.meta, &ns, &stream).await?;
     let mut records = Vec::with_capacity(request.records.len());
     for record in request.records {
         let mut headers = Vec::with_capacity(record.headers.len());
@@ -463,7 +465,7 @@ async fn fetch(
     let max_wait = query_number::<u64>(&query, "max_wait_ms")?
         .map_or(Duration::ZERO, Duration::from_millis)
         .min(MAX_WAIT);
-    let id = stream_id(&state.meta, &ns, &stream).await?;
+    let id = stream_id(&*state.meta, &ns, &stream).await?;
     let response = state
         .reader
         .fetch(FetchRequest {
@@ -545,8 +547,8 @@ async fn create_link(
 ) -> ApiResult {
     let (Path(ns), body) = (ns?, body?);
     let request: CreateLink = parse_json(&body)?;
-    let namespace = namespace_id(&state.meta, &ns).await?;
-    let source = stream_id(&state.meta, &ns, &request.source).await?;
+    let namespace = namespace_id(&*state.meta, &ns).await?;
+    let source = stream_id(&*state.meta, &ns, &request.source).await?;
     let target = request.target.map_or_else(
         || TargetRef {
             kind: COUNTER_KIND.to_string(),
@@ -569,17 +571,21 @@ async fn describe_link(
     path: Result<Path<(String, String)>, PathRejection>,
 ) -> ApiResult {
     let Path((ns, name)) = path?;
-    let namespace = namespace_id(&state.meta, &ns).await?;
+    let namespace = namespace_id(&*state.meta, &ns).await?;
+    // A description: the link and its source's name need not come from one
+    // state.
+    let not_found = || ApiError::not_found(format!("link {ns}/{name} not found"));
     let link = state
         .meta
-        .read(Consistency::Local, |s| {
-            let link = s.link_by_name(namespace, &name)?.clone();
-            let source = s.stream(link.source).map(|st| st.name.clone())?;
-            Some((link, source))
-        })
+        .link_by_name(Consistency::Local, namespace, &name)
         .await?
-        .ok_or_else(|| ApiError::not_found(format!("link {ns}/{name} not found")))?;
-    let (link, source) = link;
+        .ok_or_else(not_found)?;
+    let source = state
+        .meta
+        .stream(Consistency::Local, link.source)
+        .await?
+        .map(|st| st.name)
+        .ok_or_else(not_found)?;
     let mut body = json!({
         "id": link.id.0,
         "name": link.name,

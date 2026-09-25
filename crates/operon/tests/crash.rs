@@ -990,7 +990,7 @@ async fn check_docs(dir: &Path, docs: &Docs, model: &DocModel, what: &str) -> Co
     let expected = fold_stream(&docs.schema, COLLECTION_PARTITIONS, &records);
     let config = CollectionConfig::default();
     let ctx = CollectionContext {
-        meta: meta.clone(),
+        meta: meta.clone().into(),
         store: store.clone(),
         cache: cache.clone(),
         lance: LanceEnv::new(store.clone(), LanceConfig::default()),
@@ -1002,7 +1002,7 @@ async fn check_docs(dir: &Path, docs: &Docs, model: &DocModel, what: &str) -> Co
         .expect("verify");
     assert!(problems.is_empty(), "{what}: {problems:#?}");
     let manifest = live_manifest(
-        &ctx.meta,
+        &*ctx.meta,
         &ctx.store,
         &ctx.manifests,
         docs.ns,
