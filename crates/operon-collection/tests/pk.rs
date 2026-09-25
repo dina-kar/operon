@@ -131,3 +131,19 @@ proptest! {
         prop_assert_eq!(PrimaryKey::from_canonical(&pk.canonical()).unwrap(), pk);
     }
 }
+
+#[test]
+fn the_schema_types_are_reexported() {
+    // Ruling 6: the same types, reachable from both crates.
+    fn same(
+        schema: operon_common::schema::CollectionSchema,
+    ) -> operon_collection::CollectionSchema {
+        schema
+    }
+    let schema = operon_collection::schema::CollectionSchema::new(
+        Vec::new(),
+        Vec::new(),
+        operon_collection::DynamicMapping::Strict,
+    );
+    assert_eq!(same(schema.clone()), schema);
+}

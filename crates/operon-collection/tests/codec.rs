@@ -73,9 +73,11 @@ fn with_value(mut record: Record, value: Vec<u8>) -> Record {
     record
 }
 
-// A copy of the private wire types (overview §6.2): variant order and field
-// order are the format, so these must encode exactly like the codec's own.
-// Sparse vectors are raw here, so tests can build non-canonical ones.
+// A copy of the private `WireDoc` (overview §6.2): field order is the
+// format, so it must encode exactly like the codec's own (checked by
+// `the_hand_built_upsert_matches_encode`; the format itself is pinned
+// by `every_record_variant_has_a_pinned_encoding`). Sparse vectors are raw
+// here, so tests can build non-canonical ones.
 
 #[derive(Serialize)]
 struct RawSparse {
@@ -91,28 +93,14 @@ struct WireDoc {
     sparse_vectors: BTreeMap<String, RawSparse>,
 }
 
-#[derive(Serialize)]
-enum WireOp {
-    Upsert(WireDoc),
-    #[allow(dead_code)]
-    Delete(PrimaryKey),
-    #[allow(dead_code)]
-    Patch {
-        pk: PrimaryKey,
-        mode: PatchMode,
-        source: Vec<u8>,
-        delete_keys: Vec<String>,
-        vectors: BTreeMap<String, Option<Vec<f32>>>,
-        sparse_vectors: BTreeMap<String, Option<RawSparse>>,
-        upsert: Option<WireDoc>,
-    },
-}
+/// The postcard variant index of the codec's `WireOp::Upsert`.
+const WIRE_UPSERT: u8 = 0x00;
 
-/// A record carrying `op` exactly as the codec lays it out, bypassing
-/// `encode`'s checks.
-fn hand_built(pk: &PrimaryKey, op: &WireOp) -> Record {
-    let mut value = vec![CODEC_VERSION];
-    value.extend(postcard::to_stdvec(op).expect("postcard"));
+/// An upsert record carrying `doc` exactly as the codec lays it out,
+/// bypassing `encode`'s checks.
+fn hand_built(pk: &PrimaryKey, doc: &WireDoc) -> Record {
+    let mut value = vec![CODEC_VERSION, WIRE_UPSERT];
+    value.extend(postcard::to_stdvec(doc).expect("postcard"));
     Record {
         key: Some(Bytes::from(pk.canonical())),
         value: Some(Bytes::from(value)),
@@ -121,13 +109,13 @@ fn hand_built(pk: &PrimaryKey, op: &WireOp) -> Record {
     }
 }
 
-fn wire_upsert(source: &[u8], vectors: BTreeMap<String, Vec<f32>>) -> WireOp {
-    WireOp::Upsert(WireDoc {
+fn wire_upsert(source: &[u8], vectors: BTreeMap<String, Vec<f32>>) -> WireDoc {
+    WireDoc {
         pk: pk1(),
         source: source.to_vec(),
         vectors,
         sparse_vectors: BTreeMap::new(),
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -141,15 +129,17 @@ fn any_pk() -> impl Strategy<Value = PrimaryKey> {
     ]
 }
 
-/// JSON leaves whose text form round-trips exactly (floats are dyadic
-/// fractions, which every float parser reads back bit for bit).
+/// JSON leaves, any finite float included: the workspace enables
+/// `serde_json/float_roundtrip`, so a float's text form reads back exactly.
 fn json_leaf() -> impl Strategy<Value = Value> {
     prop_oneof![
         Just(Value::Null),
         any::<bool>().prop_map(Value::Bool),
         any::<i64>().prop_map(Value::from),
         any::<u64>().prop_map(Value::from),
-        any::<i32>().prop_map(|n| Value::from(f64::from(n) / 8.0)),
+        any::<f64>()
+            .prop_filter("finite", |x| x.is_finite())
+            .prop_map(Value::from),
         "\\PC{0,8}".prop_map(Value::String),
     ]
 }
@@ -265,7 +255,7 @@ proptest! {
 }
 
 #[test]
-fn the_wire_layout_matches_the_documented_types() {
+fn the_hand_built_upsert_matches_encode() {
     let mut vectors = BTreeMap::new();
     vectors.insert("v".to_string(), vec![1.0, -2.5]);
     let op = DocOp::Upsert(Document {
@@ -274,6 +264,131 @@ fn the_wire_layout_matches_the_documented_types() {
     });
     let expected = hand_built(&pk1(), &wire_upsert(br#"{"a":1}"#, vectors));
     assert_eq!(encode(&op).unwrap(), expected);
+}
+
+fn uuid_one() -> PrimaryKey {
+    let mut uuid = [0u8; 16];
+    uuid[15] = 1;
+    PrimaryKey::Uuid(uuid)
+}
+
+/// The record format is durable: these bytes must never change within codec
+/// version `0x01` (postcard: varint lengths, variant indices and `Option`
+/// tags, little-endian `f32`s; `[u8; 16]` has no length).
+#[test]
+fn every_record_variant_has_a_pinned_encoding() {
+    let upsert = DocOp::Upsert(Document {
+        pk: PrimaryKey::U64(7),
+        source: obj(json!({"a": 1.5, "b": [true, null]})),
+        vectors: BTreeMap::from([("v".to_string(), vec![1.0, -2.0])]),
+        sparse_vectors: BTreeMap::from([("s".to_string(), sparse(&[3, 1], &[0.5, 0.0]))]),
+    });
+    #[rustfmt::skip]
+    let upsert_bytes: &[u8] = &[
+        0x01,                                   // codec version
+        0x00,                                   // WireOp::Upsert
+        0x00, 0x07,                             // pk: U64(7)
+        0x19, b'{', b'"', b'a', b'"', b':', b'1', b'.', b'5', b',', b'"', b'b', b'"', b':',
+        b'[', b't', b'r', b'u', b'e', b',', b'n', b'u', b'l', b'l', b']', b'}', // source (25 bytes)
+        0x01,                                   // vectors: 1 entry
+        0x01, b'v', 0x02,                       // "v", 2 values
+        0x00, 0x00, 0x80, 0x3f,                 // 1.0
+        0x00, 0x00, 0x00, 0xc0,                 // -2.0
+        0x01,                                   // sparse_vectors: 1 entry
+        0x01, b's',                             // "s"
+        0x02, 0x01, 0x03,                       // indices [1, 3]
+        0x02, 0x00, 0x00, 0x00, 0x00,           // values [0.0,
+        0x00, 0x00, 0x00, 0x3f,                 //         0.5]
+    ];
+
+    let delete = DocOp::Delete(pk1());
+    #[rustfmt::skip]
+    let delete_bytes: &[u8] = &[
+        0x01,                                   // codec version
+        0x01,                                   // WireOp::Delete
+        0x02, 0x05, b'd', b'o', b'c', b'-', b'1', // pk: Str("doc-1")
+    ];
+
+    let patch = DocOp::Patch {
+        pk: uuid_one(),
+        mode: PatchMode::MergeTop,
+        source: obj(json!({"x": "y"})),
+        delete_keys: vec!["a.b".to_string()],
+        vectors: BTreeMap::from([
+            ("gone".to_string(), None),
+            ("v".to_string(), Some(vec![0.25])),
+        ]),
+        sparse_vectors: BTreeMap::from([
+            ("s".to_string(), Some(sparse(&[2], &[1.0]))),
+            ("t".to_string(), None),
+        ]),
+        upsert: Some(Document {
+            pk: uuid_one(),
+            source: obj(json!({"n": 1})),
+            vectors: BTreeMap::new(),
+            sparse_vectors: BTreeMap::new(),
+        }),
+    };
+    #[rustfmt::skip]
+    let patch_bytes: &[u8] = &[
+        0x01,                                   // codec version
+        0x02,                                   // WireOp::Patch
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, // pk: Uuid(00…01)
+        0x01,                                   // mode: MergeTop
+        0x09, b'{', b'"', b'x', b'"', b':', b'"', b'y', b'"', b'}', // source
+        0x01, 0x03, b'a', b'.', b'b',           // delete_keys ["a.b"]
+        0x02,                                   // vectors: 2 entries
+        0x04, b'g', b'o', b'n', b'e', 0x00,     // "gone": None
+        0x01, b'v', 0x01, 0x01,                 // "v": Some, 1 value
+        0x00, 0x00, 0x80, 0x3e,                 // 0.25
+        0x02,                                   // sparse_vectors: 2 entries
+        0x01, b's', 0x01,                       // "s": Some
+        0x01, 0x02,                             // indices [2]
+        0x01, 0x00, 0x00, 0x80, 0x3f,           // values [1.0]
+        0x01, b't', 0x00,                       // "t": None
+        0x01,                                   // upsert: Some
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, // pk: Uuid(00…01)
+        0x07, b'{', b'"', b'n', b'"', b':', b'1', b'}', // source
+        0x00,                                   // vectors: none
+        0x00,                                   // sparse_vectors: none
+    ];
+
+    for (op, bytes) in [
+        (upsert, upsert_bytes),
+        (delete, delete_bytes),
+        (patch, patch_bytes),
+    ] {
+        let record = encode(&op).unwrap();
+        assert_eq!(value_of(&record), bytes, "{op:?}");
+        let pinned = with_value(record, bytes.to_vec());
+        assert_eq!(decode(&pinned).unwrap(), op);
+    }
+}
+
+#[test]
+fn source_floats_round_trip_exactly() {
+    for x in [
+        // serde_json's default (fast) parser reads this back one ULP off;
+        // `float_roundtrip` fixes it.
+        -3.210_093_094_931_787_3e-229,
+        0.1,
+        0.30000000000000004,
+        1.0e-300,
+        f64::MIN_POSITIVE,
+        5.0e-324,
+        f64::MAX,
+        -123_456.789_012_345_67,
+        2.225_073_858_507_201e-308,
+    ] {
+        let op = DocOp::Upsert(doc(pk1(), json!({ "x": x })));
+        let DocOp::Upsert(decoded) = decode(&encode(&op).unwrap()).unwrap() else {
+            panic!("not an upsert");
+        };
+        let back = decoded.source["x"].as_f64().unwrap();
+        assert_eq!(back.to_bits(), x.to_bits(), "{x:e}");
+    }
 }
 
 #[test]
@@ -428,12 +543,12 @@ fn sparse_vectors_are_canonical() {
         sparse_vectors.insert("s".to_string(), RawSparse { indices, values });
         hand_built(
             &pk1(),
-            &WireOp::Upsert(WireDoc {
+            &WireDoc {
                 pk: pk1(),
                 source: b"{}".to_vec(),
                 vectors: BTreeMap::new(),
                 sparse_vectors,
-            }),
+            },
         )
     };
     assert!(matches!(
