@@ -286,7 +286,7 @@ pub async fn context(
     config: operon_collection::CollectionConfig,
 ) -> operon_collection::CollectionContext {
     operon_collection::CollectionContext {
-        meta: meta.clone(),
+        meta: meta.clone().into(),
         store: store.clone(),
         cache: range_cache(store).await,
         lance: operon_collection::LanceEnv::new(
@@ -391,6 +391,7 @@ impl TargetFixture {
     ) -> operon_link::LinkApplySource {
         let registry = operon_link::TargetRegistry::new().with(factory);
         operon_link::LinkApplySource::new(
+            self.ctx.meta.clone(),
             self.reader.clone(),
             registry,
             operon_link::LinkConfig {
@@ -478,7 +479,7 @@ impl TargetFixture {
     /// The live manifest (the empty one before the first commit).
     pub async fn manifest(&self) -> operon_collection::CollectionManifest {
         match operon_collection::live_manifest(
-            &self.ctx.meta,
+            &*self.ctx.meta,
             &self.ctx.store,
             &self.ctx.manifests,
             self.ns,

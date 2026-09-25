@@ -87,7 +87,7 @@ async fn range_cache(store: &Store) -> RangeCache {
 
 async fn context(meta: &Meta, store: &Store, config: CollectionConfig) -> CollectionContext {
     CollectionContext {
-        meta: meta.client.clone(),
+        meta: meta.client.clone().into(),
         store: store.clone(),
         cache: range_cache(store).await,
         lance: LanceEnv::new(store.clone(), LanceConfig::default()),
@@ -285,8 +285,9 @@ impl Fixture {
             .await
             .expect("put manifest");
         let expected = (version > 1).then_some(version - 1);
-        let pointer = ctx
+        let pointer = self
             .meta
+            .client
             .cas_pointer(
                 self.ns,
                 &collection_pointer_key(self.cid),
@@ -593,8 +594,8 @@ async fn at_equals_open_for_the_same_manifest() {
     // With the metastore shut down, a metastore read fails, but `at` works.
     fx.meta.shutdown().await;
     assert!(
-        fx.ctx
-            .meta
+        fx.meta
+            .client
             .read(Consistency::Linearizable, |_| ())
             .await
             .is_err()

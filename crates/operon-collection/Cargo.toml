@@ -26,7 +26,6 @@ operon-cache.workspace = true
 operon-common.workspace = true
 operon-link.workspace = true
 operon-log.workspace = true
-operon-meta.workspace = true
 operon-pk.workspace = true
 operon-quickwit.workspace = true
 operon-store.workspace = true
@@ -56,7 +55,6 @@ failpoints = [
     "fail/failpoints",
     "operon-link/failpoints",
     "operon-log/failpoints",
-    "operon-meta/failpoints",
 ]
 
 [build-dependencies]

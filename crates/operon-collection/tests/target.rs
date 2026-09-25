@@ -591,7 +591,9 @@ async fn a_lost_cas_ack_is_recognised() {
         futures::future::ready(()).boxed()
     });
     let factory = f.hooked_factory(hook);
-    let target = factory.open(&f.meta.client, &f.link().await).unwrap();
+    let target = factory
+        .open(&f.meta.client.clone().into(), &f.link().await)
+        .unwrap();
     f.write(vec![upsert(1, json!({ "n": 1 }))]).await;
     let state = target.load().await.unwrap();
     let batch = f.batch_after(&state).await;
@@ -621,7 +623,7 @@ async fn load_opens_no_writer() {
 
     let factory = f.factory();
     let link = f.link().await;
-    let target = factory.open(&f.meta.client, &link).unwrap();
+    let target = factory.open(&f.meta.client.clone().into(), &link).unwrap();
     let state = target.load().await.unwrap();
     assert_eq!(state.version, 1);
     let outside = PkIndex::open(
@@ -672,7 +674,7 @@ async fn a_task_of_a_dropped_collection_stops() {
     // finds nothing.
     assert!(source.candidates(&f.meta.client).await.unwrap().is_empty());
     let err = factory
-        .open(&f.meta.client, &link)
+        .open(&f.meta.client.clone().into(), &link)
         .unwrap()
         .load()
         .await

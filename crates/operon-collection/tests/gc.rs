@@ -175,13 +175,15 @@ impl Env {
     /// first, as (version, path).
     async fn retained(&self) -> Vec<(u64, String)> {
         let ctx = &self.f.ctx;
-        let clock_ms = ctx
+        let clock_ms = self
+            .f
             .meta
+            .client
             .read(Consistency::Linearizable, |s| s.clock_ms())
             .await
             .expect("read");
         let live = operon_collection::live_manifest(
-            &ctx.meta,
+            &*ctx.meta,
             &ctx.store,
             &ctx.manifests,
             self.f.ns,
@@ -1196,7 +1198,7 @@ async fn a_fenced_trim_changes_nothing() {
             epoch: stale.epoch,
         },
         cancel: CancellationToken::new(),
-        meta: client.clone(),
+        meta: client.clone().into(),
     };
     assert!(matches!(task.run(ctx).await, Err(TaskError::Fenced)));
     assert_eq!(log_starts(&env).await, vec![0, 0]);

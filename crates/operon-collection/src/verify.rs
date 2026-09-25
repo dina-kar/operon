@@ -10,9 +10,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use operon_common::meta::{Consistency, collection_pk_prefix};
 use operon_common::{CollectionId, NamespaceId};
 use operon_log::OffsetRecord;
-use operon_meta::{Consistency, collection_pk_prefix};
 use operon_pk::PkReader;
 use serde_json::{Map, Value};
 

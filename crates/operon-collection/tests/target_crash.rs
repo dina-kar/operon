@@ -17,8 +17,8 @@ use operon_collection::{
     Document, DynamicMapping, FieldKind, LanceCommitter, NewRow, PkWatermark, PrimaryKey,
     RebuildHook, to_record_batch,
 };
+use operon_common::meta::MetaStore;
 use operon_link::{CommitError, LinkTargetFactory};
-use operon_meta::MetaClient;
 use operon_meta::{Fence, collection_pk_prefix};
 use operon_pk::{PkIndex, PkIndexConfig};
 use operon_worker::{
@@ -371,7 +371,7 @@ impl TaskSource for Recording {
         self.inner.priority()
     }
 
-    async fn candidates(&self, meta: &MetaClient) -> Result<Vec<Candidate>, TaskError> {
+    async fn candidates(&self, meta: &dyn MetaStore) -> Result<Vec<Candidate>, TaskError> {
         let candidates = self.inner.candidates(meta).await?;
         Ok(candidates
             .into_iter()
@@ -615,7 +615,9 @@ async fn a_stale_parent_never_rolls_the_pk_index_back() {
     f.apply_all(&f.source(f.factory()), "w1").await;
     // Target A loads version 1 with no PK handle of its own.
     let a = f.factory();
-    let target = a.open(&f.meta.client, &f.link().await).unwrap();
+    let target = a
+        .open(&f.meta.client.clone().into(), &f.link().await)
+        .unwrap();
     let state = target.load().await.unwrap();
     assert_eq!(state.version, 1);
     // Another factory commits version 2.
@@ -693,7 +695,10 @@ async fn an_unmatched_watermark_is_rebuilt_not_a_conflict() {
         .unwrap();
     index.close().await.unwrap();
 
-    let target = f.factory().open(&f.meta.client, &f.link().await).unwrap();
+    let target = f
+        .factory()
+        .open(&f.meta.client.clone().into(), &f.link().await)
+        .unwrap();
     f.write((0..8).map(|n| upsert(n, json!({ "n": n + 20 }))).collect())
         .await;
     let state = target.load().await.unwrap();
