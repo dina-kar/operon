@@ -135,16 +135,18 @@ s3://<bucket>/<cluster_prefix>/
   ns/<namespace_id>/
     streams/<stream_id>/<partition>/<base_offset:020>-<ulid>.seg
     collections/<collection_id>/
-      lance/…                                        # Lance dataset (data/, _versions/, _indices/)
-      text/splits/<ulid>.split                       # Tantivy split bundles (with hotcache footer)
-      text/deletes/<split_ulid>/<version>.bitmap     # per-split deletion bitmaps
-      manifests/<version>.pb                         # immutable collection manifests
-      hot/<artifact_kind>/<source_version>/…         # optional prebuilt hot-tier artifacts (HNSW)
+      lance/…                                        # Lance dataset (data/, _deletions/, _transactions/, _indices/, _versions/ incl. d<id>.manifest detached versions)
+      text/splits/<ulid>.split                       # Tantivy split bundles (hotcache footer + trailer)
+      text/deletes/<split_ulid>/<ulid>.bitmap        # one whole roaring delete bitmap per split (OPDB)
+      manifests/<version:020>-<ulid>.pb              # immutable collection manifests (OPCM)
+      pkdelta/<version:020>-<ulid>.pkd               # the keys one commit changed, for PK-index repair (OPPD)
+      deadletters/<version:020>-<ulid>.dlq           # records one commit dead-lettered (OPDL)
+      hot/hnsw/<column>/<source_version:020>-<ulid>/… # optional derived hot-tier artifacts (HNSW, M1.3)
     graphs/<graph_id>/
       idmap/…                                        # SlateDB instance: external key → dense id
       adj/<source_ref>/<segment_ulid>.{csr,csc}
       manifests/<version>.pb
-    pk/<object_id>/…                                 # SlateDB instance: primary key → row location
+    pk/<object_id>/…                                 # SlateDB instance: primary key → row location (e.g. pk/collection-<cid>/)
     durable/                                         # durable execution (§14), Resonate blob layout
       wf/<enc(origin)>                               # one document per workflow origin (CAS'd)
       sched/<enc(schedule_id)>                       # one object per schedule
