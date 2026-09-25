@@ -17,8 +17,10 @@
 //! - [`doc_fetch`]: the documents of ranked rows;
 //! - [`tail_merge`]: durable rows and the tail merged in PK order;
 //! - [`planner`]: planning and running searches, get, count and scroll,
-//!   with [`project`], [`groups`], [`get`] and [`scroll`].
+//!   with [`project`], [`groups`], [`get`] and [`scroll`];
+//! - [`aggs`]: aggregations over splits and the tail.
 
+pub mod aggs;
 pub mod ann;
 pub mod doc_fetch;
 pub mod filter_bitmap;
@@ -56,6 +58,7 @@ use crate::text::compile::CompiledQuery;
 use crate::text::fields::{ResolvedField, resolve_field};
 use crate::text::splits::{OpenSplit, open_splits_with, tail_segment_masks};
 
+pub use aggs::{AggDomain, MaskedCollector, aggregate};
 pub use ann::AnnExec;
 pub use doc_fetch::{DocFetchExec, FetchColumns, FetchedRow, fetch_rows};
 pub use filter_bitmap::FilterBitmapExec;
@@ -165,14 +168,28 @@ pub(crate) async fn open_units(
     sort_fields: &[SortField],
     parallelism: usize,
 ) -> Result<(Vec<OpenSplit>, Vec<Unit>), ServiceError> {
+    let fast: Vec<FastFieldWarmupInfo> = sort_fields
+        .iter()
+        .map(|field| FastFieldWarmupInfo {
+            name: field.name.clone(),
+            with_subfields: false,
+        })
+        .collect();
+    open_units_with(view, compile, &fast, parallelism).await
+}
+
+/// [`open_units`] warming the fast columns `fast` (those a split has).
+pub(crate) async fn open_units_with(
+    view: &ReadView,
+    compile: &Compile<'_>,
+    fast: &[FastFieldWarmupInfo],
+    parallelism: usize,
+) -> Result<(Vec<OpenSplit>, Vec<Unit>), ServiceError> {
     let warm = |schema: &Schema| {
         let mut warmup = compile(schema)?.warmup;
-        for field in sort_fields {
+        for field in fast {
             if schema.get_field(&field.name).is_ok() {
-                warmup.fast_fields.insert(FastFieldWarmupInfo {
-                    name: field.name.clone(),
-                    with_subfields: false,
-                });
+                warmup.fast_fields.insert(field.clone());
             }
         }
         Ok(warmup)

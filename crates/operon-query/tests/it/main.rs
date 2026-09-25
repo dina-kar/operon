@@ -1,5 +1,6 @@
 mod common;
 
+mod aggs;
 mod ann;
 mod compile;
 mod ir_json;

@@ -2,6 +2,7 @@
 //! [`SearchRequest`] over one read view as a tree of the operators, runs
 //! it, and assembles the response; and point reads, counts and scrolls.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -16,6 +17,7 @@ use futures::future::BoxFuture;
 use operon_collection::{CollectionSchema, FieldKind, PrimaryKey};
 
 use crate::error::ServiceError;
+use crate::exec::aggs::{AggDomain, aggregate};
 use crate::exec::ann::AnnExec;
 use crate::exec::doc_fetch::{FetchColumns, FetchedRow, fetch_rows};
 use crate::exec::filter_bitmap::FilterBitmapExec;
@@ -35,6 +37,7 @@ use crate::ir::{
 };
 use crate::read::ReadView;
 use crate::text::fields::{ResolvedField, resolve_field};
+use crate::text::highlight::{check_highlight, highlight, highlight_stats};
 use crate::text::pkdict::PkDictCache;
 use crate::text::stats::StatsCache;
 use crate::types::{Projection, StoredDoc};
@@ -515,6 +518,9 @@ impl SearchPlanner {
         }
         let schema = &view.collection.schema;
         let columns = fetch_columns(schema, &request.select, request.highlight.is_some())?;
+        if let Some(highlight) = &request.highlight {
+            check_highlight(schema, highlight)?;
+        }
         let context = datafusion::prelude::SessionContext::new().task_ctx();
         let plan = Plan {
             planner: self,
@@ -584,20 +590,41 @@ impl SearchPlanner {
                 (hits, domain)
             }
         };
-        // 6–8. Groups, or the page.
+        // 6–8. Groups, or the page, with their highlights (Task 8).
+        let stats = match &request.highlight {
+            Some(_) => {
+                Some(highlight_stats(&view, &request, &self.stats, self.config.parallelism).await?)
+            }
+            None => None,
+        };
+        let hits_of = |members: Vec<(Ranked, FetchedRow)>| -> Result<Vec<Hit>, ServiceError> {
+            let (ranked, rows): (Vec<Ranked>, Vec<FetchedRow>) = members.into_iter().unzip();
+            let highlights = match &stats {
+                Some(stats) => highlight(schema, &view, &request, stats, &rows)?,
+                None => vec![BTreeMap::new(); rows.len()],
+            };
+            Ok(ranked
+                .iter()
+                .zip(rows)
+                .zip(highlights)
+                .map(|((ranked, row), highlight)| Hit {
+                    highlight,
+                    ..self.hit(&view, &request, &sort, ranked, row)
+                })
+                .collect())
+        };
         let (hits, groups) = match &request.group_by {
             Some(group_by) => {
-                let groups = group(&view, &candidates, group_by, &columns).await?;
-                let groups = groups
+                let groups = group(&view, &candidates, group_by, &columns)
+                    .await?
                     .into_iter()
-                    .map(|(key, members)| HitGroup {
-                        key,
-                        hits: members
-                            .into_iter()
-                            .map(|(ranked, row)| self.hit(&view, &request, &sort, &ranked, row))
-                            .collect(),
+                    .map(|(key, members)| {
+                        Ok(HitGroup {
+                            key,
+                            hits: hits_of(members)?,
+                        })
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>, ServiceError>>()?;
                 (Vec::new(), Some(groups))
             }
             None => {
@@ -609,20 +636,31 @@ impl SearchPlanner {
                     .collect();
                 let ids: Vec<u64> = page.iter().map(|hit| hit.row_id).collect();
                 let rows = fetch_rows(&view, &ids, &columns).await?;
-                let hits = page
-                    .iter()
-                    .zip(rows)
-                    .map(|(ranked, row)| self.hit(&view, &request, &sort, ranked, row))
-                    .collect();
-                (hits, None)
+                (hits_of(page.into_iter().zip(rows).collect())?, None)
             }
         };
         // 9.
         let total = self.total(&view, &request, &domain).await?;
+        let aggregations = match &request.aggregations {
+            Some(aggregations) => {
+                let domain = match domain {
+                    Domain::Text(query) => AggDomain::Query {
+                        query,
+                        filter: request.filter.clone(),
+                    },
+                    Domain::Filter => AggDomain::Filter(request.filter.clone()),
+                    Domain::Candidates(hits) => {
+                        AggDomain::Rows(hits.iter().map(|hit| hit.row_id).collect())
+                    }
+                };
+                Some(aggregate(&view, aggregations, domain, &self.config).await?)
+            }
+            None => None,
+        };
         Ok(SearchResponse {
             hits,
             total,
-            aggregations: None,
+            aggregations,
             groups,
             read_token: view.read_token.clone(),
             hot_used: view.hot_used.kinds(),

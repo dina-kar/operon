@@ -9,7 +9,7 @@
 //! ([`stats`]).
 //!
 //! Task 7: the per-split primary-key dictionaries that scroll walks
-//! ([`pkdict`]).
+//! ([`pkdict`]). Task 8: highlighting ([`highlight`]).
 //!
 //! Query analysis uses Quickwit's [`TokenizerManager`] ([`query_tokenizers`],
 //! P28, row 0.44); splits and the tail index keep Tantivy's
@@ -18,6 +18,7 @@
 pub mod coerce;
 pub mod compile;
 pub mod fields;
+pub mod highlight;
 pub mod norms;
 pub mod pkdict;
 pub mod splits;
@@ -32,6 +33,7 @@ pub use compile::{
     parse_minimum_should_match,
 };
 pub use fields::{ResolvedField, resolve_field};
+pub use highlight::{check_highlight, highlight, highlight_stats};
 pub use norms::{FIELD_NORMS_TABLE, norm_mid2};
 pub use pkdict::{PkCursor, PkDictCache};
 pub use splits::{LocalSplitStorage, OpenSplit, open_splits};

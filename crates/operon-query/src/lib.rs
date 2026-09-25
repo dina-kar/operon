@@ -13,6 +13,9 @@
 //! tail, filter bitmaps and global BM25 statistics ([`exec`], [`text`]).
 //! Task 6: dense vector search over Lance, the tail and the hot tier, and
 //! exact sparse vector search ([`vector`], [`sparse`], [`exec`]).
+//! Task 7: search assembly, get, count and scroll ([`exec::planner`]).
+//! Task 8: aggregations and highlighting ([`exec::aggs`],
+//! [`text::highlight`]).
 
 pub mod error;
 pub mod exec;
