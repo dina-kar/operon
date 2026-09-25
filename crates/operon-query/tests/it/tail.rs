@@ -458,19 +458,25 @@ async fn a_failed_reresolve_is_retried_before_publishing() {
     let (_, manifest) = f.manifest().await;
     let delta = manifest.pk_delta.clone().expect("a pk delta");
     f.store.delete(&delta).await.expect("delete the pk delta");
-    // Re-resolution reads the new Lance version: fail it until one attempt
-    // has failed.
+    // Re-resolution reads the new Lance version. With every such read
+    // failing, the held follower runs exactly one iteration: one failed
+    // attempt, which neither publishes the new manifest nor resets.
     let lance = operon_collection::lance_prefix(f.ns, f.cid);
-    let gets = f.paths.gets_under(&lance);
     f.paths.fail_gets_under(&lance);
-    tail.pause_fetch(false);
-    let deadline = std::time::Instant::now() + WAIT;
-    while f.paths.gets_under(&lance) == gets {
-        assert!(std::time::Instant::now() < deadline, "no re-resolution");
-        tail.notify();
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    tail.step().await;
+    assert!(
+        f.paths.failures_under(&lance) > 0,
+        "the attempt read the Lance version and failed"
+    );
+    assert!(
+        tail.current().manifest().version < version,
+        "a failed re-resolution publishes nothing"
+    );
+    // The retry succeeds and adopts the manifest over the same overlay: the
+    // tail's row ids are unchanged, which a reset (a refold with new row
+    // ids) would not give.
     f.paths.clear_failures();
+    tail.pause_fetch(false);
 
     let after = f.adopted(&tail, version).await;
     let fresh: BTreeSet<u64> = f
@@ -483,12 +489,11 @@ async fn a_failed_reresolve_is_retried_before_publishing() {
         .map(|stored| stored.expect("durable").row_id)
         .collect();
     assert_ne!(fresh, before.shadow().iter().collect::<BTreeSet<u64>>());
-    let after = if after.keys_after(None, 100).len() == keys.len() {
-        after
-    } else {
-        // Two failures in a row reset the tail; it refolds the patches.
-        f.sync(&tail).await
-    };
+    assert_eq!(
+        after.live().iter().collect::<Vec<u64>>(),
+        before.live().iter().collect::<Vec<u64>>(),
+        "the adoption kept the overlay's row ids"
+    );
     assert_eq!(after.shadow().iter().collect::<BTreeSet<u64>>(), fresh);
     assert_eq!(after.keys_after(None, 100).len(), keys.len());
     tail.stop().await;

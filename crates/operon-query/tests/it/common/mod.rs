@@ -125,12 +125,26 @@ pub struct PathStore {
     inner: InMemory,
     gets: Mutex<HashMap<String, u64>>,
     failing: Mutex<Vec<String>>,
+    /// `get`s that returned an injected failure, per path.
+    failed: Mutex<HashMap<String, u64>>,
 }
 
 impl PathStore {
     /// The `get`s so far of paths starting with `prefix`.
     pub fn gets_under(&self, prefix: &str) -> u64 {
         self.gets
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter(|(path, _)| path.starts_with(prefix))
+            .map(|(_, n)| *n)
+            .sum()
+    }
+
+    /// The `get`s so far of paths starting with `prefix` that returned an
+    /// injected failure.
+    pub fn failures_under(&self, prefix: &str) -> u64 {
+        self.failed
             .lock()
             .expect("lock")
             .iter()
@@ -209,6 +223,12 @@ impl ObjectStore for PathStore {
             .iter()
             .any(|prefix| path.starts_with(prefix.as_str()));
         if failing {
+            *self
+                .failed
+                .lock()
+                .expect("lock")
+                .entry(path.clone())
+                .or_default() += 1;
             return Err(object_store::Error::Generic {
                 store: "PathStore",
                 source: format!("injected get failure on {path}").into(),

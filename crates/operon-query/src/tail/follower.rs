@@ -45,6 +45,12 @@ struct Shared {
     pause: watch::Sender<bool>,
     #[cfg(feature = "test-util")]
     held: watch::Sender<bool>,
+    /// Iterations granted to a paused follower by [`Tail::step`].
+    #[cfg(feature = "test-util")]
+    steps: watch::Sender<u64>,
+    /// Iterations the follower has run.
+    #[cfg(feature = "test-util")]
+    iterations: watch::Sender<u64>,
 }
 
 impl Shared {
@@ -111,6 +117,10 @@ impl Tail {
             pause: watch::channel(false).0,
             #[cfg(feature = "test-util")]
             held: watch::channel(false).0,
+            #[cfg(feature = "test-util")]
+            steps: watch::channel(0).0,
+            #[cfg(feature = "test-util")]
+            iterations: watch::channel(0).0,
         });
         let follower = Follower {
             shared: shared.clone(),
@@ -125,6 +135,8 @@ impl Tail {
             adopt_failures: 0,
             reresolve_pending: false,
             fresh_reset: BTreeSet::new(),
+            #[cfg(feature = "test-util")]
+            steps_taken: 0,
         };
         let task = tokio::spawn(follower.run());
         Arc::new(Self {
@@ -237,6 +249,16 @@ impl Tail {
         let mut held = self.shared.held.subscribe();
         let _ = held.wait_for(|held| *held).await;
     }
+
+    /// Lets a paused follower run exactly one more iteration, and waits
+    /// until it has run it; the follower is held again before the next.
+    #[cfg(feature = "test-util")]
+    pub async fn step(&self) {
+        let mut iterations = self.shared.iterations.subscribe();
+        let done = *iterations.borrow_and_update();
+        self.shared.steps.send_modify(|n| *n += 1);
+        let _ = iterations.wait_for(|n| *n > done).await;
+    }
 }
 
 impl Drop for Tail {
@@ -267,6 +289,9 @@ struct Follower {
     reresolve_pending: bool,
     /// Partitions whose first fetch after a reset has not returned yet.
     fresh_reset: BTreeSet<u32>,
+    /// Grants of [`Tail::step`] used so far.
+    #[cfg(feature = "test-util")]
+    steps_taken: u64,
 }
 
 enum Step {
@@ -320,7 +345,10 @@ impl Follower {
             if !self.hold(&mut stop).await {
                 break;
             }
-            match self.iteration().await {
+            let step = self.iteration().await;
+            #[cfg(feature = "test-util")]
+            self.shared.iterations.send_modify(|n| *n += 1);
+            match step {
                 Step::Continue(still_behind) => behind = still_behind,
                 Step::Stop => break,
             }
@@ -331,16 +359,27 @@ impl Follower {
         self.shared.publishes.send_modify(|n| *n += 1);
     }
 
-    /// Holds while paused; `false` when stopped meanwhile.
+    /// Holds while paused, except for one iteration per [`Tail::step`] grant;
+    /// `false` when stopped meanwhile.
     #[cfg(feature = "test-util")]
-    async fn hold(&self, stop: &mut watch::Receiver<bool>) -> bool {
+    async fn hold(&mut self, stop: &mut watch::Receiver<bool>) -> bool {
         let mut pause = self.shared.pause.subscribe();
         if !*pause.borrow_and_update() {
+            return true;
+        }
+        let mut steps = self.shared.steps.subscribe();
+        let taken = self.steps_taken;
+        if *steps.borrow_and_update() > taken {
+            self.steps_taken += 1;
             return true;
         }
         self.shared.held.send_replace(true);
         let resumed = tokio::select! {
             _ = pause.wait_for(|paused| !*paused) => true,
+            _ = steps.wait_for(|granted| *granted > taken) => {
+                self.steps_taken += 1;
+                true
+            }
             _ = stop.wait_for(|stop| *stop) => false,
         };
         self.shared.held.send_replace(false);
