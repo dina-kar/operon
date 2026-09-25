@@ -1,10 +1,10 @@
 //! Versioned pointers with compare-and-swap, for manifest commits (design §03 §3.3).
 
+use operon_common::meta::{ApplyError, COLLECTION_POINTER_PREFIX, Fence, Freshness, Pointer};
 use operon_common::{CollectionId, NamespaceId};
 
 use super::{MetaState, validate_key};
-use crate::command::{ApplyError, Reply};
-use crate::types::{COLLECTION_POINTER_PREFIX, Fence, Freshness, Pointer};
+use crate::command::Reply;
 
 impl MetaState {
     pub(super) fn cas_pointer(

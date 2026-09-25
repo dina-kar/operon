@@ -4486,6 +4486,7 @@ dependencies = [
  "postcard",
  "serde",
  "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]

@@ -1,8 +1,9 @@
 //! Leases with epochs, for worker tasks and fencing (design §09 §3, §6).
 
-use super::{MAX_LEASE_TTL_MS, MetaState, validate_key};
-use crate::command::{ApplyError, Reply};
-use crate::types::{Fence, Lease, LeaseGrant};
+use operon_common::meta::{ApplyError, Fence, Lease, LeaseGrant, MAX_LEASE_TTL_MS};
+
+use super::{MetaState, validate_key};
+use crate::command::Reply;
 
 impl MetaState {
     pub(super) fn acquire_lease(

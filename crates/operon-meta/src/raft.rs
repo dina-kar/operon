@@ -1,6 +1,8 @@
 //! openraft type configuration for the metastore.
 
-use crate::command::{ApplyError, Command, Reply};
+use operon_common::meta::ApplyError;
+
+use crate::command::{Command, Reply};
 
 /// Identifies a meta node. Chosen by the operator and stable across restarts.
 pub type NodeId = u64;

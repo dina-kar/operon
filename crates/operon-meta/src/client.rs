@@ -6,19 +6,19 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use operon_common::meta::{
+    AliasAction, ApplyError, Consistency, Fence, Freshness, LeaseGrant, LinkId, MetaError,
+    Retention, TargetRef, WalChunk, WalClass,
+};
 use operon_common::schema::CollectionSchema;
 use operon_common::{CollectionId, NamespaceId, StreamId};
 use tokio::sync::watch;
 
 use crate::clock::Clock;
-use crate::command::{ApplyError, Command, Reply};
-use crate::error::MetaError;
-use crate::node::{Consistency, MetaNode};
+use crate::command::{Command, Reply};
+use crate::node::MetaNode;
 use crate::raft::NodeId;
 use crate::state::MetaState;
-use crate::types::{
-    AliasAction, Fence, Freshness, LeaseGrant, LinkId, Retention, TargetRef, WalChunk, WalClass,
-};
 
 /// The longest wait between two attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(1);
@@ -280,7 +280,7 @@ impl MetaClient {
         };
         match self.write(command).await? {
             Reply::NamespaceCreated(id) => Ok(id),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -314,7 +314,7 @@ impl MetaClient {
         };
         match self.write(command).await? {
             Reply::StreamCreated(id) => Ok(id),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -338,7 +338,7 @@ impl MetaClient {
         };
         match self.write(command).await? {
             Reply::LinkCreated(id) => Ok(id),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -357,7 +357,7 @@ impl MetaClient {
         };
         match self.write(command).await? {
             Reply::WalCommitted { base_offsets } => Ok(base_offsets),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -388,7 +388,7 @@ impl MetaClient {
         };
         match self.write(command).await? {
             Reply::SegmentSwapped => Ok(()),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -410,7 +410,7 @@ impl MetaClient {
         };
         match self.write(command).await? {
             Reply::Trimmed { log_start_offset } => Ok(log_start_offset),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -424,7 +424,7 @@ impl MetaClient {
             .await?
         {
             Reply::RetentionSet => Ok(()),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -437,7 +437,7 @@ impl MetaClient {
         };
         match self.write(command).await? {
             Reply::Pruned { removed } => Ok(removed),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -453,7 +453,7 @@ impl MetaClient {
             .await?
         {
             Reply::Forgotten { removed } => Ok(removed),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -471,7 +471,7 @@ impl MetaClient {
         };
         match self.write(command).await? {
             Reply::Lease(grant) => Ok(grant),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -491,7 +491,7 @@ impl MetaClient {
         };
         match self.write(command).await? {
             Reply::Lease(grant) => Ok(grant),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -513,7 +513,7 @@ impl MetaClient {
         };
         match self.write(command).await? {
             Reply::Lease(grant) => Ok(grant),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -525,7 +525,7 @@ impl MetaClient {
         };
         match self.write(command).await? {
             Reply::LeaseReleased => Ok(()),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -564,7 +564,7 @@ impl MetaClient {
         };
         match self.write(command).await? {
             Reply::PointerSet { version } => Ok(version),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -590,7 +590,7 @@ impl MetaClient {
         };
         match self.write_tracked(command).await {
             (Ok(Reply::CollectionCreated { id, stream, link }), _) => Ok((id, stream, link)),
-            (Ok(other), _) => Err(MetaError::UnexpectedReply(other)),
+            (Ok(other), _) => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
             (Err(MetaError::Rejected(ApplyError::CollectionExists(id))), true) => {
                 self.created_collection(id).await
             }
@@ -631,7 +631,7 @@ impl MetaClient {
         };
         match self.write(command).await? {
             Reply::CollectionDropped(id) => Ok(id),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -650,7 +650,7 @@ impl MetaClient {
         };
         match self.write(command).await? {
             Reply::SchemaUpdated { version } => Ok(version),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -665,7 +665,7 @@ impl MetaClient {
             .await?
         {
             Reply::AliasesUpdated => Ok(()),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 }

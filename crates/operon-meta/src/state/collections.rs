@@ -3,17 +3,17 @@
 
 use std::collections::BTreeMap;
 
+use operon_common::meta::{
+    AliasAction, ApplyError, COLLECTION_KIND, Collection, LinkId, MAX_COLLECTION_NAME_LEN,
+    Retention, TargetRef, WalClass, collection_pk_prefix, collection_pointer_key,
+    collection_prefix, implicit_name,
+};
 use operon_common::schema::{CollectionSchema, SchemaError};
 use operon_common::{CollectionId, NamespaceId};
 
 use super::catalog::check_partitions;
 use super::{MetaState, refuse_reserved, validate_name};
-use crate::command::{ApplyError, Reply};
-use crate::types::{
-    AliasAction, COLLECTION_KIND, Collection, LinkId, MAX_COLLECTION_NAME_LEN, Retention,
-    TargetRef, WalClass, collection_pk_prefix, collection_pointer_key, collection_prefix,
-    implicit_name,
-};
+use crate::command::Reply;
 
 /// Most actions one `UpdateAliases` may carry.
 const MAX_ALIAS_ACTIONS: usize = 100;

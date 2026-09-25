@@ -2,11 +2,11 @@
 
 use std::collections::BTreeMap;
 
+use operon_common::meta::{ApplyError, COLLECTION_KIND, Link, LinkId, MAX_KEY_LEN, TargetRef};
 use operon_common::{NamespaceId, StreamId};
 
-use super::{MAX_KEY_LEN, MetaState, refuse_reserved, validate_name};
-use crate::command::{ApplyError, Reply};
-use crate::types::{COLLECTION_KIND, Link, LinkId, TargetRef};
+use super::{MetaState, refuse_reserved, validate_name};
+use crate::command::Reply;
 
 /// Most options one link may carry.
 const MAX_LINK_OPTIONS: usize = 64;

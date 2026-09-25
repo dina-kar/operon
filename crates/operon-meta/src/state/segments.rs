@@ -4,10 +4,11 @@
 use std::ops::Range;
 
 use operon_common::StreamId;
+use operon_common::meta::{ApplyError, EntryKind, Fence, Freshness, IndexEntry};
 
 use super::{MetaState, validate_key};
-use crate::command::{ApplyError, Reply};
-use crate::types::{EntryKind, Fence, Freshness, IndexEntry, PartitionState};
+use crate::command::Reply;
+use crate::types::PartitionState;
 
 impl MetaState {
     #[allow(clippy::too_many_arguments)]
