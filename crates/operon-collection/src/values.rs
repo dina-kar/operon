@@ -141,10 +141,11 @@ fn malformed(kind: &FieldKind, value: &Value) -> String {
 /// `null`, `Err(message)` when the value is malformed for the kind.
 ///
 /// - `Text`, `Keyword`: strings; numbers and bools become their JSON text.
-/// - `I64`: integers in range; floats with a zero fraction in range; strings
-///   that parse as an `i64`.
+/// - `I64`: integers in range; other numbers, and strings that parse as a
+///   number, truncated toward zero if that is in range (`3.5` and `"3.5"`
+///   give 3).
 /// - `F64`: numbers; strings that parse as a finite `f64`.
-/// - `Bool`: `true`, `false`, `"true"`, `"false"`.
+/// - `Bool`: `true`, `false`, `"true"`, `"false"`, and `""` (false).
 /// - `Date`: [`parse_date`].
 /// - `Uuid`: strings `uuid::Uuid::parse_str` accepts.
 /// - `Json` is never coerced (a Json field is indexed whole, Task 8): every
@@ -168,7 +169,12 @@ pub fn coerce(kind: &FieldKind, value: &Value) -> Result<Option<IndexValue>, Str
                 .or_else(|| float_to_i64(n.as_f64()?))
                 .ok_or_else(bad)?,
         ),
-        (FieldKind::I64, Value::String(s)) => IndexValue::I64(s.parse().map_err(|_| bad())?),
+        (FieldKind::I64, Value::String(s)) => IndexValue::I64(
+            s.parse()
+                .ok()
+                .or_else(|| float_to_i64(s.parse().ok()?))
+                .ok_or_else(bad)?,
+        ),
         (FieldKind::F64, Value::Number(n)) => {
             IndexValue::F64(n.as_f64().filter(|f| f.is_finite()).ok_or_else(bad)?)
         }
@@ -181,7 +187,7 @@ pub fn coerce(kind: &FieldKind, value: &Value) -> Result<Option<IndexValue>, Str
         (FieldKind::Bool, Value::Bool(b)) => IndexValue::Bool(*b),
         (FieldKind::Bool, Value::String(s)) => match s.as_str() {
             "true" => IndexValue::Bool(true),
-            "false" => IndexValue::Bool(false),
+            "false" | "" => IndexValue::Bool(false),
             _ => return Err(bad()),
         },
         (FieldKind::Date, _) => IndexValue::Date(parse_date(value).map_err(|_| bad())?),
@@ -201,11 +207,15 @@ fn scalar_text(value: &Value) -> String {
     }
 }
 
-/// `f` as an `i64` if it has no fraction and is in range.
+/// `f` truncated toward zero, if that is in the `i64` range (ES coerces
+/// `3.5` to `3`). Not-a-number and infinities are out of range.
 fn float_to_i64(f: f64) -> Option<i64> {
     // -2^63 is exact as an f64; 2^63 is the first value out of range.
     const BOUND: f64 = 9_223_372_036_854_775_808.0;
-    (f.fract() == 0.0 && (-BOUND..BOUND).contains(&f)).then_some(f as i64)
+    let truncated = f.trunc();
+    (-BOUND..BOUND)
+        .contains(&truncated)
+        .then_some(truncated as i64)
 }
 
 /// The Java-style date formats a string may use after the digit and RFC 3339

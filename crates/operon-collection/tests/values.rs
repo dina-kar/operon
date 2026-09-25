@@ -115,7 +115,7 @@ fn coercion_follows_es_rules() {
         (FieldKind::Keyword, json!({"k": 1}), bad()),
         (FieldKind::I64, json!(-42), ok(IndexValue::I64(-42))),
         (FieldKind::I64, json!("17"), ok(IndexValue::I64(17))),
-        (FieldKind::I64, json!(3.5), bad()),
+        (FieldKind::I64, json!("abc"), bad()),
         (FieldKind::F64, json!(2.25), ok(IndexValue::F64(2.25))),
         (FieldKind::F64, json!("1e3"), ok(IndexValue::F64(1000.0))),
         (FieldKind::F64, json!("NaN"), bad()),
@@ -145,7 +145,7 @@ fn coercion_follows_es_rules() {
         ),
         (FieldKind::Uuid, json!("not-a-uuid"), bad()),
         (FieldKind::I64, Value::Null, Ok(None)),
-        (FieldKind::I64, json!(3.0), ok(IndexValue::I64(3))),
+        (FieldKind::I64, json!(3.5), ok(IndexValue::I64(3))),
         (FieldKind::Json, json!({"a": 1}), bad()),
     ];
     assert_eq!(cases.len(), 24);
@@ -155,15 +155,40 @@ fn coercion_follows_es_rules() {
         });
         assert_eq!(got, expected, "{kind:?} {input}");
     }
-    // Integers out of range, and floats with a fraction or out of range.
+    // ES 8 `coerce: true`: fractions are truncated toward zero (controller
+    // ruling P27); values out of range and non-numeric strings are refused.
+    for (input, expected) in [
+        (json!(3.0), 3),
+        (json!(-3.7), -3),
+        (json!("1.0"), 1),
+        (json!("3.5"), 3),
+        (json!("-0.5"), 0),
+    ] {
+        assert_eq!(
+            coerce(&FieldKind::I64, &input),
+            Ok(Some(IndexValue::I64(expected))),
+            "{input}"
+        );
+    }
     for input in [
         json!(u64::MAX),
         json!(1e19),
         json!(-1e19),
         json!("9223372036854775808"),
-        json!("1.0"),
+        json!("1e19"),
+        json!("NaN"),
+        json!("inf"),
+        json!(""),
+        json!("3 apples"),
     ] {
         assert!(coerce(&FieldKind::I64, &input).is_err(), "{input}");
+    }
+    assert_eq!(
+        coerce(&FieldKind::Bool, &json!("")),
+        Ok(Some(IndexValue::Bool(false)))
+    );
+    for input in [json!("yes"), json!("TRUE"), json!(0)] {
+        assert!(coerce(&FieldKind::Bool, &input).is_err(), "{input}");
     }
     assert_eq!(
         coerce(&FieldKind::I64, &json!(i64::MIN)),

@@ -47,8 +47,8 @@ pub enum OpResult {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpError {
     /// The op is malformed whatever the schema: an invalid key, a patch
-    /// `delete_keys` entry that is not a path, or a record that cannot be
-    /// encoded.
+    /// `delete_keys` entry that is not a path, a patch whose upsert document
+    /// has another key, or a record that cannot be encoded.
     InvalidArgument(String),
     /// The first violation of the schema.
     SchemaViolation { field: String, message: String },
@@ -203,8 +203,13 @@ fn check(collection: &Collection, op: &DocOp) -> Checked {
     let checked = match op {
         DocOp::Upsert(doc) => check_document(schema, doc).map(|_| ()),
         DocOp::Delete(_) => Ok(()),
-        DocOp::Patch { delete_keys, .. } => {
-            // Not a schema matter: reported before the schema is consulted,
+        DocOp::Patch {
+            pk,
+            delete_keys,
+            upsert,
+            ..
+        } => {
+            // Not schema matters: reported before the schema is consulted,
             // so a field that happens to be named `delete_keys` is not
             // mistaken for it.
             if let Some(violation) = invalid_delete_key(delete_keys) {
@@ -212,6 +217,13 @@ fn check(collection: &Collection, op: &DocOp) -> Checked {
                     "{}: {}",
                     violation.field, violation.message
                 )));
+            }
+            // Apply would never insert it (`apply_patch`), so the patch
+            // would be acknowledged and silently do nothing.
+            if upsert.as_ref().is_some_and(|doc| doc.pk != *pk) {
+                return Err(OpError::InvalidArgument(
+                    "the upsert document's primary key differs from the patch's".to_string(),
+                ));
             }
             check_patch(schema, op)
         }

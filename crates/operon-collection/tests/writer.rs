@@ -130,6 +130,10 @@ async fn rejected_ops_are_reported_and_valid_ones_written() {
     if let DocOp::Patch { delete_keys, .. } = &mut bad_keys {
         delete_keys.push("a..b".to_string());
     }
+    let mut cross_key = common::patch(PrimaryKey::U64(7), json!({"n": 7}));
+    if let DocOp::Patch { upsert: u, .. } = &mut cross_key {
+        *u = Some(common::doc(PrimaryKey::U64(8), json!({"n": 8})));
+    }
     let ops = vec![
         upsert(1, json!({"n": 1})),
         upsert(2, json!({"n": "two"})),
@@ -138,10 +142,11 @@ async fn rejected_ops_are_reported_and_valid_ones_written() {
         DocOp::Delete(PrimaryKey::U64(4)),
         common::patch(PrimaryKey::U64(5), json!({"n": 5})),
         bad_keys,
+        cross_key,
     ];
     let outcome = writer.write(ns, cid, ops.clone()).await.unwrap();
     let results = &outcome.results;
-    assert_eq!(results.len(), 7);
+    assert_eq!(results.len(), 8);
     assert!(matches!(results[0], OpResult::Written { .. }));
     assert_eq!(
         results[1],
@@ -167,6 +172,12 @@ async fn rejected_ops_are_reported_and_valid_ones_written() {
         matches!(&results[6], OpResult::Rejected(OpError::InvalidArgument(_))),
         "{:?}",
         results[6]
+    );
+    // A patch whose upsert document has another key would never insert it.
+    assert!(
+        matches!(&results[7], OpResult::Rejected(OpError::InvalidArgument(_))),
+        "{:?}",
+        results[7]
     );
 
     let reader = reader(&meta.client, &store).await;
