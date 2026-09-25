@@ -35,6 +35,12 @@ impl MetaState {
                     "stream {source} is not in namespace {namespace}"
                 )));
             }
+            // It lives and dies with its collection, so a user link would dangle.
+            Some(stream) if stream.name.starts_with('_') => {
+                return Err(ApplyError::InvalidArgument(format!(
+                    "stream {source} belongs to a collection and cannot be a link source"
+                )));
+            }
             Some(_) => {}
         }
         validate_name("link target kind", &target.kind)?;

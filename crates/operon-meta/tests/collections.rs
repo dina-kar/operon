@@ -335,6 +335,56 @@ fn create_link_refuses_a_collection_target() {
 }
 
 #[test]
+fn create_link_refuses_an_implicit_stream_as_source() {
+    let mut state = state();
+    let (_, stream, _) = create(&mut state, "docs", 1);
+    let before = state.clone();
+    let result = state.apply(Command::CreateLink {
+        namespace: NS,
+        name: "tap".to_string(),
+        source: stream,
+        target: TargetRef {
+            kind: "counter".to_string(),
+            name: "tap".to_string(),
+        },
+        options: BTreeMap::new(),
+    });
+    assert!(
+        matches!(result, Err(ApplyError::InvalidArgument(_))),
+        "{result:?}"
+    );
+    assert_eq!(state, before);
+}
+
+#[test]
+fn set_retention_refuses_an_implicit_stream() {
+    let mut state = state();
+    let (_, stream, _) = create(&mut state, "docs", 1);
+    let before = state.clone();
+    let result = state.apply(Command::SetRetention {
+        stream,
+        retention: Retention {
+            max_age_ms: Some(1),
+            max_bytes: None,
+        },
+    });
+    assert!(
+        matches!(result, Err(ApplyError::InvalidArgument(_))),
+        "{result:?}"
+    );
+    assert_eq!(state, before);
+    // A user stream still takes one.
+    assert!(
+        state
+            .apply(Command::SetRetention {
+                stream: StreamId(1),
+                retention: Retention::default(),
+            })
+            .is_ok()
+    );
+}
+
+#[test]
 fn drop_frees_the_name_and_recreate_gets_a_new_id() {
     let mut state = state();
     let (first, old_stream, old_link) = create(&mut state, "docs", 2);
@@ -659,6 +709,24 @@ fn rejected_commands_leave_the_state_unchanged() {
             partitions: 1,
             class: WalClass::Standard,
             retention: Retention::default(),
+        },
+        // The implicit stream (2) keeps its retention and takes no user links.
+        Command::SetRetention {
+            stream: StreamId(2),
+            retention: Retention {
+                max_age_ms: Some(1),
+                max_bytes: None,
+            },
+        },
+        Command::CreateLink {
+            namespace: NS,
+            name: "tap".to_string(),
+            source: StreamId(2),
+            target: TargetRef {
+                kind: "counter".to_string(),
+                name: "tap".to_string(),
+            },
+            options: BTreeMap::new(),
         },
     ];
     for command in rejected {

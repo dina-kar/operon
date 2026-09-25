@@ -605,7 +605,8 @@ impl MetaClient {
         id: CollectionId,
     ) -> Result<(CollectionId, StreamId, LinkId), MetaError> {
         let ids = |state: &MetaState| state.collection(id).map(|c| (c.id, c.stream, c.link));
-        if let Some(ids) = self.read(Consistency::Local, ids).await? {
+        // A failed local read is not an answer: ask the leader instead.
+        if let Some(ids) = self.read(Consistency::Local, ids).await.ok().flatten() {
             return Ok(ids);
         }
         self.read(Consistency::Linearizable, ids)

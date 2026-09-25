@@ -145,6 +145,15 @@ fn command() -> impl Strategy<Value = Command> {
                 }],
             }
         ),
+        1 => (1u64..=8, proptest::option::of(1u64..=1_000)).prop_map(|(stream, max_bytes)| {
+            Command::SetRetention {
+                stream: StreamId(stream),
+                retention: Retention {
+                    max_age_ms: None,
+                    max_bytes,
+                },
+            }
+        }),
         2 => (namespace(), 1u64..=4, proptest::option::of(1u64..=3)).prop_map(
             |(namespace, id, expected)| Command::CasPointer {
                 namespace,
