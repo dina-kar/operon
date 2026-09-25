@@ -42,9 +42,9 @@ jobs:
       - name: test
         run: cargo test --workspace --locked
       - name: metastore encoding
-        run: cargo test -p operon-meta --test it encoding:: --locked
+        run: 'cargo test -p operon-meta --test it encoding:: --locked'
       - name: metastore conformance
-        run: cargo test -p operon-meta --test it conformance:: --locked
+        run: 'cargo test -p operon-meta --test it conformance:: --locked'
       - name: log with failpoints
         run: cargo test -p operon-log --features failpoints --locked
       - name: link with failpoints
@@ -78,7 +78,7 @@ jobs:
         run: cargo test -p operon-sim --release --locked
       - name: simulation (1000 seeds x 300 steps, nightly)
         if: github.event_name == 'schedule'
-        run: cargo test -p operon-sim --release --locked --test it sim::
+        run: 'cargo test -p operon-sim --release --locked --test it sim::'
         env:
           SIM_SEEDS: "1000"
 
