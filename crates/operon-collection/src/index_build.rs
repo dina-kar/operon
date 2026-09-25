@@ -220,45 +220,62 @@ fn default_sub_vectors(dim: u32) -> usize {
     (dim / k) as usize
 }
 
+/// The IVF partitions of vector `spec`'s index over `rows` rows: the spec's
+/// `num_partitions`, else [`default_partitions`].
+fn partitions_for(spec: &VectorSpec, rows: u64) -> usize {
+    let given = match spec.index {
+        VectorIndexSpec::Auto | VectorIndexSpec::None => None,
+        VectorIndexSpec::IvfPq { num_partitions, .. }
+        | VectorIndexSpec::IvfRq { num_partitions, .. }
+        | VectorIndexSpec::IvfHnswSq { num_partitions } => num_partitions,
+    };
+    given.map_or_else(|| default_partitions(rows), |p| p as usize)
+}
+
+/// The fewest rows with the vector that vector `spec`'s index can be
+/// trained on when built over `rows` rows: `MIN_TRAINING_ROWS`, and at
+/// least one row per IVF partition (Lance's k-means refuses fewer rows than
+/// centroids, `lance-index` `kmeans.rs`). PQ's own k-means needs 2^num_bits
+/// ≤ 256 rows, which the floor covers.
+fn training_minimum(spec: &VectorSpec, rows: u64) -> u64 {
+    MIN_TRAINING_ROWS.max(partitions_for(spec, rows) as u64)
+}
+
 /// The Lance parameters of vector `spec`'s index over `rows` rows.
 fn vector_params(spec: &VectorSpec, rows: u64) -> Option<VectorIndexParams> {
     let metric = distance_type(spec.distance)?;
-    let partitions =
-        |given: Option<u32>| given.map_or_else(|| default_partitions(rows), |p| p as usize);
+    let partitions = partitions_for(spec, rows);
     Some(match spec.index {
         VectorIndexSpec::None => return None,
         VectorIndexSpec::Auto => VectorIndexParams::ivf_pq(
-            partitions(None),
+            partitions,
             8,
             default_sub_vectors(spec.dim),
             metric,
             PQ_MAX_ITERATIONS,
         ),
         VectorIndexSpec::IvfPq {
-            num_partitions,
             num_sub_vectors,
             num_bits,
+            ..
         } => VectorIndexParams::ivf_pq(
-            partitions(num_partitions),
+            partitions,
             num_bits,
             num_sub_vectors.map_or_else(|| default_sub_vectors(spec.dim), |n| n as usize),
             metric,
             PQ_MAX_ITERATIONS,
         ),
-        VectorIndexSpec::IvfRq {
-            num_partitions,
-            num_bits,
-        } => VectorIndexParams::ivf_rq(partitions(num_partitions), num_bits, metric),
-        VectorIndexSpec::IvfHnswSq { num_partitions } => {
-            VectorIndexParams::with_ivf_hnsw_sq_params(
-                metric,
-                IvfBuildParams::new(partitions(num_partitions)),
-                HnswBuildParams::default()
-                    .num_edges(spec.hnsw.m as usize)
-                    .ef_construction(spec.hnsw.ef_construct as usize),
-                SQBuildParams::default(),
-            )
+        VectorIndexSpec::IvfRq { num_bits, .. } => {
+            VectorIndexParams::ivf_rq(partitions, num_bits, metric)
         }
+        VectorIndexSpec::IvfHnswSq { .. } => VectorIndexParams::with_ivf_hnsw_sq_params(
+            metric,
+            IvfBuildParams::new(partitions),
+            HnswBuildParams::default()
+                .num_edges(spec.hnsw.m as usize)
+                .ef_construction(spec.hnsw.ef_construct as usize),
+            SQBuildParams::default(),
+        ),
     })
 }
 
@@ -344,6 +361,7 @@ struct Staged {
 }
 
 /// The live manifest a commit builds on, and its Lance version.
+#[derive(Clone)]
 struct Base {
     path: String,
     manifest: Arc<CollectionManifest>,
@@ -534,9 +552,9 @@ impl IndexTask {
             .await?)
     }
 
-    /// The live manifest (`Linearizable`) and its Lance version; `None`
-    /// before the first commit with data.
-    async fn base(&self) -> Result<Option<Base>, CollectionError> {
+    /// The live manifest's version (`Linearizable`; 0 before the first
+    /// commit), and the manifest with its Lance version once it has data.
+    async fn base(&self) -> Result<(u64, Option<Base>), CollectionError> {
         let ctx = self.ctx();
         let live = live_manifest(
             &ctx.meta,
@@ -548,28 +566,39 @@ impl IndexTask {
         )
         .await?;
         let Some((path, manifest)) = live else {
-            return Ok(None);
+            return Ok((0, None));
         };
+        let version = manifest.version;
         if manifest.lance_version == 0 {
-            return Ok(None);
+            return Ok((version, None));
         }
         let dataset = ctx
             .lance
             .open(self.ns, self.cid, manifest.lance_version)
             .await?;
-        Ok(Some(Base {
-            path,
-            manifest,
-            dataset,
-        }))
+        Ok((
+            version,
+            Some(Base {
+                path,
+                manifest,
+                dataset,
+            }),
+        ))
     }
 
+    /// Plans the work and does the first item that is neither deferred nor
+    /// failing: one item's deferral or failure never blocks the items after
+    /// it. A run where every buildable item failed returns the first
+    /// failure; `Fenced` ends the run at once.
     async fn run_inner(&self, fence: &Fence) -> Result<Ran, TaskError> {
         let Some(collection) = self.collection().await.map_err(failed)? else {
             return Ok((TaskOutcome::Idle, 0));
         };
-        let Some(base) = self.base().await.map_err(failed)? else {
-            return Ok((TaskOutcome::Idle, 0));
+        let (version, base) = self.base().await.map_err(failed)?;
+        let Some(base) = base else {
+            // No data yet: idle at the live version, so the collection is
+            // proposed again only when it moves or the poll interval passes.
+            return Ok((TaskOutcome::Idle, version));
         };
         let indices = base
             .dataset
@@ -583,31 +612,46 @@ impl IndexTask {
             &indices,
             &self.ctx().config,
         );
-        // The first work item that is not deferred.
-        let mut next = None;
+        let mut first_failure = None;
         for (done, item) in work.iter().enumerate() {
-            if let Some(build) = self
-                .prepare(&collection.schema, &base.dataset, item)
-                .await
-                .map_err(failed)?
-            {
-                next = Some((done, build));
-                break;
+            let prepared = self.prepare(&collection.schema, &base.dataset, item).await;
+            let result = match prepared {
+                Ok(None) => continue,
+                Ok(Some(build)) => {
+                    self.build(&collection.schema, base.clone(), build, fence)
+                        .await
+                }
+                Err(err) => Err(failed(err)),
+            };
+            match result {
+                Ok(version) => {
+                    let outcome = match done + 1 < work.len() {
+                        true => TaskOutcome::MoreWork,
+                        false => TaskOutcome::Idle,
+                    };
+                    return Ok((outcome, version));
+                }
+                Err(TaskError::Fenced) => return Err(TaskError::Fenced),
+                Err(err) => {
+                    tracing::warn!(
+                        collection = %self.cid,
+                        work = ?item,
+                        %err,
+                        "an index build failed; trying the next index"
+                    );
+                    first_failure.get_or_insert(err);
+                }
             }
         }
-        let Some((done, build)) = next else {
-            return Ok((TaskOutcome::Idle, base.manifest.version));
-        };
-        let version = self.build(&collection.schema, base, build, fence).await?;
-        let outcome = match done + 1 < work.len() {
-            true => TaskOutcome::MoreWork,
-            false => TaskOutcome::Idle,
-        };
-        Ok((outcome, version))
+        match first_failure {
+            Some(err) => Err(err),
+            None => Ok((TaskOutcome::Idle, base.manifest.version)),
+        }
     }
 
     /// The build `item` needs, or `None` to defer it: a vector whose rows
-    /// being indexed have fewer than `MIN_TRAINING_ROWS` vectors.
+    /// being indexed have fewer vectors than its index can be trained on
+    /// ([`training_minimum`]).
     async fn prepare(
         &self,
         schema: &CollectionSchema,
@@ -633,11 +677,13 @@ impl IndexTask {
         })?;
         let column = vector_column(vector);
         let rows = rows_with(dataset, &column, fragments.as_deref()).await?;
-        if rows < MIN_TRAINING_ROWS {
+        let needed = training_minimum(spec, rows);
+        if rows < needed {
             tracing::debug!(
                 collection = %self.cid,
                 vector = %spec.name,
                 rows,
+                needed,
                 "too few rows with the vector to train an index; deferred"
             );
             return Ok(None);
@@ -755,7 +801,7 @@ impl IndexTask {
                         parent = base.manifest.version,
                         "an index commit conflicted; rebasing onto the live manifest"
                     );
-                    base = self.base().await.map_err(failed)?.ok_or_else(|| {
+                    base = self.base().await.map_err(failed)?.1.ok_or_else(|| {
                         failed(CollectionError::Corrupt(format!(
                             "collection {} lost its lance dataset",
                             self.cid

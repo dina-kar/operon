@@ -769,3 +769,85 @@ async fn a_fenced_index_task_changes_nothing() {
     assert_eq!(f.manifest().await, before);
     f.shutdown().await;
 }
+
+/// A vector whose spec asks for more IVF partitions than it has rows cannot
+/// be trained yet: it is deferred, never failed, and the `_pk` BTREE after it
+/// is still built.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_vector_index_that_cannot_train_yet_does_not_block_the_pk_btree() {
+    let wide = VectorSpec {
+        index: VectorIndexSpec::IvfPq {
+            num_partitions: Some(1024),
+            num_sub_vectors: None,
+            num_bits: 8,
+        },
+        ..vector("v", DIM)
+    };
+    let schema = CollectionSchema::new(vec![], vec![wide], DynamicMapping::Ignore);
+    schema.validate().expect("valid schema");
+    let config = CollectionConfig {
+        pk_index_min_unindexed_rows: 50,
+        ..config()
+    };
+    let f = TargetFixture::start_with(schema, 2, config).await;
+    let source = IndexBuildSource::new(f.ctx.clone());
+    write_applied(&f, (0..300).map(|n| upsert_with(n, &["v"])).collect()).await;
+    assert_eq!(
+        plan(&f).await,
+        vec![IndexWork::VectorFull { vector: 0 }, IndexWork::PkBtree]
+    );
+    index_all(&f, &source).await;
+    let manifest = f.manifest().await;
+    assert!(manifest.vector_indexes.is_empty());
+    let [pk] = manifest.scalar_indexes.as_slice() else {
+        panic!("one scalar index: {:?}", manifest.scalar_indexes);
+    };
+    assert_eq!(pk.index_name, PK_INDEX_NAME);
+    // Only the vector remains, and it stays deferred without an error.
+    assert_eq!(plan(&f).await, vec![IndexWork::VectorFull { vector: 0 }]);
+    let version = manifest.version;
+    index_all(&f, &source).await;
+    assert_eq!(f.manifest().await.version, version);
+    assert_verified(f.verify().await);
+    f.shutdown().await;
+}
+
+/// An idle run records the live pointer version, also for a collection
+/// without data (only a dead letter, `lance_version == 0`): it is proposed
+/// again only when its pointer moves (or the poll interval passes).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_idle_collection_is_proposed_again_only_when_it_changes() {
+    let config = CollectionConfig {
+        index_poll_interval: Duration::from_secs(3_600),
+        ..config()
+    };
+    let f = TargetFixture::start_with(with_vector(), 2, config).await;
+    let source = IndexBuildSource::new(f.ctx.clone());
+    f.append_raw(
+        0,
+        operon_log::Record {
+            key: Some(bytes::Bytes::from_static(b"\x09not a key")),
+            value: Some(bytes::Bytes::from_static(b"\x01garbage")),
+            headers: vec![],
+            timestamp_ms: -1,
+        },
+    )
+    .await;
+    f.apply_all(&f.source(f.factory()), "linker").await;
+    let manifest = f.manifest().await;
+    assert_eq!((manifest.version, manifest.lance_version), (1, 0));
+    let run = || run_once(&f.meta.client, "indexer", TTL, &source);
+    assert_eq!(
+        outcome(run().await.expect("run")).unwrap(),
+        TaskOutcome::Idle
+    );
+    assert!(run().await.expect("run").is_empty(), "proposed again");
+
+    write_applied(&f, (0..10).map(|n| upsert_with(n, &["v"])).collect()).await;
+    assert_eq!(
+        outcome(run().await.expect("run")).unwrap(),
+        TaskOutcome::Idle
+    );
+    assert!(run().await.expect("run").is_empty(), "proposed again");
+    f.shutdown().await;
+}
