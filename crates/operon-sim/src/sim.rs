@@ -10,13 +10,20 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use object_store::memory::InMemory;
 use operon_cache::{RangeCache, RangeCacheConfig};
-use operon_common::{NamespaceId, StreamId};
+use operon_collection::{
+    CollectionConfig, CollectionContext, CollectionGcRoots, CollectionSchema, CollectionSnapshot,
+    CollectionTargetFactory, CollectionWriter, DocOp, Document, DynamicMapping, FieldKind,
+    FieldSpec, LanceConfig, LanceEnv, ManifestCache, OpResult, PatchMode, PkGcRoots, PrimaryKey,
+    VectorIndexSpec, VectorSpec, WriteError, fold_stream, live_manifest, split_path,
+    verify_collection,
+};
+use operon_common::{CollectionId, NamespaceId, StreamId};
 use operon_link::{
     CounterTable, CounterTargetFactory, LinkApplySource, LinkConfig, LinkGcRoots, TargetRegistry,
 };
 use operon_log::gc::{GcConfig, GcSource};
 use operon_log::{
-    FetchRequest, LogConfig, LogError, LogReader, LogWriter, Record, RetentionConfig,
+    FetchRequest, LogConfig, LogError, LogReader, LogWriter, OffsetRecord, Record, RetentionConfig,
     RetentionSource, SegmenterConfig, SegmenterSource,
 };
 use operon_meta::{
@@ -90,6 +97,12 @@ pub enum Event {
         client: usize,
         key: String,
     },
+    /// `ops` (1–5) document ops on keys `d0..d15` through `client`'s
+    /// `CollectionWriter`; their content comes from the seed too.
+    DocWrite {
+        client: usize,
+        ops: u8,
+    },
     ReadHwm {
         client: usize,
         partition: u32,
@@ -132,6 +145,11 @@ pub struct SimStats {
     pub worker_restarts: u64,
     pub fault_bursts: u64,
     pub link_version: u64,
+    pub doc_writes_acked: u64,
+    pub doc_writes_unknown: u64,
+    pub doc_writes_failed: u64,
+    /// The collection's live manifest version at the end.
+    pub collection_version: u64,
 }
 
 /// The result of one run.
@@ -196,6 +214,13 @@ struct Recorder {
     unknown: Mutex<BTreeSet<String>>,
     /// Values whose append failed definitely (never committed).
     failed: Mutex<BTreeSet<String>>,
+    /// Acknowledged document ops: (partition, offset) of the implicit
+    /// stream → the op's record value.
+    docs_acked: Mutex<BTreeMap<(u32, u64), Vec<u8>>>,
+    /// The ids (`n`) of upserts and patches, by their write's outcome.
+    doc_ids_acked: Mutex<BTreeSet<u64>>,
+    doc_ids_unknown: Mutex<BTreeSet<u64>>,
+    doc_ids_failed: Mutex<BTreeSet<u64>>,
     violations: Mutex<Vec<String>>,
     stats: Mutex<SimStats>,
 }
@@ -252,6 +277,60 @@ struct Cluster {
     events: StreamId,
     raw: StreamId,
     partitions: u32,
+    /// Collection `docs` and its implicit stream.
+    docs: CollectionId,
+    docs_stream: StreamId,
+    docs_schema: CollectionSchema,
+}
+
+/// A running worker and the collection target factory its link apply
+/// uses (closed on a graceful stop).
+struct SimWorker {
+    handle: WorkerHandle,
+    collections: Arc<CollectionTargetFactory>,
+}
+
+impl SimWorker {
+    /// A graceful stop: the worker, then the PK index handles.
+    async fn stop(self) {
+        self.handle.stop().await;
+        self.collections.close().await;
+    }
+}
+
+/// The collection's schema: keyword `tag`, a vector `v` of dim 2 without an
+/// index, dynamic mapping `Ignore`.
+fn docs_schema() -> CollectionSchema {
+    let tag = FieldSpec {
+        name: "tag".to_string(),
+        source_path: "tag".to_string(),
+        kind: FieldKind::Keyword,
+        indexed: true,
+        fast: true,
+        ignore_malformed: false,
+    };
+    let vector = VectorSpec {
+        name: "v".to_string(),
+        dim: 2,
+        distance: operon_collection::Distance::Cosine,
+        element: operon_collection::VectorElement::F32,
+        index: VectorIndexSpec::None,
+        hnsw: operon_collection::HnswParams::default(),
+        quantization: None,
+    };
+    CollectionSchema::new(vec![tag], vec![vector], DynamicMapping::Ignore)
+}
+
+/// The collection config of the simulation's workers.
+fn collection_config() -> CollectionConfig {
+    CollectionConfig {
+        trim: false,
+        max_commit_delay: GRACE / 2,
+        index_commit_delay: GRACE / 2,
+        keep_manifests: 3,
+        time_travel_retention: Duration::ZERO,
+        ..CollectionConfig::default()
+    }
 }
 
 const WAIT: Duration = Duration::from_secs(60);
@@ -362,6 +441,24 @@ impl Cluster {
             }
         })
         .await?;
+        let (docs, docs_stream) = retry("create the collection", || async {
+            match admin
+                .create_collection(ns, "docs", docs_schema(), config.partitions)
+                .await
+            {
+                Ok((id, stream, _)) => Ok((id, stream)),
+                Err(MetaError::Rejected(ApplyError::CollectionExists(id))) => admin
+                    .read(Consistency::Linearizable, |s| {
+                        s.collection(id).map(|c| c.stream)
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .map(|stream| (id, stream))
+                    .ok_or_else(|| format!("collection {id} vanished")),
+                Err(err) => Err(err.to_string()),
+            }
+        })
+        .await?;
         Ok(Self {
             router,
             nodes,
@@ -373,6 +470,24 @@ impl Cluster {
             events,
             raw,
             partitions: config.partitions,
+            docs,
+            docs_stream,
+            docs_schema: docs_schema(),
+        })
+    }
+
+    /// A collection context for client `client`'s view.
+    async fn collection_context(&self, client: usize) -> Result<CollectionContext, String> {
+        let config = collection_config();
+        Ok(CollectionContext {
+            meta: self.clients[client].clone(),
+            store: self.store.clone(),
+            cache: RangeCache::new(self.store.clone(), RangeCacheConfig::default())
+                .await
+                .map_err(|e| e.to_string())?,
+            lance: LanceEnv::new(self.store.clone(), LanceConfig::default()),
+            manifests: ManifestCache::new(config.manifest_cache_entries),
+            config,
         })
     }
 
@@ -383,7 +498,7 @@ impl Cluster {
         Ok(LogReader::new(self.clients[client].clone(), cache))
     }
 
-    async fn start_worker(&self, client: usize, owner: String) -> Result<WorkerHandle, String> {
+    async fn start_worker(&self, client: usize, owner: String) -> Result<SimWorker, String> {
         let meta = self.clients[client].clone();
         let reader = self.reader(client).await?;
         let cache = RangeCache::new(self.store.clone(), RangeCacheConfig::default())
@@ -397,10 +512,14 @@ impl Cluster {
                 ..WorkerConfig::new(owner)
             },
         );
-        let registry = TargetRegistry::new().with(Arc::new(CounterTargetFactory::new(
-            self.store.clone(),
-            GRACE / 2,
-        )));
+        let ctx = self.collection_context(client).await?;
+        let collections = Arc::new(CollectionTargetFactory::new(ctx.clone()));
+        let registry = TargetRegistry::new()
+            .with(Arc::new(CounterTargetFactory::new(
+                self.store.clone(),
+                GRACE / 2,
+            )))
+            .with(collections.clone());
         worker.add_source(Arc::new(LinkApplySource::new(
             reader,
             registry,
@@ -432,9 +551,16 @@ impl Cluster {
                 keep_manifests: 3,
                 ..GcConfig::default()
             },
-            vec![Arc::new(LinkGcRoots)],
+            vec![
+                Arc::new(LinkGcRoots),
+                Arc::new(CollectionGcRoots::new(ctx)),
+                Arc::new(PkGcRoots),
+            ],
         )));
-        Ok(worker.start())
+        Ok(SimWorker {
+            handle: worker.start(),
+            collections,
+        })
     }
 
     fn link_table(&self, client: usize) -> CounterTable {
@@ -725,6 +851,94 @@ async fn fetch(
     }
 }
 
+/// The id an upsert or a patch carries in its source (`n`), which makes
+/// every such record distinguishable; deletes carry none.
+fn doc_id(op: &DocOp) -> Option<u64> {
+    let source = match op {
+        DocOp::Upsert(doc) => &doc.source,
+        DocOp::Patch { source, .. } => source,
+        DocOp::Delete(_) => return None,
+    };
+    source.get("n").and_then(serde_json::Value::as_u64)
+}
+
+/// Document op number `n` (its id), on a key and of a kind drawn from
+/// `rng`: Upsert 60 %, Patch (`MergeDeep`, with `upsert` half the time)
+/// 20 %, Delete 20 %.
+fn doc_op(rng: &mut ChaCha8Rng, n: u64) -> DocOp {
+    let pk = PrimaryKey::Str(format!("d{}", rng.random_range(0..16)));
+    let document = |pk: PrimaryKey| Document {
+        pk,
+        source: serde_json::Map::from_iter([
+            ("tag".to_string(), serde_json::json!(format!("t{}", n % 4))),
+            ("n".to_string(), serde_json::json!(n)),
+        ]),
+        vectors: BTreeMap::from([("v".to_string(), vec![(n % 7) as f32, 1.0])]),
+        sparse_vectors: BTreeMap::new(),
+    };
+    match rng.random_range(0..10u32) {
+        0..6 => DocOp::Upsert(document(pk)),
+        6..8 => {
+            let upsert = rng.random_bool(0.5).then(|| document(pk.clone()));
+            DocOp::Patch {
+                pk,
+                mode: PatchMode::MergeDeep,
+                source: serde_json::Map::from_iter([("n".to_string(), serde_json::json!(n))]),
+                delete_keys: Vec::new(),
+                vectors: BTreeMap::new(),
+                sparse_vectors: BTreeMap::new(),
+                upsert,
+            }
+        }
+        _ => DocOp::Delete(pk),
+    }
+}
+
+/// One `CollectionWriter::write`, recorded as acked, unknown or failed.
+async fn doc_write(
+    rec: Arc<Recorder>,
+    writer: CollectionWriter,
+    ns: NamespaceId,
+    collection: CollectionId,
+    ops: Vec<DocOp>,
+) {
+    let ids: Vec<u64> = ops.iter().filter_map(doc_id).collect();
+    let values: Vec<Option<Vec<u8>>> = ops
+        .iter()
+        .map(|op| {
+            operon_collection::encode(op)
+                .ok()
+                .and_then(|r| r.value.map(|v| v.to_vec()))
+        })
+        .collect();
+    match writer.write(ns, collection, ops).await {
+        Ok(outcome) => {
+            lock(&rec.stats).doc_writes_acked += 1;
+            lock(&rec.doc_ids_acked).extend(ids);
+            let mut acked = lock(&rec.docs_acked);
+            for (result, value) in outcome.results.iter().zip(values) {
+                match (result, value) {
+                    (OpResult::Written { partition, offset }, Some(value)) => {
+                        acked.insert((*partition, *offset), value);
+                    }
+                    (other, _) => {
+                        rec.violation(format!("DocWrite: a valid op was not written: {other:?}"));
+                    }
+                }
+            }
+        }
+        Err(WriteError::Log(LogError::CommitUnknown(_))) => {
+            lock(&rec.stats).doc_writes_unknown += 1;
+            lock(&rec.doc_ids_unknown).extend(ids);
+        }
+        // Nothing was written.
+        Err(_) => {
+            lock(&rec.stats).doc_writes_failed += 1;
+            lock(&rec.doc_ids_failed).extend(ids);
+        }
+    }
+}
+
 async fn simulate(config: SimConfig) -> SimReport {
     let mut schedule = Vec::new();
     let rec = Arc::new(Recorder::default());
@@ -786,6 +1000,12 @@ async fn drive(
         .map_err(|e| e.to_string())?;
         writers.push(writer);
     }
+    let doc_writers: Vec<CollectionWriter> = cluster
+        .clients
+        .iter()
+        .enumerate()
+        .map(|(c, meta)| CollectionWriter::new(meta.clone(), writers[c % writers.len()].clone()))
+        .collect();
     let reader = cluster.reader(0).await?;
     let mut restarts = 0u64;
     let mut worker = Some(
@@ -802,6 +1022,9 @@ async fn drive(
     };
     let mut isolated: Option<u64> = None;
     let mut raw_objects: Vec<(u32, String, u32)> = Vec::new();
+    // Schedule-local counters, so the schedule is a function of the seed.
+    let mut raw_seq = 0u64;
+    let mut doc_seq = 0u64;
     let mut in_flight: JoinSet<()> = JoinSet::new();
 
     for _ in 0..config.steps {
@@ -809,19 +1032,24 @@ async fn drive(
         let client = rng.random_range(0..nodes);
         let partition = rng.random_range(0..cluster.partitions);
         let event = match roll {
-            0..35 => Event::Append {
+            0..25 => Event::Append {
                 writer: rng.random_range(0..writers.len()),
                 partition,
                 records: rng.random_range(1..=3),
+            },
+            25..35 => Event::DocWrite {
+                client,
+                ops: rng.random_range(1..=5),
             },
             35..45 => {
                 let retry = !raw_objects.is_empty() && rng.random_bool(0.25);
                 let (partition, object, records) = if retry {
                     raw_objects[rng.random_range(0..raw_objects.len())].clone()
                 } else {
+                    raw_seq += 1;
                     let entry = (
                         partition,
-                        format!("raw/{}/{}.wal", config.seed, rec.id()),
+                        format!("raw/{}/{raw_seq}.wal", config.seed),
                         rng.random_range(1..=4),
                     );
                     raw_objects.push(entry.clone());
@@ -896,6 +1124,21 @@ async fn drive(
                     client_id,
                 ));
             }
+            Event::DocWrite { client, ops } => {
+                let ops = (0..ops)
+                    .map(|_| {
+                        doc_seq += 1;
+                        doc_op(&mut rng, doc_seq)
+                    })
+                    .collect();
+                in_flight.spawn(doc_write(
+                    rec.clone(),
+                    doc_writers[client].clone(),
+                    cluster.ns,
+                    cluster.docs,
+                    ops,
+                ));
+            }
             Event::Cas { client, key } => {
                 in_flight.spawn(cas(
                     rec.clone(),
@@ -936,11 +1179,13 @@ async fn drive(
             }
             Event::RestartWorker { crash, client } => {
                 lock(&rec.stats).worker_restarts += 1;
-                if let Some(handle) = worker.take() {
+                if let Some(worker) = worker.take() {
                     if crash {
-                        drop(handle);
+                        // Its PK index writers stay open, like a crashed
+                        // process's, until the next writer fences them.
+                        drop(worker);
                     } else {
-                        handle.stop().await;
+                        worker.stop().await;
                     }
                 }
                 restarts += 1;
@@ -979,6 +1224,7 @@ async fn drive(
         }
     };
     settle_link(cluster, rec).await;
+    settle_collection(cluster, rec).await;
     worker.stop().await;
     converge(cluster).await?;
     verify(cluster, rec).await;
@@ -1012,6 +1258,51 @@ async fn settle_link(cluster: &Cluster, rec: &Recorder) {
             return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Waits until the collection's link has applied its whole implicit stream.
+async fn settle_collection(cluster: &Cluster, rec: &Recorder) {
+    let deadline = Instant::now() + WAIT;
+    let ctx = match cluster.collection_context(0).await {
+        Ok(ctx) => ctx,
+        Err(err) => return rec.violation(format!("collection context: {err}")),
+    };
+    let (stream, partitions) = (cluster.docs_stream, cluster.partitions);
+    loop {
+        let hwms = cluster.clients[0]
+            .read(Consistency::Linearizable, |s| {
+                (0..partitions)
+                    .filter_map(|p| {
+                        let hwm = s.partition(stream, p)?.high_watermark();
+                        (hwm > 0).then_some((p, hwm))
+                    })
+                    .collect::<BTreeMap<u32, u64>>()
+            })
+            .await;
+        let applied = live_manifest(
+            &ctx.meta,
+            &ctx.store,
+            &ctx.manifests,
+            cluster.ns,
+            cluster.docs,
+            Consistency::Linearizable,
+        )
+        .await
+        .map(|live| live.map_or_else(BTreeMap::new, |(_, m)| m.applied.clone()));
+        if let (Ok(hwms), Ok(applied)) = (hwms, applied)
+            && hwms == applied
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            rec.violation("the collection link never caught up with its stream".to_string());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    if let Err(err) = ctx.cache.close().await {
+        rec.violation(format!("closing a cache: {err}"));
     }
 }
 
@@ -1202,5 +1493,148 @@ async fn verify(cluster: &Cluster, rec: &Recorder) {
             }
         }
         Err(err) => rec.violation(format!("reading references: {err}")),
+    }
+
+    verify_collection_model(cluster, rec).await;
+}
+
+/// Every record of the implicit stream, from offset 0 (never trimmed:
+/// `CollectionConfig.trim` is off).
+async fn read_docs_stream(
+    cluster: &Cluster,
+    reader: &LogReader,
+) -> Result<Vec<(u32, OffsetRecord)>, String> {
+    let mut out = Vec::new();
+    for partition in 0..cluster.partitions {
+        let mut offset = 0;
+        loop {
+            let request = FetchRequest {
+                stream: cluster.docs_stream,
+                partition,
+                offset,
+                max_bytes: 1 << 20,
+                max_wait: Duration::ZERO,
+            };
+            let response = reader
+                .fetch(request)
+                .await
+                .map_err(|e| format!("final read of docs/{partition}@{offset}: {e}"))?;
+            if response.records.is_empty() {
+                break;
+            }
+            offset = response.next_offset;
+            out.extend(response.records.into_iter().map(|r| (partition, r)));
+        }
+    }
+    Ok(out)
+}
+
+/// The collection's end-of-run checks (plan M1.1 Task 13):
+/// 1. the committed collection equals the fold of its implicit stream
+///    (`fold_stream`, an independent model, and `verify_collection`);
+/// 2. every acknowledged document op is in the stream at its offset;
+/// 3. every upsert and patch record is in the stream at most once, and
+///    never one of a write that failed;
+/// 4. every object the live manifest references exists: the manifest, its
+///    splits and delete bitmaps, its PK delta and dead letters, and its
+///    Lance manifest.
+async fn verify_collection_model(cluster: &Cluster, rec: &Recorder) {
+    let reader = match cluster.reader(0).await {
+        Ok(reader) => reader,
+        Err(err) => return rec.violation(format!("reader: {err}")),
+    };
+    let records = match read_docs_stream(cluster, &reader).await {
+        Ok(records) => records,
+        Err(err) => return rec.violation(err),
+    };
+    let ctx = match cluster.collection_context(0).await {
+        Ok(ctx) => ctx,
+        Err(err) => return rec.violation(format!("collection context: {err}")),
+    };
+    let (ns, cid) = (cluster.ns, cluster.docs);
+
+    // 1. The collection is the fold of its stream.
+    let expected = fold_stream(&cluster.docs_schema, cluster.partitions, &records);
+    match verify_collection(&ctx, ns, cid, &expected).await {
+        Ok(problems) => {
+            for problem in problems {
+                rec.violation(format!("collection: {problem}"));
+            }
+        }
+        Err(err) => rec.violation(format!("verifying the collection: {err}")),
+    }
+
+    // 2. Acknowledged ops at their offsets.
+    let by_offset: BTreeMap<(u32, u64), &OffsetRecord> =
+        records.iter().map(|(p, r)| ((*p, r.offset), r)).collect();
+    for ((partition, offset), value) in lock(&rec.docs_acked).iter() {
+        let found = by_offset
+            .get(&(*partition, *offset))
+            .and_then(|r| r.record.value.as_deref());
+        if found != Some(value.as_slice()) {
+            rec.violation(format!(
+                "docs/{partition}@{offset}: an acknowledged op is missing or different"
+            ));
+        }
+    }
+
+    // 3. Exactly once, and nothing of a failed write.
+    let failed = lock(&rec.doc_ids_failed).clone();
+    let known: BTreeSet<u64> = lock(&rec.doc_ids_acked)
+        .union(&lock(&rec.doc_ids_unknown))
+        .copied()
+        .collect();
+    let mut seen = BTreeSet::new();
+    for (partition, record) in &records {
+        let op = match operon_collection::decode(&record.record) {
+            Ok(op) => op,
+            Err(err) => {
+                rec.violation(format!(
+                    "docs/{partition}@{}: undecodable: {err}",
+                    record.offset
+                ));
+                continue;
+            }
+        };
+        let Some(id) = doc_id(&op) else { continue };
+        if !seen.insert(id) {
+            rec.violation(format!("docs/{partition}@{}: op {id} twice", record.offset));
+        }
+        if failed.contains(&id) || !known.contains(&id) {
+            rec.violation(format!(
+                "docs/{partition}@{}: op {id} was never successfully written",
+                record.offset
+            ));
+        }
+    }
+
+    // 4. No dangling reference from the live manifest.
+    let snapshot = match CollectionSnapshot::open(&ctx, ns, cid, Consistency::Linearizable).await {
+        Ok(snapshot) => snapshot,
+        Err(err) => return rec.violation(format!("opening the collection: {err}")),
+    };
+    let manifest = snapshot.manifest();
+    lock(&rec.stats).collection_version = manifest.version;
+    let mut objects: Vec<String> = snapshot
+        .manifest_path()
+        .map(str::to_string)
+        .into_iter()
+        .collect();
+    for split in &manifest.splits {
+        objects.push(split_path(ns, cid, split.ulid));
+        objects.extend(split.delete_bitmap.clone());
+    }
+    objects.extend(manifest.pk_delta.clone());
+    objects.extend(manifest.dead_letters.clone());
+    if let Some(dataset) = snapshot.dataset() {
+        objects.push(dataset.manifest_location().path.to_string());
+    }
+    for object in objects {
+        if let Err(err) = cluster.store.head(&object).await {
+            rec.violation(format!("dangling collection reference to {object}: {err}"));
+        }
+    }
+    if let Err(err) = ctx.cache.close().await {
+        rec.violation(format!("closing a cache: {err}"));
     }
 }

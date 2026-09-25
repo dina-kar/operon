@@ -13,7 +13,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use operon_sim::{SimConfig, SimReport, run};
+use operon_sim::{Event, SimConfig, SimReport, run};
 
 fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name)
@@ -81,4 +81,27 @@ fn every_seed_passes() {
         failures.len(),
         failures.iter().map(|r| r.seed).collect::<Vec<_>>()
     );
+}
+
+/// Plan M1.1 Task 13: the event schedule, collection writes included, is a
+/// function of the seed alone, so a failing seed's schedule replays.
+#[test]
+fn a_seed_with_collection_writes_is_reproducible_in_schedule() {
+    let config = SimConfig {
+        steps: 80,
+        ..SimConfig::new(env_u64("SIM_SEED", 7))
+    };
+    let first = run(config.clone());
+    let second = run(config);
+    assert!(first.is_ok(), "{}", first.describe());
+    assert!(second.is_ok(), "{}", second.describe());
+    assert!(
+        first
+            .schedule
+            .iter()
+            .any(|event| matches!(event, Event::DocWrite { .. })),
+        "the schedule has no collection write: {:?}",
+        first.schedule
+    );
+    assert_eq!(first.schedule, second.schedule);
 }
