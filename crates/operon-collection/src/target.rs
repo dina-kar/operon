@@ -96,13 +96,23 @@ pub type CollectionCommitHook = Arc<
     dyn Fn(CollectionCommitStep, Fence) -> futures::future::BoxFuture<'static, ()> + Send + Sync,
 >;
 
+/// A test hook awaited after the `i`-th PK index write of a rebuild (0 is
+/// the [`PkWatermark::rebuilding`] marker when the rebuild takes several
+/// writes). Only with the `test-util` feature.
+#[cfg(feature = "test-util")]
+pub type RebuildHook = Arc<dyn Fn(usize) -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
+
 /// Serves [`COLLECTION_KIND`] links: one cached [`CollectionTarget`] per
 /// link, so a PK index handle survives across task runs (Ruling 7).
 pub struct CollectionTargetFactory {
     ctx: CollectionContext,
     targets: Mutex<BTreeMap<LinkId, Arc<CollectionTarget>>>,
+    /// Entries per PK index write of a rebuild.
+    rebuild_chunk: usize,
     #[cfg(feature = "test-util")]
     hook: Option<CollectionCommitHook>,
+    #[cfg(feature = "test-util")]
+    rebuild_hook: Option<RebuildHook>,
 }
 
 impl fmt::Debug for CollectionTargetFactory {
@@ -124,8 +134,11 @@ impl CollectionTargetFactory {
         Self {
             ctx,
             targets: Mutex::default(),
+            rebuild_chunk: REBUILD_CHUNK,
             #[cfg(feature = "test-util")]
             hook: None,
+            #[cfg(feature = "test-util")]
+            rebuild_hook: None,
         }
     }
 
@@ -144,13 +157,41 @@ impl CollectionTargetFactory {
             std::mem::take(&mut *self.targets.lock().unwrap_or_else(PoisonError::into_inner))
                 .into_values()
                 .collect();
-        for target in targets {
-            let mut pk = target.pk.lock().await;
-            discard(pk.take()).await;
-        }
+        close_all(targets).await;
+    }
+
+    /// Test hook: PK index rebuilds write `chunk` entries at a time and
+    /// await `hook` after each write. Only with the `test-util` feature.
+    #[cfg(feature = "test-util")]
+    pub fn with_rebuild_chunks(mut self, chunk: usize, hook: RebuildHook) -> Self {
+        self.rebuild_chunk = chunk.max(1);
+        self.rebuild_hook = Some(hook);
+        self
+    }
+
+    /// The links whose targets are cached. Only with the `test-util`
+    /// feature.
+    #[cfg(feature = "test-util")]
+    pub fn cached_links(&self) -> Vec<LinkId> {
+        self.targets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .copied()
+            .collect()
     }
 }
 
+/// Closes the PK index handles of `targets`, each after its commit in
+/// flight, if any.
+async fn close_all(targets: Vec<Arc<CollectionTarget>>) {
+    for target in targets {
+        let mut pk = target.pk.lock().await;
+        discard(pk.take()).await;
+    }
+}
+
+#[async_trait]
 impl LinkTargetFactory for CollectionTargetFactory {
     fn kind(&self) -> &str {
         COLLECTION_KIND
@@ -167,11 +208,29 @@ impl LinkTargetFactory for CollectionTargetFactory {
                 ctx: self.ctx.clone(),
                 parent: Mutex::default(),
                 pk: tokio::sync::Mutex::default(),
+                rebuild_chunk: self.rebuild_chunk,
                 #[cfg(feature = "test-util")]
                 hook: self.hook.clone(),
+                #[cfg(feature = "test-util")]
+                rebuild_hook: self.rebuild_hook.clone(),
             })
         });
         Ok(target.clone())
+    }
+
+    /// Evicts the targets of links that are gone (their collection was
+    /// dropped) and closes their PK index handles.
+    async fn retain(&self, links: &BTreeSet<LinkId>) {
+        let gone: Vec<Arc<CollectionTarget>> = {
+            let mut targets = self.targets.lock().unwrap_or_else(PoisonError::into_inner);
+            let ids: Vec<LinkId> = targets
+                .keys()
+                .filter(|id| !links.contains(id))
+                .copied()
+                .collect();
+            ids.iter().filter_map(|id| targets.remove(id)).collect()
+        };
+        close_all(gone).await;
     }
 }
 
@@ -187,6 +246,25 @@ struct Parent {
 struct PkState {
     index: PkIndex,
     watermark: PkWatermark,
+}
+
+/// What a fresh handle's repair did.
+enum Repaired {
+    /// The index now reflects the parent; the watermark it holds.
+    To(PkWatermark),
+    /// The index reflects a newer manifest than the parent (its watermark):
+    /// nothing was written.
+    StaleParent(PkWatermark),
+}
+
+/// What the manifest chain says about a PK index.
+enum Replay {
+    /// The keys changed since the manifest the index reflects.
+    Deltas(BTreeMap<Vec<u8>, Option<u64>>),
+    /// A manifest or PK delta of the chain is gone: rebuild from Lance.
+    Gone,
+    /// No manifest of the chain is the one the index reflects.
+    Unmatched,
 }
 
 /// Closes a PK index handle that is no longer used.
@@ -209,8 +287,11 @@ pub struct CollectionTarget {
     /// the parent's `applied`. Held for a whole commit, so commits through
     /// one target never interleave.
     pk: tokio::sync::Mutex<Option<PkState>>,
+    rebuild_chunk: usize,
     #[cfg(feature = "test-util")]
     hook: Option<CollectionCommitHook>,
+    #[cfg(feature = "test-util")]
+    rebuild_hook: Option<RebuildHook>,
 }
 
 impl fmt::Debug for CollectionTarget {
@@ -335,6 +416,14 @@ enum Outcome {
 /// has no row, or if the first op overwrites it and it was not read). `ops`
 /// hold no invalid upsert. A patch whose result breaks `lenient` is
 /// dead-lettered into `resolution` and skipped.
+///
+/// The key gets a new row iff its final state is present and some op
+/// *wrote* it: an upsert, or a patch whose result differs from the state
+/// before it (controller ruling P32, refining rule 3.5's "differs from the
+/// committed one", which cannot be told for keys whose committed document is
+/// not read). The row carries the last writing op's record, so a key's
+/// result and `seq_no` do not depend on how its records were batched, and a
+/// patch that changes nothing keeps the committed row.
 fn fold_key(
     lenient: &CollectionSchema,
     current: Option<Document>,
@@ -342,7 +431,7 @@ fn fold_key(
     records: &BTreeMap<(u32, u64), &operon_log::OffsetRecord>,
     resolution: &mut Resolution,
     has_row: bool,
-) -> Outcome {
+) -> Result<Outcome, CollectionError> {
     let mut state = current;
     // The last writing op: the typed values of its result and its record.
     let mut written: Option<(ExtractedDoc, u32, u64)> = None;
@@ -373,15 +462,18 @@ fn fold_key(
                         written = Some((e, partition, offset));
                     }
                     Err(rejection) => {
-                        if let Some(record) = records.get(&(partition, offset)) {
-                            resolution.letter(partition, record, schema_reason(rejection));
-                        }
+                        let record = records.get(&(partition, offset)).ok_or_else(|| {
+                            CollectionError::Internal(format!(
+                                "record {partition}/{offset} of a key's ops is not in the batch"
+                            ))
+                        })?;
+                        resolution.letter(partition, record, schema_reason(rejection));
                     }
                 },
             },
         }
     }
-    match (state, written) {
+    Ok(match (state, written) {
         (Some(doc), Some((extracted, partition, offset))) => Outcome::Upsert(Insert {
             doc,
             extracted,
@@ -392,7 +484,7 @@ fn fold_key(
         (Some(_), None) => Outcome::Unchanged,
         (None, _) if has_row => Outcome::Delete,
         (None, _) => Outcome::Unchanged,
-    }
+    })
 }
 
 impl CollectionTarget {
@@ -468,7 +560,19 @@ impl CollectionTarget {
     }
 
     async fn load_state(&self) -> Result<TargetState, CollectionError> {
-        let collection = self.collection(Consistency::Local).await?;
+        let collection = match self.collection(Consistency::Local).await {
+            Ok(collection) => collection,
+            Err(err) => {
+                // Dropped: the handle is of no more use. Never waits for a
+                // commit in flight (that commit closes it itself).
+                if matches!(err, CollectionError::NotFound(_))
+                    && let Ok(mut pk) = self.pk.try_lock()
+                {
+                    discard(pk.take()).await;
+                }
+                return Err(err);
+            }
+        };
         let parent = self.live(collection.id).await?;
         let state = TargetState {
             version: parent.manifest.version,
@@ -480,13 +584,16 @@ impl CollectionTarget {
 
     /// The PK index handle for a commit on `parent`: the cached one if its
     /// watermark matches `parent.applied`, else a new one (which fences
-    /// every other writer), repaired to `parent`.
+    /// every other writer), repaired to `parent`. If the index is ahead of
+    /// `parent`, the parent is stale: the new handle is kept (with the
+    /// index's watermark) and the commit is a `Conflict`, so the task
+    /// reloads; the index is never rolled back.
     async fn pk_handle<'g>(
         &self,
         pk: &'g mut Option<PkState>,
         cid: CollectionId,
         parent: &Parent,
-    ) -> Result<&'g mut PkState, CollectionError> {
+    ) -> Result<&'g mut PkState, CommitError> {
         let reusable = pk
             .as_ref()
             .is_some_and(|state| state.watermark.applied == parent.manifest.applied);
@@ -497,44 +604,63 @@ impl CollectionTarget {
                 &collection_pk_prefix(self.namespace, cid),
                 PkIndexConfig::default(),
             )
-            .await?;
+            .await
+            .map_err(CollectionError::from)?;
             match self.repair(&index, cid, parent).await {
-                Ok(watermark) => *pk = Some(PkState { index, watermark }),
+                Ok(Repaired::To(watermark)) => *pk = Some(PkState { index, watermark }),
+                Ok(Repaired::StaleParent(watermark)) => {
+                    tracing::info!(
+                        link = %self.link,
+                        parent = parent.manifest.version,
+                        index = watermark.manifest_version,
+                        "the pk index is ahead of the commit's parent; reloading"
+                    );
+                    *pk = Some(PkState { index, watermark });
+                    return Err(CommitError::Conflict);
+                }
                 Err(err) => {
                     let state = PkState {
                         index,
                         watermark: PkWatermark::default(),
                     };
                     discard(Some(state)).await;
-                    return Err(err);
+                    return Err(err.into());
                 }
             }
         }
-        pk.as_mut()
-            .ok_or_else(|| CollectionError::Internal("no pk index handle".to_string()))
+        Ok(pk
+            .as_mut()
+            .ok_or_else(|| CollectionError::Internal("no pk index handle".to_string()))?)
     }
 
-    /// Brings a fresh handle's index to `parent` (rule 5); returns the
-    /// watermark it then holds.
+    /// Brings a fresh handle's index to `parent` (rule 5), unless the index
+    /// is ahead of `parent` (written by a commit `parent` does not know).
     async fn repair(
         &self,
         index: &PkIndex,
         cid: CollectionId,
         parent: &Parent,
-    ) -> Result<PkWatermark, CollectionError> {
+    ) -> Result<Repaired, CollectionError> {
         let current = match index.get(PK_WATERMARK_KEY).await? {
             Some(bytes) => PkWatermark::decode(&bytes)?,
             None => PkWatermark::default(),
         };
         if current.applied == parent.manifest.applied {
-            return Ok(current);
+            return Ok(Repaired::To(current));
         }
         let target = PkWatermark {
             manifest_version: parent.manifest.version,
             applied: parent.manifest.applied.clone(),
         };
+        if current == PkWatermark::rebuilding() {
+            self.rebuild(index, cid, parent, &target).await?;
+            return Ok(Repaired::To(target));
+        }
+        if current.manifest_version > parent.manifest.version {
+            return Ok(Repaired::StaleParent(current));
+        }
         match self.replayed_deltas(&current, parent).await? {
-            Some(entries) => {
+            Replay::Deltas(entries) => {
                 let mut batch: Vec<(Bytes, Option<Bytes>)> = entries
                     .into_iter()
                     .map(|(key, row)| (Bytes::from(key), row.map(pk_bytes)))
@@ -548,26 +674,23 @@ impl CollectionTarget {
                     "repaired the pk index from pk deltas"
                 );
             }
-            None => {
+            Replay::Gone => {
                 self.rebuild(index, cid, parent, &target).await?;
-                tracing::info!(
-                    link = %self.link,
-                    to = target.manifest_version,
-                    "rebuilt the pk index from lance"
-                );
             }
+            // No manifest of the chain matches the index: it reflects a
+            // commit `parent` does not know.
+            Replay::Unmatched => return Ok(Repaired::StaleParent(current)),
         }
-        Ok(target)
+        Ok(Repaired::To(target))
     }
 
     /// The PK changes between the manifest the index reflects (`watermark`)
-    /// and `parent`, merged oldest first; `None` when the chain cannot tell
-    /// (a manifest or a PK delta is gone, or no manifest matches).
+    /// and `parent`, merged oldest first.
     async fn replayed_deltas(
         &self,
         watermark: &PkWatermark,
         parent: &Parent,
-    ) -> Result<Option<BTreeMap<Vec<u8>, Option<u64>>>, CollectionError> {
+    ) -> Result<Replay, CollectionError> {
         let ctx = &self.ctx;
         // Newest first: the manifests the index does not reflect yet.
         let mut newer: Vec<Arc<CollectionManifest>> = Vec::new();
@@ -578,7 +701,7 @@ impl CollectionTarget {
             }
             if manifest.version == 0 {
                 // Nothing committed, yet the index holds something.
-                return Ok(None);
+                return Ok(Replay::Unmatched);
             }
             newer.push(manifest.clone());
             let Some(path) = manifest.parent_manifest.clone() else {
@@ -586,11 +709,13 @@ impl CollectionTarget {
                 if *watermark == PkWatermark::default() {
                     break;
                 }
-                return Ok(None);
+                return Ok(Replay::Unmatched);
             };
             let ancestor = match ctx.manifests.load(&ctx.store, &path).await {
                 Ok(ancestor) => ancestor,
-                Err(CollectionError::Store(StoreError::NotFound { .. })) => return Ok(None),
+                Err(CollectionError::Store(StoreError::NotFound { .. })) => {
+                    return Ok(Replay::Gone);
+                }
                 Err(err) => return Err(err),
             };
             if ancestor.version != manifest.parent_version
@@ -616,17 +741,19 @@ impl CollectionTarget {
             };
             let bytes = match ctx.store.get(path).await {
                 Ok((bytes, _)) => bytes,
-                Err(StoreError::NotFound { .. }) => return Ok(None),
+                Err(StoreError::NotFound { .. }) => return Ok(Replay::Gone),
                 Err(err) => return Err(err.into()),
             };
             merged.extend(decode_pk_delta(&bytes)?);
         }
-        Ok(Some(merged))
+        Ok(Replay::Deltas(merged))
     }
 
     /// Rebuilds the index from `parent`'s Lance version: puts for every row,
-    /// deletes for every other key, the watermark last, in chunks. An
-    /// interrupted rebuild keeps the old watermark, so it runs again.
+    /// deletes for every other key, then `target`. A rebuild that needs
+    /// several writes first replaces the watermark with
+    /// [`PkWatermark::rebuilding`] and writes `target` last, so an
+    /// interrupted rebuild is never trusted and runs again.
     async fn rebuild(
         &self,
         index: &PkIndex,
@@ -655,13 +782,37 @@ impl CollectionTarget {
                 .map(|(key, row)| (Bytes::from(key), Some(pk_bytes(row)))),
         );
         entries.push(watermark_entry(target));
+        let mut writes = 0;
+        if entries.len() > self.rebuild_chunk {
+            index
+                .write(vec![watermark_entry(&PkWatermark::rebuilding())])
+                .await?;
+            self.rebuild_step(writes).await;
+            writes += 1;
+        }
         let mut entries = entries.into_iter().peekable();
         while entries.peek().is_some() {
             index
-                .write(entries.by_ref().take(REBUILD_CHUNK).collect())
+                .write(entries.by_ref().take(self.rebuild_chunk).collect())
                 .await?;
+            self.rebuild_step(writes).await;
+            writes += 1;
         }
+        tracing::info!(
+            link = %self.link,
+            to = target.manifest_version,
+            writes,
+            "rebuilt the pk index from lance"
+        );
         Ok(())
+    }
+
+    async fn rebuild_step(&self, write: usize) {
+        #[cfg(feature = "test-util")]
+        if let Some(hook) = &self.rebuild_hook {
+            hook(write).await;
+        }
+        let _ = write;
     }
 
     /// Decodes the batch and folds every key (rules 3.4 and 3.5).
@@ -771,7 +922,7 @@ impl CollectionTarget {
                     &records,
                     &mut resolution,
                     old.is_some(),
-                ) {
+                )? {
                     Outcome::Unchanged => {}
                     Outcome::Delete => {
                         resolution.deleted_rows.extend(old);

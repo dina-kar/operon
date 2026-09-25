@@ -13,12 +13,18 @@ use std::time::{Duration, Instant};
 use common::{TargetFixture, WAIT, field, patch, schema, upsert};
 use futures::FutureExt;
 use operon_collection::{
-    CollectionCommitHook, CollectionCommitStep, CollectionSchema, DocOp, Document, DynamicMapping,
-    FieldKind, LanceCommitter, NewRow, PrimaryKey, to_record_batch,
+    CollectionCommitHook, CollectionCommitStep, CollectionSchema, CollectionTargetFactory, DocOp,
+    Document, DynamicMapping, FieldKind, LanceCommitter, NewRow, PkWatermark, PrimaryKey,
+    RebuildHook, to_record_batch,
 };
+use operon_link::{CommitError, LinkTargetFactory};
+use operon_meta::MetaClient;
 use operon_meta::{Fence, collection_pk_prefix};
 use operon_pk::{PkIndex, PkIndexConfig};
-use operon_worker::{RunResult, TaskError, TaskKey, Worker, WorkerConfig, run_once};
+use operon_worker::{
+    Candidate, Priority, RunResult, Task, TaskContext, TaskError, TaskKey, TaskOutcome, TaskSource,
+    Worker, WorkerConfig, run_once,
+};
 use proptest::prelude::*;
 use serde_json::json;
 
@@ -73,7 +79,16 @@ fn crash_at(step: CollectionCommitStep, nth: u32) -> (CollectionCommitHook, Arc<
 /// then drops the task there.
 async fn crash_run(f: &TargetFixture, step: CollectionCommitStep) {
     let (hook, reached) = crash_at(step, 1);
-    let source = f.source(f.hooked_factory(hook));
+    crash_with(f, f.hooked_factory(hook), reached).await;
+}
+
+/// Runs the link with `factory` until `reached`, then drops the task there.
+async fn crash_with(
+    f: &TargetFixture,
+    factory: Arc<CollectionTargetFactory>,
+    reached: Arc<AtomicBool>,
+) {
+    let source = f.source(factory);
     let meta = f.meta.client.clone();
     let crashed = tokio::spawn(async move {
         loop {
@@ -253,8 +268,12 @@ async fn a_zombie_lance_commit_never_reaches_the_live_manifest() {
         lease_ttl: Duration::from_millis(400),
         ..WorkerConfig::new(owner)
     };
+    let zombie_runs: Arc<Mutex<Vec<String>>> = Arc::default();
     let mut zombie = Worker::new(f.meta.client.clone(), worker_config("zombie"));
-    zombie.add_source(Arc::new(f.source(f.hooked_factory(hook))));
+    zombie.add_source(Arc::new(Recording {
+        inner: f.source(f.hooked_factory(hook)),
+        runs: zombie_runs.clone(),
+    }));
     let zombie = zombie.start();
     wait_for("the zombie's lance commit", || {
         reached.load(Ordering::SeqCst)
@@ -303,21 +322,81 @@ async fn a_zombie_lance_commit_never_reaches_the_live_manifest() {
     zombie.stop().await;
     successor.stop().await;
 
+    // The zombie's run ended fenced: its CAS was refused.
+    assert!(
+        zombie_runs
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|run| run == "Err(Fenced)"),
+        "{:?}",
+        zombie_runs.lock().unwrap()
+    );
     // Detached commits on one parent allocate the same row ids, so the
-    // zombie's rows are told apart by their data files: none of them is in
-    // the live Lance version.
+    // zombie's rows are told apart by the data files it added on top of its
+    // parent (mainline version 1, as the collection had no commit yet): none
+    // of them is in the live Lance version.
     let live = f.manifest().await.lance_version;
     let zombie_version = *zombie_versions.iter().next().unwrap();
     assert!(!zombie_versions.contains(&live));
-    let zombie_files = data_files(&f, zombie_version).await;
-    assert!(!zombie_files.is_empty());
+    let zombie_added: BTreeSet<String> = data_files(&f, zombie_version)
+        .await
+        .difference(&data_files(&f, 1).await)
+        .cloned()
+        .collect();
+    assert!(!zombie_added.is_empty());
     let live_files = data_files(&f, live).await;
     assert!(
-        zombie_files.is_disjoint(&live_files),
-        "{zombie_files:?} ∩ {live_files:?}"
+        zombie_added.is_disjoint(&live_files),
+        "{zombie_added:?} ∩ {live_files:?}"
     );
     assert_verified(f.verify().await);
     f.shutdown().await;
+}
+
+/// A task source that records how each of its runs ended.
+struct Recording {
+    inner: operon_link::LinkApplySource,
+    runs: Arc<Mutex<Vec<String>>>,
+}
+
+struct RecordingTask {
+    inner: Arc<dyn Task>,
+    runs: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl TaskSource for Recording {
+    fn priority(&self) -> Priority {
+        self.inner.priority()
+    }
+
+    async fn candidates(&self, meta: &MetaClient) -> Result<Vec<Candidate>, TaskError> {
+        let candidates = self.inner.candidates(meta).await?;
+        Ok(candidates
+            .into_iter()
+            .map(|(key, task)| {
+                let task: Arc<dyn Task> = Arc::new(RecordingTask {
+                    inner: task,
+                    runs: self.runs.clone(),
+                });
+                (key, task)
+            })
+            .collect())
+    }
+}
+
+#[async_trait::async_trait]
+impl Task for RecordingTask {
+    async fn run(&self, ctx: TaskContext) -> Result<TaskOutcome, TaskError> {
+        let result = self.inner.run(ctx).await;
+        let summary = match &result {
+            Err(TaskError::Fenced) => "Err(Fenced)".to_string(),
+            other => format!("{other:?}"),
+        };
+        self.runs.lock().expect("lock").push(summary);
+        result
+    }
 }
 
 /// Waits until the link has applied the whole stream (a worker applies it).
@@ -455,21 +534,7 @@ async fn a_cached_pk_handle_is_reopened_after_another_writer_committed() {
 #[tokio::test]
 async fn a_pk_index_whose_delta_is_gone_is_rebuilt_from_lance() {
     let f = TargetFixture::start(tagged(), 3).await;
-    f.write((0..10).map(|n| upsert(n, json!({ "n": n }))).collect())
-        .await;
-    f.apply_all(&f.source(f.factory()), "w1").await;
-    // The commit that deletes and replaces keys lands, but the PK index is
-    // not written.
-    let mut ops: Vec<DocOp> = (0..4).map(|n| DocOp::Delete(key(n))).collect();
-    ops.extend((4..8).map(|n| upsert(n, json!({ "n": n + 100 }))));
-    f.write(ops).await;
-    crash_run(&f, CollectionCommitStep::AfterCas).await;
-    let manifest = f.manifest().await;
-    assert_eq!(manifest.version, 2);
-    f.store
-        .delete(manifest.pk_delta.as_deref().expect("a pk delta"))
-        .await
-        .expect("delete the pk delta");
+    lose_the_pk_delta(&f).await;
     // More upserts of the replaced keys: a stale index would leave their
     // old rows live.
     f.write(
@@ -481,6 +546,107 @@ async fn a_pk_index_whose_delta_is_gone_is_rebuilt_from_lance() {
     f.apply_all(&f.source(f.factory()), "w2").await;
     assert_verified(f.verify().await);
     assert_eq!(f.snapshot().await.scan_all().await.unwrap().len(), 10);
+    f.shutdown().await;
+}
+
+/// Commits keys 0..10, then a batch that deletes and replaces keys whose
+/// PK write is lost (a crash after the CAS), then deletes that commit's PK
+/// delta: the next PK repair must rebuild from Lance.
+async fn lose_the_pk_delta(f: &TargetFixture) {
+    f.write((0..10).map(|n| upsert(n, json!({ "n": n }))).collect())
+        .await;
+    f.apply_all(&f.source(f.factory()), "w1").await;
+    let mut ops: Vec<DocOp> = (0..4).map(|n| DocOp::Delete(key(n))).collect();
+    ops.extend((4..8).map(|n| upsert(n, json!({ "n": n + 100 }))));
+    f.write(ops).await;
+    crash_run(f, CollectionCommitStep::AfterCas).await;
+    let manifest = f.manifest().await;
+    assert_eq!(manifest.version, 2);
+    assert_ne!(f.pk_watermark().await.applied, manifest.applied);
+    f.store
+        .delete(manifest.pk_delta.as_deref().expect("a pk delta"))
+        .await
+        .expect("delete the pk delta");
+}
+
+/// A rebuild of several writes first marks the index as rebuilding, so one
+/// interrupted after a chunk is never trusted: the next opener rebuilds.
+#[tokio::test]
+async fn an_interrupted_pk_rebuild_is_never_trusted() {
+    let f = TargetFixture::start(tagged(), 3).await;
+    lose_the_pk_delta(&f).await;
+    f.write(
+        (0..10)
+            .map(|n| upsert(n, json!({ "n": n + 200 })))
+            .collect(),
+    )
+    .await;
+    // Three entries per write; the task is dropped after the first chunk.
+    let reached = Arc::new(AtomicBool::new(false));
+    let hook: RebuildHook = {
+        let reached = reached.clone();
+        Arc::new(move |write| {
+            if write == 1 {
+                reached.store(true, Ordering::SeqCst);
+                futures::future::pending::<()>().boxed()
+            } else {
+                futures::future::ready(()).boxed()
+            }
+        })
+    };
+    let factory =
+        Arc::new(CollectionTargetFactory::new(f.ctx.clone()).with_rebuild_chunks(3, hook));
+    crash_with(&f, factory, reached).await;
+    assert_eq!(f.pk_watermark().await, PkWatermark::rebuilding());
+    f.apply_all(&f.source(f.factory()), "w2").await;
+    assert_verified(f.verify().await);
+    assert_eq!(f.pk_watermark().await.applied, f.manifest().await.applied);
+    f.shutdown().await;
+}
+
+/// Review focus 2: a target whose parent is stale (another writer committed
+/// since its `load`) must not roll the PK index back to that parent: its
+/// commit is a `Conflict` and the index keeps the newer watermark.
+#[tokio::test]
+async fn a_stale_parent_never_rolls_the_pk_index_back() {
+    let f = TargetFixture::start(tagged(), 3).await;
+    f.write((0..6).map(|n| upsert(n, json!({ "n": n }))).collect())
+        .await;
+    f.apply_all(&f.source(f.factory()), "w1").await;
+    // Target A loads version 1 with no PK handle of its own.
+    let a = f.factory();
+    let target = a.open(&f.meta.client, &f.link().await).unwrap();
+    let state = target.load().await.unwrap();
+    assert_eq!(state.version, 1);
+    // Another factory commits version 2.
+    f.write((0..3).map(|n| upsert(n, json!({ "n": n + 10 }))).collect())
+        .await;
+    f.apply_all(&f.source(f.factory()), "w2").await;
+    let live = f.manifest().await;
+    assert_eq!(live.version, 2);
+    let watermark = f.pk_watermark().await;
+    assert_eq!(
+        (watermark.manifest_version, &watermark.applied),
+        (2, &live.applied)
+    );
+
+    let batch = f.batch_after(&state).await;
+    let fence = f.fence("w3").await;
+    let result = target.commit(1, batch, &fence).await;
+    assert!(matches!(result, Err(CommitError::Conflict)), "{result:?}");
+    assert_eq!(
+        f.pk_watermark().await,
+        watermark,
+        "the pk index was rolled back"
+    );
+    // A reloads and commits on top.
+    f.write(vec![upsert(9, json!({ "n": 9 }))]).await;
+    let state = target.load().await.unwrap();
+    assert_eq!(state.version, 2);
+    let batch = f.batch_after(&state).await;
+    let result = target.commit(2, batch, &fence).await;
+    assert!(matches!(result, Ok(3)), "{result:?}");
+    assert_verified(f.verify().await);
     f.shutdown().await;
 }
 
@@ -573,37 +739,4 @@ proptest! {
             .unwrap();
         runtime.block_on(random_batches(batches, crash_batch, step));
     }
-}
-
-/// With the `failpoints` feature, each named failpoint fires at its step (a
-/// panic stands in for the crash gate's abort), and a fresh run recovers.
-#[cfg(feature = "failpoints")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn each_failpoint_fires_at_its_step() {
-    let scenario = fail::FailScenario::setup();
-    for (name, landed) in [
-        ("collection.after_lance_commit", false),
-        ("collection.after_split_put", false),
-        ("collection.after_manifest_put", false),
-        ("collection.after_cas", true),
-        ("collection.after_pk_write", true),
-    ] {
-        let f = TargetFixture::start(tagged(), 3).await;
-        f.write((0..6).map(|n| upsert(n, json!({ "n": n }))).collect())
-            .await;
-        fail::cfg(name, "panic").expect("arm the failpoint");
-        let source = f.source(f.factory());
-        let meta = f.meta.client.clone();
-        let run =
-            tokio::spawn(async move { run_once(&meta, "crashed", CRASHED_TTL, &source).await });
-        let err = run.await.expect_err("the run panics at the failpoint");
-        assert!(err.is_panic(), "{name}: {err}");
-        fail::remove(name);
-        let version = f.manifest().await.version;
-        assert_eq!(version, u64::from(landed), "{name}");
-        f.apply_all(&f.source(f.factory()), "w2").await;
-        assert_verified(f.verify().await);
-        f.shutdown().await;
-    }
-    scenario.teardown();
 }

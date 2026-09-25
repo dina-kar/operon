@@ -1,6 +1,6 @@
 //! The link-apply task (design §09 §3) and its task source.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -154,6 +154,17 @@ impl TaskSource for LinkApplySource {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
+        // Factories drop what they cache for links that are gone.
+        for kind in self.shared.registry.kinds() {
+            let live: BTreeSet<LinkId> = links
+                .iter()
+                .filter(|(link, _)| link.target.kind == kind)
+                .map(|(link, _)| link.id)
+                .collect();
+            if let Some(factory) = self.shared.registry.get(&kind) {
+                factory.retain(&live).await;
+            }
+        }
         let mut candidates = Vec::new();
         let mut unregistered = BTreeMap::new();
         for (link, hwms) in links {

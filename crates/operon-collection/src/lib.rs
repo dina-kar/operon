@@ -101,7 +101,7 @@ pub use tantivy_schema::{
     to_tantivy_doc,
 };
 #[cfg(feature = "test-util")]
-pub use target::CollectionCommitHook;
+pub use target::{CollectionCommitHook, RebuildHook};
 pub use target::{
     CollectionCommitStep, CollectionTarget, CollectionTargetFactory, PK_WATERMARK_KEY,
 };

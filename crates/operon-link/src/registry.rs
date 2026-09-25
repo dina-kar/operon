@@ -1,12 +1,13 @@
 //! The link-target registry (plan M1.1 Task 10): which [`LinkTarget`] serves
 //! a link, by its `TargetRef.kind`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use operon_meta::{Link, MetaClient};
+use async_trait::async_trait;
+use operon_meta::{Link, LinkId, MetaClient};
 use operon_store::Store;
 
 use crate::counter::{COUNTER_KIND, CounterTable};
@@ -14,6 +15,7 @@ use crate::error::LinkError;
 use crate::target::LinkTarget;
 
 /// Makes the targets of one link kind.
+#[async_trait]
 pub trait LinkTargetFactory: Send + Sync + fmt::Debug {
     /// The `TargetRef.kind` this factory serves.
     fn kind(&self) -> &str;
@@ -21,6 +23,14 @@ pub trait LinkTargetFactory: Send + Sync + fmt::Debug {
     /// A target for `link` (cheap; may return a cached instance). Never
     /// opens writers.
     fn open(&self, meta: &MetaClient, link: &Link) -> Result<Arc<dyn LinkTarget>, LinkError>;
+
+    /// `links` are every link of this kind the metastore still has: a
+    /// factory that caches per-link state (open writers) drops the state of
+    /// every other link. Called on every poll of the link-apply source. The
+    /// default keeps nothing, so does nothing.
+    async fn retain(&self, links: &BTreeSet<LinkId>) {
+        let _ = links;
+    }
 }
 
 /// Link target factories by the kind they serve. Cheap to clone.

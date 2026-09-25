@@ -553,6 +553,54 @@ impl TargetFixture {
             .expect("verify")
     }
 
+    /// The PK index watermark, read without opening a writer.
+    pub async fn pk_watermark(&self) -> operon_collection::PkWatermark {
+        let reader = operon_pk::PkReader::open(
+            &self.store,
+            &operon_meta::collection_pk_prefix(self.ns, self.cid),
+        )
+        .await
+        .expect("pk reader");
+        let value = reader
+            .get(operon_collection::PK_WATERMARK_KEY)
+            .await
+            .expect("read the watermark");
+        reader.close().await.expect("close the reader");
+        value
+            .map(|bytes| operon_collection::PkWatermark::decode(&bytes).expect("a watermark"))
+            .unwrap_or_default()
+    }
+
+    /// The link task's lease, taken as `owner`, as a commit fence.
+    pub async fn fence(&self, owner: &str) -> operon_meta::Fence {
+        let lease = format!("task/link/{}", self.link);
+        let grant = self
+            .meta
+            .client
+            .acquire_lease(&lease, owner, Duration::from_secs(30))
+            .await
+            .expect("lease");
+        operon_meta::Fence {
+            lease,
+            epoch: grant.epoch,
+        }
+    }
+
+    /// Every record after `state`'s applied offsets, up to the high
+    /// watermarks, as one batch.
+    pub async fn batch_after(&self, state: &operon_link::TargetState) -> operon_link::ApplyBatch {
+        let records = self
+            .records()
+            .await
+            .into_iter()
+            .filter(|(p, r)| r.offset >= state.applied.get(p).copied().unwrap_or(0))
+            .collect();
+        operon_link::ApplyBatch {
+            records,
+            applied_after: self.high_watermarks().await,
+        }
+    }
+
     pub async fn snapshot(&self) -> operon_collection::CollectionSnapshot {
         operon_collection::CollectionSnapshot::open(
             &self.ctx,

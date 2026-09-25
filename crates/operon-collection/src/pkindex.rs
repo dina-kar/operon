@@ -35,15 +35,25 @@ pub struct PkWatermark {
 }
 
 impl PkWatermark {
+    /// The watermark a multi-write rebuild writes first: it matches no
+    /// manifest (no stream has partition `u32::MAX`), so an index whose
+    /// rebuild was interrupted is never trusted, and is rebuilt again.
+    pub fn rebuilding() -> Self {
+        Self {
+            manifest_version: 0,
+            applied: BTreeMap::from([(u32::MAX, u64::MAX)]),
+        }
+    }
+
     /// The watermark's PK index value: `0x01 ‖ postcard(self)`.
-    pub(crate) fn encode(&self) -> Bytes {
+    pub fn encode(&self) -> Bytes {
         let mut out = vec![VALUE_VERSION];
         out.extend(postcard::to_stdvec(self).expect("a plain struct always serializes"));
         Bytes::from(out)
     }
 
     /// Parses a watermark value.
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, CollectionError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, CollectionError> {
         let corrupt = |why: String| CollectionError::Corrupt(format!("pk watermark: {why}"));
         let body = match bytes.split_first() {
             Some((&VALUE_VERSION, body)) => body,

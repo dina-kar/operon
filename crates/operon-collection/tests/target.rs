@@ -18,9 +18,9 @@ use operon_collection::{
     SparseVectorSpec, StoredDoc, decode_dead_letters, decode_sparse_weights, sparse_postings_field,
     sparse_weights_field,
 };
-use operon_link::{ApplyBatch, CommitError, LinkError, LinkTargetFactory};
+use operon_link::{CommitError, LinkError, LinkTargetFactory};
 use operon_log::Record;
-use operon_meta::{Consistency, Fence, collection_pk_prefix, collection_pointer_key};
+use operon_meta::{Consistency, collection_pk_prefix, collection_pointer_key};
 use operon_pk::{PkIndex, PkIndexConfig};
 use operon_worker::{RunResult, TaskError, TaskKey, TaskOutcome, TaskSource};
 use serde_json::json;
@@ -536,20 +536,33 @@ async fn a_batch_of_only_dead_letters_advances_applied() {
     f.shutdown().await;
 }
 
+/// Step 11: a commit that took longer than `max_commit_delay` is refused
+/// by the target itself, before any CAS (the metastore's own freshness
+/// refusal would say "stale object").
 #[tokio::test]
 async fn a_commit_past_max_commit_delay_is_blocked_and_logged() {
     let config = CollectionConfig {
-        max_commit_delay: Duration::from_millis(50),
+        max_commit_delay: Duration::from_secs(1),
         ..CollectionConfig::default()
     };
     let f = TargetFixture::start_with(tagged(), 2, config).await;
     f.write(vec![upsert(1, json!({ "n": 1 }))]).await;
     let hook = once_at(CollectionCommitStep::AfterManifestPut, || {
-        tokio::time::sleep(Duration::from_millis(100)).boxed()
+        tokio::time::sleep(Duration::from_millis(1_200)).boxed()
     });
     let source = f.source(f.hooked_factory(hook));
     let err = link_error(ran(f.run_once(&source, "w1").await));
-    assert!(matches!(err, LinkError::Blocked(_)), "{err:?}");
+    let LinkError::Blocked(why) = &err else {
+        panic!("expected Blocked, got {err:?}");
+    };
+    assert!(
+        why.contains("longer than"),
+        "not the target's own check: {why}"
+    );
+    assert!(
+        !why.contains("stale object"),
+        "the CAS was attempted: {why}"
+    );
     let key = collection_pointer_key(f.cid);
     let pointer = f
         .meta
@@ -566,6 +579,8 @@ async fn a_commit_past_max_commit_delay_is_blocked_and_logged() {
     f.shutdown().await;
 }
 
+/// The CAS is applied but its acknowledgement is lost: the retry sees the
+/// pointer at our manifest, and the commit reports success at exactly +1.
 #[tokio::test]
 async fn a_lost_cas_ack_is_recognised() {
     let f = TargetFixture::start(tagged(), 2).await;
@@ -575,12 +590,20 @@ async fn a_lost_cas_ack_is_recognised() {
         meta.inject_lost_ack();
         futures::future::ready(()).boxed()
     });
-    let source = f.source(f.hooked_factory(hook));
+    let factory = f.hooked_factory(hook);
+    let target = factory.open(&f.meta.client, &f.link().await).unwrap();
     f.write(vec![upsert(1, json!({ "n": 1 }))]).await;
-    assert_ran_ok(f.run_once(&source, "w1").await);
-    assert_eq!(f.manifest().await.version, 1);
+    let state = target.load().await.unwrap();
+    let batch = f.batch_after(&state).await;
+    let fence = f.fence("w1").await;
+    let result = target.commit(0, batch, &fence).await;
+    assert!(matches!(result, Ok(1)), "{result:?}");
+    let manifest = f.manifest().await;
+    assert_eq!(manifest.version, 1);
+    // The commit went on past the CAS: the PK index reflects it.
+    assert_eq!(f.pk_watermark().await.applied, manifest.applied);
     f.write(vec![upsert(2, json!({ "n": 2 }))]).await;
-    assert_ran_ok(f.run_once(&source, "w1").await);
+    assert_ran_ok(f.run_once(&f.source(factory), "w1").await);
     assert_eq!(f.manifest().await.version, 2);
     assert_verified(f.verify().await);
     f.shutdown().await;
@@ -611,27 +634,8 @@ async fn load_opens_no_writer() {
     outside.close().await.unwrap();
 
     f.write(vec![upsert(2, json!({ "n": 2 }))]).await;
-    let records: Vec<_> = f
-        .records()
-        .await
-        .into_iter()
-        .filter(|(p, r)| r.offset >= state.applied.get(p).copied().unwrap_or(0))
-        .collect();
-    let batch = ApplyBatch {
-        records,
-        applied_after: f.high_watermarks().await,
-    };
-    let lease = format!("task/link/{}", f.link);
-    let grant = f
-        .meta
-        .client
-        .acquire_lease(&lease, "w9", Duration::from_secs(30))
-        .await
-        .unwrap();
-    let fence = Fence {
-        lease,
-        epoch: grant.epoch,
-    };
+    let batch = f.batch_after(&state).await;
+    let fence = f.fence("w9").await;
     let result = target.commit(state.version, batch, &fence).await;
     assert!(!matches!(result, Err(CommitError::Fenced)), "{result:?}");
     assert_eq!(result.unwrap(), 2);
@@ -782,4 +786,25 @@ fn pk_values_deltas_and_dead_letters_round_trip_and_reject_corruption() {
         flipped[i] ^= 0x01;
         assert!(decode_dead_letters(&flipped).is_err(), "byte {i}");
     }
+}
+
+/// A dropped collection's target (and its open PK index writer) is evicted
+/// by the factory on the next poll, although its link is never a candidate
+/// again.
+#[tokio::test]
+async fn a_dropped_collections_target_is_evicted_and_closed() {
+    let f = TargetFixture::start(tagged(), 2).await;
+    f.write(vec![upsert(1, json!({ "n": 1 }))]).await;
+    let factory = f.factory();
+    let source = f.source(factory.clone());
+    assert_ran_ok(f.run_once(&source, "w1").await);
+    assert_eq!(factory.cached_links(), [f.link]);
+    f.meta
+        .client
+        .drop_collection(f.ns, "docs")
+        .await
+        .expect("drop");
+    assert!(source.candidates(&f.meta.client).await.unwrap().is_empty());
+    assert!(factory.cached_links().is_empty());
+    f.shutdown().await;
 }
