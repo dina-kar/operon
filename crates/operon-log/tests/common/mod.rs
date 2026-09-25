@@ -267,14 +267,17 @@ pub async fn small_cache(store: &Store) -> operon_cache::RangeCache {
 }
 
 /// An object store that holds the next PUT under a prefix until released,
-/// to interleave a background task with the test.
+/// to interleave a background task with the test. The PUT is held before it
+/// reaches the store ([`Gate::arm`]) or after it was applied
+/// ([`Gate::arm_after`]).
 pub struct PausingStore {
     inner: Arc<dyn object_store::ObjectStore>,
     gate: Arc<Gate>,
 }
 
 pub struct Gate {
-    prefix: std::sync::Mutex<Option<String>>,
+    /// The prefix to hold, and whether to hold after applying the PUT.
+    prefix: std::sync::Mutex<Option<(String, bool)>>,
     held: std::sync::Mutex<Option<String>>,
     paused: tokio::sync::Notify,
     release: tokio::sync::Semaphore,
@@ -292,9 +295,16 @@ impl Default for Gate {
 }
 
 impl Gate {
-    /// Holds the next PUT whose path starts with `prefix`.
+    /// Holds the next PUT whose path starts with `prefix`, before it
+    /// reaches the store.
     pub fn arm(&self, prefix: &str) {
-        *self.prefix.lock().expect("lock") = Some(prefix.to_string());
+        *self.prefix.lock().expect("lock") = Some((prefix.to_string(), false));
+    }
+
+    /// Holds the next PUT whose path starts with `prefix` after it was
+    /// applied: the object exists, but the caller has not heard back.
+    pub fn arm_after(&self, prefix: &str) {
+        *self.prefix.lock().expect("lock") = Some((prefix.to_string(), true));
     }
 
     /// Waits until a PUT is held.
@@ -318,15 +328,27 @@ impl Gate {
             .expect("a PUT was held")
     }
 
-    fn take(&self, path: &str) -> bool {
+    /// Whether to hold this PUT, and if so whether after applying it.
+    fn take(&self, path: &str) -> Option<bool> {
         let mut prefix = self.prefix.lock().expect("lock");
-        if prefix.as_deref().is_some_and(|p| path.starts_with(p)) {
-            *prefix = None;
+        if prefix
+            .as_ref()
+            .is_some_and(|(p, _)| path.starts_with(p.as_str()))
+        {
             *self.held.lock().expect("lock") = Some(path.to_string());
-            true
+            prefix.take().map(|(_, after)| after)
         } else {
-            false
+            None
         }
+    }
+
+    async fn hold(&self) {
+        self.paused.notify_one();
+        self.release
+            .acquire()
+            .await
+            .expect("semaphore open")
+            .forget();
     }
 }
 
@@ -361,16 +383,18 @@ impl object_store::ObjectStore for PausingStore {
         payload: object_store::PutPayload,
         opts: object_store::PutOptions,
     ) -> object_store::Result<object_store::PutResult> {
-        if self.gate.take(location.as_ref()) {
-            self.gate.paused.notify_one();
-            self.gate
-                .release
-                .acquire()
-                .await
-                .expect("semaphore open")
-                .forget();
+        match self.gate.take(location.as_ref()) {
+            None => self.inner.put_opts(location, payload, opts).await,
+            Some(false) => {
+                self.gate.hold().await;
+                self.inner.put_opts(location, payload, opts).await
+            }
+            Some(true) => {
+                let result = self.inner.put_opts(location, payload, opts).await;
+                self.gate.hold().await;
+                result
+            }
         }
-        self.inner.put_opts(location, payload, opts).await
     }
 
     async fn put_multipart_opts(

@@ -9,7 +9,7 @@ use std::time::Duration;
 use common::{Meta, PausingStore, faulty_store, read_direct, records, value};
 use operon_common::StreamId;
 use operon_log::{AppendAck, LogConfig, LogError, LogWriter, Record};
-use operon_meta::{Consistency, MetaClient, MetaClientConfig};
+use operon_meta::{Consistency, EntryKind, IndexEntry, MetaClient, MetaClientConfig};
 use operon_store::{Fault, Op, Store};
 
 /// A writer config that flushes only when asked (or when the buffer fills).
@@ -306,8 +306,9 @@ async fn append_many_refuses_requests_beyond_the_limits() {
 }
 
 /// Tasks mixing `append` and `append_many` on the same partitions: every ack
-/// matches the stored records, offsets are dense, and each task's records
-/// keep its submission order in every partition.
+/// matches the stored records, offsets are dense, each task's records keep
+/// its submission order in every partition, and every `append_many` request
+/// landed in one WAL object.
 #[tokio::test]
 async fn concurrent_appends_and_append_many_keep_per_partition_order() {
     const TASKS: usize = 8;
@@ -327,6 +328,7 @@ async fn concurrent_appends_and_append_many_keep_per_partition_order() {
         let writer = writer.clone();
         tasks.push(tokio::spawn(async move {
             let mut acked = Vec::new();
+            let mut requests = Vec::new();
             for i in 0..ITERATIONS {
                 let first = ((task + i) % PARTITIONS as usize) as u32;
                 let n = 1 + i % 3;
@@ -350,18 +352,22 @@ async fn concurrent_appends_and_append_many_keep_per_partition_order() {
                         .await
                         .expect("append_many");
                     assert_eq!(acks.len(), request.len());
+                    requests.push(acks.clone());
                     for (ack, (partition, batch)) in acks.into_iter().zip(request) {
                         assert_eq!(ack.partition, partition);
                         acked.push((ack, batch));
                     }
                 }
             }
-            acked
+            (acked, requests)
         }));
     }
     let mut acked: Vec<(AppendAck, Vec<Record>)> = Vec::new();
+    let mut requests: Vec<Vec<AppendAck>> = Vec::new();
     for task in tasks {
-        acked.extend(task.await.unwrap());
+        let (task_acked, task_requests) = task.await.unwrap();
+        acked.extend(task_acked);
+        requests.extend(task_requests);
     }
 
     let mut stored: BTreeMap<u32, Vec<String>> = BTreeMap::new();
@@ -392,6 +398,40 @@ async fn concurrent_appends_and_append_many_keep_per_partition_order() {
         stored.values().map(Vec::len).sum::<usize>(),
         "every stored record was acknowledged"
     );
+    // Every batch of one request is in the same WAL object.
+    let mut entries = BTreeMap::new();
+    for partition in 0..PARTITIONS {
+        let partition_entries: Vec<IndexEntry> = meta
+            .client
+            .read(Consistency::Local, move |s| {
+                s.partition(stream, partition)
+                    .expect("partition")
+                    .entries()
+                    .cloned()
+                    .collect()
+            })
+            .await
+            .unwrap();
+        entries.insert(partition, partition_entries);
+    }
+    let object_of = |ack: &AppendAck| -> String {
+        let entry = entries[&ack.partition]
+            .iter()
+            .find(|e| e.base_offset <= ack.base_offset && ack.last_offset < e.end_offset())
+            .expect("an index entry holds the acked batch");
+        assert_eq!(entry.kind, EntryKind::Wal);
+        entry.object.clone()
+    };
+    for acks in &requests {
+        let object = object_of(&acks[0]);
+        for ack in &acks[1..] {
+            assert_eq!(
+                object_of(ack),
+                object,
+                "one WAL object per request: {acks:?}"
+            );
+        }
+    }
     // Per task and partition, the iteration numbers only grow with the offset.
     for (partition, values) in &stored {
         let mut last: BTreeMap<usize, usize> = BTreeMap::new();
@@ -411,14 +451,36 @@ async fn concurrent_appends_and_append_many_keep_per_partition_order() {
     meta.shutdown().await;
 }
 
-/// The writer crashes while the request's WAL object is being written: a
-/// restarted writer sees none of its batches, and no offset was taken.
+/// The writer crashes after the request's WAL object was written but before
+/// it was committed: the object is an orphan (GC's job), no partition's index
+/// points to it, and a restarted writer sees none of the request's batches.
 #[tokio::test]
 async fn a_crash_between_put_and_commit_loses_every_batch_of_the_request_together() {
+    let orphan = crash_during_wal_put(true).await;
+    assert!(orphan, "the held WAL object was written");
+}
+
+/// The writer crashes while the request's WAL object is being written: no
+/// object, and none of the request's batches.
+#[tokio::test]
+async fn a_crash_during_the_put_loses_every_batch_of_the_request_together() {
+    let orphan = crash_during_wal_put(false).await;
+    assert!(!orphan, "the held WAL object was never written");
+}
+
+/// Holds the WAL PUT of a three-partition `append_many` (after applying it
+/// if `after_apply`), crashes the writer there, and checks that a restarted
+/// writer sees none of the request and starts every partition at offset 0.
+/// Returns whether the held object exists in the store.
+async fn crash_during_wal_put(after_apply: bool) -> bool {
     let meta = Meta::start().await;
     let (_, stream) = meta.stream("acme", "events", 3).await;
     let (gate, store) = PausingStore::create();
-    gate.arm("wal/");
+    if after_apply {
+        gate.arm_after("wal/");
+    } else {
+        gate.arm("wal/");
+    }
     let writer =
         LogWriter::start(meta.client.clone(), store.clone(), common::fast_config()).expect("start");
     let request = {
@@ -430,15 +492,25 @@ async fn a_crash_between_put_and_commit_loses_every_batch_of_the_request_togethe
         })
     };
     gate.paused().await;
-    assert!(gate.held_path().starts_with("wal/standard/1/"));
+    let held = gate.held_path();
+    assert!(held.starts_with("wal/standard/1/"), "{held}");
     // Crash: the caller and the writer are gone, and the held PUT never
-    // completes. The flush task stays parked on it until the runtime stops.
+    // returns. The flush task stays parked on it until the runtime stops.
     request.abort();
     let _ = request.await;
     drop(writer);
 
+    let orphan = store.head(&held).await.is_ok();
     let restarted =
         LogWriter::start(meta.client.clone(), store.clone(), common::fast_config()).expect("start");
+    let committed = {
+        let held = held.clone();
+        meta.client
+            .read(Consistency::Local, move |s| s.wal_commit(&held).is_some())
+            .await
+            .expect("read")
+    };
+    assert!(!committed, "the held object was not committed");
     for partition in 0..3 {
         assert_eq!(meta.high_watermark(stream, partition).await, 0);
         assert!(objects(&meta.client, stream, partition).await.is_empty());
@@ -452,11 +524,16 @@ async fn a_crash_between_put_and_commit_loses_every_batch_of_the_request_togethe
     let acks = restarted
         .append_many(stream, batches("after", &[0, 1, 2], 2))
         .await
-        .unwrap();
+        .expect("append_many");
     assert!(
         acks.iter()
             .all(|a| (a.base_offset, a.last_offset) == (0, 1))
     );
-    restarted.shutdown().await.unwrap();
+    for partition in 0..3 {
+        let objects = objects(&meta.client, stream, partition).await;
+        assert!(!objects.contains(&held), "partition {partition}");
+    }
+    restarted.shutdown().await.expect("shutdown");
     meta.shutdown().await;
+    orphan
 }
