@@ -4555,6 +4555,7 @@ dependencies = [
  "openraft",
  "operon-common",
  "operon-meta",
+ "operon-meta-conformance",
  "operon-store",
  "postcard",
  "proptest",
@@ -4564,6 +4565,17 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "operon-meta-conformance"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "operon-common",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "tokio",
 ]
 
 [[package]]
@@ -4627,6 +4639,7 @@ dependencies = [
  "operon-link",
  "operon-log",
  "operon-meta",
+ "operon-meta-conformance",
  "operon-store",
  "operon-worker",
  "rand 0.9.5",

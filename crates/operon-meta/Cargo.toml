@@ -33,6 +33,7 @@ failpoints = ["dep:fail", "fail/failpoints"]
 
 [dev-dependencies]
 operon-meta = { path = ".", features = ["test-util"] }
+operon-meta-conformance.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 

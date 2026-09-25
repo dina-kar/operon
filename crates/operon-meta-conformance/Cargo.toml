@@ -1,0 +1,19 @@
+[package]
+name = "operon-meta-conformance"
+description = "Backend-agnostic conformance suite for Operon's MetaStore trait, with the linearizability checker (test-only)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+async-trait.workspace = true
+operon-common.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
