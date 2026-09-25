@@ -539,3 +539,36 @@ proptest! {
         runtime.block_on(random_batches(batches, crash_batch, step));
     }
 }
+
+/// With the `failpoints` feature, each named failpoint fires at its step (a
+/// panic stands in for the crash gate's abort), and a fresh run recovers.
+#[cfg(feature = "failpoints")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn each_failpoint_fires_at_its_step() {
+    let scenario = fail::FailScenario::setup();
+    for (name, landed) in [
+        ("collection.after_lance_commit", false),
+        ("collection.after_split_put", false),
+        ("collection.after_manifest_put", false),
+        ("collection.after_cas", true),
+        ("collection.after_pk_write", true),
+    ] {
+        let f = TargetFixture::start(tagged(), 3).await;
+        f.write((0..6).map(|n| upsert(n, json!({ "n": n }))).collect())
+            .await;
+        fail::cfg(name, "panic").expect("arm the failpoint");
+        let source = f.source(f.factory());
+        let meta = f.meta.client.clone();
+        let run =
+            tokio::spawn(async move { run_once(&meta, "crashed", CRASHED_TTL, &source).await });
+        let err = run.await.expect_err("the run panics at the failpoint");
+        assert!(err.is_panic(), "{name}: {err}");
+        fail::remove(name);
+        let version = f.manifest().await.version;
+        assert_eq!(version, u64::from(landed), "{name}");
+        f.apply_all(&f.source(f.factory()), "w2").await;
+        assert_verified(f.verify().await);
+        f.shutdown().await;
+    }
+    scenario.teardown();
+}

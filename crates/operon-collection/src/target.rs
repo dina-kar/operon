@@ -397,6 +397,23 @@ fn fold_key(
 
 impl CollectionTarget {
     async fn step(&self, step: CollectionCommitStep, fence: &Fence) {
+        match step {
+            CollectionCommitStep::AfterLanceCommit => {
+                crate::failpoint!("collection.after_lance_commit");
+            }
+            CollectionCommitStep::AfterSplitPut => {
+                crate::failpoint!("collection.after_split_put");
+            }
+            CollectionCommitStep::AfterManifestPut => {
+                crate::failpoint!("collection.after_manifest_put");
+            }
+            CollectionCommitStep::AfterCas => {
+                crate::failpoint!("collection.after_cas");
+            }
+            CollectionCommitStep::AfterPkWrite => {
+                crate::failpoint!("collection.after_pk_write");
+            }
+        }
         #[cfg(feature = "test-util")]
         if let Some(hook) = &self.hook {
             hook(step, fence.clone()).await;

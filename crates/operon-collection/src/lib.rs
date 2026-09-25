@@ -112,3 +112,14 @@ pub use values::{
 };
 pub use verify::{Expected, fold_stream, verify_collection};
 pub use writer::{CollectionWriter, MAX_WRITE_OPS, OpError, OpResult, WriteError, WriteOutcome};
+
+/// Evaluates a named failpoint. With the `failpoints` feature the `fail`
+/// crate may act on it (the crash gate aborts the process there); without
+/// it, this expands to nothing.
+macro_rules! failpoint {
+    ($name:literal) => {
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!($name);
+    };
+}
+pub(crate) use failpoint;

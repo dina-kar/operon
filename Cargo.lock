@@ -4439,6 +4439,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "crc32c",
+ "fail",
  "futures",
  "lance",
  "lance-file",

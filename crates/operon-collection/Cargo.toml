@@ -13,6 +13,7 @@ arrow-schema.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 crc32c.workspace = true
+fail = { workspace = true, optional = true }
 futures.workspace = true
 lance.workspace = true
 lance-file.workspace = true
@@ -45,6 +46,15 @@ xxhash-rust.workspace = true
 [features]
 # Test hooks (holding a commit at a step). Not part of the stable API.
 test-util = []
+# Named failpoints for the crash gate (`collection.after_*`). Off by default:
+# without it the failpoints compile to nothing.
+failpoints = [
+    "dep:fail",
+    "fail/failpoints",
+    "operon-link/failpoints",
+    "operon-log/failpoints",
+    "operon-meta/failpoints",
+]
 
 [build-dependencies]
 prost-build.workspace = true
