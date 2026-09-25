@@ -48,6 +48,7 @@ failpoints = [
 ]
 
 [dev-dependencies]
+arrow-array.workspace = true
 object_store.workspace = true
 reqwest.workspace = true
 tempfile.workspace = true
