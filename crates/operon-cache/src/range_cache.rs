@@ -172,11 +172,13 @@ impl RangeCache {
     /// manifest), so a cold read costs no HEAD: one GET per run of missing
     /// blocks.
     ///
-    /// Every GET's response also carries the object's size, and a `size`
-    /// that it contradicts is a [`CacheError::SizeMismatch`] before any
-    /// block is cached. So is a `size` that contradicts the size already
-    /// known, without a request. Once a GET has confirmed `size`, it is
-    /// remembered for later [`Self::size`] and [`Self::read`] calls.
+    /// A `size` that contradicts a remembered size or a GET's reported size
+    /// yields [`CacheError::SizeMismatch`]. Each GET checks its size and
+    /// payload length before caching its blocks. A successful read that fetched
+    /// blocks remembers `size` for later [`Self::size`] and [`Self::read`]
+    /// calls; an empty or fully cached read makes no GET and cannot confirm it.
+    /// An inverted range or one extending past `size` yields
+    /// [`CacheError::OutOfRange`].
     pub async fn read_with_size(
         &self,
         path: &str,
@@ -263,9 +265,9 @@ impl RangeCache {
         Ok((out.freeze(), confirmed))
     }
 
-    /// Forgets `path`: its size and its cached blocks, so that a deleted
-    /// object is not reported as present (and an object written at the same
-    /// path later is read afresh).
+    /// Invalidates the remembered size of `path`. When that size is still
+    /// cached, evicts blocks covering its byte range; otherwise blocks for
+    /// `path` cannot be enumerated and may remain cached.
     pub async fn forget(&self, path: &str) {
         if let Some(size) = self.sizes.get(path).await {
             for index in 0..size.div_ceil(self.block_size) {

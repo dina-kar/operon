@@ -2,13 +2,9 @@
 
 use crate::doc::{DocOp, Document, apply_patch};
 
-/// Whether folding `ops` (one key, in partition order) needs the committed
-/// document: true iff a Patch comes before every Upsert and Delete.
-///
-/// Otherwise, for a non-empty `ops`, the first upsert or delete overwrites
-/// whatever came before, so the fold's result does not depend on the
-/// committed state. (Empty `ops` give false: a key with no ops is not
-/// resolved at all.)
+/// Whether the first op for one key is a patch, so folding may need the
+/// committed document. A later upsert or delete can make that read unnecessary;
+/// this check conservatively returns true anyway. Empty `ops` returns false.
 pub fn needs_current<'a>(ops: impl IntoIterator<Item = &'a DocOp>) -> bool {
     matches!(ops.into_iter().next(), Some(DocOp::Patch { .. }))
 }

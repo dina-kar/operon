@@ -117,7 +117,7 @@ pub struct StoredRow {
     pub offset: u64,
 }
 
-/// `rows` as one batch with [`arrow_schema`]`(schema)`. A vector that the
+/// `rows` as one batch using [`arrow_schema()`]. A vector that the
 /// schema lacks, or a dense vector of the wrong dimension, is an `Internal`
 /// error: documents are validated before they are written.
 pub fn to_record_batch(
