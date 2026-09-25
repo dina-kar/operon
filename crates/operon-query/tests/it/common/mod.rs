@@ -354,6 +354,24 @@ impl TailFixture {
     }
 
     pub async fn start_with(meta: Meta, schema: CollectionSchema, partitions: u32) -> Self {
+        Self::start_with_config(meta, schema, partitions, CollectionConfig::default()).await
+    }
+
+    /// Over a one-node metastore, with collection config `config`.
+    pub async fn start_configured(
+        schema: CollectionSchema,
+        partitions: u32,
+        config: CollectionConfig,
+    ) -> Self {
+        Self::start_with_config(Meta::start().await, schema, partitions, config).await
+    }
+
+    pub async fn start_with_config(
+        meta: Meta,
+        schema: CollectionSchema,
+        partitions: u32,
+        config: CollectionConfig,
+    ) -> Self {
         let paths = Arc::new(PathStore::default());
         let faulty = Arc::new(FaultyStore::new(paths.clone()));
         let store = Store::new(faulty.clone());
@@ -387,7 +405,6 @@ impl TailFixture {
         .await
         .expect("range cache");
         let reader = LogReader::new(meta.client.clone(), cache.clone());
-        let config = CollectionConfig::default();
         let ctx = CollectionContext {
             meta: meta.client.clone().into(),
             store: store.clone(),
@@ -570,6 +587,32 @@ impl TailFixture {
             assert!(Instant::now() < deadline, "the link never caught up");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    /// Runs M1.1's index builds until they are idle.
+    pub async fn build_indexes(&self) {
+        let source = operon_collection::IndexBuildSource::new(self.ctx.clone());
+        for _ in 0..20 {
+            let results = operon_worker::run_once(
+                self.meta.client.clone(),
+                "indexer",
+                Duration::from_secs(30),
+                &source,
+            )
+            .await
+            .expect("run");
+            let idle = results.iter().all(|(_, result)| match result {
+                operon_worker::RunResult::Ran(Ok(outcome)) => {
+                    matches!(outcome, operon_worker::TaskOutcome::Idle)
+                }
+                operon_worker::RunResult::Ran(Err(err)) => panic!("index build: {err}"),
+                _ => false,
+            });
+            if idle {
+                return;
+            }
+        }
+        panic!("the index builds never went idle");
     }
 
     /// Commits exactly the records below `upto` (per partition, from the

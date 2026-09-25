@@ -15,6 +15,8 @@ datafusion.workspace = true
 futures.workspace = true
 http.workspace = true
 http-body.workspace = true
+lance.workspace = true
+lance-linalg.workspace = true
 moka = { workspace = true, features = ["sync"] }
 operon-collection.workspace = true
 operon-common.workspace = true

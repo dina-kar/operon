@@ -4602,6 +4602,8 @@ dependencies = [
  "futures",
  "http",
  "http-body",
+ "lance",
+ "lance-linalg",
  "moka",
  "object_store 0.14.2",
  "operon-cache",

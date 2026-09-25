@@ -10,8 +10,10 @@
 //! - [`order`]: the effective sort (R10) and `search_after`;
 //! - [`mask`]: row sets and split masks;
 //! - [`tantivy_search`]: BM25 search over splits and the tail;
-//! - [`filter_bitmap`]: a filter as a row-id set.
+//! - [`filter_bitmap`]: a filter as a row-id set;
+//! - [`ann`]: dense vector search over Lance, the tail and the hot tier.
 
+pub mod ann;
 pub mod filter_bitmap;
 pub mod mask;
 pub mod order;
@@ -39,6 +41,7 @@ use crate::text::compile::CompiledQuery;
 use crate::text::fields::{ResolvedField, resolve_field};
 use crate::text::splits::{OpenSplit, open_splits_with, tail_segment_masks};
 
+pub use ann::AnnExec;
 pub use filter_bitmap::FilterBitmapExec;
 pub use mask::{RowSet, SplitMask};
 pub use order::{EffectiveSort, RankMode};

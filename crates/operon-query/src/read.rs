@@ -27,7 +27,7 @@ use operon_log::{LogError, LogReader};
 use roaring::RoaringBitmap;
 
 use crate::error::ServiceError;
-use crate::hot::{HotTier, HotUsed, RequestHot};
+use crate::hot::{HotTier, HotUsed, NoHotTier, RequestHot};
 use crate::ir::ReadConsistency;
 use crate::tail::{
     RangeTailCache, Tail, TailBudget, TailConfig, TailError, TailRegistry, TailSnapshot, TailState,
@@ -309,6 +309,13 @@ impl Reads {
                 self.pinned(ns, collection.clone(), *manifest_version, token)
                     .await?
             }
+        };
+        // `Operon-Hot: off` reads no hot structure (Ruling 11); the service
+        // passes `NoHotTier` then too (Task 9).
+        let hot_tier: Arc<dyn HotTier> = if hot.enabled {
+            hot_tier
+        } else {
+            Arc::new(NoHotTier)
         };
         hot_tier.record_access(ns, collection.id);
         Ok(ReadView {
