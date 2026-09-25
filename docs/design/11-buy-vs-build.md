@@ -10,10 +10,10 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 
 | Component | Crate / project | License | Version (2026-09) | Role in Operon | Notes / risks |
 |---|---|---|---|---|---|
-| Query engine | **Apache DataFusion** | Apache-2.0 | 55.x | All planning/execution | Very active ASF project; extensibility proven by InfluxDB 3, GreptimeDB, LanceDB |
-| Distributed exec | **datafusion-distributed** | Apache-2.0 | 4.0 | Multi-node stages over Flight | Young (datafusion-contrib); Ballista rejected (batch-oriented) |
-| Collection format | **Lance** (`lance` crate) | Apache-2.0 | 12.0 (format 2.1) | Docs, vectors, IVF + scalar indexes | Vendor-led (LanceDB Inc.), fast API churn → pin + trait boundary; small-commit cost → batch via own WAL |
-| Full-text | **Tantivy** | MIT | 0.26.1 | Inverted index, fast fields, aggregations | Healthy, 16k stars |
+| Query engine | **Apache DataFusion** | Apache-2.0 | 54.1 (lockstep with Lance 12 / arrow 58) | All planning/execution | Very active ASF project; extensibility proven by InfluxDB 3, GreptimeDB, LanceDB |
+| Distributed exec | **datafusion-distributed** | Apache-2.0 | 3.0 (the last release on DataFusion 54; not used in M1) | Multi-node stages over Flight | Young (datafusion-contrib); Ballista rejected (batch-oriented) |
+| Collection format | **Lance** (`lance` crate) | Apache-2.0 | 12.0 (file format 2.1 set explicitly; detached versions, M1.1) | Docs, vectors, IVF + scalar indexes | Vendor-led (LanceDB Inc.), fast API churn → pin + trait boundary; small-commit cost → batch via own WAL |
+| Full-text | **Tantivy** | MIT | =0.26.2 (feature `quickwit`) | Inverted index, fast fields, aggregations | Healthy, 16k stars |
 | KV / PK index / ID map | **SlateDB** | Apache-2.0 (Commonhaus) | 0.16 | PkIndex, vertex-ID maps | Pre-1.0 API; single writer per DB (fits our fencing model); used by HelixDB, Dropbox |
 | Consensus | **openraft** | MIT/Apache-2.0 | 0.10.0-alpha.34 (pinned exactly) | Meta Raft, `quorum` journals | API unstable pre-1.0 (alphas break APIs); used in production by Databend |
 | Local Raft log | **redb** | MIT/Apache-2.0 | 4.3 | Meta Raft log, vote, snapshot pointer | Pure Rust, ACID, fsync per commit; passes openraft's storage test suite |
@@ -29,15 +29,17 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | Arrow Flight SQL | arrow-flight | Apache-2.0 | — | Native bulk results | — |
 | SQL parsing | sqlparser-rs | Apache-2.0 | — | ClickHouse dialect, SQL | — |
 | Qdrant API types | Qdrant OpenAPI + protobuf | Apache-2.0 | 1.19 | Qdrant gateway | — |
-| Bitmaps | roaring-rs | Apache-2.0/MIT | — | Delete bitmaps, filter bitmaps | — |
+| Bitmaps | roaring-rs (`roaring`) | Apache-2.0/MIT | 0.11 | Delete bitmaps, filter bitmaps | — |
+| HNSW hot tier | **qdrant-edge** | Apache-2.0 | =0.8.0 (M1.3) | HNSW artifacts behind Operon's `HnswIndex` (R20) | Enables `serde_json/preserve_order`, which vendored Quickwit code must not see; M1.3 Task 0 resolves it (M1.1 ruling P5) |
+| MCP server | **rmcp** | Apache-2.0 | 3.4.1 (M1.6) | The W0 MCP server (§15) | — |
 | Tokenizers | lindera, jieba-rs, ICU4X | MIT/Apache | — | Analyzers | — |
 
 ## 2. Fork (take code, own the fork)
 
 | Source | License | What we take | Why fork (not depend) |
 |---|---|---|---|
-| **Quickwit** | Apache-2.0 (since 2025) | `storage`, `directories` (split bundle + hotcache), ES DSL → Tantivy query crates, aggregation request/response mapping, `bitpacking` | Internal crates, no stable API; Datadog observability roadmap; we need upserts which Quickwit lacks |
-| **Qdrant** `lib/segment` (or `qdrant-edge` 0.8) | Apache-2.0 | HNSW, filterable-HNSW links, quantization, payload-filter planner | Qdrant's storage is local-disk; we need the index code only, as a hot tier |
+| **Quickwit** | Apache-2.0 (since 2025) | `storage`, `directories` (split bundle + hotcache, async directories, warmup), ES DSL → `QueryAst` → Tantivy (`quickwit-query`), the doc-mapper query builder, aggregation merge glue, `StableLogMergePolicy`, `quickwit-datetime`: vendored file by file from `af0591a3` into `operon-quickwit` (R21) | Internal crates, no stable API; Datadog observability roadmap; we need upserts which Quickwit lacks |
+| **Qdrant** | Apache-2.0 | `qdrant-edge =0.8.0` behind `HnswIndex` (R20): HNSW, filterable-HNSW links, quantization, payload-filter planner; `lib/segment` is not vendored | Qdrant's storage is local-disk; we need the index code only, as a hot tier |
 | **lance-graph** | Apache-2.0 | Cypher parser + planner lowering to DataFusion | Small project (slowing activity); we need extensions (MERGE, Bolt semantics, overlay) |
 | **Nisshi** (formerly Tansu) | Apache-2.0 | Kafka broker structure, schema registry pieces, S3/Iceberg integration patterns | Bus factor 1 upstream; only selective borrowing |
 | **RisingWave iceberg-rust fork** | Apache-2.0 | RowDelta/RewriteFiles, equality & position deletes | Upstream gaps; plan to converge on upstream |

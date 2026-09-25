@@ -1,0 +1,75 @@
+[package]
+name = "operon-collection"
+description = "Operon collections: documents, the collection catalog client, Lance and Tantivy storage under one manifest, and the collection link target."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+arrow-array.workspace = true
+arrow-schema.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+crc32c.workspace = true
+fail = { workspace = true, optional = true }
+futures.workspace = true
+lance.workspace = true
+lance-file.workspace = true
+lance-index.workspace = true
+lance-io.workspace = true
+lance-linalg.workspace = true
+lance-table.workspace = true
+moka = { workspace = true, features = ["sync"] }
+operon-cache.workspace = true
+operon-common.workspace = true
+operon-link.workspace = true
+operon-log.workspace = true
+operon-meta.workspace = true
+operon-pk.workspace = true
+operon-quickwit.workspace = true
+operon-store.workspace = true
+operon-text.workspace = true
+operon-worker.workspace = true
+postcard.workspace = true
+prost.workspace = true
+roaring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tantivy.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+ulid.workspace = true
+url.workspace = true
+uuid.workspace = true
+xxhash-rust.workspace = true
+
+[features]
+# Test hooks (holding a commit at a step). Not part of the stable API.
+test-util = []
+# Named failpoints for the crash gate (`collection.after_*`). Off by default:
+# without it the failpoints compile to nothing.
+failpoints = [
+    "dep:fail",
+    "fail/failpoints",
+    "operon-link/failpoints",
+    "operon-log/failpoints",
+    "operon-meta/failpoints",
+]
+
+[build-dependencies]
+prost-build.workspace = true
+
+[dev-dependencies]
+object_store.workspace = true
+operon-collection = { path = ".", features = ["test-util"] }
+operon-link = { workspace = true, features = ["test-util"] }
+operon-meta = { workspace = true, features = ["test-util"] }
+operon-worker = { workspace = true, features = ["test-util"] }
+proptest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -11,7 +11,7 @@ use operon_cache::{RangeCache, RangeCacheConfig};
 use operon_common::{NamespaceId, StreamId};
 use operon_link::{
     ApplyBatch, CommitError, CommitHook, CommitStep, CounterSnapshot, CounterTable,
-    LinkApplySource, LinkConfig, LinkTarget,
+    CounterTargetFactory, LinkApplySource, LinkConfig, LinkTarget, TargetRegistry,
 };
 use operon_log::{
     FetchRequest, LogConfig, LogReader, LogWriter, Record, SegmenterConfig, SegmenterSource,
@@ -21,7 +21,7 @@ use operon_meta::{
     SystemClock, TargetRef, WalClass,
 };
 use operon_store::Store;
-use operon_worker::{RunResult, TaskOutcome, Worker, WorkerConfig, run_once};
+use operon_worker::{RunResult, TaskKey, TaskOutcome, Worker, WorkerConfig, run_once};
 use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(30);
@@ -136,15 +136,14 @@ impl Fixture {
     }
 
     fn source(&self, hook: Option<CommitHook>) -> LinkApplySource {
-        match hook {
-            Some(hook) => LinkApplySource::with_hook(
-                self.reader.clone(),
-                self.store.clone(),
-                link_config(),
-                hook,
-            ),
-            None => LinkApplySource::new(self.reader.clone(), self.store.clone(), link_config()),
-        }
+        let config = link_config();
+        let factory = CounterTargetFactory::new(self.store.clone(), config.max_commit_delay);
+        let factory = match hook {
+            Some(hook) => factory.with_hook(hook),
+            None => factory,
+        };
+        let registry = TargetRegistry::new().with(Arc::new(factory));
+        LinkApplySource::new(self.reader.clone(), registry, config)
     }
 
     fn table(&self) -> CounterTable {
@@ -357,7 +356,13 @@ async fn a_zombie_task_cannot_double_apply() {
             .contains(&CommitStep::AfterManifestPut)
     })
     .await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Once the zombie's task has ended, its commit attempt has returned, so
+    // it can no longer reach the step after the CAS.
+    let task = TaskKey::new(f.ns, format!("link/{}", f.link));
+    wait_for("the zombie's task to end", || {
+        !zombie.running().contains(&task)
+    })
+    .await;
     assert!(
         !zombie_steps.lock().unwrap().contains(&CommitStep::AfterCas),
         "{:?}",

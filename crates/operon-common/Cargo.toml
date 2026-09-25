@@ -1,6 +1,6 @@
 [package]
 name = "operon-common"
-description = "Identifier types shared by Operon crates."
+description = "Identifier and schema types shared by Operon crates."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

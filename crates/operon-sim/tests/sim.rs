@@ -13,7 +13,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use operon_sim::{SimConfig, SimReport, run};
+use operon_sim::{Event, SimConfig, SimReport, run};
 
 fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name)
@@ -36,6 +36,9 @@ fn every_seed_passes() {
     let next = AtomicU64::new(first);
     let failures: Mutex<Vec<SimReport>> = Mutex::new(Vec::new());
     let totals: Mutex<(u64, u64, u64)> = Mutex::new((0, 0, 0));
+    // Acknowledged document writes, the highest collection version, and
+    // dead letters.
+    let collection: Mutex<(u64, u64, u64)> = Mutex::new((0, 0, 0));
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| {
@@ -53,6 +56,10 @@ fn every_seed_passes() {
                         totals.0 += 1;
                         totals.1 += report.stats.appends_acked;
                         totals.2 += report.stats.indeterminate;
+                        let mut collection = collection.lock().expect("lock");
+                        collection.0 += report.stats.doc_writes_acked;
+                        collection.1 = collection.1.max(report.stats.collection_version);
+                        collection.2 += report.stats.collection_dead_letters;
                     }
                     eprintln!(
                         "seed {seed}: {} ({:?})",
@@ -71,6 +78,11 @@ fn every_seed_passes() {
         "{} seeds x {steps} steps: {} acknowledged appends, {} indeterminate operations",
         totals.0, totals.1, totals.2
     );
+    let (doc_writes, collection_version, dead_letters) = *collection.lock().expect("lock");
+    eprintln!(
+        "{doc_writes} acknowledged document writes, collection versions up to \
+         {collection_version}, {dead_letters} dead letters"
+    );
     let failures = failures.into_inner().expect("lock");
     for report in &failures {
         eprintln!("{}", report.describe());
@@ -80,5 +92,39 @@ fn every_seed_passes() {
         "{} of {count} seeds failed: {:?}",
         failures.len(),
         failures.iter().map(|r| r.seed).collect::<Vec<_>>()
+    );
+    // The collection path did something (with a few seeds, surely).
+    if count >= 4 {
+        assert!(doc_writes > 0, "no document write was acknowledged");
+        assert!(collection_version > 0, "no collection commit landed");
+        assert!(dead_letters > 0, "no schema-invalid op was dead-lettered");
+    }
+}
+
+/// Plan M1.1 Task 13: the event schedule, collection writes included, is a
+/// function of the seed alone, so a failing seed's schedule replays.
+#[test]
+fn a_seed_with_collection_writes_is_reproducible_in_schedule() {
+    let config = SimConfig {
+        steps: 80,
+        ..SimConfig::new(env_u64("SIM_SEED", 7))
+    };
+    let first = run(config.clone());
+    let second = run(config);
+    assert!(first.is_ok(), "{}", first.describe());
+    assert!(second.is_ok(), "{}", second.describe());
+    assert!(
+        first
+            .schedule
+            .iter()
+            .any(|event| matches!(event, Event::DocWrite { .. })),
+        "the schedule has no collection write: {:?}",
+        first.schedule
+    );
+    assert_eq!(first.schedule, second.schedule);
+    assert!(
+        first.stats.doc_writes_acked > 0 && first.stats.collection_version > 0,
+        "the collection path did nothing: {:?}",
+        first.stats
     );
 }

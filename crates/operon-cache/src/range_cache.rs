@@ -162,6 +162,54 @@ impl RangeCache {
     /// Reads bytes `range` of the immutable object at `path`.
     pub async fn read(&self, path: &str, range: Range<u64>) -> Result<Bytes, CacheError> {
         let size = self.size(path).await?;
+        self.read_sized(path, size, range)
+            .await
+            .map(|(bytes, _)| bytes)
+    }
+
+    /// Reads bytes `range` of the immutable object at `path`, whose `size`
+    /// the caller already knows (for example a split's size from its
+    /// manifest), so a cold read costs no HEAD: one GET per run of missing
+    /// blocks.
+    ///
+    /// A `size` that contradicts a remembered size or a GET's reported size
+    /// yields [`CacheError::SizeMismatch`]. Each GET checks its size and
+    /// payload length before caching its blocks. A successful read that fetched
+    /// blocks remembers `size` for later [`Self::size`] and [`Self::read`]
+    /// calls; an empty or fully cached read makes no GET and cannot confirm it.
+    /// An inverted range or one extending past `size` yields
+    /// [`CacheError::OutOfRange`].
+    pub async fn read_with_size(
+        &self,
+        path: &str,
+        size: u64,
+        range: Range<u64>,
+    ) -> Result<Bytes, CacheError> {
+        if let Some(known) = self.sizes.get(path).await
+            && known != size
+        {
+            return Err(CacheError::SizeMismatch {
+                path: path.to_string(),
+                expected: size,
+                actual: known,
+            });
+        }
+        let (bytes, confirmed) = self.read_sized(path, size, range).await?;
+        if confirmed {
+            self.sizes.insert(path.to_string(), size).await;
+        }
+        Ok(bytes)
+    }
+
+    /// Reads bytes `range` of the object at `path`, which is `size` bytes:
+    /// the cached blocks, then each run of missing blocks with one GET.
+    /// Returns the bytes and whether a GET confirmed `size`.
+    async fn read_sized(
+        &self,
+        path: &str,
+        size: u64,
+        range: Range<u64>,
+    ) -> Result<(Bytes, bool), CacheError> {
         if range.start > range.end || range.end > size {
             return Err(CacheError::OutOfRange {
                 path: path.to_string(),
@@ -171,24 +219,62 @@ impl RangeCache {
             });
         }
         if range.start == range.end {
-            return Ok(Bytes::new());
+            return Ok((Bytes::new(), false));
         }
         let first = range.start / self.block_size;
         let last = (range.end - 1) / self.block_size;
-        let blocks: Vec<Bytes> =
-            futures::stream::iter((first..=last).map(|index| self.block(path, index, size)))
+        let mut blocks: Vec<Option<Bytes>> =
+            futures::stream::iter((first..=last).map(|index| self.cached_block(path, index, size)))
                 .buffered(MAX_CONCURRENT_BLOCK_FETCHES)
-                .try_collect()
-                .await?;
+                .collect()
+                .await;
+
+        // The maximal runs of missing blocks, as block index ranges.
+        let mut runs: Vec<Range<u64>> = Vec::new();
+        for (index, block) in (first..=last).zip(&blocks) {
+            if block.is_some() {
+                continue;
+            }
+            match runs.last_mut() {
+                Some(run) if run.end == index => run.end += 1,
+                _ => runs.push(index..index + 1),
+            }
+        }
+        let confirmed = !runs.is_empty();
+        let fetched: Vec<(u64, Vec<Bytes>)> =
+            futures::stream::iter(runs.into_iter().map(|run| async move {
+                Ok::<_, CacheError>((run.start, self.fetch_run(path, run, size).await?))
+            }))
+            .buffered(MAX_CONCURRENT_BLOCK_FETCHES)
+            .try_collect()
+            .await?;
+        for (run_start, run_blocks) in fetched {
+            for (offset, block) in run_blocks.into_iter().enumerate() {
+                blocks[(run_start - first) as usize + offset] = Some(block);
+            }
+        }
 
         let mut out = BytesMut::with_capacity((range.end - range.start) as usize);
         for (index, block) in (first..=last).zip(blocks) {
+            let block = block.ok_or_else(|| CacheError::Cache("a block was not fetched".into()))?;
             let block_start = index * self.block_size;
             let from = range.start.saturating_sub(block_start) as usize;
             let to = (range.end - block_start).min(block.len() as u64) as usize;
             out.extend_from_slice(&block[from..to]);
         }
-        Ok(out.freeze())
+        Ok((out.freeze(), confirmed))
+    }
+
+    /// Invalidates the remembered size of `path`. When that size is still
+    /// cached, evicts blocks covering its byte range; otherwise blocks for
+    /// `path` cannot be enumerated and may remain cached.
+    pub async fn forget(&self, path: &str) {
+        if let Some(size) = self.sizes.get(path).await {
+            for index in 0..size.div_ceil(self.block_size) {
+                self.blocks.remove(&block_key(path, index));
+            }
+        }
+        self.sizes.invalidate(path).await;
     }
 
     /// Gracefully closes the cache, flushing any in-memory blocks to the disk
@@ -214,56 +300,75 @@ impl RangeCache {
         }
     }
 
-    async fn block(&self, path: &str, index: u64, size: u64) -> Result<Bytes, CacheError> {
+    /// Block `index` of the `size`-byte object at `path`, if it is cached
+    /// and intact. A block that fails its checksum, or whose length is not
+    /// what this read expects (the object shrank after `size` was cached),
+    /// is evicted; a foyer lookup error (for example disk I/O) is counted.
+    /// Either way the block is then fetched like a miss.
+    async fn cached_block(&self, path: &str, index: u64, size: u64) -> Option<Bytes> {
         let key = block_key(path, index);
-        let start = index * self.block_size;
-        // `size` is only ever passed in for a block index derived from a
-        // validated range, so `start < size` always holds here.
-        let expected = self.block_size.min(size - start);
-        let cache_hit = match self
-            .blocks
-            .get(&key)
-            .await
-            .map_err(|e| CacheError::Cache(e.to_string()))
-        {
-            Ok(entry) => entry,
+        // `index` comes from a validated range, so `start < size`.
+        let expected = self.block_size.min(size - index * self.block_size);
+        let entry = match self.blocks.get(&key).await {
+            Ok(entry) => entry?,
             Err(_) => {
-                // A foyer lookup error (for example disk I/O) does not mean the
-                // data is unavailable: treat it as a miss and fetch from the
-                // store instead of failing the read.
                 self.counters.cache_errors.fetch_add(1, Ordering::Relaxed);
-                None
+                return None;
             }
         };
-        if let Some(entry) = cache_hit {
-            match verify(entry.value()) {
-                // A verified block whose length no longer matches what this
-                // read expects (for example the object shrank after `size`
-                // was cached) is just as unusable as a checksum failure.
-                Some(data) if data.len() as u64 == expected => {
-                    self.counters.hits.fetch_add(1, Ordering::Relaxed);
-                    return Ok(data);
-                }
-                _ => {
-                    self.counters
-                        .checksum_failures
-                        .fetch_add(1, Ordering::Relaxed);
-                    self.blocks.remove(&key);
-                }
+        match verify(entry.value()) {
+            Some(data) if data.len() as u64 == expected => {
+                self.counters.hits.fetch_add(1, Ordering::Relaxed);
+                Some(data)
+            }
+            _ => {
+                self.counters
+                    .checksum_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                self.blocks.remove(&key);
+                None
             }
         }
-        self.counters.misses.fetch_add(1, Ordering::Relaxed);
-        let end = start + expected;
-        let data = self.store.get_range(path, start..end).await?;
-        if data.len() as u64 != expected {
+    }
+
+    /// Fetches the blocks `run` of the `size`-byte object at `path` with one
+    /// GET, checks the length and the object size the response reports, and
+    /// caches each block.
+    async fn fetch_run(
+        &self,
+        path: &str,
+        run: Range<u64>,
+        size: u64,
+    ) -> Result<Vec<Bytes>, CacheError> {
+        let start = run.start * self.block_size;
+        let end = (run.end * self.block_size).min(size);
+        self.counters
+            .misses
+            .fetch_add(run.end - run.start, Ordering::Relaxed);
+        let (data, info) = self.store.get_range_with_info(path, start..end).await?;
+        if data.len() as u64 != end - start {
             return Err(CacheError::SizeMismatch {
                 path: path.to_string(),
-                expected,
+                expected: end - start,
                 actual: data.len() as u64,
             });
         }
-        self.blocks.insert(key, seal(&data));
-        Ok(data)
+        if info.size != size {
+            return Err(CacheError::SizeMismatch {
+                path: path.to_string(),
+                expected: size,
+                actual: info.size,
+            });
+        }
+        let mut blocks = Vec::with_capacity((run.end - run.start) as usize);
+        for index in run {
+            let from = (index * self.block_size - start) as usize;
+            let to = ((index + 1) * self.block_size).min(size) - start;
+            let block = data.slice(from..to as usize);
+            self.blocks.insert(block_key(path, index), seal(&block));
+            blocks.push(block);
+        }
+        Ok(blocks)
     }
 
     #[cfg(test)]

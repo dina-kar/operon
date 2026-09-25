@@ -5,7 +5,7 @@
 //! the metastore's sequencer, and only then acknowledges each append with its
 //! offsets. One flush is in flight at a time (M0.3 plan, ruling 8).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -269,82 +269,132 @@ impl LogWriter {
         &self,
         stream: StreamId,
         partition: u32,
-        mut records: Vec<Record>,
+        records: Vec<Record>,
     ) -> Result<AppendAck, LogError> {
+        let mut acks = self.append_many(stream, vec![(partition, records)]).await?;
+        acks.pop()
+            .ok_or_else(|| LogError::CommitUnknown("no acknowledgement for an append".to_string()))
+    }
+
+    /// Appends one batch per partition of `stream`, all in the same WAL object
+    /// and the same `CommitWal`, so the request is atomic across partitions
+    /// (§01 §5). Success returns one ack per input batch, in input order;
+    /// [`LogError::CommitUnknown`] means the commit may have landed without
+    /// an acknowledgement.
+    ///
+    /// The request is validated before anything is buffered: it needs at
+    /// least one batch, every batch at least one and at most
+    /// `max_batch_records` records, no partition twice, and partitions of a
+    /// known `standard` stream. Each ack means exactly what an
+    /// [`append`](Self::append) ack means. Records with negative timestamps
+    /// receive the writer's clock. An oversized request fails with
+    /// [`LogError::InvalidArgument`], and a full buffer fails with
+    /// [`LogError::Backpressure`]; a buffered request reports its flush's error.
+    pub async fn append_many(
+        &self,
+        stream: StreamId,
+        mut batches: Vec<(u32, Vec<Record>)>,
+    ) -> Result<Vec<AppendAck>, LogError> {
         let shared = self.shared();
-        if records.is_empty() {
-            return Err(LogError::InvalidArgument(
-                "an append needs at least one record".to_string(),
-            ));
+        let invalid = |what: String| Err(LogError::InvalidArgument(what));
+        if batches.is_empty() {
+            return invalid("an append needs at least one batch".to_string());
         }
-        if records.len() > shared.config.max_batch_records {
-            return Err(LogError::InvalidArgument(format!(
-                "an append holds at most {} records, got {}",
-                shared.config.max_batch_records,
-                records.len()
-            )));
+        let mut seen = BTreeSet::new();
+        for (partition, records) in &batches {
+            if records.is_empty() {
+                return invalid(format!(
+                    "the batch for partition {partition} needs at least one record"
+                ));
+            }
+            if !seen.insert(*partition) {
+                return invalid(format!(
+                    "partition {partition} appears more than once in one append"
+                ));
+            }
+            if records.len() > shared.config.max_batch_records {
+                return invalid(format!(
+                    "a batch holds at most {} records, got {} for partition {partition}",
+                    shared.config.max_batch_records,
+                    records.len()
+                ));
+            }
         }
-        let class = shared
+        let known = shared
             .meta
             .read(Consistency::Local, |s| {
-                s.stream(stream)
-                    .map(|st| (st.class, partition < st.partitions))
+                s.stream(stream).map(|st| (st.class, st.partitions))
             })
             .await?;
-        match class {
-            None => return Err(LogError::UnknownStream(stream)),
-            Some((_, false)) => return Err(LogError::UnknownPartition { stream, partition }),
-            Some((WalClass::Standard, true)) => {}
-            Some((class, true)) => {
-                return Err(LogError::InvalidArgument(format!(
-                    "stream {stream} uses WAL class {class:?}, which this build does not serve"
-                )));
-            }
+        let (class, partitions) = known.ok_or(LogError::UnknownStream(stream))?;
+        if let Some(&partition) = seen.iter().find(|&&p| p >= partitions) {
+            return Err(LogError::UnknownPartition { stream, partition });
         }
-        let now = i64::try_from(shared.meta.now_ms()).unwrap_or(i64::MAX);
-        for record in &mut records {
-            if record.timestamp_ms < 0 {
-                record.timestamp_ms = now;
-            }
+        if class != WalClass::Standard {
+            return invalid(format!(
+                "stream {stream} uses WAL class {class:?}, which this build does not serve"
+            ));
         }
-        let max_timestamp_ms = records.iter().map(|r| r.timestamp_ms).max().unwrap_or(now);
-        let batch = batch::encode(&records)?;
-        let count = u32::try_from(records.len())
-            .map_err(|_| LogError::InvalidArgument("too many records".to_string()))?;
 
-        let (reply, ack) = oneshot::channel();
+        let now = i64::try_from(shared.meta.now_ms()).unwrap_or(i64::MAX);
+        let mut encoded = Vec::with_capacity(batches.len());
+        for (partition, records) in &mut batches {
+            for record in records.iter_mut() {
+                if record.timestamp_ms < 0 {
+                    record.timestamp_ms = now;
+                }
+            }
+            let max_timestamp_ms = records.iter().map(|r| r.timestamp_ms).max().unwrap_or(now);
+            let batch = batch::encode(records)?;
+            let count = u32::try_from(records.len())
+                .map_err(|_| LogError::InvalidArgument("too many records".to_string()))?;
+            encoded.push((*partition, batch, count, max_timestamp_ms));
+        }
+        let bytes: usize = encoded.iter().map(|(_, batch, _, _)| batch.len()).sum();
+
+        let mut replies = Vec::with_capacity(encoded.len());
         {
             let mut state = shared.state();
             if state.closed {
                 return Err(LogError::Closed);
             }
             let limit = shared.config.max_buffered_bytes;
-            if batch.len() > limit {
-                return Err(LogError::InvalidArgument(format!(
-                    "an append of {} bytes exceeds the buffer limit of {limit} bytes",
-                    batch.len()
-                )));
+            if bytes > limit {
+                return invalid(format!(
+                    "an append of {bytes} bytes exceeds the buffer limit of {limit} bytes"
+                ));
             }
-            if state.pending_bytes + state.inflight_bytes + batch.len() > limit {
+            if state.pending_bytes + state.inflight_bytes + bytes > limit {
                 return Err(LogError::Backpressure);
             }
-            state.pending_bytes += batch.len();
+            // All in one go under the lock: the flush task takes the whole
+            // buffer, so these land in the same WAL object and commit.
+            state.pending_bytes += bytes;
             state.opened_at.get_or_insert_with(Instant::now);
-            state.pending.push(Pending {
-                stream,
-                partition,
-                batch,
-                records: count,
-                max_timestamp_ms,
-                reply,
-            });
+            for (partition, batch, records, max_timestamp_ms) in encoded {
+                let (reply, ack) = oneshot::channel();
+                state.pending.push(Pending {
+                    stream,
+                    partition,
+                    batch,
+                    records,
+                    max_timestamp_ms,
+                    reply,
+                });
+                replies.push(ack);
+            }
         }
         shared.wake.notify_one();
-        ack.await.unwrap_or_else(|_| {
-            Err(LogError::CommitUnknown(
-                "the writer stopped before answering".to_string(),
-            ))
-        })
+        // Every batch shares the flush's outcome; the first error is the error.
+        let mut acks = Vec::with_capacity(replies.len());
+        for reply in replies {
+            acks.push(reply.await.unwrap_or_else(|_| {
+                Err(LogError::CommitUnknown(
+                    "the writer stopped before answering".to_string(),
+                ))
+            })?);
+        }
+        Ok(acks)
     }
 
     /// How many appends are buffered, waiting for the next flush (not counting

@@ -1,12 +1,14 @@
 use std::ops::Range;
 
-use operon_common::{NamespaceId, StreamId};
+use operon_common::schema::CollectionSchema;
+use operon_common::{CollectionId, NamespaceId, StreamId};
 use serde::{Deserialize, Serialize};
 
 use std::collections::BTreeMap;
 
 use crate::types::{
-    Fence, Freshness, LeaseGrant, LinkId, Pointer, Retention, TargetRef, WalChunk, WalClass,
+    AliasAction, Fence, Freshness, LeaseGrant, LinkId, Pointer, Retention, TargetRef, WalChunk,
+    WalClass,
 };
 
 /// A change to the metastore. Commands are replicated through the Raft log and
@@ -186,6 +188,55 @@ pub enum Command {
         fence: Option<Fence>,
         fresh: Option<Freshness>,
     },
+    /// Creates a collection with its implicit stream and link, both named
+    /// [`implicit_name`](crate::implicit_name) (class `Standard`, default
+    /// retention, `partitions` partitions; the link's target is
+    /// `collection`/`name`), in one step. Names are unique within the
+    /// namespace across collections and aliases, and never start with `_`.
+    /// `schema` must be valid and at version 1.
+    ///
+    /// A retry after a lost acknowledgement fails with
+    /// [`ApplyError::CollectionExists`], which carries the id the first
+    /// attempt created. A collection of that name with another schema or
+    /// partition count, or an alias of that name, gives
+    /// [`ApplyError::NameTaken`].
+    CreateCollection {
+        namespace: NamespaceId,
+        name: String,
+        schema: CollectionSchema,
+        partitions: u32,
+    },
+    /// Drops the collection `name` (not an alias): removes it, the aliases
+    /// pointing at it, its implicit stream (retiring the objects only its
+    /// index entries referenced), its implicit link and its manifest pointer,
+    /// and retires its object and primary-key prefixes. The name is free at
+    /// once; a new collection of that name gets a new id. Replies `None` when
+    /// there is no such collection, so a retry after a lost acknowledgement
+    /// succeeds with `None`.
+    DropCollection {
+        namespace: NamespaceId,
+        name: String,
+        now_ms: u64,
+    },
+    /// Replaces a collection's schema at `expected_version` with `schema`,
+    /// which must extend it additively
+    /// ([`CollectionSchema::check_additive`]); the new version is
+    /// `expected_version + 1`. A stale `expected_version` fails with
+    /// [`ApplyError::SchemaVersionMismatch`]. A retry after a lost
+    /// acknowledgement finds the same schema at `expected_version + 1` and
+    /// succeeds.
+    UpdateCollectionSchema {
+        collection: CollectionId,
+        expected_version: u64,
+        schema: CollectionSchema,
+    },
+    /// Applies 1..=100 alias actions in order, atomically: if any fails,
+    /// nothing changes. Creating an existing alias re-points it and deleting
+    /// a missing one is a no-op, so a retry succeeds.
+    UpdateAliases {
+        namespace: NamespaceId,
+        actions: Vec<AliasAction>,
+    },
 }
 
 /// The result of successfully applying a [`Command`].
@@ -214,6 +265,17 @@ pub enum Reply {
     Forgotten {
         removed: u32,
     },
+    CollectionCreated {
+        id: CollectionId,
+        stream: StreamId,
+        link: LinkId,
+    },
+    /// The dropped collection, or `None` if there was none of that name.
+    CollectionDropped(Option<CollectionId>),
+    SchemaUpdated {
+        version: u64,
+    },
+    AliasesUpdated,
 }
 
 /// Why a [`Command`] was rejected. A rejected command leaves the state unchanged.
@@ -274,6 +336,93 @@ pub enum ApplyError {
         max_age_ms: u64,
         clock_ms: u64,
     },
+    /// Carries the existing id, so a retry after a lost acknowledgement can
+    /// recover it.
+    #[error("collection already exists: {0}")]
+    CollectionExists(CollectionId),
+    #[error("collection not found: {0}")]
+    CollectionNotFound(CollectionId),
+    /// The name is held by a collection with another schema or partition
+    /// count, or by an alias.
+    #[error("name already taken: {0}")]
+    NameTaken(String),
+    #[error("incompatible schema update: {0}")]
+    IncompatibleSchema(String),
+    #[error("schema version mismatch: collection {collection} is at schema version {current}")]
+    SchemaVersionMismatch {
+        collection: CollectionId,
+        current: u64,
+    },
+    /// An alias action named a collection that does not exist.
+    #[error("unknown collection: {0}")]
+    UnknownCollection(String),
+}
+
+/// How far the proposer's clock lagged the metastore's, for a StaleObject refusal.
+///
+/// A proposer checks an object's deadline against its own clock before it
+/// proposes; the metastore checks it again against its clock when it
+/// applies. A refusal the proposer did not predict means the command took
+/// too long between the two checks, or the proposer's clock lags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StaleLag {
+    /// `created_at_ms + max_age_ms`: the last metastore time the object was
+    /// fresh.
+    pub deadline_ms: u64,
+    /// The metastore clock when it refused the command.
+    pub clock_ms: u64,
+    /// The proposer's clock when it handled the refusal.
+    pub proposer_now_ms: u64,
+    /// `clock_ms - deadline_ms`: how late the command was applied.
+    pub late_by_ms: u64,
+    /// `clock_ms - proposer_now_ms`: how far the proposer's clock is behind
+    /// the metastore's (negative when ahead).
+    pub proposer_lag_ms: i64,
+}
+
+impl ApplyError {
+    /// `Some` for `StaleObject`, else `None`.
+    pub fn stale_lag(&self, proposer_now_ms: u64) -> Option<StaleLag> {
+        let ApplyError::StaleObject {
+            created_at_ms,
+            max_age_ms,
+            clock_ms,
+            ..
+        } = *self
+        else {
+            return None;
+        };
+        let deadline_ms = created_at_ms.saturating_add(max_age_ms);
+        let lag = i128::from(clock_ms) - i128::from(proposer_now_ms);
+        Some(StaleLag {
+            deadline_ms,
+            clock_ms,
+            proposer_now_ms,
+            late_by_ms: clock_ms.saturating_sub(deadline_ms),
+            proposer_lag_ms: i64::try_from(lag).unwrap_or(if lag < 0 {
+                i64::MIN
+            } else {
+                i64::MAX
+            }),
+        })
+    }
+}
+
+/// Logs a StaleObject refusal at WARN with every StaleLag field and the object path; no-op otherwise.
+pub fn log_stale_object(err: &ApplyError, proposer_now_ms: u64) {
+    let (ApplyError::StaleObject { object, .. }, Some(lag)) = (err, err.stale_lag(proposer_now_ms))
+    else {
+        return;
+    };
+    tracing::warn!(
+        %object,
+        deadline_ms = lag.deadline_ms,
+        clock_ms = lag.clock_ms,
+        proposer_now_ms = lag.proposer_now_ms,
+        late_by_ms = lag.late_by_ms,
+        proposer_lag_ms = lag.proposer_lag_ms,
+        "the metastore refused a stale object"
+    );
 }
 
 impl std::fmt::Display for Command {
@@ -331,6 +480,52 @@ impl std::fmt::Display for Command {
                 expected,
                 ..
             } => write!(f, "CasPointer({namespace}/{key}, expected {expected:?})"),
+            Command::CreateCollection {
+                namespace, name, ..
+            } => write!(f, "CreateCollection({namespace}/{name})"),
+            Command::DropCollection {
+                namespace, name, ..
+            } => write!(f, "DropCollection({namespace}/{name})"),
+            Command::UpdateCollectionSchema {
+                collection,
+                expected_version,
+                ..
+            } => write!(
+                f,
+                "UpdateCollectionSchema({collection}, expected {expected_version})"
+            ),
+            Command::UpdateAliases { namespace, actions } => {
+                write!(f, "UpdateAliases({namespace}, {} actions)", actions.len())
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_lag_reports_the_proposers_lag() {
+        let stale = ApplyError::StaleObject {
+            object: "ns/1/streams/1/0/seg".to_string(),
+            created_at_ms: 1_000,
+            max_age_ms: 500,
+            clock_ms: 2_000,
+        };
+        assert_eq!(
+            stale.stale_lag(1_900),
+            Some(StaleLag {
+                deadline_ms: 1_500,
+                clock_ms: 2_000,
+                proposer_now_ms: 1_900,
+                late_by_ms: 500,
+                proposer_lag_ms: 100,
+            })
+        );
+        let fenced = ApplyError::Fenced {
+            lease: "task/gc".to_string(),
+        };
+        assert_eq!(fenced.stale_lag(1_900), None);
     }
 }

@@ -1,7 +1,8 @@
 //! The object-store fault matrix (M0 exit gate; M0.4 plan Task 7).
 //!
 //! Every component operation (writer flush, reader fetch, segmenter swap,
-//! retention trim, link commit, GC pass, meta snapshot) is crossed with every
+//! retention trim, link commit, GC pass, meta snapshot, and a collection's
+//! link commit, plan M1.1 Task 13) is crossed with every
 //! `(Op, Fault)` pair, the fault hitting the operation's first or its second
 //! call of that store operation. Each cell runs on a fresh in-process setup
 //! and ends up in one of four outcomes:
@@ -21,8 +22,10 @@
 //! (`FAULT_MATRIX_BLESS=1` rewrites it; review the diff). After every cell,
 //! with faults off and the components run once more, the invariants must
 //! hold: the segmenter runs without failures, no acknowledged data loss, no
-//! torn state (meta invariants, and reads equal to the model), and the link's
-//! `CounterTable` exact. The matrix is written to `target/fault-matrix.md`.
+//! torn state (meta invariants, and reads equal to the model), the link's
+//! `CounterTable` exact, and, after a collection commit, the collection equal
+//! to the fold of its stream (`fold_stream`, `verify_collection`). The matrix
+//! is written to `target/fault-matrix.md`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -32,12 +35,21 @@ use std::time::Duration;
 use bytes::Bytes;
 use object_store::memory::InMemory;
 use operon_cache::{CacheError, RangeCache, RangeCacheConfig};
-use operon_common::{NamespaceId, StreamId};
-use operon_link::{CounterTable, LinkApplySource, LinkConfig, LinkError, LinkGcRoots};
+use operon_collection::{
+    CollectionConfig, CollectionContext, CollectionGcRoots, CollectionSchema,
+    CollectionTargetFactory, CollectionWriter, DocOp, Document, DynamicMapping, FieldKind,
+    FieldSpec, LanceConfig, LanceEnv, ManifestCache, OpResult, PkGcRoots, PrimaryKey, VectorSpec,
+    fold_stream, verify_collection,
+};
+use operon_common::{CollectionId, NamespaceId, StreamId};
+use operon_link::{
+    CounterTable, CounterTargetFactory, LinkApplySource, LinkConfig, LinkError, LinkGcRoots,
+    TargetRegistry,
+};
 use operon_log::gc::{GcConfig, GcSource};
 use operon_log::{
-    FetchRequest, LogConfig, LogError, LogReader, LogWriter, Record, Retention, RetentionConfig,
-    Segmenter, SegmenterConfig,
+    FetchRequest, LogConfig, LogError, LogReader, LogWriter, OffsetRecord, Record, Retention,
+    RetentionConfig, Segmenter, SegmenterConfig,
 };
 use operon_meta::{
     Consistency, MetaClient, MetaClientConfig, MetaConfig, MetaError, MetaNode, Router,
@@ -56,9 +68,10 @@ enum Component {
     LinkCommit,
     GcPass,
     MetaSnapshot,
+    CollectionCommit,
 }
 
-const COMPONENTS: [Component; 7] = [
+const COMPONENTS: [Component; 8] = [
     Component::WriterFlush,
     Component::ReaderFetch,
     Component::SegmenterSwap,
@@ -66,7 +79,11 @@ const COMPONENTS: [Component; 7] = [
     Component::LinkCommit,
     Component::GcPass,
     Component::MetaSnapshot,
+    Component::CollectionCommit,
 ];
+
+/// Partitions of the fixture's collection.
+const DOCS_PARTITIONS: u32 = 2;
 
 const OPS: [Op; 6] = [
     Op::Put,
@@ -141,10 +158,9 @@ fn meta_retryable(err: &MetaError) -> bool {
 
 fn log_retryable(err: &LogError) -> bool {
     match err {
-        LogError::Store(_)
-        | LogError::Cache(CacheError::Store(_))
-        | LogError::CommitUnknown(_)
-        | LogError::Backpressure => true,
+        LogError::Store(err) => err.is_retryable(),
+        LogError::Cache(CacheError::Store(err)) => err.is_retryable(),
+        LogError::CommitUnknown(_) | LogError::Backpressure => true,
         LogError::Meta(err) => meta_retryable(err),
         LogError::Task(err) => task_retryable(err),
         _ => false,
@@ -153,9 +169,11 @@ fn log_retryable(err: &LogError) -> bool {
 
 fn link_retryable(err: &LinkError) -> bool {
     match err {
-        LinkError::Store(_) | LinkError::Blocked(_) => true,
+        LinkError::Store(err) => err.is_retryable(),
+        LinkError::Blocked(_) => true,
         LinkError::Meta(err) => meta_retryable(err),
         LinkError::Log(err) => log_retryable(err),
+        LinkError::Target { retryable, .. } => *retryable,
         LinkError::Corrupt(_) | LinkError::NotFound(_) => false,
     }
 }
@@ -170,7 +188,8 @@ fn task_retryable(err: &TaskError) -> bool {
             } else if let Some(err) = err.downcast_ref::<LinkError>() {
                 link_retryable(err)
             } else {
-                err.downcast_ref::<operon_store::StoreError>().is_some()
+                err.downcast_ref::<operon_store::StoreError>()
+                    .is_some_and(operon_store::StoreError::is_retryable)
             }
         }
     }
@@ -208,6 +227,11 @@ struct Fixture {
     ns: NamespaceId,
     events: StreamId,
     logs: StreamId,
+    /// Collection `docs`, its implicit stream and its storage.
+    docs: CollectionId,
+    docs_stream: StreamId,
+    collections: CollectionContext,
+    collection_factory: Arc<CollectionTargetFactory>,
     /// (stream, partition) → offset → value, acknowledged.
     acked: Mutex<BTreeMap<(StreamId, u32), BTreeMap<u64, String>>>,
     /// Values whose append had an unknown outcome.
@@ -219,15 +243,73 @@ struct Fixture {
 }
 
 fn link_source(f: &Fixture, reader: LogReader) -> LinkApplySource {
-    LinkApplySource::new(
-        reader,
+    let config = LinkConfig {
+        batch_records: 1_000,
+        batch_interval: Duration::ZERO,
+        ..LinkConfig::default()
+    };
+    let registry = TargetRegistry::new().with(Arc::new(CounterTargetFactory::new(
         f.store.clone(),
-        LinkConfig {
-            batch_records: 1_000,
-            batch_interval: Duration::ZERO,
-            ..LinkConfig::default()
-        },
-    )
+        config.max_commit_delay,
+    )));
+    LinkApplySource::new(reader, registry, config)
+}
+
+/// Link apply whose registry serves only collections, so it runs only the
+/// collection's link (the counter link is reported as unregistered).
+fn collection_link_source(f: &Fixture, reader: LogReader) -> LinkApplySource {
+    let config = LinkConfig {
+        batch_records: 1_000,
+        batch_interval: Duration::ZERO,
+        ..LinkConfig::default()
+    };
+    let registry = TargetRegistry::new().with(f.collection_factory.clone());
+    LinkApplySource::new(reader, registry, config)
+}
+
+fn field(name: &str, kind: FieldKind) -> FieldSpec {
+    FieldSpec {
+        name: name.to_string(),
+        source_path: name.to_string(),
+        kind,
+        indexed: true,
+        fast: true,
+        ignore_malformed: false,
+    }
+}
+
+/// The crash gate's collection schema: `tag` Keyword, `n` I64, vector `v`
+/// of dim 4 (Cosine, `Auto`), dynamic mapping `Ignore`.
+fn docs_schema() -> CollectionSchema {
+    let vector = VectorSpec {
+        name: "v".to_string(),
+        dim: 4,
+        distance: operon_collection::Distance::Cosine,
+        element: operon_collection::VectorElement::F32,
+        index: operon_collection::VectorIndexSpec::Auto,
+        hnsw: operon_collection::HnswParams::default(),
+        quantization: None,
+    };
+    let schema = CollectionSchema::new(
+        vec![field("tag", FieldKind::Keyword), field("n", FieldKind::I64)],
+        vec![vector],
+        DynamicMapping::Ignore,
+    );
+    schema.validate().expect("valid schema");
+    schema
+}
+
+fn upsert(n: u64) -> DocOp {
+    let x = n as f32;
+    DocOp::Upsert(Document {
+        pk: PrimaryKey::U64(n),
+        source: serde_json::Map::from_iter([
+            ("tag".to_string(), serde_json::json!(format!("t{}", n % 3))),
+            ("n".to_string(), serde_json::json!(n)),
+        ]),
+        vectors: BTreeMap::from([("v".to_string(), vec![x, 1.0, 0.0, 0.0])]),
+        sparse_vectors: BTreeMap::new(),
+    })
 }
 
 fn segmenter(f: &Fixture, cache: RangeCache) -> Segmenter {
@@ -253,6 +335,22 @@ fn gc(f: &Fixture) -> GcSource {
             ..GcConfig::default()
         },
         vec![Arc::new(LinkGcRoots)],
+    )
+}
+
+/// [`gc`] that also knows the collection's roots, for the checks.
+fn gc_with_collections(f: &Fixture) -> GcSource {
+    GcSource::with_roots(
+        f.store.clone(),
+        GcConfig {
+            grace: Duration::ZERO,
+            ..GcConfig::default()
+        },
+        vec![
+            Arc::new(LinkGcRoots),
+            Arc::new(CollectionGcRoots::new(f.collections.clone())),
+            Arc::new(PkGcRoots),
+        ],
     )
 }
 
@@ -308,6 +406,22 @@ impl Fixture {
         )
         .await
         .expect("link");
+        let (docs, docs_stream, _) = meta
+            .create_collection(ns, "docs", docs_schema(), DOCS_PARTITIONS)
+            .await
+            .expect("collection");
+        let collection_config = CollectionConfig::default();
+        let collections = CollectionContext {
+            meta: meta.clone(),
+            store: store.clone(),
+            cache: RangeCache::new(store.clone(), RangeCacheConfig::default())
+                .await
+                .expect("cache"),
+            lance: LanceEnv::new(store.clone(), LanceConfig::default()),
+            manifests: ManifestCache::new(collection_config.manifest_cache_entries),
+            config: collection_config,
+        };
+        let collection_factory = Arc::new(CollectionTargetFactory::new(collections.clone()));
         let writer = LogWriter::start(
             meta.clone(),
             store.clone(),
@@ -327,6 +441,10 @@ impl Fixture {
             ns,
             events,
             logs,
+            docs,
+            docs_stream,
+            collections,
+            collection_factory,
             acked: Mutex::default(),
             unknown: Mutex::default(),
             failed: Mutex::default(),
@@ -514,8 +632,12 @@ impl Fixture {
             .run_once()
             .await
             .map(|_| ())?),
-            Component::LinkCommit => {
-                let source = link_source(self, self.reader().await);
+            Component::LinkCommit | Component::CollectionCommit => {
+                let source = if component == Component::LinkCommit {
+                    link_source(self, self.reader().await)
+                } else {
+                    collection_link_source(self, self.reader().await)
+                };
                 let results = run_once(&self.meta, "matrix-link", Duration::from_secs(30), &source)
                     .await
                     .map_err(Failure::Task)?;
@@ -561,13 +683,95 @@ impl Fixture {
                     .await
                     .expect("segment");
             }
+            Component::CollectionCommit => {
+                let mut ops: Vec<DocOp> = (0..6).map(upsert).collect();
+                ops.push(DocOp::Delete(PrimaryKey::U64(2)));
+                let outcome = CollectionWriter::new(self.meta.clone(), self.writer.clone())
+                    .write(self.ns, self.docs, ops)
+                    .await
+                    .expect("write");
+                assert!(
+                    outcome
+                        .results
+                        .iter()
+                        .all(|r| matches!(r, OpResult::Written { .. })),
+                    "{outcome:?}"
+                );
+            }
             Component::WriterFlush | Component::ReaderFetch => {}
         }
     }
 
+    async fn docs_hwms(&self) -> BTreeMap<u32, u64> {
+        let stream = self.docs_stream;
+        self.meta
+            .read(Consistency::Local, |s| {
+                (0..DOCS_PARTITIONS)
+                    .filter_map(|p| {
+                        let hwm = s.partition(stream, p)?.high_watermark();
+                        (hwm > 0).then_some((p, hwm))
+                    })
+                    .collect()
+            })
+            .await
+            .expect("read")
+    }
+
+    async fn docs_applied(&self) -> BTreeMap<u32, u64> {
+        let manifest = operon_collection::live_manifest(
+            &self.meta,
+            &self.store,
+            &self.collections.manifests,
+            self.ns,
+            self.docs,
+            Consistency::Linearizable,
+        )
+        .await
+        .expect("live manifest");
+        manifest.map_or_else(BTreeMap::new, |(_, m)| m.applied.clone())
+    }
+
+    /// Runs the collection's link apply until it has applied its whole
+    /// stream (fault-free).
+    async fn apply_collection_link(&self, what: &str) {
+        let source = collection_link_source(self, self.reader().await);
+        for _ in 0..50 {
+            run_once(&self.meta, "matrix-link", Duration::from_secs(30), &source)
+                .await
+                .unwrap_or_else(|e| panic!("{what}: collection link run: {e}"));
+            if self.docs_applied().await == self.docs_hwms().await {
+                return;
+            }
+        }
+        panic!("{what}: the collection link never caught up");
+    }
+
+    /// The collection equals the fold of its stream (plan M1.1 Task 10
+    /// rule 8).
+    async fn check_collection(&self, what: &str) {
+        let reader = self.reader().await;
+        let mut records: Vec<(u32, OffsetRecord)> = Vec::new();
+        for partition in 0..DOCS_PARTITIONS {
+            records.extend(
+                read_records(&reader, self.docs_stream, partition, 0)
+                    .await
+                    .unwrap_or_else(|e| panic!("{what}: read docs/{partition}: {e}"))
+                    .into_iter()
+                    .map(|r| (partition, r)),
+            );
+        }
+        assert_eq!(records.len(), 7, "{what}: the collection's stream");
+        let expected = fold_stream(&docs_schema(), DOCS_PARTITIONS, &records);
+        assert_eq!(expected.len(), 5, "{what}: the model");
+        let problems = verify_collection(&self.collections, self.ns, self.docs, &expected)
+            .await
+            .unwrap_or_else(|e| panic!("{what}: verify the collection: {e}"));
+        assert!(problems.is_empty(), "{what}: {problems:#?}");
+    }
+
     /// The invariants after a cell, with faults off and every component run
     /// once more so that retries complete.
-    async fn check(&self, what: &str) {
+    async fn check(&self, component: Component, what: &str) {
         self.faults.clear();
         let report = segmenter(self, self.cache().await)
             .run_once()
@@ -578,8 +782,16 @@ impl Fixture {
             "{what}: segmenter after the cell: {report:?}"
         );
         self.apply_link().await;
-        gc(self)
-            .run_once(&self.meta, "matrix-gc")
+        let collection = component == Component::CollectionCommit;
+        if collection {
+            self.apply_collection_link(what).await;
+        }
+        let gc = if collection {
+            gc_with_collections(self)
+        } else {
+            gc(self)
+        };
+        gc.run_once(&self.meta, "matrix-gc")
             .await
             .unwrap_or_else(|e| panic!("{what}: gc after the cell: {e}"));
         let violations = self
@@ -635,10 +847,14 @@ impl Fixture {
         let snapshot = self.table().snapshot().await.expect("snapshot");
         assert_eq!(snapshot.counters, sums, "{what}: CounterTable is not exact");
         assert_eq!(snapshot.skipped, 0, "{what}");
+        if collection {
+            self.check_collection(what).await;
+        }
     }
 
     async fn shutdown(self) {
         self.faults.clear();
+        self.collection_factory.close().await;
         let _ = self.writer.shutdown().await;
         self.node.shutdown().await.expect("shutdown");
     }
@@ -650,7 +866,24 @@ async fn read_all(
     partition: u32,
     from: u64,
 ) -> Result<BTreeMap<u64, String>, LogError> {
-    let mut out = BTreeMap::new();
+    Ok(read_records(reader, stream, partition, from)
+        .await?
+        .into_iter()
+        .map(|r| {
+            let value =
+                String::from_utf8_lossy(r.record.value.as_deref().unwrap_or_default()).to_string();
+            (r.offset, value)
+        })
+        .collect())
+}
+
+async fn read_records(
+    reader: &LogReader,
+    stream: StreamId,
+    partition: u32,
+    from: u64,
+) -> Result<Vec<OffsetRecord>, LogError> {
+    let mut out = Vec::new();
     let mut offset = from;
     loop {
         let response = reader
@@ -665,12 +898,8 @@ async fn read_all(
         if response.records.is_empty() {
             return Ok(out);
         }
-        for r in response.records {
-            let value =
-                String::from_utf8_lossy(r.record.value.as_deref().unwrap_or_default()).to_string();
-            out.insert(r.offset, value);
-        }
         offset = response.next_offset;
+        out.extend(response.records);
     }
 }
 
@@ -694,7 +923,7 @@ async fn cell(component: Component, op: Op, fault: Fault, nth: u64) -> Outcome {
         (Err(err), true) => panic!("{what}: a non-retryable error surfaced: {err}"),
         (Err(err), false) => panic!("{what}: failed without reaching the fault: {err}"),
     };
-    f.check(&what).await;
+    f.check(component, &what).await;
     f.shutdown().await;
     outcome
 }

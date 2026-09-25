@@ -323,3 +323,158 @@ async fn multi_block_read_bounds_concurrent_block_fetches() {
         "expected at most 16 concurrent block fetches, saw {max_seen}"
     );
 }
+
+#[tokio::test]
+async fn a_known_size_read_costs_one_get_and_remembers_the_size() {
+    let faulty = Arc::new(FaultyStore::new(Arc::new(InMemory::new())));
+    let store = Store::new(faulty.clone());
+    let body = data(256);
+    store.put("obj", body.clone()).await.unwrap();
+    let cache = cache_over(store, 1024).await;
+
+    let gets = faulty.calls(Op::Get);
+    let got = cache.read_with_size("obj", 256, 200..256).await.unwrap();
+    assert_eq!(got, body.slice(200..256));
+    assert_eq!(faulty.calls(Op::Get), gets + 1, "one GET and no HEAD");
+
+    // The size is remembered: neither `size` nor a later `read` needs a HEAD.
+    faulty.inject(Op::Get, Fault::Error);
+    assert_eq!(cache.size("obj").await.unwrap(), 256);
+    assert_eq!(cache.read("obj", 0..10).await.unwrap(), body.slice(0..10));
+    assert_eq!(faulty.calls(Op::Get), gets + 1);
+}
+
+#[tokio::test]
+async fn a_known_size_read_checks_the_range_and_the_size() {
+    let store = Store::in_memory();
+    store.put("obj", data(256)).await.unwrap();
+    store.put("other", data(256)).await.unwrap();
+    // One block per object, so the short object shows as a short block.
+    let cache = cache_over(store, 1024).await;
+
+    let err = cache.read_with_size("obj", 10, 5..11).await.unwrap_err();
+    assert!(
+        matches!(err, CacheError::OutOfRange { size: 10, .. }),
+        "got {err:?}"
+    );
+
+    // The object is shorter than the caller claims.
+    let err = cache
+        .read_with_size("obj", 300, 250..300)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            CacheError::SizeMismatch {
+                expected: 300,
+                actual: 256,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+    // A failed read remembers nothing.
+    assert_eq!(cache.size("obj").await.unwrap(), 256);
+
+    // A claim that contradicts the size already known is refused.
+    let err = cache.read_with_size("obj", 300, 0..10).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            CacheError::SizeMismatch {
+                expected: 300,
+                actual: 256,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+    assert_eq!(
+        cache.read_with_size("other", 256, 0..4).await.unwrap(),
+        data(4)
+    );
+}
+
+#[tokio::test]
+async fn a_cold_read_fetches_each_run_of_missing_blocks_in_one_get() {
+    let faulty = Arc::new(FaultyStore::new(Arc::new(InMemory::new())));
+    let store = Store::new(faulty.clone());
+    let body = data(1000);
+    store.put("obj", body.clone()).await.unwrap();
+    let cache = cache_over(store, 64).await;
+
+    // Five cold blocks (0..=4), one GET.
+    let gets = faulty.calls(Op::Get);
+    let got = cache.read_with_size("obj", 1000, 10..300).await.unwrap();
+    assert_eq!(got, body.slice(10..300));
+    assert_eq!(faulty.calls(Op::Get), gets + 1);
+    assert_eq!(cache.stats().misses, 5);
+
+    // Blocks 5..=9 with 7 already cached: two runs, two GETs.
+    cache.read("obj", 450..460).await.unwrap();
+    let gets = faulty.calls(Op::Get);
+    let got = cache.read("obj", 320..640).await.unwrap();
+    assert_eq!(got, body.slice(320..640));
+    assert_eq!(faulty.calls(Op::Get), gets + 2);
+    assert_eq!(cache.stats().misses, 5 + 1 + 4);
+    assert_eq!(cache.stats().hits, 1);
+
+    // Every block of those runs was cached on its own.
+    faulty.inject(Op::Get, Fault::Error);
+    assert_eq!(cache.read("obj", 0..640).await.unwrap(), body.slice(0..640));
+}
+
+#[tokio::test]
+async fn a_known_size_read_refuses_a_smaller_size_and_caches_nothing() {
+    let store = Store::in_memory();
+    store.put("obj", data(256)).await.unwrap();
+    let cache = cache_over(store, 1024).await;
+
+    // The object is longer than the caller claims: the GET's own metadata
+    // says so, before any block is cached or the size remembered.
+    let err = cache
+        .read_with_size("obj", 200, 150..200)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            CacheError::SizeMismatch {
+                expected: 200,
+                actual: 256,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+    assert_eq!(
+        cache.read_with_size("obj", 256, 150..256).await.unwrap(),
+        data(256).slice(150..256)
+    );
+    assert_eq!(
+        cache.stats().checksum_failures,
+        0,
+        "no short block was cached"
+    );
+}
+
+#[tokio::test]
+async fn forget_drops_the_size_and_the_blocks_of_an_object() {
+    let faulty = Arc::new(FaultyStore::new(Arc::new(InMemory::new())));
+    let store = Store::new(faulty.clone());
+    store.put("obj", data(100)).await.unwrap();
+    let cache = cache_over(store.clone(), 64).await;
+    cache.read("obj", 0..100).await.unwrap();
+
+    store.delete("obj").await.unwrap();
+    cache.forget("obj").await;
+    assert!(matches!(
+        cache.size("obj").await,
+        Err(CacheError::Store(operon_store::StoreError::NotFound { .. }))
+    ));
+    // A new object at the path is read afresh.
+    store.put("obj", Bytes::from(vec![7u8; 30])).await.unwrap();
+    assert_eq!(cache.read("obj", 0..30).await.unwrap(), vec![7u8; 30]);
+    cache.forget("never-read").await;
+}

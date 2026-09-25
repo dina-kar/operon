@@ -9,9 +9,18 @@
 //! sums equal the log's records exactly once, and the metastore's
 //! invariants hold. A random-time SIGKILL loop does the same.
 //!
+//! The collection scenario (plan M1.1 Task 13) does the same for a
+//! collection: document ops are produced to its implicit stream, and after
+//! the abort and a restart every acknowledged record must be in the stream
+//! at its offset, the committed collection must equal the fold of the
+//! stream (`fold_stream`, `verify_collection`) and the metastore's
+//! invariants must hold. Its rows cover every collection commit failpoint
+//! and both index-build failpoints.
+//!
 //! Runs only with `--features failpoints`:
 //! `cargo test -p operon --features failpoints --test crash`.
-//! `CRASH_KILLS=<n>` sets the SIGKILL loop's iterations (default 20).
+//! `CRASH_KILLS=<n>` sets the SIGKILL loops' iterations (default 20, and 10
+//! for the collection loop).
 #![cfg(feature = "failpoints")]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,7 +32,17 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use operon_meta::{Consistency, MetaConfig, MetaNode, Router};
+use operon_cache::{RangeCache, RangeCacheConfig};
+use operon_collection::{
+    CollectionConfig, CollectionContext, CollectionManifest, CollectionSchema, DocOp, Document,
+    DynamicMapping, FieldKind, FieldSpec, LanceConfig, LanceEnv, ManifestCache, PrimaryKey,
+    VectorSpec, fold_stream, live_manifest, partition_of, verify_collection,
+};
+use operon_common::{CollectionId, NamespaceId, StreamId};
+use operon_log::{FetchRequest, LogReader};
+use operon_meta::{
+    Consistency, MetaClient, MetaClientConfig, MetaConfig, MetaNode, Router, SystemClock,
+};
 use operon_store::Store;
 use reqwest::StatusCode;
 use serde_json::{Value, json};
@@ -44,8 +63,15 @@ struct Dev {
 
 impl Dev {
     fn start(dir: &Path, failpoint: Option<(&str, u32)>) -> Self {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_operon"));
+        // Through `sh`, to turn core dumps off: an armed failpoint aborts,
+        // and dumping the core of a binary this large (Lance, DataFusion)
+        // can take the host's core handler most of a minute, while the
+        // process has stopped serving. `exec` keeps the child's pid the
+        // server's.
+        let mut command = Command::new("sh");
         command
+            .args(["-c", "ulimit -c 0 && exec \"$0\" \"$@\""])
+            .arg(env!("CARGO_BIN_EXE_operon"))
             .args([
                 "dev",
                 "--listen",
@@ -74,6 +100,14 @@ impl Dev {
                 "25",
                 "--snapshot-every",
                 "64",
+                "--collection-trim",
+                "false",
+                "--collection-index-min-rows",
+                "40",
+                "--collection-index-delta-min-rows",
+                "40",
+                "--collection-index-poll-interval-ms",
+                "200",
             ])
             .env("RUST_LOG", "error")
             .env_remove("OPERON_FAILPOINTS")
@@ -146,10 +180,6 @@ impl Drop for Dev {
 struct Api {
     base: String,
     http: reqwest::Client,
-}
-
-fn b64(s: &str) -> String {
-    BASE64.encode(s.as_bytes())
 }
 
 fn unb64(v: &Value) -> String {
@@ -234,7 +264,20 @@ impl Api {
     /// Produces one record; `Some(offset)` once acknowledged, `None` if the
     /// outcome is unknown (an error or a dead server).
     async fn produce(&self, stream: &str, partition: u32, key: &str, value: &str) -> Option<u64> {
-        let body = json!({ "records": [{ "key": b64(key), "value": b64(value) }] });
+        self.produce_bytes(stream, partition, key.as_bytes(), value.as_bytes())
+            .await
+    }
+
+    /// [`Api::produce`] of a binary key and value.
+    async fn produce_bytes(
+        &self,
+        stream: &str,
+        partition: u32,
+        key: &[u8],
+        value: &[u8],
+    ) -> Option<u64> {
+        let body =
+            json!({ "records": [{ "key": BASE64.encode(key), "value": BASE64.encode(value) }] });
         let path = format!("/v1/namespaces/acme/streams/{stream}/partitions/{partition}/records");
         match self.post(&path, body).await {
             Ok((StatusCode::OK, body)) => body["base_offset"].as_u64(),
@@ -297,22 +340,7 @@ impl Api {
 
     /// The link: `(applied per partition, counters, skipped)`.
     async fn link(&self) -> (BTreeMap<u32, u64>, BTreeMap<String, i64>, u64) {
-        let (status, body) = self
-            .get("/v1/namespaces/acme/links/counts")
-            .await
-            .expect("link");
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let applied = body["applied"]
-            .as_array()
-            .expect("applied")
-            .iter()
-            .map(|a| {
-                (
-                    u32::try_from(a["partition"].as_u64().expect("p")).expect("u32"),
-                    a["offset"].as_u64().expect("offset"),
-                )
-            })
-            .collect();
+        let body = self.describe_link("counts").await;
         let counters = body["counters"]
             .as_object()
             .expect("counters")
@@ -320,11 +348,47 @@ impl Api {
             .map(|(k, v)| (k.clone(), v.as_i64().expect("i64")))
             .collect();
         (
-            applied,
+            applied(&body),
             counters,
             body["skipped"].as_u64().expect("skipped"),
         )
     }
+
+    async fn describe_link(&self, name: &str) -> Value {
+        let (status, body) = self
+            .get(&format!("/v1/namespaces/acme/links/{name}"))
+            .await
+            .expect("link");
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    }
+
+    /// The high watermarks of `stream`'s non-empty partitions.
+    async fn high_watermarks(&self, stream: &str) -> BTreeMap<u32, u64> {
+        self.partitions(stream)
+            .await
+            .into_iter()
+            .enumerate()
+            .map(|(p, (_, hwm))| (u32::try_from(p).expect("u32"), hwm))
+            .filter(|(_, hwm)| *hwm > 0)
+            .collect()
+    }
+}
+
+/// A link description's applied offsets, of non-empty partitions.
+fn applied(body: &Value) -> BTreeMap<u32, u64> {
+    body["applied"]
+        .as_array()
+        .expect("applied")
+        .iter()
+        .map(|a| {
+            (
+                u32::try_from(a["partition"].as_u64().expect("p")).expect("u32"),
+                a["offset"].as_u64().expect("offset"),
+            )
+        })
+        .filter(|(_, offset)| *offset > 0)
+        .collect()
 }
 
 /// What the client knows: acknowledged records (stream, partition, offset →
@@ -631,5 +695,494 @@ async fn random_sigkills_under_load_lose_nothing() {
     let snapshot = model.lock().expect("lock").clone();
     check(&api, &snapshot, "after the last kill").await;
     dev.kill();
+    check_meta(dir.path(), "after the last kill").await;
+}
+
+// The collection scenario (plan M1.1 Task 13).
+
+const COLLECTION_PARTITIONS: u32 = 3;
+/// The key space `k0..k49` of the commit rows and the SIGKILL loop.
+const COMMIT_KEYS: u64 = 50;
+/// The key space `k0..k399` of the index rows: at least 256 keys must be
+/// live for a vector index to be trained (Lance's 8-bit PQ, controller
+/// ruling P1), and one pass over 400 keys leaves about 320.
+const INDEX_KEYS: u64 = 400;
+
+/// The collection the scenario writes to.
+#[derive(Clone)]
+struct Docs {
+    ns: NamespaceId,
+    cid: CollectionId,
+    stream: StreamId,
+    /// The implicit stream's and link's name, `_collection.docs.<cid>`.
+    name: String,
+    schema: CollectionSchema,
+    /// Op `n` writes key `k<n % keys>`.
+    keys: u64,
+}
+
+/// What the client knows of the collection: every acknowledged record
+/// `(partition, offset) → (key, value)`, and the next op number.
+#[derive(Clone, Default)]
+struct DocModel {
+    acked: BTreeMap<(u32, u64), (Vec<u8>, Vec<u8>)>,
+    next: u64,
+}
+
+fn bucket_store(dir: &Path) -> Store {
+    let bucket = dir.join("bucket");
+    std::fs::create_dir_all(&bucket).expect("bucket dir");
+    let url = url::Url::from_directory_path(bucket.canonicalize().expect("bucket")).expect("url");
+    Store::from_url(url.as_str(), Vec::<(String, String)>::new()).expect("store")
+}
+
+/// The stopped server's metastore, opened in this process, with a client.
+async fn open_meta(dir: &Path, store: &Store) -> (MetaNode, MetaClient) {
+    let node = MetaNode::start(
+        MetaConfig::new(1, dir.join("meta"), store.clone()),
+        &Router::new(),
+    )
+    .await
+    .expect("open the metastore");
+    node.initialize([1]).await.expect("initialize");
+    node.wait_for_leader(WAIT).await.expect("leader");
+    let meta = MetaClient::new(
+        node.clone(),
+        Vec::new(),
+        Arc::new(SystemClock),
+        MetaClientConfig::default(),
+    );
+    (node, meta)
+}
+
+fn field(name: &str, kind: FieldKind) -> FieldSpec {
+    FieldSpec {
+        name: name.to_string(),
+        source_path: name.to_string(),
+        kind,
+        indexed: true,
+        fast: true,
+        ignore_malformed: false,
+    }
+}
+
+/// Before the first start: namespace `acme` and collection `docs` (3
+/// partitions; `tag` Keyword, `n` I64; vector `v` of dim 4, Cosine, `Auto`;
+/// dynamic mapping `Ignore`), created in this process.
+async fn create_docs(dir: &Path, keys: u64) -> Docs {
+    let store = bucket_store(dir);
+    let (node, meta) = open_meta(dir, &store).await;
+    let ns = meta.create_namespace("acme").await.expect("namespace");
+    let vector = VectorSpec {
+        name: "v".to_string(),
+        dim: 4,
+        distance: operon_collection::Distance::Cosine,
+        element: operon_collection::VectorElement::F32,
+        index: operon_collection::VectorIndexSpec::Auto,
+        hnsw: operon_collection::HnswParams::default(),
+        quantization: None,
+    };
+    let schema = CollectionSchema::new(
+        vec![field("tag", FieldKind::Keyword), field("n", FieldKind::I64)],
+        vec![vector],
+        DynamicMapping::Ignore,
+    );
+    schema.validate().expect("valid schema");
+    let (cid, stream, _) = meta
+        .create_collection(ns, "docs", schema.clone(), COLLECTION_PARTITIONS)
+        .await
+        .expect("collection");
+    node.shutdown().await.expect("shutdown");
+    Docs {
+        ns,
+        cid,
+        stream,
+        name: operon_meta::implicit_name("docs", cid),
+        schema,
+        keys,
+    }
+}
+
+/// Whether op `n` is a delete (one in five, spread over the keys).
+fn is_delete(n: u64) -> bool {
+    let mut x = n.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    x ^= x >> 29;
+    x.is_multiple_of(5)
+}
+
+/// Op `n` on key `k<i>`: 80 % `Upsert { tag, n, v }`, 20 % `Delete`.
+fn doc_op(n: u64, i: u64) -> DocOp {
+    let pk = PrimaryKey::Str(format!("k{i}"));
+    if is_delete(n) {
+        return DocOp::Delete(pk);
+    }
+    let source = serde_json::Map::from_iter([
+        ("tag".to_string(), json!(format!("t{}", i % 3))),
+        ("n".to_string(), json!(n)),
+    ]);
+    let vector = vec![i as f32, 1.0, 0.0, 0.0];
+    DocOp::Upsert(Document {
+        pk,
+        source,
+        vectors: BTreeMap::from([("v".to_string(), vector)]),
+        sparse_vectors: BTreeMap::new(),
+    })
+}
+
+/// Produces the next op, on key `k<n % keys>`, to its partition of the
+/// implicit stream and records it if acknowledged.
+async fn produce_doc(api: &Api, docs: &Docs, model: &Mutex<DocModel>) {
+    produce_doc_on(api, docs, model, |n| n % docs.keys).await;
+}
+
+/// Produces the next op `n` on key `k<key(n)>`; whether it was
+/// acknowledged, and whether it was a delete.
+async fn produce_doc_on(
+    api: &Api,
+    docs: &Docs,
+    model: &Mutex<DocModel>,
+    key: impl FnOnce(u64) -> u64,
+) -> Option<bool> {
+    let n = {
+        let mut m = model.lock().expect("lock");
+        m.next += 1;
+        m.next
+    };
+    let op = doc_op(n, key(n));
+    let delete = matches!(op, DocOp::Delete(_));
+    let partition = partition_of(op.pk(), COLLECTION_PARTITIONS);
+    let record = operon_collection::encode(&op).expect("encode");
+    let key = record.key.expect("a key").to_vec();
+    let value = record.value.expect("a value").to_vec();
+    let offset = api
+        .produce_bytes(&docs.name, partition, &key, &value)
+        .await?;
+    model
+        .lock()
+        .expect("lock")
+        .acked
+        .insert((partition, offset), (key, value));
+    Some(delete)
+}
+
+/// The key indexes of the model's acknowledged ops: all of them, and those
+/// whose last acknowledged op (in offset order; a key has one partition)
+/// is an upsert.
+fn acked_keys(model: &DocModel) -> (Vec<u64>, BTreeSet<u64>) {
+    let mut touched = BTreeSet::new();
+    let mut live = BTreeSet::new();
+    for (key, value) in model.acked.values() {
+        let record = operon_log::Record {
+            key: Some(key.clone().into()),
+            value: Some(value.clone().into()),
+            headers: Vec::new(),
+            timestamp_ms: 0,
+        };
+        let op = operon_collection::decode(&record).expect("decode");
+        let PrimaryKey::Str(name) = op.pk() else {
+            panic!("an unexpected key {:?}", op.pk());
+        };
+        let i: u64 = name[1..].parse().expect("key index");
+        touched.insert(i);
+        match op {
+            DocOp::Delete(_) => live.remove(&i),
+            _ => live.insert(i),
+        };
+    }
+    (touched.into_iter().collect(), live)
+}
+
+/// After a restart: 20 ops on keys acknowledged before it, so upserts and
+/// deletes resolve keys the crashed commits wrote (Review Focus 2: a
+/// missing PK repair would leave a duplicate row). At least one must hit a
+/// key that was live, or the check would pass vacuously.
+async fn rewrite_acked_keys(api: &Api, docs: &Docs, model: &Mutex<DocModel>, what: &str) {
+    let (touched, live) = acked_keys(&model.lock().expect("lock"));
+    assert!(!touched.is_empty(), "{what}: nothing was acknowledged");
+    let mut hit_live = false;
+    for j in 0..20 {
+        let i = touched[j % touched.len()];
+        if produce_doc_on(api, docs, model, |_| i).await.is_some() {
+            hit_live |= live.contains(&i);
+        }
+    }
+    assert!(
+        hit_live,
+        "{what}: no acknowledged op after the restart hit a key live before it"
+    );
+}
+
+/// Waits until the collection's link has applied its whole stream.
+async fn settle_docs(api: &Api, docs: &Docs) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let hwms = api.high_watermarks(&docs.name).await;
+        let applied = applied(&api.describe_link(&docs.name).await);
+        if applied == hwms {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the collection link never caught up: applied {applied:?}, high watermarks {hwms:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Every record of the implicit stream, from offset 0 (it is never
+/// trimmed: `--collection-trim false`).
+async fn read_stream(reader: &LogReader, stream: StreamId) -> Vec<(u32, operon_log::OffsetRecord)> {
+    let mut out = Vec::new();
+    for partition in 0..COLLECTION_PARTITIONS {
+        let mut offset = 0;
+        loop {
+            let response = reader
+                .fetch(FetchRequest {
+                    stream,
+                    partition,
+                    offset,
+                    max_bytes: 16 << 20,
+                    max_wait: Duration::ZERO,
+                })
+                .await
+                .expect("fetch");
+            if response.records.is_empty() {
+                break;
+            }
+            offset = response.next_offset;
+            out.extend(response.records.into_iter().map(|r| (partition, r)));
+        }
+    }
+    out
+}
+
+/// The gate's collection checks against the stopped server's data, in this
+/// process: every acknowledged record is in the stream at its offset, and
+/// the committed collection is the fold of the stream. Returns the live
+/// manifest.
+async fn check_docs(dir: &Path, docs: &Docs, model: &DocModel, what: &str) -> CollectionManifest {
+    let store = bucket_store(dir);
+    let (node, meta) = open_meta(dir, &store).await;
+    let cache = RangeCache::new(
+        store.clone(),
+        RangeCacheConfig {
+            memory_bytes: 64 << 20,
+            ..RangeCacheConfig::default()
+        },
+    )
+    .await
+    .expect("cache");
+    let reader = LogReader::new(meta.clone(), cache.clone());
+    let records = read_stream(&reader, docs.stream).await;
+    let by_offset: BTreeMap<(u32, u64), &operon_log::Record> = records
+        .iter()
+        .map(|(partition, r)| ((*partition, r.offset), &r.record))
+        .collect();
+    for ((partition, offset), (key, value)) in &model.acked {
+        let found = by_offset.get(&(*partition, *offset));
+        assert!(
+            found.is_some_and(|r| r.key.as_deref() == Some(key.as_slice())
+                && r.value.as_deref() == Some(value.as_slice())),
+            "{what}: acknowledged {}/{partition}@{offset} is missing or different",
+            docs.name
+        );
+    }
+    let expected = fold_stream(&docs.schema, COLLECTION_PARTITIONS, &records);
+    let config = CollectionConfig::default();
+    let ctx = CollectionContext {
+        meta: meta.clone(),
+        store: store.clone(),
+        cache: cache.clone(),
+        lance: LanceEnv::new(store.clone(), LanceConfig::default()),
+        manifests: ManifestCache::new(config.manifest_cache_entries),
+        config,
+    };
+    let problems = verify_collection(&ctx, docs.ns, docs.cid, &expected)
+        .await
+        .expect("verify");
+    assert!(problems.is_empty(), "{what}: {problems:#?}");
+    let manifest = live_manifest(
+        &ctx.meta,
+        &ctx.store,
+        &ctx.manifests,
+        docs.ns,
+        docs.cid,
+        Consistency::Linearizable,
+    )
+    .await
+    .expect("live manifest")
+    .map_or_else(
+        || CollectionManifest::empty(docs.cid),
+        |(_, m)| (*m).clone(),
+    );
+    assert!(
+        !expected.is_empty() && manifest.version > 0,
+        "{what}: nothing was committed"
+    );
+    if !manifest.vector_indexes.is_empty() {
+        query_vector_index(&ctx, docs, what).await;
+    }
+    cache.close().await.expect("close the cache");
+    node.shutdown().await.expect("shutdown");
+    manifest
+}
+
+/// A nearest-neighbour query on `v` through the live version's vector
+/// index: the plan must use the index (an ANN node, not a brute-force
+/// scan) and return rows, so every index file the query needs exists (GC
+/// deleted none of them).
+async fn query_vector_index(ctx: &CollectionContext, docs: &Docs, what: &str) {
+    let snapshot = operon_collection::CollectionSnapshot::open(
+        ctx,
+        docs.ns,
+        docs.cid,
+        Consistency::Linearizable,
+    )
+    .await
+    .expect("snapshot");
+    let dataset = snapshot.dataset().expect("a lance version");
+    let query = arrow_array::Float32Array::from(vec![1.0, 1.0, 0.0, 0.0]);
+    let mut scanner = dataset.scan();
+    scanner
+        .nearest(&operon_collection::vector_column(0), &query, 5)
+        .expect("nearest");
+    let plan = scanner.explain_plan(false).await.expect("plan");
+    assert!(
+        plan.contains("ANN"),
+        "{what}: the query does not use the index: {plan}"
+    );
+    let batch = scanner
+        .try_into_batch()
+        .await
+        .unwrap_or_else(|err| panic!("{what}: the vector index cannot be queried: {err}"));
+    assert_eq!(batch.num_rows(), 5, "{what}: the vector query");
+}
+
+/// Arms `point` to abort on its `hit`-th hit, produces document ops until
+/// the process dies, restarts it, and checks everything. An index-build
+/// point is checked until the restarted server has built the index.
+async fn collection_crash_at(point: &str, hit: u32) {
+    let index_point = point.starts_with("collection.index.");
+    let dir = TempDir::new().expect("temp dir");
+    let keys = if index_point { INDEX_KEYS } else { COMMIT_KEYS };
+    let docs = create_docs(dir.path(), keys).await;
+    let mut dev = Dev::start(dir.path(), Some((point, hit)));
+    let api = Api::new(&dev);
+    let model = Mutex::new(DocModel::default());
+    let deadline = Instant::now() + WAIT;
+    while !dev.exited() {
+        assert!(
+            Instant::now() < deadline,
+            "{point} was not hit {hit} times within {WAIT:?}"
+        );
+        for _ in 0..8 {
+            produce_doc(&api, &docs, &model).await;
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !dev.aborted_at(point) {
+        assert!(
+            Instant::now() < deadline,
+            "the process exited, but not at {point}: {:?}",
+            dev.stderr.lock().expect("lock")
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    dev.kill();
+
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let dev = Dev::start(dir.path(), None);
+        let api = Api::new(&dev);
+        // The restarted server keeps taking writes, over the keys the
+        // crashed commits wrote.
+        rewrite_acked_keys(&api, &docs, &model, point).await;
+        settle_docs(&api, &docs).await;
+        if index_point {
+            // Give the index build a moment before the check.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        dev.kill();
+        let snapshot = model.lock().expect("lock").clone();
+        let manifest = check_docs(dir.path(), &docs, &snapshot, point).await;
+        if !index_point || !manifest.vector_indexes.is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{point}: the restarted server never built the vector index"
+        );
+    }
+    check_meta(dir.path(), point).await;
+}
+
+macro_rules! collection_crash_tests {
+    ($($name:ident: $point:literal @ $hit:literal,)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+            async fn $name() {
+                collection_crash_at($point, $hit).await;
+            }
+        )*
+    };
+}
+
+collection_crash_tests! {
+    abort_after_the_collection_lance_commit: "collection.after_lance_commit" @ 3,
+    abort_after_the_collection_split_put: "collection.after_split_put" @ 3,
+    abort_after_the_collection_manifest_put: "collection.after_manifest_put" @ 3,
+    abort_after_the_collection_cas: "collection.after_cas" @ 3,
+    abort_after_the_collection_pk_write: "collection.after_pk_write" @ 3,
+    abort_after_the_index_lance_commit: "collection.index.after_lance_commit" @ 1,
+    abort_after_the_index_cas: "collection.index.after_cas" @ 1,
+}
+
+/// Ruling 2 for collections: SIGKILL at random times under the collection
+/// workload.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn random_sigkills_under_collection_load_lose_nothing() {
+    let kills: u32 = std::env::var("CRASH_KILLS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    let seed: u64 = std::env::var("CRASH_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0x5eed);
+    eprintln!("random SIGKILL loop under collection load: {kills} kills, seed {seed}");
+    let mut rng = Lcg(seed);
+    let dir = TempDir::new().expect("temp dir");
+    let docs = create_docs(dir.path(), COMMIT_KEYS).await;
+    let model = Arc::new(Mutex::new(DocModel::default()));
+    for kill in 0..kills {
+        let dev = Dev::start(dir.path(), None);
+        let api = Api::new(&dev);
+        let run_for = Duration::from_millis(200 + rng.next(1_300));
+        let until = Instant::now() + run_for;
+        while Instant::now() < until {
+            let batch: Vec<_> = (0..4)
+                .map(|_| {
+                    let (api, docs, model) = (api.clone(), docs.clone(), model.clone());
+                    tokio::spawn(async move { produce_doc(&api, &docs, &model).await })
+                })
+                .collect();
+            for handle in batch {
+                handle.await.expect("producer");
+            }
+        }
+        dev.kill();
+        if kill % 5 == 4 {
+            let dev = Dev::start(dir.path(), None);
+            settle_docs(&Api::new(&dev), &docs).await;
+            dev.kill();
+            let snapshot = model.lock().expect("lock").clone();
+            check_docs(dir.path(), &docs, &snapshot, &format!("after kill {kill}")).await;
+        }
+    }
+    let dev = Dev::start(dir.path(), None);
+    settle_docs(&Api::new(&dev), &docs).await;
+    dev.kill();
+    let snapshot = model.lock().expect("lock").clone();
+    check_docs(dir.path(), &docs, &snapshot, "after the last kill").await;
     check_meta(dir.path(), "after the last kill").await;
 }

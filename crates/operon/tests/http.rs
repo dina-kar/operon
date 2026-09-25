@@ -560,6 +560,146 @@ async fn a_failed_start_releases_the_data_directory() {
     server.shutdown().await.unwrap();
 }
 
+/// M0.4 re-review m1: a freshness deadline at or above GC's grace period is
+/// refused at startup, not clamped. The segmenter's deadline is below grace,
+/// so the error must name the link's.
+#[tokio::test]
+async fn a_config_with_a_deadline_at_grace_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let mut bad = config(&dir, lazy_segmenter());
+    bad.gc.grace = Duration::from_secs(2);
+    bad.segmenter.swap_deadline = Duration::from_secs(1);
+    bad.link.max_commit_delay = Duration::from_secs(2);
+    let err = Server::start(bad).await.unwrap_err();
+    let operon::ServerError::Config(message) = &err else {
+        panic!("expected a config error, got {err:?}");
+    };
+    assert!(message.contains("link.max_commit_delay"), "{message}");
+    assert!(!message.contains("segmenter.swap_deadline"), "{message}");
+}
+
+/// M1.1 Task 13 (Ruling 22, controller ruling P11): the collection index
+/// commit delay is a freshness deadline too. The other deadlines are below
+/// grace, so the error must name it.
+#[tokio::test]
+async fn a_config_with_index_commit_delay_at_grace_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let mut bad = config(&dir, lazy_segmenter());
+    bad.gc.grace = Duration::from_secs(2);
+    bad.segmenter.swap_deadline = Duration::from_secs(1);
+    bad.link.max_commit_delay = Duration::from_secs(1);
+    bad.collection.index_commit_delay = Duration::from_secs(2);
+    let err = Server::start(bad).await.unwrap_err();
+    let operon::ServerError::Config(message) = &err else {
+        panic!("expected a config error, got {err:?}");
+    };
+    assert!(
+        message.contains("collection.index_commit_delay"),
+        "{message}"
+    );
+    assert!(!message.contains("segmenter.swap_deadline"), "{message}");
+    assert!(!message.contains("link.max_commit_delay"), "{message}");
+
+    // Below grace, the same config starts.
+    let mut good = config(&dir, lazy_segmenter());
+    good.gc.grace = Duration::from_secs(2);
+    good.segmenter.swap_deadline = Duration::from_secs(1);
+    good.link.max_commit_delay = Duration::from_secs(1);
+    good.collection.index_commit_delay = Duration::from_secs(1);
+    Server::start(good).await.unwrap().shutdown().await.unwrap();
+}
+
+/// M1.1 Task 13: the server runs collection link apply. A write through a
+/// `CollectionWriter` on the server's log writer is applied by the server's
+/// worker, and a snapshot on the server's collection context reads it.
+#[tokio::test]
+async fn the_server_applies_collection_links() {
+    use operon_collection::{
+        CollectionSchema, CollectionSnapshot, CollectionWriter, DocOp, Document, DynamicMapping,
+        OpResult, PrimaryKey,
+    };
+
+    let dir = TempDir::new().unwrap();
+    let mut cfg = config(&dir, lazy_segmenter());
+    cfg.link.batch_interval = Duration::ZERO;
+    let server = Server::start(cfg).await.unwrap();
+    let api = Api::new(&server);
+    let meta = server.meta();
+    let ns = meta.create_namespace("acme").await.unwrap();
+    let schema = CollectionSchema::new(vec![], vec![], DynamicMapping::Ignore);
+    let (cid, stream, _) = meta.create_collection(ns, "docs", schema, 2).await.unwrap();
+
+    let doc = |n: u64| Document {
+        pk: PrimaryKey::U64(n),
+        source: serde_json::Map::from_iter([("n".to_string(), json!(n))]),
+        vectors: Default::default(),
+        sparse_vectors: Default::default(),
+    };
+    let mut ops: Vec<DocOp> = (0..6).map(|n| DocOp::Upsert(doc(n))).collect();
+    ops.push(DocOp::Delete(PrimaryKey::U64(5)));
+    let outcome = CollectionWriter::new(meta.clone(), server.log_writer().clone())
+        .write(ns, cid, ops)
+        .await
+        .unwrap();
+    assert!(
+        outcome
+            .results
+            .iter()
+            .all(|r| matches!(r, OpResult::Written { .. })),
+        "{outcome:?}"
+    );
+
+    let hwms: Vec<Value> = meta
+        .read(Consistency::Linearizable, |s| {
+            (0..2)
+                .filter_map(|p| {
+                    let hwm = s.partition(stream, p)?.high_watermark();
+                    (hwm > 0).then(|| json!({ "partition": p, "offset": hwm }))
+                })
+                .collect()
+        })
+        .await
+        .unwrap();
+    let path = format!(
+        "/v1/namespaces/acme/links/{}",
+        operon_meta::implicit_name("docs", cid)
+    );
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let (status, body) = api.get(&path).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        if body["applied"] == Value::from(hwms.clone()) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the collection link never caught up: {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let snapshot = CollectionSnapshot::open(
+        server.collection_context(),
+        ns,
+        cid,
+        Consistency::Linearizable,
+    )
+    .await
+    .unwrap();
+    let pks: Vec<PrimaryKey> = (0..6).map(PrimaryKey::U64).collect();
+    let found = snapshot.get_by_pk(&pks).await.unwrap();
+    for (n, stored) in (0..6).zip(&found) {
+        if n == 5 {
+            assert!(stored.is_none(), "{stored:?}");
+        } else {
+            let stored = stored.as_ref().expect("a live document");
+            assert_eq!(stored.source, doc(n).source);
+        }
+    }
+    assert_eq!(snapshot.manifest().live_doc_count, 5);
+    server.shutdown().await.unwrap();
+}
+
 /// A running `operon dev` process.
 struct Dev {
     child: std::process::Child,
@@ -710,20 +850,178 @@ async fn a_link_is_created_once_and_sums_its_stream() {
     server.shutdown().await.unwrap();
 }
 
+/// M1.1 Task 10: the link description of a collection's implicit link shows
+/// its target's version and applied offsets, read through the registry.
+#[tokio::test]
+async fn the_link_endpoint_shows_version_and_applied_for_collections() {
+    use std::sync::Arc;
+
+    use operon_collection::{
+        CollectionConfig, CollectionContext, CollectionSchema, CollectionTargetFactory,
+        CollectionWriter, DocOp, Document, DynamicMapping, LanceConfig, LanceEnv, ManifestCache,
+        PrimaryKey,
+    };
+    use operon_link::{
+        CounterTargetFactory, LinkApplySource, LinkConfig, MAX_COMMIT_DELAY, TargetRegistry,
+    };
+    use operon_log::{LogConfig, LogReader, LogWriter};
+    use operon_meta::{MetaClient, MetaClientConfig, MetaConfig, MetaNode, SystemClock};
+    use operon_store::Store;
+
+    let dir = TempDir::new().unwrap();
+    let store = Store::in_memory();
+    let node = MetaNode::start(
+        MetaConfig::new(1, dir.path().join("meta"), store.clone()),
+        &operon_meta::Router::new(),
+    )
+    .await
+    .unwrap();
+    node.initialize([1]).await.unwrap();
+    node.wait_for_leader(WAIT).await.unwrap();
+    let meta = MetaClient::new(
+        node.clone(),
+        vec![],
+        Arc::new(SystemClock),
+        MetaClientConfig::default(),
+    );
+    let writer = LogWriter::start(
+        meta.clone(),
+        store.clone(),
+        LogConfig {
+            flush_interval: Duration::from_millis(20),
+            ..LogConfig::new(1)
+        },
+    )
+    .unwrap();
+    let cache = operon_cache::RangeCache::new(store.clone(), Default::default())
+        .await
+        .unwrap();
+    let reader = LogReader::new(meta.clone(), cache.clone());
+    let config = CollectionConfig::default();
+    let ctx = CollectionContext {
+        meta: meta.clone(),
+        store: store.clone(),
+        cache: cache.clone(),
+        lance: LanceEnv::new(store.clone(), LanceConfig::default()),
+        manifests: ManifestCache::new(config.manifest_cache_entries),
+        config,
+    };
+    let factory = Arc::new(CollectionTargetFactory::new(ctx));
+    let registry = TargetRegistry::new()
+        .with(Arc::new(CounterTargetFactory::new(
+            store.clone(),
+            MAX_COMMIT_DELAY,
+        )))
+        .with(factory.clone());
+    let app = operon::api::router(operon::api::AppState {
+        meta: meta.clone(),
+        writer: writer.clone(),
+        reader: reader.clone(),
+        store: store.clone(),
+        registry: registry.clone(),
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let http = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let api = Api {
+        base,
+        http: reqwest::Client::new(),
+    };
+
+    let ns = meta.create_namespace("acme").await.unwrap();
+    let schema = CollectionSchema::new(vec![], vec![], DynamicMapping::Ignore);
+    let (cid, stream, _) = meta.create_collection(ns, "docs", schema, 2).await.unwrap();
+    let path = format!(
+        "/v1/namespaces/acme/links/{}",
+        operon_meta::implicit_name("docs", cid)
+    );
+    let (status, body) = api.get(&path).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["target"]["kind"], json!("collection"));
+    assert_eq!(body["version"], json!(0));
+    assert_eq!(body["applied"], json!([]));
+    assert!(body.get("counters").is_none(), "{body}");
+
+    let ops = (0..6)
+        .map(|n| {
+            DocOp::Upsert(Document {
+                pk: PrimaryKey::U64(n),
+                source: serde_json::Map::from_iter([("n".to_string(), json!(n))]),
+                vectors: Default::default(),
+                sparse_vectors: Default::default(),
+            })
+        })
+        .collect();
+    CollectionWriter::new(meta.clone(), writer.clone())
+        .write(ns, cid, ops)
+        .await
+        .unwrap();
+    let source = LinkApplySource::new(
+        reader,
+        registry,
+        LinkConfig {
+            batch_interval: Duration::ZERO,
+            ..LinkConfig::default()
+        },
+    );
+    operon_worker::run_once(&meta, "w1", Duration::from_secs(5), &source)
+        .await
+        .unwrap();
+    let hwms: Vec<Value> = meta
+        .read(Consistency::Linearizable, |s| {
+            (0..2)
+                .filter_map(|p| {
+                    let hwm = s.partition(stream, p)?.high_watermark();
+                    (hwm > 0).then(|| json!({ "partition": p, "offset": hwm }))
+                })
+                .collect()
+        })
+        .await
+        .unwrap();
+    let (status, body) = api.get(&path).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["version"], json!(1));
+    assert_eq!(body["applied"], Value::from(hwms));
+
+    http.abort();
+    writer.shutdown().await.unwrap();
+    factory.close().await;
+    cache.close().await.unwrap();
+    node.shutdown().await.unwrap();
+}
+
 /// Failpoints exist only in builds with the `failpoints` feature; a normal
 /// build refuses to run with them requested rather than ignoring them.
 #[cfg(not(feature = "failpoints"))]
 #[test]
 fn a_build_without_failpoints_refuses_to_arm_them() {
     let dir = TempDir::new().unwrap();
-    let status = std::process::Command::new(env!("CARGO_BIN_EXE_operon"))
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_operon"))
         .args(["dev", "--listen", "127.0.0.1:0"])
         .arg("--data-dir")
         .arg(dir.path())
         .env("OPERON_FAILPOINTS", "wal.after_put")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
-        .expect("run operon");
+        .spawn()
+        .expect("spawn operon");
+    // A binary built with failpoints would ignore the variable and serve
+    // forever: bound the wait instead of hanging the test run.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait for operon") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "the operon binary did not exit within 30 s with OPERON_FAILPOINTS set; \
+                 it was probably built with --features failpoints: \
+                 run \"cargo build -p operon\" and retry"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
     assert!(!status.success());
 }

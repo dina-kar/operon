@@ -46,38 +46,56 @@ The durable tier is the **only source of truth**. It consists of open formats on
 ## 3. Collections — Lance + Tantivy under one manifest
 
 ### 3.1 Lance dataset
-- Columns: `_pk`, `_row_version`, `_ingest_offset`, user fields, vector columns (FixedSizeList<f32|f16|u8>), JSON payload (`large_binary`/JSON), `_deleted` (logical).
-- File format pinned to **Lance 2.1** initially (stable default); 2.2 adoption after evaluation.
-- Indexes: IVF_RQ or IVF_PQ per vector column (IVF_HNSW_SQ for high-recall collections); BTREE/BITMAP/LABEL_LIST scalar indexes for filter columns.
+- Columns: `_pk` (canonical PK bytes), `_source` (the document's JSON bytes), `_ingest_partition` and `_ingest_offset` (the record that last wrote the document; returned as its `seq_no`), one `_vector_<i>` per dense vector (`FixedSizeList<f32>`, nullable), one `_sparse_<j>` per sparse vector (`Struct<indices: List<u32>, values: List<f32>>`, nullable; M1.1 Ruling 27), and Lance's stable row id `_rowid` (stable row ids are on, so row ids survive compaction).
+- Typed fields are **not** Lance columns (M1.1 Ruling 4): they live in Tantivy (indexed and fast fields) and are always re-derivable from `_source`. Schema evolution of fields therefore never touches Lance; vector columns are added lazily, all-null, by a metadata-only commit (M1.1 Ruling 5).
+- File format pinned to **Lance 2.1** initially, set explicitly (`V2_1`); Lance 12 defaults to 2.2. 2.2 adoption after evaluation.
+- Indexes: vector index segments per §06 §5.1 (IVF_PQ default, IVF_RQ, IVF_HNSW_SQ), and a scalar BTREE only on `_pk`.
 - Operon does **not** use Lance's per-write commit path for small writes (expensive, contended). Workers write large fragments from batched stream data and commit once per batch.
 - Lance FTS is **not** used; text is in Tantivy.
 
 ### 3.2 Tantivy splits
-- One **split** per indexing batch: an immutable Tantivy index bundled into a single object with a **hotcache footer** (term dictionary skeleton, fast-field metadata, file offsets) — Quickwit's design, using Quickwit's `storage`/`directories`/split-bundle crates (forked, pinned).
-- Opening a split cold = 1 GET for the footer/hotcache, then range reads for postings/positions/fast fields.
-- Each Tantivy doc stores `_pk` and the **Lance row address** so hits join to documents without a lookup.
-- Fast fields hold aggregation/sort columns (keywords, numerics, dates) for ES aggregations.
-- **Deletes/upserts:** per-split **deletion bitmaps** (roaring), versioned, written as small objects; the PK index identifies which split/doc to mark. Merges (compaction) drop deleted docs and rewrite row addresses.
-- Merge policy: log-structured tiers by doc count (Quickwit's `StableLogMergePolicy` as reference), bounded by split size (target 1–5 GiB for search-heavy collections).
+- One **split** per indexing batch: an immutable, single-segment Tantivy index bundled into a single object with a **hotcache footer** (term dictionary skeleton, fast-field metadata, file offsets) — Quickwit's design, using Quickwit's `storage`/`directories`/split-bundle code vendored into `operon-quickwit` (R21).
+- Splits carry Quickwit's footer trailer; open = one GET of `footer_range`, recorded in the manifest's `SplitRef`. Then range reads for postings/positions/fast fields. The workspace builds Tantivy `=0.26.2` with its `quickwit` feature (sstable term dictionary), so a split is not readable by a Tantivy built without it (M1.1 Ruling 10).
+- Each Tantivy doc stores `_pk` (canonical bytes, indexed and fast) and the Lance stable row id (`_rowid` fast field); `SplitRef.row_id_ranges` map row ids to doc ids. Documents are added in ascending row-id order, so doc id *i* is the *i*-th document and row id → (split, doc id) is a binary search (M1.1 Ruling 8).
+- Fast fields hold aggregation/sort columns (keywords, numerics, dates) for ES aggregations. A JSON field `n` is five Tantivy fields: `n`, `_text.n`, `_date.n`, `_null.n`, `_count.n` (M1.1 Ruling 26).
+- Sparse vectors: split fields `_sparse.<name>` (u64 postings, one term per index plus `u64::MAX` for every non-empty vector) and `_sparse_w.<name>` (bytes fast weights: `u32 LE nnz ‖ nnz × u32 LE indices ‖ nnz × f32 LE values`) (M1.1 Ruling 27).
+- **Deletes/upserts:** one whole roaring bitmap per split at `text/deletes/<split_ulid>/<ulid>.bitmap` (format `OPDB` v1, §3.4), rewritten whole on each change; the PK index identifies which row, hence which split/doc, to mark. A split whose every doc is deleted leaves the manifest. Merges (compaction, M1.3) drop deleted docs and recompute `row_id_ranges`.
+- Merge policy: log-structured tiers by doc count (Quickwit's `StableLogMergePolicy`, vendored), bounded by split size (target 1–5 GiB for search-heavy collections).
 
 ### 3.3 Collection manifest
-Immutable, protobuf-encoded, `collections/<id>/manifests/<version>.pb`:
+Immutable, protobuf-encoded inside the `OPCM` v1 envelope (§3.4), at `collections/<cid>/manifests/<version:020>-<ulid>.pb`. The fields are defined by [`crates/operon-collection/proto/collection_manifest.proto`](../../crates/operon-collection/proto/collection_manifest.proto) (package `operon.collection.v1`): the version and its parent (by version and by full path), the schema version, `created_at_ms`, the detached `lance_version`, the `SplitRef`s (with footer range, row-id ranges and delete-bitmap path), the vector and scalar index segments, hot artifacts (M1.3), the `applied` offsets per partition of the implicit stream, the live doc count, the commit kind, and this commit's PK delta and dead-letter paths.
 
-```text
-CollectionManifest {
-  version:            u64
-  parent_version:     u64
-  schema_id:          u64
-  lance_version:      u64                      // Lance dataset version
-  splits:             [SplitRef { ulid, doc_count, size, min_offset, max_offset, delete_bitmap_version }]
-  vector_indexes:     [{column, lance_index_uuid, trained_at_version}]
-  hot_artifacts:      [{kind: HNSW, column, object_prefix, source_version}]   // optional, derived
-  applied_offsets:    {stream_id/partition: offset}
-  created_at:         timestamp
-}
-```
+**Commit protocol** (the collection link-apply task, one per collection; plan M1.1 Task 10 rule 3):
+1. The task loads the parent manifest *v* and reads the schema. A PK handle is reused only while its watermark equals the parent's `applied`; otherwise the index is reopened (fencing any other writer) and repaired before any key is resolved.
+2. It decodes the batch's records (an undecodable, wrong-partition or schema-violating record is a dead letter), resolves every key through the PK index, and folds each key's ops latest-wins in partition order.
+3. It writes the new rows and deletes the superseded ones in Lance. Each Lance commit is a *detached* version built from exactly the parent manifest's `lance_version`; the mainline holds only the empty version 1 (R7, M1.1 Ruling 1). A crashed or fenced writer's Lance version is never referenced and never blocks the next commit.
+4. It writes the new split and the changed delete bitmaps, then the PK delta (`pkdelta/…pkd`) and the dead letters (`deadletters/…dlq`), then manifest *v+1* (all create-only, new ULID paths).
+5. It **CASes the pointer `collection/<cid>` in meta** (`expected = v`, fenced by the task lease, and freshness-checked: refused if the commit started more than `max_commit_delay` ago, which is below GC's grace).
+6. The PK index is updated after the CAS and repaired from per-commit PK deltas: it stores `pk → row id` plus a watermark (the manifest and `applied` offsets it reflects); a new handle replays the deltas of the live chain newer than its watermark, or rebuilds from Lance if one is gone (M1.1 Ruling 7).
 
-**Commit protocol:** worker writes Lance fragment(s) + Tantivy split + deletion bitmaps (all new objects) → commits Lance version → writes new manifest object → **CAS the manifest pointer in meta** (`expected = parent_version`). A reader that loads manifest *v* sees a mutually consistent Lance version, split set and delete bitmaps. Lance versions not referenced by any live manifest are cleaned up by GC.
+A reader that loads manifest *v* sees a mutually consistent Lance version, split set and delete bitmaps. Lance's own cleanup is never run; Operon GC computes Lance reachability from the Lance manifests of the retained chain (M1.1 Ruling 2, §7).
+
+### 3.4 Operon-defined collection formats
+Each Operon format below is `magic (4 bytes) ‖ u16 LE format version ‖ body ‖ crc32c (u32 LE) of every preceding byte` (M1.1 Ruling 19):
+
+| Magic | Object | Body (version 1) |
+|---|---|---|
+| `OPCM` | collection manifest, `manifests/<version:020>-<ulid>.pb` | protobuf `operon.collection.v1.CollectionManifest` |
+| `OPDB` | delete bitmap, `text/deletes/<split_ulid>/<ulid>.bitmap` | split ULID (u128 BE) ‖ split doc count (u32 LE) ‖ cardinality (u64 LE) ‖ roaring portable serialization |
+| `OPPD` | PK delta, `pkdelta/<version:020>-<ulid>.pkd` | postcard `Vec<(key bytes, Option<row id u64>)>`, keys strictly ascending, `None` = deleted |
+| `OPDL` | dead letters, `deadletters/<version:020>-<ulid>.dlq` | postcard `Vec<DeadLetter { partition: u32, offset: u64, key: Option<bytes>, value: Option<bytes>, reason: String }>` ([`deadletter.rs`](../../crates/operon-collection/src/deadletter.rs)) |
+
+Not enveloped:
+- **Implicit-stream records** (overview §6.2), defined in [`codec.rs`](../../crates/operon-collection/src/codec.rs):
+  - The key is the canonical PK bytes (`0x01` ‖ u64 BE, `0x02` ‖ 16-byte UUID, or `0x03` ‖ UTF-8). A key's partition is `xxh3_64(canonical) mod partitions`.
+  - The value is `0x01` (codec version) ‖ postcard `WireOp`, at most 16 MiB with the version byte. Variant order and field order are the format:
+    - `WireOp`: variant 0 `Upsert(WireDoc)`; variant 1 `Delete(pk)`; variant 2 `Patch { pk, mode, source, delete_keys, vectors, sparse_vectors, upsert: Option<WireDoc> }`.
+    - `WireDoc { pk, source, vectors, sparse_vectors }`.
+    - `source` is a JSON object as UTF-8 bytes, because postcard cannot carry `serde_json::Value`. `vectors` maps a name to `[f32]`, and `sparse_vectors` maps a name to `{ indices: [u32], values: [f32] }`; both maps are in ascending name order. In a `Patch`, each map value is an `Option`, where `None` removes the vector. `mode` is `PatchMode` (0 `MergeDeep`, 1 `MergeTop`, 2 `Replace`), and `delete_keys` is a list of dot-separated paths.
+    - The `pk` inside `WireOp` is `PrimaryKey`'s derived serde enum in postcard (0 `U64` varint, 1 `Uuid` 16 bytes with no length, 2 `Str` varint length ‖ UTF-8). It is not the canonical bytes (M1.1 ruling P23).
+  - The golden test `every_record_variant_has_a_pinned_encoding` in [`tests/codec.rs`](../../crates/operon-collection/tests/codec.rs) pins one byte literal per variant (M1.1 ruling P24).
+- **PK index values** (inside SlateDB, which checksums its blocks): `0x01 ‖ row id u64 BE`; the watermark under the key `0x00 "watermark"` is `0x01 ‖ postcard(PkWatermark { manifest_version, applied })`.
+- **Splits**: Quickwit's bundle: the index files, then the footer = bundle metadata ‖ its length (u32 LE) ‖ hotcache ‖ its length (u32 LE) ‖ the 16-byte trailer (footer start u64 LE ‖ trailer version u32 LE = 1 ‖ `QWFT`). `SplitRef.footer_range` spans the whole footer, trailer included (M1.1 Ruling 9).
 
 ## 4. Graph structures
 
@@ -104,7 +122,7 @@ For each edge source segment (an Iceberg data file or a Lance fragment), the gra
 
 ## 5. Primary-key indexes
 
-A single abstraction (`PkIndex`) backed by **SlateDB** (object-storage-native LSM, writer fencing, SSI transactions) per keyed object, located at `ns/<ns>/pk/<object_id>/`. Used by: keyed tables (row positions), collections (split doc + Lance row address), graph vertex-ID maps, and changelog streams in `full` mode (before-image lookup). Written only by the owning worker (single-writer per object shard, fenced by lease epoch).
+A single abstraction (`PkIndex`) backed by **SlateDB** (object-storage-native LSM, writer fencing, SSI transactions) per keyed object, located at `ns/<ns>/pk/<object_id>/` (for example `ns/<ns>/pk/collection-<cid>/`). Used by: keyed tables (row positions), collections (the Lance stable row id; derived state with a watermark, §3.3), graph vertex-ID maps, and changelog streams in `full` mode (before-image lookup). Written only by the owning worker (single-writer per object shard, fenced by lease epoch).
 
 ## 6. Format versioning and compatibility
 
@@ -118,4 +136,5 @@ A single abstraction (`PkIndex`) backed by **SlateDB** (object-storage-native LS
 
 - Reachability-based: an object is deletable when no live manifest/snapshot/offset-index entry references it **and** it is older than the grace period (default 1 h; ≥ longest query timeout).
 - Time travel: manifests/snapshots retained per policy (default 24 h for collections/graphs, Iceberg snapshot policy for tables); GC respects retention.
+- Collections keep every manifest for `time_travel_retention` (24 h) after it is superseded, plus the last `keep_manifests`; implicit streams are trimmed below the oldest retained manifest. GC keeps every object a retained manifest references (splits, delete bitmaps, PK deltas, dead letters and the files of its Lance version), and deletes a released manifest's objects no earlier than the manifest itself. A dropped collection's prefixes are retired and deleted once the drop is older than the grace period (M1.1 Rulings 12, 13).
 - `durable/` is outside reachability GC: the Resonate server owns those objects and collects its own orphan timers. Settled-promise retention (deleting old origin documents) is a per-namespace policy run as a worker task.

@@ -8,7 +8,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use operon_cache::{RangeCache, RangeCacheConfig};
-use operon_link::{LinkApplySource, LinkConfig, LinkGcRoots};
+use operon_collection::{
+    CollectionConfig, CollectionContext, CollectionGcRoots, CollectionTargetFactory,
+    CollectionTrimSource, IndexBuildSource, LanceConfig, LanceEnv, ManifestCache, PkGcRoots,
+};
+use operon_link::{CounterTargetFactory, LinkApplySource, LinkConfig, LinkGcRoots, TargetRegistry};
 use operon_log::gc::{GcConfig, GcSource};
 use operon_log::{
     LogConfig, LogReader, LogWriter, RetentionConfig, RetentionSource, SegmenterConfig,
@@ -46,6 +50,11 @@ pub struct ServerConfig {
     pub cache: RangeCacheConfig,
     pub link: LinkConfig,
     pub gc: GcConfig,
+    /// How collections commit, index, trim and keep manifests. The server
+    /// overrides `max_commit_delay` with `link.max_commit_delay` and
+    /// `keep_manifests` with `gc.keep_manifests`.
+    pub collection: CollectionConfig,
+    pub lance: LanceConfig,
     /// The metastore builds a snapshot after this many log entries. Default
     /// 10 000.
     pub snapshot_every: u64,
@@ -68,16 +77,45 @@ impl ServerConfig {
             cache: RangeCacheConfig::default(),
             link: LinkConfig::default(),
             gc: GcConfig::default(),
+            collection: CollectionConfig::default(),
+            lance: LanceConfig::default(),
             snapshot_every: 10_000,
             worker_poll_interval: Duration::from_secs(1),
             worker_lease_ttl: Duration::from_secs(30),
         }
+    }
+
+    /// Rejects any freshness deadline at or above `gc.grace`:
+    /// `segmenter.swap_deadline`, `link.max_commit_delay` (which is also the
+    /// collection commit delay: the server sets `collection.max_commit_delay`
+    /// to it) and `collection.index_commit_delay`. Called first thing by
+    /// [`Server::start`]; the error names the first violating deadline in
+    /// that order.
+    ///
+    /// Garbage collection deletes unreferenced objects older than its grace
+    /// period, so a segment swap, link commit or index build must reference
+    /// its new objects strictly within it (M0.4 ruling E7, re-review m1;
+    /// plan M1.1 Ruling 22).
+    pub fn validate(&self) -> Result<(), ServerError> {
+        self.gc
+            .check_deadlines(&[
+                ("segmenter.swap_deadline", self.segmenter.swap_deadline),
+                ("link.max_commit_delay", self.link.max_commit_delay),
+                (
+                    "collection.index_commit_delay",
+                    self.collection.index_commit_delay,
+                ),
+            ])
+            .map_err(|err| ServerError::Config(err.to_string()))
     }
 }
 
 /// Why the server could not start.
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
+    /// The configuration is inconsistent (see [`ServerConfig::validate`]).
+    #[error("invalid configuration: {0}")]
+    Config(String),
     #[error("data directory {path}: {source}")]
     DataDir {
         path: PathBuf,
@@ -106,6 +144,8 @@ pub struct Server {
     meta: MetaClient,
     writer: LogWriter,
     cache: RangeCache,
+    collections: CollectionContext,
+    collection_factory: Arc<CollectionTargetFactory>,
     worker: WorkerHandle,
     http: JoinHandle<()>,
     stop_http: oneshot::Sender<()>,
@@ -139,14 +179,9 @@ impl Server {
     /// On failure, everything already started is stopped again (the
     /// metastore releases its local database), so a retry in the same process
     /// can succeed.
-    pub async fn start(mut config: ServerConfig) -> Result<Self, ServerError> {
+    pub async fn start(config: ServerConfig) -> Result<Self, ServerError> {
+        config.validate()?;
         config.log.validate()?;
-        // Garbage collection deletes unreferenced objects older than its
-        // grace period, so a segment or link commit must reference its new
-        // objects well within it (M0.4 ruling E7).
-        let half_grace = config.gc.grace / 2;
-        config.segmenter.swap_deadline = config.segmenter.swap_deadline.min(half_grace);
-        config.link.max_commit_delay = config.link.max_commit_delay.min(half_grace);
         let store = Store::from_url(&bucket_url(&config)?, Vec::<(String, String)>::new())?;
         let mut meta_config = MetaConfig::new(NODE_ID, config.data_dir.join("meta"), store.clone());
         meta_config.snapshot_every = config.snapshot_every;
@@ -212,9 +247,27 @@ impl Server {
                 ..WorkerConfig::new(owner)
             },
         );
+        let mut collection = config.collection.clone();
+        collection.max_commit_delay = config.link.max_commit_delay;
+        collection.keep_manifests = config.gc.keep_manifests;
+        let collections = CollectionContext {
+            meta: meta.clone(),
+            store: store.clone(),
+            cache: cache.clone(),
+            lance: LanceEnv::new(store.clone(), config.lance.clone()),
+            manifests: ManifestCache::new(collection.manifest_cache_entries),
+            config: collection,
+        };
+        let collection_factory = Arc::new(CollectionTargetFactory::new(collections.clone()));
+        let registry = TargetRegistry::new()
+            .with(Arc::new(CounterTargetFactory::new(
+                store.clone(),
+                config.link.max_commit_delay,
+            )))
+            .with(collection_factory.clone());
         worker.add_source(Arc::new(LinkApplySource::new(
             reader.clone(),
-            store.clone(),
+            registry.clone(),
             config.link.clone(),
         )));
         worker.add_source(Arc::new(SegmenterSource::new(
@@ -222,11 +275,17 @@ impl Server {
             cache.clone(),
             config.segmenter.clone(),
         )));
+        worker.add_source(Arc::new(IndexBuildSource::new(collections.clone())));
         worker.add_source(Arc::new(RetentionSource::new(config.retention.clone())));
+        worker.add_source(Arc::new(CollectionTrimSource::new(collections.clone())));
         worker.add_source(Arc::new(GcSource::with_roots(
             store.clone(),
             config.gc.clone(),
-            vec![Arc::new(LinkGcRoots)],
+            vec![
+                Arc::new(LinkGcRoots),
+                Arc::new(CollectionGcRoots::new(collections.clone())),
+                Arc::new(PkGcRoots),
+            ],
         )));
         let worker = worker.start();
         let app = api::router(AppState {
@@ -234,6 +293,7 @@ impl Server {
             writer: writer.clone(),
             reader,
             store: store.clone(),
+            registry,
         });
         let (stop_http, stopped) = oneshot::channel::<()>();
         let http = tokio::spawn(async move {
@@ -251,6 +311,8 @@ impl Server {
             meta,
             writer,
             cache,
+            collections,
+            collection_factory,
             worker,
             http,
             stop_http,
@@ -267,8 +329,20 @@ impl Server {
         &self.meta
     }
 
+    /// The collection storage context the server's tasks run on; M1.2 builds
+    /// its `CollectionService` on it.
+    pub fn collection_context(&self) -> &CollectionContext {
+        &self.collections
+    }
+
+    /// The server's log writer; M1.2 builds its `CollectionWriter` on it.
+    pub fn log_writer(&self) -> &LogWriter {
+        &self.writer
+    }
+
     /// Stops accepting requests, flushes the writer (buffered appends are
-    /// acknowledged), stops the worker (releasing its task leases), waits for
+    /// acknowledged), stops the worker (releasing its task leases), closes
+    /// the collection targets' PK index handles, waits for
     /// in-flight requests (up to 10 s), and shuts the metastore down.
     pub async fn shutdown(self) -> Result<(), ServerError> {
         let _ = self.stop_http.send(());
@@ -276,6 +350,7 @@ impl Server {
             tracing::warn!(%err, "the final flush failed");
         }
         self.worker.stop().await;
+        self.collection_factory.close().await;
         let mut http = self.http;
         if tokio::time::timeout(HTTP_GRACE, &mut http).await.is_err() {
             tracing::warn!("in-flight requests did not finish; aborting them");

@@ -1,10 +1,14 @@
 //! Structural invariants of the state, for tests, the crash gate and the
 //! simulation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+use operon_common::CollectionId;
 
 use super::MetaState;
-use crate::types::EntryKind;
+use crate::types::{
+    COLLECTION_KIND, COLLECTION_POINTER_PREFIX, EntryKind, Retention, WalClass, implicit_name,
+};
 
 impl MetaState {
     /// Checks the invariants every sequence of commands must keep, and
@@ -15,7 +19,8 @@ impl MetaState {
     ///   the sum of the entries' byte ranges;
     /// - every WAL object's live chunk count equals its number of `Wal`
     ///   entries, and every `Wal` entry's object is counted;
-    /// - no retired object is referenced by an index entry.
+    /// - no retired object is referenced by an index entry;
+    /// - the collection catalog is consistent (see `check_collections`).
     pub fn check_invariants(&self) -> Vec<String> {
         let mut violations = Vec::new();
         let mut wal_entries: BTreeMap<&str, u32> = BTreeMap::new();
@@ -102,6 +107,114 @@ impl MetaState {
                 violations.push(format!("retired object {object} is still referenced"));
             }
         }
+        self.check_collections(&mut violations);
         violations
+    }
+
+    /// The collection catalog's invariants:
+    /// - every collection's implicit stream exists in its namespace, named
+    ///   [`implicit_name`], with its partition count, class `Standard` and
+    ///   default retention, and its implicit link exists with that stream as
+    ///   source, the same name, and target `collection`/its name;
+    /// - `collection_names` and `collections` agree both ways;
+    /// - every alias points at a collection of its namespace and no alias
+    ///   has a collection's name;
+    /// - every stream or link named with a leading `_` is a collection's;
+    /// - every `collection/<id>` pointer names a collection of its namespace;
+    /// - `last_collection_id` is at least every collection id.
+    fn check_collections(&self, violations: &mut Vec<String>) {
+        let mut implicit_streams = BTreeSet::new();
+        let mut implicit_links = BTreeSet::new();
+        for (id, c) in &self.collections {
+            let at = format!("collection {id} ({}/{})", c.namespace, c.name);
+            if c.id != *id {
+                violations.push(format!("{at}: keyed {id} but has id {}", c.id));
+            }
+            if self.collection_names.get(&(c.namespace, c.name.clone())) != Some(id) {
+                violations.push(format!("{at}: its name does not map to it"));
+            }
+            let name = implicit_name(&c.name, c.id);
+            implicit_streams.insert(c.stream);
+            implicit_links.insert(c.link);
+            match self.streams.get(&c.stream) {
+                None => violations.push(format!("{at}: stream {} is missing", c.stream)),
+                Some(s) => {
+                    if s.namespace != c.namespace
+                        || s.name != name
+                        || s.partitions != c.partitions
+                        || s.class != WalClass::Standard
+                        || s.retention != Retention::default()
+                    {
+                        violations.push(format!("{at}: stream {} does not match: {s:?}", s.id));
+                    }
+                }
+            }
+            match self.links.get(&c.link) {
+                None => violations.push(format!("{at}: link {} is missing", c.link)),
+                Some(l) => {
+                    if l.namespace != c.namespace
+                        || l.name != name
+                        || l.source != c.stream
+                        || l.target.kind != COLLECTION_KIND
+                        || l.target.name != c.name
+                    {
+                        violations.push(format!("{at}: link {} does not match: {l:?}", l.id));
+                    }
+                }
+            }
+            if c.id.0 > self.last_collection_id {
+                violations.push(format!(
+                    "{at}: id above last_collection_id {}",
+                    self.last_collection_id
+                ));
+            }
+        }
+        for ((ns, name), id) in &self.collection_names {
+            match self.collections.get(id) {
+                Some(c) if c.namespace == *ns && c.name == *name => {}
+                _ => violations.push(format!("collection name {ns}/{name} maps to {id}")),
+            }
+        }
+        for ((ns, alias), id) in &self.aliases {
+            if !self.collections.get(id).is_some_and(|c| c.namespace == *ns) {
+                violations.push(format!(
+                    "alias {ns}/{alias} points at {id}, not a collection of its namespace"
+                ));
+            }
+            if self.collection_names.contains_key(&(*ns, alias.clone())) {
+                violations.push(format!("alias {ns}/{alias} has a collection's name"));
+            }
+        }
+        for s in self.streams.values() {
+            if s.name.starts_with('_') && !implicit_streams.contains(&s.id) {
+                violations.push(format!(
+                    "stream {} ({}) belongs to no collection",
+                    s.id, s.name
+                ));
+            }
+        }
+        for l in self.links.values() {
+            if l.name.starts_with('_') && !implicit_links.contains(&l.id) {
+                violations.push(format!(
+                    "link {} ({}) belongs to no collection",
+                    l.id, l.name
+                ));
+            }
+        }
+        for (ns, key) in self.pointers.keys() {
+            let Some(id) = key.strip_prefix(COLLECTION_POINTER_PREFIX) else {
+                continue;
+            };
+            let live = id
+                .parse::<CollectionId>()
+                .ok()
+                .and_then(|id| self.collections.get(&id))
+                .is_some_and(|c| c.namespace == *ns);
+            if !live {
+                violations.push(format!(
+                    "pointer {ns}/{key} names no collection of its namespace"
+                ));
+            }
+        }
     }
 }

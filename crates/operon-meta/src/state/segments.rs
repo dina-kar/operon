@@ -121,7 +121,7 @@ impl MetaState {
     /// Accounts for an index entry that was removed: a WAL chunk decrements
     /// its object's live count, retiring the object at zero; a segment is
     /// retired at once. Retirement is stamped with the metastore clock.
-    fn release_entry(&mut self, entry: IndexEntry) {
+    pub(super) fn release_entry(&mut self, entry: IndexEntry) {
         match entry.kind {
             EntryKind::Wal => {
                 let remaining = match self.wal_live_chunks.get_mut(&entry.object) {

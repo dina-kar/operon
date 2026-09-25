@@ -380,6 +380,7 @@ impl SegmentTask {
                 | ApplyError::Fenced { .. }
                 | ApplyError::StaleObject { .. }),
             )) => {
+                operon_meta::log_stale_object(&rejection, ctx.meta.now_ms());
                 if !earlier_unknown {
                     self.delete_unused(ctx, &path).await;
                 }

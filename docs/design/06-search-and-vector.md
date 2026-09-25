@@ -23,16 +23,19 @@ A collection schema is derived from ES mappings or Qdrant collection config (or 
 | Multivector | — | multivector (ColBERT) | List<FixedSizeList> | — | hot tier (§5) |
 | Object / nested | `object`, `nested` | JSON payload | JSON column | JSON field (flattened paths) | — |
 
+As built in M1.1 (Ruling 4, §03 §3.1): typed fields are held in Lance only inside `_source` and are indexed in Tantivy; the only Lance columns are the system columns and the dense and sparse vector columns, and the only Lance scalar index is the BTREE on `_pk`. The table's per-field Lance columns and scalar indexes are not built.
+
 Dynamic mapping follows ES defaults for unknown fields (string → text + keyword subfield), bounded by a per-collection field limit.
 
 ## 2. Write path
 
 1. Gateway (`_bulk`, `_doc`, Qdrant `upsert`, native) validates and appends operations to the collection's implicit stream; responds with a consistency token (ES `refresh=wait_for` waits for tail visibility, which is immediate).
 2. Collection-link worker consumes batches (target 16–128 MiB or 1–5 s):
-   - Resolves upserts/deletes via the PK index.
+   - Resolves upserts/deletes via the PK index (latest-wins per key, in partition order).
+   - Records that cannot be decoded, sit on the wrong partition or violate the current schema are **dead letters**: skipped, counted in the manifest's `dead_letters_total`, logged, and written to one `deadletters/…dlq` object per commit that lives as long as its manifest (M1.1 Ruling 11).
    - Writes a Lance fragment + a Tantivy split from the same batch; updates deletion bitmaps for superseded docs.
    - If the collection has a changelog stream (§02 §8.1), appends the batch's change records with a fenced append first.
-   - Commits Lance version → writes manifest → CAS pointer in meta (§03 §3.3).
+   - Commits a **detached** Lance version built from exactly the parent manifest's Lance version (R7) → writes the split, bitmaps, PK delta, dead letters and manifest → fenced, freshness-checked CAS of the pointer in meta → updates the PK index after the CAS (§03 §3.3).
 3. Background: split merges, Lance compaction, vector index optimization (incremental add to IVF; periodic re-clustering when centroid drift exceeds threshold).
 
 ## 3. Read path and ranking
@@ -56,13 +59,13 @@ Selectivity is estimated from bitmap cardinalities (Tantivy/Lance scalar indexes
 ## 5. Vector tiers
 
 ### 5.1 Durable: Lance IVF
-- Default `IVF_RQ` (RaBitQ) or `IVF_PQ` with full-vector refine; `IVF_HNSW_SQ` for high-recall collections.
+- Default `IVF_PQ` (`VectorIndexSpec::Auto`; no index for Manhattan distance) with full-vector refine, or `IVF_RQ` (RaBitQ); `IVF_HNSW_SQ` for high-recall collections.
 - Cold path touches: centroids (cached H0) → selected partitions (range GETs) → refine vectors (range GETs) ⇒ ~3 round trips.
-- Freshness: tail brute-force until the incremental index step; re-clustering in background. SPFresh-style incremental split/merge of partitions is a Phase C research item (reference: SPFresh paper, turbopuffer design; no production Rust implementation exists).
+- Freshness: tail brute-force until the incremental index step, then delta segments over unindexed fragments, full rebuild past `index_max_segments` (not `optimize_indices`, which commits to Lance's mainline; M1.1 Ruling 3). Each build is a worker task committed as a detached `CreateIndex` and a manifest CAS that rebases onto concurrent link-apply commits (R9); a first index waits for 256 rows with the vector (PQ training minimum). Re-clustering in background. SPFresh-style incremental split/merge of partitions is a Phase C research item (reference: SPFresh paper, turbopuffer design; no production Rust implementation exists).
 
 ### 5.2 Hot: Qdrant-derived HNSW
 - Fork of Qdrant's `lib/segment` components (Apache-2.0): HNSW graph construction/search, **payload-aware (filterable) links**, scalar/product/binary quantization, and the payload-filter planner. Evaluate `qdrant-edge` (0.8) as the packaging boundary before forking deeper.
-- Built by workers from a manifest version, published as a hot artifact (`hot/hnsw/<version>/`), loaded by owning query nodes into RAM (quantized vectors) + NVMe (full vectors for rescoring).
+- Built by workers from a manifest version, published as a hot artifact (`hot/hnsw/<column>/<source_version:020>-<ulid>/`), loaded by owning query nodes into RAM (quantized vectors) + NVMe (full vectors for rescoring).
 - Incremental updates: new points go into a small appendable in-memory HNSW (Qdrant's appendable-segment model); periodic rebuild/merge into the main artifact; deletes via bitmap.
 - Used when a collection is pinned or auto-promoted; otherwise Lance IVF serves.
 - Larger-than-RAM alternative: **DiskANN** (MIT, Rust) on NVMe — evaluate in Phase C.
@@ -104,7 +107,14 @@ Qdrant's OpenAPI and protobuf definitions are Apache-2.0 and used directly (`ton
 **Conformance:** Qdrant Python/TS/Rust client test suites (subset), LangChain/LlamaIndex Qdrant vector store tests, recall parity vs. reference Qdrant (Recall@10 within 1% at equal latency budget on hot tier).
 
 ## 9. Analyzers and languages
-Tantivy tokenizers (simple, whitespace, n-gram, stemmers), `lindera` (Japanese/Korean), `jieba-rs` (Chinese), ICU-based tokenizer; ES analyzer definitions mapped where equivalent, rejected with a clear error otherwise.
+**M1 analyzer set** (`operon-text`, M1.1 Ruling 25, overview A5), built to match Lucene because the BEIR gate compares rankings with ES:
+- `standard`: UAX #29 word segmentation + lowercase, no stop words, tokens over 255 chars split at 255 (ES `standard`);
+- `english`: Lucene's `EnglishAnalyzer` chain: standard tokenizer → English possessive filter → lowercase → Lucene's 33 English stop words → Porter stemmer;
+- `simple` (letter tokenizer + lowercase), `whitespace` (case kept), `keyword` (the whole value as one token).
+
+The Porter stemmer is the **original** 1980 Porter algorithm (what Lucene's `PorterStemFilter` implements), ported from Martin Porter's ANSI C reference into `operon-text` and checked against Porter's published 23 531-word vocabulary and output; it is not Porter2 (Snowball `english`, as in `rust-stemmers`).
+
+Later: n-gram and other Tantivy tokenizers, `lindera` (Japanese/Korean), `jieba-rs` (Chinese), ICU-based tokenizer; ES analyzer definitions mapped where equivalent, rejected with a clear error otherwise.
 
 ## 10. Benchmarks and gates
 - Text relevance: BEIR subsets (nDCG@10 parity with Elasticsearch BM25 ± 1 point).

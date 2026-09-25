@@ -17,6 +17,14 @@ impl MetaState {
             .streams
             .get_mut(&stream)
             .ok_or(ApplyError::StreamNotFound(stream))?;
+        // A collection's implicit stream is trimmed only by its collection
+        // (plan M1.1 Ruling 12), never by a retention policy.
+        if stream.name.starts_with('_') {
+            return Err(ApplyError::InvalidArgument(format!(
+                "stream {} belongs to a collection; its retention cannot be set",
+                stream.id
+            )));
+        }
         stream.retention = retention;
         Ok(Reply::RetentionSet)
     }
