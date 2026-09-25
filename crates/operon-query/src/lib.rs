@@ -11,6 +11,7 @@ pub mod hot;
 pub mod ir;
 pub mod json;
 pub mod placement;
+pub mod text;
 pub mod types;
 pub mod validate;
 
