@@ -20,17 +20,25 @@
 //! ([`tantivy_layout`]) and the Tantivy document of a row
 //! ([`to_tantivy_doc`]), with Json fields and sparse vectors.
 //!
+//! Task 9: the collection manifest ([`CollectionManifest`], in the `OPCM`
+//! envelope: [`encode_manifest`], [`decode_manifest`]), the object
+//! [paths](manifest_path), the manifest chain ([`ManifestCache`],
+//! [`live_manifest`], [`retained_chain`]) and the [`CollectionConfig`].
+//!
 //! The collection schema types live in `operon_common::schema`, because the
 //! metastore's commands carry them (plan M1.1 Ruling 6); they are re-exported
 //! here, both as [`schema`] and at the crate root.
 
 mod arrow_schema;
+mod chain;
 mod codec;
 mod config;
 mod doc;
 mod dynamic;
 mod error;
 mod lance;
+mod manifest;
+mod paths;
 mod pk;
 mod resolve;
 mod tantivy_schema;
@@ -50,11 +58,21 @@ pub use arrow_schema::{
     INGEST_OFFSET_COLUMN, INGEST_PARTITION_COLUMN, NewRow, PK_COLUMN, SOURCE_COLUMN, StoredRow,
     arrow_schema, base_arrow_schema, row_from_batch, sparse_column, to_record_batch, vector_column,
 };
+pub use chain::{ManifestCache, live_manifest, retained_chain};
 pub use codec::{CODEC_VERSION, MAX_RECORD_VALUE_BYTES, decode, encode};
-pub use config::LanceConfig;
+pub use config::{CollectionConfig, LanceConfig};
 pub use doc::{DocOp, Document, PatchMode, SparseVector, apply_patch};
 pub use dynamic::{DynamicMappingError, propose_dynamic_fields};
 pub use error::{CodecError, CollectionError, SparseVectorError};
+pub use manifest::{
+    CollectionManifest, CommitKind, HotArtifactRef, MANIFEST_FORMAT_VERSION, MANIFEST_MAGIC,
+    RowLocator, ScalarIndexRef, SplitRef, VectorIndexKind, VectorIndexRef, decode_manifest,
+    encode_manifest,
+};
+pub use paths::{
+    dead_letters_path, delete_bitmap_path, lance_prefix, manifest_path, manifest_version,
+    pk_delta_path, split_path,
+};
 pub use pk::{MAX_STR_PK_BYTES, PrimaryKey, partition_of};
 pub use resolve::{fold, needs_current};
 pub use tantivy_schema::{

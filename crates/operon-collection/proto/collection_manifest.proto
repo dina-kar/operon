@@ -1,0 +1,51 @@
+// The collection manifest (M1 overview §6.4, plan M1.1 Task 9). Stored inside
+// Operon's envelope: "OPCM" | u16 LE format version 1 | this message | crc32c.
+syntax = "proto3";
+package operon.collection.v1;
+
+message CollectionManifest {
+  uint64 version = 1;
+  uint64 parent_version = 2;             // 0 for version 1
+  uint64 collection_id = 3;
+  uint64 schema_version = 4;             // collection schema version the newest split was written with
+  uint64 created_at_ms = 5;              // writer's metastore-client clock when the commit started
+  uint64 lance_version = 6;              // detached Lance version id (bit 63 set), or 1, or 0 = no dataset yet
+  repeated SplitRef splits = 7;
+  repeated VectorIndexRef vector_indexes = 8;
+  repeated HotArtifactRef hot_artifacts = 9;   // written by M1.3; empty before
+  map<uint32, uint64> applied = 10;      // partition -> next offset to apply
+  uint64 live_doc_count = 11;
+  string parent_manifest = 12;           // full object path of the parent manifest; "" for version 1
+  CommitKind kind = 13;
+  string pk_delta = 14;                  // path of this commit's PK delta; "" when none
+  string dead_letters = 15;              // path of this commit's dead letters; "" when none
+  uint64 dead_letters_total = 16;        // cumulative
+  uint64 skipped_offsets_total = 17;     // cumulative offsets trimmed before they could be applied
+  repeated ScalarIndexRef scalar_indexes = 18;
+}
+enum CommitKind { COMMIT_KIND_UNSPECIFIED = 0; COMMIT_KIND_LINK_APPLY = 1; COMMIT_KIND_INDEX_BUILD = 2; COMMIT_KIND_MAINTENANCE = 3; }
+message SplitRef {
+  bytes ulid = 1;                        // 16 bytes, u128 BE
+  uint64 doc_count = 2;
+  uint64 deleted_count = 3;
+  uint64 size_bytes = 4;
+  uint64 footer_start = 5;               // footer_range = [footer_start, footer_end)
+  uint64 footer_end = 6;
+  repeated RowIdRange row_id_ranges = 7; // sorted, disjoint, maximal runs in doc-id order (Ruling 8)
+  string delete_bitmap = 8;              // path; "" when no doc is deleted
+  uint64 schema_version = 9;             // collection schema version the split was written with
+  uint64 created_at_ms = 10;
+  uint32 merge_ops = 11;                 // 0 for a split written by link apply (M1.3 merges increment)
+}
+message RowIdRange { uint64 start = 1; uint64 end = 2; }   // [start, end)
+message VectorIndexRef {
+  string column = 1;                     // "_vector_<i>"
+  string lance_index_uuid = 2;           // one segment
+  uint64 indexed_row_ids_upto = 3;       // the dataset's next_row_id when the segment was built
+  string index_name = 4;                 // "vec_<i>"
+  string vector = 5;                     // VectorSpec.name
+  VectorIndexKind kind = 6;
+}
+enum VectorIndexKind { VECTOR_INDEX_KIND_UNSPECIFIED = 0; VECTOR_INDEX_KIND_IVF_PQ = 1; VECTOR_INDEX_KIND_IVF_RQ = 2; VECTOR_INDEX_KIND_IVF_HNSW_SQ = 3; }
+message ScalarIndexRef { string column = 1; string lance_index_uuid = 2; uint64 indexed_row_ids_upto = 3; string index_name = 4; }
+message HotArtifactRef { string kind = 1; string column = 2; string prefix = 3; uint64 source_version = 4; }

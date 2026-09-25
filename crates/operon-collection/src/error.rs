@@ -1,5 +1,7 @@
 use operon_meta::MetaError;
+use operon_quickwit::storage::StorageErrorKind;
 use operon_store::StoreError;
+use operon_text::TextError;
 
 /// Why a record could not be encoded or decoded (overview §6.2). At apply
 /// time every decode error dead-letters the record (plan M1.1 Ruling 11).
@@ -45,6 +47,12 @@ pub enum CollectionError {
     Corrupt(String),
     #[error("not found: {0}")]
     NotFound(String),
+    /// A pinned read of a manifest version that is no longer retained
+    /// (Ruling 12).
+    #[error("collection manifest version {0} is no longer retained")]
+    ManifestGone(u64),
+    #[error("text: {0}")]
+    Text(#[from] TextError),
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -58,7 +66,8 @@ impl CollectionError {
     ///   (`DatasetAlreadyExists`), like the store's `AlreadyExists`; a commit
     ///   whose outcome Lance could not verify, too much write contention, or a
     ///   timeout. Retrying an ambiguous detached commit is always safe: if the
-    ///   first attempt landed, it is an orphan no manifest references (R7).
+    ///   first attempt landed, it is an orphan no manifest references (R7);
+    /// - a split or bitmap read that failed with an I/O error.
     pub fn is_retryable(&self) -> bool {
         match self {
             CollectionError::Store(err) => err.is_retryable(),
@@ -76,8 +85,11 @@ impl CollectionError {
                             | lance::Error::Timeout { .. }
                     )
             }
-            CollectionError::Corrupt(_)
+            CollectionError::Text(TextError::Storage(err)) => err.kind() == StorageErrorKind::Io,
+            CollectionError::Text(_)
+            | CollectionError::Corrupt(_)
             | CollectionError::NotFound(_)
+            | CollectionError::ManifestGone(_)
             | CollectionError::Internal(_) => false,
         }
     }
