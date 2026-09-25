@@ -650,6 +650,62 @@ async fn a_stale_parent_never_rolls_the_pk_index_back() {
     f.shutdown().await;
 }
 
+/// Ruling P34: a watermark at a version the parent's chain has, whose
+/// offsets match no manifest of it, is not a stale parent (the version check
+/// catches those) but unexpected history: the index is rebuilt, and the
+/// commit succeeds instead of conflicting forever.
+#[tokio::test]
+async fn an_unmatched_watermark_is_rebuilt_not_a_conflict() {
+    let f = TargetFixture::start(tagged(), 3).await;
+    f.write((0..6).map(|n| upsert(n, json!({ "n": n }))).collect())
+        .await;
+    f.apply_all(&f.source(f.factory()), "w1").await;
+    f.write((0..3).map(|n| upsert(n, json!({ "n": n + 10 }))).collect())
+        .await;
+    f.apply_all(&f.source(f.factory()), "w1").await;
+    assert_eq!(f.manifest().await.version, 2);
+    // Version 1, but offsets no manifest has, plus a key no row has.
+    let bogus = PkWatermark {
+        manifest_version: 1,
+        applied: [(0, 12_345)].into(),
+    };
+    let index = PkIndex::open(
+        &f.store,
+        &collection_pk_prefix(f.ns, f.cid),
+        PkIndexConfig::default(),
+    )
+    .await
+    .unwrap();
+    index
+        .write(vec![
+            (
+                bytes::Bytes::from_static(operon_collection::PK_WATERMARK_KEY),
+                Some(bogus.encode()),
+            ),
+            (
+                bytes::Bytes::from(key(77).canonical()),
+                Some(bytes::Bytes::copy_from_slice(&operon_collection::pk_value(
+                    9_999,
+                ))),
+            ),
+        ])
+        .await
+        .unwrap();
+    index.close().await.unwrap();
+
+    let target = f.factory().open(&f.meta.client, &f.link().await).unwrap();
+    f.write((0..8).map(|n| upsert(n, json!({ "n": n + 20 }))).collect())
+        .await;
+    let state = target.load().await.unwrap();
+    let batch = f.batch_after(&state).await;
+    let fence = f.fence("w2").await;
+    let result = target.commit(state.version, batch, &fence).await;
+    assert!(matches!(result, Ok(3)), "{result:?}");
+    assert_eq!(f.pk_watermark().await.applied, f.manifest().await.applied);
+    assert_verified(f.verify().await);
+    f.shutdown().await;
+}
+
 /// One random op over keys 0..12.
 #[derive(Clone, Debug)]
 enum RandomOp {

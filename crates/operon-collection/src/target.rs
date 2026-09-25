@@ -634,7 +634,8 @@ impl CollectionTarget {
     }
 
     /// Brings a fresh handle's index to `parent` (rule 5), unless the index
-    /// is ahead of `parent` (written by a commit `parent` does not know).
+    /// is ahead of `parent`: its watermark's version is newer, so it was
+    /// written by a commit `parent` does not know.
     async fn repair(
         &self,
         index: &PkIndex,
@@ -674,12 +675,13 @@ impl CollectionTarget {
                     "repaired the pk index from pk deltas"
                 );
             }
-            Replay::Gone => {
+            // A manifest or PK delta is gone, or no manifest of the chain
+            // matches the index although its version is not ahead of
+            // `parent` (unexpected history, ruling P34; a stale parent is
+            // caught by the version check above): rebuild from Lance.
+            Replay::Gone | Replay::Unmatched => {
                 self.rebuild(index, cid, parent, &target).await?;
             }
-            // No manifest of the chain matches the index: it reflects a
-            // commit `parent` does not know.
-            Replay::Unmatched => return Ok(Repaired::StaleParent(current)),
         }
         Ok(Repaired::To(target))
     }
