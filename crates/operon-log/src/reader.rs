@@ -1,6 +1,7 @@
 //! The fetch path (design §02 §6): offset index → range reads through the
 //! range cache, with long-poll at the high watermark.
 
+use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -17,6 +18,13 @@ use crate::segment::{self, SegmentFooter, TRAILER_LEN};
 /// How many segment footers a reader keeps. Segments are immutable, so a
 /// cached footer never goes stale.
 const FOOTER_CACHE_ENTRIES: u64 = 10_000;
+/// How many WAL chunks' batch boundaries a reader keeps (plan M1.2 Task 3
+/// rule 11). WAL chunks are immutable, so an entry never goes stale.
+const CHUNK_BATCHES_ENTRIES: u64 = 100_000;
+
+/// A WAL chunk's batches: each batch's base offset and its bytes within the
+/// object, in offset order.
+type ChunkBatches = Arc<Vec<(u64, Range<u64>)>>;
 
 /// A fetch of one partition from `offset`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +67,9 @@ pub struct LogReader {
     meta: Arc<dyn MetaStore>,
     cache: RangeCache,
     footers: moka::future::Cache<String, Arc<SegmentFooter>>,
+    /// Batch boundaries by (object path, start of the chunk within it),
+    /// learned whenever a whole chunk is read.
+    chunk_batches: moka::future::Cache<(String, u64), ChunkBatches>,
 }
 
 impl std::fmt::Debug for LogReader {
@@ -131,6 +142,7 @@ impl LogReader {
             meta: meta.into(),
             cache,
             footers: moka::future::Cache::new(FOOTER_CACHE_ENTRIES),
+            chunk_batches: moka::future::Cache::new(CHUNK_BATCHES_ENTRIES),
         }
     }
 
@@ -284,23 +296,76 @@ impl LogReader {
 
     /// Reads a WAL chunk: its batches, back to back, starting at the entry's
     /// base offset.
+    ///
+    /// When the chunk's batch boundaries are known and the fetch starts past
+    /// the chunk's first record, only `[start of the batch holding the fetch
+    /// offset, chunk end)` is read (M0 known limitation; a tail fetches
+    /// sequentially, so after its first fetch every fetch starts at a batch
+    /// it has seen). A whole-chunk read records the boundaries.
     async fn read_wal(&self, entry: &IndexEntry, gather: &mut Gather) -> Result<(), LogError> {
+        let key = (entry.object.clone(), entry.byte_range.start);
+        let known = self.chunk_batches.get(&key).await;
+        let (start, mut base) = match &known {
+            Some(batches) if gather.offset > entry.base_offset => {
+                let holding = batches
+                    .partition_point(|(base, _)| *base <= gather.offset)
+                    .saturating_sub(1);
+                match batches.get(holding) {
+                    Some((base, range)) => (range.start, *base),
+                    None => (entry.byte_range.start, entry.base_offset),
+                }
+            }
+            _ => (entry.byte_range.start, entry.base_offset),
+        };
         let bytes = self
             .cache
-            .read(&entry.object, entry.byte_range.clone())
+            .read(&entry.object, start..entry.byte_range.end)
             .await
             .map_err(cache_error)?;
-        let mut base = entry.base_offset;
-        for batch in batch::batches(&bytes) {
+        // Learn the boundaries only from a whole chunk not learned yet.
+        let mut learned = (known.is_none() && start == entry.byte_range.start).then(Vec::new);
+        let mut at = start;
+        let mut batches = batch::batches(&bytes);
+        let mut stopped = false;
+        for batch in batches.by_ref() {
             let batch = batch?;
+            let len = batch.bytes.len();
             let end = base + u64::from(batch.record_count);
-            if end > gather.offset {
-                if !gather.fits(batch.bytes.len()) {
-                    return Ok(());
-                }
-                gather.add(&batch, base)?;
+            if let Some(learned) = learned.as_mut() {
+                learned.push((base, at..at + len as u64));
             }
+            let (batch_base, batch_end) = (base, end);
             base = end;
+            at += len as u64;
+            if batch_end > gather.offset {
+                if !gather.fits(len) {
+                    stopped = true;
+                    break;
+                }
+                gather.add(&batch, batch_base)?;
+            }
+        }
+        if stopped {
+            // The rest of the chunk is walked only to learn its boundaries;
+            // a batch there that does not parse is left to the fetch that
+            // reaches it.
+            if let Some(mut boundaries) = learned.take() {
+                let mut whole = true;
+                for batch in batches {
+                    let Ok(batch) = batch else {
+                        whole = false;
+                        break;
+                    };
+                    let len = batch.bytes.len() as u64;
+                    boundaries.push((base, at..at + len));
+                    base += u64::from(batch.record_count);
+                    at += len;
+                }
+                if whole && base == entry.end_offset() {
+                    self.chunk_batches.insert(key, Arc::new(boundaries)).await;
+                }
+            }
+            return Ok(());
         }
         if base != entry.end_offset() {
             return Err(corrupt(format!(
@@ -308,6 +373,9 @@ impl LogReader {
                 entry.object,
                 entry.end_offset()
             )));
+        }
+        if let Some(boundaries) = learned {
+            self.chunk_batches.insert(key, Arc::new(boundaries)).await;
         }
         Ok(())
     }

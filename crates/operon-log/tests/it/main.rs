@@ -3,6 +3,7 @@ mod common;
 mod append_many;
 mod batch;
 mod e2e;
+mod fetch_ranges;
 mod gc;
 mod reader;
 mod retention;
