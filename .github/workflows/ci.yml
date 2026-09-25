@@ -29,14 +29,14 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: metastore boundary
         run: |
-          for c in operon-worker operon-log operon-link operon-collection; do
+          for c in operon-worker operon-log operon-link operon-collection operon-query; do
             if cargo tree -p "$c" -e normal --prefix none --locked | grep -q '^operon-meta v'; then
               echo "$c depends on operon-meta outside dev-dependencies (D47)"; exit 1
             fi
           done
           deps=$(cargo tree -p operon-common -e normal --depth 1 --prefix none --locked | tail -n +2 | awk '{print $1}' | sort -u | tr '\n' ' ')
           test "$deps" = "async-trait serde thiserror tracing " || { echo "operon-common dependencies changed: $deps"; exit 1; }
-          if grep -rnwE 'MetaClient|MetaNode|MetaState|PartitionState' crates/operon-worker/src crates/operon-log/src crates/operon-link/src crates/operon-collection/src crates/operon/src/api.rs; then
+          if grep -rnwE 'MetaClient|MetaNode|MetaState|PartitionState' crates/operon-worker/src crates/operon-log/src crates/operon-link/src crates/operon-collection/src crates/operon-query/src crates/operon/src/api.rs; then
             echo "downstream source names an openraft type (D47)"; exit 1
           fi
       - name: test

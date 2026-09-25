@@ -4592,6 +4592,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "operon-query"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "http",
+ "operon-collection",
+ "operon-common",
+ "proptest",
+ "roaring",
+ "serde",
+ "serde_json",
+ "tantivy",
+ "thiserror 2.0.20",
+ "time",
+ "tokio",
+ "tower",
+ "ulid 3.0.0",
+]
+
+[[package]]
 name = "operon-quickwit"
 version = "0.0.1"
 dependencies = [

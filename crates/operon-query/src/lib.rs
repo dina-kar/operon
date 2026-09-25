@@ -1,0 +1,28 @@
+//! `operon-query`: the read side of collections and the one facade every
+//! gateway uses (plan M1.2).
+//!
+//! This crate holds the search IR of overview §6.6 with its exact JSON form
+//! ([`ir`], [`json`]), the service types and errors ([`types`], [`error`]),
+//! schema-free request validation ([`validate`]) and the hot-tier hooks
+//! ([`hot`]).
+
+pub mod error;
+pub mod hot;
+pub mod ir;
+pub mod json;
+pub mod types;
+pub mod validate;
+
+pub use error::{NOT_FOUND_KINDS, ServiceError};
+pub use ir::{
+    AnnParams, BoolOperator, FieldValue, Fusion, Fuzziness, GroupBy, Highlight, HighlightField,
+    Hit, HitGroup, MissingOrder, MultiMatchKind, Query, ReadConsistency, Retriever, SearchRequest,
+    SearchResponse, SortKey, SortOrder, SortValue, SparseParams, SparseVector, TotalHits,
+    TotalRelation, TrackTotalHits,
+};
+pub use json::alias_actions_from_json;
+pub use types::{
+    AliasAction, CollectionInfo, ManifestInfo, OpPosition, OpResult, PinnedRead, Projection,
+    SourceFilter, StoredDoc, WriteOptions, WriteResult,
+};
+pub use validate::{SearchLimits, validate_request};
