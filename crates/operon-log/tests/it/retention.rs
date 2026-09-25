@@ -1,12 +1,10 @@
 //! Retention by age and by size, and WAL-commit pruning.
 
-mod common;
-
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::common::{Meta, fast_config, records, segment_now};
 use bytes::Bytes;
-use common::{Meta, fast_config, records, segment_now};
 use operon_common::StreamId;
 use operon_log::{LogWriter, Record, Retention, RetentionConfig, RetentionReport, RetentionSource};
 use operon_meta::{Consistency, ManualClock, MetaClientConfig, WAL_COMMIT_WINDOW_MS};
@@ -302,7 +300,7 @@ async fn a_worker_runs_retention_until_stopped() {
         interval: Duration::from_millis(20),
     })));
     let worker = worker.start();
-    common::eventually("the task trims", || async { f.log_start().await == 2 }).await;
+    crate::common::eventually("the task trims", || async { f.log_start().await == 2 }).await;
     worker.stop().await;
     f.shutdown().await;
 }

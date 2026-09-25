@@ -1,13 +1,11 @@
 //! The fetch path with long-poll.
 
-mod common;
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use common::{Meta, fast_config, records, segment_now, small_cache, value};
+use crate::common::{Meta, fast_config, records, segment_now, small_cache, value};
 use operon_common::{NamespaceId, StreamId};
 use operon_log::{FetchRequest, FetchResponse, LogConfig, LogError, LogReader, LogWriter};
 use operon_meta::{Consistency, EntryKind};

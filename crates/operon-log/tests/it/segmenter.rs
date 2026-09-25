@@ -1,12 +1,10 @@
 //! The segmenter, and a differential test of the whole log against a model.
 
-mod common;
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{Meta, PausingStore, fast_config, records, small_cache, value};
+use crate::common::{Meta, PausingStore, fast_config, records, small_cache, value};
 use operon_common::StreamId;
 use operon_log::{
     FetchRequest, LogError, LogReader, LogWriter, Segmenter, SegmenterConfig, SegmenterReport,

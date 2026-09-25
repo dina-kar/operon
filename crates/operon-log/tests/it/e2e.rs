@@ -3,15 +3,13 @@
 //! acknowledged append must be readable at its acknowledged offset, offsets
 //! must be dense, and no record may appear twice.
 
-mod common;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::common::{Meta, WAIT, small_cache};
 use bytes::Bytes;
-use common::{Meta, WAIT, small_cache};
 use operon_common::StreamId;
 use operon_log::{
     FetchRequest, LogConfig, LogError, LogReader, LogWriter, Record, Retention, RetentionConfig,
@@ -240,7 +238,7 @@ impl Cluster {
             .await
             .expect("linearizable read");
         for node in &self.nodes {
-            common::eventually("a node to catch up", || async {
+            crate::common::eventually("a node to catch up", || async {
                 let local: Vec<(u64, u64)> = node
                     .read(Consistency::Local, |s| {
                         (0..PARTITIONS)
@@ -374,7 +372,7 @@ async fn acknowledged_appends_survive_a_meta_leader_failover() {
         .await
         .unwrap();
     for node in &cluster.nodes {
-        common::eventually("the stream to replicate", || async {
+        crate::common::eventually("the stream to replicate", || async {
             node.read(Consistency::Local, |s| s.stream(stream).is_some())
                 .await
                 .unwrap()
@@ -409,14 +407,14 @@ async fn acknowledged_appends_survive_a_meta_leader_failover() {
     appenders.extend(spawn_appenders("b", &writer_b, stream, 4, 30, &acks));
 
     // Mid-run: cut the leader off, keep writing through the new one, heal.
-    common::eventually("some appends", || async {
+    crate::common::eventually("some appends", || async {
         acks.load(Ordering::SeqCst) >= 30
     })
     .await;
     let old = cluster.leader().await;
     cluster.router.isolate(old);
     let before = acks.load(Ordering::SeqCst);
-    common::eventually("progress without the old leader", || async {
+    crate::common::eventually("progress without the old leader", || async {
         acks.load(Ordering::SeqCst) >= before + 30
     })
     .await;

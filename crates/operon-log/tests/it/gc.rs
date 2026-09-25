@@ -1,12 +1,10 @@
 //! Garbage collection of retired and orphaned log objects.
 
-mod common;
-
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::common::{Meta, fast_config, faulty_store, read_direct, records, segment_now};
 use bytes::Bytes;
-use common::{Meta, fast_config, faulty_store, read_direct, records, segment_now};
 use operon_log::LogWriter;
 use operon_log::gc::{GcConfig, GcReport, GcSource};
 use operon_meta::{Clock, Consistency, ManualClock, MetaClientConfig, SystemClock};

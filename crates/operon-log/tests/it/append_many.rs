@@ -1,12 +1,10 @@
 //! `LogWriter::append_many`: one request, one WAL object, one commit.
 
-mod common;
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{Meta, PausingStore, faulty_store, read_direct, records, value};
+use crate::common::{Meta, PausingStore, faulty_store, read_direct, records, value};
 use operon_common::StreamId;
 use operon_log::{AppendAck, LogConfig, LogError, LogWriter, Record};
 use operon_meta::{Consistency, EntryKind, IndexEntry, MetaClient, MetaClientConfig};
@@ -65,7 +63,7 @@ async fn append_many_places_every_partition_in_one_wal_object_and_one_commit() {
             let writer = writer.clone();
             tokio::spawn(async move { writer.append_many(stream, request).await })
         };
-        common::eventually("the request is buffered", || async {
+        crate::common::eventually("the request is buffered", || async {
             writer.buffered_appends() == 3
         })
         .await;
@@ -116,8 +114,12 @@ async fn append_many_is_all_or_nothing_under_a_failed_put() {
     let meta = Meta::start().await;
     let (_, stream) = meta.stream("acme", "events", 3).await;
     let (faulty, store) = faulty_store();
-    let writer =
-        LogWriter::start(meta.client.clone(), store.clone(), common::fast_config()).expect("start");
+    let writer = LogWriter::start(
+        meta.client.clone(),
+        store.clone(),
+        crate::common::fast_config(),
+    )
+    .expect("start");
     writer
         .append_many(stream, batches("before", &[0, 1, 2], 2))
         .await
@@ -156,8 +158,12 @@ async fn append_many_with_a_lost_commit_ack_commits_once() {
     let meta = Meta::start_with(Arc::new(operon_meta::SystemClock), no_retry).await;
     let (_, stream) = meta.stream("acme", "events", 3).await;
     let store = Store::in_memory();
-    let writer =
-        LogWriter::start(meta.client.clone(), store.clone(), common::fast_config()).expect("start");
+    let writer = LogWriter::start(
+        meta.client.clone(),
+        store.clone(),
+        crate::common::fast_config(),
+    )
+    .expect("start");
     writer
         .append_many(stream, batches("before", &[0, 1, 2], 2))
         .await
@@ -289,7 +295,7 @@ async fn append_many_refuses_requests_beyond_the_limits() {
         let writer = writer.clone();
         tokio::spawn(async move { writer.append_many(stream, batches("x", &[0], 5)).await })
     };
-    common::eventually("the first request is buffered", || async {
+    crate::common::eventually("the first request is buffered", || async {
         writer.buffered_appends() == 1
     })
     .await;
@@ -481,8 +487,12 @@ async fn crash_during_wal_put(after_apply: bool) -> bool {
     } else {
         gate.arm("wal/");
     }
-    let writer =
-        LogWriter::start(meta.client.clone(), store.clone(), common::fast_config()).expect("start");
+    let writer = LogWriter::start(
+        meta.client.clone(),
+        store.clone(),
+        crate::common::fast_config(),
+    )
+    .expect("start");
     let request = {
         let writer = writer.clone();
         tokio::spawn(async move {
@@ -501,8 +511,12 @@ async fn crash_during_wal_put(after_apply: bool) -> bool {
     drop(writer);
 
     let orphan = store.head(&held).await.is_ok();
-    let restarted =
-        LogWriter::start(meta.client.clone(), store.clone(), common::fast_config()).expect("start");
+    let restarted = LogWriter::start(
+        meta.client.clone(),
+        store.clone(),
+        crate::common::fast_config(),
+    )
+    .expect("start");
     let committed = {
         let held = held.clone();
         meta.client

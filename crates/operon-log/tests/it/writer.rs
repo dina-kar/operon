@@ -1,12 +1,10 @@
 //! The leaderless `standard` write path.
 
-mod common;
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::{Meta, fast_config, faulty_store, read_direct, records, value};
+use crate::common::{Meta, fast_config, faulty_store, read_direct, records, value};
 use operon_common::StreamId;
 use operon_log::{LogConfig, LogError, LogWriter, Record};
 use operon_meta::{
@@ -100,7 +98,7 @@ async fn one_flush_writes_one_object_for_many_streams_and_partitions() {
         }));
     }
     // Wait until every append is buffered, then flush once.
-    common::eventually("appends buffered", || async {
+    crate::common::eventually("appends buffered", || async {
         writer.buffered_appends() == 5
     })
     .await;
@@ -254,7 +252,7 @@ async fn appends_beyond_the_buffer_limit_are_refused() {
         let writer = writer.clone();
         tokio::spawn(async move { writer.append(stream, 0, records("x", 20)).await })
     };
-    common::eventually("the first append is buffered", || async {
+    crate::common::eventually("the first append is buffered", || async {
         writer.buffered_appends() == 1
     })
     .await;
@@ -274,7 +272,7 @@ async fn appends_beyond_the_buffer_limit_are_refused() {
     // With the buffer drained, appends are accepted again.
     let writer2 = writer.clone();
     let next = tokio::spawn(async move { writer2.append(stream, 0, records("y", 20)).await });
-    common::eventually("the next append is buffered", || async {
+    crate::common::eventually("the next append is buffered", || async {
         writer.buffered_appends() == 1
     })
     .await;
@@ -302,7 +300,7 @@ async fn shutdown_flushes_buffered_appends_and_then_refuses_new_ones() {
             writer.append(stream, 0, records(&format!("s{i}"), 2)).await
         }));
     }
-    common::eventually("appends buffered", || async {
+    crate::common::eventually("appends buffered", || async {
         writer.buffered_appends() == 3
     })
     .await;
@@ -420,7 +418,7 @@ async fn a_stale_rejection_of_a_retried_commit_is_commit_unknown() {
         tokio::spawn(async move { writer.append(stream, 0, records("x", 3)).await })
     };
     // The first attempt is applied; the client now backs off for 2 s.
-    common::eventually("the first attempt to apply", || async {
+    crate::common::eventually("the first attempt to apply", || async {
         meta.high_watermark(stream, 0).await == 3
     })
     .await;
@@ -493,12 +491,12 @@ async fn shutdown_reports_the_error_of_the_flush_in_flight() {
         let writer = writer.clone();
         tokio::spawn(async move { writer.append(stream, 0, records("x", 1)).await })
     };
-    common::eventually("the append to be buffered", || async {
+    crate::common::eventually("the append to be buffered", || async {
         writer.buffered_appends() == 1
     })
     .await;
     // The flush takes it; its commit then fails for 2 s.
-    common::eventually("the flush to start", || async {
+    crate::common::eventually("the flush to start", || async {
         writer.buffered_appends() == 0
     })
     .await;
