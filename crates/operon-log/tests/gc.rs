@@ -462,17 +462,11 @@ impl operon_log::gc::GcRoots for TestRoots {
         _store: &Store,
         _namespace: operon_common::NamespaceId,
         _keep_manifests: usize,
-    ) -> Result<std::collections::BTreeSet<String>, operon_log::LogError> {
-        Ok(std::collections::BTreeSet::new())
-    }
-
-    async fn kept_prefixes(
-        &self,
-        _meta: &operon_meta::MetaClient,
-        _store: &Store,
-        _namespace: operon_common::NamespaceId,
-    ) -> Result<Vec<String>, operon_log::LogError> {
-        Ok(self.kept.clone())
+    ) -> Result<operon_log::gc::GcKeep, operon_log::LogError> {
+        Ok(operon_log::gc::GcKeep {
+            objects: std::collections::BTreeSet::new(),
+            prefixes: self.kept.clone(),
+        })
     }
 
     fn object_time_ms(&self, info: &operon_store::ObjectInfo) -> u64 {

@@ -27,7 +27,7 @@ use operon_collection::{
 };
 use operon_common::StreamId;
 use operon_link::LinkApplySource;
-use operon_log::gc::{GcConfig, GcReport, GcSource};
+use operon_log::gc::{GcConfig, GcReport, GcRoots, GcSource};
 use operon_meta::{
     Clock, Consistency, Fence, ManualClock, SystemClock, collection_pk_prefix, collection_prefix,
 };
@@ -659,6 +659,22 @@ async fn an_unreadable_collection_is_kept_whole() {
         !env.exists(&good_orphan).await,
         "the readable collection was not collected"
     );
+    // Review P38: the keep is the answer of one call, so overlapping runs
+    // on one roots instance each see the unreadable collection.
+    let roots = CollectionGcRoots::new(env.f.ctx.clone());
+    let (store, ns) = (&env.f.store, env.f.ns);
+    let (a, b) = tokio::join!(
+        roots.reachable(client, store, ns, 0),
+        roots.reachable(client, store, ns, 0)
+    );
+    for keep in [a.expect("first pass"), b.expect("second pass")] {
+        assert!(keep.prefixes.contains(&bad_prefix), "{:?}", keep.prefixes);
+        assert!(
+            !keep.prefixes.contains(&env.prefix()),
+            "{:?}",
+            keep.prefixes
+        );
+    }
     env.verify().await;
     env.shutdown().await;
 }

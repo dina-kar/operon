@@ -28,8 +28,7 @@
 //!
 //! [`CollectionSnapshot::open_version`]: crate::CollectionSnapshot::open_version
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::collections::BTreeSet;
 
 use async_trait::async_trait;
 use lance_table::format::{Fragment, RowDatasetVersionMeta, RowIdMeta};
@@ -37,7 +36,7 @@ use lance_table::io::deletion::relative_deletion_file_path;
 use lance_table::io::manifest::read_manifest_indexes;
 use operon_common::{CollectionId, NamespaceId};
 use operon_log::LogError;
-use operon_log::gc::{GcRoots, object_time_ms};
+use operon_log::gc::{GcKeep, GcRoots, object_time_ms};
 use operon_meta::{
     Consistency, MetaClient, MetaState, Pointer, collection_pk_prefix, collection_pointer_key,
     collection_prefix,
@@ -58,56 +57,54 @@ use crate::snapshot::CollectionContext;
 #[derive(Clone, Debug)]
 pub struct CollectionGcRoots {
     ctx: CollectionContext,
-    /// Per namespace, the prefixes of the collections the last `reachable`
-    /// call could not read; the next `kept_prefixes` call keeps them.
-    unreadable: Arc<Mutex<BTreeMap<NamespaceId, Vec<String>>>>,
 }
 
 impl CollectionGcRoots {
     pub fn new(ctx: CollectionContext) -> Self {
-        Self {
-            ctx,
-            unreadable: Arc::default(),
-        }
+        Self { ctx }
     }
 
-    /// Every collection's objects to keep. A collection whose objects cannot
-    /// be read is kept whole (its prefix goes to the next `kept_prefixes`),
-    /// so one bad collection does not stop GC of the others.
-    async fn reachable_objects(
+    /// Every collection's objects to keep, and the prefixes to keep whole:
+    /// the retired prefixes of dropped collections (GC's pass 1 deletes them
+    /// once their grace is over), and the prefix of every collection whose
+    /// objects cannot be read, so one bad collection does not stop GC of the
+    /// others. Collections, pointers, the clock and the retired prefixes
+    /// come from one `Linearizable` read. Nothing is carried between calls.
+    async fn keep(
         &self,
         meta: &MetaClient,
         store: &Store,
         ns: NamespaceId,
-    ) -> Result<BTreeSet<String>, CollectionError> {
-        let (collections, clock_ms): (Vec<(CollectionId, Option<Pointer>)>, u64) = meta
+    ) -> Result<GcKeep, CollectionError> {
+        type Seen = (Vec<(CollectionId, Option<Pointer>)>, u64, Vec<String>);
+        let under = format!("ns/{ns}/collections/");
+        let (collections, clock_ms, retired): Seen = meta
             .read(Consistency::Linearizable, |s| {
                 let collections = s
                     .collections(ns)
                     .map(|c| (c.id, s.pointer(ns, &collection_pointer_key(c.id)).cloned()))
                     .collect();
-                (collections, s.clock_ms())
+                (collections, s.clock_ms(), retired_prefixes(s, &under))
             })
             .await?;
-        let mut keep = BTreeSet::new();
-        let mut unreadable = Vec::new();
+        let mut keep = GcKeep {
+            objects: BTreeSet::new(),
+            prefixes: retired,
+        };
         for (cid, pointer) in collections {
+            let mut objects = BTreeSet::new();
             match self
-                .collection_objects(store, ns, cid, pointer, clock_ms, &mut keep)
+                .collection_objects(store, ns, cid, pointer, clock_ms, &mut objects)
                 .await
             {
-                Ok(()) => {}
+                Ok(()) => keep.objects.extend(objects),
                 Err(err) => {
                     let prefix = collection_prefix(ns, cid);
                     tracing::warn!(%prefix, %err, "gc keeps a collection whose objects it cannot read");
-                    unreadable.push(prefix);
+                    keep.prefixes.push(prefix);
                 }
             }
         }
-        self.unreadable
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(ns, unreadable);
         Ok(keep)
     }
 
@@ -354,42 +351,18 @@ impl GcRoots for CollectionGcRoots {
     }
 
     /// Every collection's retained manifests and what they reference, and
-    /// every Lance file outside the collectable classes, as of one
-    /// `Linearizable` read (collections, pointers and the clock). Any read
-    /// error fails the call, so GC skips the prefix this run.
+    /// every Lance file outside the collectable classes; kept whole, the
+    /// retired prefixes and every collection that cannot be read (see
+    /// [`CollectionGcRoots`]). An error in the metastore read fails the
+    /// call, so GC skips the prefix this run.
     async fn reachable(
         &self,
         meta: &MetaClient,
         store: &Store,
         namespace: NamespaceId,
         _keep_manifests: usize,
-    ) -> Result<BTreeSet<String>, LogError> {
-        self.reachable_objects(meta, store, namespace)
-            .await
-            .map_err(log_error)
-    }
-
-    /// The retired prefixes of dropped collections (GC's pass 1 deletes them
-    /// once their grace is over), and the prefixes of the collections the
-    /// preceding `reachable` call of this run could not read.
-    async fn kept_prefixes(
-        &self,
-        meta: &MetaClient,
-        _store: &Store,
-        namespace: NamespaceId,
-    ) -> Result<Vec<String>, LogError> {
-        let mut kept = self
-            .unreadable
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&namespace)
-            .unwrap_or_default();
-        let under = format!("ns/{namespace}/collections/");
-        kept.extend(
-            meta.read(Consistency::Linearizable, |s| retired_prefixes(s, &under))
-                .await?,
-        );
-        Ok(kept)
+    ) -> Result<GcKeep, LogError> {
+        self.keep(meta, store, namespace).await.map_err(log_error)
     }
 
     /// Lance names carry no ULID, so Lance files are aged by their
@@ -419,22 +392,13 @@ impl GcRoots for PkGcRoots {
 
     async fn reachable(
         &self,
-        _meta: &MetaClient,
-        _store: &Store,
-        _namespace: NamespaceId,
-        _keep_manifests: usize,
-    ) -> Result<BTreeSet<String>, LogError> {
-        Ok(BTreeSet::new())
-    }
-
-    async fn kept_prefixes(
-        &self,
         meta: &MetaClient,
         _store: &Store,
         namespace: NamespaceId,
-    ) -> Result<Vec<String>, LogError> {
+        _keep_manifests: usize,
+    ) -> Result<GcKeep, LogError> {
         let under = format!("ns/{namespace}/pk/");
-        Ok(meta
+        let prefixes = meta
             .read(Consistency::Linearizable, |s| {
                 let mut kept: Vec<String> = s
                     .collections(namespace)
@@ -443,7 +407,11 @@ impl GcRoots for PkGcRoots {
                 kept.extend(retired_prefixes(s, &under));
                 kept
             })
-            .await?)
+            .await?;
+        Ok(GcKeep {
+            objects: BTreeSet::new(),
+            prefixes,
+        })
     }
 }
 

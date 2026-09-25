@@ -138,6 +138,25 @@ impl GcReport {
     }
 }
 
+/// What a [`GcRoots`] keeps under its prefix in one namespace, as of one
+/// [`reachable`](GcRoots::reachable) call.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GcKeep {
+    /// Objects (full paths) that must be kept.
+    pub objects: BTreeSet<String>,
+    /// Prefixes (full paths) under which nothing is deleted this run.
+    pub prefixes: Vec<String>,
+}
+
+impl From<BTreeSet<String>> for GcKeep {
+    fn from(objects: BTreeSet<String>) -> Self {
+        Self {
+            objects,
+            prefixes: Vec::new(),
+        }
+    }
+}
+
 /// Reports which objects under a per-namespace prefix are still reachable,
 /// for objects the log does not track itself (link targets, for example).
 #[async_trait]
@@ -145,28 +164,19 @@ pub trait GcRoots: Send + Sync {
     /// The prefix under `ns/<ns>/` this source owns, such as `links/`.
     fn prefix(&self) -> &str;
 
-    /// Every object under `ns/<namespace>/<prefix>` that must be kept, as of
-    /// now. Objects written after this call are young, so they are safe
-    /// either way. An error makes the run skip this prefix.
+    /// Every object under `ns/<namespace>/<prefix>` that must be kept, and
+    /// every prefix under which nothing may be deleted, as of now, in one
+    /// call: a run filters its listing with exactly what its own call
+    /// returned, so overlapping runs cannot mix up each other's answers.
+    /// Objects written after this call are young, so they are safe either
+    /// way. An error makes the run skip this prefix.
     async fn reachable(
         &self,
         meta: &MetaClient,
         store: &Store,
         namespace: NamespaceId,
         keep_manifests: usize,
-    ) -> Result<BTreeSet<String>, LogError>;
-
-    /// Prefixes (full paths) under which nothing is deleted this run.
-    /// Default: none. Like [`reachable`](Self::reachable), an error makes
-    /// the run skip this root's prefix.
-    async fn kept_prefixes(
-        &self,
-        _meta: &MetaClient,
-        _store: &Store,
-        _namespace: NamespaceId,
-    ) -> Result<Vec<String>, LogError> {
-        Ok(Vec::new())
-    }
+    ) -> Result<GcKeep, LogError>;
 
     /// This root's notion of an object's creation time. Default:
     /// [`object_time_ms`].
@@ -562,15 +572,11 @@ impl GcTask {
                     .read(Consistency::Linearizable, |s| s.clock_ms())
                     .await?;
                 let store = &self.shared.store;
-                let roots = async {
-                    let reachable = root
-                        .reachable(&ctx.meta, store, namespace, config.keep_manifests)
-                        .await?;
-                    let kept = root.kept_prefixes(&ctx.meta, store, namespace).await?;
-                    Ok::<_, LogError>((reachable, kept))
-                };
-                let (reachable, kept) = match roots.await {
-                    Ok(roots) => roots,
+                let keep = match root
+                    .reachable(&ctx.meta, store, namespace, config.keep_manifests)
+                    .await
+                {
+                    Ok(keep) => keep,
                     Err(err) => {
                         tracing::warn!(%prefix, %err, "gc skips a prefix whose roots it cannot read");
                         continue;
@@ -579,8 +585,13 @@ impl GcTask {
                 let listed = store.list(&prefix).await.map_err(store_failed)?;
                 let orphans: Vec<String> = listed
                     .iter()
-                    .filter(|info| !reachable.contains(&info.path))
-                    .filter(|info| !kept.iter().any(|p| info.path.starts_with(p.as_str())))
+                    .filter(|info| !keep.objects.contains(&info.path))
+                    .filter(|info| {
+                        !keep
+                            .prefixes
+                            .iter()
+                            .any(|p| info.path.starts_with(p.as_str()))
+                    })
                     .filter(|info| root.object_time_ms(info).saturating_add(grace) <= now)
                     .map(|info| info.path.clone())
                     .take(config.list_page)

@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use async_trait::async_trait;
 use operon_common::NamespaceId;
 use operon_log::LogError;
-use operon_log::gc::GcRoots;
+use operon_log::gc::{GcKeep, GcRoots};
 use operon_meta::{Consistency, MetaClient};
 use operon_store::Store;
 
@@ -36,7 +36,7 @@ impl GcRoots for LinkGcRoots {
         store: &Store,
         namespace: NamespaceId,
         keep_manifests: usize,
-    ) -> Result<BTreeSet<String>, LogError> {
+    ) -> Result<GcKeep, LogError> {
         type Row = (operon_meta::LinkId, bool, Option<operon_meta::Pointer>);
         let links: Vec<Row> = meta
             .read(Consistency::Linearizable, |s| {
@@ -81,6 +81,6 @@ impl GcRoots for LinkGcRoots {
             );
             reachable.insert(pointer.value);
         }
-        Ok(reachable)
+        Ok(reachable.into())
     }
 }
