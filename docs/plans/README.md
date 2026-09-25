@@ -17,6 +17,26 @@ Design references: [01 Architecture](../design/01-architecture.md), [02 Stream e
 
 **M0 is done.** The exit gates and their results are in the [M0 exit report](m0-exit-report.md).
 
+## Milestone M1: Collections (Elasticsearch + Qdrant)
+
+Design references: [03 Storage formats](../design/03-storage-formats.md) §3, [04 Hot tier](../design/04-hot-tier.md), [05 Query engine](../design/05-query-engine.md), [06 Search & vector](../design/06-search-and-vector.md), [09 Links & workers](../design/09-links-and-workers.md), [12 Roadmap](../design/12-roadmap-testing-risks.md), [15 Agent workspaces](../design/15-agent-workspaces.md) §10.1.
+
+Start with the **[M1 overview](m1-overview.md)**. It fixes the contracts every M1 plan shares: crates, the collection catalog, the record format, the manifest, consistency tokens, the search IR and `CollectionService`, along with rulings R1–R22 and amendments A1–A32 (A26–A32 record the owner decisions of 2026-09-25: Qdrant sparse vectors in M1, the elasticsearch-py wipe endpoints, and the Loam rename after M1). Where a plan and the overview disagree, the overview wins. The [M1 dependency spike](m1-dependency-spike.md) records the dependency set that was verified to build together, including the fact that Lance 12 pins DataFusion 54 and arrow 58.
+
+Only M1.1 is written against code that exists. Each later plan starts with a Task 0 that reconciles it with the as-built code of the plans it depends on.
+
+| Plan | Scope | Depends on | Status |
+|---|---|---|---|
+| [M1.1: Collection storage](2026-09-24-m1.1-collection-storage.md) | Collection catalog, `DocOp` records, atomic multi-partition append, Lance (detached versions) + Tantivy splits under one manifest, upserts/deletes via the PK index, the collection link target, index builds, GC roots, gates | M0 | Planned |
+| [M1.2: Query engine and native API](2026-09-24-m1.2-query-engine.md) | Search IR, DataFusion operators, tail index, strong reads, global BM25 statistics, `CollectionService`, native REST, SQL UDTFs, Flight SQL | M1.1 | Planned |
+| [M1.3: Hot tier, maintenance and affinity routing](2026-09-24-m1.3-hot-tier-routing.md) | Split merges, Lance compaction, qdrant-edge HNSW artifacts, pinned splits, the metastore over the network, node registry, rendezvous routing, the hot on/off differential harness | M1.2 | Planned |
+| [M1.4: Qdrant API Phase A](2026-09-24-m1.4-qdrant-api.md) | REST 6333 + gRPC 6334 over `CollectionService`, sparse vectors included | M1.2 | Planned |
+| [M1.5: Elasticsearch API Phase A](2026-09-24-m1.5-elasticsearch-api.md) | REST 9200: document APIs, `_search` DSL, `knn`, aggregations, PIT, index admin, the elasticsearch-py test-fixture endpoints | M1.2 | Planned |
+| [M1.6: SDKs and MCP server](2026-09-24-m1.6-sdks-mcp.md) | Python and TypeScript SDKs, the W0 MCP server (2026-07-28 stateless spec) | M1.2 | Planned |
+| [M1.7: M1 exit gates](2026-09-24-m1.7-exit-gates.md) | LangChain/LlamaIndex and client suites, BEIR vs ES BM25, Recall@10 vs Qdrant, hot on/off identity at scale, the M1 exit report | M1.3–M1.6 | Planned |
+
+M1.4, M1.5 and M1.6 can run in parallel once M1.2 is merged.
+
 ## Later milestones
 
-Plans for M1 (collections), M2 (graph and the Resonate durable-execution surface), M3 (Kafka and changelog streams), M4 (analytics) and M5 (scale) will be written once M0 is done. Their scope and exit gates are in [12-roadmap-testing-risks.md](../design/12-roadmap-testing-risks.md).
+Plans for M2 (graph and the Resonate durable-execution surface), M3 (Kafka and changelog streams), M4 (analytics) and M5 (scale) will be written once M1 is done. Their scope and exit gates are in [12-roadmap-testing-risks.md](../design/12-roadmap-testing-risks.md).
