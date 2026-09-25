@@ -12,8 +12,9 @@
 //! ([`propose_dynamic_fields`]), and the [`CollectionWriter`].
 //!
 //! Task 7: the Lance integration: the Arrow schema ([`arrow_schema()`],
-//! [`to_record_batch`], [`row_from_batch`]) and [`LanceEnv`] (the Operon
-//! object-store provider, version 1).
+//! [`to_record_batch`], [`row_from_batch`]), [`LanceEnv`] (the Operon
+//! object-store provider, version 1) and [`LanceCommitter`], which commits
+//! every later Lance version detached from the mainline (R7, Ruling 1).
 //!
 //! The collection schema types live in `operon_common::schema`, because the
 //! metastore's commands carry them (plan M1.1 Ruling 6); they are re-exported
@@ -39,7 +40,7 @@ pub use operon_common::schema::{
     SparseVectorSpec, VectorElement, VectorIndexSpec, VectorSpec,
 };
 
-pub use crate::lance::{LANCE_SCHEME, LanceEnv};
+pub use crate::lance::{LANCE_SCHEME, LanceCommitter, LanceEnv};
 pub use arrow_schema::{
     INGEST_OFFSET_COLUMN, INGEST_PARTITION_COLUMN, NewRow, PK_COLUMN, SOURCE_COLUMN, StoredRow,
     arrow_schema, base_arrow_schema, row_from_batch, sparse_column, to_record_batch, vector_column,

@@ -5,33 +5,45 @@
 //! the Operon [`Store`] (so a `FaultyStore` sees all of it), with an explicit
 //! commit handler, file format 2.1, stable row ids and no auto-cleanup.
 //!
-//! A dataset has exactly one mainline version, the empty version 1
-//! ([`LanceEnv::ensure_created`]).
+//! A dataset has exactly one mainline version, the empty version 1. Every
+//! later commit is detached and built from exactly its parent's manifest
+//! ([`LanceCommitter::commit`]); the collection manifest records which
+//! detached version is live.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
+use arrow_array::{Array, BinaryArray, RecordBatch, UInt64Array};
 use arrow_schema::Schema as ArrowSchema;
 use lance::Dataset;
 use lance::dataset::builder::DatasetBuilder;
+use lance::dataset::rowids::get_row_id_index;
 use lance::dataset::transaction::{Operation, Transaction};
-use lance::dataset::{CommitBuilder, WriteMode, WriteParams};
+use lance::dataset::{CommitBuilder, InsertBuilder, ROW_ID, WriteMode, WriteParams};
 use lance::session::Session;
 use lance_file::version::LanceFileVersion;
 use lance_io::object_store::providers::ObjectStoreProvider;
 use lance_io::object_store::{ObjectStore, ObjectStoreParams, ObjectStoreRegistry};
+use lance_table::format::{Fragment, is_detached_version};
 use lance_table::io::commit::{CommitHandler, ConditionalPutCommitHandler};
 use operon_common::{CollectionId, NamespaceId};
 use operon_store::Store;
 use url::Url;
 
-use crate::arrow_schema::base_arrow_schema;
+use crate::arrow_schema::{
+    PK_COLUMN, base_arrow_schema, sparse_column, sparse_field, vector_column, vector_field,
+};
 use crate::config::LanceConfig;
 use crate::error::CollectionError;
+use crate::schema::CollectionSchema;
 
 /// The URL scheme of Operon's Lance object-store provider.
 pub const LANCE_SCHEME: &str = "operon";
+
+/// Retries of a detached commit, which retries only on a collision of its
+/// random version id.
+const DETACHED_COMMIT_RETRIES: u32 = 20;
 
 /// Retries Lance makes of one failed download.
 const DOWNLOAD_RETRIES: usize = 3;
@@ -263,4 +275,180 @@ fn check_version_one(dataset: Dataset) -> Result<Arc<Dataset>, CollectionError> 
         )));
     }
     Ok(Arc::new(dataset))
+}
+
+/// The only way Operon commits to Lance after a dataset's creation (R7).
+#[derive(Debug)]
+pub struct LanceCommitter;
+
+impl LanceCommitter {
+    /// The only Lance commit path after creation: a detached commit of
+    /// `operation` on exactly `parent`.
+    pub async fn commit(
+        env: &LanceEnv,
+        parent: &Arc<Dataset>,
+        operation: Operation,
+    ) -> Result<Arc<Dataset>, CollectionError> {
+        let transaction = Transaction::new(parent.manifest.version, operation, None);
+        let committed = CommitBuilder::new(parent.clone())
+            .with_session(env.session.clone())
+            .with_commit_handler(env.handler.clone())
+            .with_detached(true)
+            .with_skip_auto_cleanup(true)
+            .with_max_retries(DETACHED_COMMIT_RETRIES)
+            .execute(transaction)
+            .await?;
+        if !is_detached_version(committed.manifest.version) {
+            return Err(CollectionError::Internal(format!(
+                "lance committed mainline version {} for a detached commit",
+                committed.manifest.version
+            )));
+        }
+        Ok(Arc::new(committed))
+    }
+
+    /// Adds an all-null column for each dense or sparse vector of `schema`
+    /// that `parent` lacks (one detached Merge), else returns `parent`.
+    pub async fn ensure_vectors(
+        env: &LanceEnv,
+        parent: &Arc<Dataset>,
+        schema: &CollectionSchema,
+    ) -> Result<Arc<Dataset>, CollectionError> {
+        let current = parent.schema();
+        let mut missing: Vec<_> = schema
+            .vectors
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| current.field(&vector_column(*index)).is_none())
+            .map(vector_field)
+            .collect();
+        missing.extend(
+            (0..schema.sparse_vectors.len())
+                .filter(|index| current.field(&sparse_column(*index)).is_none())
+                .map(sparse_field),
+        );
+        if missing.is_empty() {
+            return Ok(parent.clone());
+        }
+        let mut merged = current.merge(&ArrowSchema::new(missing))?;
+        merged.set_field_id(Some(parent.manifest.max_field_id()));
+        let operation = Operation::Merge {
+            fragments: parent.manifest.fragments.to_vec(),
+            schema: merged,
+            preserves_nullability: true,
+        };
+        Self::commit(env, parent, operation).await
+    }
+
+    /// Writes `batch` as new data files; returns the fragments (ids assigned
+    /// at commit).
+    pub async fn write_fragments(
+        env: &LanceEnv,
+        parent: &Arc<Dataset>,
+        batch: RecordBatch,
+    ) -> Result<Vec<Fragment>, CollectionError> {
+        let params = env.write_params();
+        let transaction = InsertBuilder::new(parent.clone())
+            .with_params(&params)
+            .execute_uncommitted(vec![batch])
+            .await?;
+        match transaction.operation {
+            Operation::Append { fragments } => Ok(fragments),
+            other => Err(CollectionError::Internal(format!(
+                "lance staged {} instead of an append",
+                other.name()
+            ))),
+        }
+    }
+
+    /// Deletion files for `row_ids` of `parent`: (updated fragments, removed
+    /// fragment ids). A fragment whose every row is deleted is removed.
+    pub async fn delete_rows(
+        parent: &Arc<Dataset>,
+        row_ids: &[u64],
+    ) -> Result<(Vec<Fragment>, Vec<u64>), CollectionError> {
+        let version = parent.manifest.version;
+        let index = get_row_id_index(parent).await?.ok_or_else(|| {
+            CollectionError::Internal(format!("lance version {version} has no stable row ids"))
+        })?;
+        let mut offsets: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        for &row_id in row_ids {
+            let address = index.get(row_id)?.ok_or_else(|| {
+                CollectionError::Corrupt(format!(
+                    "row id {row_id} is not in lance version {version}"
+                ))
+            })?;
+            offsets
+                .entry(address.fragment_id())
+                .or_default()
+                .push(address.row_offset());
+        }
+        let mut updated = Vec::new();
+        let mut removed = Vec::new();
+        for (fragment_id, offsets) in offsets {
+            let fragment = parent.get_fragment(fragment_id as usize).ok_or_else(|| {
+                CollectionError::Corrupt(format!(
+                    "fragment {fragment_id} is not in lance version {version}"
+                ))
+            })?;
+            match fragment.extend_deletions(offsets).await? {
+                Some(fragment) => updated.push(fragment.metadata().clone()),
+                None => removed.push(u64::from(fragment_id)),
+            }
+        }
+        Ok((updated, removed))
+    }
+
+    /// (canonical pk, row id) of every row in `committed`'s fragments absent
+    /// from `parent`. It joins on the key rather than trusting Lance's write
+    /// order.
+    pub async fn new_row_ids(
+        committed: &Arc<Dataset>,
+        parent: &Arc<Dataset>,
+    ) -> Result<Vec<(Vec<u8>, u64)>, CollectionError> {
+        let old: HashSet<u64> = parent.manifest.fragments.iter().map(|f| f.id).collect();
+        let fragments: Vec<Fragment> = committed
+            .manifest
+            .fragments
+            .iter()
+            .filter(|fragment| !old.contains(&fragment.id))
+            .cloned()
+            .collect();
+        if fragments.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut scanner = committed.scan();
+        scanner
+            .with_fragments(fragments)
+            .project(&[PK_COLUMN])?
+            .with_row_id();
+        let batch = scanner.try_into_batch().await?;
+        let column = |name: &str| {
+            batch
+                .column_by_name(name)
+                .ok_or_else(|| CollectionError::Corrupt(format!("the scan has no {name} column")))
+        };
+        let pks = column(PK_COLUMN)?;
+        let pks = pks.as_any().downcast_ref::<BinaryArray>().ok_or_else(|| {
+            CollectionError::Corrupt(format!("{PK_COLUMN} is {}", pks.data_type()))
+        })?;
+        let row_ids = column(ROW_ID)?;
+        let row_ids = row_ids
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .ok_or_else(|| {
+                CollectionError::Corrupt(format!("{ROW_ID} is {}", row_ids.data_type()))
+            })?;
+        (0..batch.num_rows())
+            .map(|row| {
+                if pks.is_null(row) {
+                    return Err(CollectionError::Corrupt(format!(
+                        "row id {} has a null {PK_COLUMN}",
+                        row_ids.value(row)
+                    )));
+                }
+                Ok((pks.value(row).to_vec(), row_ids.value(row)))
+            })
+            .collect()
+    }
 }
