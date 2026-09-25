@@ -420,8 +420,18 @@ async fn unreachable_collection_objects_are_deleted_after_grace() {
         );
     }
     env.past_grace();
-    let report = env.gc().await;
-    assert_eq!(report.orphan_other as usize, crashed.len(), "{report:?}");
+    // The crashed manifest goes first, what it references one run later.
+    let first = env.gc().await.orphan_other;
+    for path in &crashed {
+        let is_manifest = path.contains("/manifests/");
+        assert_eq!(
+            env.exists(path).await,
+            !is_manifest,
+            "{path} after the first run"
+        );
+    }
+    let second = env.gc().await.orphan_other;
+    assert_eq!((first + second) as usize, crashed.len());
     for path in &crashed {
         assert!(!env.exists(path).await, "{path} was not deleted");
     }
@@ -453,6 +463,10 @@ async fn manifests_beyond_keep_and_retention_are_collected() {
         .map(|path| operon_collection::manifest_version(path).expect("a manifest"))
         .collect();
     assert_eq!(kept, (last - 2..=last).collect(), "{manifests:#?}");
+    // The released manifests' PK deltas go one run after them.
+    let deltas = env.objects(&format!("{}pkdelta/", env.prefix())).await;
+    assert_eq!(deltas.len(), 5, "{deltas:#?}");
+    env.gc().await;
     let deltas = env.objects(&format!("{}pkdelta/", env.prefix())).await;
     assert_eq!(deltas.len(), 3, "{deltas:#?}");
     for version in 1..last - 2 {
@@ -486,6 +500,166 @@ async fn a_pinned_manifest_within_retention_stays_readable() {
     let pinned = env.open_version(3).await.expect("version 3 is retained");
     assert_eq!(&pinned.scan_all().await.expect("scan"), &versions[&3]);
     assert_versions_read(&env, &versions).await;
+    env.shutdown().await;
+}
+
+/// Every version up to `live` either opens and reads exactly what it read
+/// when it was live, or is `ManifestGone`; never readable but broken.
+async fn assert_no_broken_version(
+    env: &Env,
+    config: &CollectionConfig,
+    versions: &BTreeMap<u64, Vec<StoredDoc>>,
+) -> Vec<u64> {
+    let mut readable = Vec::new();
+    for (&version, docs) in versions {
+        let ctx = CollectionContext {
+            config: config.clone(),
+            ..env.cold_ctx().await
+        };
+        match CollectionSnapshot::open_version(&ctx, env.f.ns, env.f.cid, version).await {
+            Ok(snapshot) => {
+                let read = snapshot
+                    .scan_all()
+                    .await
+                    .unwrap_or_else(|err| panic!("version {version} opens but reads {err}"));
+                assert_eq!(&read, docs, "version {version}");
+                for split in snapshot.splits() {
+                    snapshot.open_split(split).await.expect("open split");
+                    snapshot.deleted_docs(split).await.expect("delete bitmap");
+                }
+                readable.push(version);
+            }
+            Err(CollectionError::ManifestGone(v)) if v == version => {}
+            Err(err) => panic!("version {version}: {err}"),
+        }
+    }
+    readable
+}
+
+/// Review P30: a manifest that leaves retention goes first and its objects
+/// one run later, so a manifest that lingers (here: its delete "failed",
+/// simulated by putting it back) is never readable but broken, even after
+/// a retention increase walks back into it.
+#[tokio::test]
+async fn a_released_manifests_objects_go_one_run_after_it() {
+    let env = Env::start(CollectionConfig {
+        keep_manifests: 1,
+        time_travel_retention: Duration::ZERO,
+        ..CollectionConfig::default()
+    })
+    .await;
+    let mut versions = BTreeMap::new();
+    let mut manifests = BTreeMap::new();
+    let batches = [
+        upserts(0..10, "a"),
+        upserts(0..1, "b"),
+        upserts(1..2, "b"),
+        upserts(20..22, "c"),
+        upserts(22..24, "c"),
+    ];
+    for ops in batches {
+        let (version, docs) = env.commit(ops).await;
+        versions.insert(version, docs);
+        let snapshot = env.f.snapshot().await;
+        let path = snapshot.manifest_path().expect("a manifest").to_string();
+        let (bytes, _) = env.f.store.get(&path).await.expect("get");
+        manifests.insert(version, (path, snapshot.manifest().clone(), bytes));
+    }
+    // v5 and v4 are retained; v1..v3 are not. v2's PK delta and its Lance
+    // deletion file are referenced by v2 alone.
+    let (_, v2, _) = &manifests[&2];
+    let v2_delta = v2.pk_delta.clone().expect("v2 replaced a key");
+    let v2_deletion = deletion_file(&env, v2.lance_version).await;
+    let (v3_path, v3, v3_bytes) = manifests[&3].clone();
+    let v3_delta = v3.pk_delta.clone().expect("v3 replaced a key");
+    let wider = CollectionConfig {
+        keep_manifests: 10,
+        time_travel_retention: Duration::from_secs(3_600),
+        ..env.f.ctx.config.clone()
+    };
+
+    env.past_grace();
+    env.gc().await;
+    for version in 1..=3 {
+        assert!(
+            !env.exists(&manifests[&version].0).await,
+            "manifest v{version}"
+        );
+    }
+    for path in [&v2_delta, &v2_deletion, &v3_delta] {
+        assert!(env.exists(path).await, "{path} went with its manifest");
+    }
+    // v3's delete "failed": it lingers. A wider retention walks back into
+    // it and reads it whole; v1 and v2 are gone.
+    env.f.store.put(&v3_path, v3_bytes).await.expect("put back");
+    assert_eq!(
+        assert_no_broken_version(&env, &wider, &versions).await,
+        vec![3, 4, 5]
+    );
+
+    // v2's objects go now; v3 is listed again, so its objects stay while it
+    // goes.
+    env.gc().await;
+    assert!(!env.exists(&v2_delta).await && !env.exists(&v2_deletion).await);
+    assert!(!env.exists(&v3_path).await);
+    assert!(env.exists(&v3_delta).await);
+    assert_eq!(
+        assert_no_broken_version(&env, &wider, &versions).await,
+        vec![4, 5]
+    );
+    env.gc().await;
+    assert!(!env.exists(&v3_delta).await);
+    assert_eq!(
+        assert_no_broken_version(&env, &wider, &versions).await,
+        vec![4, 5]
+    );
+    env.verify().await;
+    env.shutdown().await;
+}
+
+/// A collection whose objects GC cannot read (here: its pointer names a
+/// missing manifest) is kept whole, and GC goes on with the others.
+#[tokio::test]
+async fn an_unreadable_collection_is_kept_whole() {
+    let env = Env::start(CollectionConfig::default()).await;
+    env.commit(upserts(0..4, "a")).await;
+    let client = &env.f.meta.client;
+    let (bad, _, _) = client
+        .create_collection(env.f.ns, "broken", tagged(), 1)
+        .await
+        .expect("create");
+    let bad_prefix = collection_prefix(env.f.ns, bad);
+    let missing = operon_collection::manifest_path(env.f.ns, bad, 1, ulid_at(1));
+    client
+        .cas_pointer(
+            env.f.ns,
+            &operon_meta::collection_pointer_key(bad),
+            None,
+            &missing,
+            None,
+        )
+        .await
+        .expect("point at a missing manifest");
+    let bad_orphan = format!("{bad_prefix}text/splits/{}.split", ulid_at(1));
+    let good_orphan = format!("{}text/splits/{}.split", env.prefix(), ulid_at(1));
+    for path in [&bad_orphan, &good_orphan] {
+        env.f
+            .store
+            .put(path, Bytes::from_static(b"x"))
+            .await
+            .expect("put");
+    }
+    env.past_grace();
+    assert_eq!(env.gc().await.orphan_other, 1);
+    assert!(
+        env.exists(&bad_orphan).await,
+        "the unreadable collection lost an object"
+    );
+    assert!(
+        !env.exists(&good_orphan).await,
+        "the readable collection was not collected"
+    );
+    env.verify().await;
     env.shutdown().await;
 }
 
@@ -534,6 +708,9 @@ async fn lance_files_of_retained_versions_are_kept_and_others_deleted() {
     env.commit(upserts(22..24, "c")).await;
     assert!(env.exists(&old).await);
     env.past_grace();
+    // The manifests that name it go first, then it.
+    env.gc().await;
+    assert!(env.exists(&old).await, "{old} went with its manifests");
     env.gc().await;
     assert!(!env.exists(&old).await, "{old} was not deleted");
     assert!(env.exists(&new).await, "{new} was deleted");
@@ -847,7 +1024,6 @@ async fn gc_racing_commits_and_reads_never_breaks_a_read() {
         if !seen.is_empty() {
             env.verify().await;
         }
-        eprintln!("seed {seed}: {reads} pinned reads, {gone} gone");
         (total_reads, total_gone) = (total_reads + reads, total_gone + gone);
         env.shutdown().await;
     }
