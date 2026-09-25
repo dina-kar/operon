@@ -423,7 +423,7 @@ pub struct Segmenter {
 
 impl Segmenter {
     /// `owner` names this process incarnation in leases; it must be unique
-    /// per process (see `Command::AcquireLease`).
+    /// per process (see [`MetaStore::acquire_lease`]).
     pub fn new(
         meta: impl Into<Arc<dyn MetaStore>>,
         store: Store,

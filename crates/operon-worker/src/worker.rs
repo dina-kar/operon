@@ -23,7 +23,7 @@ const STOP_GRACE: Duration = Duration::from_secs(30);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkerConfig {
     /// Names this worker in task leases. Must be unique per process
-    /// incarnation (see `Command::AcquireLease`).
+    /// incarnation (see [`MetaStore::acquire_lease`]).
     pub owner: String,
     /// Time between polls of the task sources. Default 1 s.
     pub poll_interval: Duration,
