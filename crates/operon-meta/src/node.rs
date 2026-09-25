@@ -304,6 +304,21 @@ impl MetaNode {
         self.inner.state.watch_applied()
     }
 
+    /// Completes once this node's Raft has stopped, after a
+    /// [`MetaNode::shutdown`] or a fatal error: nothing will be applied here
+    /// any more. For the `MetaStore` change watch.
+    pub(crate) async fn stopped(&self) {
+        let mut metrics = self.inner.raft.metrics();
+        loop {
+            if metrics.borrow_watched().running_state.is_err() {
+                return;
+            }
+            if metrics.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
     /// The leader this node currently knows of.
     pub async fn current_leader(&self) -> Option<NodeId> {
         self.inner.raft.current_leader().await
