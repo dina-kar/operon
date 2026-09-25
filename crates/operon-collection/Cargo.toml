@@ -11,14 +11,21 @@ authors.workspace = true
 bytes.workspace = true
 operon-common.workspace = true
 operon-log.workspace = true
+operon-meta.workspace = true
+operon-quickwit.workspace = true
 postcard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
 xxhash-rust.workspace = true
 
 [dev-dependencies]
+operon-cache.workspace = true
+operon-store.workspace = true
 proptest.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

@@ -7,16 +7,22 @@
 //! ([`encode`]/[`decode`]), patches ([`apply_patch`]) and the per-key
 //! latest-wins [`fold`], and the [`ConsistencyToken`] a write returns.
 //!
+//! Task 6: value [`extract`]ion and [`coerce`]ion, document validation
+//! ([`check_document`], [`check_patch`]) and ES dynamic mapping
+//! ([`propose_dynamic_fields`]).
+//!
 //! The collection schema types live in `operon_common::schema`, because the
 //! metastore's commands carry them (plan M1.1 Ruling 6); they are re-exported
 //! here, both as [`schema`] and at the crate root.
 
 mod codec;
 mod doc;
+mod dynamic;
 mod error;
 mod pk;
 mod resolve;
 mod token;
+mod values;
 
 pub use operon_common::schema;
 pub use operon_common::schema::{
@@ -27,7 +33,12 @@ pub use operon_common::schema::{
 
 pub use codec::{CODEC_VERSION, MAX_RECORD_VALUE_BYTES, decode, encode};
 pub use doc::{DocOp, Document, PatchMode, SparseVector, apply_patch};
+pub use dynamic::{DynamicMappingError, propose_dynamic_fields};
 pub use error::{CodecError, SparseVectorError};
 pub use pk::{MAX_STR_PK_BYTES, PrimaryKey, partition_of};
 pub use resolve::{fold, needs_current};
 pub use token::{CONSISTENCY_TOKEN_HEADER, ConsistencyToken, TokenParseError};
+pub use values::{
+    DocRejection, ExtractedDoc, IndexValue, Violation, check_document, check_patch, coerce,
+    extract, parse_date, unmapped_paths,
+};

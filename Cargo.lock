@@ -2380,13 +2380,20 @@ name = "operon-collection"
 version = "0.0.1"
 dependencies = [
  "bytes",
+ "operon-cache",
  "operon-common",
  "operon-log",
+ "operon-meta",
+ "operon-quickwit",
+ "operon-store",
  "postcard",
  "proptest",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
+ "tokio",
+ "uuid",
  "xxhash-rust",
 ]
 
