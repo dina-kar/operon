@@ -211,14 +211,18 @@ fn golden_schema() -> CollectionSchema {
 
 /// At least one value of every [`Command`] variant, with every `Option`
 /// field present in one value and absent in another where the variant has
-/// one (`fence`, `fresh`, `expected`): every [`WalClass`], both `EntryKind`s
-/// (reached through the two [`Command::SwapSegment`] values below, which
-/// each replace a `Wal` entry with a `Segment` entry), both `AliasAction`s,
-/// and [`golden_schema`]'s full coverage of `FieldKind`, `VectorIndexSpec`,
-/// `Quantization` and `SparseModifier`.
+/// one (`fence`, `fresh`, `expected`): every [`WalClass`], both
+/// `AliasAction`s, and [`golden_schema`]'s full coverage of `FieldKind`,
+/// `VectorIndexSpec`, `Quantization` and `SparseModifier`.
 ///
 /// Applying this list in order to `MetaState::default()` succeeds for every
-/// command; it ends with a `DropCollection` so `retired` holds a prefix.
+/// command; it ends with a `DropCollection` so `retired` holds a prefix. The
+/// two [`Command::SwapSegment`] values each replace a live `Wal` index entry
+/// with a `Segment` one, so by the end of this list every surviving index
+/// entry has kind `Segment`: this list, [`golden_state`] and
+/// `snapshot-v5.bin` pin `EntryKind::Segment` only, never `EntryKind::Wal`
+/// (CodeRabbit PR11). [`golden_wal_commands`], [`golden_wal_state`] and
+/// `snapshot-v5-wal.bin` pin the `Wal` encoding separately.
 fn golden_commands() -> Vec<Command> {
     let ns1 = NamespaceId(1);
     let stream1 = StreamId(1);
@@ -578,6 +582,50 @@ fn golden_state() -> MetaState {
     state
 }
 
+/// A minimal command list whose final state still holds a live `Wal` index
+/// entry (CodeRabbit PR11): the `CommitWal` here is never swapped into a
+/// segment or trimmed away, unlike every `CommitWal` in [`golden_commands`].
+/// Gives `EntryKind::Wal` its own golden snapshot, since `snapshot-v5.bin`
+/// only ever pins `EntryKind::Segment`.
+fn golden_wal_commands() -> Vec<Command> {
+    let ns1 = NamespaceId(1);
+    let stream1 = StreamId(1);
+    vec![
+        Command::CreateNamespace {
+            name: "acme".to_string(),
+        },
+        Command::CreateStream {
+            namespace: ns1,
+            name: "events".to_string(),
+            partitions: 1,
+            class: WalClass::Standard,
+            retention: Retention::default(),
+        },
+        Command::CommitWal {
+            object: "wal-1".to_string(),
+            created_at_ms: 100,
+            chunks: vec![WalChunk {
+                stream: stream1,
+                partition: 0,
+                records: 2,
+                byte_range: 0..10,
+                max_timestamp_ms: 5,
+            }],
+        },
+    ]
+}
+
+/// A state built by applying [`golden_wal_commands`] to `MetaState::default()`.
+fn golden_wal_state() -> MetaState {
+    let mut state = MetaState::default();
+    for command in golden_wal_commands() {
+        state
+            .apply(command.clone())
+            .unwrap_or_else(|e| panic!("{command:?} failed to apply: {e}"));
+    }
+    state
+}
+
 /// A `match` with no wildcard arm: a new `Command` variant fails to compile
 /// here until it is added to [`golden_commands`].
 #[test]
@@ -667,5 +715,36 @@ fn the_golden_snapshot_decodes_to_the_same_state() {
     let fresh = operon_meta::snapshot_bytes(&state).expect("encode golden snapshot");
     let golden = golden_bytes("snapshot-v5.bin", &fresh);
     let decoded = operon_meta::state_from_snapshot_bytes(&golden).expect("decode golden snapshot");
+    assert_eq!(decoded, state);
+}
+
+/// Guard: [`golden_wal_state`] must actually hold a live `Wal` index entry
+/// for `wal-1`, or this golden would silently stop pinning the `Wal`
+/// encoding (CodeRabbit PR11).
+#[test]
+fn golden_wal_commands_leave_a_live_wal_entry() {
+    let state = golden_wal_state();
+    assert_eq!(
+        state.wal_live_chunks("wal-1"),
+        Some(1),
+        "wal-1 must still have one live Wal index entry"
+    );
+}
+
+#[test]
+fn a_wal_backed_snapshot_encodes_to_the_golden_bytes() {
+    let state = golden_wal_state();
+    let fresh = operon_meta::snapshot_bytes(&state).expect("encode golden wal snapshot");
+    let golden = golden_bytes("snapshot-v5-wal.bin", &fresh);
+    assert_eq!(fresh, golden);
+}
+
+#[test]
+fn the_golden_wal_snapshot_decodes_to_the_same_state() {
+    let state = golden_wal_state();
+    let fresh = operon_meta::snapshot_bytes(&state).expect("encode golden wal snapshot");
+    let golden = golden_bytes("snapshot-v5-wal.bin", &fresh);
+    let decoded =
+        operon_meta::state_from_snapshot_bytes(&golden).expect("decode golden wal snapshot");
     assert_eq!(decoded, state);
 }
