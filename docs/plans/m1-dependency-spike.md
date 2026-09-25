@@ -135,6 +135,7 @@ Registry source paths below are relative to `~/.cargo/registry/src/index.crates.
 **What qdrant-edge is:**
 - It is an amalgamation of qdrant's segment, shard, quantization, common, wal, sparse and related crates, and corresponds to Qdrant v1.19.0 (inferred by diffing; the current Qdrant release is v1.19.1).
 - Only the high-level `edge` API is public (`qdrant-edge-0.8.0/src/lib.rs:4-14`). `HNSWIndex`, `GraphLayers` and `VectorStorage` are private.
+- The sparse inverted index is private too (`mod sparse;`, `lib.rs:13`; only `SparseVector` is re-exported, `edge/reexports.rs:63`): sparse vectors are reachable only as `EdgeShard` configuration (`EdgeConfigBuilder::sparse_vector`, `edge/builders/edge_config.rs:53-62`). Added 2026-09-25: this is why M1's sparse index lives in the Tantivy splits instead (overview R22).
 
 **Why not vendor `lib/segment`:**
 - The HNSW code depends on `FilteredScorer`, `RawScorer`, `vector_storage`, `id_tracker` and `payload_index`, through about 1,100 `use crate::` imports.

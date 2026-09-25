@@ -19,7 +19,7 @@ A collection schema is derived from ES mappings or Qdrant collection config (or 
 | Boolean | `boolean` | `bool` | yes | fast field | BITMAP |
 | Geo point | `geo_point` | `geo` | yes | fast field (lat/lon) | (Phase B) |
 | Dense vector | `dense_vector` | named / default vector | FixedSizeList | — | IVF_RQ / IVF_PQ / IVF_HNSW_SQ |
-| Sparse vector | `sparse_vector` | sparse vector | yes | custom sparse index (§6) | — |
+| Sparse vector | `sparse_vector` (Phase B) | sparse vector (M1) | `Struct<indices, values>` column | split postings + weights (M1), custom sparse index (§6, Phase B) | — |
 | Multivector | — | multivector (ColBERT) | List<FixedSizeList> | — | hot tier (§5) |
 | Object / nested | `object`, `nested` | JSON payload | JSON column | JSON field (flattened paths) | — |
 
@@ -68,7 +68,11 @@ Selectivity is estimated from bitmap cardinalities (Tantivy/Lance scalar indexes
 - Larger-than-RAM alternative: **DiskANN** (MIT, Rust) on NVMe — evaluate in Phase C.
 
 ## 6. Sparse vectors
-Qdrant sparse vectors / ES `sparse_vector` need float-weighted inverted lists and dot-product scoring. Tantivy stores integer term frequencies, so Phase B adds a **custom sparse index** stored as split-adjacent posting files (quantized f16 weights, block-max metadata) with a MAXSCORE scorer — informed by turbopuffer's FTS v2 posting-block design.
+Qdrant sparse vectors / ES `sparse_vector` need float-weighted inverted lists and dot-product scoring.
+
+**M1 (owner decision 2026-09-25; M1 overview A26–A30, R22):** Qdrant sparse vectors ship in M1 with a simple, exact index. Each sparse field is a Lance column (`Struct<indices: List<u32>, values: List<f32>>`, the source of truth) and two hidden fields in every Tantivy split and in the tail's RAM index: a u64 postings field with one term per index (plus a presence term) and a bytes fast field holding the vector. A query unions the postings of its indices, masks deleted, shadowed and filtered documents, reads each candidate's vector and scores it exactly (Qdrant's dot product in f32, and Qdrant's IDF modifier `ln((N − df + 0.5)/(df + 0.5) + 1)` with `N` and `df` counted over the live documents of the read snapshot). No hot artifact: pinned splits serve it, so results are identical with the hot tier on and off. qdrant-edge's sparse index was not taken: it is private and local-directory-only. ES `sparse_vector` stays out of M1 (string token keys and Lucene's reduced-precision weights make it more than a mapping).
+
+**Phase B:** a **custom sparse index** stored as split-adjacent posting files (quantized f16 weights, block-max metadata) with a MAXSCORE scorer — informed by turbopuffer's FTS v2 posting-block design — replaces the M1 split fields when collections outgrow exhaustive scoring; ES `sparse_vector` follows it.
 
 ## 7. Elasticsearch compatibility scope
 
@@ -78,7 +82,7 @@ Qdrant sparse vectors / ES `sparse_vector` need float-weighted inverted lists an
 | Search | `_search`, `_count`, `_msearch`, `search_after`, PIT, `from/size`, `sort`, `_source` filtering, highlighting | `scroll`, `collapse`, suggesters (term/completion) | Percolator, scripts in queries |
 | Query DSL | `match`, `match_phrase`, `multi_match`, `bool`, `term(s)`, `range`, `exists`, `prefix`, `wildcard`, `fuzzy`, `ids`, `query_string` (simple), `knn` | `nested`, `function_score` (field_value_factor, decay), `more_like_this`, `simple_query_string` | Painless scripting, `script_score` with arbitrary scripts |
 | Aggregations | `terms`, `histogram`, `date_histogram`, `range`, `stats`, `avg/sum/min/max`, `cardinality`, `percentiles`, `top_hits` | `composite`, `filters`, `significant_terms`, pipeline aggs (subset) | `scripted_metric` |
-| Index admin | create/delete index, mappings, aliases, `_cat/indices`, `_cluster/health` (synthetic) | index templates, analyzers config | ILM, snapshots API (use Operon versions), ingest pipelines, CCR/CCS |
+| Index admin | create/delete index (wildcard deletes allowed by default), mappings, aliases, `_cat/indices`, `_cluster/health` (synthetic); the endpoints elasticsearch-py's test fixture `wipe_cluster` calls, answered as an empty cluster (`_snapshot`, `_data_stream`, `_template`, `_index_template`, `_cluster/settings`, `_cluster/pending_tasks`) | index templates, analyzers config | ILM, snapshots API (use Operon versions), ingest pipelines, CCR/CCS |
 | Tooling | elasticsearch-py/js/java clients; LangChain/LlamaIndex ES vector stores | OpenSearch clients (verify divergence) | Kibana |
 
 Implementation starts from **Quickwit's ES-compatible API crates** (DSL parsing → Tantivy queries, aggregation request/response mapping), forked and extended with `_doc`-level CRUD, upserts and `knn`.
@@ -91,9 +95,9 @@ Qdrant's OpenAPI and protobuf definitions are Apache-2.0 and used directly (`ton
 
 | Area | Phase A (M1) | Phase B | Accepted as no-op / out |
 |---|---|---|---|
-| Collections | create/delete/get/list, aliases, named vectors, distance metrics, HNSW/quantization params (mapped to hot-tier config) | collection update params, optimizer config (mapped) | shard/replica settings (no-op), cluster APIs |
-| Points | upsert, delete, get, scroll, count, set/overwrite/delete payload, batch update | — | — |
-| Search | `query` (universal API: prefetch, fusion RRF/DBSF, filters), `search`, `search_batch`, `recommend`, `discover`, `search_groups`, `with_payload`/`with_vectors`, score threshold | sparse vectors, multivector (hot tier), `order_by` | — |
+| Collections | create/delete/get/list, aliases, named vectors, named sparse vectors (`modifier: idf`), distance metrics, HNSW/quantization params (mapped to hot-tier config) | collection update params, optimizer config (mapped), adding a sparse vector after creation | shard/replica settings (no-op), cluster APIs |
+| Points | upsert, delete, get, scroll, count, set/overwrite/delete payload, batch update (dense and sparse vector values) | — | — |
+| Search | `query` (universal API: prefetch, fusion RRF/DBSF, filters), dense and sparse nearest (with `params.idf`), `search`, `search_batch`, `recommend`, `discover`, `search_groups`, `with_payload`/`with_vectors`, score threshold | sparse recommend/discover/context/MMR, multivector (hot tier), `order_by` | — |
 | Payload indexes | keyword, integer, float, bool, datetime, uuid, full-text | geo | — |
 | Snapshots | create/list → Operon manifest versions (restore = time travel) | download/upload | — |
 

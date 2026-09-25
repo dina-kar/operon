@@ -6,14 +6,14 @@ Design references: [01 Architecture](../design/01-architecture.md), [03 Storage 
 
 ## 1. Goal
 
-Ship collections: documents with text, keyword, numeric, date, boolean and JSON fields and named dense vectors, stored as one Lance dataset plus Tantivy splits under one manifest, written only through the log, read with strong consistency by a DataFusion-based hybrid engine, served through a native API, SQL and Arrow Flight SQL, the Qdrant and Elasticsearch APIs (Phase A), Python and TypeScript SDKs and an MCP server, accelerated by a hot tier that never changes results, and proven by the M1 exit gates.
+Ship collections: documents with text, keyword, numeric, date, boolean and JSON fields, named dense vectors and named sparse vectors (Qdrant sparse vectors with exact dot-product scoring and the IDF modifier, A26), stored as one Lance dataset plus Tantivy splits under one manifest, written only through the log, read with strong consistency by a DataFusion-based hybrid engine, served through a native API, SQL and Arrow Flight SQL, the Qdrant and Elasticsearch APIs (Phase A), Python and TypeScript SDKs and an MCP server, accelerated by a hot tier that never changes results, and proven by the M1 exit gates.
 
 ## 2. Plans
 
 | Plan | Branch | Scope | Depends on |
 |---|---|---|---|
-| [M1.1: Collection storage](2026-09-24-m1.1-collection-storage.md) | `m1.1-collection-storage` | Collection catalog in meta (collections, implicit streams, aliases, schema evolution, drop); `DocOp` record format; atomic multi-partition append; Lance dataset + Tantivy split writers; collection manifest and fenced, freshness-checked CAS; upserts, patches and deletes through the PK index and delete bitmaps; the `collection` link target; vector and scalar index builds; collection GC roots; carried-in M0 items | M0 |
-| [M1.2: Query engine and native API](2026-09-24-m1.2-query-engine.md) | `m1.2-query-engine` | `operon-query`: the search IR, DataFusion catalog and operators (`TantivySearchExec`, `AnnExec`, `FilterBitmapExec`, `FusionExec`, `DocFetchExec`, `TailMergeExec`), the tail index, consistency tokens and strong reads, global BM25 statistics, `CollectionService`; native REST collection, document and hybrid query endpoints; SQL with `vector_search`/`text_search`/`hybrid_search`; Arrow Flight SQL | M1.1 |
+| [M1.1: Collection storage](2026-09-24-m1.1-collection-storage.md) | `m1.1-collection-storage` | Collection catalog in meta (collections, implicit streams, aliases, schema evolution, drop); `DocOp` record format (dense and sparse vectors); atomic multi-partition append; Lance dataset + Tantivy split writers (sparse vectors as Lance columns and split postings, A28); collection manifest and fenced, freshness-checked CAS; upserts, patches and deletes through the PK index and delete bitmaps; the `collection` link target; vector and scalar index builds; collection GC roots; carried-in M0 items | M0 |
+| [M1.2: Query engine and native API](2026-09-24-m1.2-query-engine.md) | `m1.2-query-engine` | `operon-query`: the search IR, DataFusion catalog and operators (`TantivySearchExec`, `AnnExec`, `SparseExec`, `FilterBitmapExec`, `FusionExec`, `DocFetchExec`, `TailMergeExec`), the tail index, consistency tokens and strong reads, global BM25 statistics, `CollectionService`; native REST collection, document and hybrid query endpoints; SQL with `vector_search`/`text_search`/`hybrid_search`; Arrow Flight SQL | M1.1 |
 | [M1.3: Hot tier, maintenance and affinity routing](2026-09-24-m1.3-hot-tier-routing.md) | `m1.3-hot-tier-routing` | Split merges and Lance compaction; Qdrant-derived HNSW hot artifacts (worker build, publish, load, appendable tail HNSW); pinned splits and fragments on NVMe; pin/warm APIs; the metastore over the network, node registry, rendezvous ownership and request forwarding; the hot-on/off differential harness | M1.2 |
 | [M1.4: Qdrant API Phase A](2026-09-24-m1.4-qdrant-api.md) | `m1.4-qdrant-api` | `operon-qdrant`: REST (6333) and gRPC (6334) gateways per §06 §8 Phase A, over `CollectionService` | M1.2 (M1.3 for hot-tier params) |
 | [M1.5: Elasticsearch API Phase A](2026-09-24-m1.5-elasticsearch-api.md) | `m1.5-elasticsearch-api` | `operon-es`: REST gateway (9200) per §06 §7 Phase A: document APIs, `_search` with the Phase A DSL, `knn`, aggregations, highlighting, PIT/`search_after`, index admin | M1.2 |
@@ -29,6 +29,7 @@ M1.4, M1.5 and M1.6 are independent of each other and may run in parallel once M
 | Design §12 M1 item | Plan |
 |---|---|
 | Lance + Tantivy splits under one manifest | M1.1 |
+| Sparse vectors (Qdrant; pulled from Phase B by the owner, 2026-09-25, A26–A30, R22) | M1.1 (storage), M1.2 (exact search, IDF), M1.3 (served from pinned splits), M1.4 (Qdrant API), M1.6 (SDK types) |
 | Upserts/deletes | M1.1 (write), M1.2 (read semantics) |
 | Tail indexes | M1.2 |
 | Native hybrid API + Python/TS SDK | M1.2 (API), M1.6 (SDKs) |
@@ -41,7 +42,7 @@ M1.4, M1.5 and M1.6 are independent of each other and may run in parallel once M
 
 | Exit gate | Plan |
 |---|---|
-| LangChain + LlamaIndex vector-store tests (ES and Qdrant backends) pass unmodified: each suite runs with its own commands and only its server URL/environment pointed at Operon; tests of sparse or hybrid (dense + sparse) retrieval need Qdrant sparse vectors (Phase B, §06 §6) and are run and reported but not gated; tests hard-wired to Qdrant's in-process `:memory:` mode never reach a server and are not counted (A14) | M1.7 (surface built in M1.4, M1.5) |
+| LangChain + LlamaIndex vector-store tests (ES and Qdrant backends) pass unmodified: each suite runs with its own commands and only its server URL/environment pointed at Operon; every server-backed test is gated, the sparse and hybrid (dense + sparse) retrieval tests included (sparse vectors are in M1, A26); tests hard-wired to Qdrant's in-process `:memory:` mode never reach a server and are not counted (A14) | M1.7 (surface built in M1.4, M1.5) |
 | BEIR nDCG@10 within 1 point of ES BM25 | M1.7 (analyzers and global statistics in M1.2) |
 | Recall@10 within 1% of Qdrant at equal hot-tier latency | M1.7 (HNSW in M1.3) |
 | Results identical with the hot tier on and off | M1.3 (harness), M1.7 (at scale); see Ruling R12 |
@@ -71,10 +72,10 @@ New crates (all `0.0.1`, Apache-2.0, workspace lints):
 
 | Crate | Owns | Depends on |
 |---|---|---|
-| `operon-collection` | Schema, `PrimaryKey`, `DocOp` and its record codec, catalog helpers, `CollectionWriter` (append to the implicit stream), Lance and split writers, manifest codec, `CollectionTarget: LinkTarget`, PK usage, delete bitmaps, index-build tasks, `CollectionGcRoots` | meta, log, store, cache, pk, link, worker, `operon-text` |
+| `operon-collection` | Schema, `PrimaryKey`, `SparseVector`, `DocOp` and its record codec, catalog helpers, `CollectionWriter` (append to the implicit stream), Lance and split writers, manifest codec, `CollectionTarget: LinkTarget`, PK usage, delete bitmaps, index-build tasks, `CollectionGcRoots` | meta, log, store, cache, pk, link, worker, `operon-text` |
 | `operon-quickwit` | Vendored Quickwit files (split bundle and footer, hotcache, async storage directories, warmup, ES DSL → Tantivy AST, doc-mapper pieces, `StableLogMergePolicy`) with a small shim, built against crates.io Tantivy; per-file Datadog headers kept, Quickwit's NOTICE text added to ours (dependency spike §d) | tantivy |
 | `operon-text` | Tantivy integration: analyzers, split writer/reader over `operon-store` + `operon-cache`, delete-bitmap application, the `Query` → Tantivy query builder, global statistics provider | quickwit, store, cache |
-| `operon-query` | Search IR, DataFusion catalog/providers/operators, fusion, tail index, consistency tokens, `CollectionService`, SQL UDTFs, Flight SQL service | collection, text, log, meta |
+| `operon-query` | Search IR, DataFusion catalog/providers/operators (sparse search included), fusion, tail index, consistency tokens, `CollectionService`, SQL UDTFs, Flight SQL service | collection, text, log, meta |
 | `operon-hnsw` (M1.3) | The `HnswIndex` trait and its `qdrant-edge` implementation (build, filtered search, publish and read-only open); the only crate that depends on `qdrant-edge`, behind the binary's `hnsw` feature | — |
 | `operon-hot` (M1.3) | Hot artifacts, pinned-object manager, budgets, node registry and rendezvous ownership | collection, query, hnsw, cache |
 | `operon-qdrant` (M1.4) | Qdrant REST + gRPC gateway | query |
@@ -118,19 +119,29 @@ pub enum PrimaryKey { U64(u64), Uuid([u8; 16]), Str(String) }
 // Canonical bytes: tag 0x01 + u64 big-endian | tag 0x02 + 16 bytes | tag 0x03 + UTF-8. Ordering of keys = ordering of canonical bytes.
 pub fn partition_of(pk: &PrimaryKey, partitions: u32) -> u32;   // xxh3_64(canonical bytes) % partitions  (crate xxhash-rust, feature xxh3)
 
-pub struct Document { pub pk: PrimaryKey, pub source: serde_json::Map<String, serde_json::Value>, pub vectors: BTreeMap<String, Vec<f32>> }
+/// A sparse vector in canonical form (A27): indices strictly ascending, one finite value per index (zeros allowed).
+/// Fields are private; every constructor, `Deserialize` included (`#[serde(try_from = "RawSparseVector")]`), goes through `new`.
+/// JSON form: {"indices": [u32], "values": [f32]}.
+pub struct SparseVector { indices: Vec<u32>, values: Vec<f32> }
+impl SparseVector {
+    pub fn new(indices: Vec<u32>, values: Vec<f32>) -> Result<Self, SparseVectorError>;   // sorts by index; unequal lengths, a duplicate index or a non-finite value is an error
+    pub fn indices(&self) -> &[u32]; pub fn values(&self) -> &[f32]; pub fn len(&self) -> usize; pub fn is_empty(&self) -> bool;
+}
+pub struct Document { pub pk: PrimaryKey, pub source: serde_json::Map<String, serde_json::Value>, pub vectors: BTreeMap<String, Vec<f32>>,
+                      pub sparse_vectors: BTreeMap<String, SparseVector> /* A27 */ }
 pub enum PatchMode { MergeDeep /* ES partial doc */, MergeTop /* Qdrant set_payload */, Replace /* Qdrant overwrite_payload */ }
 pub enum DocOp {
     Upsert(Document),
     Delete(PrimaryKey),
     Patch { pk: PrimaryKey, mode: PatchMode, source: serde_json::Map<String, serde_json::Value>,
             delete_keys: Vec<String> /* JSON paths, dot-separated */, vectors: BTreeMap<String, Option<Vec<f32>>> /* None = delete vector */,
+            sparse_vectors: BTreeMap<String, Option<SparseVector>> /* None = delete sparse vector (A27) */,
             upsert: Option<Document> /* used when the key does not exist; otherwise a patch of a missing key changes nothing at apply time,
                                        and CollectionService reports it as OpResult::NotFound (A24) */ },
 }
 ```
 
-One record per op on the implicit stream: Kafka record key = canonical PK bytes; value = `0x01` (codec version) followed by the postcard encoding of `DocOp` with `source` carried as UTF-8 JSON bytes (postcard cannot encode `serde_json::Value`); no headers; timestamp = the writer's clock. Records for one key always go to `partition_of(pk)`, so per-key order is the partition order. Sparse vectors and multivectors are rejected with `InvalidArgument` in M1 (Phase B).
+One record per op on the implicit stream: Kafka record key = canonical PK bytes; value = `0x01` (codec version) followed by the postcard encoding of `DocOp` with `source` carried as UTF-8 JSON bytes (postcard cannot encode `serde_json::Value`); no headers; timestamp = the writer's clock. Records for one key always go to `partition_of(pk)`, so per-key order is the partition order. Sparse vectors travel in `Document.sparse_vectors` and `Patch.sparse_vectors` inside the same codec version `0x01` body (A27; no record has been written yet, so this is not a format change). Multivectors are rejected with `InvalidArgument` in M1 (Phase B).
 
 **Atomic writes.** `LogWriter` gains `append_many(stream, Vec<(u32 /* partition */, Vec<Record>)>) -> Result<Vec<AppendAck>, LogError>`, which places every batch in the same WAL object and the same `CommitWal`, so one request is atomic across partitions (§01 §5). A collection write request is one `append_many`.
 
@@ -141,6 +152,7 @@ pub struct CollectionSchema {
     pub version: u64,                       // 1 at creation; +1 per UpdateCollectionSchema
     pub fields: Vec<FieldSpec>,             // unique names; order is stable
     pub vectors: Vec<VectorSpec>,           // unique names; "" is Qdrant's unnamed default vector
+    pub sparse_vectors: Vec<SparseVectorSpec>, // unique non-empty names, disjoint from `vectors`; fixed at creation in M1 (A26)
     pub dynamic: DynamicMapping,            // Strict | Ignore | Map
     pub max_fields: u32,                    // default 1000 (ES index.mapping.total_fields.limit)
     pub annotations: BTreeMap<String, String>,  // opaque gateway data, keys namespaced `es.*` / `qdrant.*`; preserved (A1)
@@ -152,6 +164,8 @@ pub enum FieldKind { Text { analyzer: String, positions: bool }, Keyword, I64, F
 pub struct VectorSpec { pub name: String, pub dim: u32, pub distance: Distance, pub element: VectorElement /* F32 in M1 */,
                         pub index: VectorIndexSpec, pub hnsw: HnswParams, pub quantization: Option<Quantization> }
 pub enum Distance { Cosine, Dot, Euclid, Manhattan }
+pub struct SparseVectorSpec { pub name: String, pub modifier: SparseModifier }   // A26
+pub enum SparseModifier { None, Idf }                                           // Qdrant's `modifier`; Idf reweights the query at search time
 ```
 
 Every document keeps its `_source` verbatim (a Qdrant payload is its `_source`). Fields are values extracted from `_source` by `source_path` (arrays give multi-valued fields); they are what is indexed, filtered, sorted and aggregated. With `DynamicMapping::Map`, a gateway that sees unmapped paths proposes `UpdateCollectionSchema` with ES's dynamic rules before it appends the write (Ruling R17). With `Ignore` (the Qdrant default), unmapped paths live only in `_source`.
@@ -159,6 +173,8 @@ Every document keeps its `_source` verbatim (a Qdrant payload is its `_source`).
 **JSON fields (A3).** A `FieldKind::Json` field with `source_path: ""` indexes the whole `_source`. `Query` field names address paths inside a Json field as `"<field>.<path>"` (dot-separated, arrays flattened, type-strict: a numeric range matches only numeric leaves). String leaves are indexed raw (exact match, fast) and, in a companion Tantivy field defined by M1.1, tokenized with the `standard` analyzer, so `Match`/`MatchPhrase` work on JSON paths. Every Qdrant collection has a Json field named `payload` with `source_path: ""`, and Qdrant filters always address `payload.<key>`; Qdrant payload indexes are recorded in `annotations`.
 
 **No backfill (A4).** Fields added by `UpdateCollectionSchema` apply to documents written after the schema version that added them (ES put-mapping semantics). Each `SplitRef` records the `schema_version` it was written with.
+
+**Sparse vectors (A26–A30, R22).** A sparse vector field holds, per document, at most one `SparseVector` (absent is allowed; an empty vector is stored and read back but is never a search candidate and never counts in statistics, as in Qdrant, `qdrant-edge-0.8.0/src/segment/index/sparse_index/sparse_vector_index/vector_index_impl.rs:177-190`). Search is exact (§6.6 `Retriever::Sparse`). `check_additive` requires `next.sparse_vectors == old.sparse_vectors`: sparse vectors are declared when the collection is created, and adding one later is Phase B. ES `sparse_vector` stays refused (M1.5 Ruling 13): its string-keyed token weights need a token → index dictionary and Lucene stores them at reduced precision, so it is not free on top of this.
 
 **Analyzers (A5, M1.1 in `operon-text`).** `standard` (ES standard: UAX #29 word segmentation + lowercase, no stop words, max token length 255), `english` (Lucene's EnglishAnalyzer chain: standard tokenizer → English possessive filter → lowercase → Lucene English stop words → the original Porter stemmer, not Porter2/Snowball), `simple`, `whitespace`, `keyword`. The BEIR gate depends on `english` matching Lucene.
 
@@ -175,6 +191,8 @@ ns/<ns>/collections/<cid>/
   hot/hnsw/<column>/<source_version:020>-<ulid>/{descriptor.bin,covered.bin,files/…}  # derived HNSW artifacts (M1.3)
 ns/<ns>/pk/collection-<cid>/                                # PkIndex (SlateDB)
 ```
+
+Sparse vectors add no object kind (A28): each sparse field is a Lance column `_sparse_<j>` (`Struct<indices: List<UInt32>, values: List<Float32>>`, nullable) and two hidden fields inside every Tantivy split, `_sparse.<name>` (the postings: one u64 term per index, plus `u64::MAX` for every non-empty vector) and `_sparse_w.<name>` (a bytes fast field with the vector), so split writes, merges, delete bitmaps, pinned splits and the tail cover them with no new mechanism.
 
 The manifest is protobuf (`prost`) inside Operon's standard envelope (magic `OPCM`, format version `1`, crc32c trailer; §03 §6). Fields every plan may rely on:
 
@@ -223,7 +241,9 @@ pub enum Retriever {
     Text { query: Query, k: usize },
     Fused { inputs: Vec<Retriever>, fusion: Fusion, k: usize },               // Qdrant nested prefetch
     Rescore { input: Box<Retriever>, field: String, query: Vec<f32>, k: usize },  // Qdrant prefetch + query
+    Sparse { field: String, query: SparseVector, k: usize, filter: Option<Query>, params: SparseParams },   // A29; exact
 }
+#[derive(Default)] pub struct SparseParams { pub idf_corpus: Option<Query> /* IDF statistics over the docs matching this query (Qdrant `params.idf.corpus`); Idf fields only */ }
 pub struct AnnParams { pub exact: bool, pub nprobes: Option<u32>, pub refine_factor: Option<u32>, pub ef: Option<u32>, pub oversampling: Option<f32>,
                       pub distance: Option<Distance> /* metric override, exact search only (ES script_score) (A7) */ }
 pub enum Fusion { Rrf { k: u32 /* default 60 */ }, Dbsf, WeightedSum { weights: Vec<f32> } }
@@ -248,12 +268,14 @@ pub enum Query {  // scoring when used by Retriever::Text, a bitmap when used as
 }
 pub struct SearchResponse { pub hits: Vec<Hit>, pub total: Option<TotalHits>, pub aggregations: Option<serde_json::Value>, pub groups: Option<Vec<HitGroup>>, pub read_token: ConsistencyToken }
 pub struct Hit { pub pk: PrimaryKey, pub score: f32, pub sort_values: Vec<SortValue>, pub source: Option<serde_json::Map<String, serde_json::Value>>,
-                 pub vectors: BTreeMap<String, Vec<f32>>, pub highlight: BTreeMap<String, Vec<String>> }
+                 pub vectors: BTreeMap<String, Vec<f32>>, pub sparse_vectors: BTreeMap<String, SparseVector> /* A29 */, pub highlight: BTreeMap<String, Vec<String>> }
 ```
+
+**`Retriever::Sparse` semantics (A29, R22).** Candidates are the live documents of the read view that pass `request.filter ∧ filter` and share at least one index with `query` (a stored zero weight counts). The score is `Σ q'ᵢ · wᵢ` over the shared indices in ascending index order, accumulated in f32 (Qdrant's `score_vectors`, `qdrant-edge-0.8.0/src/sparse/common/sparse_vector.rs:66-90`), where `q'ᵢ = qᵢ` for `SparseModifier::None` and `q'ᵢ = qᵢ · idfᵢ` for `Idf`, with `idfᵢ = ln((N − dfᵢ + 0.5) / (dfᵢ + 0.5) + 1)` in f32 (Qdrant's `fancy_idf`, `qdrant-edge-0.8.0/src/segment/data_types/query_context.rs:276-299`). `N` is the number of live documents of the view (durable minus deleted and shadowed rows, plus the live tail) with a non-empty vector in the field, and `dfᵢ` the number of those containing index *i*; with `params.idf_corpus` both count only documents matching it. The top k are ordered by score descending, then PK (R10). An empty query returns no hits. `idf_corpus` on a `None` field is `InvalidArgument`. A sparse retriever may appear at the top level, inside `Fused` (Qdrant hybrid prefetch + RRF/DBSF) and as the input of `Rescore`; `Rescore`'s own query stays dense in M1.
 
 `R4` exception (A9): a gateway may move mapped vector values out of `_source` into `Document.vectors` on write and restore them into `_source` on read (ES `dense_vector` fields).
 
-Score convention: larger is better. A vector retriever's score is cosine similarity (Cosine), dot product (Dot), or the negated distance (Euclid, Manhattan); gateways convert to their protocol's convention. Equal scores are ordered by canonical PK bytes ascending, on every path.
+Score convention: larger is better. A vector retriever's score is cosine similarity (Cosine), dot product (Dot), or the negated distance (Euclid, Manhattan); a sparse retriever's is the (IDF-weighted) dot product; gateways convert to their protocol's convention. Equal scores are ordered by canonical PK bytes ascending, on every path.
 
 ### 6.7 `CollectionService` (M1.2, `operon-query`) — the one facade every gateway uses
 
@@ -274,13 +296,15 @@ impl CollectionService {
     pub async fn versions(&self, ns: &str, name: &str) -> Result<Vec<ManifestInfo>, ServiceError>;   // Qdrant snapshots = manifest versions
     pub fn sql_context(&self, ns: &str) -> datafusion::prelude::SessionContext;
 }
-// StoredDoc carries `seq_no: u64`: the partition offset of the record that last wrote the document (ES `_seq_no`) (A11).
+// StoredDoc carries `seq_no: u64`: the partition offset of the record that last wrote the document (ES `_seq_no`) (A11),
+// and `sparse_vectors: BTreeMap<String, SparseVector>` (A30). `Projection.vectors` names dense or sparse vectors; each name is
+// resolved against both lists of the schema. `add_fields` is unchanged: it adds fields and dense vectors only (sparse vectors are fixed at creation, A26).
 pub enum ServiceError { NotFound { kind: &'static str, name: String }, AlreadyExists(String), InvalidArgument(String), SchemaViolation { field: String, message: String }, Unavailable(String) /* retryable */, Timeout, Internal(String) }
 ```
 
 ### 6.8 Native API additions (M1.2; routes follow the M0 style `/v1/namespaces/{ns}/…`, JSON error body unchanged)
 
-`POST|GET /v1/namespaces/{ns}/collections` (create, list) · `GET|DELETE /v1/namespaces/{ns}/collections/{c}` · `POST /v1/namespaces/{ns}/collections/{c}/documents` (ops) · `POST /v1/namespaces/{ns}/collections/{c}/documents/get` · `POST /v1/namespaces/{ns}/query` (the §05 §4 hybrid request) · `POST /v1/namespaces/{ns}/sql` · M1.3 adds `PUT /v1/namespaces/{ns}/collections/{c}/hot` and `POST /v1/namespaces/{ns}/collections/{c}/warm`. Flight SQL listens on `native.flight_sql` (default `0.0.0.0:8082`). M1.2 also serves `…/collections/{c}/fields`, `…/versions`, `/v1/namespaces/{ns}/aliases`, `…/documents/scroll` and `…/documents/count`; `operon dev` binds Flight SQL on `127.0.0.1:8082` (A22). `PrimaryKey` in JSON: integer → `U64`, string → `Str`, `{"uuid": "…"}` → `Uuid` (A12).
+`POST|GET /v1/namespaces/{ns}/collections` (create, list) · `GET|DELETE /v1/namespaces/{ns}/collections/{c}` · `POST /v1/namespaces/{ns}/collections/{c}/documents` (ops) · `POST /v1/namespaces/{ns}/collections/{c}/documents/get` · `POST /v1/namespaces/{ns}/query` (the §05 §4 hybrid request) · `POST /v1/namespaces/{ns}/sql` · M1.3 adds `PUT /v1/namespaces/{ns}/collections/{c}/hot` and `POST /v1/namespaces/{ns}/collections/{c}/warm`. Flight SQL listens on `native.flight_sql` (default `0.0.0.0:8082`). M1.2 also serves `…/collections/{c}/fields`, `…/versions`, `/v1/namespaces/{ns}/aliases`, `…/documents/scroll` and `…/documents/count`; `operon dev` binds Flight SQL on `127.0.0.1:8082` (A22). `PrimaryKey` in JSON: integer → `U64`, string → `Str`, `{"uuid": "…"}` → `Uuid` (A12). Sparse vectors need no new route: the IR's JSON carries `{"sparse": {...}}` retrievers, document ops carry `sparse_vectors`, and a schema carries `sparse_vectors` (A29, A30).
 
 **Hot-tier controls (A13, A23).** M1.2 owns the per-request switch (`operon_query::hot::HotLayer`: the request header and metadata, `Operon-Hot-Used`) and the `--hot` flag; M1.3 owns the hot tier behind it, `PUT …/hot`, `POST …/warm`, the full hot status and `--hot-pin-all`. Every read listener (native REST with `/mcp`, Flight SQL, Qdrant REST and gRPC, Elasticsearch) is wrapped in `HotLayer`, and gRPC responses carry `operon-hot-used` as response metadata (A23). Request header `Operon-Hot: on|off` (gRPC metadata `operon-hot`) disables every hot structure for one request; responses carry `Operon-Hot-Used: <comma-separated subset of hnsw, splits; or none>` (fragment prefetch only fills the H1 cache and is never reported or bypassed); the server flag `--hot=on|off` sets the default and `--hot-pin-all` pins every collection (gates and benchmarks). `PUT …/hot` takes `{vectors, text, fragments}`. `GET …/collections/{c}` reports `manifest_version`, `link_lag_records` and the hot status per structure.
 
@@ -303,7 +327,7 @@ ES and Qdrant have no namespaces. Each gateway serves one namespace, `default` u
 | R9 | One link-apply task per collection (D30 stands). Compaction, split merges and index builds commit through the same pointer CAS and rebase on `Conflict` | One manifest per collection: parallel partition-range tasks would only contend on its CAS | Ingest per collection is bounded by one task; M5 revisits |
 | R10 | Deterministic ordering everywhere: score desc, then canonical PK asc | Required by hot on/off identity and by paging (`search_after`, `scroll`) | None |
 | R11 | Strong consistency is the default for every read on every surface (§01 §4.2); `eventual` is opt-in | ES `refresh`/Qdrant `wait` semantics become free, and conformance tests that write then read pass | One linearizable metastore read per request |
-| R12 | **Hot on/off identity** (§04 §6 rule 1) is enforced exactly for text search, filters, aggregations, fetch, scroll, counts and exact vector search (`AnnParams.exact`, and any ANN whose candidate set falls under the brute-force threshold). Approximate ANN on the hot tier (HNSW) and on the durable tier (Lance IVF) are different approximations, so for them the gate is: every returned score is exact (rescored with full vectors), and Recall@10 against exact search is within the §12 bound on both tiers | Two approximate indexes cannot return identical top-k on every query; pretending otherwise would force brute force | If the user wants bit-identical ANN, hot HNSW must be restricted to exact rescoring of a durable-tier candidate set |
+| R12 | **Hot on/off identity** (§04 §6 rule 1) is enforced exactly for text search, sparse vector search (A29), filters, aggregations, fetch, scroll, counts and exact vector search (`AnnParams.exact`, and any ANN whose candidate set falls under the brute-force threshold). Approximate ANN on the hot tier (HNSW) and on the durable tier (Lance IVF) are different approximations, so for them the gate is: every returned score is exact (rescored with full vectors), and Recall@10 against exact search is within the §12 bound on both tiers | Two approximate indexes cannot return identical top-k on every query; pretending otherwise would force brute force | If the user wants bit-identical ANN, hot HNSW must be restricted to exact rescoring of a durable-tier candidate set |
 | R13 | The metastore over the network (openraft RPCs over HTTP; non-meta nodes run a non-voting learner replica, and `MetaClient` forwards writes and read-index requests to the leader) and `operon --roles …` cluster mode are pulled from M5 into M1.3 | Affinity routing needs more than one process; the in-process `Router` cannot run a real multi-node deployment | M1.3 grows by one task; M5 keeps meta sharding |
 | R14 | Qdrant and Elasticsearch servers are used only as external test oracles (Docker images in M1.7); no code, spec tests or resources from Elastic are vendored (Q10 resolved: not in M1) | License policy (D11) | Conformance relies on client-library and framework suites |
 | R15 | Every gateway returns its protocol's error body; `ServiceError` maps to one status per variant, fixed in each gateway plan | Clients branch on those errors | — |
@@ -313,6 +337,7 @@ ES and Qdrant have no namespaces. Each gateway serves one namespace, `default` u
 | R19 | Lance is always given an explicit commit handler (never the `UnsafeCommitHandler` it silently picks for an unknown URL scheme), auto-cleanup is never enabled, and Lance cleanup is never run: it sees only mainline manifests and would delete detached versions' files (A15). Operon's GC computes Lance reachability from retained collection manifests | R7 and GC own lineage and deletion | — |
 | R20 | Q7: **depend on `qdrant-edge =0.8.0`** behind Operon's own `HnswIndex` trait in `operon-hnsw`; do not vendor Qdrant `lib/segment` (≈200k LOC once its imports are followed). Allow-list filters are `has_id` sets; artifacts are built in a local directory, published as files and opened read-only (mmap) on the owning node | Buy over build; the trait keeps a later fork possible | 0.x API churn; heavy dependency tree, isolated by the feature |
 | R21 | Quickwit code is vendored file by file into `operon-quickwit` from Quickwit `af0591a3`, adapted to Tantivy 0.26.2 (≈16k LOC + ≈1.2k LOC shim, spike §d); its S3 backend is not taken (our `Storage` impl sits on `operon-store`) | Quickwit's crates are coupled through `quickwit-config`/`-proto`/`-common`; files are not | Re-sync by diff on Tantivy bumps |
+| R22 | **The M1 sparse index rides in the Tantivy split, and scoring is exact** (owner decision 2026-09-25, A26–A30). Each sparse field is stored as a Lance column (the source of truth, read by fetch and by split merges) and, inside each split and the tail's RAM index, as a u64 postings field (one term per index) plus a bytes fast field holding the vector. `SparseExec` (M1.2) unions the postings of the query's indices, masks deleted, shadowed and filtered docs, reads each candidate's vector and scores it exactly; IDF statistics are counted over the same live postings. Sparse fields get no hot artifact: pinned splits serve them (M1.3). Not taken: qdrant-edge's sparse inverted index is private (`mod sparse;`, `qdrant-edge-0.8.0/src/lib.rs:13`; only `SparseVector` is re-exported, `edge/reexports.rs:63`) and reachable only through a whole `EdgeShard` on a local directory, so it cannot be the durable, object-storage-backed index, and a hot-only copy would still need this path; Qdrant's standalone `lib/sparse` (≈4.4k LOC at v1.19.1, Apache-2.0) is not published, depends on Qdrant's `common`, `blobstore` and mmap files, and would be a fork. The §06 §6 posting-file index with f16 weights, block-max metadata and MAXSCORE stays Phase B | Buy over build: Tantivy already gives postings, split bundling, hotcache, warmup, delete bitmaps, merges, the RAM tail and pinned splits, so sparse vectors need no new format, commit step, GC root or hot artifact, and exact scoring is the same computation hot or cold (R12) | Query cost is O(Σ posting lengths of the query's indices + candidates × nnz) with no pruning; a very common index makes most documents candidates. The Phase B index replaces the two split fields; splits are re-derived from Lance by merges (M1.3 Ruling 4), so the migration rewrites splits only |
 
 ## 8. Global Constraints (every M1 task)
 
@@ -346,13 +371,14 @@ ES and Qdrant have no namespaces. Each gateway serves one namespace, `default` u
 
 | # | Question | Resolution |
 |---|---|---|
-| Q6 | Lance multivector depth vs hot-tier multivector | Not in M1 (Phase B); multivectors rejected with a clear error |
+| Q1 | Final project name ("Operon" is the working name) | **Resolved 2026-09-25 (owner):** renamed Loam, package name `loamdb` on PyPI, npm and crates.io, after M1 completes. M1 keeps the working names (`operon-*` crates, `operon-client`, `@operon/client`) and publishes nothing; one mechanical rename PR follows M1 (A32) |
+| Q6 | Lance multivector depth vs hot-tier multivector | Not in M1 (Phase B); multivectors rejected with a clear error. Sparse vectors are in M1 (A26) |
 | Q7 | `qdrant-edge` vs forking `lib/segment` | **Resolved:** depend on `qdrant-edge` (R20) |
 | Q10 | Elastic REST YAML spec test license | Not vendored in M1 (R14) |
 
 ## Amendments
 
-Adopted 2026-09-25 from the M1.4, M1.5, M1.6 and M1.7 plans (their proposals are recorded there); already reflected in the text above. A23–A25 come from the cross-plan consistency review of the seven plans (2026-09-25).
+Adopted 2026-09-25 from the M1.4, M1.5, M1.6 and M1.7 plans (their proposals are recorded there); already reflected in the text above. A23–A25 come from the cross-plan consistency review of the seven plans (2026-09-25). A26–A32 record the owner decisions of 2026-09-25 (sparse vectors in M1; the elasticsearch-py wipe endpoints; the package names).
 
 | # | Change | From |
 |---|---|---|
@@ -369,7 +395,7 @@ Adopted 2026-09-25 from the M1.4, M1.5, M1.6 and M1.7 plans (their proposals are
 | A11 | `StoredDoc.seq_no` | M1.5 A2 |
 | A12 | `GET` collections list route; `PrimaryKey` JSON form | M1.6 A1, A3 |
 | A13 | Hot-tier request header, response header, flags and status fields | M1.7 amendment 1 |
-| A14 | Exit-gate wording for sparse/hybrid and `:memory:` tests | M1.4 A4, M1.7 amendment 5 — **owner decision pending**: the alternative is to pull Qdrant sparse vectors (§06 §6) into M1 |
+| A14 | Exit-gate wording for `:memory:` tests (never counted). **Decided 2026-09-25 (owner): sparse vectors are pulled into M1**, so the sparse and hybrid tests are gated like every other server-backed test and the earlier "run and reported but not gated" wording is withdrawn (A26–A30) | M1.4 A4, M1.7 amendment 5; owner decision 2026-09-25 |
 | A15 | R19: Lance cleanup is never run (detached versions) | M1.1 A1 |
 | A16 | `ApplyError::SchemaVersionMismatch` | M1.1 A2 |
 | A17 | Schema types in `operon_common::schema`; `VectorIndexSpec`, `HnswParams`, `Quantization` defined by M1.1; collection names ≤ 222 bytes | M1.1 A5 |
@@ -381,3 +407,10 @@ Adopted 2026-09-25 from the M1.4, M1.5, M1.6 and M1.7 plans (their proposals are
 | A23 | §6.8: the per-request hot switch, `Operon-Hot-Used` and `--hot` are M1.2's (`HotLayer`, M1.2 Ruling 11); M1.3 owns the tier, the hot routes, the status and `--hot-pin-all`; every read listener, the Qdrant and ES gateways included, is wrapped in `HotLayer`; on gRPC `operon-hot-used` is response metadata, not a trailer | Consistency review (M1.2 Task 1 and M1.3 Task 8 both built on this split; the §6.8 text named M1.3 only) |
 | A24 | §6.2/§6.7: `WriteOptions { report_existence, atomic }`, `WriteResult { token, results, positions }`, `OpResult` is an enum; a patch of a missing key without `upsert` changes nothing at apply time and is reported as `OpResult::NotFound` at request time | Consistency review (M1.2 Rulings 10, 16 are the producer's definition) |
 | A25 | §8: commit areas `common` (M1.1's `operon_common::schema`) and `quickwit` (`operon-quickwit`) | Consistency review (M1.1 uses both) |
+| A26 | §1, §3, §6.3: sparse vectors are in M1. `CollectionSchema.sparse_vectors: Vec<SparseVectorSpec>`, `SparseVectorSpec { name, modifier }`, `SparseModifier { None, Idf }`; names unique, non-empty and disjoint from `vectors`; fixed at creation (`check_additive` refuses any change); the exit gate counts the sparse and hybrid suite tests | Owner decision 2026-09-25 (M1.1 Task 3) |
+| A27 | §6.2: `SparseVector` (canonical, private fields, `new` validates and sorts), `Document.sparse_vectors`, `DocOp::Patch.sparse_vectors` (`None` deletes); codec `0x01` body carries them | Owner decision 2026-09-25 (M1.1 Tasks 5–6) |
+| A28 | §6.4: Lance column `_sparse_<j>` per sparse field; split fields `_sparse.<name>` (u64 postings + `u64::MAX` presence term) and `_sparse_w.<name>` (bytes fast); no new object kind, commit step or hot artifact | Owner decision 2026-09-25 (M1.1 Tasks 7–8, R22) |
+| A29 | §6.6: `Retriever::Sparse { field, query, k, filter, params }`, `SparseParams { idf_corpus }`, `Hit.sparse_vectors`; exact scoring and live-only IDF statistics as specified under "`Retriever::Sparse` semantics"; R12's exact class includes sparse search | Owner decision 2026-09-25 (M1.2 Tasks 1, 6, 7) |
+| A30 | §6.7, §6.8: `StoredDoc.sparse_vectors`; `Projection.vectors` resolves dense and sparse names; `add_fields` unchanged; the native JSON forms gain the sparse keys, no new routes | Owner decision 2026-09-25 (M1.2 Tasks 1, 9, 11; M1.6) |
+| A31 | Scope: M1.5 serves the endpoints elasticsearch-py's `wipe_cluster` calls (M1.5 Task 3 rule 7), and M1.7 gates the `elasticsearch-py` client suite; wildcard and `_all` index deletes are served when `destructive_requires_name` is false, the gateway's default (M1.5 Ruling 21) | Owner decision 2026-09-25 (replaces M1.7 amendment 3's "not in M1.5") |
+| A32 | §10 Q1: the product is renamed Loam (`loamdb` on PyPI, npm, crates.io) after M1; M1 keeps the working names and publishes nothing (M1.6 Ruling 16) | Owner decision 2026-09-25 |
