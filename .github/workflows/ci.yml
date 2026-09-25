@@ -27,8 +27,30 @@ jobs:
         run: cargo fmt --all --check
       - name: clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: metastore boundary
+        run: |
+          for c in operon-worker operon-log operon-link operon-collection; do
+            if cargo tree -p "$c" -e normal --prefix none --locked | grep -q '^operon-meta v'; then
+              echo "$c depends on operon-meta outside dev-dependencies (D47)"; exit 1
+            fi
+          done
+          deps=$(cargo tree -p operon-common -e normal --depth 1 --prefix none --locked | tail -n +2 | awk '{print $1}' | sort -u | tr '\n' ' ')
+          test "$deps" = "async-trait serde thiserror tracing " || { echo "operon-common dependencies changed: $deps"; exit 1; }
+          if grep -rnwE 'MetaClient|MetaNode|MetaState|PartitionState' crates/operon-worker/src crates/operon-log/src crates/operon-link/src crates/operon-collection/src crates/operon/src/api.rs; then
+            echo "downstream source names an openraft type (D47)"; exit 1
+          fi
       - name: test
         run: cargo test --workspace --locked
+      - name: metastore encoding
+        run: cargo test -p operon-meta --test encoding --locked
+      - name: metastore conformance
+        run: cargo test -p operon-meta --test conformance --locked
+      - name: log with failpoints
+        run: cargo test -p operon-log --features failpoints --locked
+      - name: link with failpoints
+        run: cargo test -p operon-link --features failpoints --locked
+      - name: collection with failpoints
+        run: cargo test -p operon-collection --features failpoints --locked
 
   crash-gate:
     name: kill -9 crash gate
