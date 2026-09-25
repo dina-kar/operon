@@ -17,7 +17,9 @@ fail = { workspace = true, optional = true }
 futures.workspace = true
 lance.workspace = true
 lance-file.workspace = true
+lance-index.workspace = true
 lance-io.workspace = true
+lance-linalg.workspace = true
 lance-table.workspace = true
 moka = { workspace = true, features = ["sync"] }
 operon-cache.workspace = true
@@ -29,6 +31,7 @@ operon-pk.workspace = true
 operon-quickwit.workspace = true
 operon-store.workspace = true
 operon-text.workspace = true
+operon-worker.workspace = true
 postcard.workspace = true
 prost.workspace = true
 roaring.workspace = true

@@ -1182,65 +1182,21 @@ impl CollectionTarget {
                 + resolution.letters.len() as u64,
             skipped_offsets_total: parent.manifest.skipped_offsets_total + skipped,
         };
-        let path = manifest_path(ns, cid, v + 1, object_ulid(started));
-        put_unique(
-            &ctx.store,
-            &path,
-            crate::manifest::encode_manifest(&manifest),
-        )
-        .await?;
+        let path = put_manifest(ctx, ns, &manifest).await?;
         self.step(CollectionCommitStep::AfterManifestPut, fence)
             .await;
 
-        // 11. Too slow: GC could delete the new objects around the time the
-        // pointer starts referencing them. Leave them unreferenced.
-        let max_commit_delay = ctx.config.max_commit_delay;
-        let took = ctx.meta.now_ms().saturating_sub(started);
-        if took > millis(max_commit_delay) {
-            tracing::warn!(
-                link = %self.link,
-                manifest = %path,
-                took_ms = took,
-                max_commit_delay_ms = millis(max_commit_delay),
-                "a collection commit took longer than max_commit_delay; it is not committed"
-            );
-            return Err(CollectionError::Blocked(format!(
-                "the commit of {path} took {took} ms, longer than {max_commit_delay:?}"
-            ))
-            .into());
+        // 11.–12. The CAS, unless the commit took too long.
+        let version = PointerCas {
+            ns,
+            cid,
+            parent_version: v,
+            path: &path,
+            started,
+            max_age: ctx.config.max_commit_delay,
         }
-
-        // 12. The CAS.
-        let fresh = Freshness {
-            created_at_ms: started,
-            max_age_ms: millis(max_commit_delay),
-        };
-        let result = ctx
-            .meta
-            .cas_pointer_fresh(
-                ns,
-                &collection_pointer_key(cid),
-                (v > 0).then_some(v),
-                &path,
-                Some(fence.clone()),
-                Some(fresh),
-            )
-            .await;
-        let version = match result {
-            Ok(version) => version,
-            // A lost acknowledgement: the pointer names our manifest, which
-            // only we could have written (a unique path).
-            Err(MetaError::Rejected(ApplyError::VersionMismatch {
-                current: Some(current),
-            })) if current.version == v + 1 && current.value == path => current.version,
-            Err(err) => return Err(cas_error(err, ctx.meta.now_ms(), cid)),
-        };
-        if version != v + 1 {
-            return Err(CollectionError::Corrupt(format!(
-                "the pointer of collection {cid} moved from {v} to {version}"
-            ))
-            .into());
-        }
+        .run(ctx, fence)
+        .await?;
         self.step(CollectionCommitStep::AfterCas, fence).await;
         let watermark = PkWatermark {
             manifest_version: version,
@@ -1382,6 +1338,105 @@ fn skipped_offsets(
         skipped += covered.saturating_sub(records);
     }
     Ok(skipped)
+}
+
+/// Step 10 of every collection commit: PUTs `manifest` create-only at a new
+/// path for its version, named with its `created_at_ms` (the commit's
+/// start); returns the path.
+pub(crate) async fn put_manifest(
+    ctx: &CollectionContext,
+    ns: NamespaceId,
+    manifest: &CollectionManifest,
+) -> Result<String, CollectionError> {
+    let path = manifest_path(
+        ns,
+        manifest.collection_id,
+        manifest.version,
+        object_ulid(manifest.created_at_ms),
+    );
+    put_unique(
+        &ctx.store,
+        &path,
+        crate::manifest::encode_manifest(manifest),
+    )
+    .await?;
+    Ok(path)
+}
+
+/// Steps 11 and 12 of every collection commit (link apply and index builds
+/// commit through the same CAS, R9): the pointer `collection/<cid>` moves
+/// from `parent_version` to the manifest at `path`.
+pub(crate) struct PointerCas<'a> {
+    pub ns: NamespaceId,
+    pub cid: CollectionId,
+    pub parent_version: u64,
+    pub path: &'a str,
+    /// The commit's start (`meta.now_ms()`), no later than its oldest new
+    /// object.
+    pub started: u64,
+    /// The oldest the commit's new objects may be at the CAS; below GC's
+    /// grace.
+    pub max_age: Duration,
+}
+
+impl PointerCas<'_> {
+    /// Refuses a commit that started more than `max_age` ago before any CAS
+    /// (GC could delete its new objects around the time the pointer starts
+    /// referencing them: they are left unreferenced), then CASes the pointer
+    /// with `fence` and the freshness `(started, max_age)`. A lost
+    /// acknowledgement is recognised: the pointer names our manifest, which
+    /// only we could have written (a unique path).
+    pub(crate) async fn run(
+        &self,
+        ctx: &CollectionContext,
+        fence: &Fence,
+    ) -> Result<u64, CommitError> {
+        let (ns, cid, v, path) = (self.ns, self.cid, self.parent_version, self.path);
+        let max_age = self.max_age;
+        let took = ctx.meta.now_ms().saturating_sub(self.started);
+        if took > millis(max_age) {
+            tracing::warn!(
+                collection = %cid,
+                manifest = %path,
+                took_ms = took,
+                max_age_ms = millis(max_age),
+                "a collection commit took longer than its deadline; it is not committed"
+            );
+            return Err(CollectionError::Blocked(format!(
+                "the commit of {path} took {took} ms, longer than {max_age:?}"
+            ))
+            .into());
+        }
+        let fresh = Freshness {
+            created_at_ms: self.started,
+            max_age_ms: millis(max_age),
+        };
+        let result = ctx
+            .meta
+            .cas_pointer_fresh(
+                ns,
+                &collection_pointer_key(cid),
+                (v > 0).then_some(v),
+                path,
+                Some(fence.clone()),
+                Some(fresh),
+            )
+            .await;
+        let version = match result {
+            Ok(version) => version,
+            Err(MetaError::Rejected(ApplyError::VersionMismatch {
+                current: Some(current),
+            })) if current.version == v + 1 && current.value == path => current.version,
+            Err(err) => return Err(cas_error(err, ctx.meta.now_ms(), cid)),
+        };
+        if version != v + 1 {
+            return Err(CollectionError::Corrupt(format!(
+                "the pointer of collection {cid} moved from {v} to {version}"
+            ))
+            .into());
+        }
+        Ok(version)
+    }
 }
 
 /// Maps a refused pointer CAS; `proposer_now_ms` is this node's metastore

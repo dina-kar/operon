@@ -33,6 +33,11 @@
 //! deltas ([`PkWatermark`], [`encode_pk_delta`]); [`DeadLetter`]s; and the
 //! gates' model ([`fold_stream`], [`verify_collection`]).
 //!
+//! Task 11: index builds as worker tasks ([`IndexBuildSource`]): Lance
+//! vector indexes grown by delta segments with full rebuilds, and the `_pk`
+//! BTREE, planned by [`plan_index_work`] and committed under the manifest by
+//! the same CAS as link apply.
+//!
 //! The collection schema types live in `operon_common::schema`, because the
 //! metastore's commands carry them (plan M1.1 Ruling 6); they are re-exported
 //! here, both as [`schema`] and at the crate root.
@@ -45,6 +50,7 @@ mod deadletter;
 mod doc;
 mod dynamic;
 mod error;
+mod index_build;
 mod lance;
 mod manifest;
 mod paths;
@@ -78,6 +84,10 @@ pub use deadletter::{DEAD_LETTERS_MAGIC, DeadLetter, decode_dead_letters, encode
 pub use doc::{DocOp, Document, PatchMode, SparseVector, apply_patch};
 pub use dynamic::{DynamicMappingError, propose_dynamic_fields};
 pub use error::{CodecError, CollectionError, SparseVectorError};
+pub use index_build::{
+    INDEX_TASK_PREFIX, IndexBuildSource, IndexWork, PK_INDEX_NAME, plan_index_work,
+    vector_index_name,
+};
 pub use manifest::{
     CollectionManifest, CommitKind, HotArtifactRef, MANIFEST_FORMAT_VERSION, MANIFEST_MAGIC,
     RowLocator, ScalarIndexRef, SplitRef, VectorIndexKind, VectorIndexRef, decode_manifest,
