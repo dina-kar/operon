@@ -15,3 +15,10 @@ af0591a36e16831af9a2ad9484e12465f511ef84. Quickwit's NOTICE:
   Datadog Quickwit
   Copyright 2021-Present Datadog, Inc.
   This product includes software developed at Datadog (<https://www.datadoghq.com/).>
+
+The Porter stemming algorithm (https://tartarus.org/martin/PorterStemmer/),
+by Martin Porter. crates/operon-text/src/porter.rs is a port of his ANSI C
+reference implementation (release 3, 25 Mar 2014), and
+crates/operon-text/tests/data/porter_voc.txt and porter_output.txt are his
+published test vocabulary and its stems. The site states that all the
+software there "is completely free for any purpose", free of charge.

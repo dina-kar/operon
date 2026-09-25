@@ -8,6 +8,11 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+tantivy.workspace = true
+unicode-segmentation.workspace = true
+
+[dev-dependencies]
+operon-common.workspace = true
 
 [lints]
 workspace = true

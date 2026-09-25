@@ -4633,6 +4633,11 @@ dependencies = [
 [[package]]
 name = "operon-text"
 version = "0.0.1"
+dependencies = [
+ "operon-common",
+ "tantivy",
+ "unicode-segmentation",
+]
 
 [[package]]
 name = "operon-worker"
