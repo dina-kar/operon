@@ -1,6 +1,6 @@
 # 03 — Storage Formats (Durable Tier)
 
-Status: **Approved** · 2026-09-22
+Status: **Approved** · 2026-09-22 · revised 2026-09-25 (dataset tags, D52; scan pinning, D53)
 
 The durable tier is the **only source of truth**. It consists of open formats on object storage plus small metastore pointers. Every structure here must be (a) immutable once written, (b) addressable by range reads, and (c) openable cold in ≤ 3 sequential object-store round trips.
 
@@ -19,7 +19,7 @@ The durable tier is the **only source of truth**. It consists of open formats on
 ## 2. Tables — Iceberg via Lakekeeper
 
 ### 2.1 Catalog
-- **Lakekeeper** (Rust, Apache-2.0) is the Iceberg REST catalog. It is bundled in Operon deployments and is also the endpoint external engines (Spark, Trino, DuckDB, Snowflake) use.
+- **Lakekeeper** (Rust, Apache-2.0) is the Iceberg REST catalog. It is bundled in Operon deployments and is also the endpoint external engines (Spark, Trino, DuckDB, ClickHouse, Snowflake) use.
 - Lakekeeper stores catalog state in Postgres today (verify pluggability). Options, in order of preference:
   1. Implement Lakekeeper's catalog-backend trait on the Operon metastore (no extra dependency) — **verify the trait is pluggable**.
   2. Bundle a small managed Postgres for the catalog only (acceptable for large deployments).
@@ -34,14 +34,14 @@ The durable tier is the **only source of truth**. It consists of open formats on
 - Keyed tables maintain a **PK index**: SlateDB instance mapping `pk → (data_file, row_position)`, updated by the worker that writes each data file (it knows positions).
 - Upsert = write new row + add old position to the **deletion vector** of its data file (Iceberg v3 Puffin DV). This keeps reads merge-on-read-cheap.
 - Fallback for engines/versions without v3: equality deletes, converted to DVs/rewrites by compaction.
-- **External upsert writers** (e.g., RisingWave's Iceberg upsert sink) commit equality deletes and bypass the PK index. A keyed table therefore has **one writer class**: either Operon links or an external engine. Externally written tables are read with equality-delete support and are never targets of Operon links; compaction converts their equality deletes to DVs without building a PK index.
+- **External upsert writers** (e.g., the Flink or RisingWave Iceberg upsert sinks) commit equality deletes and bypass the PK index. A keyed table therefore has **one writer class**: either Operon links or an external engine. Externally written tables are read with equality-delete support and are never targets of Operon links; compaction converts their equality deletes to DVs without building a PK index.
 - **Changelog:** because the PK index locates the old row, the apply worker can emit before/after images to the table's changelog stream (§02 §8.1) at the cost of one cached read per update.
 - **Gap:** apache/iceberg-rust cannot yet write DVs or RowDelta commits (open PRs as of 2026-09). Plan: start from the **RisingWave iceberg-rust fork** (equality/position deletes, RewriteFiles), build the DV writer, and upstream it.
 
 ### 2.4 Maintenance
 - Compaction (bin-pack + sort) via **nimtable/iceberg-compaction** (Rust, DataFusion-based), scheduled by workers (§09).
 - Snapshot expiry, orphan-file removal, manifest rewrite — worker tasks with per-table policy.
-- Partition spec and sort order map from ClickHouse `PARTITION BY` / `ORDER BY` (§08).
+- Partition spec and sort order are set per table at creation and changed through Iceberg partition and sort-order evolution (§08).
 
 ## 3. Collections — Lance + Tantivy under one manifest
 
@@ -75,6 +75,8 @@ Immutable, protobuf-encoded inside the `OPCM` v1 envelope (§3.4), at `collectio
 
 A reader that loads manifest *v* sees a mutually consistent Lance version, split set and delete bitmaps. Lance's own cleanup is never run; Operon GC computes Lance reachability from the Lance manifests of the retained chain (M1.1 Ruling 2, §7).
 
+**External readers** (Ray Data, Polars, PySpark, the torch loader, any Lance reader) get a pinned Lance version only through **scan pinning** (D53, §17 §3): the dataset's mainline is the empty version 1, so opening the dataset root shows no rows. A scan plan names the manifest version, the Lance dataset URI with the manifest's detached version id, the fragments with their row counts and whether a tail exists; the reader reads those fragments (which carry `_source`, system columns and vectors, not the typed fields) or falls back to Flight.
+
 ### 3.4 Operon-defined collection formats
 Each Operon format below is `magic (4 bytes) ‖ u16 LE format version ‖ body ‖ crc32c (u32 LE) of every preceding byte` (M1.1 Ruling 19):
 
@@ -101,7 +103,7 @@ Not enveloped:
 
 ### 4.1 Vertex-ID map
 - Per vertex label, a SlateDB instance mapping `external_key → dense u64 vertex_id` (and reverse). Dense IDs make CSR arrays compact and cache-friendly.
-- IDs are assigned by the graph-link worker in batches; `MERGE` uniqueness is enforced with SlateDB transactions (SSI).
+- IDs are assigned by the graph-link worker in batches; one ID per external key is enforced with SlateDB transactions (SSI).
 
 ### 4.2 Adjacency sidecars
 For each edge source segment (an Iceberg data file or a Lance fragment), the graph link writes:
@@ -134,7 +136,8 @@ A single abstraction (`PkIndex`) backed by **SlateDB** (object-storage-native LS
 
 ## 7. Garbage collection
 
-- Reachability-based: an object is deletable when no live manifest/snapshot/offset-index entry references it **and** it is older than the grace period (default 1 h; ≥ longest query timeout).
+- Reachability-based: an object is deletable when no live manifest/snapshot/offset-index entry or dataset tag (M2) references it **and** it is older than the grace period (default 1 h; ≥ longest query timeout).
 - Time travel: manifests/snapshots retained per policy (default 24 h for collections/graphs, Iceberg snapshot policy for tables); GC respects retention.
 - Collections keep every manifest for `time_travel_retention` (24 h) after it is superseded, plus the last `keep_manifests`; implicit streams are trimmed below the oldest retained manifest. GC keeps every object a retained manifest references (splits, delete bitmaps, PK deltas, dead letters and the files of its Lance version), and deletes a released manifest's objects no earlier than the manifest itself. A dropped collection's prefixes are retired and deleted once the drop is older than the grace period (M1.1 Rulings 12, 13).
+- **Dataset tags** (M2, D52, §17 §4): a named tag pins one collection manifest until the tag is deleted (or expires). GC keeps a tagged manifest and the same objects a retained manifest keeps, but not its ancestors. A tag can be created only on a manifest that is still retained, and GC reads tags and retention from one metastore snapshot, so a manifest is never both tagged and collected. A tag is taken only on a manifest whose `applied` offsets cover the requested consistency token, so reading it never needs the stream tail and tags never hold back implicit-stream trimming. From M4 a tag on a table is an Iceberg tag ref without a maximum ref age, which Iceberg snapshot expiry already respects.
 - `durable/` is outside reachability GC: the Resonate server owns those objects and collects its own orphan timers. Settled-promise retention (deleting old origin documents) is a per-namespace policy run as a worker task.

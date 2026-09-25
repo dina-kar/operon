@@ -1,110 +1,135 @@
-# 08 — Analytics (ClickHouse Pillar)
+# 08 — Analytics (Iceberg)
 
-Status: **Approved** · 2026-09-22
+Status: **Approved** · 2026-09-22 · revised 2026-09-25 (Iceberg only, no ClickHouse surface, D45; M4)
 
-Tables replace ClickHouse for AI-app analytics (product analytics, LLM usage/cost, traces, evals, observability). Storage is **Apache Iceberg** (open to every lakehouse engine); speed comes from DataFusion + the Iceberg hot tier (§04 §3); freshness comes from the tail.
+Tables serve AI-app analytics (product analytics, LLM usage and cost, traces, evals, observability). Storage is **Apache Iceberg** through Lakekeeper, open to every lakehouse engine; speed comes from DataFusion and the Iceberg hot tier (§04 §3); freshness comes from the tail. Operon's SQL surface is DataFusion SQL over Arrow Flight SQL and the native API. External engines, ClickHouse among them, query the same tables through Lakekeeper's Iceberg REST catalog (§8); Operon has no ClickHouse HTTP interface, dialect or MergeTree-engine DDL (D45).
 
 ---
 
-## 1. Table semantics: MergeTree family → Iceberg
+## 1. Table semantics
 
-ClickHouse DDL is accepted and mapped:
+Every table is an Iceberg table. Its write semantics are declared natively:
 
-| ClickHouse engine | Operon table semantics | Implementation |
-|---|---|---|
-| `MergeTree` | Append-only table, sort key = `ORDER BY`, partition spec = `PARTITION BY` | Iceberg sort order + partition spec; hot projections sorted by key |
-| `ReplacingMergeTree(ver)` | Keyed table; latest version per key wins | PK index + deletion vectors on upsert (§03 §2.3); `FINAL` is implicit (always deduplicated) |
-| `SummingMergeTree` / `AggregatingMergeTree` | Rows are partial aggregate states merged by key | Stored as aggregate-state columns; merged at read (`TailMergeExec`/aggregation) and during compaction |
-| `CollapsingMergeTree` / `VersionedCollapsingMergeTree` | Phase B: sign-based collapse at read/compaction | — |
-| `Kafka` engine + materialized view | **Link** `stream → table` with transform (§09) | Native; no polling engine table |
-| `Distributed`, `ON CLUSTER`, `Replicated*` | Accepted; no-op (storage is shared) | — |
-| `TTL` | Retention/transform policy executed by workers | Row-level delete via DVs or partition drop |
+| Kind | Declaration | Semantics | Implementation |
+|---|---|---|---|
+| Append-only | default | Rows are appended; duplicates are kept | Iceberg data files; sort order and partition spec from `SORTED BY` / `PARTITIONED BY` |
+| Keyed | `PRIMARY KEY (…)` | One live row per key, latest write wins in log order; every read is deduplicated | PK index + deletion vectors on upsert (§03 §2.3) |
+| Keyed, versioned | `PRIMARY KEY (…) VERSION BY (col)` | The row with the greatest `col` wins; equal versions resolve by log order. Late, older rows are dropped at apply | As keyed; the apply worker compares versions through the PK index |
+| Aggregating | `PRIMARY KEY (…) WITH (merge = 'aggregate')` and state columns | Rows are partial aggregate states merged by key | State columns (§4) merged at read (`TailMergeExec` / aggregation) and during compaction |
+| Retention | `WITH (retention = '180 days' ON ts)` | Rows older than the retention are removed | Worker job: partition drop when whole partitions expire, DVs otherwise |
 
 Example:
 
 ```sql
 CREATE TABLE llm_calls (
-  ts DateTime64(3), tenant LowCardinality(String), model LowCardinality(String),
-  prompt_tokens UInt32, completion_tokens UInt32, cost_usd Float64, latency_ms UInt32,
-  trace_id String
-) ENGINE = MergeTree
-PARTITION BY toDate(ts)
-ORDER BY (tenant, model, ts)
-TTL ts + INTERVAL 180 DAY;
--- ⇒ Iceberg table: partition day(ts), sort (tenant, model, ts); retention 180 d
+  ts TIMESTAMP(3) WITH TIME ZONE, tenant STRING, model STRING,
+  prompt_tokens INT, completion_tokens INT, cost_usd DOUBLE, latency_ms INT,
+  trace_id STRING
+)
+PARTITIONED BY (day(ts))
+SORTED BY (tenant, model, ts)
+WITH (retention = '180 days' ON ts, dictionary = 'tenant, model');
+-- ⇒ Iceberg table: partition day(ts), sort order (tenant, model, ts), Parquet dictionary pages on tenant and model
 ```
 
-## 2. Type mapping (ClickHouse → Iceberg/Arrow)
+`CREATE TABLE` with these clauses is an Operon DDL extension to DataFusion SQL; the native API has the same resource (`POST|GET /v1/namespaces/{ns}/tables`, `GET|DELETE /v1/namespaces/{ns}/tables/{t}`). A table has one writer class (§03 §2.3): Operon links and ingest, or an external engine (§8).
 
-| ClickHouse | Iceberg | Notes |
+## 2. Types
+
+Arrow/DataFusion types map to Iceberg types:
+
+| Arrow / DataFusion | Iceberg | Notes |
 |---|---|---|
-| `Int8…Int64`, `UInt8…UInt32` | `int`/`long` | UInt32 → long |
-| `UInt64` | `decimal(20,0)` or `long` with overflow check | configurable |
-| `Float32/64` | `float`/`double` | |
-| `Decimal(P,S)` | `decimal(P,S)` | P ≤ 38 |
-| `String`, `FixedString` | `string` / `binary`/`fixed` | |
-| `LowCardinality(T)` | `T` + dictionary encoding hint | Parquet dictionary pages |
-| `Date`, `Date32`, `DateTime`, `DateTime64(p, tz)` | `date`, `timestamp`/`timestamptz` (µs; ns in v3) | |
-| `UUID` | `uuid` | |
-| `Enum8/16` | `string` + check | |
-| `Nullable(T)` | optional `T` | |
-| `Array(T)`, `Map(K,V)`, `Tuple(...)` | `list`, `map`, `struct` | |
-| `JSON` / `Object('json')` | `variant` (Iceberg v3) | requires v3 table |
-| `IPv4/IPv6` | `int`/`fixed(16)` + logical annotation | |
-| `AggregateFunction(f, T)` | `binary` (serialized state) | Operon-readable only; external engines see opaque bytes |
+| `Int8…Int64`, `UInt8…UInt32` | `int` / `long` | `UInt32` → `long` |
+| `UInt64` | `decimal(20,0)`, or `long` with an overflow check | configurable |
+| `Float32` / `Float64` | `float` / `double` | |
+| `Decimal128(P,S)` | `decimal(P,S)` | P ≤ 38 |
+| `Utf8`, `Binary`, `FixedSizeBinary(n)` | `string`, `binary`, `fixed(n)` | dictionary encoding is a Parquet hint, not a type |
+| `Date32`, `Timestamp(µs[, tz])` | `date`, `timestamp` / `timestamptz` | ns precision needs an Iceberg v3 table |
+| UUID (extension type) | `uuid` | |
+| `List`, `Map`, `Struct` | `list`, `map`, `struct` | |
+| JSON | `variant` | requires an Iceberg v3 table |
+| Aggregate state (§4) | `binary` (serialized state) | Operon-readable only; external engines see opaque bytes |
 
 ## 3. Ingest paths
 
-1. **ClickHouse HTTP `INSERT`** (`INSERT INTO t FORMAT JSONEachRow|CSV|TSV|RowBinary|Parquet|Arrow`) → table's implicit stream → link → Iceberg.
-2. **Kafka topic → table link** (replaces Kafka engine + MV).
-3. **Materialized views** (§4) from other tables/streams.
-4. **Bulk load**: register existing Parquet files into the Iceberg table (add-files) or `INSERT … SELECT` from `s3()`/`url()` table functions (Phase B).
+1. **Native API:** `POST /v1/namespaces/{ns}/tables/{t}/rows` with JSON, NDJSON or Arrow IPC → the table's implicit stream → link → Iceberg. The response carries a consistency token.
+2. **Flight `DoPut`:** Flight SQL bulk ingest (`CommandStatementIngest`, what ADBC's ingest API sends) with a target in the `tables` schema, as for collections and streams (D49, §02 §7).
+3. **SQL:** `INSERT INTO t VALUES …` and `INSERT INTO t SELECT …` over Flight SQL or the native API.
+4. **Stream → table links** from explicit streams (native streaming API, §02 §7) and system streams such as agent telemetry (§16 §6.1).
+5. **Materialized views** (§4) from other tables and streams.
+6. **Bulk load:** register existing Parquet files into the table (add-files), or `INSERT … SELECT` from external Parquet on object storage (Phase B).
 
 Implicit streams of tables use the `arrow` segment encoding (§02 §5): the link reads only the columns it writes and skips JSON decoding, and the T3 tail holds the same Arrow batches.
 
-**CDC out:** keyed tables (`ReplacingMergeTree`) can expose a changelog stream (§02 §8.1), so downstream consumers and rollups see updates and deletes, not just inserts.
+**CDC out:** keyed tables can expose a changelog stream (§02 §8.1, M5), read through the native streaming API, so downstream consumers and rollups see updates and deletes, not just inserts.
 
 ## 4. Materialized views
 
-ClickHouse MVs are insert-triggered transforms; Operon implements them as links with a SQL transform:
+A materialized view is a link with a SQL transform (§09): per input batch it computes rows or partial aggregate states and appends them to its target table, exactly once via link offsets.
 
 ```sql
+CREATE TABLE cost_daily (
+  day DATE, tenant STRING, model STRING,
+  cost  STATE sum(DOUBLE),
+  calls STATE count(),
+  p95   STATE quantile(0.95, INT)
+) PRIMARY KEY (day, tenant, model) WITH (merge = 'aggregate');
+
 CREATE MATERIALIZED VIEW cost_by_day TO cost_daily AS
-SELECT toDate(ts) AS day, tenant, model,
-       sumState(cost_usd) AS cost, countState() AS calls, quantileState(0.95)(latency_ms) AS p95
-FROM llm_calls GROUP BY day, tenant, model;
+SELECT date_trunc('day', ts) AS day, tenant, model,
+       sum(cost_usd) AS cost, count(*) AS calls, quantile(0.95, latency_ms) AS p95
+FROM llm_calls GROUP BY 1, 2, 3;
+
+SELECT day, tenant, finalize(cost), finalize(calls), finalize(p95) FROM cost_daily;  -- merged states, finalized
 ```
 
-- Supported (Phase A): stateless projections/filters/UDFs, and **mergeable aggregate states**: `count`, `sum`, `min`, `max`, `avg`, `uniq` (HLL), `uniqExact` (bounded), `quantile(s)` (t-digest/DDSketch), `argMin/argMax`, `groupArray` (bounded).
-- Semantics: per input batch, compute partial states → append to target (an AggregatingMergeTree-style table) → merged at read and compaction. Exactly-once via link offsets.
+- Supported (Phase A): stateless projections, filters and UDFs, and **mergeable aggregate states**: `count`, `sum`, `min`, `max`, `avg`, `approx_distinct` (HLL), bounded exact distinct, `quantile(s)` (t-digest/DDSketch), `arg_min`/`arg_max`, bounded `array_agg`.
+- Semantics: an aggregate MV's target is an aggregating keyed table (§1); states are merged at read and during compaction, and `finalize` turns a merged state into its value.
 - Out of scope: MV joins with mutable dimension tables beyond dictionary-style lookups (Phase B), window views, refreshable MVs (Phase B, as scheduled `INSERT … SELECT`).
 
-## 5. ClickHouse HTTP interface
+## 5. SQL surface
 
-- Endpoint compatible with port 8123 semantics: `GET/POST /?query=…`, body as query or data, `database`, `default_format`, `query_id`, `session_id` (temporary settings), `settings` params, `X-ClickHouse-*` headers, `/ping`, `/replicas_status` (synthetic).
-- Formats (Phase A): `JSON`, `JSONEachRow`, `JSONCompact`, `TabSeparated(WithNames)`, `CSV(WithNames)`, `RowBinary(WithNamesAndTypes)`, `Parquet`, `Arrow`, `ArrowStream`, `Pretty` (subset). Phase B: `Native` format over HTTP.
-- SQL: `sqlparser-rs` `ClickHouseDialect` → DataFusion, plus a **function-compat UDF library** prioritized by usage in target clients/dashboards: `toStartOfInterval`, `toDate`, `toStartOfHour`, `dateDiff`, `formatDateTime`, `if`, `multiIf`, `countIf`/`sumIf`/`avgIf`, `uniq`, `quantile(s)`, `arrayJoin`, `has`, `arrayMap` (lambdas), `JSONExtract*`, `splitByChar`, `match`/`extract` (regex), `any`, `argMax`, `groupArray`, `topK`, `runningDifference`, `neighbor`.
-- System tables (subset): `system.tables`, `system.columns`, `system.databases`, `system.parts` (synthetic from Iceberg files), `system.query_log` (from Operon query log stream).
-- **Native TCP protocol (9000):** Phase C, only if client demand justifies it (many tools — Grafana plugin, clickhouse-connect, Metabase driver, JDBC — work over HTTP; verify per tool).
+- **Dialect:** DataFusion SQL with Operon's DDL extensions and UDFs (§05 §8). One dialect for tables, collections, streams and graphs.
+- **Transports:** Arrow Flight SQL (ADBC drivers for Python, Go, Java and C; the Flight SQL JDBC driver), the native API (`POST /v1/namespaces/{ns}/sql`) and the Python/TypeScript SDKs.
+- **BI and dashboards:** tools with a Flight SQL or ADBC connector (for example Grafana's Flight SQL data source, Superset and Metabase through the Flight SQL JDBC driver; verify per tool). Tools that only speak another engine's protocol use that engine over the Iceberg REST catalog (§8).
+- **System tables:** `information_schema`, `system.tables`, `system.columns`, `system.files` (Iceberg data files and DVs of the current snapshot), `system.snapshots`, `system.query_log` (from Operon's query-log stream).
+- Time travel: `SELECT … FROM t FOR SYSTEM_TIME AS OF <timestamp>` and `FOR SYSTEM_VERSION AS OF <snapshot_id>` read an older Iceberg snapshot (verify syntax against DataFusion's parser).
 
-Conformance: clickhouse-connect (Python) and clickhouse-js test subsets; Grafana ClickHouse datasource over HTTP; Metabase/Superset via HTTP drivers; ClickBench query set.
+## 6. Mutations and deletes
 
-## 6. Mutations
-
-- `ALTER TABLE … DELETE WHERE` / lightweight `DELETE FROM` → DV writes for matching rows (worker job; synchronous for small predicates).
-- `ALTER TABLE … UPDATE` → rewrite affected rows as upserts (keyed tables) or copy-on-write file rewrites (append tables).
-- Schema evolution: `ADD/DROP/RENAME COLUMN`, type widening → Iceberg schema evolution (no rewrite).
+- `DELETE FROM t WHERE …` → deletion-vector writes for matching rows (a worker job; synchronous for small predicates).
+- `UPDATE t SET … WHERE …` → upserts on keyed tables; on append tables, a DV for the old rows plus appended new rows (merge-on-read).
+- Deletion vectors are Iceberg v3 Puffin DVs written by Operon's DV writer (§03 §2.3); compaction folds them into rewritten files.
+- Schema evolution: `ALTER TABLE … ADD/DROP/RENAME COLUMN`, type widening → Iceberg schema evolution (no rewrite). Partition and sort-order evolution for new data.
 
 ## 7. Performance strategy
 
-1. **Layout:** sort by `ORDER BY` key within files; partition pruning; Parquet page index + bloom filters on declared columns; target 128–512 MiB files via compaction.
+1. **Layout:** sort by the table's sort key within files; partition pruning; Parquet page index and bloom filters on declared columns; 128–512 MiB files via compaction.
 2. **T0 file index** for zero-I/O pruning (§04 §3.1).
-3. **Hot projections** for pinned/hot partitions: sparse PK index, skip indexes, aggregate projections (§04 §3.3).
-4. **Tail** for sub-second freshness (§04 §3.4).
-5. **Distributed execution** across hot-tier owners for large scans (§05 §6).
+3. **T1 Parquet data cache** in foyer (RAM → NVMe), with coalesced range reads (§04 §3.2).
+4. **T2 hot projections** for pinned or hot partitions: sparse PK index, skip indexes, aggregate projections (§04 §3.3).
+5. **T3 tail** for sub-second freshness (§04 §3.4).
+6. **Distributed execution** across hot-tier owners for large scans (§05 §6).
 
-Targets: ClickBench (hot, on hot projections) within 2–3× of ClickHouse OSS on equal hardware for the median query in v1; TPC-H SF100 for join-heavy workloads (DataFusion baseline).
+Skip indexes and aggregate projections are declared per table and built only in the hot tier (Iceberg files are unchanged):
+
+```sql
+ALTER TABLE llm_calls ADD INDEX trace_bloom (trace_id) TYPE bloom;
+ALTER TABLE llm_calls ADD PROJECTION cost_by_tenant AS
+  SELECT date_trunc('day', ts) AS day, tenant, count(*), sum(cost_usd) FROM llm_calls GROUP BY 1, 2;
+ALTER TABLE llm_calls SET HOT (partitions => 'last 7 days');
+```
+
+Targets: ClickBench (hot, on hot projections) median query within 2–3× of ClickHouse OSS on equal hardware in v1, with ClickHouse as a performance reference only; TPC-H SF100 for join-heavy workloads (DataFusion baseline).
 
 ## 8. External engine access
 
-Every table is a standard Iceberg table in Lakekeeper: Spark, Trino, DuckDB, Snowflake, StarRocks, PyIceberg read it (and may write it; Operon's T0 cache detects external snapshots via Lakekeeper events/polling). External writers bypass Operon's tail and links; Operon treats their commits as new snapshots. A table has one writer class (§03 §2.3): tables written by an external engine, such as RisingWave's results (§09 §8), are not Operon link targets. They still get the Iceberg hot tier and the ClickHouse surface, with freshness equal to the external engine's commit cadence.
+Every table is a standard Iceberg table in Lakekeeper. DuckDB, Trino, Spark, Sail (a named M4 gate reader; Operon contributes its deletion-vector reads upstream, D55), ClickHouse (through its Iceberg REST catalog support; verify version), Snowflake, StarRocks, PyIceberg, Ray Data and Polars read it (retained dataset tags are Iceberg tag refs, D52), and may write it; Operon's T0 cache detects external snapshots via Lakekeeper events or polling. External writers bypass Operon's tail and links; Operon treats their commits as new snapshots. A table has one writer class (§03 §2.3): tables written by an external engine, such as a Spark or Flink job, are not Operon link targets. They still get the Iceberg hot tier and Operon's SQL surface, with freshness equal to the external engine's commit cadence. Access control for external engines is Lakekeeper's (credential vending and its authorization model); how Operon's namespace RBAC maps onto it is settled in the M4 plan (verify).
+
+## 9. Benchmarks and gates (M4, §12)
+
+- ClickBench (hot) over Flight SQL: median query within 2–3× of ClickHouse OSS on equal hardware.
+- TPC-H SF100 completes.
+- Spark, Trino, DuckDB and ClickHouse read Operon tables through Lakekeeper's Iceberg REST catalog.
+- Query results match DuckDB over the same Iceberg tables (differential, §12 §2).

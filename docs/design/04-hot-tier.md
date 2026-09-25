@@ -18,6 +18,8 @@ Status: **Approved** · 2026-09-22
 
 **Coherence is trivial by construction:** durable objects are immutable, so H0/H1 never need invalidation. Only *pointers* (manifest pointer, Iceberg current snapshot) change; nodes learn about them through meta watch streams (Operon-written objects) or Lakekeeper change events/polling (externally written Iceberg tables).
 
+The layering is the pattern StarRocks' Data Cache established for Iceberg on S3 (stateless compute over open files, a RAM + NVMe cache), applied uniformly to Parquet, Lance pages, Tantivy splits and graph sidecars.
+
 ## 2. Hot structures per object type
 
 | Object | Durable tier | H2 hot structure | H3 tail |
@@ -26,13 +28,13 @@ Status: **Approved** · 2026-09-22
 | Collection — vectors | Lance IVF index + vectors | **HNSW** (Qdrant `lib/segment`-derived: HNSW, filterable-HNSW links, quantization) on NVMe/RAM | Small in-memory HNSW / flat index over tail points |
 | Collection — text | Tantivy splits on S3 | Splits pinned on NVMe (whole files), hotcaches in RAM | In-memory Tantivy index (RAM directory) over tail docs |
 | Collection — docs | Lance fragments | Hot fragments on NVMe | Tail docs in Arrow |
-| **Table (Iceberg)** | Parquet + Iceberg metadata | **Hot projections** (MergeTree-like sorted parts + sparse PK index + skip indexes + aggregate projections) on NVMe | Arrow buffers of rows beyond last Iceberg commit |
+| **Table (Iceberg)** | Parquet + Iceberg metadata | **Hot projections** (sorted columnar parts + sparse PK index + skip indexes + aggregate projections) on NVMe | Arrow buffers of rows beyond last Iceberg commit |
 | Graph | CSR/CSC sidecars | CSR/CSC chunks resident in RAM for hot vertex ranges; hot vertex-ID map | Edge-delta overlay (adds/deletes since last sidecar build) |
 | Durable execution (§14) | Origin documents | Canonical document bytes cached per origin, bounded by count and weight, revalidated with `If-None-Match: <etag>` on every read | — (every transition is a durable write) |
 
 ## 3. The Iceberg + Lakekeeper hot tier (tables)
 
-Goal: ClickHouse-like latency and sub-second freshness on hot data, while every byte at rest stays standard Iceberg readable by any engine.
+Goal: interactive analytical latency (§7) and sub-second freshness on hot data, while every byte at rest stays standard Iceberg readable by any engine.
 
 ### 3.1 T0 — metadata hot tier
 - Lakekeeper `LoadTable` response, `metadata.json`, manifest lists and manifests are fetched **once per snapshot** and decoded into an in-memory **file index**: per data file → partition values, column min/max/null counts, record count, DV reference, sort-order id.
@@ -45,13 +47,13 @@ Goal: ClickHouse-like latency and sub-second freshness on hot data, while every 
 - Column-chunk pages in `foyer` (RAM → NVMe), keyed by `(file_path, offset, len)` — Iceberg data files are immutable, so no invalidation.
 - Read coalescing: adjacent page requests merged into single range GETs (≥ 1 MiB) on cold reads.
 
-### 3.3 T2 — hot projections ("MergeTree on NVMe")
+### 3.3 T2 — hot projections
 For tables/partitions that are **pinned** or **auto-promoted** (§4):
 
 - **Local parts:** data files re-encoded into node-local columnar parts (Arrow IPC + LZ4/ZSTD initially; Vortex as a future option), sorted by the table's sort key.
 - **Sparse primary index:** one entry per 8,192-row granule (ClickHouse model) → binary search on sort-key prefixes.
-- **Skip indexes:** per-granule min/max, bloom (tokens/ngrams for LIKE), set indexes for low-cardinality columns — declared per table (`INDEX … TYPE bloom_filter`).
-- **Aggregate projections:** declared rollups (`ADD PROJECTION p (SELECT day, tenant, count(), sum(cost) GROUP BY day, tenant)`) maintained incrementally with mergeable aggregate states; the planner rewrites matching queries to read the projection (ClickHouse projection semantics).
+- **Skip indexes:** per-granule min/max, bloom (tokens/ngrams for LIKE), set indexes for low-cardinality columns — declared per table (§08).
+- **Aggregate projections:** declared rollups (for example `count(*)` and `sum(cost)` grouped by `day, tenant`) maintained incrementally with mergeable aggregate states; the planner rewrites queries the projection covers to read it (§05 §3).
 - **Incremental maintenance from snapshot diffs:** added data files → new local parts; added DVs/deletes → local delete masks; background local merges. A projection is tagged with the Iceberg snapshot id it reflects.
 - **Optional publication:** a worker may build projection parts once and publish them under `…/hot/projection/<snapshot>/` so new/replacement nodes download instead of rebuilding (still derived; safe to delete).
 

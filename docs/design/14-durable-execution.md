@@ -53,7 +53,7 @@ Workers receive tasks through transports: HTTP push (Resonate calls the worker),
 
 ## 4. Phases
 
-### Phase A — the Resonate surface on the blob backend (M2)
+### Phase A — the Resonate surface on the blob backend (M3)
 
 - Fork, pinned to a git revision (the crates are not on crates.io): `resonate-core`, `resonate-plugin`, `resonate-gateway-http`, `resonate-server-blob`, `resonate-transport-http-push`, `resonate-transport-http-poll`. Workspace version at research time: 0.10.1.
 - Hand the blob server an `object_store` built by `operon-store` (so fault injection, provider conformance and credentials are shared) with the namespace prefix.
@@ -65,10 +65,10 @@ Workers receive tasks through transports: HTTP push (Resonate calls the worker),
 ### Phase B — Operon-native value (M4)
 
 1. **Search and observability via a change stream.** After each committed origin write, the server appends the changed promises and tasks to the namespace's `durable_events` stream (at-least-once, idempotent by `(origin, generation)`). A link maintains a keyed table `system.durable_promises` and `system.durable_tasks`, so SQL and the Resonate `search` operations run against an index instead of a scan. A worker repair sweep re-emits documents whose generation is ahead of the index. These reads are eventually consistent, as Resonate's searches already are.
-2. **Execution graphs.** The same events feed an Operon graph: promises as vertices, callbacks as edges, so a call tree is a Cypher path (Resonate's Neo4j backend does this for Neo4j).
+2. **Execution graphs.** The same events feed a mapped Operon graph (§07): promises as vertices, callbacks as edges, so a call tree is a `graph_expand` from its root promise (Resonate's Neo4j backend does the same in Neo4j).
 3. **Cluster-wide timer shards.** Phase A keeps timers per namespace, which is fine for thousands of active namespaces but makes timer scanning grow with namespace count. Phase B moves timer objects to cluster-level shards (`durable/t/<NN>/<deadline>_<ns>_<target>@<token>`), each shard leased to one worker through meta leases, so one sweeper per shard lists only due deadlines.
 4. **Low-latency namespaces.** Place a namespace's `durable/` prefix on the `express` zonal buckets (§02 §2) for single-digit-ms transitions (verify that S3 Express One Zone supports `If-Match` on PUT).
-5. **Workers on streams (M3+).** A transport plugin that publishes tasks to an Operon stream, so Kafka consumer groups can serve as a worker pool.
+5. **Workers on streams (M5+).** A transport plugin that publishes tasks to an Operon stream, so named consumers of the native streaming API (§02 §7) can serve as a worker pool.
 
 ## 5. Consistency and failure model
 

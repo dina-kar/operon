@@ -1,8 +1,8 @@
 # 05 — Query Engine
 
-Status: **Approved** · 2026-09-22
+Status: **Approved** · 2026-09-22 · revised 2026-09-25 (frontends narrowed, D42/D44)
 
-All reads — SQL, ClickHouse queries, ES `_search`, Qdrant `query`, Cypher, native hybrid requests — compile to **Apache DataFusion** logical plans and execute on `query` nodes. DataFusion is embedded as a library; Operon adds catalogs, table providers, physical operators, optimizer rules and a distributed layer.
+All reads — native hybrid requests (including the graph `expand` stage), SQL over the native API and Flight SQL, ES `_search`, Qdrant `query` — compile to **Apache DataFusion** logical plans and execute on `query` nodes. DataFusion is embedded as a library; Operon adds catalogs, table providers, physical operators, optimizer rules and a distributed layer.
 
 ---
 
@@ -13,7 +13,7 @@ All reads — SQL, ClickHouse queries, ES `_search`, Qdrant `query`, Cypher, nat
 | `CatalogProvider` | Namespace |
 | `SchemaProvider` | Object kind: `tables`, `collections`, `streams`, `graphs` (plus user schemas for tables) |
 | `TableProvider` | `IcebergTable` (hot-tier aware), `CollectionProvider`, `StreamProvider` (offset/timestamp-bounded scans), `GraphVertexProvider`/`GraphEdgeProvider` |
-| Table functions (UDTF) | `vector_search`, `text_search`, `hybrid_search`, `graph_expand`, `graph_table` (SQL/PGQ-style), graph algorithms |
+| Table functions (UDTF) | `vector_search`, `text_search`, `hybrid_search`, `rrf` (reciprocal-rank fusion; Spice's names, D56; `rerank` reserved for M3), `graph_expand`, `graph_neighbors`, graph algorithms (`leiden`, `pagerank`, `wcc`) |
 
 ## 2. Custom physical operators
 
@@ -26,7 +26,7 @@ All reads — SQL, ClickHouse queries, ES `_search`, Qdrant `query`, Cypher, nat
 | `FilterBitmapExec` | Builds roaring bitmaps from Tantivy/Lance scalar indexes for pre-filtering | Filter predicate |
 | `FusionExec` | Combines ranked lists: RRF, weighted score, DBSF (Qdrant-compatible) | ≥2 ranked inputs |
 | `DocFetchExec` | Fetches documents/columns by row address from Lance (coalesced range reads) | Row addresses |
-| `ExpandExec` / `VarExpandExec` | 1-hop / k-hop traversal over CSR/CSC + edge-delta overlay, with edge-type/property filters | Frontier vertex ids |
+| `ExpandExec` | 1–2 hop traversal over CSR/CSC + edge-delta overlay, with edge-type/property filters | Frontier vertex ids |
 | `ShortestPathExec` | Bidirectional BFS | Two vertex sets |
 | `StreamScanExec` | Scans stream segments by offset/time range, decodes RecordBatch → Arrow | Stream partitions |
 | `TailMergeExec` | Unions durable results with tail results honoring upsert/delete semantics | Durable + tail |
@@ -37,7 +37,7 @@ All operators emit Arrow `RecordBatch` streams and report metrics (rows, bytes, 
 
 - **Index pushdown:** predicates on indexed columns become `FilterBitmapExec` inputs; `ORDER BY distance(v, q) LIMIT k` → `AnnExec`; `WHERE match(text, 'q') ORDER BY score LIMIT k` → `TantivySearchExec`.
 - **Pre- vs post-filter selection** for ANN: cost-based on estimated filter selectivity (bitmap cardinality); highly selective → pre-filter (bitmap-restricted search / brute force on small sets); broad → post-filter with over-fetch.
-- **Projection matching** for aggregates (ClickHouse semantics) → `ProjectionScanExec`.
+- **Projection matching** for aggregates: a query whose grouping keys and aggregates a declared aggregate projection covers is rewritten to read it → `ProjectionScanExec`.
 - **Late materialization:** retrieve `(_pk, row_addr, score)` first, fetch documents only for final top-k.
 - **Dynamic filters** (DataFusion 55) propagate join/top-k bounds into scans, including across distributed stage boundaries.
 
@@ -64,6 +64,8 @@ POST /v1/ns/acme/query
 ```
 
 Plan: `FilterBitmapExec` → (`AnnExec` ‖ `TantivySearchExec`) → `FusionExec(RRF)` → `ExpandExec(2 hops)` → `DocFetchExec` → optional `RerankExec` (UDF calling an external model endpoint; pluggable, off by default) → `Limit`.
+
+The `expand` stage is the GraphRAG path (D44): vector/BM25 seeds → 1–2 hops over a mapped graph → rerank, in one planned query.
 
 The same plan is reachable from SQL:
 
@@ -98,15 +100,15 @@ LIMIT 10;
 - Admission control and priority classes: `interactive` (search/vector/graph), `analytical` (large scans), `background` (worker-internal). Interactive preempts analytical on shared nodes; large deployments separate pools.
 - Timeouts and cancellation propagate across distributed stages.
 
-## 8. SQL surfaces
+## 8. Frontends
 
-| Surface | Parser/dialect | Notes |
+| Frontend | Parser/mapping | Notes |
 |---|---|---|
-| Operon SQL (native, Flight SQL, ADBC) | DataFusion SQL + Operon UDTFs | Primary SQL surface |
-| ClickHouse HTTP | `sqlparser-rs` `ClickHouseDialect` + function-compat UDF library | §08 |
-| Cypher | Forked `lance-graph` parser → logical plan | §07 |
+| Native REST/gRPC | Hybrid request (§4) → logical plan; SQL endpoint with DataFusion SQL + Operon UDTFs | Primary surface; hybrid, graph `expand` and SQL |
+| Arrow Flight SQL (ADBC) | DataFusion SQL + Operon UDTFs | Queries, and `DoPut` bulk ingest into collections and streams (D49) |
 | ES Query DSL | Quickwit-derived DSL → logical plan | §06 |
 | Qdrant query API | Direct mapping → logical plan | §06 |
-| Postgres wire (optional, later) | `pgwire` + DataFusion | For BI tools only; not OLTP |
 
-**Arrow Flight SQL** is exposed from M1 for high-throughput result transfer (Python/pandas/Polars, BI via ADBC).
+Graph queries have no language frontend: traversal runs as `ExpandExec` and `ShortestPathExec`, reached through the SQL table functions (§1) and the hybrid `expand` stage (§4) (D44).
+
+**Arrow Flight SQL** is a core surface from M1.2 (D49): high-throughput result transfer (Python/pandas/Polars, BI via ADBC) and zero-copy bulk ingest; the ADBC Flight SQL drivers (Python and Go) are an M1 exit gate.
