@@ -13,7 +13,9 @@ use operon_collection::{
     CollectionSchema, DocOp, Document, DynamicMapping, FieldKind, PrimaryKey, split_path,
 };
 use operon_common::{CollectionId, NamespaceId};
-use operon_query::exec::{EffectiveSort, Ranked, TantivySearchExec, batch_to_ranked};
+use operon_query::exec::{
+    EffectiveSort, FilterBitmapExec, Ranked, RowSet, TantivySearchExec, batch_to_ranked,
+};
 use operon_query::hot::{HotAnn, HotKind, HotTier, RequestHot};
 use operon_query::read::{ReadConfig, ReadView, Reads};
 use operon_query::tail::TailConfig;
@@ -181,6 +183,22 @@ fn tokens_of(name: &str, text: &str) -> Vec<String> {
 fn fieldnorm_id(len: usize) -> u8 {
     let len = u32::try_from(len).expect("short");
     (FIELD_NORMS_TABLE.partition_point(|bound| *bound <= len) - 1) as u8
+}
+
+/// The documents of a view: durable rows that are not shadowed, plus the
+/// tail's live docs, by row id.
+async fn rows_of(view: &ReadView) -> BTreeMap<u64, (PrimaryKey, Value)> {
+    let mut out = BTreeMap::new();
+    for stored in view.snapshot.scan_all().await.expect("scan") {
+        if !view.is_shadowed(stored.row_id) {
+            out.insert(stored.row_id, (stored.pk, Value::Object(stored.source)));
+        }
+    }
+    for doc in view.tail.live_docs() {
+        let source = doc.doc.as_ref().expect("live").source.clone();
+        out.insert(doc.row_id, (doc.pk.clone(), Value::Object(source)));
+    }
+    out
 }
 
 /// Warms every field norm and the text fields' dictionaries and postings,
@@ -602,6 +620,16 @@ async fn deleted_and_shadowed_docs_never_score_or_count() {
     .expect("count");
     assert_eq!(everything, 30);
 
+    let RowSet::Rows(rows) = FilterBitmapExec::new(view.clone(), matching("apple"), 8)
+        .rows()
+        .await
+        .expect("rows")
+    else {
+        panic!("a clause is not All");
+    };
+    let by_row = rows_of(&view).await;
+    let keys: BTreeSet<PrimaryKey> = rows.iter().map(|row| by_row[&row].0.clone()).collect();
+    assert_eq!(keys, expected);
     reads.shutdown().await;
     fixture.shutdown().await;
 }
@@ -775,6 +803,148 @@ async fn a_sort_on_a_non_fast_field_is_invalid() {
         EffectiveSort::of(&request),
         Err(ServiceError::InvalidArgument(_))
     ));
+    reads.shutdown().await;
+    fixture.shutdown().await;
+}
+
+// ----- filter bitmaps -----
+
+fn random_filter(rng: &mut ChaCha8Rng, depth: u32) -> Query {
+    let tags = ["a", "b", "c"];
+    match rng.random_range(0..if depth == 0 { 4 } else { 6 }) {
+        0 => Query::Term {
+            field: "tag".to_string(),
+            value: FieldValue::Str(tags.choose(rng).expect("tag").to_string()),
+        },
+        1 => {
+            let low = rng.random_range(-5..5);
+            Query::Range {
+                field: "n".to_string(),
+                gt: None,
+                gte: Some(FieldValue::I64(low)),
+                lt: Some(FieldValue::I64(low + rng.random_range(1..6))),
+                lte: None,
+            }
+        }
+        2 => Query::Exists {
+            field: "n".to_string(),
+        },
+        3 => Query::MatchAll,
+        _ => Query::Bool {
+            must: (0..rng.random_range(0..2))
+                .map(|_| random_filter(rng, depth - 1))
+                .collect(),
+            should: vec![],
+            must_not: (0..rng.random_range(0..2))
+                .map(|_| random_filter(rng, depth - 1))
+                .collect(),
+            filter: (0..rng.random_range(1..3))
+                .map(|_| random_filter(rng, depth - 1))
+                .collect(),
+            minimum_should_match: None,
+        },
+    }
+}
+
+/// `filter` evaluated on a document's source.
+fn eval(filter: &Query, source: &Value) -> bool {
+    match filter {
+        Query::MatchAll => true,
+        Query::Term {
+            field,
+            value: FieldValue::Str(value),
+        } => source.get(field) == Some(&json!(value)),
+        Query::Range { field, gte, lt, .. } => {
+            let Some(n) = source.get(field).and_then(Value::as_i64) else {
+                return false;
+            };
+            let (Some(FieldValue::I64(low)), Some(FieldValue::I64(high))) = (gte, lt) else {
+                unreachable!()
+            };
+            *low <= n && n < *high
+        }
+        Query::Exists { field } => source.get(field).is_some_and(|v| !v.is_null()),
+        Query::Bool {
+            must,
+            must_not,
+            filter,
+            ..
+        } => {
+            must.iter().chain(filter).all(|q| eval(q, source))
+                && !must_not.iter().any(|q| eval(q, source))
+        }
+        other => unreachable!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn filter_bitmaps_cover_splits_and_tail() {
+    let mut rng = ChaCha8Rng::seed_from_u64(30);
+    let fixture = TailFixture::start(body_schema(), 2).await;
+    let random_doc = |pk: u64, rng: &mut ChaCha8Rng| {
+        let mut source = json!({"body": "apple"});
+        if rng.random_bool(0.7) {
+            source["tag"] = json!(["a", "b", "c"].choose(rng).expect("tag"));
+        }
+        if rng.random_bool(0.7) {
+            source["n"] = json!(rng.random_range(-5..5));
+        }
+        doc_of(PrimaryKey::U64(pk), source)
+    };
+    let first: Vec<DocOp> = (0..60).map(|pk| random_doc(pk, &mut rng)).collect();
+    fixture.append_all(&first).await;
+    fixture.apply_link().await;
+    let mut second: Vec<DocOp> = (40..90).map(|pk| random_doc(pk, &mut rng)).collect();
+    second.extend((0..5).map(delete));
+    fixture.append_all(&second).await;
+    fixture.apply_link().await;
+    let mut tail: Vec<DocOp> = (80..110).map(|pk| random_doc(pk, &mut rng)).collect();
+    tail.extend((10..14).map(delete));
+    fixture.append_all(&tail).await;
+    let reads = reads(&fixture);
+    let view = view(&fixture, &reads).await;
+    let rows = rows_of(&view).await;
+    assert!(view.tail.live_count() > 0 && !view.tail.shadow().is_empty());
+    for _ in 0..30 {
+        let filter = random_filter(&mut rng, 2);
+        let expected: BTreeSet<u64> = rows
+            .iter()
+            .filter(|(_, (_, source))| eval(&filter, source))
+            .map(|(row, _)| *row)
+            .collect();
+        let exec = FilterBitmapExec::new(view.clone(), filter.clone(), 8);
+        match exec.rows().await.expect("rows") {
+            RowSet::All => {
+                assert!(matches!(filter, Query::MatchAll), "{filter:?}");
+                assert_eq!(expected.len(), rows.len());
+            }
+            RowSet::Rows(found) => {
+                assert_eq!(
+                    found.iter().collect::<BTreeSet<_>>(),
+                    expected,
+                    "{filter:?}"
+                );
+            }
+        }
+        // Through DataFusion: ascending row ids; All expands to every row.
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(exec);
+        let batches = datafusion::physical_plan::collect(plan, Arc::new(TaskContext::default()))
+            .await
+            .expect("collect");
+        let emitted: Vec<u64> = batches
+            .iter()
+            .flat_map(|batch| {
+                let column = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::UInt64Array>()
+                    .expect("u64")
+                    .clone();
+                column.values().to_vec()
+            })
+            .collect();
+        assert_eq!(emitted, expected.iter().copied().collect::<Vec<_>>());
+    }
     reads.shutdown().await;
     fixture.shutdown().await;
 }

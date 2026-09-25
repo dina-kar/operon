@@ -9,8 +9,10 @@
 //! - [`schema`]: the Arrow schemas operators exchange;
 //! - [`order`]: the effective sort (R10) and `search_after`;
 //! - [`mask`]: row sets and split masks;
-//! - [`tantivy_search`]: BM25 search over splits and the tail.
+//! - [`tantivy_search`]: BM25 search over splits and the tail;
+//! - [`filter_bitmap`]: a filter as a row-id set.
 
+pub mod filter_bitmap;
 pub mod mask;
 pub mod order;
 pub mod schema;
@@ -37,6 +39,7 @@ use crate::text::compile::CompiledQuery;
 use crate::text::fields::{ResolvedField, resolve_field};
 use crate::text::splits::{OpenSplit, open_splits_with, tail_segment_masks};
 
+pub use filter_bitmap::FilterBitmapExec;
 pub use mask::{RowSet, SplitMask};
 pub use order::{EffectiveSort, RankMode};
 pub use schema::{Ranked, batch_to_ranked, ranked_schema, ranked_to_batch, rowid_schema};
