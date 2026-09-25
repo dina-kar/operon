@@ -44,3 +44,17 @@ fn ids_order_numerically_and_serialize_as_bare_integers() {
     let back: NamespaceId = postcard::from_bytes(&bytes).unwrap();
     assert_eq!(back, NamespaceId(300));
 }
+
+#[test]
+fn collection_ids_round_trip_display_and_parse() {
+    use operon_common::CollectionId;
+    for n in [0, 1, 42, u64::MAX] {
+        let id = CollectionId(n);
+        assert_eq!(id.to_string(), n.to_string());
+        assert_eq!(id.to_string().parse::<CollectionId>().unwrap(), id);
+    }
+    assert!("01".parse::<CollectionId>().is_err());
+    assert!(CollectionId(2) < CollectionId(10));
+    let bytes = postcard::to_stdvec(&CollectionId(300)).unwrap();
+    assert_eq!(bytes, postcard::to_stdvec(&300u64).unwrap());
+}

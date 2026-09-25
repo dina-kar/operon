@@ -54,3 +54,8 @@ id_type!(
     /// Identifies a stream. Unique across the cluster, not only within its namespace.
     StreamId
 );
+
+id_type!(
+    /// Identifies a collection. Dense, allocated by the state machine (D18), never reused.
+    CollectionId
+);
