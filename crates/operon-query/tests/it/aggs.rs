@@ -474,6 +474,8 @@ async fn an_invalid_aggregation_is_invalid_argument() {
         json!({"x": {"nope": {"field": "n"}}}),
         json!({"x": {"histogram": {"field": "n"}}}),
         json!({"x": {"terms": {"field": "tag"}, "aggs": {"y": {"top_hits": {"_source": 3}}}}}),
+        json!({"x": {"terms": {"field": "tag"}, "aggs": {"y": {"top_hits": 3}}}}),
+        json!({"x": {"terms": {"field": "tag"}, "aggs": {"y": {"top_hits": null}}}}),
         json!([1, 2]),
     ] {
         let err = run(&view, &request, AggDomain::Filter(None))

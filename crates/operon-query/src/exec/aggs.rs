@@ -270,7 +270,10 @@ fn rewrite(
             continue;
         };
         path.push(name.clone());
-        if let Some(Value::Object(top)) = node.get_mut("top_hits") {
+        if let Some(top) = node.get_mut("top_hits") {
+            let Value::Object(top) = top else {
+                return Err(invalid("top_hits must be an object"));
+            };
             let source = source_option(top.remove("_source"))?;
             let docvalue_fields = match top.remove("docvalue_fields") {
                 Some(value) => strings(&value, "docvalue_fields")?,

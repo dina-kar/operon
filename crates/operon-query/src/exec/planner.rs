@@ -22,7 +22,7 @@ use crate::exec::ann::AnnExec;
 use crate::exec::doc_fetch::{FetchColumns, FetchedRow, fetch_rows};
 use crate::exec::filter_bitmap::FilterBitmapExec;
 use crate::exec::fusion::{FusionExec, collect_ranked};
-use crate::exec::groups::group;
+use crate::exec::groups::{Group, group, groups_full};
 use crate::exec::mask::RowSet;
 use crate::exec::order::{EffectiveSort, RankMode};
 use crate::exec::project::{fetch_columns, field_values, filter_source, stored_doc};
@@ -530,6 +530,8 @@ impl SearchPlanner {
         };
         let text_only = request.retrievers.len() == 1
             && matches!(request.retrievers[0], Retriever::Text { .. });
+        // Groups computed while sizing a field-mode window, if any.
+        let mut prepared: Option<Vec<Group>> = None;
         // 2–5. The ranked candidates, in the effective order.
         let (candidates, domain) = match sort.mode {
             RankMode::Field => {
@@ -537,18 +539,38 @@ impl SearchPlanner {
                     Some(Retriever::Text { query, .. }) => query.clone(),
                     _ => Query::MatchAll,
                 };
-                let window = request.offset + request.limit;
-                let exec = TantivySearchExec::new(
-                    view.clone(),
-                    query.clone(),
-                    request.filter.clone(),
-                    window,
-                    sort.clone(),
-                    request.search_after.clone(),
-                    self.stats.clone(),
-                    self.config.parallelism,
-                );
-                let hits = collect_ranked(Arc::new(exec), context.clone()).await?;
+                // Grouping needs enough matches to fill its groups: start at
+                // `limit × group_size` and double the window while the
+                // groups are not full and more matches exist.
+                let mut window = request.offset + request.limit;
+                if let Some(group_by) = &request.group_by {
+                    window = window.max(group_by.limit.saturating_mul(group_by.group_size));
+                }
+                let hits = loop {
+                    let exec = TantivySearchExec::new(
+                        view.clone(),
+                        query.clone(),
+                        request.filter.clone(),
+                        window,
+                        sort.clone(),
+                        request.search_after.clone(),
+                        self.stats.clone(),
+                        self.config.parallelism,
+                    );
+                    let hits = collect_ranked(Arc::new(exec), context.clone()).await?;
+                    let Some(group_by) = &request.group_by else {
+                        break hits;
+                    };
+                    if hits.len() < window {
+                        break hits;
+                    }
+                    let groups = group(&view, &hits, group_by, &columns).await?;
+                    if groups_full(&groups, group_by) {
+                        prepared = Some(groups);
+                        break hits;
+                    }
+                    window = window.saturating_mul(2);
+                };
                 let domain = if request.retrievers.is_empty() {
                     Domain::Filter
                 } else {
@@ -580,7 +602,13 @@ impl SearchPlanner {
                     hits.retain(|hit| hit.score >= threshold);
                 }
                 let domain = match &request.retrievers[0] {
-                    Retriever::Text { query, .. } if text_only => Domain::Text(query.clone()),
+                    // A threshold cuts the matches, so the domain is the
+                    // candidates that pass it.
+                    Retriever::Text { query, .. }
+                        if text_only && request.score_threshold.is_none() =>
+                    {
+                        Domain::Text(query.clone())
+                    }
                     _ => Domain::Candidates(hits.clone()),
                 };
                 if let Some(after) = &request.search_after {
@@ -615,8 +643,11 @@ impl SearchPlanner {
         };
         let (hits, groups) = match &request.group_by {
             Some(group_by) => {
-                let groups = group(&view, &candidates, group_by, &columns)
-                    .await?
+                let groups = match prepared {
+                    Some(groups) => groups,
+                    None => group(&view, &candidates, group_by, &columns).await?,
+                };
+                let groups = groups
                     .into_iter()
                     .map(|(key, members)| {
                         Ok(HitGroup {

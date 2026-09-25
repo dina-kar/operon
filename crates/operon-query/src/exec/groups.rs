@@ -79,6 +79,14 @@ fn key_path<'a>(schema: &'a CollectionSchema, field: &str) -> Result<KeyPath<'a>
 /// A group: its key and its hits with their fetched rows.
 pub(crate) type Group = (FieldValue, Vec<(Ranked, FetchedRow)>);
 
+/// Whether `groups` holds `limit` groups of `group_size` hits each.
+pub(crate) fn groups_full(groups: &[Group], group_by: &GroupBy) -> bool {
+    groups.len() >= group_by.limit
+        && groups
+            .iter()
+            .all(|(_, hits)| hits.len() >= group_by.group_size)
+}
+
 /// Rule 5: walks `candidates` in order, fetching their rows (`columns`
 /// plus the source) in pages of 256. A hit joins the group of every key it
 /// has; a group keeps at most `group_size` hits; at most `limit` groups are
@@ -95,12 +103,7 @@ pub(crate) async fn group(
         ..columns.clone()
     };
     let mut groups: Vec<Group> = Vec::new();
-    let full = |groups: &[Group]| {
-        groups.len() >= group_by.limit
-            && groups
-                .iter()
-                .all(|(_, hits)| hits.len() >= group_by.group_size)
-    };
+    let full = |groups: &[Group]| groups_full(groups, group_by);
     for page in candidates.chunks(PAGE) {
         let ids: Vec<u64> = page.iter().map(|hit| hit.row_id).collect();
         let rows = fetch_rows(view, &ids, &columns).await?;

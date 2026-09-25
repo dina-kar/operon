@@ -1124,6 +1124,25 @@ async fn offset_limit_and_threshold() {
         .collect();
     assert!(expected.len() > 20 && expected.len() < 50);
     assert_eq!(pks(&above.hits), expected);
+    // A threshold cuts the total too (review #21).
+    let counted = search(
+        &view,
+        SearchRequest {
+            retrievers: vec![text(query.clone(), 50)],
+            score_threshold: Some(threshold),
+            track_total_hits: TrackTotalHits::Exact,
+            limit: 50,
+            ..request()
+        },
+    )
+    .await;
+    assert_eq!(
+        counted.total,
+        Some(TotalHits {
+            value: expected.len() as u64,
+            relation: TotalRelation::Eq,
+        })
+    );
     setup.shutdown().await;
 }
 
@@ -1277,6 +1296,49 @@ async fn group_by_groups_by_value() {
         .map(|group| (group.key, u64s(&group.hits)))
         .collect();
     assert_eq!(got, expected);
+    setup.shutdown().await;
+}
+
+#[tokio::test]
+async fn field_mode_groups_fill_past_the_page_window() {
+    // Sorted by `n`, the first 40 matches all share group key 0, so a
+    // window of `limit × group_size` (6) fills only one group.
+    let ops: Vec<DocOp> = (0..60)
+        .map(|pk| {
+            let g = if pk < 40 { 0 } else { pk % 3 };
+            plain(pk, json!({"body": "apple", "n": pk, "payload": {"g": g}}))
+        })
+        .collect();
+    let setup = Setup::new(search_schema(), commits_of(ops, 2), vec![]).await;
+    let view = setup.view().await;
+    let response = search(
+        &view,
+        SearchRequest {
+            retrievers: vec![text(matching("body", "apple"), 10)],
+            sort: by_n(),
+            group_by: Some(GroupBy {
+                field: "payload.g".to_string(),
+                group_size: 2,
+                limit: 3,
+            }),
+            ..request()
+        },
+    )
+    .await;
+    let got: Vec<(FieldValue, Vec<u64>)> = response
+        .groups
+        .expect("groups")
+        .into_iter()
+        .map(|group| (group.key, u64s(&group.hits)))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (FieldValue::I64(0), vec![0, 1]),
+            (FieldValue::I64(1), vec![40, 43]),
+            (FieldValue::I64(2), vec![41, 44]),
+        ]
+    );
     setup.shutdown().await;
 }
 
