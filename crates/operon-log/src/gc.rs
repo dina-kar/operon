@@ -23,17 +23,17 @@
 //!    their name, else their modification time).
 //!
 //! Every decision uses a linearizable metastore read, and ages are measured
-//! against the **metastore clock** (`MetaState::clock_ms`, read in the same
-//! or an earlier linearizable read), not this node's wall clock. Commands
-//! that make the metastore reference a new object (`SwapSegment`, a link's
-//! fenced `CasPointer`) carry the object's [`Freshness`] and are refused once
-//! the metastore clock is past it; with their deadlines below `grace`, any
-//! such command applied after GC's read is refused, so an object GC decided
-//! to delete can never become referenced (M0.4 review I1). Object deletes
-//! cannot be fenced by the metastore, so before each batch of deletes the
-//! task confirms it still holds its lease.
+//! against the metastore clock (read in the same or an earlier linearizable
+//! read), not this node's wall clock. Commands that make the metastore
+//! reference a new object (a segment swap, a link's fenced pointer CAS)
+//! carry the object's [`Freshness`] and are refused once the metastore clock
+//! is past it; with their deadlines below `grace`, any such command applied
+//! after GC's read is refused, so an object GC decided to delete can never
+//! become referenced (M0.4 review I1). Object deletes cannot be fenced by
+//! the metastore, so before each batch of deletes the task confirms it still
+//! holds its lease.
 //!
-//! [`Freshness`]: operon_meta::Freshness
+//! [`Freshness`]: operon_common::meta::Freshness
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -41,7 +41,9 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use operon_common::NamespaceId;
-use operon_meta::{ApplyError, Consistency, Fence, MetaClient, MetaError, WAL_COMMIT_WINDOW_MS};
+use operon_common::meta::{
+    ApplyError, Consistency, Fence, MetaError, MetaStore, WAL_COMMIT_WINDOW_MS,
+};
 use operon_store::{ObjectInfo, Store};
 use operon_worker::{
     Candidate, Priority, RunResult, Task, TaskContext, TaskError, TaskKey, TaskOutcome, TaskSource,
@@ -172,7 +174,7 @@ pub trait GcRoots: Send + Sync {
     /// way. An error makes the run skip this prefix.
     async fn reachable(
         &self,
-        meta: &MetaClient,
+        meta: &dyn MetaStore,
         store: &Store,
         namespace: NamespaceId,
         keep_manifests: usize,
@@ -275,7 +277,7 @@ impl GcSource {
     /// `owner`. `Ok(None)` if another owner holds the lease.
     pub async fn run_once(
         &self,
-        meta: &MetaClient,
+        meta: impl Into<Arc<dyn MetaStore>>,
         owner: &str,
     ) -> Result<Option<GcReport>, LogError> {
         struct Once(Candidate);
@@ -284,7 +286,7 @@ impl GcSource {
             fn priority(&self) -> Priority {
                 Priority::Gc
             }
-            async fn candidates(&self, _meta: &MetaClient) -> Result<Vec<Candidate>, TaskError> {
+            async fn candidates(&self, _meta: &dyn MetaStore) -> Result<Vec<Candidate>, TaskError> {
                 Ok(vec![self.0.clone()])
             }
         }
@@ -318,7 +320,7 @@ impl TaskSource for GcSource {
         Priority::Gc
     }
 
-    async fn candidates(&self, _meta: &MetaClient) -> Result<Vec<Candidate>, TaskError> {
+    async fn candidates(&self, _meta: &dyn MetaStore) -> Result<Vec<Candidate>, TaskError> {
         let due = self
             .shared
             .last_run
@@ -374,11 +376,9 @@ impl GcTask {
         let Fence { lease, epoch } = &ctx.fence;
         let held = ctx
             .meta
-            .read(Consistency::Linearizable, |s| {
-                s.lease(lease)
-                    .is_some_and(|l| l.epoch == *epoch && l.owner.is_some())
-            })
-            .await?;
+            .lease(Consistency::Linearizable, lease)
+            .await?
+            .is_some_and(|l| l.epoch == *epoch && l.owner.is_some());
         if held && !ctx.cancel.is_cancelled() {
             Ok(())
         } else {
@@ -420,16 +420,7 @@ impl GcTask {
     async fn retired(&self, ctx: &TaskContext, report: &mut GcReport) -> Result<(), TaskError> {
         let config = &self.shared.config;
         let grace = millis(config.grace);
-        let due: Vec<String> = ctx
-            .meta
-            .read(Consistency::Linearizable, |s| {
-                let now = s.clock_ms();
-                s.retired()
-                    .filter(|(_, at)| at.saturating_add(grace) <= now)
-                    .map(|(path, _)| path.to_string())
-                    .collect()
-            })
-            .await?;
+        let due: Vec<String> = ctx.meta.retired_expired(grace).await?;
         let mut budget = config.list_page;
         let mut objects = Vec::new();
         let mut empty_prefixes = Vec::new();
@@ -485,18 +476,7 @@ impl GcTask {
         let limit = config.list_page;
         let orphans: Vec<String> = ctx
             .meta
-            .read(Consistency::Linearizable, |s| {
-                let now = s.clock_ms();
-                let retired: BTreeSet<&str> = s.retired().map(|(p, _)| p).collect();
-                candidates
-                    .iter()
-                    .filter(|(_, created)| created.saturating_add(min_age) <= now)
-                    .map(|(p, _)| p)
-                    .filter(|p| s.wal_live_chunks(p).is_none() && !retired.contains(p.as_str()))
-                    .take(limit)
-                    .cloned()
-                    .collect()
-            })
+            .orphan_wal_objects(candidates, min_age, limit)
             .await?;
         let deleted = self.delete(ctx, orphans).await?;
         report.orphan_wal += u32::try_from(deleted.len()).unwrap_or(u32::MAX);
@@ -513,10 +493,11 @@ impl GcTask {
         let config = &self.shared.config;
         let namespaces: Vec<NamespaceId> = ctx
             .meta
-            .read(Consistency::Linearizable, |s| {
-                s.namespaces().map(|n| n.id).collect()
-            })
-            .await?;
+            .namespaces(Consistency::Linearizable)
+            .await?
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
         let grace = millis(config.grace);
         for namespace in namespaces {
             if ctx.cancel.is_cancelled() {
@@ -538,25 +519,7 @@ impl GcTask {
                 let limit = config.list_page;
                 let orphans: Vec<String> = ctx
                     .meta
-                    .read(Consistency::Linearizable, |s| {
-                        let now = s.clock_ms();
-                        let mut kept: BTreeSet<&str> = s.retired().map(|(p, _)| p).collect();
-                        for stream in s.streams(namespace) {
-                            for partition in 0..stream.partitions {
-                                if let Some(state) = s.partition(stream.id, partition) {
-                                    kept.extend(state.entries().map(|e| e.object.as_str()));
-                                }
-                            }
-                        }
-                        candidates
-                            .iter()
-                            .filter(|(_, created)| created.saturating_add(grace) <= now)
-                            .map(|(p, _)| p)
-                            .filter(|p| !kept.contains(p.as_str()))
-                            .take(limit)
-                            .cloned()
-                            .collect()
-                    })
+                    .orphan_segments(namespace, candidates, grace, limit)
                     .await?;
                 let deleted = self.delete(ctx, orphans).await?;
                 report.orphan_segments += u32::try_from(deleted.len()).unwrap_or(u32::MAX);
@@ -567,13 +530,10 @@ impl GcTask {
                 // The clock is read before the roots: a commit applied after
                 // this read that references an object at least `grace` old
                 // by this clock is refused as stale.
-                let now = ctx
-                    .meta
-                    .read(Consistency::Linearizable, |s| s.clock_ms())
-                    .await?;
+                let now = ctx.meta.clock_ms(Consistency::Linearizable).await?;
                 let store = &self.shared.store;
                 let keep = match root
-                    .reachable(&ctx.meta, store, namespace, config.keep_manifests)
+                    .reachable(&*ctx.meta, store, namespace, config.keep_manifests)
                     .await
                 {
                     Ok(keep) => keep,

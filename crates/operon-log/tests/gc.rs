@@ -458,7 +458,7 @@ impl operon_log::gc::GcRoots for TestRoots {
 
     async fn reachable(
         &self,
-        _meta: &operon_meta::MetaClient,
+        _meta: &dyn operon_common::meta::MetaStore,
         _store: &Store,
         _namespace: operon_common::NamespaceId,
         _keep_manifests: usize,

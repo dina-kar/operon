@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use operon_cache::{CacheError, RangeCache};
 use operon_common::StreamId;
-use operon_meta::{Consistency, EntryKind, IndexEntry, MetaClient};
+use operon_common::meta::{Consistency, EntryKind, IndexEntry, MetaStore};
 use operon_store::StoreError;
 
 use crate::batch;
@@ -56,7 +56,7 @@ struct Plan {
 /// follower's high watermark. Cheap to clone.
 #[derive(Clone)]
 pub struct LogReader {
-    meta: MetaClient,
+    meta: Arc<dyn MetaStore>,
     cache: RangeCache,
     footers: moka::future::Cache<String, Arc<SegmentFooter>>,
 }
@@ -126,9 +126,9 @@ impl Gather {
 }
 
 impl LogReader {
-    pub fn new(meta: MetaClient, cache: RangeCache) -> Self {
+    pub fn new(meta: impl Into<Arc<dyn MetaStore>>, cache: RangeCache) -> Self {
         Self {
-            meta,
+            meta: meta.into(),
             cache,
             footers: moka::future::Cache::new(FOOTER_CACHE_ENTRIES),
         }
@@ -150,8 +150,7 @@ impl LogReader {
         loop {
             // Subscribe before reading, so a commit between the read and the
             // wait still wakes the wait.
-            let mut applied = self.meta.watch_applied();
-            applied.borrow_and_update();
+            let mut applied = self.meta.watch_changes();
             let plan = self.plan(&request).await?;
             let out_of_range = || LogError::OffsetOutOfRange {
                 requested: request.offset,
@@ -226,32 +225,37 @@ impl LogReader {
             max_bytes,
             ..
         } = *request;
-        let plan = self
+        let index = self
             .meta
-            .read(Consistency::Local, |s| {
-                if s.stream(stream).is_none() {
-                    return Err(LogError::UnknownStream(stream));
-                }
-                let state = s
-                    .partition(stream, partition)
-                    .ok_or(LogError::UnknownPartition { stream, partition })?;
-                let mut entries = Vec::new();
-                let mut bytes = 0u64;
-                for entry in state.entries_from(offset) {
-                    if !entries.is_empty() && bytes >= max_bytes as u64 {
-                        break;
-                    }
-                    bytes += entry.byte_range.end - entry.byte_range.start;
-                    entries.push(entry.clone());
-                }
-                Ok(Plan {
-                    log_start_offset: state.log_start_offset(),
-                    high_watermark: state.high_watermark(),
-                    entries,
-                })
-            })
-            .await??;
-        Ok(plan)
+            .partition_index(
+                Consistency::Local,
+                stream,
+                partition,
+                offset,
+                Some(max_bytes as u64),
+            )
+            .await?;
+        let index = match index {
+            Some(index) => index,
+            None => {
+                let unknown = if self
+                    .meta
+                    .stream(Consistency::Local, stream)
+                    .await?
+                    .is_some()
+                {
+                    LogError::UnknownPartition { stream, partition }
+                } else {
+                    LogError::UnknownStream(stream)
+                };
+                return Err(unknown);
+            }
+        };
+        Ok(Plan {
+            log_start_offset: index.log_start_offset(),
+            high_watermark: index.high_watermark(),
+            entries: index.into_entries(),
+        })
     }
 
     async fn read(
