@@ -578,6 +578,128 @@ async fn a_config_with_a_deadline_at_grace_is_refused() {
     assert!(!message.contains("segmenter.swap_deadline"), "{message}");
 }
 
+/// M1.1 Task 13 (Ruling 22, controller ruling P11): the collection index
+/// commit delay is a freshness deadline too. The other deadlines are below
+/// grace, so the error must name it.
+#[tokio::test]
+async fn a_config_with_index_commit_delay_at_grace_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let mut bad = config(&dir, lazy_segmenter());
+    bad.gc.grace = Duration::from_secs(2);
+    bad.segmenter.swap_deadline = Duration::from_secs(1);
+    bad.link.max_commit_delay = Duration::from_secs(1);
+    bad.collection.index_commit_delay = Duration::from_secs(2);
+    let err = Server::start(bad).await.unwrap_err();
+    let operon::ServerError::Config(message) = &err else {
+        panic!("expected a config error, got {err:?}");
+    };
+    assert!(
+        message.contains("collection.index_commit_delay"),
+        "{message}"
+    );
+    assert!(!message.contains("segmenter.swap_deadline"), "{message}");
+    assert!(!message.contains("link.max_commit_delay"), "{message}");
+
+    // Below grace, the same config starts.
+    let mut good = config(&dir, lazy_segmenter());
+    good.gc.grace = Duration::from_secs(2);
+    good.segmenter.swap_deadline = Duration::from_secs(1);
+    good.link.max_commit_delay = Duration::from_secs(1);
+    good.collection.index_commit_delay = Duration::from_secs(1);
+    Server::start(good).await.unwrap().shutdown().await.unwrap();
+}
+
+/// M1.1 Task 13: the server runs collection link apply. A write through a
+/// `CollectionWriter` on the server's log writer is applied by the server's
+/// worker, and a snapshot on the server's collection context reads it.
+#[tokio::test]
+async fn the_server_applies_collection_links() {
+    use operon_collection::{
+        CollectionSchema, CollectionSnapshot, CollectionWriter, DocOp, Document, DynamicMapping,
+        OpResult, PrimaryKey,
+    };
+
+    let dir = TempDir::new().unwrap();
+    let mut cfg = config(&dir, lazy_segmenter());
+    cfg.link.batch_interval = Duration::ZERO;
+    let server = Server::start(cfg).await.unwrap();
+    let api = Api::new(&server);
+    let meta = server.meta();
+    let ns = meta.create_namespace("acme").await.unwrap();
+    let schema = CollectionSchema::new(vec![], vec![], DynamicMapping::Ignore);
+    let (cid, stream, _) = meta.create_collection(ns, "docs", schema, 2).await.unwrap();
+
+    let doc = |n: u64| Document {
+        pk: PrimaryKey::U64(n),
+        source: serde_json::Map::from_iter([("n".to_string(), json!(n))]),
+        vectors: Default::default(),
+        sparse_vectors: Default::default(),
+    };
+    let mut ops: Vec<DocOp> = (0..6).map(|n| DocOp::Upsert(doc(n))).collect();
+    ops.push(DocOp::Delete(PrimaryKey::U64(5)));
+    let outcome = CollectionWriter::new(meta.clone(), server.log_writer().clone())
+        .write(ns, cid, ops)
+        .await
+        .unwrap();
+    assert!(
+        outcome
+            .results
+            .iter()
+            .all(|r| matches!(r, OpResult::Written { .. })),
+        "{outcome:?}"
+    );
+
+    let hwms: Vec<Value> = meta
+        .read(Consistency::Linearizable, |s| {
+            (0..2)
+                .filter_map(|p| {
+                    let hwm = s.partition(stream, p)?.high_watermark();
+                    (hwm > 0).then(|| json!({ "partition": p, "offset": hwm }))
+                })
+                .collect()
+        })
+        .await
+        .unwrap();
+    let path = format!(
+        "/v1/namespaces/acme/links/{}",
+        operon_meta::implicit_name("docs", cid)
+    );
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let (status, body) = api.get(&path).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        if body["applied"] == Value::from(hwms.clone()) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the collection link never caught up: {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let snapshot = CollectionSnapshot::open(
+        server.collection_context(),
+        ns,
+        cid,
+        Consistency::Linearizable,
+    )
+    .await
+    .unwrap();
+    let pks: Vec<PrimaryKey> = (0..6).map(PrimaryKey::U64).collect();
+    let found = snapshot.get_by_pk(&pks).await.unwrap();
+    for (n, stored) in (0..6).zip(&found) {
+        if n == 5 {
+            assert!(stored.is_none(), "{stored:?}");
+        } else {
+            let stored = stored.as_ref().expect("a live document");
+            assert_eq!(stored.source, doc(n).source);
+        }
+    }
+    assert_eq!(snapshot.manifest().live_doc_count, 5);
+    server.shutdown().await.unwrap();
+}
+
 /// A running `operon dev` process.
 struct Dev {
     child: std::process::Child,

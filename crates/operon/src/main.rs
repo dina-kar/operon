@@ -38,8 +38,9 @@ struct Tuning {
     /// How often retention runs.
     #[arg(long, hide = true)]
     retention_interval_ms: Option<u64>,
-    /// Garbage collection's grace period. Also sets the segmenter's swap
-    /// deadline and the link commit delay to half of it.
+    /// Garbage collection's grace period. Also sets every freshness deadline
+    /// to half of it: the segmenter's swap deadline, the link (and
+    /// collection) commit delay and the collection index commit delay.
     #[arg(long, hide = true)]
     gc_grace_ms: Option<u64>,
     /// How often garbage collection runs.
@@ -54,6 +55,21 @@ struct Tuning {
     /// Build a metastore snapshot after this many log entries.
     #[arg(long, hide = true)]
     snapshot_every: Option<u64>,
+    /// Whether collections' implicit streams are trimmed.
+    #[arg(long, hide = true, action = clap::ArgAction::Set)]
+    collection_trim: Option<bool>,
+    /// Rows before a collection's first vector index is built.
+    #[arg(long, hide = true)]
+    collection_index_min_rows: Option<u64>,
+    /// Unindexed rows before a delta vector index segment is built.
+    #[arg(long, hide = true)]
+    collection_index_delta_min_rows: Option<u64>,
+    /// How long a superseded collection manifest stays readable.
+    #[arg(long, hide = true)]
+    collection_retention_ms: Option<u64>,
+    /// How often an idle collection is checked for index work.
+    #[arg(long, hide = true)]
+    collection_index_poll_interval_ms: Option<u64>,
 }
 
 impl Tuning {
@@ -80,6 +96,8 @@ impl Tuning {
             // (ServerConfig::validate).
             config.segmenter.swap_deadline = ms(v / 2);
             config.link.max_commit_delay = ms(v / 2);
+            config.collection.max_commit_delay = ms(v / 2);
+            config.collection.index_commit_delay = ms(v / 2);
         }
         if let Some(v) = self.gc_interval_ms {
             config.gc.interval = ms(v);
@@ -92,6 +110,21 @@ impl Tuning {
         }
         if let Some(v) = self.snapshot_every {
             config.snapshot_every = v;
+        }
+        if let Some(v) = self.collection_trim {
+            config.collection.trim = v;
+        }
+        if let Some(v) = self.collection_index_min_rows {
+            config.collection.index_min_rows = v;
+        }
+        if let Some(v) = self.collection_index_delta_min_rows {
+            config.collection.index_delta_min_rows = v;
+        }
+        if let Some(v) = self.collection_retention_ms {
+            config.collection.time_travel_retention = ms(v);
+        }
+        if let Some(v) = self.collection_index_poll_interval_ms {
+            config.collection.index_poll_interval = ms(v);
         }
     }
 }
@@ -110,7 +143,7 @@ enum Command {
         #[arg(long)]
         flush_interval_ms: Option<u64>,
         #[command(flatten)]
-        tuning: Tuning,
+        tuning: Box<Tuning>,
     },
     /// Run everything in one process, with data in an object-store bucket.
     Standalone {
@@ -250,5 +283,54 @@ async fn main() -> ExitCode {
             eprintln!("operon: shutdown failed: {err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dev_config(args: &[&str]) -> ServerConfig {
+        let cli = Cli::try_parse_from(["operon", "dev"].iter().chain(args)).expect("parse");
+        config(cli.command)
+    }
+
+    /// Ruling 22, controller ruling P2: `--gc-grace-ms` lowers every
+    /// freshness deadline to half of it, so the config still validates.
+    #[test]
+    fn gc_grace_lowers_every_deadline_to_half() {
+        let config = dev_config(&["--gc-grace-ms", "1500"]);
+        let half = Duration::from_millis(750);
+        assert_eq!(config.gc.grace, Duration::from_millis(1500));
+        assert_eq!(config.segmenter.swap_deadline, half);
+        assert_eq!(config.link.max_commit_delay, half);
+        assert_eq!(config.collection.max_commit_delay, half);
+        assert_eq!(config.collection.index_commit_delay, half);
+        config.validate().expect("valid");
+    }
+
+    #[test]
+    fn collection_tuning_flags_set_the_collection_config() {
+        let config = dev_config(&[
+            "--collection-trim",
+            "false",
+            "--collection-index-min-rows",
+            "40",
+            "--collection-index-delta-min-rows",
+            "41",
+            "--collection-retention-ms",
+            "0",
+            "--collection-index-poll-interval-ms",
+            "200",
+        ]);
+        assert!(!config.collection.trim);
+        assert_eq!(config.collection.index_min_rows, 40);
+        assert_eq!(config.collection.index_delta_min_rows, 41);
+        assert_eq!(config.collection.time_travel_retention, Duration::ZERO);
+        assert_eq!(
+            config.collection.index_poll_interval,
+            Duration::from_millis(200)
+        );
+        assert!(dev_config(&["--collection-trim", "true"]).collection.trim);
     }
 }
