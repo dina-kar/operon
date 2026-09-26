@@ -166,9 +166,12 @@ pub fn plan_merges(
 
 /// The inputs of one policy operation that one merge takes: its smallest
 /// splits (by live docs, then ULID) while their live docs stay within
-/// `max_merge_docs` and their bytes within `max_merge_bytes`. A merge holds
-/// its output split in memory while it builds it, so this bounds it; the
-/// splits left out are planned again once the merged split has landed.
+/// `max_merge_docs` and their bytes within `max_merge_bytes`. A split whose
+/// bytes do not fit is skipped and the scan goes on (the order is by docs,
+/// not bytes, so a later split may still fit); the first split whose docs do
+/// not fit ends it. A merge holds its output split in memory while it builds
+/// it, so this bounds it; the splits left out are planned again once the
+/// merged split has landed.
 fn bounded(mut splits: Vec<&SplitRef>, config: &MaintenanceConfig) -> Vec<Ulid> {
     let live = |split: &SplitRef| split.doc_count.saturating_sub(split.deleted_count);
     splits.sort_by_key(|split| (live(split), split.ulid));
@@ -177,8 +180,11 @@ fn bounded(mut splits: Vec<&SplitRef>, config: &MaintenanceConfig) -> Vec<Ulid> 
     for split in splits {
         let next_docs = docs.saturating_add(live(split));
         let next_bytes = bytes.saturating_add(split.size_bytes);
-        if next_docs > config.max_merge_docs || next_bytes > config.max_merge_bytes {
+        if next_docs > config.max_merge_docs {
             break;
+        }
+        if next_bytes > config.max_merge_bytes {
+            continue;
         }
         (docs, bytes) = (next_docs, next_bytes);
         inputs.push(split.ulid);
