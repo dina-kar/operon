@@ -28,6 +28,7 @@
 | 16 | [Agent fleet demo](16-agent-fleet-demo.md) | 100 Claude Code / Codex / opencode sessions on one host and one bucket: density, durability, tool-retrieval savings, analytics with tokscale parity | **Approved** |
 | 17 | [AI data ecosystem](17-ai-data-ecosystem.md) | Operon as a source and sink for AI labs' data pipelines: integration map (Ray Data, Polars, PySpark on Spark 4 and Sail, PyTorch/JAX, Spice, Iceberg engines), scan pinning, retained dataset tags, Python SDK extras, what is not built | **Approved** |
 | 18 | [Metastore backends, tenancy and the namespace router](18-metastore-backends-and-router.md) | Postgres, DynamoDB and TiDB backends; the relaxed `MetaStore` contract; conformance, fault matrices and CI targets (floci, Alternator, RustFS); consistency tokens on every backend; the router for millions of namespaces and every resource kind; orgs, API keys and quotas; the `Authorizer` trait and OpenFGA; BYOC; GDPR erasure; ids under sharding | **Approved** (three defaults pending) |
+| 19 | [Console, identity and agents](19-console-identity-and-agents.md) | One console for OSS, Cloud and BYOC; org → projects → environments; agents as principals with short-lived tokens (federation, delegation, vending); OSS sign-in methods; the console API contract and its mock | **Proposed** |
 
 ## Glossary
 

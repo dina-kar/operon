@@ -1,0 +1,4495 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Loam console API",
+    "version": "0.1.0",
+    "summary": "The control API behind the Loam console: org, teams, projects, environments, agents, keys and audit.",
+    "description": "Design: docs/design/19-console-identity-and-agents.md. The data API (collections, documents, query) is the native API under /v1 and is not part of this contract. Timestamps are RFC 3339 in UTC. Lists are wrapped in an object keyed by the plural resource name.",
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    }
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "The native REST listener (the console is served at /ui)"
+    }
+  ],
+  "security": [
+    {
+      "session": []
+    },
+    {
+      "bearer": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "session",
+      "description": "The install, first-run setup and console sessions."
+    },
+    {
+      "name": "org",
+      "description": "The organization: its settings, members and invitations."
+    },
+    {
+      "name": "teams",
+      "description": "Groups of members that receive project roles."
+    },
+    {
+      "name": "projects",
+      "description": "Projects and who can access them."
+    },
+    {
+      "name": "environments",
+      "description": "An environment is one engine namespace, with a name and usage."
+    },
+    {
+      "name": "agents",
+      "description": "AI agents: policies, trust policies for federation, and their short-lived tokens."
+    },
+    {
+      "name": "service-accounts",
+      "description": "Non-agent workloads such as CI jobs."
+    },
+    {
+      "name": "api-keys",
+      "description": "Long-lived keys for SDKs and service accounts; never for agents."
+    },
+    {
+      "name": "audit",
+      "description": "Every mutating call and token issue, with the actor and whom it acted for."
+    },
+    {
+      "name": "oauth",
+      "description": "Token exchange, user delegation and the documents MCP clients discover."
+    }
+  ],
+  "paths": {
+    "/api/v1/instance": {
+      "get": {
+        "operationId": "getInstance",
+        "summary": "What this install is and how people sign in",
+        "tags": [
+          "session"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Instance"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/v1/setup": {
+      "post": {
+        "operationId": "completeSetup",
+        "summary": "First-run setup: create the org and its owner with the setup token",
+        "tags": [
+          "session"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupRequest"
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/v1/session": {
+      "get": {
+        "operationId": "getSession",
+        "summary": "The signed-in user, their org and a CSRF token",
+        "tags": [
+          "session"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createSession",
+        "summary": "Sign in with email and password",
+        "tags": [
+          "session"
+        ],
+        "responses": {
+          "201": {
+            "description": "Signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        },
+        "security": []
+      },
+      "delete": {
+        "operationId": "deleteSession",
+        "summary": "Sign out",
+        "tags": [
+          "session"
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/oidc/{provider}/start": {
+      "get": {
+        "operationId": "startOidcSignIn",
+        "summary": "Redirect to an OIDC provider",
+        "tags": [
+          "session"
+        ],
+        "responses": {
+          "302": {
+            "description": "To the provider's authorization endpoint"
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": []
+      }
+    },
+    "/api/v1/org": {
+      "get": {
+        "operationId": "getOrg",
+        "summary": "The org",
+        "tags": [
+          "org"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Org"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateOrg",
+        "summary": "Rename the org or change its sign-in rules",
+        "tags": [
+          "org"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Org"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrgUpdate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/org/members": {
+      "get": {
+        "operationId": "listMembers",
+        "summary": "The org's members",
+        "tags": [
+          "org"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberList"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/org/members/{user}": {
+      "delete": {
+        "operationId": "removeMember",
+        "summary": "Remove a member from the org",
+        "tags": [
+          "org"
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/org/invitations": {
+      "get": {
+        "operationId": "listInvitations",
+        "summary": "Pending invitations",
+        "tags": [
+          "org"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationList"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createInvitation",
+        "summary": "Invite someone by email",
+        "tags": [
+          "org"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Invitation"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitationCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/teams": {
+      "get": {
+        "operationId": "listTeams",
+        "summary": "The org's teams",
+        "tags": [
+          "teams"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamList"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createTeam",
+        "summary": "Create a team",
+        "tags": [
+          "teams"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Team"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/teams/{team}": {
+      "get": {
+        "operationId": "getTeam",
+        "summary": "A team, its members and its project roles",
+        "tags": [
+          "teams"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamDetail"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "team",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The team's id"
+          }
+        ]
+      }
+    },
+    "/api/v1/teams/{team}/members": {
+      "post": {
+        "operationId": "addTeamMember",
+        "summary": "Add a member to a team",
+        "tags": [
+          "teams"
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "team",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The team's id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamMemberAdd"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects": {
+      "get": {
+        "operationId": "listProjects",
+        "summary": "Projects the caller can see",
+        "tags": [
+          "projects"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectList"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createProject",
+        "summary": "Create a project",
+        "tags": [
+          "projects"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}": {
+      "get": {
+        "operationId": "getProject",
+        "summary": "A project",
+        "tags": [
+          "projects"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The project's slug"
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project}/access": {
+      "get": {
+        "operationId": "listProjectAccess",
+        "summary": "Who has which role on a project",
+        "tags": [
+          "projects"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GrantList"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The project's slug"
+          }
+        ]
+      },
+      "post": {
+        "operationId": "grantProjectAccess",
+        "summary": "Give a team or user a project role",
+        "tags": [
+          "projects"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Grant"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The project's slug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GrantCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/environments": {
+      "get": {
+        "operationId": "listEnvironments",
+        "summary": "A project's environments",
+        "tags": [
+          "environments"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvironmentList"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The project's slug"
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createEnvironment",
+        "summary": "Create an environment, and with it a namespace",
+        "tags": [
+          "environments"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Environment"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The project's slug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/environments/{environment}": {
+      "get": {
+        "operationId": "getEnvironment",
+        "summary": "An environment and its namespace",
+        "tags": [
+          "environments"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Environment"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The project's slug"
+          },
+          {
+            "name": "environment",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The environment's slug"
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project}/environments/{environment}/usage": {
+      "get": {
+        "operationId": "getEnvironmentUsage",
+        "summary": "Storage, queries and writes over the current period",
+        "tags": [
+          "environments"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Usage"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The project's slug"
+          },
+          {
+            "name": "environment",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The environment's slug"
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project}/agents": {
+      "get": {
+        "operationId": "listAgents",
+        "summary": "A project's agents",
+        "tags": [
+          "agents"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentList"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The project's slug"
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createAgent",
+        "summary": "Register an agent",
+        "tags": [
+          "agents"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agent"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The project's slug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agents/{agent}": {
+      "get": {
+        "operationId": "getAgent",
+        "summary": "An agent",
+        "tags": [
+          "agents"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agent"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The agent's id"
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "updateAgent",
+        "summary": "Change an agent's policy, TTL cap or limits",
+        "tags": [
+          "agents"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agent"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The agent's id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentUpdate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agents/{agent}/suspend": {
+      "post": {
+        "operationId": "suspendAgent",
+        "summary": "Suspend an agent and revoke its tokens",
+        "tags": [
+          "agents"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agent"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The agent's id"
+          }
+        ]
+      }
+    },
+    "/api/v1/agents/{agent}/resume": {
+      "post": {
+        "operationId": "resumeAgent",
+        "summary": "Let a suspended agent get tokens again",
+        "tags": [
+          "agents"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agent"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The agent's id"
+          }
+        ]
+      }
+    },
+    "/api/v1/agents/{agent}/tokens": {
+      "get": {
+        "operationId": "listAgentTokens",
+        "summary": "An agent's unexpired tokens",
+        "tags": [
+          "agents"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentTokenList"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The agent's id"
+          }
+        ]
+      }
+    },
+    "/api/v1/agents/{agent}/trust-policies": {
+      "get": {
+        "operationId": "listTrustPolicies",
+        "summary": "Workload identities that may act as the agent",
+        "tags": [
+          "agents"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrustPolicyList"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The agent's id"
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createTrustPolicy",
+        "summary": "Trust a workload identity",
+        "tags": [
+          "agents"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrustPolicy"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The agent's id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrustPolicyCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tokens/{jti}": {
+      "delete": {
+        "operationId": "revokeToken",
+        "summary": "Revoke one access token",
+        "tags": [
+          "agents"
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "jti",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project}/service-accounts": {
+      "get": {
+        "operationId": "listServiceAccounts",
+        "summary": "A project's service accounts",
+        "tags": [
+          "service-accounts"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceAccountList"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The project's slug"
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createServiceAccount",
+        "summary": "Create a service account",
+        "tags": [
+          "service-accounts"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceAccount"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The project's slug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServiceAccountCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project}/environments/{environment}/keys": {
+      "get": {
+        "operationId": "listApiKeys",
+        "summary": "An environment's API keys",
+        "tags": [
+          "api-keys"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyList"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The project's slug"
+          },
+          {
+            "name": "environment",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The environment's slug"
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createApiKey",
+        "summary": "Create an API key; the secret is returned once",
+        "tags": [
+          "api-keys"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyCreated"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The project's slug"
+          },
+          {
+            "name": "environment",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The environment's slug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApiKeyCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/keys/{key}": {
+      "delete": {
+        "operationId": "revokeApiKey",
+        "summary": "Revoke an API key",
+        "tags": [
+          "api-keys"
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/audit": {
+      "get": {
+        "operationId": "listAuditEvents",
+        "summary": "The audit log, newest first",
+        "tags": [
+          "audit"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPage"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A principal id"
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "An event id, for the next page"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/oauth/token": {
+      "post": {
+        "operationId": "exchangeToken",
+        "summary": "Token exchange (RFC 8693), authorization code with PKCE, or refresh",
+        "tags": [
+          "oauth"
+        ],
+        "responses": {
+          "200": {
+            "description": "A token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "An OAuth error (RFC 6749 section 5.2)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthError"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenRequest"
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/v1/oauth/authorize": {
+      "get": {
+        "operationId": "authorize",
+        "summary": "Start user delegation: redirects to the console's consent screen",
+        "tags": [
+          "oauth"
+        ],
+        "responses": {
+          "302": {
+            "description": "To /ui/consent, with the request's parameters"
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "client_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "redirect_uri",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "response_type",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code_challenge",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code_challenge_method",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": []
+      }
+    },
+    "/api/v1/oauth/consent": {
+      "post": {
+        "operationId": "decideConsent",
+        "summary": "Record the signed-in user's consent decision and get the client redirect",
+        "tags": [
+          "oauth"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsentResult"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsentDecision"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/.well-known/oauth-protected-resource": {
+      "get": {
+        "operationId": "getProtectedResourceMetadata",
+        "summary": "Protected resource metadata (RFC 9728), for MCP clients",
+        "tags": [
+          "oauth"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtectedResourceMetadata"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/.well-known/oauth-authorization-server": {
+      "get": {
+        "operationId": "getAuthorizationServerMetadata",
+        "summary": "OAuth authorization server metadata (RFC 8414)",
+        "tags": [
+          "oauth"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthorizationServerMetadata"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/.well-known/jwks.json": {
+      "get": {
+        "operationId": "getJwks",
+        "summary": "The public keys that sign access tokens",
+        "tags": [
+          "oauth"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Jwks"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "message"
+        ],
+        "additionalProperties": false,
+        "description": "The engine's error body: a stable code and a human message."
+      },
+      "Edition": {
+        "type": "string",
+        "enum": [
+          "oss",
+          "cloud",
+          "byoc"
+        ]
+      },
+      "Instance": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "edition": {
+            "$ref": "#/components/schemas/Edition"
+          },
+          "version": {
+            "type": "string"
+          },
+          "setup_required": {
+            "type": "boolean",
+            "description": "True until first-run setup has created the org and its owner."
+          },
+          "sign_in": {
+            "$ref": "#/components/schemas/SignInMethods"
+          },
+          "features": {
+            "type": "object",
+            "properties": {
+              "billing": {
+                "type": "boolean"
+              },
+              "multi_org": {
+                "type": "boolean"
+              },
+              "passkeys": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "billing",
+              "multi_org",
+              "passkeys"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "name",
+          "edition",
+          "version",
+          "setup_required",
+          "sign_in",
+          "features"
+        ],
+        "additionalProperties": false,
+        "description": "What this install is and how people sign in. Public: the console reads it before sign-in."
+      },
+      "SignInMethods": {
+        "type": "object",
+        "properties": {
+          "password": {
+            "type": "boolean"
+          },
+          "totp": {
+            "type": "boolean"
+          },
+          "passkeys": {
+            "type": "boolean"
+          },
+          "oidc": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OidcProvider"
+            }
+          }
+        },
+        "required": [
+          "password",
+          "totp",
+          "passkeys",
+          "oidc"
+        ],
+        "additionalProperties": false
+      },
+      "OidcProvider": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "keycloak",
+              "okta",
+              "entra",
+              "google",
+              "authentik",
+              "dex",
+              "generic"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind"
+        ],
+        "additionalProperties": false
+      },
+      "SetupRequest": {
+        "type": "object",
+        "properties": {
+          "setup_token": {
+            "type": "string"
+          },
+          "org_name": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "setup_token",
+          "org_name",
+          "name",
+          "email",
+          "password"
+        ],
+        "additionalProperties": false
+      },
+      "LoginRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "totp_code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "additionalProperties": false
+      },
+      "OrgRole": {
+        "type": "string",
+        "enum": [
+          "owner",
+          "admin",
+          "member"
+        ]
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "avatar_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "two_factor": {
+            "type": "boolean"
+          },
+          "sso": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_seen_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "email",
+          "avatar_url",
+          "two_factor",
+          "sso",
+          "created_at",
+          "last_seen_at"
+        ],
+        "additionalProperties": false
+      },
+      "Session": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/User"
+          },
+          "org": {
+            "$ref": "#/components/schemas/Org"
+          },
+          "role": {
+            "$ref": "#/components/schemas/OrgRole"
+          },
+          "csrf_token": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "user",
+          "org",
+          "role",
+          "csrf_token",
+          "expires_at"
+        ],
+        "additionalProperties": false
+      },
+      "Org": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "require_two_factor": {
+            "type": "boolean"
+          },
+          "allowed_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "slug",
+          "created_at",
+          "require_two_factor",
+          "allowed_domains"
+        ],
+        "additionalProperties": false
+      },
+      "OrgUpdate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "require_two_factor": {
+            "type": "boolean"
+          },
+          "allowed_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "Member": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/User"
+          },
+          "role": {
+            "$ref": "#/components/schemas/OrgRole"
+          },
+          "teams": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "joined_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "user",
+          "role",
+          "teams",
+          "joined_at"
+        ],
+        "additionalProperties": false
+      },
+      "MemberList": {
+        "type": "object",
+        "properties": {
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Member"
+            }
+          }
+        },
+        "required": [
+          "members"
+        ],
+        "additionalProperties": false
+      },
+      "Invitation": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/OrgRole"
+          },
+          "teams": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "invited_by": {
+            "$ref": "#/components/schemas/SubjectRef"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "role",
+          "teams",
+          "invited_by",
+          "created_at",
+          "expires_at"
+        ],
+        "additionalProperties": false
+      },
+      "InvitationCreate": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/OrgRole"
+          },
+          "teams": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "email",
+          "role"
+        ],
+        "additionalProperties": false
+      },
+      "InvitationList": {
+        "type": "object",
+        "properties": {
+          "invitations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Invitation"
+            }
+          }
+        },
+        "required": [
+          "invitations"
+        ],
+        "additionalProperties": false
+      },
+      "Team": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "member_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "idp_group": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "slug",
+          "description",
+          "member_count",
+          "idp_group",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "TeamDetail": {
+        "type": "object",
+        "properties": {
+          "team": {
+            "$ref": "#/components/schemas/Team"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/User"
+            }
+          },
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectGrantRef"
+            }
+          }
+        },
+        "required": [
+          "team",
+          "members",
+          "projects"
+        ],
+        "additionalProperties": false
+      },
+      "TeamCreate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "idp_group": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "TeamMemberAdd": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "user"
+        ],
+        "additionalProperties": false
+      },
+      "TeamList": {
+        "type": "object",
+        "properties": {
+          "teams": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Team"
+            }
+          }
+        },
+        "required": [
+          "teams"
+        ],
+        "additionalProperties": false
+      },
+      "SubjectKind": {
+        "type": "string",
+        "enum": [
+          "user",
+          "team",
+          "agent",
+          "service_account",
+          "system"
+        ]
+      },
+      "SubjectRef": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/SubjectKind"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "Project": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "environment_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "agent_count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "name",
+          "description",
+          "created_at",
+          "environment_count",
+          "agent_count"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectCreate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectList": {
+        "type": "object",
+        "properties": {
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Project"
+            }
+          }
+        },
+        "required": [
+          "projects"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectRole": {
+        "type": "string",
+        "enum": [
+          "admin",
+          "developer",
+          "viewer"
+        ]
+      },
+      "ProjectGrantRef": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/ProjectRole"
+          }
+        },
+        "required": [
+          "project",
+          "role"
+        ],
+        "additionalProperties": false
+      },
+      "Grant": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/SubjectRef"
+          },
+          "role": {
+            "$ref": "#/components/schemas/ProjectRole"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "subject",
+          "role",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "GrantCreate": {
+        "type": "object",
+        "properties": {
+          "subject": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "user",
+                  "team"
+                ]
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "role": {
+            "$ref": "#/components/schemas/ProjectRole"
+          }
+        },
+        "required": [
+          "subject",
+          "role"
+        ],
+        "additionalProperties": false
+      },
+      "GrantList": {
+        "type": "object",
+        "properties": {
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Grant"
+            }
+          }
+        },
+        "required": [
+          "grants"
+        ],
+        "additionalProperties": false
+      },
+      "Environment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string",
+            "description": "The engine namespace this environment is (1:1)."
+          },
+          "protected": {
+            "type": "boolean",
+            "description": "Destructive actions need the project admin role."
+          },
+          "region": {
+            "type": "string"
+          },
+          "bucket": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/EnvironmentStats"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "name",
+          "project",
+          "namespace",
+          "protected",
+          "region",
+          "bucket",
+          "created_at",
+          "stats"
+        ],
+        "additionalProperties": false
+      },
+      "EnvironmentStats": {
+        "type": "object",
+        "properties": {
+          "collections": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "documents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "storage_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "queries_24h": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "writes_24h": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "collections",
+          "documents",
+          "storage_bytes",
+          "queries_24h",
+          "writes_24h"
+        ],
+        "additionalProperties": false
+      },
+      "EnvironmentCreate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "protected": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "EnvironmentList": {
+        "type": "object",
+        "properties": {
+          "environments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Environment"
+            }
+          }
+        },
+        "required": [
+          "environments"
+        ],
+        "additionalProperties": false
+      },
+      "Usage": {
+        "type": "object",
+        "properties": {
+          "environment": {
+            "type": "string"
+          },
+          "period_start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "period_end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "limits": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "storage_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "queries_month": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "writes_month": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "storage_bytes",
+              "queries_month",
+              "writes_month"
+            ],
+            "additionalProperties": false
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": {
+                  "type": "string",
+                  "format": "date"
+                },
+                "queries": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "writes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "storage_bytes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "date",
+                "queries",
+                "writes",
+                "storage_bytes"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "environment",
+          "period_start",
+          "period_end",
+          "limits",
+          "series"
+        ],
+        "additionalProperties": false
+      },
+      "Action": {
+        "type": "string",
+        "enum": [
+          "collections:read",
+          "collections:write",
+          "documents:delete",
+          "query",
+          "streams:read",
+          "streams:produce",
+          "mcp:tools"
+        ]
+      },
+      "PolicyRule": {
+        "type": "object",
+        "properties": {
+          "environment": {
+            "type": "string"
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Action"
+            }
+          },
+          "collections": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "environment",
+          "actions",
+          "collections"
+        ],
+        "additionalProperties": false,
+        "description": "What a principal may do in one environment; collections null means all."
+      },
+      "AgentLimits": {
+        "type": "object",
+        "properties": {
+          "requests_per_s": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "concurrent_queries": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "requests_per_s",
+          "concurrent_queries"
+        ],
+        "additionalProperties": false
+      },
+      "AgentStatus": {
+        "type": "string",
+        "enum": [
+          "active",
+          "suspended"
+        ]
+      },
+      "Agent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/SubjectRef"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AgentStatus"
+          },
+          "policy": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PolicyRule"
+            }
+          },
+          "max_token_ttl_s": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 3600
+          },
+          "limits": {
+            "$ref": "#/components/schemas/AgentLimits"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_active_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "active_tokens": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "project",
+          "owner",
+          "status",
+          "policy",
+          "max_token_ttl_s",
+          "limits",
+          "created_at",
+          "last_active_at",
+          "active_tokens"
+        ],
+        "additionalProperties": false,
+        "description": "An AI agent: a principal that only ever holds short-lived tokens (design \u00a719 \u00a75)."
+      },
+      "AgentCreate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "user",
+                  "team"
+                ]
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "policy": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PolicyRule"
+            }
+          },
+          "max_token_ttl_s": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 3600
+          },
+          "limits": {
+            "$ref": "#/components/schemas/AgentLimits"
+          }
+        },
+        "required": [
+          "name",
+          "owner",
+          "policy"
+        ],
+        "additionalProperties": false
+      },
+      "AgentUpdate": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "policy": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PolicyRule"
+            }
+          },
+          "max_token_ttl_s": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 3600
+          },
+          "limits": {
+            "$ref": "#/components/schemas/AgentLimits"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "AgentList": {
+        "type": "object",
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Agent"
+            }
+          }
+        },
+        "required": [
+          "agents"
+        ],
+        "additionalProperties": false
+      },
+      "TokenFlow": {
+        "type": "string",
+        "enum": [
+          "federation",
+          "delegation",
+          "vending"
+        ]
+      },
+      "AgentToken": {
+        "type": "object",
+        "properties": {
+          "jti": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Action"
+            }
+          },
+          "flow": {
+            "$ref": "#/components/schemas/TokenFlow"
+          },
+          "subject": {
+            "type": "string",
+            "description": "The federated subject (for example repo:acme/search:ref:refs/heads/main), or the delegating user's id."
+          },
+          "acting_for": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "issued_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "jti",
+          "agent",
+          "environment",
+          "scopes",
+          "flow",
+          "subject",
+          "acting_for",
+          "issued_at",
+          "expires_at"
+        ],
+        "additionalProperties": false
+      },
+      "AgentTokenList": {
+        "type": "object",
+        "properties": {
+          "tokens": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentToken"
+            }
+          }
+        },
+        "required": [
+          "tokens"
+        ],
+        "additionalProperties": false
+      },
+      "TrustPolicy": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "audience": {
+            "type": "string"
+          },
+          "subject_pattern": {
+            "type": "string",
+            "description": "Glob over the federated token's sub claim."
+          },
+          "environments": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "agent",
+          "name",
+          "issuer",
+          "audience",
+          "subject_pattern",
+          "environments",
+          "created_at"
+        ],
+        "additionalProperties": false,
+        "description": "Which external workload identities may exchange their token for this agent's."
+      },
+      "TrustPolicyCreate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "audience": {
+            "type": "string"
+          },
+          "subject_pattern": {
+            "type": "string"
+          },
+          "environments": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "issuer",
+          "audience",
+          "subject_pattern",
+          "environments"
+        ],
+        "additionalProperties": false
+      },
+      "TrustPolicyList": {
+        "type": "object",
+        "properties": {
+          "trust_policies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TrustPolicy"
+            }
+          }
+        },
+        "required": [
+          "trust_policies"
+        ],
+        "additionalProperties": false
+      },
+      "ServiceAccount": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "key_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "last_active_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "project",
+          "created_at",
+          "key_count",
+          "last_active_at"
+        ],
+        "additionalProperties": false
+      },
+      "ServiceAccountCreate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "ServiceAccountList": {
+        "type": "object",
+        "properties": {
+          "service_accounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServiceAccount"
+            }
+          }
+        },
+        "required": [
+          "service_accounts"
+        ],
+        "additionalProperties": false
+      },
+      "ApiKey": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string",
+            "description": "loam_<key_id>, safe to show; the secret is never returned again."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "principal": {
+            "$ref": "#/components/schemas/SubjectRef"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Action"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "prefix",
+          "environment",
+          "principal",
+          "scopes",
+          "created_at",
+          "expires_at",
+          "last_used_at"
+        ],
+        "additionalProperties": false
+      },
+      "ApiKeyCreate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "service_account": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Action"
+            }
+          },
+          "expires_in_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 365
+          }
+        },
+        "required": [
+          "name",
+          "scopes"
+        ],
+        "additionalProperties": false
+      },
+      "ApiKeyCreated": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/ApiKey"
+          },
+          "secret": {
+            "type": "string",
+            "description": "The full key, shown once."
+          }
+        },
+        "required": [
+          "key",
+          "secret"
+        ],
+        "additionalProperties": false
+      },
+      "ApiKeyList": {
+        "type": "object",
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApiKey"
+            }
+          }
+        },
+        "required": [
+          "keys"
+        ],
+        "additionalProperties": false
+      },
+      "AuditOutcome": {
+        "type": "string",
+        "enum": [
+          "success",
+          "denied"
+        ]
+      },
+      "AuditEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "actor": {
+            "$ref": "#/components/schemas/SubjectRef"
+          },
+          "acting_for": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "action": {
+            "type": "string",
+            "description": "Dotted, for example agent.token.issued or collection.dropped."
+          },
+          "target": {
+            "$ref": "#/components/schemas/SubjectRefOrResource"
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "environment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/AuditOutcome"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "actor",
+          "acting_for",
+          "action",
+          "target",
+          "project",
+          "environment",
+          "ip",
+          "outcome"
+        ],
+        "additionalProperties": false
+      },
+      "SubjectRefOrResource": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "AuditPage": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEvent"
+            }
+          },
+          "next_before": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "events",
+          "next_before"
+        ],
+        "additionalProperties": false
+      },
+      "TokenRequest": {
+        "type": "object",
+        "properties": {
+          "grant_type": {
+            "type": "string",
+            "enum": [
+              "urn:ietf:params:oauth:grant-type:token-exchange",
+              "authorization_code",
+              "refresh_token"
+            ]
+          },
+          "subject_token": {
+            "type": "string"
+          },
+          "subject_token_type": {
+            "type": "string"
+          },
+          "actor_token": {
+            "type": "string"
+          },
+          "actor_token_type": {
+            "type": "string"
+          },
+          "audience": {
+            "type": "string",
+            "description": "The environment, as <project>/<environment>."
+          },
+          "scope": {
+            "type": "string",
+            "description": "Space-separated actions."
+          },
+          "requested_token_type": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "code_verifier": {
+            "type": "string"
+          },
+          "redirect_uri": {
+            "type": "string"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "refresh_token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "grant_type"
+        ],
+        "additionalProperties": false,
+        "description": "application/x-www-form-urlencoded, per RFC 8693 and OAuth 2.1."
+      },
+      "TokenResponse": {
+        "type": "object",
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "token_type": {
+            "type": "string",
+            "enum": [
+              "Bearer"
+            ]
+          },
+          "expires_in": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "scope": {
+            "type": "string"
+          },
+          "issued_token_type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "access_token",
+          "token_type",
+          "expires_in",
+          "scope",
+          "issued_token_type"
+        ],
+        "additionalProperties": false
+      },
+      "OAuthError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "error_description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false
+      },
+      "AuthorizationServerMetadata": {
+        "type": "object",
+        "properties": {
+          "issuer": {
+            "type": "string"
+          },
+          "authorization_endpoint": {
+            "type": "string"
+          },
+          "token_endpoint": {
+            "type": "string"
+          },
+          "jwks_uri": {
+            "type": "string"
+          },
+          "grant_types_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "code_challenge_methods_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "token_endpoint_auth_methods_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scopes_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "response_types_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "issuer",
+          "authorization_endpoint",
+          "token_endpoint",
+          "jwks_uri",
+          "grant_types_supported",
+          "code_challenge_methods_supported",
+          "token_endpoint_auth_methods_supported",
+          "scopes_supported",
+          "response_types_supported"
+        ],
+        "additionalProperties": false
+      },
+      "ProtectedResourceMetadata": {
+        "type": "object",
+        "properties": {
+          "resource": {
+            "type": "string"
+          },
+          "authorization_servers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scopes_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "bearer_methods_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "resource_documentation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "resource",
+          "authorization_servers",
+          "scopes_supported",
+          "bearer_methods_supported",
+          "resource_documentation"
+        ],
+        "additionalProperties": false,
+        "description": "RFC 9728. A 401 from a protected route carries WWW-Authenticate: Bearer resource_metadata=\"<this document's URL>\"."
+      },
+      "ConsentDecision": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny"
+            ]
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "redirect_uri": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "audience": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "code_challenge": {
+            "type": "string"
+          },
+          "code_challenge_method": {
+            "type": "string",
+            "enum": [
+              "S256"
+            ]
+          }
+        },
+        "required": [
+          "decision",
+          "client_id",
+          "redirect_uri",
+          "scope",
+          "audience",
+          "state",
+          "code_challenge",
+          "code_challenge_method"
+        ],
+        "additionalProperties": false,
+        "description": "The signed-in user's answer on the consent screen, carrying the authorize request's parameters."
+      },
+      "ConsentResult": {
+        "type": "object",
+        "properties": {
+          "redirect_to": {
+            "type": "string",
+            "description": "The client's redirect_uri with code and state, or with error=access_denied."
+          }
+        },
+        "required": [
+          "redirect_to"
+        ],
+        "additionalProperties": false
+      },
+      "Jwks": {
+        "type": "object",
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kty": {
+                  "type": "string"
+                },
+                "crv": {
+                  "type": "string"
+                },
+                "x": {
+                  "type": "string"
+                },
+                "kid": {
+                  "type": "string"
+                },
+                "use": {
+                  "type": "string"
+                },
+                "alg": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kty",
+                "crv",
+                "x",
+                "kid",
+                "use",
+                "alg"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "keys"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "securitySchemes": {
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "loam_session",
+        "description": "Console sessions; mutating requests also send X-CSRF-Token."
+      },
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Short-lived access tokens from /api/v1/oauth/token."
+      }
+    }
+  }
+}

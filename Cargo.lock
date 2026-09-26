@@ -441,6 +441,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "assert-json-diff"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47e4f2b81832e72834d7518d8487a0396a28cc408186a2e8854c0f98011faf12"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -517,6 +527,16 @@ dependencies = [
  "event-listener",
  "event-listener-strategy",
  "pin-project-lite",
+]
+
+[[package]]
+name = "async-object-pool"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1ac0219111eb7bb7cb76d4cf2cb50c598e7ae549091d3616f9e95442c18486f"
+dependencies = [
+ "async-lock",
+ "event-listener",
 ]
 
 [[package]]
@@ -2999,6 +3019,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd417de3d1d015fc3bfd2b1ea46dfc7bab72ef86f1cc7cc9c78e728b34a6d1fd"
 
 [[package]]
+name = "futures-timer"
+version = "3.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af43fadb8a98512d547e37b4e92e0ced13e205c061b87b4623eff01d918d6968"
+
+[[package]]
 name = "futures-util"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3350,6 +3376,39 @@ name = "httpdate"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
+name = "httpmock"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf4888a4d02d8e1f92ffb6b4965cf5ff56dda36ef41975f41c6fa0f6bde78c4e"
+dependencies = [
+ "assert-json-diff",
+ "async-object-pool",
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "crossbeam-utils",
+ "form_urlencoded",
+ "futures-timer",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "path-tree",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_regex",
+ "similar",
+ "stringmetrics",
+ "tabwriter",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "url",
+]
 
 [[package]]
 name = "humantime"
@@ -5408,6 +5467,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "operon-console-mock"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "httpmock",
+ "humantime",
+ "reqwest 0.12.28",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "operon-hnsw"
 version = "0.0.1"
 dependencies = [
@@ -5854,6 +5928,15 @@ name = "pastey"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
+
+[[package]]
+name = "path-tree"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2a97453bc21a968f722df730bfe11bd08745cb50d1300b0df2bda131dece136"
+dependencies = [
+ "smallvec",
+]
 
 [[package]]
 name = "path_abs"
@@ -7382,6 +7465,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_regex"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bafc8d0c5330cecff10f16b459b479fd9acaa5b4acd7167301414e21b0057012"
+dependencies = [
+ "regex",
+ "serde",
+]
+
+[[package]]
 name = "serde_repr"
 version = "0.1.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7531,6 +7624,12 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "siphasher"
@@ -7752,6 +7851,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "stringmetrics"
+version = "2.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b3c8667cd96245cbb600b8dec5680a7319edd719c5aa2b5d23c6bff94f39765"
+
+[[package]]
 name = "strsim"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7858,6 +7963,15 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-io-kit",
  "windows 0.62.2",
+]
+
+[[package]]
+name = "tabwriter"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fce91f2f0ec87dff7e6bcbbeb267439aa1188703003c6055193c821487400432"
+dependencies = [
+ "unicode-width",
 ]
 
 [[package]]
@@ -8099,7 +8213,7 @@ dependencies = [
  "libc",
  "log",
  "rustversion",
- "windows 0.61.3",
+ "windows 0.62.2",
 ]
 
 [[package]]

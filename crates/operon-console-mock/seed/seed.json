@@ -1,0 +1,5566 @@
+{
+  "instance": {
+    "name": "Acme Loam",
+    "edition": "oss",
+    "version": "0.1.0-dev",
+    "setup_required": false,
+    "sign_in": {
+      "password": true,
+      "totp": true,
+      "passkeys": false,
+      "oidc": [
+        {
+          "id": "keycloak",
+          "name": "Acme SSO",
+          "kind": "keycloak"
+        }
+      ]
+    },
+    "features": {
+      "billing": false,
+      "multi_org": false,
+      "passkeys": false
+    }
+  },
+  "session": {
+    "user": {
+      "id": "usr_01",
+      "name": "Priya Raman",
+      "email": "priya@acme.dev",
+      "avatar_url": null,
+      "two_factor": true,
+      "sso": null,
+      "created_at": "@now-120d",
+      "last_seen_at": "@now-2m"
+    },
+    "org": {
+      "id": "org_acme",
+      "name": "Acme Robotics",
+      "slug": "acme",
+      "created_at": "@now-120d",
+      "require_two_factor": false,
+      "allowed_domains": [
+        "acme.dev"
+      ]
+    },
+    "role": "owner",
+    "csrf_token": "csrf_mock_2d5b7c",
+    "expires_at": "@now+12h"
+  },
+  "org": {
+    "id": "org_acme",
+    "name": "Acme Robotics",
+    "slug": "acme",
+    "created_at": "@now-120d",
+    "require_two_factor": false,
+    "allowed_domains": [
+      "acme.dev"
+    ]
+  },
+  "members": [
+    {
+      "user": {
+        "id": "usr_01",
+        "name": "Priya Raman",
+        "email": "priya@acme.dev",
+        "avatar_url": null,
+        "two_factor": true,
+        "sso": null,
+        "created_at": "@now-120d",
+        "last_seen_at": "@now-2m"
+      },
+      "role": "owner",
+      "teams": [
+        "team_platform"
+      ],
+      "joined_at": "@now-100d"
+    },
+    {
+      "user": {
+        "id": "usr_02",
+        "name": "Marcus Chen",
+        "email": "marcus@acme.dev",
+        "avatar_url": null,
+        "two_factor": true,
+        "sso": "keycloak",
+        "created_at": "@now-120d",
+        "last_seen_at": "@now-1h"
+      },
+      "role": "admin",
+      "teams": [
+        "team_platform",
+        "team_search"
+      ],
+      "joined_at": "@now-100d"
+    },
+    {
+      "user": {
+        "id": "usr_03",
+        "name": "Aiko Tanaka",
+        "email": "aiko@acme.dev",
+        "avatar_url": null,
+        "two_factor": false,
+        "sso": "keycloak",
+        "created_at": "@now-120d",
+        "last_seen_at": "@now-3h"
+      },
+      "role": "member",
+      "teams": [
+        "team_search"
+      ],
+      "joined_at": "@now-100d"
+    },
+    {
+      "user": {
+        "id": "usr_04",
+        "name": "Diego Alvarez",
+        "email": "diego@acme.dev",
+        "avatar_url": null,
+        "two_factor": true,
+        "sso": "keycloak",
+        "created_at": "@now-120d",
+        "last_seen_at": "@now-1d"
+      },
+      "role": "member",
+      "teams": [
+        "team_search",
+        "team_support"
+      ],
+      "joined_at": "@now-100d"
+    },
+    {
+      "user": {
+        "id": "usr_05",
+        "name": "Sam Okafor",
+        "email": "sam@acme.dev",
+        "avatar_url": null,
+        "two_factor": false,
+        "sso": "keycloak",
+        "created_at": "@now-120d",
+        "last_seen_at": null
+      },
+      "role": "member",
+      "teams": [
+        "team_support"
+      ],
+      "joined_at": "@now-100d"
+    }
+  ],
+  "invitations": [
+    {
+      "id": "inv_01",
+      "email": "lena@acme.dev",
+      "role": "member",
+      "teams": [
+        "team_search"
+      ],
+      "invited_by": {
+        "kind": "user",
+        "id": "usr_02",
+        "name": "Marcus Chen"
+      },
+      "created_at": "@now-2d",
+      "expires_at": "@now+5d"
+    }
+  ],
+  "teams": [
+    {
+      "id": "team_platform",
+      "name": "Platform",
+      "slug": "platform",
+      "description": "Runs Loam and the data platform.",
+      "idp_group": "acme-platform",
+      "created_at": "@now-118d",
+      "member_count": 2
+    },
+    {
+      "id": "team_search",
+      "name": "Search",
+      "slug": "search",
+      "description": "Docs search and the code index.",
+      "idp_group": "acme-search",
+      "created_at": "@now-90d",
+      "member_count": 3
+    },
+    {
+      "id": "team_support",
+      "name": "Support AI",
+      "slug": "support-ai",
+      "description": "The support assistant.",
+      "idp_group": null,
+      "created_at": "@now-40d",
+      "member_count": 2
+    }
+  ],
+  "team_details": {
+    "team_platform": {
+      "team": {
+        "id": "team_platform",
+        "name": "Platform",
+        "slug": "platform",
+        "description": "Runs Loam and the data platform.",
+        "idp_group": "acme-platform",
+        "created_at": "@now-118d",
+        "member_count": 2
+      },
+      "members": [
+        {
+          "id": "usr_01",
+          "name": "Priya Raman",
+          "email": "priya@acme.dev",
+          "avatar_url": null,
+          "two_factor": true,
+          "sso": null,
+          "created_at": "@now-120d",
+          "last_seen_at": "@now-2m"
+        },
+        {
+          "id": "usr_02",
+          "name": "Marcus Chen",
+          "email": "marcus@acme.dev",
+          "avatar_url": null,
+          "two_factor": true,
+          "sso": "keycloak",
+          "created_at": "@now-120d",
+          "last_seen_at": "@now-1h"
+        }
+      ],
+      "projects": [
+        {
+          "project": "docs-search",
+          "role": "admin"
+        },
+        {
+          "project": "code-index",
+          "role": "developer"
+        }
+      ]
+    },
+    "team_search": {
+      "team": {
+        "id": "team_search",
+        "name": "Search",
+        "slug": "search",
+        "description": "Docs search and the code index.",
+        "idp_group": "acme-search",
+        "created_at": "@now-90d",
+        "member_count": 3
+      },
+      "members": [
+        {
+          "id": "usr_02",
+          "name": "Marcus Chen",
+          "email": "marcus@acme.dev",
+          "avatar_url": null,
+          "two_factor": true,
+          "sso": "keycloak",
+          "created_at": "@now-120d",
+          "last_seen_at": "@now-1h"
+        },
+        {
+          "id": "usr_03",
+          "name": "Aiko Tanaka",
+          "email": "aiko@acme.dev",
+          "avatar_url": null,
+          "two_factor": false,
+          "sso": "keycloak",
+          "created_at": "@now-120d",
+          "last_seen_at": "@now-3h"
+        },
+        {
+          "id": "usr_04",
+          "name": "Diego Alvarez",
+          "email": "diego@acme.dev",
+          "avatar_url": null,
+          "two_factor": true,
+          "sso": "keycloak",
+          "created_at": "@now-120d",
+          "last_seen_at": "@now-1d"
+        }
+      ],
+      "projects": [
+        {
+          "project": "docs-search",
+          "role": "admin"
+        },
+        {
+          "project": "support-assistant",
+          "role": "developer"
+        },
+        {
+          "project": "code-index",
+          "role": "admin"
+        }
+      ]
+    },
+    "team_support": {
+      "team": {
+        "id": "team_support",
+        "name": "Support AI",
+        "slug": "support-ai",
+        "description": "The support assistant.",
+        "idp_group": null,
+        "created_at": "@now-40d",
+        "member_count": 2
+      },
+      "members": [
+        {
+          "id": "usr_04",
+          "name": "Diego Alvarez",
+          "email": "diego@acme.dev",
+          "avatar_url": null,
+          "two_factor": true,
+          "sso": "keycloak",
+          "created_at": "@now-120d",
+          "last_seen_at": "@now-1d"
+        },
+        {
+          "id": "usr_05",
+          "name": "Sam Okafor",
+          "email": "sam@acme.dev",
+          "avatar_url": null,
+          "two_factor": false,
+          "sso": "keycloak",
+          "created_at": "@now-120d",
+          "last_seen_at": null
+        }
+      ],
+      "projects": [
+        {
+          "project": "support-assistant",
+          "role": "admin"
+        }
+      ]
+    }
+  },
+  "projects": [
+    {
+      "id": "prj_docs",
+      "slug": "docs-search",
+      "name": "Docs search",
+      "description": "Hybrid search over the product docs and changelog.",
+      "created_at": "@now-95d",
+      "environment_count": 3,
+      "agent_count": 2
+    },
+    {
+      "id": "prj_support",
+      "slug": "support-assistant",
+      "name": "Support assistant",
+      "description": "Retrieval for the support agent: tickets, macros and help-center articles.",
+      "created_at": "@now-95d",
+      "environment_count": 3,
+      "agent_count": 2
+    },
+    {
+      "id": "prj_code",
+      "slug": "code-index",
+      "name": "Code index",
+      "description": "Code and pull requests, searchable by coding agents over MCP.",
+      "created_at": "@now-95d",
+      "environment_count": 3,
+      "agent_count": 2
+    }
+  ],
+  "grants": {
+    "docs-search": [
+      {
+        "id": "grt_01",
+        "subject": {
+          "kind": "team",
+          "id": "team_search",
+          "name": "Search"
+        },
+        "role": "admin",
+        "created_at": "@now-90d"
+      },
+      {
+        "id": "grt_02",
+        "subject": {
+          "kind": "team",
+          "id": "team_platform",
+          "name": "Platform"
+        },
+        "role": "admin",
+        "created_at": "@now-90d"
+      },
+      {
+        "id": "grt_03",
+        "subject": {
+          "kind": "user",
+          "id": "usr_05",
+          "name": "Sam Okafor"
+        },
+        "role": "viewer",
+        "created_at": "@now-12d"
+      }
+    ],
+    "support-assistant": [
+      {
+        "id": "grt_04",
+        "subject": {
+          "kind": "team",
+          "id": "team_support",
+          "name": "Support AI"
+        },
+        "role": "admin",
+        "created_at": "@now-40d"
+      },
+      {
+        "id": "grt_05",
+        "subject": {
+          "kind": "team",
+          "id": "team_search",
+          "name": "Search"
+        },
+        "role": "developer",
+        "created_at": "@now-30d"
+      }
+    ],
+    "code-index": [
+      {
+        "id": "grt_06",
+        "subject": {
+          "kind": "team",
+          "id": "team_search",
+          "name": "Search"
+        },
+        "role": "admin",
+        "created_at": "@now-60d"
+      },
+      {
+        "id": "grt_07",
+        "subject": {
+          "kind": "team",
+          "id": "team_platform",
+          "name": "Platform"
+        },
+        "role": "developer",
+        "created_at": "@now-60d"
+      }
+    ]
+  },
+  "environments": [
+    {
+      "id": "env_docs-search_development",
+      "slug": "development",
+      "name": "Development",
+      "project": "docs-search",
+      "namespace": "docs-search-development",
+      "protected": false,
+      "region": "us-east-1",
+      "bucket": "s3://acme-loam/docs-search",
+      "created_at": "@now-94d",
+      "stats": {
+        "collections": 2,
+        "documents": 394,
+        "storage_bytes": 2165424,
+        "queries_24h": 2223,
+        "writes_24h": 44
+      }
+    },
+    {
+      "id": "env_docs-search_staging",
+      "slug": "staging",
+      "name": "Staging",
+      "project": "docs-search",
+      "namespace": "docs-search-staging",
+      "protected": false,
+      "region": "us-east-1",
+      "bucket": "s3://acme-loam/docs-search",
+      "created_at": "@now-94d",
+      "stats": {
+        "collections": 2,
+        "documents": 4934,
+        "storage_bytes": 27117264,
+        "queries_24h": 27009,
+        "writes_24h": 540
+      }
+    },
+    {
+      "id": "env_docs-search_production",
+      "slug": "production",
+      "name": "Production",
+      "project": "docs-search",
+      "namespace": "docs-search-production",
+      "protected": true,
+      "region": "us-east-1",
+      "bucket": "s3://acme-loam/docs-search",
+      "created_at": "@now-94d",
+      "stats": {
+        "collections": 2,
+        "documents": 19738,
+        "storage_bytes": 108480048,
+        "queries_24h": 654837,
+        "writes_24h": 13096
+      }
+    },
+    {
+      "id": "env_support-assistant_development",
+      "slug": "development",
+      "name": "Development",
+      "project": "support-assistant",
+      "namespace": "support-assistant-development",
+      "protected": false,
+      "region": "us-east-1",
+      "bucket": "s3://acme-loam/support-assistant",
+      "created_at": "@now-94d",
+      "stats": {
+        "collections": 3,
+        "documents": 8439,
+        "storage_bytes": 37739208,
+        "queries_24h": 2218,
+        "writes_24h": 665
+      }
+    },
+    {
+      "id": "env_support-assistant_staging",
+      "slug": "staging",
+      "name": "Staging",
+      "project": "support-assistant",
+      "namespace": "support-assistant-staging",
+      "protected": false,
+      "region": "us-east-1",
+      "bucket": "s3://acme-loam/support-assistant",
+      "created_at": "@now-94d",
+      "stats": {
+        "collections": 3,
+        "documents": 105495,
+        "storage_bytes": 471773640,
+        "queries_24h": 23089,
+        "writes_24h": 6926
+      }
+    },
+    {
+      "id": "env_support-assistant_production",
+      "slug": "production",
+      "name": "Production",
+      "project": "support-assistant",
+      "namespace": "support-assistant-production",
+      "protected": true,
+      "region": "us-east-1",
+      "bucket": "s3://acme-loam/support-assistant",
+      "created_at": "@now-94d",
+      "stats": {
+        "collections": 3,
+        "documents": 421988,
+        "storage_bytes": 1887130336,
+        "queries_24h": 653860,
+        "writes_24h": 196158
+      }
+    },
+    {
+      "id": "env_code-index_development",
+      "slug": "development",
+      "name": "Development",
+      "project": "code-index",
+      "namespace": "code-index-development",
+      "protected": false,
+      "region": "us-east-1",
+      "bucket": "s3://acme-loam/code-index",
+      "created_at": "@now-94d",
+      "stats": {
+        "collections": 2,
+        "documents": 48593,
+        "storage_bytes": 366585592,
+        "queries_24h": 1884,
+        "writes_24h": 226
+      }
+    },
+    {
+      "id": "env_code-index_staging",
+      "slug": "staging",
+      "name": "Staging",
+      "project": "code-index",
+      "namespace": "code-index-staging",
+      "protected": false,
+      "region": "us-east-1",
+      "bucket": "s3://acme-loam/code-index",
+      "created_at": "@now-94d",
+      "stats": {
+        "collections": 2,
+        "documents": 607415,
+        "storage_bytes": 4582338760,
+        "queries_24h": 25203,
+        "writes_24h": 3024
+      }
+    },
+    {
+      "id": "env_code-index_production",
+      "slug": "production",
+      "name": "Production",
+      "project": "code-index",
+      "namespace": "code-index-production",
+      "protected": true,
+      "region": "us-east-1",
+      "bucket": "s3://acme-loam/code-index",
+      "created_at": "@now-94d",
+      "stats": {
+        "collections": 2,
+        "documents": 2429662,
+        "storage_bytes": 18329370128,
+        "queries_24h": 812153,
+        "writes_24h": 97458
+      }
+    }
+  ],
+  "usage": {
+    "docs-search/development": {
+      "environment": "development",
+      "period_start": "@month-start",
+      "period_end": "@month-end",
+      "limits": null,
+      "series": [
+        {
+          "date": "@date-29d",
+          "queries": 1689,
+          "writes": 33,
+          "storage_bytes": 1914234
+        },
+        {
+          "date": "@date-28d",
+          "queries": 1680,
+          "writes": 33,
+          "storage_bytes": 1922896
+        },
+        {
+          "date": "@date-27d",
+          "queries": 2104,
+          "writes": 41,
+          "storage_bytes": 1931558
+        },
+        {
+          "date": "@date-26d",
+          "queries": 2775,
+          "writes": 54,
+          "storage_bytes": 1940219
+        },
+        {
+          "date": "@date-25d",
+          "queries": 1988,
+          "writes": 39,
+          "storage_bytes": 1948881
+        },
+        {
+          "date": "@date-24d",
+          "queries": 1832,
+          "writes": 36,
+          "storage_bytes": 1957543
+        },
+        {
+          "date": "@date-23d",
+          "queries": 1957,
+          "writes": 38,
+          "storage_bytes": 1966204
+        },
+        {
+          "date": "@date-22d",
+          "queries": 1400,
+          "writes": 27,
+          "storage_bytes": 1974866
+        },
+        {
+          "date": "@date-21d",
+          "queries": 1475,
+          "writes": 29,
+          "storage_bytes": 1983528
+        },
+        {
+          "date": "@date-20d",
+          "queries": 1965,
+          "writes": 38,
+          "storage_bytes": 1992190
+        },
+        {
+          "date": "@date-19d",
+          "queries": 1786,
+          "writes": 35,
+          "storage_bytes": 2000851
+        },
+        {
+          "date": "@date-18d",
+          "queries": 2029,
+          "writes": 40,
+          "storage_bytes": 2009513
+        },
+        {
+          "date": "@date-17d",
+          "queries": 2012,
+          "writes": 39,
+          "storage_bytes": 2018175
+        },
+        {
+          "date": "@date-16d",
+          "queries": 2299,
+          "writes": 45,
+          "storage_bytes": 2026836
+        },
+        {
+          "date": "@date-15d",
+          "queries": 1335,
+          "writes": 26,
+          "storage_bytes": 2035498
+        },
+        {
+          "date": "@date-14d",
+          "queries": 1190,
+          "writes": 23,
+          "storage_bytes": 2044160
+        },
+        {
+          "date": "@date-13d",
+          "queries": 1892,
+          "writes": 37,
+          "storage_bytes": 2052821
+        },
+        {
+          "date": "@date-12d",
+          "queries": 2270,
+          "writes": 44,
+          "storage_bytes": 2061483
+        },
+        {
+          "date": "@date-11d",
+          "queries": 2099,
+          "writes": 41,
+          "storage_bytes": 2070145
+        },
+        {
+          "date": "@date-10d",
+          "queries": 2482,
+          "writes": 49,
+          "storage_bytes": 2078807
+        },
+        {
+          "date": "@date-9d",
+          "queries": 2559,
+          "writes": 50,
+          "storage_bytes": 2087468
+        },
+        {
+          "date": "@date-8d",
+          "queries": 1572,
+          "writes": 31,
+          "storage_bytes": 2096130
+        },
+        {
+          "date": "@date-7d",
+          "queries": 1221,
+          "writes": 24,
+          "storage_bytes": 2104792
+        },
+        {
+          "date": "@date-6d",
+          "queries": 2476,
+          "writes": 49,
+          "storage_bytes": 2113453
+        },
+        {
+          "date": "@date-5d",
+          "queries": 2507,
+          "writes": 49,
+          "storage_bytes": 2122115
+        },
+        {
+          "date": "@date-4d",
+          "queries": 2107,
+          "writes": 41,
+          "storage_bytes": 2130777
+        },
+        {
+          "date": "@date-3d",
+          "queries": 2398,
+          "writes": 47,
+          "storage_bytes": 2139438
+        },
+        {
+          "date": "@date-2d",
+          "queries": 1999,
+          "writes": 39,
+          "storage_bytes": 2148100
+        },
+        {
+          "date": "@date-1d",
+          "queries": 2128,
+          "writes": 42,
+          "storage_bytes": 2156762
+        },
+        {
+          "date": "@date-0d",
+          "queries": 2038,
+          "writes": 40,
+          "storage_bytes": 2165424
+        }
+      ]
+    },
+    "docs-search/staging": {
+      "environment": "staging",
+      "period_start": "@month-start",
+      "period_end": "@month-end",
+      "limits": null,
+      "series": [
+        {
+          "date": "@date-29d",
+          "queries": 16648,
+          "writes": 332,
+          "storage_bytes": 23971661
+        },
+        {
+          "date": "@date-28d",
+          "queries": 20867,
+          "writes": 417,
+          "storage_bytes": 24080130
+        },
+        {
+          "date": "@date-27d",
+          "queries": 30133,
+          "writes": 602,
+          "storage_bytes": 24188599
+        },
+        {
+          "date": "@date-26d",
+          "queries": 31080,
+          "writes": 621,
+          "storage_bytes": 24297068
+        },
+        {
+          "date": "@date-25d",
+          "queries": 25527,
+          "writes": 510,
+          "storage_bytes": 24405537
+        },
+        {
+          "date": "@date-24d",
+          "queries": 22127,
+          "writes": 442,
+          "storage_bytes": 24514006
+        },
+        {
+          "date": "@date-23d",
+          "queries": 28714,
+          "writes": 574,
+          "storage_bytes": 24622475
+        },
+        {
+          "date": "@date-22d",
+          "queries": 14917,
+          "writes": 298,
+          "storage_bytes": 24730944
+        },
+        {
+          "date": "@date-21d",
+          "queries": 23030,
+          "writes": 460,
+          "storage_bytes": 24839413
+        },
+        {
+          "date": "@date-20d",
+          "queries": 20350,
+          "writes": 406,
+          "storage_bytes": 24947882
+        },
+        {
+          "date": "@date-19d",
+          "queries": 26394,
+          "writes": 527,
+          "storage_bytes": 25056351
+        },
+        {
+          "date": "@date-18d",
+          "queries": 26735,
+          "writes": 534,
+          "storage_bytes": 25164820
+        },
+        {
+          "date": "@date-17d",
+          "queries": 21874,
+          "writes": 437,
+          "storage_bytes": 25273290
+        },
+        {
+          "date": "@date-16d",
+          "queries": 26741,
+          "writes": 534,
+          "storage_bytes": 25381759
+        },
+        {
+          "date": "@date-15d",
+          "queries": 20257,
+          "writes": 405,
+          "storage_bytes": 25490228
+        },
+        {
+          "date": "@date-14d",
+          "queries": 18488,
+          "writes": 369,
+          "storage_bytes": 25598697
+        },
+        {
+          "date": "@date-13d",
+          "queries": 32360,
+          "writes": 646,
+          "storage_bytes": 25707166
+        },
+        {
+          "date": "@date-12d",
+          "queries": 31952,
+          "writes": 638,
+          "storage_bytes": 25815635
+        },
+        {
+          "date": "@date-11d",
+          "queries": 32282,
+          "writes": 645,
+          "storage_bytes": 25924104
+        },
+        {
+          "date": "@date-10d",
+          "queries": 23563,
+          "writes": 471,
+          "storage_bytes": 26032573
+        },
+        {
+          "date": "@date-9d",
+          "queries": 20606,
+          "writes": 411,
+          "storage_bytes": 26141042
+        },
+        {
+          "date": "@date-8d",
+          "queries": 18590,
+          "writes": 371,
+          "storage_bytes": 26249511
+        },
+        {
+          "date": "@date-7d",
+          "queries": 15039,
+          "writes": 300,
+          "storage_bytes": 26357980
+        },
+        {
+          "date": "@date-6d",
+          "queries": 29780,
+          "writes": 595,
+          "storage_bytes": 26466449
+        },
+        {
+          "date": "@date-5d",
+          "queries": 23807,
+          "writes": 475,
+          "storage_bytes": 26574918
+        },
+        {
+          "date": "@date-4d",
+          "queries": 21990,
+          "writes": 439,
+          "storage_bytes": 26683387
+        },
+        {
+          "date": "@date-3d",
+          "queries": 24088,
+          "writes": 481,
+          "storage_bytes": 26791856
+        },
+        {
+          "date": "@date-2d",
+          "queries": 25704,
+          "writes": 513,
+          "storage_bytes": 26900325
+        },
+        {
+          "date": "@date-1d",
+          "queries": 23435,
+          "writes": 468,
+          "storage_bytes": 27008794
+        },
+        {
+          "date": "@date-0d",
+          "queries": 19730,
+          "writes": 394,
+          "storage_bytes": 27117264
+        }
+      ]
+    },
+    "docs-search/production": {
+      "environment": "production",
+      "period_start": "@month-start",
+      "period_end": "@month-end",
+      "limits": null,
+      "series": [
+        {
+          "date": "@date-29d",
+          "queries": 429336,
+          "writes": 8586,
+          "storage_bytes": 95896362
+        },
+        {
+          "date": "@date-28d",
+          "queries": 643381,
+          "writes": 12866,
+          "storage_bytes": 96330282
+        },
+        {
+          "date": "@date-27d",
+          "queries": 628840,
+          "writes": 12576,
+          "storage_bytes": 96764202
+        },
+        {
+          "date": "@date-26d",
+          "queries": 642713,
+          "writes": 12853,
+          "storage_bytes": 97198123
+        },
+        {
+          "date": "@date-25d",
+          "queries": 644594,
+          "writes": 12891,
+          "storage_bytes": 97632043
+        },
+        {
+          "date": "@date-24d",
+          "queries": 638869,
+          "writes": 12776,
+          "storage_bytes": 98065963
+        },
+        {
+          "date": "@date-23d",
+          "queries": 804303,
+          "writes": 16085,
+          "storage_bytes": 98499883
+        },
+        {
+          "date": "@date-22d",
+          "queries": 384774,
+          "writes": 7695,
+          "storage_bytes": 98933803
+        },
+        {
+          "date": "@date-21d",
+          "queries": 539898,
+          "writes": 10797,
+          "storage_bytes": 99367723
+        },
+        {
+          "date": "@date-20d",
+          "queries": 515807,
+          "writes": 10315,
+          "storage_bytes": 99801644
+        },
+        {
+          "date": "@date-19d",
+          "queries": 532504,
+          "writes": 10649,
+          "storage_bytes": 100235564
+        },
+        {
+          "date": "@date-18d",
+          "queries": 631953,
+          "writes": 12638,
+          "storage_bytes": 100669484
+        },
+        {
+          "date": "@date-17d",
+          "queries": 780266,
+          "writes": 15604,
+          "storage_bytes": 101103404
+        },
+        {
+          "date": "@date-16d",
+          "queries": 763423,
+          "writes": 15267,
+          "storage_bytes": 101537324
+        },
+        {
+          "date": "@date-15d",
+          "queries": 393814,
+          "writes": 7875,
+          "storage_bytes": 101971245
+        },
+        {
+          "date": "@date-14d",
+          "queries": 481196,
+          "writes": 9623,
+          "storage_bytes": 102405165
+        },
+        {
+          "date": "@date-13d",
+          "queries": 817932,
+          "writes": 16357,
+          "storage_bytes": 102839085
+        },
+        {
+          "date": "@date-12d",
+          "queries": 756605,
+          "writes": 15131,
+          "storage_bytes": 103273005
+        },
+        {
+          "date": "@date-11d",
+          "queries": 631539,
+          "writes": 12630,
+          "storage_bytes": 103706925
+        },
+        {
+          "date": "@date-10d",
+          "queries": 800877,
+          "writes": 16016,
+          "storage_bytes": 104140846
+        },
+        {
+          "date": "@date-9d",
+          "queries": 541287,
+          "writes": 10825,
+          "storage_bytes": 104574766
+        },
+        {
+          "date": "@date-8d",
+          "queries": 614935,
+          "writes": 12298,
+          "storage_bytes": 105008686
+        },
+        {
+          "date": "@date-7d",
+          "queries": 530672,
+          "writes": 10612,
+          "storage_bytes": 105442606
+        },
+        {
+          "date": "@date-6d",
+          "queries": 586004,
+          "writes": 11719,
+          "storage_bytes": 105876526
+        },
+        {
+          "date": "@date-5d",
+          "queries": 699700,
+          "writes": 13993,
+          "storage_bytes": 106310447
+        },
+        {
+          "date": "@date-4d",
+          "queries": 503998,
+          "writes": 10079,
+          "storage_bytes": 106744367
+        },
+        {
+          "date": "@date-3d",
+          "queries": 669789,
+          "writes": 13395,
+          "storage_bytes": 107178287
+        },
+        {
+          "date": "@date-2d",
+          "queries": 607880,
+          "writes": 12156,
+          "storage_bytes": 107612207
+        },
+        {
+          "date": "@date-1d",
+          "queries": 410255,
+          "writes": 8204,
+          "storage_bytes": 108046127
+        },
+        {
+          "date": "@date-0d",
+          "queries": 413949,
+          "writes": 8278,
+          "storage_bytes": 108480048
+        }
+      ]
+    },
+    "support-assistant/development": {
+      "environment": "development",
+      "period_start": "@month-start",
+      "period_end": "@month-end",
+      "limits": null,
+      "series": [
+        {
+          "date": "@date-29d",
+          "queries": 1833,
+          "writes": 549,
+          "storage_bytes": 33361459
+        },
+        {
+          "date": "@date-28d",
+          "queries": 1342,
+          "writes": 402,
+          "storage_bytes": 33512416
+        },
+        {
+          "date": "@date-27d",
+          "queries": 1882,
+          "writes": 564,
+          "storage_bytes": 33663373
+        },
+        {
+          "date": "@date-26d",
+          "queries": 2244,
+          "writes": 672,
+          "storage_bytes": 33814330
+        },
+        {
+          "date": "@date-25d",
+          "queries": 2497,
+          "writes": 748,
+          "storage_bytes": 33965287
+        },
+        {
+          "date": "@date-24d",
+          "queries": 1814,
+          "writes": 543,
+          "storage_bytes": 34116244
+        },
+        {
+          "date": "@date-23d",
+          "queries": 2022,
+          "writes": 606,
+          "storage_bytes": 34267200
+        },
+        {
+          "date": "@date-22d",
+          "queries": 1677,
+          "writes": 502,
+          "storage_bytes": 34418157
+        },
+        {
+          "date": "@date-21d",
+          "queries": 1398,
+          "writes": 419,
+          "storage_bytes": 34569114
+        },
+        {
+          "date": "@date-20d",
+          "queries": 2644,
+          "writes": 792,
+          "storage_bytes": 34720071
+        },
+        {
+          "date": "@date-19d",
+          "queries": 2467,
+          "writes": 739,
+          "storage_bytes": 34871028
+        },
+        {
+          "date": "@date-18d",
+          "queries": 2723,
+          "writes": 816,
+          "storage_bytes": 35021985
+        },
+        {
+          "date": "@date-17d",
+          "queries": 2374,
+          "writes": 711,
+          "storage_bytes": 35172941
+        },
+        {
+          "date": "@date-16d",
+          "queries": 2419,
+          "writes": 725,
+          "storage_bytes": 35323898
+        },
+        {
+          "date": "@date-15d",
+          "queries": 1425,
+          "writes": 427,
+          "storage_bytes": 35474855
+        },
+        {
+          "date": "@date-14d",
+          "queries": 1668,
+          "writes": 500,
+          "storage_bytes": 35625812
+        },
+        {
+          "date": "@date-13d",
+          "queries": 2139,
+          "writes": 641,
+          "storage_bytes": 35776769
+        },
+        {
+          "date": "@date-12d",
+          "queries": 2194,
+          "writes": 657,
+          "storage_bytes": 35927726
+        },
+        {
+          "date": "@date-11d",
+          "queries": 1732,
+          "writes": 519,
+          "storage_bytes": 36078682
+        },
+        {
+          "date": "@date-10d",
+          "queries": 2605,
+          "writes": 781,
+          "storage_bytes": 36229639
+        },
+        {
+          "date": "@date-9d",
+          "queries": 1834,
+          "writes": 550,
+          "storage_bytes": 36380596
+        },
+        {
+          "date": "@date-8d",
+          "queries": 1617,
+          "writes": 484,
+          "storage_bytes": 36531553
+        },
+        {
+          "date": "@date-7d",
+          "queries": 2140,
+          "writes": 641,
+          "storage_bytes": 36682510
+        },
+        {
+          "date": "@date-6d",
+          "queries": 2232,
+          "writes": 669,
+          "storage_bytes": 36833467
+        },
+        {
+          "date": "@date-5d",
+          "queries": 2626,
+          "writes": 787,
+          "storage_bytes": 36984423
+        },
+        {
+          "date": "@date-4d",
+          "queries": 1952,
+          "writes": 585,
+          "storage_bytes": 37135380
+        },
+        {
+          "date": "@date-3d",
+          "queries": 2181,
+          "writes": 653,
+          "storage_bytes": 37286337
+        },
+        {
+          "date": "@date-2d",
+          "queries": 2084,
+          "writes": 624,
+          "storage_bytes": 37437294
+        },
+        {
+          "date": "@date-1d",
+          "queries": 1468,
+          "writes": 440,
+          "storage_bytes": 37588251
+        },
+        {
+          "date": "@date-0d",
+          "queries": 1518,
+          "writes": 455,
+          "storage_bytes": 37739208
+        }
+      ]
+    },
+    "support-assistant/staging": {
+      "environment": "staging",
+      "period_start": "@month-start",
+      "period_end": "@month-end",
+      "limits": null,
+      "series": [
+        {
+          "date": "@date-29d",
+          "queries": 19858,
+          "writes": 5957,
+          "storage_bytes": 417047897
+        },
+        {
+          "date": "@date-28d",
+          "queries": 18885,
+          "writes": 5665,
+          "storage_bytes": 418934992
+        },
+        {
+          "date": "@date-27d",
+          "queries": 24927,
+          "writes": 7477,
+          "storage_bytes": 420822086
+        },
+        {
+          "date": "@date-26d",
+          "queries": 22508,
+          "writes": 6751,
+          "storage_bytes": 422709181
+        },
+        {
+          "date": "@date-25d",
+          "queries": 24444,
+          "writes": 7332,
+          "storage_bytes": 424596276
+        },
+        {
+          "date": "@date-24d",
+          "queries": 27380,
+          "writes": 8213,
+          "storage_bytes": 426483370
+        },
+        {
+          "date": "@date-23d",
+          "queries": 18398,
+          "writes": 5518,
+          "storage_bytes": 428370465
+        },
+        {
+          "date": "@date-22d",
+          "queries": 16588,
+          "writes": 4975,
+          "storage_bytes": 430257559
+        },
+        {
+          "date": "@date-21d",
+          "queries": 16830,
+          "writes": 5048,
+          "storage_bytes": 432144654
+        },
+        {
+          "date": "@date-20d",
+          "queries": 25755,
+          "writes": 7725,
+          "storage_bytes": 434031748
+        },
+        {
+          "date": "@date-19d",
+          "queries": 17835,
+          "writes": 5350,
+          "storage_bytes": 435918843
+        },
+        {
+          "date": "@date-18d",
+          "queries": 20341,
+          "writes": 6101,
+          "storage_bytes": 437805937
+        },
+        {
+          "date": "@date-17d",
+          "queries": 18336,
+          "writes": 5500,
+          "storage_bytes": 439693032
+        },
+        {
+          "date": "@date-16d",
+          "queries": 19931,
+          "writes": 5978,
+          "storage_bytes": 441580127
+        },
+        {
+          "date": "@date-15d",
+          "queries": 11911,
+          "writes": 3573,
+          "storage_bytes": 443467221
+        },
+        {
+          "date": "@date-14d",
+          "queries": 13511,
+          "writes": 4053,
+          "storage_bytes": 445354316
+        },
+        {
+          "date": "@date-13d",
+          "queries": 22741,
+          "writes": 6821,
+          "storage_bytes": 447241410
+        },
+        {
+          "date": "@date-12d",
+          "queries": 25570,
+          "writes": 7670,
+          "storage_bytes": 449128505
+        },
+        {
+          "date": "@date-11d",
+          "queries": 18550,
+          "writes": 5564,
+          "storage_bytes": 451015599
+        },
+        {
+          "date": "@date-10d",
+          "queries": 24202,
+          "writes": 7260,
+          "storage_bytes": 452902694
+        },
+        {
+          "date": "@date-9d",
+          "queries": 18367,
+          "writes": 5509,
+          "storage_bytes": 454789788
+        },
+        {
+          "date": "@date-8d",
+          "queries": 11965,
+          "writes": 3589,
+          "storage_bytes": 456676883
+        },
+        {
+          "date": "@date-7d",
+          "queries": 16577,
+          "writes": 4972,
+          "storage_bytes": 458563978
+        },
+        {
+          "date": "@date-6d",
+          "queries": 25581,
+          "writes": 7673,
+          "storage_bytes": 460451072
+        },
+        {
+          "date": "@date-5d",
+          "queries": 18933,
+          "writes": 5679,
+          "storage_bytes": 462338167
+        },
+        {
+          "date": "@date-4d",
+          "queries": 21062,
+          "writes": 6318,
+          "storage_bytes": 464225261
+        },
+        {
+          "date": "@date-3d",
+          "queries": 23571,
+          "writes": 7070,
+          "storage_bytes": 466112356
+        },
+        {
+          "date": "@date-2d",
+          "queries": 23614,
+          "writes": 7083,
+          "storage_bytes": 467999450
+        },
+        {
+          "date": "@date-1d",
+          "queries": 11928,
+          "writes": 3578,
+          "storage_bytes": 469886545
+        },
+        {
+          "date": "@date-0d",
+          "queries": 13751,
+          "writes": 4125,
+          "storage_bytes": 471773640
+        }
+      ]
+    },
+    "support-assistant/production": {
+      "environment": "production",
+      "period_start": "@month-start",
+      "period_end": "@month-end",
+      "limits": null,
+      "series": [
+        {
+          "date": "@date-29d",
+          "queries": 473935,
+          "writes": 142180,
+          "storage_bytes": 1668223217
+        },
+        {
+          "date": "@date-28d",
+          "queries": 505839,
+          "writes": 151751,
+          "storage_bytes": 1675771738
+        },
+        {
+          "date": "@date-27d",
+          "queries": 679597,
+          "writes": 203879,
+          "storage_bytes": 1683320259
+        },
+        {
+          "date": "@date-26d",
+          "queries": 606070,
+          "writes": 181821,
+          "storage_bytes": 1690868781
+        },
+        {
+          "date": "@date-25d",
+          "queries": 747127,
+          "writes": 224138,
+          "storage_bytes": 1698417302
+        },
+        {
+          "date": "@date-24d",
+          "queries": 711671,
+          "writes": 213501,
+          "storage_bytes": 1705965823
+        },
+        {
+          "date": "@date-23d",
+          "queries": 574873,
+          "writes": 172462,
+          "storage_bytes": 1713514345
+        },
+        {
+          "date": "@date-22d",
+          "queries": 440186,
+          "writes": 132055,
+          "storage_bytes": 1721062866
+        },
+        {
+          "date": "@date-21d",
+          "queries": 629446,
+          "writes": 188833,
+          "storage_bytes": 1728611387
+        },
+        {
+          "date": "@date-20d",
+          "queries": 562660,
+          "writes": 168798,
+          "storage_bytes": 1736159909
+        },
+        {
+          "date": "@date-19d",
+          "queries": 636683,
+          "writes": 191005,
+          "storage_bytes": 1743708430
+        },
+        {
+          "date": "@date-18d",
+          "queries": 589792,
+          "writes": 176937,
+          "storage_bytes": 1751256951
+        },
+        {
+          "date": "@date-17d",
+          "queries": 681079,
+          "writes": 204323,
+          "storage_bytes": 1758805473
+        },
+        {
+          "date": "@date-16d",
+          "queries": 750353,
+          "writes": 225105,
+          "storage_bytes": 1766353994
+        },
+        {
+          "date": "@date-15d",
+          "queries": 367296,
+          "writes": 110189,
+          "storage_bytes": 1773902515
+        },
+        {
+          "date": "@date-14d",
+          "queries": 389155,
+          "writes": 116746,
+          "storage_bytes": 1781451037
+        },
+        {
+          "date": "@date-13d",
+          "queries": 511243,
+          "writes": 153373,
+          "storage_bytes": 1788999558
+        },
+        {
+          "date": "@date-12d",
+          "queries": 531570,
+          "writes": 159471,
+          "storage_bytes": 1796548079
+        },
+        {
+          "date": "@date-11d",
+          "queries": 660625,
+          "writes": 198187,
+          "storage_bytes": 1804096601
+        },
+        {
+          "date": "@date-10d",
+          "queries": 650226,
+          "writes": 195067,
+          "storage_bytes": 1811645122
+        },
+        {
+          "date": "@date-9d",
+          "queries": 799507,
+          "writes": 239852,
+          "storage_bytes": 1819193643
+        },
+        {
+          "date": "@date-8d",
+          "queries": 475052,
+          "writes": 142515,
+          "storage_bytes": 1826742165
+        },
+        {
+          "date": "@date-7d",
+          "queries": 498711,
+          "writes": 149613,
+          "storage_bytes": 1834290686
+        },
+        {
+          "date": "@date-6d",
+          "queries": 499043,
+          "writes": 149713,
+          "storage_bytes": 1841839207
+        },
+        {
+          "date": "@date-5d",
+          "queries": 564085,
+          "writes": 169225,
+          "storage_bytes": 1849387729
+        },
+        {
+          "date": "@date-4d",
+          "queries": 591544,
+          "writes": 177463,
+          "storage_bytes": 1856936250
+        },
+        {
+          "date": "@date-3d",
+          "queries": 570081,
+          "writes": 171024,
+          "storage_bytes": 1864484771
+        },
+        {
+          "date": "@date-2d",
+          "queries": 748034,
+          "writes": 224410,
+          "storage_bytes": 1872033293
+        },
+        {
+          "date": "@date-1d",
+          "queries": 463258,
+          "writes": 138977,
+          "storage_bytes": 1879581814
+        },
+        {
+          "date": "@date-0d",
+          "queries": 371491,
+          "writes": 111447,
+          "storage_bytes": 1887130336
+        }
+      ]
+    },
+    "code-index/development": {
+      "environment": "development",
+      "period_start": "@month-start",
+      "period_end": "@month-end",
+      "limits": null,
+      "series": [
+        {
+          "date": "@date-29d",
+          "queries": 1117,
+          "writes": 134,
+          "storage_bytes": 324061663
+        },
+        {
+          "date": "@date-28d",
+          "queries": 1514,
+          "writes": 181,
+          "storage_bytes": 325528005
+        },
+        {
+          "date": "@date-27d",
+          "queries": 1494,
+          "writes": 179,
+          "storage_bytes": 326994348
+        },
+        {
+          "date": "@date-26d",
+          "queries": 2125,
+          "writes": 255,
+          "storage_bytes": 328460690
+        },
+        {
+          "date": "@date-25d",
+          "queries": 1826,
+          "writes": 219,
+          "storage_bytes": 329927032
+        },
+        {
+          "date": "@date-24d",
+          "queries": 1473,
+          "writes": 176,
+          "storage_bytes": 331393375
+        },
+        {
+          "date": "@date-23d",
+          "queries": 2047,
+          "writes": 245,
+          "storage_bytes": 332859717
+        },
+        {
+          "date": "@date-22d",
+          "queries": 1847,
+          "writes": 221,
+          "storage_bytes": 334326059
+        },
+        {
+          "date": "@date-21d",
+          "queries": 1637,
+          "writes": 196,
+          "storage_bytes": 335792402
+        },
+        {
+          "date": "@date-20d",
+          "queries": 2205,
+          "writes": 264,
+          "storage_bytes": 337258744
+        },
+        {
+          "date": "@date-19d",
+          "queries": 2297,
+          "writes": 275,
+          "storage_bytes": 338725087
+        },
+        {
+          "date": "@date-18d",
+          "queries": 1668,
+          "writes": 200,
+          "storage_bytes": 340191429
+        },
+        {
+          "date": "@date-17d",
+          "queries": 1871,
+          "writes": 224,
+          "storage_bytes": 341657771
+        },
+        {
+          "date": "@date-16d",
+          "queries": 2111,
+          "writes": 253,
+          "storage_bytes": 343124114
+        },
+        {
+          "date": "@date-15d",
+          "queries": 1315,
+          "writes": 157,
+          "storage_bytes": 344590456
+        },
+        {
+          "date": "@date-14d",
+          "queries": 1852,
+          "writes": 222,
+          "storage_bytes": 346056798
+        },
+        {
+          "date": "@date-13d",
+          "queries": 1811,
+          "writes": 217,
+          "storage_bytes": 347523141
+        },
+        {
+          "date": "@date-12d",
+          "queries": 1433,
+          "writes": 171,
+          "storage_bytes": 348989483
+        },
+        {
+          "date": "@date-11d",
+          "queries": 1502,
+          "writes": 180,
+          "storage_bytes": 350455825
+        },
+        {
+          "date": "@date-10d",
+          "queries": 1815,
+          "writes": 217,
+          "storage_bytes": 351922168
+        },
+        {
+          "date": "@date-9d",
+          "queries": 1430,
+          "writes": 171,
+          "storage_bytes": 353388510
+        },
+        {
+          "date": "@date-8d",
+          "queries": 1516,
+          "writes": 181,
+          "storage_bytes": 354854853
+        },
+        {
+          "date": "@date-7d",
+          "queries": 1878,
+          "writes": 225,
+          "storage_bytes": 356321195
+        },
+        {
+          "date": "@date-6d",
+          "queries": 2291,
+          "writes": 274,
+          "storage_bytes": 357787537
+        },
+        {
+          "date": "@date-5d",
+          "queries": 2342,
+          "writes": 280,
+          "storage_bytes": 359253880
+        },
+        {
+          "date": "@date-4d",
+          "queries": 1647,
+          "writes": 197,
+          "storage_bytes": 360720222
+        },
+        {
+          "date": "@date-3d",
+          "queries": 1582,
+          "writes": 189,
+          "storage_bytes": 362186564
+        },
+        {
+          "date": "@date-2d",
+          "queries": 1479,
+          "writes": 177,
+          "storage_bytes": 363652907
+        },
+        {
+          "date": "@date-1d",
+          "queries": 1818,
+          "writes": 218,
+          "storage_bytes": 365119249
+        },
+        {
+          "date": "@date-0d",
+          "queries": 966,
+          "writes": 115,
+          "storage_bytes": 366585592
+        }
+      ]
+    },
+    "code-index/staging": {
+      "environment": "staging",
+      "period_start": "@month-start",
+      "period_end": "@month-end",
+      "limits": null,
+      "series": [
+        {
+          "date": "@date-29d",
+          "queries": 24544,
+          "writes": 2944,
+          "storage_bytes": 4050787463
+        },
+        {
+          "date": "@date-28d",
+          "queries": 19332,
+          "writes": 2319,
+          "storage_bytes": 4069116818
+        },
+        {
+          "date": "@date-27d",
+          "queries": 19696,
+          "writes": 2363,
+          "storage_bytes": 4087446173
+        },
+        {
+          "date": "@date-26d",
+          "queries": 19346,
+          "writes": 2321,
+          "storage_bytes": 4105775528
+        },
+        {
+          "date": "@date-25d",
+          "queries": 29229,
+          "writes": 3507,
+          "storage_bytes": 4124104884
+        },
+        {
+          "date": "@date-24d",
+          "queries": 27576,
+          "writes": 3308,
+          "storage_bytes": 4142434239
+        },
+        {
+          "date": "@date-23d",
+          "queries": 22813,
+          "writes": 2737,
+          "storage_bytes": 4160763594
+        },
+        {
+          "date": "@date-22d",
+          "queries": 25002,
+          "writes": 2999,
+          "storage_bytes": 4179092949
+        },
+        {
+          "date": "@date-21d",
+          "queries": 16145,
+          "writes": 1937,
+          "storage_bytes": 4197422304
+        },
+        {
+          "date": "@date-20d",
+          "queries": 20773,
+          "writes": 2492,
+          "storage_bytes": 4215751659
+        },
+        {
+          "date": "@date-19d",
+          "queries": 31078,
+          "writes": 3728,
+          "storage_bytes": 4234081014
+        },
+        {
+          "date": "@date-18d",
+          "queries": 19603,
+          "writes": 2352,
+          "storage_bytes": 4252410369
+        },
+        {
+          "date": "@date-17d",
+          "queries": 23474,
+          "writes": 2816,
+          "storage_bytes": 4270739724
+        },
+        {
+          "date": "@date-16d",
+          "queries": 21169,
+          "writes": 2539,
+          "storage_bytes": 4289069079
+        },
+        {
+          "date": "@date-15d",
+          "queries": 20663,
+          "writes": 2479,
+          "storage_bytes": 4307398434
+        },
+        {
+          "date": "@date-14d",
+          "queries": 18761,
+          "writes": 2251,
+          "storage_bytes": 4325727789
+        },
+        {
+          "date": "@date-13d",
+          "queries": 22078,
+          "writes": 2649,
+          "storage_bytes": 4344057144
+        },
+        {
+          "date": "@date-12d",
+          "queries": 26812,
+          "writes": 3217,
+          "storage_bytes": 4362386499
+        },
+        {
+          "date": "@date-11d",
+          "queries": 20248,
+          "writes": 2429,
+          "storage_bytes": 4380715854
+        },
+        {
+          "date": "@date-10d",
+          "queries": 31292,
+          "writes": 3754,
+          "storage_bytes": 4399045209
+        },
+        {
+          "date": "@date-9d",
+          "queries": 28775,
+          "writes": 3452,
+          "storage_bytes": 4417374564
+        },
+        {
+          "date": "@date-8d",
+          "queries": 15232,
+          "writes": 1827,
+          "storage_bytes": 4435703919
+        },
+        {
+          "date": "@date-7d",
+          "queries": 20111,
+          "writes": 2413,
+          "storage_bytes": 4454033274
+        },
+        {
+          "date": "@date-6d",
+          "queries": 22323,
+          "writes": 2678,
+          "storage_bytes": 4472362629
+        },
+        {
+          "date": "@date-5d",
+          "queries": 26145,
+          "writes": 3137,
+          "storage_bytes": 4490691984
+        },
+        {
+          "date": "@date-4d",
+          "queries": 22874,
+          "writes": 2744,
+          "storage_bytes": 4509021339
+        },
+        {
+          "date": "@date-3d",
+          "queries": 21551,
+          "writes": 2585,
+          "storage_bytes": 4527350694
+        },
+        {
+          "date": "@date-2d",
+          "queries": 25086,
+          "writes": 3009,
+          "storage_bytes": 4545680049
+        },
+        {
+          "date": "@date-1d",
+          "queries": 13504,
+          "writes": 1620,
+          "storage_bytes": 4564009404
+        },
+        {
+          "date": "@date-0d",
+          "queries": 25113,
+          "writes": 3013,
+          "storage_bytes": 4582338760
+        }
+      ]
+    },
+    "code-index/production": {
+      "environment": "production",
+      "period_start": "@month-start",
+      "period_end": "@month-end",
+      "limits": null,
+      "series": [
+        {
+          "date": "@date-29d",
+          "queries": 481306,
+          "writes": 57756,
+          "storage_bytes": 16203163193
+        },
+        {
+          "date": "@date-28d",
+          "queries": 664097,
+          "writes": 79691,
+          "storage_bytes": 16276480673
+        },
+        {
+          "date": "@date-27d",
+          "queries": 678164,
+          "writes": 81379,
+          "storage_bytes": 16349798154
+        },
+        {
+          "date": "@date-26d",
+          "queries": 826219,
+          "writes": 99146,
+          "storage_bytes": 16423115634
+        },
+        {
+          "date": "@date-25d",
+          "queries": 929583,
+          "writes": 111549,
+          "storage_bytes": 16496433115
+        },
+        {
+          "date": "@date-24d",
+          "queries": 685259,
+          "writes": 82230,
+          "storage_bytes": 16569750595
+        },
+        {
+          "date": "@date-23d",
+          "queries": 650743,
+          "writes": 78088,
+          "storage_bytes": 16643068076
+        },
+        {
+          "date": "@date-22d",
+          "queries": 668743,
+          "writes": 80248,
+          "storage_bytes": 16716385556
+        },
+        {
+          "date": "@date-21d",
+          "queries": 621209,
+          "writes": 74544,
+          "storage_bytes": 16789703037
+        },
+        {
+          "date": "@date-20d",
+          "queries": 814416,
+          "writes": 97729,
+          "storage_bytes": 16863020517
+        },
+        {
+          "date": "@date-19d",
+          "queries": 693206,
+          "writes": 83184,
+          "storage_bytes": 16936337998
+        },
+        {
+          "date": "@date-18d",
+          "queries": 638541,
+          "writes": 76624,
+          "storage_bytes": 17009655478
+        },
+        {
+          "date": "@date-17d",
+          "queries": 851482,
+          "writes": 102177,
+          "storage_bytes": 17082972959
+        },
+        {
+          "date": "@date-16d",
+          "queries": 786662,
+          "writes": 94399,
+          "storage_bytes": 17156290439
+        },
+        {
+          "date": "@date-15d",
+          "queries": 653440,
+          "writes": 78412,
+          "storage_bytes": 17229607920
+        },
+        {
+          "date": "@date-14d",
+          "queries": 534982,
+          "writes": 64197,
+          "storage_bytes": 17302925400
+        },
+        {
+          "date": "@date-13d",
+          "queries": 670819,
+          "writes": 80497,
+          "storage_bytes": 17376242881
+        },
+        {
+          "date": "@date-12d",
+          "queries": 876015,
+          "writes": 105121,
+          "storage_bytes": 17449560361
+        },
+        {
+          "date": "@date-11d",
+          "queries": 994889,
+          "writes": 119386,
+          "storage_bytes": 17522877842
+        },
+        {
+          "date": "@date-10d",
+          "queries": 977728,
+          "writes": 117326,
+          "storage_bytes": 17596195322
+        },
+        {
+          "date": "@date-9d",
+          "queries": 946516,
+          "writes": 113581,
+          "storage_bytes": 17669512803
+        },
+        {
+          "date": "@date-8d",
+          "queries": 422946,
+          "writes": 50753,
+          "storage_bytes": 17742830283
+        },
+        {
+          "date": "@date-7d",
+          "queries": 512833,
+          "writes": 61539,
+          "storage_bytes": 17816147764
+        },
+        {
+          "date": "@date-6d",
+          "queries": 733964,
+          "writes": 88075,
+          "storage_bytes": 17889465244
+        },
+        {
+          "date": "@date-5d",
+          "queries": 892975,
+          "writes": 107156,
+          "storage_bytes": 17962782725
+        },
+        {
+          "date": "@date-4d",
+          "queries": 799257,
+          "writes": 95910,
+          "storage_bytes": 18036100205
+        },
+        {
+          "date": "@date-3d",
+          "queries": 888555,
+          "writes": 106626,
+          "storage_bytes": 18109417686
+        },
+        {
+          "date": "@date-2d",
+          "queries": 891868,
+          "writes": 107023,
+          "storage_bytes": 18182735166
+        },
+        {
+          "date": "@date-1d",
+          "queries": 623879,
+          "writes": 74865,
+          "storage_bytes": 18256052647
+        },
+        {
+          "date": "@date-0d",
+          "queries": 687623,
+          "writes": 82514,
+          "storage_bytes": 18329370128
+        }
+      ]
+    }
+  },
+  "agents": [
+    {
+      "id": "agt_release_notes",
+      "name": "release-notes-writer",
+      "description": "Runs in GitHub Actions on every release; writes changelog entries.",
+      "project": "docs-search",
+      "owner": {
+        "kind": "team",
+        "id": "team_search",
+        "name": "Search"
+      },
+      "status": "active",
+      "policy": [
+        {
+          "environment": "production",
+          "actions": [
+            "collections:read",
+            "collections:write"
+          ],
+          "collections": [
+            "changelog"
+          ]
+        },
+        {
+          "environment": "staging",
+          "actions": [
+            "collections:read",
+            "collections:write",
+            "query"
+          ],
+          "collections": null
+        }
+      ],
+      "max_token_ttl_s": 900,
+      "limits": {
+        "requests_per_s": 20,
+        "concurrent_queries": 4
+      },
+      "created_at": "@now-60d",
+      "last_active_at": "@now-7m",
+      "active_tokens": 1
+    },
+    {
+      "id": "agt_docs_qa",
+      "name": "docs-qa",
+      "description": "Answers questions in the docs site's chat widget.",
+      "project": "docs-search",
+      "owner": {
+        "kind": "user",
+        "id": "usr_03",
+        "name": "Aiko Tanaka"
+      },
+      "status": "active",
+      "policy": [
+        {
+          "environment": "production",
+          "actions": [
+            "query"
+          ],
+          "collections": [
+            "docs",
+            "changelog"
+          ]
+        }
+      ],
+      "max_token_ttl_s": 600,
+      "limits": {
+        "requests_per_s": 200,
+        "concurrent_queries": 32
+      },
+      "created_at": "@now-45d",
+      "last_active_at": "@now-12s",
+      "active_tokens": 2
+    },
+    {
+      "id": "agt_support_copilot",
+      "name": "support-copilot",
+      "description": "Drafts replies for support agents; acts on behalf of the signed-in agent.",
+      "project": "support-assistant",
+      "owner": {
+        "kind": "team",
+        "id": "team_support",
+        "name": "Support AI"
+      },
+      "status": "active",
+      "policy": [
+        {
+          "environment": "production",
+          "actions": [
+            "query",
+            "collections:read"
+          ],
+          "collections": null
+        },
+        {
+          "environment": "staging",
+          "actions": [
+            "query",
+            "collections:read",
+            "collections:write"
+          ],
+          "collections": null
+        }
+      ],
+      "max_token_ttl_s": 900,
+      "limits": {
+        "requests_per_s": 50,
+        "concurrent_queries": 8
+      },
+      "created_at": "@now-38d",
+      "last_active_at": "@now-40s",
+      "active_tokens": 2
+    },
+    {
+      "id": "agt_triage",
+      "name": "ticket-triage",
+      "description": "Tags incoming tickets. Suspended after it wrote to production without review.",
+      "project": "support-assistant",
+      "owner": {
+        "kind": "user",
+        "id": "usr_04",
+        "name": "Diego Alvarez"
+      },
+      "status": "suspended",
+      "policy": [
+        {
+          "environment": "production",
+          "actions": [
+            "query",
+            "collections:write"
+          ],
+          "collections": [
+            "tickets"
+          ]
+        }
+      ],
+      "max_token_ttl_s": 900,
+      "limits": {
+        "requests_per_s": 10,
+        "concurrent_queries": 2
+      },
+      "created_at": "@now-20d",
+      "last_active_at": "@now-2d",
+      "active_tokens": 0
+    },
+    {
+      "id": "agt_claude_code",
+      "name": "claude-code",
+      "description": "Coding agents in engineers' sandboxes, over MCP, delegated per engineer.",
+      "project": "code-index",
+      "owner": {
+        "kind": "team",
+        "id": "team_search",
+        "name": "Search"
+      },
+      "status": "active",
+      "policy": [
+        {
+          "environment": "production",
+          "actions": [
+            "query",
+            "mcp:tools"
+          ],
+          "collections": null
+        },
+        {
+          "environment": "development",
+          "actions": [
+            "query",
+            "mcp:tools",
+            "collections:write",
+            "documents:delete"
+          ],
+          "collections": null
+        }
+      ],
+      "max_token_ttl_s": 3600,
+      "limits": {
+        "requests_per_s": 30,
+        "concurrent_queries": 6
+      },
+      "created_at": "@now-25d",
+      "last_active_at": "@now-3m",
+      "active_tokens": 2
+    },
+    {
+      "id": "agt_indexer",
+      "name": "pr-indexer",
+      "description": "Indexes merged pull requests from a Kubernetes CronJob.",
+      "project": "code-index",
+      "owner": {
+        "kind": "team",
+        "id": "team_platform",
+        "name": "Platform"
+      },
+      "status": "active",
+      "policy": [
+        {
+          "environment": "production",
+          "actions": [
+            "collections:write",
+            "streams:produce"
+          ],
+          "collections": [
+            "pull_requests"
+          ]
+        }
+      ],
+      "max_token_ttl_s": 900,
+      "limits": {
+        "requests_per_s": 40,
+        "concurrent_queries": 2
+      },
+      "created_at": "@now-50d",
+      "last_active_at": "@now-26m",
+      "active_tokens": 1
+    }
+  ],
+  "trust_policies": {
+    "agt_release_notes": [
+      {
+        "id": "tp_01",
+        "agent": "agt_release_notes",
+        "name": "GitHub Actions, release workflow",
+        "issuer": "https://token.actions.githubusercontent.com",
+        "audience": "https://loam.acme.dev",
+        "subject_pattern": "repo:acme/docs:ref:refs/tags/v*",
+        "environments": [
+          "production",
+          "staging"
+        ],
+        "created_at": "@now-60d"
+      }
+    ],
+    "agt_docs_qa": [
+      {
+        "id": "tp_02",
+        "agent": "agt_docs_qa",
+        "name": "Docs site on EKS",
+        "issuer": "https://oidc.eks.us-east-1.amazonaws.com/id/7F3A2C",
+        "audience": "loam",
+        "subject_pattern": "system:serviceaccount:docs:docs-qa",
+        "environments": [
+          "production"
+        ],
+        "created_at": "@now-45d"
+      }
+    ],
+    "agt_support_copilot": [],
+    "agt_triage": [
+      {
+        "id": "tp_03",
+        "agent": "agt_triage",
+        "name": "Triage worker",
+        "issuer": "https://oidc.eks.us-east-1.amazonaws.com/id/7F3A2C",
+        "audience": "loam",
+        "subject_pattern": "system:serviceaccount:support:triage",
+        "environments": [
+          "production"
+        ],
+        "created_at": "@now-20d"
+      }
+    ],
+    "agt_claude_code": [],
+    "agt_indexer": [
+      {
+        "id": "tp_04",
+        "agent": "agt_indexer",
+        "name": "pr-indexer CronJob",
+        "issuer": "https://oidc.eks.us-east-1.amazonaws.com/id/7F3A2C",
+        "audience": "loam",
+        "subject_pattern": "system:serviceaccount:code:pr-indexer",
+        "environments": [
+          "production"
+        ],
+        "created_at": "@now-50d"
+      }
+    ]
+  },
+  "tokens": {
+    "agt_release_notes": [
+      {
+        "jti": "tok_9f2c",
+        "agent": "agt_release_notes",
+        "environment": "production",
+        "scopes": [
+          "collections:read",
+          "collections:write"
+        ],
+        "flow": "federation",
+        "subject": "repo:acme/docs:ref:refs/tags/v4.12.0",
+        "acting_for": null,
+        "issued_at": "@now-7m",
+        "expires_at": "@now+8m"
+      }
+    ],
+    "agt_docs_qa": [
+      {
+        "jti": "tok_a1b0",
+        "agent": "agt_docs_qa",
+        "environment": "production",
+        "scopes": [
+          "query"
+        ],
+        "flow": "federation",
+        "subject": "system:serviceaccount:docs:docs-qa",
+        "acting_for": null,
+        "issued_at": "@now-4m",
+        "expires_at": "@now+6m"
+      },
+      {
+        "jti": "tok_a1b1",
+        "agent": "agt_docs_qa",
+        "environment": "production",
+        "scopes": [
+          "query"
+        ],
+        "flow": "federation",
+        "subject": "system:serviceaccount:docs:docs-qa",
+        "acting_for": null,
+        "issued_at": "@now-1m",
+        "expires_at": "@now+9m"
+      }
+    ],
+    "agt_support_copilot": [
+      {
+        "jti": "tok_c7d2",
+        "agent": "agt_support_copilot",
+        "environment": "production",
+        "scopes": [
+          "query",
+          "collections:read"
+        ],
+        "flow": "delegation",
+        "subject": "usr_04",
+        "acting_for": {
+          "kind": "user",
+          "id": "usr_04",
+          "name": "Diego Alvarez"
+        },
+        "issued_at": "@now-9m",
+        "expires_at": "@now+6m"
+      },
+      {
+        "jti": "tok_c7d3",
+        "agent": "agt_support_copilot",
+        "environment": "production",
+        "scopes": [
+          "query"
+        ],
+        "flow": "delegation",
+        "subject": "usr_05",
+        "acting_for": {
+          "kind": "user",
+          "id": "usr_05",
+          "name": "Sam Okafor"
+        },
+        "issued_at": "@now-2m",
+        "expires_at": "@now+13m"
+      }
+    ],
+    "agt_triage": [],
+    "agt_claude_code": [
+      {
+        "jti": "tok_e410",
+        "agent": "agt_claude_code",
+        "environment": "development",
+        "scopes": [
+          "query",
+          "mcp:tools",
+          "collections:write"
+        ],
+        "flow": "delegation",
+        "subject": "usr_03",
+        "acting_for": {
+          "kind": "user",
+          "id": "usr_03",
+          "name": "Aiko Tanaka"
+        },
+        "issued_at": "@now-21m",
+        "expires_at": "@now+39m"
+      },
+      {
+        "jti": "tok_e411",
+        "agent": "agt_claude_code",
+        "environment": "development",
+        "scopes": [
+          "query",
+          "mcp:tools"
+        ],
+        "flow": "vending",
+        "subject": "sandbox:aiko/fix-tokenizer",
+        "acting_for": {
+          "kind": "user",
+          "id": "usr_03",
+          "name": "Aiko Tanaka"
+        },
+        "issued_at": "@now-3m",
+        "expires_at": "@now+12m"
+      }
+    ],
+    "agt_indexer": [
+      {
+        "jti": "tok_f0aa",
+        "agent": "agt_indexer",
+        "environment": "production",
+        "scopes": [
+          "collections:write",
+          "streams:produce"
+        ],
+        "flow": "federation",
+        "subject": "system:serviceaccount:code:pr-indexer",
+        "acting_for": null,
+        "issued_at": "@now-26m",
+        "expires_at": "@now+4m"
+      }
+    ]
+  },
+  "service_accounts": {
+    "docs-search": [
+      {
+        "id": "sa_ci",
+        "name": "ci-deploy",
+        "description": "Creates collections and aliases during deploys.",
+        "project": "docs-search",
+        "created_at": "@now-80d",
+        "key_count": 1,
+        "last_active_at": "@now-3d"
+      }
+    ],
+    "support-assistant": [
+      {
+        "id": "sa_backfill",
+        "name": "ticket-backfill",
+        "description": "One-off backfill from the old helpdesk.",
+        "project": "support-assistant",
+        "created_at": "@now-35d",
+        "key_count": 1,
+        "last_active_at": "@now-34d"
+      }
+    ],
+    "code-index": []
+  },
+  "keys": {
+    "docs-search/production": [
+      {
+        "id": "key_7kq2m9",
+        "name": "ci-deploy",
+        "prefix": "loam_7kq2m9",
+        "environment": "production",
+        "principal": {
+          "kind": "service_account",
+          "id": "sa_ci",
+          "name": "ci-deploy"
+        },
+        "scopes": [
+          "collections:read",
+          "collections:write"
+        ],
+        "created_at": "@now-80d",
+        "expires_at": "@now+10d",
+        "last_used_at": "@now-3d"
+      }
+    ],
+    "docs-search/staging": [
+      {
+        "id": "key_p3x8a1",
+        "name": "local testing",
+        "prefix": "loam_p3x8a1",
+        "environment": "staging",
+        "principal": {
+          "kind": "user",
+          "id": "usr_03",
+          "name": "Aiko Tanaka"
+        },
+        "scopes": [
+          "query",
+          "collections:read"
+        ],
+        "created_at": "@now-15d",
+        "expires_at": "@now+75d",
+        "last_used_at": "@now-6h"
+      }
+    ],
+    "docs-search/development": [],
+    "support-assistant/production": [
+      {
+        "id": "key_b41nz0",
+        "name": "ticket-backfill",
+        "prefix": "loam_b41nz0",
+        "environment": "production",
+        "principal": {
+          "kind": "service_account",
+          "id": "sa_backfill",
+          "name": "ticket-backfill"
+        },
+        "scopes": [
+          "collections:write"
+        ],
+        "created_at": "@now-35d",
+        "expires_at": "@now+55d",
+        "last_used_at": "@now-34d"
+      }
+    ],
+    "support-assistant/staging": [],
+    "support-assistant/development": [],
+    "code-index/production": [],
+    "code-index/staging": [],
+    "code-index/development": []
+  },
+  "audit": [
+    {
+      "id": "evt_0024",
+      "at": "@now-12s",
+      "actor": {
+        "kind": "agent",
+        "id": "agt_docs_qa",
+        "name": "docs-qa"
+      },
+      "acting_for": null,
+      "action": "query.search",
+      "target": {
+        "kind": "collection",
+        "id": "docs",
+        "name": "docs"
+      },
+      "project": "docs-search",
+      "environment": "production",
+      "ip": "10.0.4.21",
+      "outcome": "success"
+    },
+    {
+      "id": "evt_0023",
+      "at": "@now-40s",
+      "actor": {
+        "kind": "agent",
+        "id": "agt_support_copilot",
+        "name": "support-copilot"
+      },
+      "acting_for": {
+        "kind": "user",
+        "id": "usr_05",
+        "name": "Sam Okafor"
+      },
+      "action": "query.search",
+      "target": {
+        "kind": "collection",
+        "id": "tickets",
+        "name": "tickets"
+      },
+      "project": "support-assistant",
+      "environment": "production",
+      "ip": "10.0.4.21",
+      "outcome": "success"
+    },
+    {
+      "id": "evt_0022",
+      "at": "@now-1m",
+      "actor": {
+        "kind": "agent",
+        "id": "agt_docs_qa",
+        "name": "docs-qa"
+      },
+      "acting_for": null,
+      "action": "agent.token.issued",
+      "target": {
+        "kind": "token",
+        "id": "tok_a1b1",
+        "name": "tok_a1b1"
+      },
+      "project": "docs-search",
+      "environment": "production",
+      "ip": "10.0.4.21",
+      "outcome": "success"
+    },
+    {
+      "id": "evt_0021",
+      "at": "@now-2m",
+      "actor": {
+        "kind": "agent",
+        "id": "agt_support_copilot",
+        "name": "support-copilot"
+      },
+      "acting_for": {
+        "kind": "user",
+        "id": "usr_05",
+        "name": "Sam Okafor"
+      },
+      "action": "agent.token.issued",
+      "target": {
+        "kind": "token",
+        "id": "tok_c7d3",
+        "name": "tok_c7d3"
+      },
+      "project": "support-assistant",
+      "environment": "production",
+      "ip": "10.0.4.21",
+      "outcome": "success"
+    },
+    {
+      "id": "evt_0020",
+      "at": "@now-3m",
+      "actor": {
+        "kind": "agent",
+        "id": "agt_claude_code",
+        "name": "claude-code"
+      },
+      "acting_for": {
+        "kind": "user",
+        "id": "usr_03",
+        "name": "Aiko Tanaka"
+      },
+      "action": "agent.token.vended",
+      "target": {
+        "kind": "token",
+        "id": "tok_e411",
+        "name": "tok_e411"
+      },
+      "project": "code-index",
+      "environment": "development",
+      "ip": "10.0.4.21",
+      "outcome": "success"
+    },
+    {
+      "id": "evt_0019",
+      "at": "@now-7m",
+      "actor": {
+        "kind": "agent",
+        "id": "agt_release_notes",
+        "name": "release-notes-writer"
+      },
+      "acting_for": null,
+      "action": "agent.token.issued",
+      "target": {
+        "kind": "token",
+        "id": "tok_9f2c",
+        "name": "tok_9f2c"
+      },
+      "project": "docs-search",
+      "environment": "production",
+      "ip": "10.0.4.21",
+      "outcome": "success"
+    },
+    {
+      "id": "evt_0018",
+      "at": "@now-7m",
+      "actor": {
+        "kind": "agent",
+        "id": "agt_release_notes",
+        "name": "release-notes-writer"
+      },
+      "acting_for": null,
+      "action": "documents.write",
+      "target": {
+        "kind": "collection",
+        "id": "changelog",
+        "name": "changelog"
+      },
+      "project": "docs-search",
+      "environment": "production",
+      "ip": "10.0.4.21",
+      "outcome": "success"
+    },
+    {
+      "id": "evt_0017",
+      "at": "@now-18m",
+      "actor": {
+        "kind": "agent",
+        "id": "agt_claude_code",
+        "name": "claude-code"
+      },
+      "acting_for": {
+        "kind": "user",
+        "id": "usr_03",
+        "name": "Aiko Tanaka"
+      },
+      "action": "documents.delete",
+      "target": {
+        "kind": "collection",
+        "id": "code",
+        "name": "code"
+      },
+      "project": "code-index",
+      "environment": "production",
+      "ip": "10.0.4.21",
+      "outcome": "denied"
+    },
+    {
+      "id": "evt_0016",
+      "at": "@now-21m",
+      "actor": {
+        "kind": "agent",
+        "id": "agt_claude_code",
+        "name": "claude-code"
+      },
+      "acting_for": {
+        "kind": "user",
+        "id": "usr_03",
+        "name": "Aiko Tanaka"
+      },
+      "action": "agent.token.issued",
+      "target": {
+        "kind": "token",
+        "id": "tok_e410",
+        "name": "tok_e410"
+      },
+      "project": "code-index",
+      "environment": "development",
+      "ip": "10.0.4.21",
+      "outcome": "success"
+    },
+    {
+      "id": "evt_0015",
+      "at": "@now-1h",
+      "actor": {
+        "kind": "user",
+        "id": "usr_02",
+        "name": "Marcus Chen"
+      },
+      "acting_for": null,
+      "action": "agent.policy.updated",
+      "target": {
+        "kind": "agent",
+        "id": "agt_claude_code",
+        "name": "claude-code"
+      },
+      "project": "code-index",
+      "environment": null,
+      "ip": "10.0.4.21",
+      "outcome": "success"
+    },
+    {
+      "id": "evt_0014",
+      "at": "@now-3h",
+      "actor": {
+        "kind": "user",
+        "id": "usr_03",
+        "name": "Aiko Tanaka"
+      },
+      "acting_for": null,
+      "action": "session.created",
+      "target": {
+        "kind": "user",
+        "id": "usr_03",
+        "name": "Aiko Tanaka"
+      },
+      "project": null,
+      "environment": null,
+      "ip": "203.0.113.14",
+      "outcome": "success"
+    },
+    {
+      "id": "evt_0013",
+      "at": "@now-6h",
+      "actor": {
+        "kind": "user",
+        "id": "usr_03",
+        "name": "Aiko Tanaka"
+      },
+      "acting_for": null,
+      "action": "api_key.used",
+      "target": {
+        "kind": "api_key",
+        "id": "key_p3x8a1",
+        "name": "local testing"
+      },
+      "project": "docs-search",
+      "environment": "staging",
+      "ip": "203.0.113.14",
+      "outcome": "success"
+    },
+    {
+      "id": "evt_0012",
+      "at": "@now-2d",
+      "actor": {
+        "kind": "user",
+        "id": "usr_04",
+        "name": "Diego Alvarez"
+      },
+      "acting_for": null,
+      "action": "agent.suspended",
+      "target": {
+        "kind": "agent",
+        "id": "agt_triage",
+        "name": "ticket-triage"
+      },
+      "project": "support-assistant",
+      "environment": null,
+      "ip": "10.0.4.21",
+      "outcome": "success"
+    },
+    {
+      "id": "evt_0011",
+      "at": "@now-2d",
+      "actor": {
+        "kind": "agent",
+        "id": "agt_triage",
+        "name": "ticket-triage"
+      },
+      "acting_for": null,
+      "action": "documents.write",
+      "target": {
+        "kind": "collection",
+        "id": "tickets",
+        "name": "tickets"
+      },
+      "project": "support-assistant",
+      "environment": "production",
+      "ip": "10.0.4.21",
+      "outcome": "denied"
+    },
+    {
+      "id": "evt_0010",
+      "at": "@now-2d",
+      "actor": {
+        "kind": "user",
+        "id": "usr_02",
+        "name": "Marcus Chen"
+      },
+      "acting_for": null,
+      "action": "org.invitation.created",
+      "target": {
+        "kind": "invitation",
+        "id": "inv_01",
+        "name": "lena@acme.dev"
+      },
+      "project": null,
+      "environment": null,
+      "ip": "10.0.4.21",
+      "outcome": "success"
+    },
+    {
+      "id": "evt_0009",
+      "at": "@now-3d",
+      "actor": {
+        "kind": "service_account",
+        "id": "sa_ci",
+        "name": "ci-deploy"
+      },
+      "acting_for": null,
+      "action": "collection.alias.updated",
+      "target": {
+        "kind": "collection",
+        "id": "docs",
+        "name": "docs_live"
+      },
+      "project": "docs-search",
+      "environment": "production",
+      "ip": "140.82.112.3",
+      "outcome": "success"
+    },
+    {
+      "id": "evt_0008",
+      "at": "@now-12d",
+      "actor": {
+        "kind": "user",
+        "id": "usr_01",
+        "name": "Priya Raman"
+      },
+      "acting_for": null,
+      "action": "project.access.granted",
+      "target": {
+        "kind": "user",
+        "id": "usr_05",
+        "name": "Sam Okafor"
+      },
+      "project": "docs-search",
+      "environment": null,
+      "ip": "10.0.4.21",
+      "outcome": "success"
+    },
+    {
+      "id": "evt_0007",
+      "at": "@now-15d",
+      "actor": {
+        "kind": "user",
+        "id": "usr_03",
+        "name": "Aiko Tanaka"
+      },
+      "acting_for": null,
+      "action": "api_key.created",
+      "target": {
+        "kind": "api_key",
+        "id": "key_p3x8a1",
+        "name": "local testing"
+      },
+      "project": "docs-search",
+      "environment": "staging",
+      "ip": "203.0.113.14",
+      "outcome": "success"
+    },
+    {
+      "id": "evt_0006",
+      "at": "@now-20d",
+      "actor": {
+        "kind": "user",
+        "id": "usr_04",
+        "name": "Diego Alvarez"
+      },
+      "acting_for": null,
+      "action": "agent.created",
+      "target": {
+        "kind": "agent",
+        "id": "agt_triage",
+        "name": "ticket-triage"
+      },
+      "project": "support-assistant",
+      "environment": null,
+      "ip": "10.0.4.21",
+      "outcome": "success"
+    },
+    {
+      "id": "evt_0005",
+      "at": "@now-25d",
+      "actor": {
+        "kind": "user",
+        "id": "usr_02",
+        "name": "Marcus Chen"
+      },
+      "acting_for": null,
+      "action": "agent.created",
+      "target": {
+        "kind": "agent",
+        "id": "agt_claude_code",
+        "name": "claude-code"
+      },
+      "project": "code-index",
+      "environment": null,
+      "ip": "10.0.4.21",
+      "outcome": "success"
+    }
+  ],
+  "collections": {
+    "docs-search-development": [
+      {
+        "id": 1,
+        "name": "docs",
+        "namespace": "docs-search-development",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "title",
+              "source_path": "title",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "body",
+              "source_path": "body",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "url",
+              "source_path": "url",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "product",
+              "source_path": "product",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "updated_at",
+              "source_path": "updated_at",
+              "kind": "date",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 1024,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [
+            {
+              "name": "splade",
+              "modifier": "idf"
+            }
+          ],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 1,
+        "aliases": [],
+        "stream": 101,
+        "manifest_version": 46,
+        "live_doc_count": 368,
+        "size_bytes": 2022528,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 0,
+        "hot": {
+          "vectors": {
+            "state": "off",
+            "source_version": null
+          },
+          "text": {
+            "state": "off",
+            "source_version": null
+          },
+          "fragments": {
+            "state": "off",
+            "source_version": null
+          }
+        }
+      },
+      {
+        "id": 2,
+        "name": "changelog",
+        "namespace": "docs-search-development",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "title",
+              "source_path": "title",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "body",
+              "source_path": "body",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "version",
+              "source_path": "version",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "released_at",
+              "source_path": "released_at",
+              "kind": "date",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 1024,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 1,
+        "aliases": [],
+        "stream": 102,
+        "manifest_version": 5,
+        "live_doc_count": 26,
+        "size_bytes": 142896,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 0,
+        "hot": {
+          "vectors": {
+            "state": "off",
+            "source_version": null
+          },
+          "text": {
+            "state": "off",
+            "source_version": null
+          },
+          "fragments": {
+            "state": "off",
+            "source_version": null
+          }
+        }
+      }
+    ],
+    "docs-search-staging": [
+      {
+        "id": 3,
+        "name": "docs",
+        "namespace": "docs-search-staging",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "title",
+              "source_path": "title",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "body",
+              "source_path": "body",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "url",
+              "source_path": "url",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "product",
+              "source_path": "product",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "updated_at",
+              "source_path": "updated_at",
+              "kind": "date",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 1024,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [
+            {
+              "name": "splade",
+              "modifier": "idf"
+            }
+          ],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 1,
+        "aliases": [],
+        "stream": 103,
+        "manifest_version": 53,
+        "live_doc_count": 4605,
+        "size_bytes": 25309080,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 0,
+        "hot": {
+          "vectors": {
+            "state": "ready",
+            "source_version": 53
+          },
+          "text": {
+            "state": "ready",
+            "source_version": 53
+          },
+          "fragments": {
+            "state": "ready",
+            "source_version": 53
+          }
+        }
+      },
+      {
+        "id": 4,
+        "name": "changelog",
+        "namespace": "docs-search-staging",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "title",
+              "source_path": "title",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "body",
+              "source_path": "body",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "version",
+              "source_path": "version",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "released_at",
+              "source_path": "released_at",
+              "kind": "date",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 1024,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 1,
+        "aliases": [],
+        "stream": 104,
+        "manifest_version": 43,
+        "live_doc_count": 329,
+        "size_bytes": 1808184,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 0,
+        "hot": {
+          "vectors": {
+            "state": "ready",
+            "source_version": 43
+          },
+          "text": {
+            "state": "ready",
+            "source_version": 43
+          },
+          "fragments": {
+            "state": "ready",
+            "source_version": 43
+          }
+        }
+      }
+    ],
+    "docs-search-production": [
+      {
+        "id": 5,
+        "name": "docs",
+        "namespace": "docs-search-production",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "title",
+              "source_path": "title",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "body",
+              "source_path": "body",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "url",
+              "source_path": "url",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "product",
+              "source_path": "product",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "updated_at",
+              "source_path": "updated_at",
+              "kind": "date",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 1024,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [
+            {
+              "name": "splade",
+              "modifier": "idf"
+            }
+          ],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 4,
+        "aliases": [
+          "docs_live"
+        ],
+        "stream": 105,
+        "manifest_version": 348,
+        "live_doc_count": 18420,
+        "size_bytes": 101236320,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 19,
+        "hot": {
+          "vectors": {
+            "state": "ready",
+            "source_version": 348
+          },
+          "text": {
+            "state": "ready",
+            "source_version": 348
+          },
+          "fragments": {
+            "state": "ready",
+            "source_version": 348
+          }
+        }
+      },
+      {
+        "id": 6,
+        "name": "changelog",
+        "namespace": "docs-search-production",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "title",
+              "source_path": "title",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "body",
+              "source_path": "body",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "version",
+              "source_path": "version",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "released_at",
+              "source_path": "released_at",
+              "kind": "date",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 1024,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 4,
+        "aliases": [
+          "changelog_live"
+        ],
+        "stream": 106,
+        "manifest_version": 733,
+        "live_doc_count": 1318,
+        "size_bytes": 7243728,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 2,
+        "hot": {
+          "vectors": {
+            "state": "ready",
+            "source_version": 733
+          },
+          "text": {
+            "state": "ready",
+            "source_version": 733
+          },
+          "fragments": {
+            "state": "ready",
+            "source_version": 733
+          }
+        }
+      }
+    ],
+    "support-assistant-development": [
+      {
+        "id": 7,
+        "name": "tickets",
+        "namespace": "support-assistant-development",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "subject",
+              "source_path": "subject",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "body",
+              "source_path": "body",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "status",
+              "source_path": "status",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "tenant",
+              "source_path": "tenant",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "created_at",
+              "source_path": "created_at",
+              "kind": "date",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 768,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 1,
+        "aliases": [],
+        "stream": 107,
+        "manifest_version": 23,
+        "live_doc_count": 8258,
+        "size_bytes": 36929776,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 0,
+        "hot": {
+          "vectors": {
+            "state": "off",
+            "source_version": null
+          },
+          "text": {
+            "state": "off",
+            "source_version": null
+          },
+          "fragments": {
+            "state": "off",
+            "source_version": null
+          }
+        }
+      },
+      {
+        "id": 8,
+        "name": "macros",
+        "namespace": "support-assistant-development",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "title",
+              "source_path": "title",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "body",
+              "source_path": "body",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "locale",
+              "source_path": "locale",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 768,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 1,
+        "aliases": [],
+        "stream": 108,
+        "manifest_version": 6,
+        "live_doc_count": 44,
+        "size_bytes": 196768,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 0,
+        "hot": {
+          "vectors": {
+            "state": "off",
+            "source_version": null
+          },
+          "text": {
+            "state": "off",
+            "source_version": null
+          },
+          "fragments": {
+            "state": "off",
+            "source_version": null
+          }
+        }
+      },
+      {
+        "id": 9,
+        "name": "articles",
+        "namespace": "support-assistant-development",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "title",
+              "source_path": "title",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "body",
+              "source_path": "body",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "locale",
+              "source_path": "locale",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "updated_at",
+              "source_path": "updated_at",
+              "kind": "date",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 768,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [
+            {
+              "name": "splade",
+              "modifier": "idf"
+            }
+          ],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 1,
+        "aliases": [],
+        "stream": 109,
+        "manifest_version": 4,
+        "live_doc_count": 137,
+        "size_bytes": 612664,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 0,
+        "hot": {
+          "vectors": {
+            "state": "off",
+            "source_version": null
+          },
+          "text": {
+            "state": "off",
+            "source_version": null
+          },
+          "fragments": {
+            "state": "off",
+            "source_version": null
+          }
+        }
+      }
+    ],
+    "support-assistant-staging": [
+      {
+        "id": 10,
+        "name": "tickets",
+        "namespace": "support-assistant-staging",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "subject",
+              "source_path": "subject",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "body",
+              "source_path": "body",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "status",
+              "source_path": "status",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "tenant",
+              "source_path": "tenant",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "created_at",
+              "source_path": "created_at",
+              "kind": "date",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 768,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 1,
+        "aliases": [],
+        "stream": 110,
+        "manifest_version": 31,
+        "live_doc_count": 103225,
+        "size_bytes": 461622200,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 0,
+        "hot": {
+          "vectors": {
+            "state": "ready",
+            "source_version": 31
+          },
+          "text": {
+            "state": "ready",
+            "source_version": 31
+          },
+          "fragments": {
+            "state": "ready",
+            "source_version": 31
+          }
+        }
+      },
+      {
+        "id": 11,
+        "name": "macros",
+        "namespace": "support-assistant-staging",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "title",
+              "source_path": "title",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "body",
+              "source_path": "body",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "locale",
+              "source_path": "locale",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 768,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 1,
+        "aliases": [],
+        "stream": 111,
+        "manifest_version": 58,
+        "live_doc_count": 553,
+        "size_bytes": 2473016,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 0,
+        "hot": {
+          "vectors": {
+            "state": "ready",
+            "source_version": 58
+          },
+          "text": {
+            "state": "ready",
+            "source_version": 58
+          },
+          "fragments": {
+            "state": "ready",
+            "source_version": 58
+          }
+        }
+      },
+      {
+        "id": 12,
+        "name": "articles",
+        "namespace": "support-assistant-staging",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "title",
+              "source_path": "title",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "body",
+              "source_path": "body",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "locale",
+              "source_path": "locale",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "updated_at",
+              "source_path": "updated_at",
+              "kind": "date",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 768,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [
+            {
+              "name": "splade",
+              "modifier": "idf"
+            }
+          ],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 1,
+        "aliases": [],
+        "stream": 112,
+        "manifest_version": 56,
+        "live_doc_count": 1717,
+        "size_bytes": 7678424,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 0,
+        "hot": {
+          "vectors": {
+            "state": "ready",
+            "source_version": 56
+          },
+          "text": {
+            "state": "ready",
+            "source_version": 56
+          },
+          "fragments": {
+            "state": "ready",
+            "source_version": 56
+          }
+        }
+      }
+    ],
+    "support-assistant-production": [
+      {
+        "id": 13,
+        "name": "tickets",
+        "namespace": "support-assistant-production",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "subject",
+              "source_path": "subject",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "body",
+              "source_path": "body",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "status",
+              "source_path": "status",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "tenant",
+              "source_path": "tenant",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "created_at",
+              "source_path": "created_at",
+              "kind": "date",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 768,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 4,
+        "aliases": [
+          "tickets_live"
+        ],
+        "stream": 113,
+        "manifest_version": 295,
+        "live_doc_count": 412903,
+        "size_bytes": 1846502216,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 18,
+        "hot": {
+          "vectors": {
+            "state": "ready",
+            "source_version": 295
+          },
+          "text": {
+            "state": "ready",
+            "source_version": 295
+          },
+          "fragments": {
+            "state": "ready",
+            "source_version": 295
+          }
+        }
+      },
+      {
+        "id": 14,
+        "name": "macros",
+        "namespace": "support-assistant-production",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "title",
+              "source_path": "title",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "body",
+              "source_path": "body",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "locale",
+              "source_path": "locale",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 768,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 4,
+        "aliases": [
+          "macros_live"
+        ],
+        "stream": 114,
+        "manifest_version": 164,
+        "live_doc_count": 2214,
+        "size_bytes": 9901008,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 37,
+        "hot": {
+          "vectors": {
+            "state": "ready",
+            "source_version": 164
+          },
+          "text": {
+            "state": "ready",
+            "source_version": 164
+          },
+          "fragments": {
+            "state": "ready",
+            "source_version": 164
+          }
+        }
+      },
+      {
+        "id": 15,
+        "name": "articles",
+        "namespace": "support-assistant-production",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "title",
+              "source_path": "title",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "body",
+              "source_path": "body",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "locale",
+              "source_path": "locale",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "updated_at",
+              "source_path": "updated_at",
+              "kind": "date",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 768,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [
+            {
+              "name": "splade",
+              "modifier": "idf"
+            }
+          ],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 4,
+        "aliases": [
+          "articles_live"
+        ],
+        "stream": 115,
+        "manifest_version": 494,
+        "live_doc_count": 6871,
+        "size_bytes": 30727112,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 8,
+        "hot": {
+          "vectors": {
+            "state": "ready",
+            "source_version": 494
+          },
+          "text": {
+            "state": "ready",
+            "source_version": 494
+          },
+          "fragments": {
+            "state": "ready",
+            "source_version": 494
+          }
+        }
+      }
+    ],
+    "code-index-development": [
+      {
+        "id": 16,
+        "name": "code",
+        "namespace": "code-index-development",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "path",
+              "source_path": "path",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": false
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "content",
+              "source_path": "content",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "repo",
+              "source_path": "repo",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "language",
+              "source_path": "language",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "commit",
+              "source_path": "commit",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 1536,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 1,
+        "aliases": [],
+        "stream": 116,
+        "manifest_version": 37,
+        "live_doc_count": 47631,
+        "size_bytes": 359328264,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 0,
+        "hot": {
+          "vectors": {
+            "state": "off",
+            "source_version": null
+          },
+          "text": {
+            "state": "off",
+            "source_version": null
+          },
+          "fragments": {
+            "state": "off",
+            "source_version": null
+          }
+        }
+      },
+      {
+        "id": 17,
+        "name": "pull_requests",
+        "namespace": "code-index-development",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "title",
+              "source_path": "title",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "body",
+              "source_path": "body",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "repo",
+              "source_path": "repo",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "state",
+              "source_path": "state",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "merged_at",
+              "source_path": "merged_at",
+              "kind": "date",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 1536,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 1,
+        "aliases": [],
+        "stream": 117,
+        "manifest_version": 17,
+        "live_doc_count": 962,
+        "size_bytes": 7257328,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 0,
+        "hot": {
+          "vectors": {
+            "state": "off",
+            "source_version": null
+          },
+          "text": {
+            "state": "off",
+            "source_version": null
+          },
+          "fragments": {
+            "state": "off",
+            "source_version": null
+          }
+        }
+      }
+    ],
+    "code-index-staging": [
+      {
+        "id": 18,
+        "name": "code",
+        "namespace": "code-index-staging",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "path",
+              "source_path": "path",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": false
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "content",
+              "source_path": "content",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "repo",
+              "source_path": "repo",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "language",
+              "source_path": "language",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "commit",
+              "source_path": "commit",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 1536,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 1,
+        "aliases": [],
+        "stream": 118,
+        "manifest_version": 7,
+        "live_doc_count": 595387,
+        "size_bytes": 4491599528,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 0,
+        "hot": {
+          "vectors": {
+            "state": "ready",
+            "source_version": 7
+          },
+          "text": {
+            "state": "ready",
+            "source_version": 7
+          },
+          "fragments": {
+            "state": "ready",
+            "source_version": 7
+          }
+        }
+      },
+      {
+        "id": 19,
+        "name": "pull_requests",
+        "namespace": "code-index-staging",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "title",
+              "source_path": "title",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "body",
+              "source_path": "body",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "repo",
+              "source_path": "repo",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "state",
+              "source_path": "state",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "merged_at",
+              "source_path": "merged_at",
+              "kind": "date",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 1536,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 1,
+        "aliases": [],
+        "stream": 119,
+        "manifest_version": 6,
+        "live_doc_count": 12028,
+        "size_bytes": 90739232,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 0,
+        "hot": {
+          "vectors": {
+            "state": "ready",
+            "source_version": 6
+          },
+          "text": {
+            "state": "ready",
+            "source_version": 6
+          },
+          "fragments": {
+            "state": "ready",
+            "source_version": 6
+          }
+        }
+      }
+    ],
+    "code-index-production": [
+      {
+        "id": 20,
+        "name": "code",
+        "namespace": "code-index-production",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "path",
+              "source_path": "path",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": false
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "content",
+              "source_path": "content",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "repo",
+              "source_path": "repo",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "language",
+              "source_path": "language",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "commit",
+              "source_path": "commit",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 1536,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 4,
+        "aliases": [
+          "code_live"
+        ],
+        "stream": 120,
+        "manifest_version": 846,
+        "live_doc_count": 2381550,
+        "size_bytes": 17966413200,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 31,
+        "hot": {
+          "vectors": {
+            "state": "ready",
+            "source_version": 846
+          },
+          "text": {
+            "state": "ready",
+            "source_version": 846
+          },
+          "fragments": {
+            "state": "ready",
+            "source_version": 846
+          }
+        }
+      },
+      {
+        "id": 21,
+        "name": "pull_requests",
+        "namespace": "code-index-production",
+        "schema": {
+          "version": 1,
+          "fields": [
+            {
+              "name": "title",
+              "source_path": "title",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "body",
+              "source_path": "body",
+              "kind": {
+                "text": {
+                  "analyzer": "standard",
+                  "positions": true
+                }
+              },
+              "indexed": true,
+              "fast": false,
+              "ignore_malformed": false
+            },
+            {
+              "name": "repo",
+              "source_path": "repo",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "state",
+              "source_path": "state",
+              "kind": "keyword",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            },
+            {
+              "name": "merged_at",
+              "source_path": "merged_at",
+              "kind": "date",
+              "indexed": true,
+              "fast": true,
+              "ignore_malformed": false
+            }
+          ],
+          "vectors": [
+            {
+              "name": "embedding",
+              "dim": 1536,
+              "distance": "cosine",
+              "element": "f32",
+              "index": "auto",
+              "hnsw": {
+                "m": 16,
+                "ef_construct": 100,
+                "full_scan_threshold_kb": 10000,
+                "payload_m": null,
+                "on_disk": false
+              },
+              "quantization": null
+            }
+          ],
+          "sparse_vectors": [],
+          "dynamic": "ignore",
+          "max_fields": 1000,
+          "annotations": {}
+        },
+        "partitions": 4,
+        "aliases": [
+          "pull_requests_live"
+        ],
+        "stream": 121,
+        "manifest_version": 272,
+        "live_doc_count": 48112,
+        "size_bytes": 362956928,
+        "created_at_ms": "@ms-80d",
+        "link_lag_records": 38,
+        "hot": {
+          "vectors": {
+            "state": "ready",
+            "source_version": 272
+          },
+          "text": {
+            "state": "ready",
+            "source_version": 272
+          },
+          "fragments": {
+            "state": "ready",
+            "source_version": 272
+          }
+        }
+      }
+    ]
+  },
+  "examples": {
+    "project": {
+      "id": "prj_new",
+      "slug": "new-project",
+      "name": "New project",
+      "description": "",
+      "created_at": "@now",
+      "environment_count": 0,
+      "agent_count": 0
+    },
+    "environment": {
+      "id": "env_new",
+      "slug": "preview",
+      "name": "Preview",
+      "project": "docs-search",
+      "namespace": "docs-search-preview",
+      "protected": false,
+      "region": "us-east-1",
+      "bucket": "s3://acme-loam/docs-search",
+      "created_at": "@now",
+      "stats": {
+        "collections": 0,
+        "documents": 0,
+        "storage_bytes": 0,
+        "queries_24h": 0,
+        "writes_24h": 0
+      }
+    },
+    "team": {
+      "id": "team_new",
+      "name": "New team",
+      "slug": "new-team",
+      "description": "",
+      "member_count": 0,
+      "idp_group": null,
+      "created_at": "@now"
+    },
+    "invitation": {
+      "id": "inv_new",
+      "email": "new@acme.dev",
+      "role": "member",
+      "teams": [],
+      "invited_by": {
+        "kind": "user",
+        "id": "usr_01",
+        "name": "Priya Raman"
+      },
+      "created_at": "@now",
+      "expires_at": "@now+7d"
+    },
+    "grant": {
+      "id": "grt_new",
+      "subject": {
+        "kind": "team",
+        "id": "team_platform",
+        "name": "Platform"
+      },
+      "role": "viewer",
+      "created_at": "@now"
+    },
+    "agent": {
+      "id": "agt_new",
+      "name": "new-agent",
+      "description": "",
+      "project": "docs-search",
+      "owner": {
+        "kind": "user",
+        "id": "usr_01",
+        "name": "Priya Raman"
+      },
+      "status": "active",
+      "policy": [
+        {
+          "environment": "development",
+          "actions": [
+            "query"
+          ],
+          "collections": null
+        }
+      ],
+      "max_token_ttl_s": 900,
+      "limits": {
+        "requests_per_s": 10,
+        "concurrent_queries": 2
+      },
+      "created_at": "@now",
+      "last_active_at": null,
+      "active_tokens": 0
+    },
+    "trust_policy": {
+      "id": "tp_new",
+      "agent": "agt_release_notes",
+      "name": "New trust policy",
+      "issuer": "https://token.actions.githubusercontent.com",
+      "audience": "https://loam.acme.dev",
+      "subject_pattern": "repo:acme/docs:*",
+      "environments": [
+        "staging"
+      ],
+      "created_at": "@now"
+    },
+    "service_account": {
+      "id": "sa_new",
+      "name": "new-service-account",
+      "description": "",
+      "project": "docs-search",
+      "created_at": "@now",
+      "key_count": 0,
+      "last_active_at": null
+    },
+    "api_key_created": {
+      "key": {
+        "id": "key_n3w0k1",
+        "name": "new key",
+        "prefix": "loam_n3w0k1",
+        "environment": "staging",
+        "principal": {
+          "kind": "user",
+          "id": "usr_01",
+          "name": "Priya Raman"
+        },
+        "scopes": [
+          "query"
+        ],
+        "created_at": "@now",
+        "expires_at": "@now+90d",
+        "last_used_at": null
+      },
+      "secret": "loam_n3w0k1_mock-secret-shown-once-9c2f41d7b8e6"
+    },
+    "consent": {
+      "redirect_to": "http://127.0.0.1:33418/callback?code=mock_auth_code_7f3a&state=mock"
+    },
+    "token": {
+      "access_token": "eyJhbGciOiJFZERTQSIsImtpZCI6Im1vY2stMSJ9.eyJtb2NrIjp0cnVlfQ.mock-signature",
+      "token_type": "Bearer",
+      "expires_in": 900,
+      "scope": "query",
+      "issued_token_type": "urn:ietf:params:oauth:token-type:access_token"
+    }
+  },
+  "oauth_metadata": {
+    "issuer": "http://localhost:8081",
+    "authorization_endpoint": "http://localhost:8081/api/v1/oauth/authorize",
+    "token_endpoint": "http://localhost:8081/api/v1/oauth/token",
+    "jwks_uri": "http://localhost:8081/.well-known/jwks.json",
+    "grant_types_supported": [
+      "urn:ietf:params:oauth:grant-type:token-exchange",
+      "authorization_code",
+      "refresh_token"
+    ],
+    "code_challenge_methods_supported": [
+      "S256"
+    ],
+    "token_endpoint_auth_methods_supported": [
+      "none",
+      "private_key_jwt"
+    ],
+    "scopes_supported": [
+      "collections:read",
+      "collections:write",
+      "documents:delete",
+      "query",
+      "streams:read",
+      "streams:produce",
+      "mcp:tools"
+    ],
+    "response_types_supported": [
+      "code"
+    ]
+  },
+  "protected_resource": {
+    "resource": "http://localhost:8081/v1",
+    "authorization_servers": [
+      "http://localhost:8081"
+    ],
+    "scopes_supported": [
+      "collections:read",
+      "collections:write",
+      "documents:delete",
+      "query",
+      "streams:read",
+      "streams:produce",
+      "mcp:tools"
+    ],
+    "bearer_methods_supported": [
+      "header"
+    ],
+    "resource_documentation": "https://loams.dev/docs"
+  },
+  "jwks": {
+    "keys": [
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+        "kid": "mock-1",
+        "use": "sig",
+        "alg": "EdDSA"
+      }
+    ]
+  }
+}

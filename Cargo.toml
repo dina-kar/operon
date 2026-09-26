@@ -42,6 +42,7 @@ futures = "0.3"
 hex = "0.4"
 http = "1"
 http-body = "1"
+httpmock = { version = "0.8.3", default-features = false, features = ["remote"] }
 humantime = "2"
 indexmap = { version = "2", features = ["serde"] }
 itertools = "0.14"
