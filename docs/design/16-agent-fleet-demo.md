@@ -13,7 +13,7 @@ Status: **Approved** (user) · 2026-09-24; the launch demo for the agent track. 
 | **Density** | 100 microVM sandboxes on one KVM host, forked from warm templates, sharing all read-only layers |
 | **Durability** | Kill sandboxes, a worker and a gateway mid-run; every session still completes, and no settled step (no paid model call) is repeated |
 | **Context efficiency** | Tool-definition tokens per request with all tools loaded, with client-side deferral, and with Operon's graph-based tool retrieval |
-| **One system for the whole loop** | Code, environments, sessions, memory, traces and analytics all live in one bucket, queried with SQL, search and Cypher |
+| **One system for the whole loop** | Code, environments, sessions, memory, traces and analytics all live in one bucket, queried with SQL, search and graph expansion |
 | **Honest accounting** | Operon's token and cost tables match tokscale's totals per session |
 
 ## 2. Setup
@@ -52,7 +52,7 @@ Each session is the durable workflow in §15 §9.2: fork a branch, resolve the e
 ## 5. MCP servers and tool retrieval
 
 - **All MCP traffic** goes through Operon's MCP gateway on the 2026-07-28 spec (§15 §10): stateless requests, `Mcp-Method` / `Mcp-Name` routing headers, cacheable `tools/list` (`ttlMs`, `cacheScope`), `traceparent` in `_meta`.
-- **Catalog:** about 20 servers and 300 tools: Operon (search, SQL, Cypher, memory, repo, sessions), a Git hosting mock (issues, pull requests, reviews), documentation search, a database, a browser, a ticketing mock, a chat mock and a set of distractor servers with overlapping tool names.
+- **Catalog:** about 20 servers and 300 tools: Operon (search, SQL, graph expansion, memory, repo, sessions), a Git hosting mock (issues, pull requests, reviews), documentation search, a database, a browser, a ticketing mock, a chat mock and a set of distractor servers with overlapping tool names.
 - **Three arms**, each run over the same 100 tasks:
 
   | Arm | What the model sees |
@@ -90,12 +90,14 @@ agent_sessions(session_id, task_id, harness, model, arm, turns, outcome,
 sandbox_events(ts, sandbox_id, session_id, event, fork_ms, rss_mib, bytes_fetched)
 ```
 
-### 6.3 Analyses (ClickHouse surface, Grafana dashboards)
+### 6.3 Analyses (Flight SQL and DuckDB over Iceberg, Grafana dashboards)
 
 ```sql
 -- cost and success per harness and arm
-SELECT harness, arm, count() AS sessions, avg(outcome = 'solved') AS solve_rate,
-       sum(cost_usd) AS cost, sum(cost_usd) / nullIf(countIf(outcome = 'solved'), 0) AS cost_per_solve
+SELECT harness, arm, count(*) AS sessions,
+       avg(CASE WHEN outcome = 'solved' THEN 1.0 ELSE 0.0 END) AS solve_rate,
+       sum(cost_usd) AS cost,
+       sum(cost_usd) / nullif(count(*) FILTER (WHERE outcome = 'solved'), 0) AS cost_per_solve
 FROM agent_sessions GROUP BY harness, arm ORDER BY harness, arm;
 
 -- prompt-cache effectiveness per model
@@ -103,7 +105,7 @@ SELECT model, sum(cache_read_tokens) / sum(input_tokens + cache_read_tokens) AS 
 FROM token_usage GROUP BY model;
 ```
 
-Other panels: tool-definition tokens by arm, p50/p95 turn latency, tokens per solved task, top tools and co-usage, sandbox fork time and memory, S3 requests per session.
+The same SQL runs in Operon over Flight SQL (Grafana through a Flight SQL data source; verify) and in DuckDB reading the tables through Lakekeeper's Iceberg REST catalog, and the two must agree. Other panels: tool-definition tokens by arm, p50/p95 turn latency, tokens per solved task, top tools and co-usage, sandbox fork time and memory, S3 requests per session.
 
 - **Session memory:** transcripts are in the `session_history` collection, so a new session can search how earlier sessions solved similar issues through the Operon MCP server.
 - **Parity with tokscale:** for every session, `token_usage` totals from `tokscale-core` must equal `tokscale --json` run over the restored `/agent-home`, and the OpenTelemetry-derived totals are reported beside them, with any gap explained.
@@ -137,12 +139,12 @@ Other panels: tool-definition tokens by arm, p50/p95 turn latency, tokens per so
 |---|---|
 | Streams, links, workers, leases | M0 |
 | Collections (tool catalog, session history, code index) | M1 |
-| Graph (tool graph) and the Resonate surface | M2 |
-| Iceberg tables and the ClickHouse surface | M4 |
+| Graph (tool graph) and the Resonate surface | M3 |
+| Iceberg tables (queried over Flight SQL and by DuckDB) | M4 |
 | MCP server, gateway, repos, OTLP ingest, session workflows | W0–W1 (§15) |
 | `operon-sandbox`, environment images | W2 (§15) |
 
-Staging: **Demo α** after M2 + W1: 100 sessions on the `microsandbox` backend with Resonate, the MCP gateway and tool retrieval, traces on streams queried with native SQL over the tail. **Demo β** after M4 + W2: the full demo with Iceberg tables, ClickHouse dashboards, environment images and the Firecracker fleet variant.
+Staging: **Demo α** after M3 + W1: 100 sessions on the `microsandbox` backend with Resonate, the MCP gateway and tool retrieval, traces on streams queried with native SQL over the tail. **Demo β** after M4 + W2: the full demo with Iceberg tables, dashboards over Flight SQL and DuckDB, environment images and the Firecracker fleet variant.
 
 ## 10. Open questions
 

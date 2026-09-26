@@ -72,7 +72,7 @@ A worker task repacks small packs into larger ones with bitmaps and a commit-gra
 A Git host stores code; Operon also makes it searchable the moment it is pushed.
 
 - **`repo → collection` link:** each push event → changed blobs → tree-sitter (MIT) parse → chunks by symbol → Tantivy text + `embed()` vectors → a collection keyed by `(repo, ref, path, symbol)`. The default branch and branches with open agent work are indexed.
-- **`repo → graph` link:** files, symbols, imports and calls as a graph, so "who calls `parse_config`" is one Cypher query (§07).
+- **`repo → graph` link:** files, symbols, imports and calls as a graph, so "who calls `parse_config`" is one `graph_neighbors` call (§07 §5.1).
 - **Read-your-writes:** a push returns a consistency token; an agent that pushes and then searches with that token sees its own change (§05 §5).
 
 ## 5. Environments: dependencies without reinstalling
@@ -198,7 +198,7 @@ session(id, task):                                   # a Resonate durable functi
 ### 9.3 Storing sessions
 
 - The `sessions` stream receives one record per message, tool call and turn result (from OTLP spans and events, and from the harness's session files parsed with `tokscale-core`, §16 §6).
-- A link keeps `agent_sessions` (one row per turn: harness, model, tokens, cost, tools used, duration, outcome) and `session_history`, a collection over transcripts, so agents can search past sessions as memory (hybrid search, §05 §4).
+- A link keeps `agent_sessions` (one row per turn: harness, model, tokens, cost, tools used, duration, outcome; a collection until M4 adds tables, then an Iceberg table) and `session_history`, a collection over transcripts, so agents can search past sessions as memory (hybrid search, §05 §4).
 - Session files in `/agent-home` are the harness's own resume state; the stream is Operon's queryable copy. Both survive the sandbox.
 - **Result:** merge within the Operon repo, or push the branch to the GitHub mirror.
 
@@ -208,7 +208,7 @@ Target spec: **MCP 2026-07-28**, which makes the protocol stateless: no `initial
 
 ### 10.1 Operon MCP server (W0)
 
-- Tools: `search` (hybrid over collections, including code), `sql`, `cypher`, `memory_write`, `repo_read` / `repo_diff` / `repo_log` at a ref, `session_search` (past sessions).
+- Tools: `search` (hybrid over collections, including code, with graph `expand` from M3), `sql` (including `graph_expand`), `memory_write`, `repo_read` / `repo_diff` / `repo_log` at a ref, `session_search` (past sessions).
 - Stateless by the spec, so any gateway node answers any request; OAuth maps to a namespace. Library: the official Rust MCP SDK (`rmcp`; license and 2026-07-28 support to verify).
 - Small and immediately useful to every Claude Code, Codex and opencode user, so it is proposed for M1, independent of the rest of this document.
 
@@ -216,8 +216,8 @@ Target spec: **MCP 2026-07-28**, which makes the protocol stateless: no `initial
 
 Agents with many MCP servers pay for every tool definition in every request. The gateway fronts all of a namespace's MCP servers and sends the model **only the tool definitions a task needs**.
 
-- **Catalog:** the gateway reads `tools/list` from each registered server (cached for `ttlMs`) and upserts every tool into a collection (name, description, parameter names; BM25 + embedding) and a **tool graph**: `(server)-[:PROVIDES]->(tool)`, `(tool)-[:REQUIRES]->(tool)` (from schemas and docs, e.g. `create_pr` needs `push_branch`), and `(tool)-[:CO_USED {weight}]->(tool)` learned from session traces.
-- **Retrieval (Graph RAG-Tool Fusion, arXiv 2502.07223):** hybrid search over the catalog seeds candidates, a 1–2 hop expansion over `REQUIRES` / `CO_USED` adds their dependencies, and a rerank keeps the top *k*. One native Operon query (§05 §4).
+- **Catalog:** the gateway reads `tools/list` from each registered server (cached for `ttlMs`) and upserts every tool into a collection (name, description, parameter names; BM25 + embedding) and a **tool graph** (a mapped graph, §07): `PROVIDES` edges from server to tool, `REQUIRES` edges from tool to tool (from schemas and docs, e.g. `create_pr` needs `push_branch`), and weighted `CO_USED` edges between tools learned from session traces.
+- **Retrieval (Graph RAG-Tool Fusion, arXiv 2502.07223):** hybrid search over the catalog seeds candidates, a 1–2 hop expansion over `REQUIRES` / `CO_USED` adds their dependencies, and a rerank keeps the top *k*. One native Operon query with an `expand` stage (§05 §4, §07 §5.2).
 - **Delivery, spec-compliant:** under 2026-07-28 `tools/list` must not vary per connection, so the gateway exposes a fixed pair of meta-tools, `find_tools(query, k)` → matching tool definitions, and `call_tool(name, arguments)` → validated against the tool's JSON Schema and proxied with the caller's credentials. Works with any client (Codex, opencode, Claude Code).
 - **Clients with native deferral:** Claude Code defers MCP tool definitions by default (`ENABLE_TOOL_SEARCH`) and the Anthropic API offers a tool search tool with `defer_loading`; the gateway can also serve the full catalog to them and let the client search. The demo compares both (§16).
 - **Older servers:** for servers on 2025-11-25 the gateway probes with `server/discover`, holds the upstream session itself and presents a stateless face to agents.
@@ -249,8 +249,8 @@ GC: reachability from `refs` documents and env manifests (env images retained by
 | Phase | When | Scope | Exit gates |
 |---|---|---|---|
 | **W0** | With M1 | Operon MCP server on the 2026-07-28 stateless spec | Claude Code, Codex and opencode use Operon tools over MCP |
-| **W1** | After M2 | Repos (smart HTTP v2, forks, partial clone, repack/GC, LFS, GitHub import); code-index links; credential vending; OTLP ingest of agent telemetry; MCP gateway with graph-based tool retrieval; session workflows on Resonate with stored sessions (§9) | Client matrix (git, gitoxide, libgit2, JGit) passes clone/fetch/push/partial clone; 10k concurrent forks; Claude Code and Codex complete a task end to end with Operon as the remote |
-| **W2** | After W1 | `operon-sandbox`: `Runtime` trait with microsandbox, Firecracker, gVisor and process backends; lazy workspace mount, env images via nydus, package-cache layer, registry proxy (PyPI, npm, crates, Go), sccache wiring; the 100-agent fleet demo (§16) | Warm-env start target met; installs work with egress limited to Operon; kill a sandbox mid-task and resume on another host from the last checkpoint with an identical workspace |
+| **W1** | After M3 | Repos (smart HTTP v2, forks, partial clone, repack/GC, LFS, GitHub import); code-index links; credential vending; OTLP ingest of agent telemetry; MCP gateway with graph-based tool retrieval; session workflows on Resonate with stored sessions (§9) | Client matrix (git, gitoxide, libgit2, JGit) passes clone/fetch/push/partial clone; 10k concurrent forks; Claude Code and Codex complete a task end to end with Operon as the remote |
+| **W2** | After W1 | `operon-sandbox`: `Runtime` trait with microsandbox, Firecracker, gVisor and process backends; lazy workspace mount, env images via nydus, package-cache layer, registry proxy (PyPI, npm, crates, Go), sccache wiring; the 100-agent fleet demo (§16), staged as α after M3 + W1 and β after M4 + W2 | Warm-env start target met; installs work with egress limited to Operon; kill a sandbox mid-task and resume on another host from the last checkpoint with an identical workspace |
 | **W3** | Phase C | `jj` backend, REAPI CAS/AC, VM snapshot storage, Turborepo/Nx caches | — |
 
 ## 14. Non-goals

@@ -10,10 +10,10 @@ Status: **Approved** · 2026-09-22
 
 | Link | Example | Target commit |
 |---|---|---|
-| `stream → table` | Kafka topic `llm_calls` → Iceberg table | Iceberg snapshot (via Lakekeeper) |
-| `stream → collection` | Topic `support_tickets` → searchable, embedded collection | Collection manifest |
+| `stream → table` | Stream `llm_calls` → Iceberg table | Iceberg snapshot (via Lakekeeper) |
+| `stream → collection` | Stream `support_tickets` → searchable, embedded collection | Collection manifest |
 | `table → collection` | Search projection of `products(title, description)` | Collection manifest |
-| `table/collection → graph` | Edge table `knows` → adjacency sidecars | Graph manifest |
+| `table/collection → graph` | Edge table `knows` → CSR/CSC sidecars of a mapped graph (§07 §2.1) | Graph manifest |
 | `table → table` | Materialized view / rollup (§08 §4) | Iceberg snapshot |
 | `table/collection → changelog stream` | Row-level changes of `tickets` as a stream (§02 §8.1) | Fenced append to the changelog stream, before the target commit |
 | `durable_events → table/graph` | Durable-execution search index and execution graph (§14 Phase B) | Iceberg snapshot / graph manifest |
@@ -36,10 +36,10 @@ CREATE LINK tickets_search
 ## 2. Transforms
 
 - SQL (DataFusion) over the decoded record batch: projections, filters, JSON extraction, casts, scalar UDFs.
-- Decoders: JSON, Avro/Protobuf (with schema registry), CSV, raw bytes.
+- Decoders: JSON, Avro/Protobuf (with a registered schema), CSV, raw bytes.
 - **`embed()` UDF (optional):** calls an external embedding endpoint (OpenAI-compatible HTTP, or a self-hosted model server) with batching, retries and rate limiting; results cached by content hash. Off by default; configured per namespace. (Operon does not host models.)
 - Mergeable aggregate states for MV-style links (§08 §4).
-- Not supported: stateful joins across streams, windowed aggregations with watermarks. Use RisingWave alongside Operon (§8).
+- Not supported: stateful joins across streams, windowed aggregations with watermarks (§00 §7).
 
 ## 3. Exactly-once semantics
 
@@ -91,38 +91,5 @@ CREATE LINK tickets_search
 
 ## 7. Backpressure
 
-- If link lag exceeds `max_lag`, the source stream can be configured to **throttle producers** (Kafka quota semantics) or to keep accepting (log absorbs, tail grows).
+- If link lag exceeds `max_lag`, the source stream can be configured to **throttle producers** (produce requests are delayed, then refused with a retryable `unavailable`) or to keep accepting (log absorbs, tail grows).
 - Tail memory is bounded per object on query nodes; when exceeded, strong reads fall back to reading the log range directly from segments (slower but correct).
-
-## 8. Stream processing with RisingWave (companion)
-
-[RisingWave](https://github.com/risingwavelabs/risingwave) (Apache-2.0, Rust, streaming database with a Postgres-compatible SQL surface) does what links deliberately do not: stateful joins, windows with watermarks and incrementally maintained materialized views. It runs **alongside** Operon, not inside it.
-
-```
-Operon topic / changelog stream ──Kafka──► RisingWave ──► Iceberg sink (REST catalog = Lakekeeper) → Operon table
-                                                      └─► Kafka sink → Operon topic → link → collection / graph
-```
-
-```sql
--- in RisingWave (illustrative; CDC and upsert formats need a TABLE, not a SOURCE)
-CREATE TABLE tickets_cdc (id VARCHAR PRIMARY KEY, status VARCHAR, team VARCHAR, updated_at TIMESTAMPTZ)
-  WITH (connector = 'kafka', topic = 'tickets_changes', properties.bootstrap.server = 'operon:9092')
-  FORMAT DEBEZIUM ENCODE JSON;
-
-CREATE MATERIALIZED VIEW open_by_team AS
-  SELECT team, count(*) AS open FROM tickets_cdc WHERE status = 'open' GROUP BY team;
-
-CREATE SINK open_by_team_iceberg FROM open_by_team WITH (
-  connector = 'iceberg', type = 'upsert', primary_key = 'team',
-  catalog.type = 'rest', catalog.uri = 'http://lakekeeper:8181/catalog',
-  warehouse.path = 'prod', database.name = 'analytics', table.name = 'open_by_team'
-  -- plus s3.* settings unless Lakekeeper vends credentials (verify vended-credential support)
-);
-```
-
-- **Inputs:** explicit topics (plain Kafka format) and changelog streams in `upsert` or `debezium-json` format (§02 §8.1).
-- **Outputs:** Iceberg tables through Lakekeeper (append-only or upsert, exactly-once), which Operon serves with its hot tier and ClickHouse surface (§08 §8); or Kafka topics that Operon links materialize into collections and graphs.
-- **Rules:** a RisingWave-written table is an external-writer table (§03 §2.3) and not a link target. RisingWave keeps its own state (Hummock) in object storage; it may share the bucket under its own prefix, but Operon never reads that prefix.
-- **What Operon does not do:** embed RisingWave's engine. It is a full distributed system (frontend, meta service with its own metadata store, compute, compactor, Hummock) and would duplicate Operon's metastore, cache and storage. Operon already reuses its ecosystem pieces: the iceberg-rust fork, `iceberg-compaction` and `foyer` (§11).
-- **Deployment:** the Helm chart and `docker-compose` examples include RisingWave as an optional companion (§10 §1).
-- **Conformance:** RisingWave is in the M3 Kafka client matrix and the M4 external Iceberg writer gate (§12).
