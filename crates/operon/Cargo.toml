@@ -1,6 +1,6 @@
 [package]
 name = "operon"
-description = "The Operon server: the native HTTP API and the dev and standalone commands."
+description = "The Operon server: the native HTTP API, the Qdrant gateway and the dev, standalone and cluster commands."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -27,6 +27,7 @@ operon-hot.workspace = true
 operon-link.workspace = true
 operon-log.workspace = true
 operon-meta.workspace = true
+operon-qdrant = { workspace = true, optional = true }
 operon-query.workspace = true
 operon-store.workspace = true
 operon-worker.workspace = true
@@ -43,9 +44,11 @@ ulid.workspace = true
 url.workspace = true
 
 [features]
-default = ["flight", "hnsw"]
+default = ["flight", "hnsw", "qdrant"]
 # Serve Arrow Flight SQL (Task 12; `--flight-sql-listen`).
 flight = []
+# Serve the Qdrant REST and gRPC APIs (plan M1.4; `--qdrant-listen`).
+qdrant = ["dep:operon-qdrant"]
 # The qdrant-edge HNSW engine for hot artifacts (M1.3); without it the hot
 # tier builds only when `ServerConfig.hnsw_engine` is set.
 hnsw = ["operon-hot/hnsw"]
@@ -73,7 +76,7 @@ futures.workspace = true
 object_store.workspace = true
 prost.workspace = true
 tempfile.workspace = true
-tonic.workspace = true
+tonic = { workspace = true, features = ["gzip"] }
 
 [lints]
 workspace = true

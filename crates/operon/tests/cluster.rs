@@ -98,6 +98,7 @@ impl Cluster {
             .arg(dir.join(format!("node-{id}")))
             .args([
                 "--no-flight-sql",
+                "--no-qdrant",
                 "--maintenance",
                 "off",
                 "--lease-ttl-ms",

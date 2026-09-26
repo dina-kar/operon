@@ -90,6 +90,8 @@ impl Dev {
                 // Parallel servers must not share Flight SQL's fixed port.
                 "--flight-sql-listen",
                 "127.0.0.1:0",
+                // Nor the Qdrant gateway's.
+                "--no-qdrant",
             ])
             .arg("--data-dir")
             .arg(dir)

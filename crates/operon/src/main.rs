@@ -214,8 +214,8 @@ enum HotSwitch {
     Off,
 }
 
-/// The native surfaces beside the HTTP API, shared by `dev` and
-/// `standalone`.
+/// The surfaces beside the HTTP API, shared by `dev`, `standalone` and
+/// `cluster`.
 #[derive(Debug, clap::Args)]
 struct Native {
     /// Address of the Arrow Flight SQL listener [default: 127.0.0.1:8082
@@ -225,6 +225,19 @@ struct Native {
     /// Serve no Flight SQL.
     #[arg(long)]
     no_flight_sql: bool,
+    /// Address of the Qdrant REST API [default: 127.0.0.1:6333].
+    #[arg(long, conflicts_with = "no_qdrant")]
+    qdrant_listen: Option<SocketAddr>,
+    /// Address of the Qdrant gRPC API [default: 127.0.0.1:6334].
+    #[arg(long, conflicts_with = "no_qdrant")]
+    qdrant_grpc_listen: Option<SocketAddr>,
+    /// The namespace of Qdrant requests without an `Operon-Namespace`
+    /// header [default: default].
+    #[arg(long, conflicts_with = "no_qdrant")]
+    qdrant_namespace: Option<String>,
+    /// Serve no Qdrant API.
+    #[arg(long)]
+    no_qdrant: bool,
     /// Whether this node runs a hot tier, and whether reads use it when a
     /// request does not say (`Operon-Hot`).
     #[arg(long, value_enum, default_value = "on")]
@@ -263,6 +276,7 @@ impl Native {
         } else {
             Some(self.flight_sql_listen.unwrap_or(default_flight))
         };
+        self.apply_qdrant(config);
         let hot = self.hot == HotSwitch::On;
         config.query.hot_default = hot;
         config.hot.enabled = hot;
@@ -283,6 +297,31 @@ impl Native {
         }
         if let Some(v) = self.max_unapplied_bytes {
             backpressure.max_unapplied_bytes = v;
+        }
+    }
+
+    /// The Qdrant gateway, unless `--no-qdrant` (plan M1.4 Task 2, E12).
+    #[cfg(feature = "qdrant")]
+    fn apply_qdrant(&self, config: &mut ServerConfig) {
+        config.qdrant = (!self.no_qdrant).then(|| {
+            let mut qdrant = operon_qdrant::QdrantConfig::default();
+            if let Some(addr) = self.qdrant_listen {
+                qdrant.rest_listen = addr;
+            }
+            if let Some(addr) = self.qdrant_grpc_listen {
+                qdrant.grpc_listen = addr;
+            }
+            if let Some(ns) = &self.qdrant_namespace {
+                qdrant.namespace = ns.clone();
+            }
+            qdrant
+        });
+    }
+
+    #[cfg(not(feature = "qdrant"))]
+    fn apply_qdrant(&self, _config: &mut ServerConfig) {
+        if self.qdrant_listen.is_some() || self.qdrant_grpc_listen.is_some() {
+            tracing::warn!("this build has no Qdrant API (the qdrant feature is off)");
         }
     }
 }
@@ -599,6 +638,13 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // Plan M1.4 Task 2 rule 2: before the HTTP line, which harnesses wait
+    // for.
+    #[cfg(feature = "qdrant")]
+    if let (Some(rest), Some(grpc)) = (server.qdrant_rest_addr(), server.qdrant_grpc_addr()) {
+        println!("operon qdrant REST listening on http://{rest}");
+        println!("operon qdrant gRPC listening on grpc://{grpc}");
+    }
     println!("operon listening on http://{}", server.local_addr());
     // M1.6 W14, M1.7 A4: printed once the listener is bound.
     if let Some(addr) = server.flight_sql_addr() {
@@ -676,6 +722,59 @@ mod tests {
             config.query.read.consistency_wait,
             Duration::from_millis(250)
         );
+    }
+
+    #[cfg(feature = "qdrant")]
+    #[test]
+    fn qdrant_flags_set_the_config() {
+        let qdrant = dev_config(&[]).qdrant.expect("on by default");
+        assert_eq!(qdrant.rest_listen, "127.0.0.1:6333".parse().unwrap());
+        assert_eq!(qdrant.grpc_listen, "127.0.0.1:6334".parse().unwrap());
+        assert_eq!(qdrant.namespace, "default");
+        let qdrant = dev_config(&[
+            "--qdrant-listen",
+            "127.0.0.1:0",
+            "--qdrant-grpc-listen",
+            "127.0.0.1:1",
+            "--qdrant-namespace",
+            "acme",
+        ])
+        .qdrant
+        .expect("on");
+        assert_eq!(qdrant.rest_listen, "127.0.0.1:0".parse().unwrap());
+        assert_eq!(qdrant.grpc_listen, "127.0.0.1:1".parse().unwrap());
+        assert_eq!(qdrant.namespace, "acme");
+        assert!(dev_config(&["--no-qdrant"]).qdrant.is_none());
+        assert!(
+            Cli::try_parse_from([
+                "operon",
+                "dev",
+                "--no-qdrant",
+                "--qdrant-listen",
+                "127.0.0.1:1"
+            ])
+            .is_err()
+        );
+        let cli = Cli::try_parse_from(["operon", "standalone", "--bucket", "file:///tmp/b"])
+            .expect("parse");
+        assert!(config_of(cli).qdrant.is_some());
+        let cluster = cluster_config(&[
+            "--node-id",
+            "1",
+            "--roles",
+            "meta,gateway",
+            "--listen",
+            "127.0.0.1:7001",
+            "--peers",
+            "1=127.0.0.1:7001",
+            "--bucket",
+            "file:///tmp/b",
+            "--no-qdrant",
+        ])
+        .expect("parse");
+        assert!(cluster.qdrant.is_none());
+        // ServerConfig::new serves no Qdrant API (E12).
+        assert!(ServerConfig::new("/tmp/x").qdrant.is_none());
     }
 
     #[test]
