@@ -49,6 +49,9 @@ flight = []
 # The qdrant-edge HNSW engine for hot artifacts (M1.3); without it the hot
 # tier builds only when `ServerConfig.hnsw_engine` is set.
 hnsw = ["operon-hot/hnsw"]
+# Builds the multi-process cluster tests (`tests/cluster.rs`, M1.3 Task 11;
+# E43); CI runs them in their own job.
+cluster-tests = []
 # Named failpoints for the crash gate (M0.4 Task 5): with it, the binary
 # reads OPERON_FAILPOINTS and OPERON_FAILPOINT_HIT. Off by default, so release
 # builds contain no failpoints.
