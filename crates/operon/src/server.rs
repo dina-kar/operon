@@ -21,7 +21,7 @@ use operon_log::{
     SegmenterSource,
 };
 use operon_meta::{MetaClient, MetaClientConfig, MetaConfig, MetaNode, Router, SystemClock};
-use operon_query::flight::{FlightConfig, serve_flight_sql_tracked};
+use operon_query::flight::{FlightConfig, PutTasks, serve_flight_sql_tracked};
 use operon_query::flight_ingest::StreamProducer;
 use operon_query::{CollectionService, ServiceConfig};
 use operon_store::Store;
@@ -29,7 +29,6 @@ use operon_worker::{Worker, WorkerConfig, WorkerHandle};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tokio_util::task::TaskTracker;
 use ulid::Ulid;
 
 use crate::api::{self, AppState, NativeStreamProducer};
@@ -183,7 +182,7 @@ struct Flight {
     task: JoinHandle<()>,
     stop: CancellationToken,
     /// The `DoPut` tasks, which outlive an aborted `task`.
-    puts: TaskTracker,
+    puts: PutTasks,
 }
 
 impl Flight {
@@ -197,7 +196,7 @@ impl Flight {
         config: FlightConfig,
     ) -> Self {
         let stop = CancellationToken::new();
-        let puts = TaskTracker::new();
+        let puts = PutTasks::new();
         let task = tokio::spawn(serve(
             listener,
             collections,
@@ -216,8 +215,9 @@ impl Flight {
 
     /// Stops accepting calls, waits up to [`HTTP_GRACE`] for the calls in
     /// flight (a `DoGet` may stream for minutes) and aborts the rest, then
-    /// waits for the puts, which stop before their next chunk, so none
-    /// writes after the collection service and the writer stop.
+    /// waits up to [`HTTP_GRACE`] for the puts, which stop before their next
+    /// chunk, and aborts the rest, so none writes after the collection
+    /// service and the writer stop.
     async fn stop(self) {
         self.stop.cancel();
         let mut task = self.task;
@@ -230,7 +230,9 @@ impl Flight {
             .await
             .is_err()
         {
-            tracing::warn!("a Flight put did not finish its chunk in flight");
+            tracing::warn!("a Flight put did not finish its chunk in flight; aborting it");
+            self.puts.abort();
+            self.puts.wait().await;
         }
     }
 }
@@ -241,7 +243,7 @@ async fn serve(
     streams: Arc<dyn StreamProducer>,
     config: FlightConfig,
     stop: CancellationToken,
-    puts: TaskTracker,
+    puts: PutTasks,
 ) {
     let served =
         serve_flight_sql_tracked(listener, collections, Some(streams), config, stop, puts).await;
