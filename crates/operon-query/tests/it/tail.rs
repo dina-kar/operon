@@ -463,7 +463,7 @@ async fn a_failed_reresolve_is_retried_before_publishing() {
     // attempt, which neither publishes the new manifest nor resets.
     let lance = operon_collection::lance_prefix(f.ns, f.cid);
     f.paths.fail_gets_under(&lance);
-    tail.step().await;
+    assert!(tail.step().await, "the held follower ran one iteration");
     assert!(
         f.paths.failures_under(&lance) > 0,
         "the attempt read the Lance version and failed"
@@ -497,6 +497,33 @@ async fn a_failed_reresolve_is_retried_before_publishing() {
     assert_eq!(after.shadow().iter().collect::<BTreeSet<u64>>(), fresh);
     assert_eq!(after.keys_after(None, 100).len(), keys.len());
     tail.stop().await;
+    f.shutdown().await;
+}
+
+/// #22 review: `Tail::step` returns once the follower stops, even when the
+/// stop wins the race with the grant, instead of waiting for an iteration
+/// that never runs.
+#[tokio::test]
+async fn a_step_returns_when_the_follower_stops() {
+    let f = TailFixture::start(tail_schema(), 2).await;
+    let tail = f.tail(TailConfig::default()).await;
+    f.sync(&tail).await;
+    tail.pause_fetch(true);
+    tail.wait_held().await;
+    // The stop and the grant race: whichever wins, the step returns.
+    let stopping = {
+        let tail = tail.clone();
+        tokio::spawn(async move { tail.stop().await })
+    };
+    tokio::time::timeout(Duration::from_secs(10), tail.step())
+        .await
+        .expect("the step returned");
+    stopping.await.expect("stop");
+    // A step on a stopped follower returns at once, and says it did not run.
+    let ran = tokio::time::timeout(Duration::from_secs(10), tail.step())
+        .await
+        .expect("the step returned");
+    assert!(!ran, "a stopped follower runs no iteration");
     f.shutdown().await;
 }
 

@@ -252,12 +252,20 @@ impl Tail {
 
     /// Lets a paused follower run exactly one more iteration, and waits
     /// until it has run it; the follower is held again before the next.
+    /// Returns `false`, without waiting further, when the follower stops
+    /// instead (a stop racing the grant, or a follower already stopped).
     #[cfg(feature = "test-util")]
-    pub async fn step(&self) {
+    pub async fn step(&self) -> bool {
         let mut iterations = self.shared.iterations.subscribe();
+        // The follower marks itself stopped, then bumps `publishes`.
+        let mut publishes = self.shared.publishes.subscribe();
         let done = *iterations.borrow_and_update();
         self.shared.steps.send_modify(|n| *n += 1);
-        let _ = iterations.wait_for(|n| *n > done).await;
+        tokio::select! {
+            biased;
+            ran = iterations.wait_for(|n| *n > done) => ran.is_ok(),
+            _ = publishes.wait_for(|_| self.shared.stopped.load(Ordering::Acquire)) => false,
+        }
     }
 }
 
