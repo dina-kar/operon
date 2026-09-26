@@ -352,13 +352,20 @@ pub(super) async fn count(
 /// `"id"` (`{"id", "source", "vectors", "sparse_vectors"?, "fields",
 /// "seq_no", "partition"}`).
 fn stored_doc_json(doc: &StoredDoc) -> Value {
-    let mut value = serde_json::to_value(doc).unwrap_or(Value::Null);
-    if let Value::Object(object) = &mut value
-        && let Some(id) = object.remove("pk")
-    {
-        object.insert("id".to_string(), id);
+    match serde_json::to_value(doc) {
+        // Renamed in place: maps keep insertion order (M1.3 row E58).
+        Ok(Value::Object(object)) => Value::Object(
+            object
+                .into_iter()
+                .map(|(key, value)| match key.as_str() {
+                    "pk" => ("id".to_string(), value),
+                    _ => (key, value),
+                })
+                .collect(),
+        ),
+        Ok(other) => other,
+        Err(_) => Value::Null,
     }
-    value
 }
 
 // ----- Op JSON (rule 1) -----

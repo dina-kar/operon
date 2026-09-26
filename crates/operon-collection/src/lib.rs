@@ -137,7 +137,8 @@ pub use tantivy_schema::{
 #[cfg(feature = "test-util")]
 pub use target::{CollectionCommitHook, RebuildHook};
 pub use target::{
-    CollectionCommitStep, CollectionTarget, CollectionTargetFactory, PK_WATERMARK_KEY,
+    CollectionCommitStep, CollectionTarget, CollectionTargetFactory, PK_WATERMARK_KEY, PointerCas,
+    put_manifest,
 };
 pub use token::{CONSISTENCY_TOKEN_HEADER, ConsistencyToken, TokenParseError};
 pub use trim::{CollectionTrimSource, TRIM_TASK_PREFIX};

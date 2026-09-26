@@ -1,8 +1,11 @@
 //! Binary encodings: postcard for Raft log entries and local records, and a
 //! checksummed, versioned envelope for snapshots.
 
+use std::collections::BTreeMap;
 use std::io;
 
+use operon_common::CollectionId;
+use operon_common::meta::HotConfig;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -15,7 +18,12 @@ const SNAPSHOT_MAGIC: &[u8; 8] = b"OPNMETA\0";
 /// Version 3 (M0.4) added the link catalog, and version 4 the per-partition
 /// byte counts. Version 5 (M1.1) added the collection catalog. Older
 /// snapshots are rejected (M0.3 plan, ruling 9: nothing is deployed yet).
-const SNAPSHOT_FORMAT_VERSION: u32 = 5;
+/// Version 6 (M1.3) appends per-collection hot configuration; a state
+/// without any is still written as before.
+const SNAPSHOT_FORMAT_VERSION: u32 = 6;
+/// The version a state without hot configuration is written in: M1.1's
+/// body, byte for byte (M1.3 Ruling 20).
+const BASE_FORMAT_VERSION: u32 = 5;
 /// Magic, then the format version.
 const HEADER_LEN: usize = 12;
 /// The crc32c trailer.
@@ -46,12 +54,23 @@ struct SnapshotBody {
 }
 
 /// Encodes a snapshot as `magic | format version (u32 LE) | postcard body | crc32c (u32 LE)`,
-/// where the checksum covers everything before it.
+/// where the checksum covers everything before it. The version is 5 while
+/// no collection has a hot configuration, so those bytes are M1.1's;
+/// otherwise it is 6 and the version-5 body is followed by the postcard
+/// encoding of the hot configuration map.
 pub(crate) fn encode_snapshot(meta: &SnapshotMeta, state: &MetaState) -> io::Result<Vec<u8>> {
+    let hot = state.collection_hot_map();
+    let version = match hot.is_empty() {
+        true => BASE_FORMAT_VERSION,
+        false => SNAPSHOT_FORMAT_VERSION,
+    };
     let mut out = Vec::new();
     out.extend_from_slice(SNAPSHOT_MAGIC);
-    out.extend_from_slice(&SNAPSHOT_FORMAT_VERSION.to_le_bytes());
+    out.extend_from_slice(&version.to_le_bytes());
     postcard::to_io(&SnapshotBodyRef { meta, state }, &mut out).map_err(invalid_data)?;
+    if !hot.is_empty() {
+        postcard::to_io(hot, &mut out).map_err(invalid_data)?;
+    }
     let crc = crc32c::crc32c(&out);
     out.extend_from_slice(&crc.to_le_bytes());
     Ok(out)
@@ -68,14 +87,30 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> io::Result<(SnapshotMeta, MetaSta
         return Err(invalid_data("snapshot checksum mismatch"));
     }
     let version = u32::from_le_bytes([covered[8], covered[9], covered[10], covered[11]]);
-    if version != SNAPSHOT_FORMAT_VERSION {
-        return Err(io::Error::new(
+    let body = &covered[HEADER_LEN..];
+    match version {
+        BASE_FORMAT_VERSION => {
+            let body: SnapshotBody = decode(body)?;
+            Ok((body.meta, body.state))
+        }
+        SNAPSHOT_FORMAT_VERSION => {
+            let (body, rest): (SnapshotBody, _) =
+                postcard::take_from_bytes(body).map_err(invalid_data)?;
+            let hot: BTreeMap<CollectionId, HotConfig> = decode(rest)?;
+            if hot.is_empty() {
+                return Err(invalid_data(
+                    "a version 6 snapshot without hot configuration",
+                ));
+            }
+            let mut state = body.state;
+            state.set_collection_hot_map(hot);
+            Ok((body.meta, state))
+        }
+        _ => Err(io::Error::new(
             io::ErrorKind::Unsupported,
             format!("unsupported snapshot format version {version}"),
-        ));
+        )),
     }
-    let body: SnapshotBody = decode(&covered[HEADER_LEN..])?;
-    Ok((body.meta, body.state))
 }
 
 /// For tests: encodes `state` as a snapshot and decodes it again, so tests

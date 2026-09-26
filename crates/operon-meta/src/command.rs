@@ -1,7 +1,8 @@
 use std::ops::Range;
 
 use operon_common::meta::{
-    AliasAction, Fence, Freshness, LeaseGrant, LinkId, Retention, TargetRef, WalChunk, WalClass,
+    AliasAction, Fence, Freshness, HotConfig, LeaseGrant, LinkId, Retention, TargetRef, WalChunk,
+    WalClass,
 };
 use operon_common::schema::CollectionSchema;
 use operon_common::{CollectionId, NamespaceId, StreamId};
@@ -251,6 +252,15 @@ pub enum Command {
         namespace: NamespaceId,
         actions: Vec<AliasAction>,
     },
+    /// Sets collection `collection`'s hot configuration (M1.3 Task 4,
+    /// Ruling 20: appended last, so every earlier variant keeps its index).
+    /// An all-false `hot` removes it. The collection must exist
+    /// ([`ApplyError::CollectionNotFound`](operon_common::meta::ApplyError::CollectionNotFound)
+    /// otherwise). Setting the same value again succeeds, so a retry is safe.
+    SetCollectionHot {
+        collection: CollectionId,
+        hot: HotConfig,
+    },
 }
 
 /// The result of successfully applying a [`Command`].
@@ -290,6 +300,8 @@ pub enum Reply {
         version: u64,
     },
     AliasesUpdated,
+    /// [`Command::SetCollectionHot`] applied (M1.3; appended last).
+    CollectionHotSet,
 }
 
 impl std::fmt::Display for Command {
@@ -364,6 +376,11 @@ impl std::fmt::Display for Command {
             Command::UpdateAliases { namespace, actions } => {
                 write!(f, "UpdateAliases({namespace}, {} actions)", actions.len())
             }
+            Command::SetCollectionHot { collection, hot } => write!(
+                f,
+                "SetCollectionHot({collection}, vectors {}, text {}, fragments {})",
+                hot.vectors, hot.text, hot.fragments
+            ),
         }
     }
 }

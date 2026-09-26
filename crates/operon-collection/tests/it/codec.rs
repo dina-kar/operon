@@ -667,6 +667,17 @@ fn delete_keys_remove_nested_paths_and_ignore_missing_ones() {
 }
 
 #[test]
+fn a_patch_keeps_the_source_key_order() {
+    // Maps keep insertion order (M1.3 row E58): a delete shifts the keys
+    // after it, and merged keys go at the end.
+    let current = doc(pk1(), json!({"z": 1, "a": 2, "m": 3, "b": 4}));
+    let op = patch_with(pk1(), PatchMode::MergeDeep, json!({"c": 5}), &["a"], None);
+    let patched = apply_patch(Some(&current), &op).unwrap();
+    let keys: Vec<&str> = patched.source.keys().map(String::as_str).collect();
+    assert_eq!(keys, ["z", "m", "b", "c"]);
+}
+
+#[test]
 fn a_patch_of_a_missing_key_is_a_noop() {
     let op = patch(pk1(), PatchMode::MergeDeep, json!({"a": 1}));
     assert_eq!(apply_patch(None, &op), None);

@@ -306,3 +306,40 @@ pub async fn a_ttl_above_the_limit_is_invalid(backend: &dyn Backend) {
         .await;
     assert!(matches!(rejected(grant), ApplyError::InvalidArgument(_)));
 }
+
+pub async fn leases_with_prefix_lists_only_that_prefix(backend: &dyn Backend) {
+    let db = backend.start().await;
+    let meta = db.first();
+    for key in ["task/x", "nodes", "node/2", "node/1"] {
+        meta.acquire_lease(key, "owner", TTL)
+            .await
+            .expect("acquire");
+    }
+    // A released lease is listed too.
+    meta.release_lease("node/2", "owner", 1)
+        .await
+        .expect("release");
+    let listed = db
+        .last()
+        .leases_with_prefix(L, "node/")
+        .await
+        .expect("list");
+    let keys: Vec<&str> = listed.iter().map(|(key, _)| key.as_str()).collect();
+    assert_eq!(keys, ["node/1", "node/2"]);
+    assert_eq!(listed[0].1.owner.as_deref(), Some("owner"));
+    assert_eq!(listed[1].1.owner, None);
+    assert_eq!(
+        db.last()
+            .leases_with_prefix(L, "node")
+            .await
+            .expect("list")
+            .len(),
+        3
+    );
+    assert!(
+        meta.leases_with_prefix(L, "none/")
+            .await
+            .expect("list")
+            .is_empty()
+    );
+}

@@ -1,0 +1,59 @@
+[package]
+name = "operon-hot"
+description = "Operon's hot tier: HNSW artifacts built from collection manifests, per-manifest views of them with delta indexes, and (later) pinning and placement."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+# The qdrant-edge HNSW engine (`operon-hnsw/qdrant`).
+hnsw = ["operon-hnsw/qdrant"]
+# Test hooks (holding a build at a step). Not part of the stable API.
+test-util = ["operon-collection/test-util"]
+# Named failpoints for the crash gate (`hot.after_artifact_put`,
+# `hot.after_manifest_put`, `hot.after_cas`). Off by default: without it the
+# failpoints compile to nothing.
+failpoints = ["dep:fail", "fail/failpoints", "operon-collection/failpoints"]
+
+[dependencies]
+arrow-array.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+crc32c.workspace = true
+fail = { workspace = true, optional = true }
+futures.workspace = true
+lance.workspace = true
+moka = { workspace = true, features = ["sync"] }
+operon-collection.workspace = true
+operon-common.workspace = true
+operon-hnsw.workspace = true
+operon-link.workspace = true
+operon-query.workspace = true
+operon-store.workspace = true
+operon-worker.workspace = true
+postcard.workspace = true
+roaring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+ulid.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+operon-cache.workspace = true
+operon-collection = { workspace = true, features = ["test-util"] }
+operon-hot = { path = ".", features = ["test-util"] }
+operon-link = { workspace = true, features = ["test-util"] }
+operon-log.workspace = true
+operon-meta = { workspace = true, features = ["test-util"] }
+operon-quickwit.workspace = true
+operon-worker = { workspace = true, features = ["test-util"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -17,6 +17,7 @@ use operon_collection::{
     PrimaryKey, ROWID_FIELD, SPARSE_PRESENT, SparseModifier, SparseVectorSpec, SplitMergeSource,
     SplitRef, plan_merges, row_id_runs,
 };
+use operon_meta::{Clock, ManualClock, SystemClock};
 use operon_quickwit::merge_policy::StableLogMergePolicyConfig;
 use operon_worker::{RunResult, TaskError, TaskKey, TaskOutcome, run_once};
 use proptest::prelude::*;
@@ -877,6 +878,139 @@ fn old_splits_are_mature_on_the_metastore_clock() {
     assert_eq!(plan_merges(&manifest, &config, 0).len(), 1);
     assert_eq!(plan_merges(&manifest, &config, 1_000 + 47 * hour).len(), 1);
     assert!(plan_merges(&manifest, &config, 1_000 + 48 * hour).is_empty());
+}
+
+/// A split of `docs` live docs and `size_bytes` bytes, created at 1 000 ms.
+fn sized_split(i: u64, docs: u64, size_bytes: u64) -> SplitRef {
+    SplitRef {
+        ulid: ulid::Ulid::from_parts(1_000, u128::from(i)),
+        doc_count: docs,
+        deleted_count: 0,
+        size_bytes,
+        footer_range: 0..size_bytes.min(100),
+        row_id_ranges: vec![std::ops::Range {
+            start: i * 1_000,
+            end: i * 1_000 + docs,
+        }],
+        delete_bitmap: None,
+        schema_version: 1,
+        created_at_ms: 1_000,
+        merge_ops: 0,
+    }
+}
+
+/// A policy operation is cut to its smallest inputs within
+/// `max_merge_docs` and `max_merge_bytes`, and dropped when fewer than two
+/// fit (PR #32 review; plan row R32.1).
+#[test]
+fn a_merge_plan_is_bounded() {
+    let mut manifest = CollectionManifest::empty(operon_common::CollectionId(1));
+    manifest.splits = vec![
+        sized_split(0, 40, 4_000),
+        sized_split(1, 20, 2_000),
+        sized_split(2, 35, 9_000),
+        sized_split(3, 25, 2_500),
+    ];
+    let ulid = |i: usize| manifest.splits[i].ulid;
+    let unbounded = plan_merges(&manifest, &config(), 0);
+    assert_eq!(
+        unbounded,
+        vec![MergePlan {
+            inputs: (0..4).map(ulid).collect(),
+            purge: false
+        }]
+    );
+    let by_docs = MaintenanceConfig {
+        max_merge_docs: 80,
+        ..config()
+    };
+    // 20 + 25 + 35 = 80 fit; the 40-doc split waits.
+    let want = |mut inputs: Vec<ulid::Ulid>| {
+        inputs.sort_unstable();
+        vec![MergePlan {
+            inputs,
+            purge: false,
+        }]
+    };
+    assert_eq!(
+        plan_merges(&manifest, &by_docs, 0),
+        want(vec![ulid(1), ulid(3), ulid(2)])
+    );
+    let by_bytes = MaintenanceConfig {
+        max_merge_bytes: 5_000,
+        ..config()
+    };
+    // 2 000 + 2 500 fit; the 35-doc split's 9 000 bytes do not.
+    assert_eq!(
+        plan_merges(&manifest, &by_bytes, 0),
+        want(vec![ulid(1), ulid(3)])
+    );
+    let one_fits = MaintenanceConfig {
+        max_merge_docs: 44,
+        ..config()
+    };
+    assert!(plan_merges(&manifest, &one_fits, 0).is_empty());
+    for plan in plan_merges(&manifest, &by_docs, 0) {
+        let docs: u64 = plan
+            .inputs
+            .iter()
+            .map(|u| {
+                manifest
+                    .splits
+                    .iter()
+                    .find(|s| s.ulid == *u)
+                    .unwrap()
+                    .doc_count
+            })
+            .sum();
+        assert!(docs <= 80);
+    }
+}
+
+/// The metastore clock passes `commit_delay` while the merged split is being
+/// built: the commit's clock starts after the build, so the merge still
+/// commits, and the split and manifest carry the post-build time (PR #32
+/// review; plan row R32.2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_slow_build_still_commits() {
+    let clock = Arc::new(ManualClock::new(SystemClock.now_ms()));
+    let f = TargetFixture::start_with_clock(
+        merge_schema(),
+        2,
+        operon_collection::CollectionConfig::default(),
+        clock.clone(),
+    )
+    .await;
+    commits(&f, 0, 3, 10).await;
+    let before = f.manifest().await;
+    let config = MaintenanceConfig {
+        commit_delay: Duration::from_secs(1),
+        ..config()
+    };
+    let built_at = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (slow, at) = (clock.clone(), built_at.clone());
+    let hook: CollectionCommitHook = Arc::new(move |step, _fence| {
+        if step == CollectionCommitStep::AfterSplitBuild {
+            // Ten commit delays of building, well within the lease's TTL.
+            slow.advance(Duration::from_secs(10));
+            at.store(slow.now_ms(), Ordering::SeqCst);
+        }
+        futures::future::ready(()).boxed()
+    });
+    let source = SplitMergeSource::new(f.ctx.clone(), config).with_hook(hook);
+    let result = merge_once(&f, &source).await;
+    assert_eq!(result.expect("merged"), TaskOutcome::Idle);
+    let built_at = built_at.load(Ordering::SeqCst);
+    assert!(built_at > 0, "the hook never ran");
+    let manifest = f.manifest().await;
+    assert_eq!(manifest.version, before.version + 1);
+    assert!(manifest.created_at_ms >= built_at);
+    let merged = only_split(manifest);
+    assert!(merged.created_at_ms >= built_at);
+    assert_eq!(merged.ulid.timestamp_ms(), merged.created_at_ms);
+    assert_eq!(merged.doc_count, 30);
+    assert_verified(f.verify().await);
+    f.shutdown().await;
 }
 
 /// One random op over 30 keys.

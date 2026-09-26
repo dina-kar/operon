@@ -44,14 +44,25 @@ const INDEX_FILES: [&str; 2] = ["meta.json", ".managed.json"];
 /// Builds a split of `docs` with `schema`. Doc id *i* is `docs[i]` (Ruling
 /// 8): the documents go into one segment in order.
 pub fn build_split(schema: Schema, docs: Vec<TantivyDocument>) -> Result<BuiltSplit, TextError> {
+    build_split_from(schema, docs)
+}
+
+/// [`build_split`] over documents that arrive one by one: doc id *i* is the
+/// *i*-th document `docs` yields, and none is kept after it is indexed, so
+/// a caller can stream them (a split merge, M1.3).
+pub fn build_split_from(
+    schema: Schema,
+    docs: impl IntoIterator<Item = TantivyDocument>,
+) -> Result<BuiltSplit, TextError> {
     let directory = RamDirectory::create();
     let mut index = Index::create(directory.clone(), schema, IndexSettings::default())?;
     index.set_tokenizers(tokenizer_manager());
     index.set_fast_field_tokenizers(tokenizer_manager());
-    let doc_count = docs.len() as u64;
+    let mut doc_count = 0u64;
     let mut writer = SingleSegmentIndexWriter::new(index, SPLIT_WRITER_MEMORY)?;
     for doc in docs {
         writer.add_document(doc)?;
+        doc_count += 1;
     }
     let index = writer.finalize()?;
 

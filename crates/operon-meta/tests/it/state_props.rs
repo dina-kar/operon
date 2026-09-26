@@ -1,6 +1,7 @@
 //! Property test: random command sequences over the collection catalog keep
-//! every invariant, rejected commands change nothing, and the final state
-//! survives a snapshot round trip.
+//! every invariant, rejected commands change nothing, the snapshot format
+//! is version 6 exactly while some collection has hot configuration (M1.3
+//! Ruling 20), and the final state survives a snapshot round trip.
 
 use operon_common::schema::{
     CollectionSchema, Distance, DynamicMapping, FieldKind, FieldSpec, HnswParams, SparseModifier,
@@ -8,8 +9,8 @@ use operon_common::schema::{
 };
 use operon_common::{CollectionId, NamespaceId, StreamId};
 use operon_meta::{
-    AliasAction, Command, MetaState, Retention, WalChunk, WalClass, collection_pointer_key,
-    snapshot_round_trip,
+    AliasAction, Command, HotConfig, MetaState, Retention, WalChunk, WalClass,
+    collection_pointer_key, snapshot_bytes, snapshot_round_trip,
 };
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -154,6 +155,12 @@ fn command() -> impl Strategy<Value = Command> {
                 },
             }
         }),
+        2 => (1u64..=6, any::<(bool, bool, bool)>()).prop_map(
+            |(id, (vectors, text, fragments))| Command::SetCollectionHot {
+                collection: CollectionId(id),
+                hot: HotConfig { vectors, text, fragments },
+            }
+        ),
         2 => (namespace(), 1u64..=4, proptest::option::of(1u64..=3)).prop_map(
             |(namespace, id, expected)| Command::CasPointer {
                 namespace,
@@ -184,6 +191,12 @@ proptest! {
             }
             let violations = state.check_invariants();
             prop_assert!(violations.is_empty(), "after {}: {:?}", command, violations);
+            // Version 6 exactly while some collection has hot configuration
+            // (Ruling 20).
+            let bytes = snapshot_bytes(&state).expect("snapshot");
+            let version = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+            let hot = state.hot_collections().count() > 0;
+            prop_assert_eq!(version, if hot { 6 } else { 5 }, "after {}", command);
         }
         prop_assert_eq!(snapshot_round_trip(&state).expect("round trip"), state);
     }

@@ -1202,3 +1202,121 @@ async fn a_fenced_trim_changes_nothing() {
     assert_eq!(log_starts(&env).await, vec![0, 0]);
     env.shutdown().await;
 }
+
+// ----- Hot artifacts (plan M1.3 Task 5 rule 7; E50) -----
+
+/// Writes the objects of a hot artifact under a new prefix and commits a
+/// `Maintenance` manifest that references it (replacing the `hnsw` entry of
+/// `_vector_0`), as a hot build does; returns the prefix and its objects.
+async fn commit_artifact(env: &Env) -> (String, BTreeSet<String>) {
+    let f = &env.f;
+    let (parent_path, parent) = operon_collection::live_manifest(
+        &*f.ctx.meta,
+        &f.ctx.store,
+        &f.ctx.manifests,
+        f.ns,
+        f.cid,
+        Consistency::Linearizable,
+    )
+    .await
+    .expect("live")
+    .expect("a pointer");
+    let started = f.ctx.meta.now_ms();
+    let prefix = format!(
+        "{}hot/hnsw/_vector_0/{:020}-{}/",
+        env.prefix(),
+        parent.version,
+        ulid_at(started)
+    );
+    let objects: BTreeSet<String> = ["descriptor.bin", "covered.bin", "files/graph.bin.000000"]
+        .iter()
+        .map(|name| format!("{prefix}{name}"))
+        .collect();
+    for object in &objects {
+        f.store
+            .put(object, Bytes::from_static(b"artifact bytes"))
+            .await
+            .expect("put");
+    }
+    let manifest = operon_collection::CollectionManifest {
+        version: parent.version + 1,
+        parent_version: parent.version,
+        parent_manifest: Some(parent_path),
+        created_at_ms: started,
+        hot_artifacts: vec![operon_collection::HotArtifactRef {
+            kind: "hnsw".to_string(),
+            column: "_vector_0".to_string(),
+            prefix: prefix.clone(),
+            source_version: parent.version,
+        }],
+        kind: operon_collection::CommitKind::Maintenance,
+        pk_delta: None,
+        dead_letters: None,
+        ..(*parent).clone()
+    };
+    let path = operon_collection::put_manifest(&f.ctx, f.ns, &manifest)
+        .await
+        .expect("put manifest");
+    operon_common::meta::MetaStore::cas_pointer(
+        &f.meta.client,
+        operon_common::meta::PointerCas {
+            namespace: f.ns,
+            key: operon_meta::collection_pointer_key(f.cid),
+            expected: Some(parent.version),
+            value: path,
+            fence: None,
+            fresh: None,
+        },
+    )
+    .await
+    .into_result()
+    .expect("cas");
+    (prefix, objects)
+}
+
+#[tokio::test]
+async fn hot_artifacts_of_retained_manifests_survive_gc() {
+    let env = Env::start(CollectionConfig::default()).await;
+    env.commit(upserts(0..5, "a")).await;
+    let (prefix, objects) = commit_artifact(&env).await;
+    for round in 0..3 {
+        env.commit(upserts(10 + round * 5..15 + round * 5, "b"))
+            .await;
+    }
+    let live = env.f.manifest().await;
+    assert_eq!(
+        live.hot_artifacts.len(),
+        1,
+        "link commits carry the artifact"
+    );
+    assert_eq!(live.hot_artifacts[0].prefix, prefix);
+    env.past_grace();
+    env.gc().await;
+    env.gc().await;
+    assert_eq!(env.objects(&prefix).await, objects);
+    env.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_replaced_artifact_is_collected_once_its_manifests_leave_retention() {
+    let env = Env::start(CollectionConfig {
+        keep_manifests: 1,
+        time_travel_retention: Duration::ZERO,
+        ..CollectionConfig::default()
+    })
+    .await;
+    env.commit(upserts(0..5, "a")).await;
+    let (old, _) = commit_artifact(&env).await;
+    env.commit(upserts(5..10, "b")).await;
+    let (new, new_objects) = commit_artifact(&env).await;
+    env.commit(upserts(10..15, "c")).await;
+    env.commit(upserts(15..20, "d")).await;
+    env.past_grace();
+    // The manifests that name the old prefix go first, its objects the run
+    // after (E50).
+    env.gc().await;
+    env.gc().await;
+    assert!(env.objects(&old).await.is_empty());
+    assert_eq!(env.objects(&new).await, new_objects);
+    env.shutdown().await;
+}

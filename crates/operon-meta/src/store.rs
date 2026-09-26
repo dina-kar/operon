@@ -11,11 +11,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use operon_common::meta::{
-    AliasAction, ChangeWait, Collection, CollectionHead, CollectionRoots, Consistency, Fence,
-    Lease, LeaseGrant, Link, LinkHead, LinkId, MetaChanges, MetaError, MetaResult, MetaStopped,
-    MetaStore, Namespace, PartitionBounds, PartitionIndex, Pointer, PointerCas, Retention,
-    SegmentSwap, Stream, StreamState, TargetRef, Tracked, WalClass, WalCommit,
-    collection_pointer_key, link_pointer_key,
+    AliasAction, ApplyError, ChangeWait, Collection, CollectionHead, CollectionRoots, Consistency,
+    Fence, HotConfig, Lease, LeaseGrant, Link, LinkHead, LinkId, MetaChanges, MetaError,
+    MetaResult, MetaStopped, MetaStore, Namespace, PartitionBounds, PartitionIndex, Pointer,
+    PointerCas, Retention, SegmentSwap, Stream, StreamState, TargetRef, Tracked, WalClass,
+    WalCommit, collection_pointer_key, link_pointer_key,
 };
 use operon_common::schema::CollectionSchema;
 use operon_common::{CollectionId, NamespaceId, StreamId};
@@ -348,6 +348,19 @@ impl MetaStore for MetaClient {
         self.read(consistency, |s| s.lease(key).cloned()).await
     }
 
+    async fn leases_with_prefix(
+        &self,
+        consistency: Consistency,
+        prefix: &str,
+    ) -> MetaResult<Vec<(String, Lease)>> {
+        self.read(consistency, |s| {
+            s.leases_with_prefix(prefix)
+                .map(|(key, lease)| (key.to_string(), lease.clone()))
+                .collect()
+        })
+        .await
+    }
+
     // ----- Manifest pointers -----
 
     async fn cas_pointer(&self, cas: PointerCas) -> Tracked<u64> {
@@ -494,6 +507,47 @@ impl MetaStore for MetaClient {
                 .collect(),
         })
         .await
+    }
+
+    async fn set_collection_hot(
+        &self,
+        namespace: NamespaceId,
+        collection: CollectionId,
+        hot: HotConfig,
+    ) -> MetaResult<()> {
+        // The command names the bare id (D70); a collection never changes
+        // namespace and its id is never reused, so checking the namespace
+        // first is exact: a drop in between makes the write
+        // `CollectionNotFound` itself.
+        let in_namespace = self
+            .read(Consistency::Linearizable, |s| {
+                s.collection(collection)
+                    .is_some_and(|c| c.namespace == namespace)
+            })
+            .await?;
+        if !in_namespace {
+            return Err(ApplyError::CollectionNotFound(collection).into());
+        }
+        MetaClient::set_collection_hot(self, collection, hot).await
+    }
+
+    async fn collection_hot(
+        &self,
+        consistency: Consistency,
+        namespace: NamespaceId,
+        collection: CollectionId,
+    ) -> MetaResult<HotConfig> {
+        self.read(consistency, |s| {
+            match s
+                .collection(collection)
+                .is_some_and(|c| c.namespace == namespace)
+            {
+                true => Ok(s.collection_hot(collection)),
+                false => Err(ApplyError::CollectionNotFound(collection)),
+            }
+        })
+        .await?
+        .map_err(MetaError::from)
     }
 
     // ----- Garbage collection (always Linearizable) -----

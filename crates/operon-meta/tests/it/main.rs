@@ -4,6 +4,7 @@ mod cluster;
 mod collections;
 mod conformance;
 mod encoding;
+mod hot;
 mod leases;
 mod links;
 mod node;

@@ -35,6 +35,7 @@ failpoints = ["dep:fail", "fail/failpoints"]
 operon-meta = { path = ".", features = ["test-util"] }
 operon-meta-conformance.workspace = true
 proptest.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
 
 [lints]

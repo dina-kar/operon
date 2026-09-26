@@ -33,7 +33,7 @@ pub use network::Router;
 pub use node::{MetaConfig, MetaNode, RaftStatus};
 pub use operon_common::meta::{
     AliasAction, ApplyError, COLLECTION_KIND, Collection, Consistency, EntryKind, Fence, Freshness,
-    IndexEntry, Lease, LeaseGrant, Link, LinkId, MAX_COLLECTION_NAME_LEN, MAX_KEY_LEN,
+    HotConfig, IndexEntry, Lease, LeaseGrant, Link, LinkId, MAX_COLLECTION_NAME_LEN, MAX_KEY_LEN,
     MAX_LEASE_TTL_MS, MAX_NAME_LEN, MAX_PARTITIONS, MetaError, Namespace, Pointer, Retention,
     StaleLag, Stream, TargetRef, WAL_COMMIT_WINDOW_MS, WalChunk, WalClass, collection_pk_prefix,
     collection_pointer_key, collection_prefix, implicit_name, log_stale_object,
