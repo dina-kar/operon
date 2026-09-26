@@ -4542,6 +4542,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "operon-hnsw"
+version = "0.0.1"
+dependencies = [
+ "crc32c",
+ "operon-common",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "roaring",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "operon-link"
 version = "0.0.1"
 dependencies = [
