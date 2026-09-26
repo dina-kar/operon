@@ -85,7 +85,7 @@ For each table scan: `hot projection @ S'` if present and `S'` ≥ required snap
 
 ## 5. Routing and affinity
 
-- Objects (or shards of large objects: table partitions/file groups, collection split groups, graph vertex-ID ranges) are mapped to query nodes by **rendezvous hashing**, AZ-aware, with replication factor *r* (default 1; auto-raised to 2–3 for very hot objects).
+- Objects (or shards of large objects: table partitions/file groups, collection split groups, graph vertex-ID ranges) are mapped to query nodes by **rendezvous hashing**, AZ-aware, with replication factor *r* (default 1). Auto-raising *r* to 2–3 for very hot objects is planned, not built: M1.3 uses the fixed `--replication`, and heat drives only promotion (M1.3 Ruling 13).
 - **Bounded load** (M2): when the top node is above its load threshold, the next rendezvous choice serves the request. **Size-class placement keys** (M6): small namespaces are placed by namespace, so one node warms a tenant's collections together; large collections by `(ns, cid)`; very large ones by `(ns, cid, shard)` (D63, §18 §5.3).
 - Ownership is a **soft hint**: correctness never depends on the owner, and any node can serve any namespace, so a stale route is slow, never wrong.
 - Gateways route to the owning node(s); large scans fan out across owners via distributed execution (§05).
