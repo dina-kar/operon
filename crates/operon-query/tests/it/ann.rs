@@ -502,6 +502,11 @@ async fn recall_of_the_durable_defaults_is_at_least_ninety_percent() {
         found += hits.iter().filter(|hit| truth.contains(&hit.pk)).count();
     }
     let recall = found as f64 / 500.0;
+    // Lance 12.0.0 trains the index with unseeded k-means (see
+    // `a_moderate_filter_prefilters`), so this recall differs from run to
+    // run. Twenty-one runs measured 0.938–0.978 (mean 0.96, standard
+    // deviation 0.01): the plan's bound, 0.90, sits 0.038 below the lowest
+    // and six standard deviations below the mean (plan row 15.4).
     assert!(recall >= 0.90, "recall@10 {recall}");
     ann.shutdown().await;
 }
@@ -654,9 +659,10 @@ async fn a_moderate_filter_prefilters() {
     // unseeded k-means (`KMeansParams::new` draws its seed from the OS, and
     // neither `IvfBuildParams` nor `PQBuildParams` exposes one), so the
     // index, and this recall, differ from run to run. Twenty runs of this
-    // test measured 86–96/100 (4 runs below the first bound, 90); the bound
-    // is the minimum less a margin of 10: it still catches a collapse of
-    // recall without failing on an unlucky training.
+    // test measured 86–96/100 (4 runs below the first bound, 90), and 21
+    // more (Task 15) 83–96/100; the bound is the first minimum less a
+    // margin of 10: it still catches a collapse of recall without failing
+    // on an unlucky training.
     assert!(found >= 76, "prefiltered recall@10 {found}/100");
     ann.shutdown().await;
 }

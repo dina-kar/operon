@@ -148,7 +148,10 @@ pub struct ScanPlan {
     pub durable_token: ConsistencyToken,
     /// Reads the requested state, tail included (rule 6).
     pub pin: ScanPin,
-    /// The metastore clock of the planning read.
+    /// The metastore clock of the planning read: the clock `expires_at_ms`
+    /// is on. It advances only with time-stamped metastore writes (log
+    /// appends and lease operations among them), so it is 0 on a cluster
+    /// that has had none yet (plan row 15.5); it is not a wall clock.
     pub planned_at_ms: u64,
     /// The earliest moment GC may stop retaining the manifest, on the
     /// metastore clock (rule 5); `None` for manifest version 0.

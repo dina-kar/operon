@@ -1067,6 +1067,38 @@ impl Fixture {
         self.service.clone()
     }
 
+    /// Another service over the same metastore, store and log, with cold
+    /// caches (its own range cache, Lance session and manifest cache) and
+    /// collection config `collection`.
+    pub async fn cold_service(
+        &self,
+        collection: CollectionConfig,
+        config: ServiceConfig,
+    ) -> Arc<CollectionService> {
+        let store = self.storage.store.clone();
+        let cache = operon_cache::RangeCache::new(
+            store.clone(),
+            operon_cache::RangeCacheConfig {
+                block_size: 1 << 20,
+                memory_bytes: 64 << 20,
+                disk: None,
+            },
+        )
+        .await
+        .expect("range cache");
+        let ctx = CollectionContext {
+            meta: self.meta.client.clone().into(),
+            store: store.clone(),
+            cache: cache.clone(),
+            lance: LanceEnv::new(store, LanceConfig::default()),
+            manifests: ManifestCache::new(collection.manifest_cache_entries),
+            config: collection,
+        };
+        let reader = LogReader::new(self.meta.client.clone(), cache);
+        let writer = CollectionWriter::new(self.meta.client.clone(), self.storage.writer.clone());
+        CollectionService::new(ctx, writer, reader, config)
+    }
+
     /// Runs the link source once over every collection.
     pub async fn apply_link(&self) {
         run_link(&self.meta.client, &self.storage.ctx, &self.storage.reader).await;
@@ -1079,6 +1111,11 @@ impl Fixture {
 
     /// Runs the link and index sources every 20 ms until shutdown.
     pub fn start_worker(&self) {
+        self.start_worker_every(Duration::from_millis(20));
+    }
+
+    /// Runs the link and index sources every `interval` until shutdown.
+    pub fn start_worker_every(&self, interval: Duration) {
         let meta = self.meta.client.clone();
         let ctx = self.storage.ctx.clone();
         let reader = self.storage.reader.clone();
@@ -1086,7 +1123,7 @@ impl Fixture {
             loop {
                 run_link(&meta, &ctx, &reader).await;
                 run_indexes(&meta, &ctx).await;
-                tokio::time::sleep(Duration::from_millis(20)).await;
+                tokio::time::sleep(interval).await;
             }
         });
         if let Some(old) = self.worker.lock().expect("lock").replace(task) {
@@ -1945,4 +1982,202 @@ pub async fn build_placements(f: &Fixture, history: &[DocOp], cuts: &[usize], sp
     f.settle().await;
     write_ops(&service, "split", history[split_at..].to_vec()).await;
     write_ops(&service, "tail", history.to_vec()).await;
+}
+
+// ----- Task 15: a fake hot tier -----
+
+/// The ids of namespace [`GATE_NS`] and of collection `name` in it.
+pub async fn gate_ids(f: &Fixture, name: &str) -> (NamespaceId, CollectionId) {
+    let ns = f
+        .meta
+        .client
+        .namespace_by_name(Consistency::Linearizable, GATE_NS)
+        .await
+        .expect("read")
+        .expect("the namespace exists")
+        .id;
+    let cid = f
+        .service()
+        .get_collection(GATE_NS, name)
+        .await
+        .expect("the collection exists")
+        .id;
+    (ns, cid)
+}
+
+/// A hot ANN artifact over the rows of one manifest: exact Cosine scores
+/// plus 0.05 (Task 15 item 6).
+#[derive(Debug)]
+pub struct FakeAnn {
+    source_version: u64,
+    covered: roaring::RoaringTreemap,
+    vectors: BTreeMap<u64, Vec<f32>>,
+}
+
+#[async_trait]
+impl operon_query::hot::HotAnn for FakeAnn {
+    fn source_version(&self) -> u64 {
+        self.source_version
+    }
+
+    fn covered(&self) -> &roaring::RoaringTreemap {
+        &self.covered
+    }
+
+    async fn search(
+        &self,
+        query: &[f32],
+        k: usize,
+        allow: Option<&roaring::RoaringTreemap>,
+        _ef: Option<u32>,
+    ) -> Result<Vec<(u64, f32)>, operon_query::hot::HotError> {
+        let mut scored: Vec<(u64, f32)> = self
+            .vectors
+            .iter()
+            .filter(|(row, _)| allow.is_none_or(|allow| allow.contains(**row)))
+            .map(|(row, v)| {
+                let exact =
+                    operon_query::vector::score(operon_collection::Distance::Cosine, query, v);
+                (*row, exact + 0.05)
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        scored.truncate(k);
+        Ok(scored)
+    }
+}
+
+/// A hot tier (Task 15 item 6): `split_file` serves copies of the splits
+/// [`FakeHot::pin_splits`] copied to a temporary directory, `ann` serves
+/// the artifact [`FakeHot::serve_ann`] built for a manifest version, and
+/// every call of the contract is counted.
+#[derive(Debug)]
+pub struct FakeHot {
+    dir: TempDir,
+    files: Mutex<BTreeMap<ulid::Ulid, std::path::PathBuf>>,
+    /// (collection, manifest version m) → the artifact over m − 1.
+    anns: Mutex<BTreeMap<(CollectionId, u64), Arc<FakeAnn>>>,
+    pub split_calls: std::sync::atomic::AtomicUsize,
+    pub ann_calls: std::sync::atomic::AtomicUsize,
+    pub access_calls: std::sync::atomic::AtomicUsize,
+}
+
+impl FakeHot {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            dir: TempDir::new().expect("temp dir"),
+            files: Mutex::default(),
+            anns: Mutex::default(),
+            split_calls: Default::default(),
+            ann_calls: Default::default(),
+            access_calls: Default::default(),
+        })
+    }
+
+    /// Every call of the contract so far.
+    pub fn calls(&self) -> usize {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.split_calls.load(SeqCst) + self.ann_calls.load(SeqCst) + self.access_calls.load(SeqCst)
+    }
+
+    /// Copies every split of collection `name`'s live manifest to the
+    /// temporary directory.
+    pub async fn pin_splits(&self, f: &Fixture, name: &str) {
+        let (ns, cid) = gate_ids(f, name).await;
+        let ctx = &f.storage.ctx;
+        let Some((_, manifest)) = operon_collection::live_manifest(
+            &*ctx.meta,
+            &ctx.store,
+            &ctx.manifests,
+            ns,
+            cid,
+            Consistency::Linearizable,
+        )
+        .await
+        .expect("live manifest") else {
+            return;
+        };
+        for split in &manifest.splits {
+            let (bytes, _) = ctx
+                .store
+                .get(&operon_collection::split_path(ns, cid, split.ulid))
+                .await
+                .expect("split bytes");
+            let path = self.dir.path().join(format!("{}.split", split.ulid));
+            std::fs::write(&path, &bytes).expect("write a split copy");
+            self.files.lock().expect("lock").insert(split.ulid, path);
+        }
+    }
+
+    /// Serves, for collection `name`'s live manifest version m, an artifact
+    /// over the rows of manifest m − 1 with their vectors `v`.
+    pub async fn serve_ann(&self, f: &Fixture, name: &str) -> u64 {
+        let (ns, cid) = gate_ids(f, name).await;
+        let ctx = &f.storage.ctx;
+        let live = CollectionSnapshot::open(ctx, ns, cid, Consistency::Linearizable)
+            .await
+            .expect("snapshot")
+            .manifest()
+            .version;
+        assert!(live >= 2, "an artifact needs an older manifest");
+        let older = CollectionSnapshot::open_version(ctx, ns, cid, live - 1)
+            .await
+            .expect("the older manifest");
+        let mut covered = roaring::RoaringTreemap::new();
+        let mut vectors = BTreeMap::new();
+        for stored in older.scan_all().await.expect("scan") {
+            if let Some(v) = stored.vectors.get("v") {
+                covered.insert(stored.row_id);
+                vectors.insert(stored.row_id, v.clone());
+            }
+        }
+        let ann = Arc::new(FakeAnn {
+            source_version: live - 1,
+            covered,
+            vectors,
+        });
+        self.anns.lock().expect("lock").insert((cid, live), ann);
+        live
+    }
+}
+
+impl HotTier for FakeHot {
+    fn ann(
+        &self,
+        _: NamespaceId,
+        cid: CollectionId,
+        _column: &str,
+        manifest_version: u64,
+    ) -> Option<Arc<dyn operon_query::hot::HotAnn>> {
+        self.ann_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let anns = self.anns.lock().expect("lock");
+        let ann = anns.get(&(cid, manifest_version))?.clone();
+        Some(ann)
+    }
+
+    fn split_file(
+        &self,
+        _: NamespaceId,
+        _: CollectionId,
+        split: ulid::Ulid,
+    ) -> Option<std::path::PathBuf> {
+        self.split_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.files.lock().expect("lock").get(&split).cloned()
+    }
+
+    fn record_access(&self, _: NamespaceId, _: CollectionId) {
+        self.access_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// `fut` with the hot switch `enabled` (Ruling 11).
+pub async fn with_hot<F: std::future::Future>(enabled: bool, fut: F) -> F::Output {
+    let hot = RequestHot {
+        enabled,
+        used: Default::default(),
+    };
+    operon_query::hot::scope(hot, fut).await
 }
