@@ -12,10 +12,10 @@ use object_store::memory::InMemory;
 use operon_cache::{RangeCache, RangeCacheConfig};
 use operon_collection::{
     CollectionConfig, CollectionContext, CollectionGcRoots, CollectionSchema, CollectionSnapshot,
-    CollectionTargetFactory, CollectionWriter, DocOp, Document, DynamicMapping, FieldKind,
-    FieldSpec, LanceConfig, LanceEnv, ManifestCache, OpResult, PatchMode, PkGcRoots, PrimaryKey,
-    VectorIndexSpec, VectorSpec, WriteError, fold_stream, live_manifest, split_path,
-    verify_collection,
+    CollectionTargetFactory, CollectionWriter, CommitKind, DocOp, Document, DynamicMapping,
+    FieldKind, FieldSpec, LanceCompactionSource, LanceConfig, LanceEnv, MaintenanceConfig,
+    ManifestCache, OpResult, PatchMode, PkGcRoots, PrimaryKey, SplitMergeSource, VectorIndexSpec,
+    VectorSpec, WriteError, fold_stream, live_manifest, split_path, verify_collection,
 };
 use operon_common::meta::{
     ApplyError, Consistency, MetaError, MetaStore, PointerCas, Retention, TargetRef, Tracked,
@@ -155,6 +155,11 @@ pub struct SimStats {
     pub collection_version: u64,
     /// Records the collection dead-lettered (the schema-invalid ops).
     pub collection_dead_letters: u64,
+    /// Split merges among the `Maintenance` commits of the live manifest's
+    /// chain (as far back as its manifests still exist).
+    pub merges: u64,
+    /// Lance compactions among them.
+    pub compactions: u64,
 }
 
 /// The result of one run.
@@ -350,6 +355,22 @@ fn collection_config() -> CollectionConfig {
 
 const WAIT: Duration = Duration::from_secs(60);
 const GRACE: Duration = Duration::from_secs(1);
+
+/// Merges of two or more small splits and compactions of two small
+/// fragments, committed within half the grace period.
+fn maintenance_config() -> MaintenanceConfig {
+    let mut config = MaintenanceConfig {
+        compaction_min_small_fragments: 2,
+        compaction_target_rows: 64,
+        commit_delay: GRACE / 2,
+        poll_interval: Duration::from_millis(100),
+        ..MaintenanceConfig::default()
+    };
+    config.merge_policy.min_level_num_docs = 4;
+    config.merge_policy.merge_factor = 2;
+    config.merge_policy.max_merge_factor = 4;
+    config
+}
 
 fn client_config() -> MetaClientConfig {
     MetaClientConfig {
@@ -572,9 +593,19 @@ impl Cluster {
             },
             vec![
                 Arc::new(LinkGcRoots),
-                Arc::new(CollectionGcRoots::new(ctx)),
+                Arc::new(CollectionGcRoots::new(ctx.clone())),
                 Arc::new(PkGcRoots),
             ],
+        )));
+        // Plan M1.3 Task 13 rule 3: merges and compactions, within the grace
+        // period.
+        worker.add_source(Arc::new(SplitMergeSource::new(
+            ctx.clone(),
+            maintenance_config(),
+        )));
+        worker.add_source(Arc::new(LanceCompactionSource::new(
+            ctx,
+            maintenance_config(),
         )));
         Ok(SimWorker {
             handle: worker.start(),
@@ -1814,6 +1845,30 @@ async fn verify_collection_model(cluster: &Cluster, rec: &Recorder) {
     objects.extend(manifest.dead_letters.clone());
     if let Some(dataset) = snapshot.dataset() {
         objects.push(dataset.manifest_location().path.to_string());
+    }
+    // The merges and compactions of the chain, as far back as its manifests
+    // exist: a `Maintenance` commit that changed the splits is a merge, one
+    // that changed the Lance version a compaction.
+    let (mut merges, mut compactions) = (0, 0);
+    let mut child = manifest.clone();
+    while let Some(parent_path) = child.parent_manifest.clone() {
+        let Ok(parent) = ctx.manifests.load(&ctx.store, &parent_path).await else {
+            break;
+        };
+        if child.kind == CommitKind::Maintenance {
+            if child.splits != parent.splits {
+                merges += 1;
+            }
+            if child.lance_version != parent.lance_version {
+                compactions += 1;
+            }
+        }
+        child = (*parent).clone();
+    }
+    {
+        let mut stats = lock(&rec.stats);
+        stats.merges = merges;
+        stats.compactions = compactions;
     }
     for object in objects {
         if let Err(err) = cluster.store.head(&object).await {

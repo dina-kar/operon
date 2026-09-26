@@ -128,3 +128,19 @@ fn a_seed_with_collection_writes_is_reproducible_in_schedule() {
         first.stats
     );
 }
+
+/// Plan M1.3 Task 13 rule 3: the worker runs split merges and Lance
+/// compaction, and a long enough seed commits both.
+#[test]
+fn a_seed_with_maintenance_has_merges_and_compactions() {
+    let report = run(SimConfig {
+        steps: 600,
+        ..SimConfig::new(7)
+    });
+    assert!(report.is_ok(), "{}", report.describe());
+    assert!(
+        report.stats.merges > 0 && report.stats.compactions > 0,
+        "no merge or no compaction: {:?}",
+        report.stats
+    );
+}
