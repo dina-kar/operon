@@ -16,7 +16,7 @@ Status: **Approved** · 2026-09-22 · amended 2026-09-26 (M1.2 as built)
 | **H3 tail** | RAM | Data committed to the log but not yet in the durable indexed form | `(object_id, partition, offset range)` | Per-type in-memory index |
 | Durable | Object storage | Source of truth | — | §03 |
 
-**Coherence is trivial by construction:** durable objects are immutable, so H0/H1 never need invalidation. Only *pointers* (manifest pointer, Iceberg current snapshot) change; nodes learn about them through meta watch streams (Operon-written objects) or Lakekeeper change events/polling (externally written Iceberg tables).
+**Coherence is trivial by construction:** durable objects are immutable, so H0/H1 never need invalidation. Only *pointers* (manifest pointer, Iceberg current snapshot) change; nodes learn about them through meta watch streams (Operon-written objects) or Lakekeeper change events/polling (externally written Iceberg tables). From M2 the watch is a scoped change feed (`changes_since(catalog_version)`, or one namespace's changes), so a node refreshes only what changed instead of re-reading the catalog (D63, §18 §5.4).
 
 The layering is the pattern StarRocks' Data Cache established for Iceberg on S3 (stateless compute over open files, a RAM + NVMe cache), applied uniformly to Parquet, Lance pages, Tantivy splits and graph sidecars.
 
@@ -76,6 +76,8 @@ For each table scan: `hot projection @ S'` if present and `S'` ≥ required snap
 ## 5. Routing and affinity
 
 - Objects (or shards of large objects: table partitions/file groups, collection split groups, graph vertex-ID ranges) are mapped to query nodes by **rendezvous hashing**, AZ-aware, with replication factor *r* (default 1; auto-raised to 2–3 for very hot objects).
+- **Bounded load** (M2): when the top node is above its load threshold, the next rendezvous choice serves the request. **Size-class placement keys** (M6): small namespaces are placed by namespace, so one node warms a tenant's collections together; large collections by `(ns, cid)`; very large ones by `(ns, cid, shard)` (D63, §18 §5.3).
+- Ownership is a **soft hint**: correctness never depends on the owner, and any node can serve any namespace, so a stale route is slow, never wrong.
 - Gateways route to the owning node(s); large scans fan out across owners via distributed execution (§05).
 - On node loss/scale-out, ownership moves with minimal churn; the new owner serves cold from S3 while warming, or downloads published hot-tier artifacts. (Peer-to-peer cache transfer between nodes is a later optimization.)
 - Prewarm API: `operon warm <object>` for planned failovers and deploys.

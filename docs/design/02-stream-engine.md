@@ -1,8 +1,8 @@
 # 02 — Stream Engine
 
-Status: **Approved** · 2026-09-22 · revised 2026-09-25 (native streaming API, D43)
+Status: **Approved** · 2026-09-22 · revised 2026-09-25 (native streaming API, D43) · revised 2026-09-26 (the stream API core and OTLP logs ingest in M2, the Kafka gateway in M5, D72–D74)
 
-Goal: a partitioned log with **AutoMQ-grade reliability** (RPO 0 on node and AZ loss, seconds-level failover, no data on broker disks) and a choice of latency/cost per stream, reached through Operon's native streaming API — and it is the internal spine for every other object in Operon.
+Goal: a partitioned log with **AutoMQ-grade reliability** (RPO 0 on node and AZ loss, seconds-level failover, no data on broker disks) and a choice of latency/cost per stream, reached through Operon's native streaming API and, from M5, the Kafka wire protocol — and it is the internal spine for every other object in Operon.
 
 ---
 
@@ -16,6 +16,7 @@ Goal: a partitioned log with **AutoMQ-grade reliability** (RPO 0 on node and AZ 
 | R4 | Avoid cross-AZ data transfer charges where the class allows |
 | R5 | Native produce and consume over HTTP, gRPC and Arrow Flight: idempotent producers, long-poll and streaming reads, named consumers with committed offsets |
 | R6 | Serve as the implicit log for tables/collections/graphs, with offsets usable as consistency tokens |
+| R7 | From M5, Kafka clients produce and consume through the Kafka wire protocol (§7.2) |
 
 ## 2. WAL durability classes
 
@@ -23,7 +24,7 @@ Goal: a partitioned log with **AutoMQ-grade reliability** (RPO 0 on node and AZ 
 |---|---|---|---|---|---|---|
 | `standard` | Multi-partition WAL objects on **S3 Standard** (or GCS/Azure regional) | PUT success + meta offset commit | 400–600 ms | Yes | None | Bulk ingest, logs, collection/table ingest, cost-first streams |
 | `express` | WAL objects written in parallel to **3 zonal buckets** (S3 Express One Zone / GCS Rapid) in 3 AZs; ack on **2 of 3** | 2 PUTs + meta commit | 20–50 ms | Yes | None (object-store writes, not VM-to-VM) | Latency-sensitive streams without running stateful disks |
-| `quorum` | **Journal**: openraft group of 3 `log` nodes (1 per AZ), WAL on local NVMe, offloaded to S3 | Majority fsync | 3–10 ms | Yes | Yes (2 replica copies per byte) | Lowest latency; on-prem/MinIO; clouds without zonal object storage |
+| `quorum` | **Journal**: openraft group of 3 `log` nodes (1 per AZ), WAL on local NVMe, offloaded to S3 | Majority fsync | 3–10 ms | Yes | Yes (2 replica copies per byte) | Lowest latency; on-prem (RustFS); clouds without zonal object storage |
 
 Notes:
 - `express` is Operon's answer to AutoMQ's commercial EBS/Regional-EBS WAL: low latency and multi-AZ durability **without stateful broker disks**. A similar multi-zonal-bucket approach has been described by WarpStream (verify). Express storage is expensive ($0.11/GB-month) but WAL objects live only seconds before offload; Express PUTs are cheaper per request than Standard.
@@ -82,7 +83,7 @@ producer ──► journal leader (log node)
 
 - **Segmenter** (worker task) rewrites WAL chunks into per-partition **segments** (64–256 MiB target), with a footer holding a per-batch offset and timestamp index. Commit = atomic, lease-fenced swap of index entries in meta: a segment becomes **one** index entry covering its data region (D26). The metastore retires WAL objects once no index entry references them, and GC deletes them after a grace period (D27). The segment byte layout (format version 1) is in the [M0.3 plan](../plans/2026-09-24-m0.3-log-engine.md#task-3-segment-format).
 - `quorum` journals write segments directly on seal.
-- Segments keep the WAL's batch bytes verbatim ⇒ segmenting never re-encodes, and fetch decodes straight from the cached byte range.
+- Segments keep the WAL's batch bytes verbatim ⇒ segmenting never re-encodes, and fetch decodes straight from the cached byte range. This holds for both encodings below: the WAL writes each stream's `encoding` directly (an `arrow` stream's WAL chunks already hold Arrow IPC batches), so the segmenter only regroups batches and adds the footer.
 - **Segment encodings** (idea from Apache Fluss's columnar log tables). WAL chunks and segments carry an `encoding` field:
   - `kafka` (default): the `RecordBatch` v2 byte format, as above. Explicit streams use it.
   - `arrow`: Arrow IPC record batches, for streams with a registered schema, which includes the implicit streams of tables and collections. The footer adds per-column byte ranges, so link apply and tail readers fetch only the columns they project (column pruning on the log itself) and skip JSON decoding. Record-oriented reads of an `arrow` stream (HTTP and gRPC fetch) build records on the fly, while Flight `DoGet` serves it without conversion, so the encoding is chosen per stream by who reads it most.
@@ -100,23 +101,74 @@ Fetch `(partition, offset, max_bytes)` from any `log` or `query` node in the con
 
 Read amplification control: reads of recent data are coalesced per WAL object (one GET feeds many consumers/partitions), and the tail cache is populated at write time on the writing node and on AZ peers.
 
-## 7. Native streaming API
+## 7. Stream APIs
 
-The Kafka wire gateway is deferred past v1.0 (D43). Streams are reached through Operon's own API; the HTTP produce and long-poll fetch routes exist from M0.3, and M5 adds the rest. Streams and namespaces are addressed by name.
+Streams are reached through Operon's own API. The HTTP produce and long-poll fetch routes exist from M0.3. **M2 completes the core for v1.0** (D72): gRPC, idempotent producers, streaming subscribe, named consumers and stream admin. OTLP logs arrive through their own endpoint in M2 (§7.1). M5 adds Flight `DoGet` replay, changelog streams (§8.1) and the Kafka wire-protocol gateway (§7.2). Streams and namespaces are addressed by name.
 
 | Feature | Design | Phase |
 |---|---|---|
-| Stream admin | `POST /v1/namespaces/{ns}/streams` (name, partitions, retention), `GET /v1/namespaces/{ns}/streams/{stream}` (per-partition log start and high watermark, retention); adding partitions, compaction and retention changes and deletion are metastore operations | M0.3 (create, describe); M5 (rest) |
-| Produce (HTTP) | `POST /v1/namespaces/{ns}/streams/{stream}/partitions/{p}/records` with JSON records (`key`/`value` base64, `headers`, `timestamp_ms`); the response carries `base_offset`, `last_offset` and a consistency token | M0.3 |
+| Stream admin | `POST /v1/namespaces/{ns}/streams` (name, partitions, retention), `GET /v1/namespaces/{ns}/streams` (list, paginated), `GET …/streams/{stream}` (per-partition log start and high watermark, retention), `PATCH …/streams/{stream}` (retention), `DELETE …/streams/{stream}` (drop: the stream is hidden at once and its objects retired); gRPC has the same calls. Adding partitions and compaction settings come later | M0.3 (create, describe); M2 (list, retention changes, drop; D72) |
+| Produce (HTTP) | `POST /v1/namespaces/{ns}/streams/{stream}/partitions/{p}/records` with JSON records (`key`/`value` base64, `headers`, `timestamp_ms`); the response carries `base_offset`, `last_offset` and a consistency token. M2 adds `POST …/streams/{stream}/records` (partition by key hash, else round-robin) and a plain-JSON body: a JSON array or JSON lines of objects, each object a record's value, which is what Fluent Bit's and Vector's `http` outputs send (§7.3) | M0.3; M2 (partitionless route, plain-JSON body) |
 | Long-poll fetch (HTTP) | `GET …/partitions/{p}/records?offset=&max_bytes=&max_wait_ms=` (§6); at the high watermark it waits up to `max_wait_ms` (at most 60 s) and returns empty, not an error | M0.3 |
-| gRPC | `Produce` (unary and client-streaming) and `Fetch` with the HTTP semantics and raw bytes instead of base64; `Subscribe` (server-streaming) pushes batches from a start position: an offset, `earliest`, `latest`, a timestamp, or a named consumer's committed offset | M5 |
-| Idempotent producers | `InitProducer` (HTTP `POST /v1/namespaces/{ns}/producers`) returns a `producer_id` and an `epoch`; re-initializing under the same producer name bumps the epoch and fences the older instance. Each produce carries `(producer_id, epoch, sequence)` per partition. The sequencer (§3) dedupes by producer id and sequence: a retried batch returns its original offsets without appending, a sequence gap is rejected (`out_of_order_sequence`), a stale epoch is rejected (`fenced`). Producer state expires after an idle TTL (default 24 h) | M5 |
-| Named consumers | A consumer is a namespace object whose committed offsets `(consumer, stream, partition) → offset` live in the metastore, committed and read through `…/consumers/{name}/offsets` (gRPC `CommitOffsets`, `GetOffsets`). Commits are coalesced per consumer and partition and batched into metastore proposals (§9). There is no membership or rebalance protocol: instances read the partitions they are given, and for exclusive ownership an instance takes a per-partition lease (the lease-and-epoch mechanism of worker tasks, §09 §6), which fences its offset commits. Lag (high watermark − committed offset) is exported as a metric | M5 |
-| Flight bulk ingest | Flight SQL's bulk-ingest `DoPut` (`CommandStatementIngest`, what ADBC's ingest API sends) with a target in the `streams` schema appends rows as records: columns `key`, `value`, `headers`, `timestamp` and an optional `partition` (else by key hash) for `kafka` streams; `arrow` streams take batches of their registered schema as-is (from M4). `CommandStatementIngest` returns only a row count; a plain `DoPut` with the path descriptor `["streams", s(, p)]` returns one `PutResult` per batch whose `app_metadata` carries the consistency token and offsets (D49; M1.2 Task 13) | M1.2 |
+| gRPC | `Produce` (unary and client-streaming) and `Fetch` with the HTTP semantics and raw bytes instead of base64; `Subscribe` (server-streaming) pushes batches from a start position: an offset, `earliest`, `latest`, a timestamp, or a named consumer's committed offset | M2 (D72) |
+| Idempotent producers | `InitProducer` (HTTP `POST /v1/namespaces/{ns}/producers`) returns a `producer_id` and an `epoch`; re-initializing under the same producer name bumps the epoch and fences the older instance. Each produce carries `(producer_id, epoch, sequence)` per partition. The sequencer (§3) dedupes by producer id and sequence: a retried batch returns its original offsets without appending, a sequence gap is rejected (`out_of_order_sequence`), a stale epoch is rejected (`fenced`). Producer state expires after an idle TTL (default 24 h) | M2 (D72) |
+| Named consumers | A consumer is a namespace object whose committed offsets `(consumer, stream, partition) → offset` live in the metastore, committed and read through `…/consumers/{name}/offsets` (gRPC `CommitOffsets`, `GetOffsets`). Commits are coalesced per consumer and partition and batched into metastore proposals (§9). There is no membership or rebalance protocol: instances read the partitions they are given, and for exclusive ownership an instance takes a per-partition lease (the lease-and-epoch mechanism of worker tasks, §09 §6), which fences its offset commits. Lag (high watermark − committed offset) is exported as a metric | M2 (D72) |
+| Flight bulk ingest | Flight SQL's bulk-ingest `DoPut` (`CommandStatementIngest`; the ADBC Flight SQL Go driver sends it for bulk ingest since ADBC Libraries 22, apache/arrow-adbc#3808, and the Python `adbc-driver-flightsql` wraps that driver; the driver's documentation page still says bulk ingest is not implemented) with a target in the `streams` schema appends rows as records: columns `key`, `value`, `headers`, `timestamp` and an optional `partition` (else by key hash) for `kafka` streams; `arrow` streams take batches of their registered schema as-is (from M4). `CommandStatementIngest` returns only a row count; a plain `DoPut` with the path descriptor `["streams", s(, p)]` returns one `PutResult` per batch whose `app_metadata` carries the consistency token and offsets (D49; M1.2 Task 13) | M1.2 |
 | Flight replay | `DoGet` with a ticket naming a stream, partitions and an offset or timestamp range returns Arrow batches (`partition`, `offset`, `timestamp`, `key`, `value`, `headers`; the registered schema for `arrow` streams) | M5 |
 | Auth | API tokens, TLS/mTLS and namespace-scoped RBAC apply to every route (§10 §4) | M2 |
 
-Not offered: multi-partition transactions and server-side consumer-group assignment.
+The native API offers neither multi-partition transactions nor server-side consumer-group assignment. Kafka consumer groups (M5, §7.2) assign partitions for Kafka clients.
+
+**The M2 gate for the core** (D72): no acknowledged write is lost across node kills; idempotent producers write no duplicate when they retry; a named consumer resumes from its committed offset across a node restart; fetch returns each partition's records in offset order. M5 extends this to the Jepsen-style tests across node and AZ kills (§12).
+
+### 7.1 OTLP logs ingest (M2, D73)
+
+An OTLP endpoint for **logs only**, so log shippers write to Loam with no custom plugin (§7.3).
+
+- **Transports.** OTLP/HTTP at `POST /v1/logs`, with protobuf (`application/x-protobuf`) or JSON (`application/json`) bodies, gzip allowed; OTLP/gRPC `LogsService/Export`. Default ports are the OTLP defaults, 4318 (HTTP) and 4317 (gRPC).
+- **Target.** The namespace and stream come from the `loam-namespace` and `loam-stream` headers (gRPC metadata), which every OTLP exporter can set, and default to the API key's namespace and the stream `otel_logs`. The API key goes in `Authorization: Bearer` (§10 §4).
+- **Mapping.** Each `LogRecord` becomes one record. The value is one self-contained JSON object: the record in OTLP's JSON encoding, with its resource and scope attributes merged in. The timestamp is `time_unix_nano`, else `observed_time_unix_nano`, else arrival time. The key is empty (round-robin) unless the stream names a key attribute, such as `service.name`, which keeps one service's logs in order. Trace id, span id and severity number are also copied into record headers, so links can filter without parsing the value.
+- **Acknowledgement.** A request succeeds once all its records are committed. Records that fail validation are reported in `partial_success`. Over quota, the endpoint returns HTTP 429 or gRPC `RESOURCE_EXHAUSTED` with a retry delay, which OTLP exporters retry. OTLP has no producer ids, so an exporter that retries after a lost response can write duplicates: OTLP ingest is at-least-once.
+- **Into a collection.** A stream → collection link (§09) makes the logs searchable through the native API and the Qdrant and ES surfaces, visible through the tail within seconds.
+- **Not in M2.** Traces and metrics arrive with W1's agent telemetry (§15, §16 §6). `arrow`-encoded OTLP streams wait for the `arrow` encoding in M4 (D20); M2's OTLP streams use the `kafka` encoding with JSON values.
+
+### 7.2 Kafka wire-protocol gateway (M5, D74)
+
+The Kafka protocol is Loam's long-term source-compatibility protocol. With it, Loam streams are readable and writable by RisingWave, Flink, Spark, Kafka Connect, Debezium, Fluent Bit's `kafka` output and Vector. WarpStream, AutoMQ and Bufstream show the model: a Kafka-compatible log on object storage, with stateless brokers. Nisshi (formerly Tansu; Apache-2.0, Rust, a Kafka broker on S3 or Postgres) is a reference (§11 §1.2).
+
+- **Mapping.** A Kafka topic is a Loam stream, a Kafka partition is a stream partition, and Kafka offsets are Loam's dense offsets. How topic names map to namespaces and how SASL carries the API key is Q26.
+- **Leaderless.** Any `log` node accepts produce and fetch for any partition (§3), so `Metadata` names a node in the client's zone (from `client.rack`) as the leader of every partition, as WarpStream does.
+- **No re-encoding.** `kafka`-encoded WAL chunks and segments already hold `RecordBatch` v2 bytes (§3, §5). Produce validates the client's batches and the sequencer assigns their offsets; Fetch serves stored bytes as they are. `arrow` streams are served by building batches on the fly.
+- **Staged within M5:**
+  1. `ApiVersions`, `Metadata`, `Produce`, `Fetch` and `ListOffsets`, with SASL over TLS; the topic admin calls the gated tools need map to stream admin (§7).
+  2. Idempotent producers: `InitProducerId` maps onto the native producer ids and epochs (§7), so the sequencer's dedupe applies unchanged.
+  3. Consumer groups with committed offsets: the classic group protocol (`FindCoordinator`, `JoinGroup`, `SyncGroup`, `Heartbeat`, `OffsetCommit`, `OffsetFetch`) first, then KIP-848 server-side assignment (`ConsumerGroupHeartbeat`). A group's coordinator runs on the rendezvous owner of `(ns, group)` (§18 §5.3); its committed offsets live in the metastore like a named consumer's, and commits are conditional on the group's generation, so a stale coordinator cannot commit.
+- **Not in M5:** Kafka transactions (transactional ids, `AddPartitionsToTxn`, `EndTxn`, read-committed isolation). A later milestone adds them on demand (Q4).
+- **Companion.** The RisingWave companion integration (D22) returns in M5 over this gateway: RisingWave reads streams and changelog streams through its Kafka source and writes back through its Kafka sink.
+- **Gate.** The Kafka client test suites (librdkafka, franz-go or the Java client) pass against Loam, stage by stage; RisingWave, Flink and Kafka Connect run end to end (§12).
+- **Rejected alternatives.** A Kinesis-compatible subset reaches fewer tools and would become redundant once Kafka exists. A RisingWave-only native connector is not needed: the Kafka gateway covers RisingWave.
+
+### 7.3 Ecosystem integrations
+
+Tools that read or write Loam with no code of ours in them:
+
+| Tool | Direction | Protocol | Milestone | Status |
+|---|---|---|---|---|
+| Fluent Bit, `opentelemetry` output | Logs into Loam | OTLP/HTTP (§7.1) | M2 | Planned (D73) |
+| OpenTelemetry Collector, `otlp` and `otlphttp` exporters | Logs into Loam | OTLP/gRPC, OTLP/HTTP (§7.1) | M2 | Planned (D73) |
+| Vector, `opentelemetry` sink | Logs into Loam | OTLP/HTTP (§7.1) | M2 | Planned (D73) |
+| Fluent Bit, `http` output (`json` or `json_lines` format) | Records into Loam | Native HTTP produce, plain-JSON body (§7) | M2 | Planned: the route exists since M0.3; the plain-JSON body is M2 |
+| Vector, `http` sink | Records into Loam | Native HTTP produce, plain-JSON body (§7) | M2 | Planned |
+| Fluent Bit, `es` output | Documents into a collection | ES `_bulk` subset (§06) | M1.5 | Planned; needs index creation on first write and `Suppress_Type_Name On` (verify) |
+| RisingWave, Elasticsearch sink | Documents into a collection | ES `_bulk` subset (§06) | M1.5 | Planned; the requests it sends are checked against the subset (verify) |
+| RisingWave, HTTP sink | Records into Loam | Native HTTP produce, plain-JSON body (§7) | M2 | Planned; the sink sends one `varchar` or `jsonb` column per row (verify batching) |
+| RisingWave, Iceberg sink | Rows into a table | Iceberg REST through Lakekeeper (§08) | M4 | Planned |
+| RisingWave, Kafka source and sink | Streams in and out | Kafka (§7.2) | M5 | Planned (D22, D74) |
+| Apache Flink, Kafka connector | Streams in and out | Kafka (§7.2) | M5 | Planned (D74) |
+| Spark Structured Streaming, Kafka source and sink | Streams in and out | Kafka (§7.2) | M5 | Planned (D74) |
+| Kafka Connect, Debezium | Streams in (CDC) and out | Kafka (§7.2) | M5 | Planned (D74); Connect's internal topics need compacted streams (§5) and consumer groups (verify) |
+| Fluent Bit, `kafka` output | Records into Loam | Kafka (§7.2) | M5 | Planned (D74) |
+| Vector, `kafka` source and sink | Streams in and out | Kafka (§7.2) | M5 | Planned (D74) |
 
 ## 8. Streams as the internal spine
 
@@ -162,6 +214,6 @@ Tuning `flush_interval` trades PUT cost against latency; `express` trades storag
 
 1. Meta scaling beyond one Raft group: shard sequencer state by namespace range (multi-Raft) — design at M6.
 2. `express` on GCS Rapid and Azure: confirm conditional-write and append semantics per provider.
-3. Whether named consumers need server-side partition assignment beyond per-partition leases.
-4. `arrow` encoding: Arrow IPC per chunk vs. one Arrow file per segment with a column index; and whether the WAL writes `arrow` directly or the segmenter converts.
+3. Whether native named consumers need server-side partition assignment beyond per-partition leases. Kafka clients get it from consumer groups (§7.2).
+4. `arrow` encoding: Arrow IPC per chunk vs. one Arrow file per segment with a column index (either layout keeps the WAL's batch bytes, §5).
 5. Changelog retention default (same as the source's implicit stream, or shorter) and whether `full` mode is allowed on collections with large documents.

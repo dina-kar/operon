@@ -282,15 +282,18 @@ impl LogWriter {
 
     /// Appends one batch per partition of `stream`, all in the same WAL object
     /// and the same `CommitWal`, so the request is atomic across partitions
-    /// (§01 §5): every batch is acknowledged or none is. Returns one ack per
-    /// input batch, in input order.
+    /// (§01 §5). Success returns one ack per input batch, in input order;
+    /// [`LogError::CommitUnknown`] means the commit may have landed without
+    /// an acknowledgement.
     ///
     /// The request is validated before anything is buffered: it needs at
     /// least one batch, every batch at least one and at most
     /// `max_batch_records` records, no partition twice, and partitions of a
     /// known `standard` stream. Each ack means exactly what an
-    /// [`append`](Self::append) ack means; a failed request fails with its
-    /// flush's error.
+    /// [`append`](Self::append) ack means. Records with negative timestamps
+    /// receive the writer's clock. An oversized request fails with
+    /// [`LogError::InvalidArgument`], and a full buffer fails with
+    /// [`LogError::Backpressure`]; a buffered request reports its flush's error.
     pub async fn append_many(
         &self,
         stream: StreamId,

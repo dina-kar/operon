@@ -32,12 +32,31 @@ Only M1.1 and M1.2a were written against code that existed. Each later plan star
 | [M1.2: Query engine and native API](2026-09-24-m1.2-query-engine.md) | Search IR, DataFusion operators, tail index, strong reads, global BM25 statistics, `CollectionService`, native REST, SQL UDTFs, Flight SQL with `DoPut` bulk ingest (D49), scan pinning (D53), Spice-named SQL search functions (D56) | M1.2a | **Done** |
 | [M1.3: Hot tier, maintenance and affinity routing](2026-09-24-m1.3-hot-tier-routing.md) | Split merges, Lance compaction, qdrant-edge HNSW artifacts, pinned splits, the metastore over the network, node registry, rendezvous routing, the hot on/off differential harness | M1.2 | Planned |
 | [M1.4: Qdrant API Phase A](2026-09-24-m1.4-qdrant-api.md) | REST 6333 + gRPC 6334 over `CollectionService`, sparse vectors included | M1.2 | Planned |
-| [M1.5: Elasticsearch API Phase A](2026-09-24-m1.5-elasticsearch-api.md) | REST 9200, trimmed to what the LangChain and LlamaIndex suites and BEIR send (D48): document APIs, `_bulk`, `_search` and `_msearch` with the core DSL, `knn`, hybrid + RRF, `_delete_by_query`, minimal index admin | M1.2 | Planned |
+| [M1.5: Elasticsearch API Phase A](2026-09-24-m1.5-elasticsearch-api.md) | REST 9200, trimmed to what the LangChain and LlamaIndex suites and BEIR send (D48): document APIs, `_bulk`, `_search` and `_msearch` with the core DSL, `knn`, hybrid + RRF, `_delete_by_query`, minimal index admin, multi-target aliases (D57) | M1.2 | Planned |
 | [M1.6: SDKs and MCP server](2026-09-24-m1.6-sdks-mcp.md) | Python and TypeScript SDKs (with `to_arrow()`/`to_polars()` and scan plans, D54), the W0 MCP server (2026-07-28 stateless spec) | M1.2 | Planned |
-| [M1.7: M1 exit gates](2026-09-24-m1.7-exit-gates.md) | LangChain/LlamaIndex suites, ADBC Flight SQL drivers (D49), BEIR vs ES BM25, Recall@10 vs Qdrant, hot on/off identity at scale, the M1 exit report | M1.3–M1.6 | Planned |
+| [M1.7: M1 exit gates](2026-09-24-m1.7-exit-gates.md) | LangChain/LlamaIndex suites, ADBC Flight SQL drivers (D49), Spice's Flight SQL connector (D56), BEIR vs ES BM25, Recall@10 vs Qdrant, hot on/off identity at scale, the M1 exit report | M1.3–M1.6 | Planned |
 
 M1.4, M1.5 and M1.6 can run in parallel once M1.2 is merged.
 
 ## Later milestones
 
-The roadmap was revised on 2026-09-25 after the [architecture review](../architecture-review-and-recommendations.md) (D42–D50). **v1.0 is M1 plus M2, production hardening** (AuthN/Z, tenant quotas, Prometheus/OpenTelemetry, multi-node, the Postgres metastore backend, the Kubernetes operator, rolling upgrades). After v1.0 come M3 (native graph for GraphRAG and the Resonate durable-execution surface), M4 (analytics on Iceberg), M5 (native streams and changelog streams) and M6 (scale). The Kafka, Neo4j and ClickHouse protocol surfaces are no longer planned; the Kafka gateway is on the Phase C list (D43). Plans for M2 onward will be written once M1 is done. Their scope and exit gates are in [12-roadmap-testing-risks.md](../design/12-roadmap-testing-risks.md).
+The roadmap was revised on 2026-09-25 after the [architecture review](../architecture-review-and-recommendations.md) (D42–D50), and on 2026-09-26 for the metastore backends, the namespace router, tenancy and erasure ([§18](../design/18-metastore-backends-and-router.md), D58–D70), then for streams, Kafka, routing and consistency tokens (D71–D76). **v1.0 is M1 plus M2, production hardening**, including the native stream API core and OTLP logs ingest (D72, D73). **v1.1 is M2.x, cloud and BYOC.** After them come M3 (native graph for GraphRAG and the Resonate durable-execution surface), M4 (analytics on Iceberg), M5 (the Kafka wire-protocol gateway with the RisingWave companion, changelog streams, `express` and Flight replay; D74) and M6 (scale). The Neo4j and ClickHouse protocol surfaces are no longer planned, and FoundationDB is dropped (D71). Plans for M2 onward will be written once M1 is done. Their scope and exit gates are in [12-roadmap-testing-risks.md](../design/12-roadmap-testing-risks.md).
+
+Future plans, in their expected order (the split into plans is fixed when each milestone is planned):
+
+| Milestone | Plan area | Design references |
+|---|---|---|
+| M2 | **The `MetaStore` contract amendment, first:** per-group `commit_wal`, bounded-skew stamps with GC claims, documented read orders (D59); the namespace on bare-id calls (D70); paginated lists and the scoped change feed (D63); conformance cases, `Backend::capabilities()`, the linearizability checker's relaxed models, and the fault-plan hook; the consistency-token conformance cases (D76) | §18 §3, §18 §10 |
+| M2 | Catalog-scale fixes: an incremental catalog cache, dirty-set maintenance, snapshot builds off the apply path, snapshots past 5 GiB, bounded-load placement (D63); placement keys for stream partitions and consumer coordination (D75) | §18 §5.3, §18 §5.7 |
+| M2 | `operon-meta-postgres` on Lakekeeper's patterns, with its fault matrix (D58, D60) | §18 §2.2, §18 §4 |
+| M2 | `operon-meta-dynamodb`, with the floci and Alternator CI jobs, its fault matrix and the nightly AWS deployment job (D58, D60, D62) | §18 §2.3, §18 §4 |
+| M2 | RustFS as the default self-hosted store; the `Store` provider suite and the S3 fault matrix over RustFS (D61) | §18 §4.4 |
+| M2 | Tenancy: orgs and the `ControlStore`, API keys, the `Authorizer` trait with RBAC, quotas (D65, D66) | §18 §6–§7, §10 §3–§4 |
+| M2 | The GDPR erasure path (D68, D69) | §18 §9, §10 §4.1 |
+| M2 | The native stream API core: gRPC, idempotent producers, streaming subscribe, named consumers, stream admin, the plain-JSON produce body (D72); OTLP logs ingest (D73) | §02 §7, §02 §7.1, §02 §7.3 |
+| M2 | Observability, multi-node membership, the Kubernetes operator, rolling upgrades, restore from bucket | §10 |
+| M2 | The AI data ecosystem workstream: dataset tags, credential vending, the Python adapters (D52, D54) | §17 |
+| M2.x | `operon-meta-remote`, the hosted `operon-control` and `ControlStore`, owned-namespace caches, both BYOC modes (D63, D64) | §18 §5.7, §18 §8 |
+| M2.x | OpenFGA authorization (D67, default) and per-chunk envelope encryption (D69, default) | §18 §7, §18 §9 |
+| M5 | The Kafka wire-protocol gateway, staged: produce and fetch, idempotent producers, consumer groups (D74); the RisingWave companion (D22); changelog streams, `express`, Flight replay | §02 §7.2, §02 §8.1 |
+| M6 | `ShardedMetaStore`, namespace moves, size-class placement (D63); `operon-meta-tidb` (D58) | §18 §2.4, §18 §5 |
