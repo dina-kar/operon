@@ -173,6 +173,15 @@ impl ColumnView {
     pub fn delta(&self) -> &Arc<DeltaIndex> {
         &self.inner.delta
     }
+
+    /// The serialized size of the view's own row sets (Task 7's RAM
+    /// accounting).
+    pub fn ram_bytes(&self) -> u64 {
+        let inner = &self.inner;
+        (inner.excluded.serialized_size()
+            + inner.covered.serialized_size()
+            + inner.delta_excluded.serialized_size()) as u64
+    }
 }
 
 /// Score descending, then id ascending (`operon-hnsw` rule 3).

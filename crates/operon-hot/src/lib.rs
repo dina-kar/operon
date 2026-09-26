@@ -8,17 +8,29 @@
 //! - [`tier`], [`live`], [`view`] and [`delta`]: [`HotTierImpl`], which
 //!   loads the artifacts of the hot collections this node owns and serves
 //!   per-manifest views of them, each with a delta index of the rows
-//!   inserted since.
+//!   inserted since;
+//! - [`splits`] and [`prefetch`]: whole split files pinned on local NVMe,
+//!   and Lance files read ahead into the range cache (Ruling 9);
+//! - [`budget`] and [`heat`]: what a node keeps when NVMe, RAM or open
+//!   artifacts run out, and the heat that promotes and demotes collections;
+//! - [`status`] and [`placement`]: the hot status of a collection, and the
+//!   single-node placement.
 //!
 //! This crate reaches the metastore only through
 //! [`MetaStore`](operon_common::meta::MetaStore) (D47).
 
 pub mod artifact;
+pub mod budget;
 pub mod build;
 mod config;
 pub mod delta;
 mod error;
+pub mod heat;
 pub mod live;
+pub mod placement;
+pub mod prefetch;
+pub mod splits;
+pub mod status;
 pub mod tier;
 pub mod view;
 
@@ -27,6 +39,10 @@ pub use artifact::{
     Currency, CurrencyCache, DESCRIPTOR_FILE, DESCRIPTOR_MAGIC, FILES_DIR, HNSW_KIND,
     artifact_prefix, chunk_path, currency, decode_covered, decode_descriptor, download,
     effective_source_version, encode_covered, encode_descriptor, publish,
+};
+pub use budget::{
+    Budget, HotClass, Resident, StructureKind, may_evict, over_share_with, plan_admission,
+    plan_shrink,
 };
 #[cfg(feature = "test-util")]
 pub use build::HotBuildHook;
@@ -37,7 +53,17 @@ pub use build::{
 pub use config::{HotBuildConfig, HotTierConfig};
 pub use delta::{DeltaIndex, Extension};
 pub use error::TierError;
+pub use heat::HeatSketch;
 pub use live::{DeletedDocsCache, live_rows, live_rows_cached};
+pub use placement::AlwaysLocal;
+pub use prefetch::{
+    FragmentProgress, PrefetchPass, prefetch_fragments, prefetch_fragments_resuming,
+};
+pub use splits::{PinnedSplits, SPLIT_PIECE_BYTES, download_split};
+pub use status::{
+    ColumnStatus, DetailedHotStatus, FragmentsStatus, HotStateKind, OwnerStatus, TextStatus,
+    VectorsStatus, disabled_status,
+};
 pub use tier::{HotTierImpl, ReconcileReport, TierCounters};
 pub use view::{ColumnView, LoadedArtifact};
 

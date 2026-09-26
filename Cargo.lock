@@ -5307,6 +5307,8 @@ dependencies = [
  "operon-cache",
  "operon-collection",
  "operon-common",
+ "operon-hnsw",
+ "operon-hot",
  "operon-link",
  "operon-log",
  "operon-meta",
@@ -5433,6 +5435,7 @@ dependencies = [
  "fail",
  "futures",
  "lance",
+ "lance-table",
  "moka",
  "operon-cache",
  "operon-collection",
@@ -5447,6 +5450,7 @@ dependencies = [
  "operon-store",
  "operon-worker",
  "postcard",
+ "proptest",
  "roaring",
  "serde",
  "serde_json",
@@ -5456,6 +5460,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "ulid 3.0.0",
+ "xxhash-rust",
  "zstd",
 ]
 

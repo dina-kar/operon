@@ -22,12 +22,15 @@ http.workspace = true
 operon-cache.workspace = true
 operon-collection.workspace = true
 operon-common.workspace = true
+operon-hnsw.workspace = true
+operon-hot.workspace = true
 operon-link.workspace = true
 operon-log.workspace = true
 operon-meta.workspace = true
 operon-query.workspace = true
 operon-store.workspace = true
 operon-worker.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -40,9 +43,12 @@ ulid.workspace = true
 url.workspace = true
 
 [features]
-default = ["flight"]
+default = ["flight", "hnsw"]
 # Serve Arrow Flight SQL (Task 12; `--flight-sql-listen`).
 flight = []
+# The qdrant-edge HNSW engine for hot artifacts (M1.3); without it the hot
+# tier builds only when `ServerConfig.hnsw_engine` is set.
+hnsw = ["operon-hot/hnsw"]
 # Named failpoints for the crash gate (M0.4 Task 5): with it, the binary
 # reads OPERON_FAILPOINTS and OPERON_FAILPOINT_HIT. Off by default, so release
 # builds contain no failpoints.
@@ -50,6 +56,7 @@ failpoints = [
     "dep:fail",
     "fail/failpoints",
     "operon-collection/failpoints",
+    "operon-hot/failpoints",
     "operon-link/failpoints",
     "operon-log/failpoints",
     "operon-meta/failpoints",
@@ -62,7 +69,6 @@ arrow-schema.workspace = true
 futures.workspace = true
 object_store.workspace = true
 prost.workspace = true
-reqwest.workspace = true
 tempfile.workspace = true
 tonic.workspace = true
 

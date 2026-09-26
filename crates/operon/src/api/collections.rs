@@ -64,7 +64,14 @@ pub(super) async fn describe(
 ) -> ApiResult {
     let Path((ns, name)) = path?;
     let info = state.collections.get_collection(&ns, &name).await?;
-    Ok(axum::Json(info).into_response())
+    // B6: the owner's full hot status replaces the local summary.
+    let mut value = serde_json::to_value(&info)
+        .map_err(|err| super::errors::internal(format!("encoding a collection: {err}")))?;
+    let (ns_id, cid) = super::hot::resolve(&state, &ns, &name).await?;
+    if cid == info.id {
+        value["hot"] = super::hot::hot_status_value(&state, ns_id, cid).await;
+    }
+    Ok(axum::Json(value).into_response())
 }
 
 /// `DELETE …/collections/{c}` (a name, not an alias).

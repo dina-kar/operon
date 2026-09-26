@@ -10,10 +10,12 @@ use std::time::Duration;
 use operon_cache::{RangeCache, RangeCacheConfig};
 use operon_collection::{
     CollectionConfig, CollectionContext, CollectionGcRoots, CollectionTargetFactory,
-    CollectionTrimSource, CollectionWriter, IndexBuildSource, LanceConfig, LanceEnv, ManifestCache,
-    PkGcRoots,
+    CollectionTrimSource, CollectionWriter, IndexBuildSource, LanceCompactionSource, LanceConfig,
+    LanceEnv, MaintenanceConfig, ManifestCache, PkGcRoots, SplitMergeSource,
 };
 use operon_common::meta::MetaStore;
+use operon_hnsw::HnswEngine;
+use operon_hot::{AlwaysLocal, HotBuildConfig, HotBuildSource, HotTierConfig, HotTierImpl};
 use operon_link::{CounterTargetFactory, LinkApplySource, LinkConfig, LinkGcRoots, TargetRegistry};
 use operon_log::gc::{GcConfig, GcSource};
 use operon_log::{
@@ -77,13 +79,32 @@ pub struct ServerConfig {
     pub flight_sql: Option<SocketAddr>,
     /// How Flight SQL bounds its statements and its ingest.
     pub flight: FlightConfig,
+    /// Split merges and Lance compaction (plan M1.3 Tasks 1–2); a source
+    /// whose switch (`merge`, `compaction`) is off is not run.
+    pub maintenance: MaintenanceConfig,
+    /// This node's hot tier (plan M1.3 Tasks 6–8). `enabled` false (`--hot
+    /// off`): no tier, no artifact builds, every read cold.
+    pub hot: HotTierConfig,
+    /// Hot artifact builds (plan M1.3 Task 5). The server sets `pin_all` to
+    /// `hot.pin_all`.
+    pub hot_build: HotBuildConfig,
+    /// The HNSW engine of artifact builds and the tier; `None` =
+    /// `operon_hnsw::default_engine()` (qdrant-edge with the `hnsw` feature;
+    /// without it, no artifact is built unless this is set). Tests set
+    /// `FlatEngine`.
+    pub hnsw_engine: Option<Arc<dyn HnswEngine>>,
 }
 
 impl ServerConfig {
     /// The defaults, with data in `data_dir`, listening on 127.0.0.1:8080.
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
+        let data_dir: PathBuf = data_dir.into();
         Self {
-            data_dir: data_dir.into(),
+            hot: HotTierConfig::new(&data_dir),
+            hot_build: HotBuildConfig::new(&data_dir),
+            maintenance: MaintenanceConfig::default(),
+            hnsw_engine: None,
+            data_dir,
             listen: SocketAddr::from(([127, 0, 0, 1], 8080)),
             bucket: None,
             log: LogConfig::new(NODE_ID),
@@ -149,6 +170,8 @@ pub enum ServerError {
     Cache(#[from] operon_cache::CacheError),
     #[error("log: {0}")]
     Log(#[from] operon_log::LogError),
+    #[error("hot tier: {0}")]
+    Hot(#[from] operon_hot::TierError),
     #[error("listen on {addr}: {source}")]
     Listen {
         addr: SocketAddr,
@@ -170,6 +193,8 @@ pub struct Server {
     collection_factory: Arc<CollectionTargetFactory>,
     collections: Arc<CollectionService>,
     worker: WorkerHandle,
+    /// The hot tier, unless `--hot off`.
+    hot: Option<HotTierImpl>,
     http: JoinHandle<()>,
     stop_http: oneshot::Sender<()>,
     flight: Option<Flight>,
@@ -377,11 +402,13 @@ impl Server {
         let mut collection = config.collection.clone();
         collection.max_commit_delay = config.link.max_commit_delay;
         collection.keep_manifests = config.gc.keep_manifests;
+        // Lance reads go through the range cache (M1.3 Ruling 9), which the
+        // hot tier's fragment prefetch fills.
         let collection_context = CollectionContext {
             meta: meta_store.clone(),
             store: store.clone(),
             cache: cache.clone(),
-            lance: LanceEnv::new(store.clone(), config.lance.clone()),
+            lance: LanceEnv::with_cache(store.clone(), cache.clone(), config.lance.clone()),
             manifests: ManifestCache::new(collection.manifest_cache_entries),
             config: collection,
         };
@@ -404,6 +431,41 @@ impl Server {
             config.segmenter.clone(),
         )));
         worker.add_source(Arc::new(IndexBuildSource::new(collection_context.clone())));
+        // M1.3: maintenance, then hot artifact builds (Task 8 rule 5).
+        if config.maintenance.merge {
+            worker.add_source(Arc::new(SplitMergeSource::new(
+                collection_context.clone(),
+                config.maintenance.clone(),
+            )));
+        }
+        if config.maintenance.compaction {
+            worker.add_source(Arc::new(LanceCompactionSource::new(
+                collection_context.clone(),
+                config.maintenance.clone(),
+            )));
+        }
+        let engine = config
+            .hnsw_engine
+            .clone()
+            .unwrap_or_else(operon_hnsw::default_engine);
+        if config.hot.enabled && (cfg!(feature = "hnsw") || config.hnsw_engine.is_some()) {
+            let hot_build = HotBuildConfig {
+                pin_all: config.hot.pin_all,
+                ..config.hot_build.clone()
+            };
+            match HotBuildSource::new(collection_context.clone(), hot_build, engine.clone()) {
+                Ok(source) => worker.add_source(Arc::new(source)),
+                Err(err) => {
+                    if let Err(err) = writer.shutdown().await {
+                        tracing::warn!(%err, "stopping the log writer after a failed start");
+                    }
+                    if let Err(err) = cache.close().await {
+                        tracing::warn!(%err, "closing the cache after a failed start");
+                    }
+                    return Err(err.into());
+                }
+            }
+        }
         worker.add_source(Arc::new(RetentionSource::new(config.retention.clone())));
         worker.add_source(Arc::new(CollectionTrimSource::new(
             collection_context.clone(),
@@ -417,6 +479,29 @@ impl Server {
                 Arc::new(PkGcRoots),
             ],
         )));
+        let hot = match config.hot.enabled {
+            true => match HotTierImpl::start(
+                collection_context.clone(),
+                config.hot.clone(),
+                NODE_ID,
+                Arc::new(AlwaysLocal),
+                engine,
+            )
+            .await
+            {
+                Ok(tier) => Some(tier),
+                Err(err) => {
+                    if let Err(err) = writer.shutdown().await {
+                        tracing::warn!(%err, "stopping the log writer after a failed start");
+                    }
+                    if let Err(err) = cache.close().await {
+                        tracing::warn!(%err, "closing the cache after a failed start");
+                    }
+                    return Err(err.into());
+                }
+            },
+            false => None,
+        };
         let worker = worker.start();
         // Rule 5.1: after the collection context, before the router, on the
         // reader built above (the server keeps none, row 0.52).
@@ -426,6 +511,14 @@ impl Server {
             reader.clone(),
             config.query.clone(),
         );
+        if let Some(tier) = &hot {
+            collections.set_hot_tier(Arc::new(tier.clone()));
+        }
+        let internal = reqwest::Client::builder()
+            .connect_timeout(api::hot::OWNER_CONNECT_TIMEOUT)
+            .timeout(api::hot::OWNER_TIMEOUT)
+            .build()
+            .unwrap_or_default();
         let app = api::router(AppState {
             meta: meta_store.clone(),
             writer: writer.clone(),
@@ -433,6 +526,11 @@ impl Server {
             store: store.clone(),
             registry,
             collections: collections.clone(),
+            hot: hot.clone(),
+            placement: Arc::new(AlwaysLocal),
+            node_id: NODE_ID,
+            internal,
+            hot_pin_all: config.hot.pin_all,
         });
         let (stop_http, stopped) = oneshot::channel::<()>();
         let http = tokio::spawn(async move {
@@ -468,6 +566,7 @@ impl Server {
             collection_factory,
             collections,
             worker,
+            hot,
             http,
             stop_http,
             flight,
@@ -497,6 +596,11 @@ impl Server {
         &self.collection_context
     }
 
+    /// The hot tier, unless `--hot off`.
+    pub fn hot_tier(&self) -> Option<&HotTierImpl> {
+        self.hot.as_ref()
+    }
+
     /// The collection service behind the native API.
     pub fn collections(&self) -> Arc<CollectionService> {
         self.collections.clone()
@@ -514,7 +618,8 @@ impl Server {
 
     /// Stops accepting requests, stops Flight SQL, stops the collection
     /// service's tails, flushes the writer (buffered appends are
-    /// acknowledged), stops the worker (releasing its task leases), closes
+    /// acknowledged), stops the worker (releasing its task leases), stops
+    /// the hot tier, closes
     /// the collection targets' PK index handles, waits for in-flight
     /// requests (up to 10 s), and shuts the metastore down (rule 5.4).
     pub async fn shutdown(self) -> Result<(), ServerError> {
@@ -527,6 +632,11 @@ impl Server {
             tracing::warn!(%err, "the final flush failed");
         }
         self.worker.stop().await;
+        // The tier stops after the worker and before the metastore (Task 8
+        // rule 5).
+        if let Some(tier) = &self.hot {
+            tier.shutdown().await;
+        }
         self.collection_factory.close().await;
         let mut http = self.http;
         if tokio::time::timeout(HTTP_GRACE, &mut http).await.is_err() {

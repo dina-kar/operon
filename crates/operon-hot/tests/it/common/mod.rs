@@ -164,6 +164,16 @@ impl Fixture {
     }
 
     pub async fn start_with(schema: CollectionSchema, config: CollectionConfig) -> Self {
+        Self::start_inner(schema, config, false).await
+    }
+
+    /// A fixture whose Lance reads go through the range cache
+    /// (`LanceEnv::with_cache`, Ruling 9).
+    pub async fn start_cached() -> Self {
+        Self::start_inner(hot_schema(), CollectionConfig::default(), true).await
+    }
+
+    async fn start_inner(schema: CollectionSchema, config: CollectionConfig, cached: bool) -> Self {
         let clock = Arc::new(ManualClock::new(SystemClock.now_ms()));
         let meta = Meta::start(clock.clone()).await;
         let faulty = Arc::new(FaultyStore::new(Store::in_memory().inner().clone()));
@@ -193,14 +203,22 @@ impl Fixture {
         .await
         .expect("range cache");
         let reader = LogReader::new(meta.client.clone(), cache.clone());
+        let lance = match cached {
+            true => operon_collection::LanceEnv::with_cache(
+                store.clone(),
+                cache.clone(),
+                operon_collection::LanceConfig::default(),
+            ),
+            false => operon_collection::LanceEnv::new(
+                store.clone(),
+                operon_collection::LanceConfig::default(),
+            ),
+        };
         let ctx = CollectionContext {
             meta: meta.client.clone().into(),
             store: store.clone(),
             cache,
-            lance: operon_collection::LanceEnv::new(
-                store.clone(),
-                operon_collection::LanceConfig::default(),
-            ),
+            lance,
             manifests: operon_collection::ManifestCache::new(config.manifest_cache_entries),
             config,
         };

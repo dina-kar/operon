@@ -444,3 +444,279 @@ async fn the_qdrant_engine_serves_views() {
     tier.shutdown().await;
     f.shutdown().await;
 }
+
+// ----- Task 7: budgets, heat, promotion and warm -----
+
+const DIM: u32 = crate::common::DIM;
+
+/// Whether the promotion lease of the first collection is held now.
+async fn promotion_held(f: &Fixture) -> Option<String> {
+    use operon_common::meta::MetaStore;
+    let lease = f
+        .meta
+        .client
+        .lease(
+            operon_meta::Consistency::Linearizable,
+            &operon_hot::promote_lease_key(f.ns, f.cid),
+        )
+        .await
+        .expect("lease")?;
+    match lease.is_held_at(f.ctx.meta.now_ms()) {
+        true => lease.owner,
+        false => None,
+    }
+}
+
+/// A tier with auto-promotion and a short heat window.
+fn promoting(f: &Fixture, name: &str, window: Duration) -> HotTierConfig {
+    HotTierConfig {
+        auto_promote: true,
+        heat_window: window,
+        ..config_in(f, name)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_demoted_artifact_stays_usable_by_a_running_query() {
+    let f = Fixture::start().await;
+    f.commit(docs(0..60)).await;
+    let v = build(&f).await;
+    let config = config_in(&f, "demote");
+    let tier = f
+        .tier_with(config.clone(), Arc::new(LocalOnly), Arc::new(FlatEngine))
+        .await;
+    tier.reconcile_once().await.expect("reconcile");
+    let held = ann(&f, &tier, v).expect("a view");
+    let dir = tier
+        .column_view(f.ns, f.cid, COLUMN, v)
+        .expect("a view")
+        .artifact()
+        .dir()
+        .to_path_buf();
+    let kinds: Vec<_> = tier.resident().iter().map(|r| r.kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            operon_hot::StructureKind::Hnsw,
+            operon_hot::StructureKind::Delta
+        ]
+    );
+
+    tier.set_budget(operon_hot::Budget {
+        nvme_bytes: 0,
+        ..tier.budget()
+    });
+    let report = tier.reconcile_once().await.expect("reconcile");
+    assert!(report.evicted >= 1, "{report:?}");
+    assert!(ann(&f, &tier, v).is_none(), "served after its eviction");
+    assert!(tier.resident().is_empty());
+    // The running query's view still searches, from its files.
+    let hits = held
+        .search(&crate::common::vector_of(7, DIM), 5, None, None)
+        .await
+        .expect("search");
+    assert_eq!(hits.len(), 5);
+    assert!(dir.exists());
+    // Not reloaded while it does not fit.
+    let report = tier.reconcile_once().await.expect("reconcile");
+    assert_eq!(report.loaded, 0);
+    drop(hits);
+    drop(held);
+    eventually("the demoted artifact's directory is removed", || {
+        !dir.exists()
+    })
+    .await;
+    tier.shutdown().await;
+    f.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn max_loaded_artifacts_bounds_the_open_artifacts() {
+    let f = Fixture::start().await;
+    let other = f.create("more", crate::common::hot_schema()).await;
+    f.write_to(f.coll, docs(0..40)).await;
+    f.write_to(other, docs(0..40)).await;
+    f.apply(&[f.coll, other]).await;
+    let vectors = HotConfig {
+        vectors: true,
+        ..HotConfig::default()
+    };
+    f.pin(f.cid, vectors).await;
+    f.pin(other.cid, vectors).await;
+    let results = crate::common::run_all(&f, &f.source(), "builder").await;
+    assert_eq!(results.len(), 2, "{results:?}");
+    let tier = f
+        .tier_with(
+            HotTierConfig {
+                max_loaded_artifacts: 1,
+                ..config_in(&f, "max")
+            },
+            Arc::new(LocalOnly),
+            Arc::new(FlatEngine),
+        )
+        .await;
+    // The second may displace the first within the pass if it is smaller
+    // (a higher heat per byte); either way one stays open.
+    let report = tier.reconcile_once().await.expect("reconcile");
+    assert!(report.loaded >= 1, "{report:?}");
+    let artifacts = tier
+        .resident()
+        .into_iter()
+        .filter(|r| r.kind == operon_hot::StructureKind::Hnsw)
+        .count();
+    assert_eq!(artifacts, 1);
+    // Stable from then on: the open one is not displaced back.
+    let report = tier.reconcile_once().await.expect("reconcile");
+    assert_eq!((report.loaded, report.evicted), (0, 0));
+    tier.shutdown().await;
+    f.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_promotion_is_off_by_default() {
+    let f = Fixture::start().await;
+    f.commit(docs(0..30)).await;
+    let config = config_in(&f, "default");
+    assert!(!config.auto_promote);
+    let tier = f
+        .tier_with(config, Arc::new(LocalOnly), Arc::new(FlatEngine))
+        .await;
+    for _ in 0..200 {
+        tier.record_access(f.ns, f.cid);
+    }
+    assert!(tier.heat(f.ns, f.cid) >= 200);
+    let report = tier.reconcile_once().await.expect("reconcile");
+    assert_eq!(report.pinned_splits, 0);
+    assert_eq!(promotion_held(&f).await, None);
+    assert!(tier.resident().is_empty());
+    let ulid = f.manifest().await.splits[0].ulid;
+    assert!(tier.split_file(f.ns, f.cid, ulid).is_none());
+    tier.shutdown().await;
+    f.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hot_collection_is_promoted_and_holds_the_lease() {
+    let f = Fixture::start().await;
+    f.commit(docs(0..50)).await;
+    let tier = f
+        .tier_with(
+            promoting(&f, "promote", Duration::from_secs(60)),
+            Arc::new(LocalOnly),
+            Arc::new(FlatEngine),
+        )
+        .await;
+    for _ in 0..100 {
+        tier.record_access(f.ns, f.cid);
+    }
+    let report = tier.reconcile_once().await.expect("reconcile");
+    assert_eq!(
+        promotion_held(&f).await.as_deref(),
+        Some("1;vectors,text,fragments")
+    );
+    // Text is promoted too: its splits are pinned in the same pass.
+    assert!(report.pinned_splits >= 1, "{report:?}");
+    // The lease makes the collection hot for workers: they build.
+    build_once(&f, &f.source()).await.expect("build");
+    let v = f.manifest().await.version;
+    let report = tier.reconcile_once().await.expect("reconcile");
+    assert_eq!(report.loaded, 1, "{report:?}");
+    assert!(ann(&f, &tier, v).is_some());
+    let classes: Vec<_> = tier.resident().iter().map(|r| r.class).collect();
+    assert!(
+        classes.iter().all(|c| *c == operon_hot::HotClass::Promoted),
+        "{classes:?}"
+    );
+    tier.shutdown().await;
+    f.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cooled_collection_is_demoted_and_releases_the_lease() {
+    let f = Fixture::start().await;
+    f.commit(docs(0..50)).await;
+    let window = Duration::from_millis(50);
+    let tier = f
+        .tier_with(
+            promoting(&f, "cool", window),
+            Arc::new(LocalOnly),
+            Arc::new(FlatEngine),
+        )
+        .await;
+    for _ in 0..100 {
+        tier.record_access(f.ns, f.cid);
+    }
+    tier.reconcile_once().await.expect("reconcile");
+    assert!(promotion_held(&f).await.is_some());
+    let ulid = f.manifest().await.splits[0].ulid;
+    assert!(tier.split_file(f.ns, f.cid, ulid).is_some());
+    // 100 → 50 → 25 → 12 → 6 → 3: five windows to fall under 4.
+    let deadline = Instant::now() + WAIT;
+    while promotion_held(&f).await.is_some() {
+        assert!(Instant::now() < deadline, "never demoted");
+        tokio::time::sleep(window).await;
+        tier.reconcile_once().await.expect("reconcile");
+    }
+    assert!(tier.heat(f.ns, f.cid) < 4);
+    assert!(tier.split_file(f.ns, f.cid, ulid).is_none());
+    // Hits again promote it again.
+    for _ in 0..100 {
+        tier.record_access(f.ns, f.cid);
+    }
+    tier.reconcile_once().await.expect("reconcile");
+    assert!(promotion_held(&f).await.is_some());
+    tier.shutdown().await;
+    f.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn warm_loads_an_unpinned_collection_until_its_heat_decays() {
+    let f = Fixture::start().await;
+    f.commit(docs(0..50)).await;
+    // An artifact built while pinned; then unpinned.
+    let v = build(&f).await;
+    f.pin(f.cid, HotConfig::default()).await;
+    let window = Duration::from_millis(100);
+    let tier = f
+        .tier_with(
+            HotTierConfig {
+                heat_window: window,
+                ..config_in(&f, "warm")
+            },
+            Arc::new(LocalOnly),
+            Arc::new(FlatEngine),
+        )
+        .await;
+    tier.reconcile_once().await.expect("reconcile");
+    assert!(ann(&f, &tier, v).is_none(), "unpinned");
+
+    tier.warm(f.ns, f.cid).await.expect("warm");
+    assert!(ann(&f, &tier, v).is_some(), "warm loads the artifact");
+    let ulid = f.manifest().await.splits[0].ulid;
+    assert!(tier.split_file(f.ns, f.cid, ulid).is_some());
+    // Warm never writes the metastore.
+    assert_eq!(promotion_held(&f).await, None);
+
+    let deadline = Instant::now() + WAIT;
+    while ann(&f, &tier, v).is_some() {
+        assert!(Instant::now() < deadline, "never cooled");
+        tokio::time::sleep(window).await;
+        tier.reconcile_once().await.expect("reconcile");
+    }
+    assert!(tier.split_file(f.ns, f.cid, ulid).is_none());
+
+    // A disabled tier refuses.
+    let off = f
+        .tier_with(
+            HotTierConfig {
+                enabled: false,
+                ..config_in(&f, "warm-off")
+            },
+            Arc::new(LocalOnly),
+            Arc::new(FlatEngine),
+        )
+        .await;
+    assert!(off.warm(f.ns, f.cid).await.is_err());
+    tier.shutdown().await;
+    f.shutdown().await;
+}

@@ -2,10 +2,13 @@
 //! record keys and values are base64 (M0.3 plan, Task 7). Collections,
 //! documents, queries and SQL go through `CollectionService` (plan M1.2
 //! Task 11): [`collections`], [`query`] and [`sql`]; so does the scan plan
-//! route (Task 14).
+//! route (Task 14). The hot routes (plan M1.3 Task 8) are [`hot`], and the
+//! internal routes a node calls on a collection's owner are [`internal`].
 
 mod collections;
 mod errors;
+pub mod hot;
+pub mod internal;
 mod query;
 mod sql;
 pub mod streams;
@@ -27,9 +30,11 @@ use bytes::Bytes;
 use operon_collection::ConsistencyToken;
 use operon_common::meta::{Consistency, MetaStore, Retention, StreamState, TargetRef, WalClass};
 use operon_common::{NamespaceId, StreamId};
+use operon_hot::HotTierImpl;
 use operon_link::{COUNTER_KIND, CounterTable, TargetRegistry};
 use operon_log::{FetchRequest, LogReader, LogWriter, Record};
 use operon_query::hot::HotLayer;
+use operon_query::placement::Placement;
 use operon_query::{CollectionService, ReadConsistency};
 use operon_store::Store;
 use serde::Deserialize;
@@ -67,12 +72,23 @@ pub struct AppState {
     pub registry: TargetRegistry,
     /// Collections, documents, queries and SQL (plan M1.2).
     pub collections: Arc<CollectionService>,
+    /// This node's hot tier; `None` with `--hot off` (plan M1.3 Task 8).
+    pub hot: Option<HotTierImpl>,
+    /// Which node owns each collection (single node: `AlwaysLocal`).
+    pub placement: Arc<dyn Placement>,
+    pub node_id: u64,
+    /// For the internal routes of other nodes (500 ms connect, 5 s total).
+    pub internal: reqwest::Client,
+    /// `--hot-pin-all`, reported by a node whose hot tier is off.
+    pub hot_pin_all: bool,
 }
 
 /// The API's routes, inside `HotLayer` (the `Operon-Hot` switch, with the
-/// service's `hot_default` for requests without it).
+/// service's `hot_default` for requests without it), and the internal hot
+/// routes outside it.
 pub fn router(state: AppState) -> Router {
-    let hot = HotLayer::new(state.collections.config().hot_default);
+    let internal = internal::hot_routes().with_state(state.clone());
+    let hot_layer = HotLayer::new(state.collections.config().hot_default);
     let collection = "/v1/namespaces/{ns}/collections/{c}";
     Router::new()
         .route("/health", get(health))
@@ -119,11 +135,13 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/namespaces/{ns}/query", post(query::search))
         .route("/v1/namespaces/{ns}/sql", post(sql::sql))
+        .merge(hot::routes())
         .fallback(no_route)
         .method_not_allowed_fallback(method_not_allowed)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
-        .layer(hot)
+        .layer(hot_layer)
+        .merge(internal)
 }
 
 async fn no_route() -> ApiError {

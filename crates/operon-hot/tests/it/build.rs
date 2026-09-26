@@ -527,6 +527,36 @@ async fn an_artifact_commit_rebases_over_link_commits() {
     f.shutdown().await;
 }
 
+/// The collection is dropped while its build is held after the artifact
+/// PUT: the commit finds no pointer and the run ends `Idle`, not failed
+/// (row 5.5; PR #34 review).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_collection_dropped_during_a_build_ends_idle() {
+    let f = Fixture::start().await;
+    f.commit(docs(0..50)).await;
+    f.pin_vectors().await;
+    let (hook, reached, release, _) = hold_at(HotBuildStep::AfterArtifactPut);
+    let source = f.source().with_hook(hook);
+    let meta = f.meta.client.clone();
+    let run = tokio::spawn(async move { run_once(&meta, "builder", TTL, &source).await });
+    wait_for("the artifact PUT", || reached.load(Ordering::SeqCst)).await;
+    f.meta
+        .client
+        .drop_collection(f.ns, "docs")
+        .await
+        .expect("drop");
+    release.notify_one();
+    let results = run.await.expect("join").expect("run");
+    assert!(
+        matches!(
+            results.as_slice(),
+            [(_, RunResult::Ran(Ok(TaskOutcome::Idle)))]
+        ),
+        "{results:?}"
+    );
+    f.shutdown().await;
+}
+
 /// Build A (from manifest s₁) is held after its artifact PUT; its task
 /// lease moves to build B, which builds from a newer manifest and commits.
 /// A then finds the newer artifact and abandons.
