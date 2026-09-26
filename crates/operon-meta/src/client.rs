@@ -961,13 +961,17 @@ impl MetaClient {
 }
 
 /// A forwarded write that failed at the transport. A request that never
-/// reached the leader, or that it refused unhandled (503), did not apply; any
-/// other failure after sending leaves its outcome unknown (`Timeout`).
-fn forward_error(err: PostError) -> AttemptError {
+/// reached the leader, or that it refused unhandled (503), did not apply; a
+/// 4xx did not apply either and is not retried (`Config`); any other failure
+/// after sending leaves its outcome unknown (`Timeout`).
+pub(crate) fn forward_error(err: PostError) -> AttemptError {
     match err {
         PostError::NotSent(msg) | PostError::Refused(msg) => {
             AttemptError::before_proposal(MetaError::Unavailable(msg))
         }
+        // A 4xx: handled by no route, so it did not apply, and a retry gets
+        // the same answer.
+        PostError::Rejected(msg) => AttemptError::before_proposal(MetaError::Config(msg)),
         PostError::Unknown(msg) | PostError::Decode(msg) => {
             tracing::debug!(msg, "a forwarded write's outcome is unknown");
             MetaError::Timeout.into()

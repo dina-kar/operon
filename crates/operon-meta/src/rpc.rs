@@ -364,6 +364,8 @@ async fn membership_request<Req: Serialize>(
                     }
                 }
                 Ok(WireMembership::Unavailable(msg)) => last = MetaError::Unavailable(msg),
+                // A 4xx is answered the same way on every retry.
+                Err(PostError::Rejected(msg)) => return Err(MetaError::Config(msg)),
                 Err(err) => last = post_error(err),
             }
         }
@@ -380,13 +382,15 @@ async fn membership_request<Req: Serialize>(
 /// Each attempt gets at least this long, even at the deadline.
 const MIN_ATTEMPT: Duration = Duration::from_millis(100);
 
-/// A failed POST as a retryable metastore error.
+/// A failed POST as a metastore error: retryable, except a 4xx (`Config`).
 pub(crate) fn post_error(err: PostError) -> MetaError {
     match err {
         PostError::Unknown(msg) => {
             tracing::debug!(msg, "metastore request outcome unknown");
             MetaError::Timeout
         }
+        // A 4xx: the request did nothing and a retry gets the same answer.
+        PostError::Rejected(msg) => MetaError::Config(msg),
         other => MetaError::Unavailable(other.to_string()),
     }
 }

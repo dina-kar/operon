@@ -91,6 +91,12 @@ pub(crate) enum PostError {
     /// back (a timeout, a broken connection, another status): its outcome
     /// is unknown.
     Unknown(String),
+    /// The peer answered a 4xx status. The routes answer 400 for a body
+    /// that does not decode, and axum answers 413 (body limit), 404 and 405
+    /// before any handler runs: the request did nothing, and sending it
+    /// again gets the same answer (a peer on an older build that does not
+    /// know a newer `Command` variant, for one).
+    Rejected(String),
     /// The body of a 200 answer did not decode.
     Decode(String),
 }
@@ -98,7 +104,10 @@ pub(crate) enum PostError {
 impl fmt::Display for PostError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PostError::NotSent(m) | PostError::Refused(m) | PostError::Unknown(m) => f.write_str(m),
+            PostError::NotSent(m)
+            | PostError::Refused(m)
+            | PostError::Unknown(m)
+            | PostError::Rejected(m) => f.write_str(m),
             PostError::Decode(m) => write!(f, "undecodable response: {m}"),
         }
     }
@@ -166,6 +175,9 @@ impl HttpTransport {
         let status = response.status();
         if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
             return Err(PostError::Refused(format!("POST {url}: {status}")));
+        }
+        if status.is_client_error() {
+            return Err(PostError::Rejected(format!("POST {url}: {status}")));
         }
         if status != reqwest::StatusCode::OK {
             return Err(PostError::Unknown(format!("POST {url}: {status}")));
@@ -413,4 +425,59 @@ pub(crate) fn decode_snapshot_request(
             snapshot: std::io::Cursor::new(data.to_vec()),
         },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    /// Serves `status` on every route, on a free local port.
+    async fn answering(status: StatusCode) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let app = axum::Router::new().fallback(move || async move { status });
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        addr
+    }
+
+    async fn post_to(status: StatusCode) -> PostError {
+        let addr = answering(status).await;
+        let transport = HttpTransport::new(HttpTransportConfig::default()).unwrap();
+        transport
+            .post_raw(&addr, META_WRITE, vec![1, 2, 3], Duration::from_secs(5))
+            .await
+            .unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn a_client_error_status_is_a_rejection_not_an_unknown_outcome() {
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            StatusCode::NOT_FOUND,
+        ] {
+            let err = post_to(status).await;
+            assert!(matches!(err, PostError::Rejected(_)), "{status}: {err:?}");
+        }
+        assert!(matches!(
+            post_to(StatusCode::SERVICE_UNAVAILABLE).await,
+            PostError::Refused(_)
+        ));
+        assert!(matches!(
+            post_to(StatusCode::INTERNAL_SERVER_ERROR).await,
+            PostError::Unknown(_)
+        ));
+    }
+
+    #[test]
+    fn a_rejection_is_a_definite_non_retryable_failure() {
+        let err = crate::client::forward_error(PostError::Rejected("400".into()));
+        assert!(err.refused, "a 4xx did not apply");
+        assert!(matches!(err.error, MetaError::Config(_)), "{:?}", err.error);
+        assert!(matches!(
+            crate::rpc::post_error(PostError::Rejected("413".into())),
+            MetaError::Config(_)
+        ));
+    }
 }
