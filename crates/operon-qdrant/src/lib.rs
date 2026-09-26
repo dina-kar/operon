@@ -8,6 +8,8 @@
 //!   (Ruling 3); [`convert`] turns protobuf messages into it and back.
 //! - [`ids`]: point ids (Ruling 18); [`error`]: Qdrant's status codes and
 //!   messages; [`ctx`]: the per-request namespace, consistency and timeout.
+//! - [`QdrantGateway::serve`]: the REST listener (axum, Qdrant's envelope)
+//!   and the gRPC listener (tonic, gzip), both inside `HotLayer` (Task 2).
 //!
 //! # Divergences from Qdrant 1.19
 //!
@@ -20,14 +22,22 @@
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use operon_query::CollectionService;
+use operon_query::flight::{ACCEPT_ERROR_PAUSE, pace_accept_errors};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 pub mod convert;
 pub mod ctx;
 pub mod error;
+mod grpc;
 pub mod ids;
 pub mod model;
+mod reads;
+mod rest;
+mod schema;
 
 pub use ctx::RequestCtx;
 pub use error::GatewayError;
@@ -112,6 +122,105 @@ impl QdrantGateway {
     pub fn service(&self) -> &Arc<CollectionService> {
         &self.inner.service
     }
+
+    /// Every REST route (Qdrant's envelope on every answer, `GET /`
+    /// aside): unknown routes are 404, a known route's other methods 405,
+    /// and the 1.19 routes no task serves yet 501.
+    pub fn rest_router(&self) -> axum::Router {
+        rest::router(self.clone())
+    }
+
+    /// The `Qdrant`, `Collections`, `Points`, `Snapshots` and `Health`
+    /// services, with gzip and messages of up to `max_request_bytes`.
+    pub fn grpc_routes(&self) -> tonic::service::Routes {
+        grpc::routes(self)
+    }
+
+    /// Serves REST on `rest` and gRPC on `grpc` until `shutdown` is
+    /// cancelled.
+    pub async fn serve(
+        self,
+        rest: tokio::net::TcpListener,
+        grpc: tokio::net::TcpListener,
+        shutdown: CancellationToken,
+    ) -> QdrantHandle {
+        let rest_addr = rest.local_addr().unwrap_or(self.config().rest_listen);
+        let grpc_addr = grpc.local_addr().unwrap_or(self.config().grpc_listen);
+        let router = self.rest_router();
+        let stop = shutdown.clone();
+        let rest_task = tokio::spawn(async move {
+            axum::serve(rest, router)
+                .with_graceful_shutdown(stop.cancelled_owned())
+                .await
+                .map_err(QdrantError::Rest)
+        });
+        let routes = self.grpc_routes();
+        let grpc_task = tokio::spawn(async move {
+            let incoming = pace_accept_errors(
+                tonic::transport::server::TcpIncoming::from(grpc),
+                ACCEPT_ERROR_PAUSE,
+            );
+            tonic::transport::Server::builder()
+                .add_routes(routes)
+                .serve_with_incoming_shutdown(incoming, shutdown.cancelled_owned())
+                .await
+                .map_err(QdrantError::Grpc)
+        });
+        QdrantHandle {
+            rest_addr,
+            grpc_addr,
+            rest: rest_task,
+            grpc: grpc_task,
+        }
+    }
+}
+
+/// The running gateway listeners.
+#[derive(Debug)]
+pub struct QdrantHandle {
+    pub rest_addr: SocketAddr,
+    pub grpc_addr: SocketAddr,
+    rest: JoinHandle<Result<(), QdrantError>>,
+    grpc: JoinHandle<Result<(), QdrantError>>,
+}
+
+impl QdrantHandle {
+    /// Waits for both servers (they stop once the shutdown token is
+    /// cancelled); the REST error first when both failed.
+    pub async fn join(self) -> Result<(), QdrantError> {
+        let joined = |r: Result<Result<(), QdrantError>, tokio::task::JoinError>| {
+            r.unwrap_or_else(|err| Err(QdrantError::Task(err.to_string())))
+        };
+        let rest = joined(self.rest.await);
+        let grpc = joined(self.grpc.await);
+        rest.and(grpc)
+    }
+
+    /// [`QdrantHandle::join`], for at most `grace`; then both servers are
+    /// aborted (with the requests still in flight).
+    pub async fn stop_within(self, grace: Duration) -> Result<(), QdrantError> {
+        let aborts = [self.rest.abort_handle(), self.grpc.abort_handle()];
+        match tokio::time::timeout(grace, self.join()).await {
+            Ok(joined) => joined,
+            Err(_) => {
+                tracing::warn!("in-flight Qdrant requests did not finish; aborting them");
+                aborts.iter().for_each(tokio::task::AbortHandle::abort);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Why a gateway listener stopped with an error.
+#[derive(Debug, thiserror::Error)]
+pub enum QdrantError {
+    #[error("qdrant REST server failed: {0}")]
+    Rest(std::io::Error),
+    #[error("qdrant gRPC server failed: {0}")]
+    Grpc(tonic::transport::Error),
+    /// A server task panicked or was aborted.
+    #[error("qdrant server task failed: {0}")]
+    Task(String),
 }
 
 impl fmt::Debug for QdrantGateway {
