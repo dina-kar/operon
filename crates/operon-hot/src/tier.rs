@@ -52,6 +52,8 @@ pub struct TierCounters {
     pub ann_served: u64,
     pub ann_missed: u64,
     pub split_files_served: u64,
+    /// Pinned split files evicted because a read of them failed (row F3).
+    pub split_files_quarantined: u64,
     /// Artifacts loaded.
     pub loads: u64,
     /// Artifact loads that failed.
@@ -83,6 +85,7 @@ struct Counters {
     ann_served: AtomicU64,
     ann_missed: AtomicU64,
     split_files_served: AtomicU64,
+    split_files_quarantined: AtomicU64,
     loads: AtomicU64,
     load_failures: AtomicU64,
 }
@@ -498,6 +501,7 @@ impl HotTierImpl {
             ann_served: c.ann_served.load(Ordering::Relaxed),
             ann_missed: c.ann_missed.load(Ordering::Relaxed),
             split_files_served: c.split_files_served.load(Ordering::Relaxed),
+            split_files_quarantined: c.split_files_quarantined.load(Ordering::Relaxed),
             loads: c.loads.load(Ordering::Relaxed),
             load_failures: c.load_failures.load(Ordering::Relaxed),
         }
@@ -1638,6 +1642,28 @@ impl HotTier for HotTierImpl {
             .split_files_served
             .fetch_add(1, Ordering::Relaxed);
         Some(path)
+    }
+
+    /// Row F3: a pinned file that failed a read (checksums, footer or
+    /// warm-up) is evicted, so its next pass downloads it again.
+    fn quarantine_split(
+        &self,
+        ns: NamespaceId,
+        cid: CollectionId,
+        split: ulid::Ulid,
+        path: &std::path::Path,
+    ) {
+        if self
+            .inner
+            .splits
+            .quarantine(&(ns, cid, split), path, Instant::now())
+        {
+            self.inner
+                .counters
+                .split_files_quarantined
+                .fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(namespace = %ns, collection = %cid, %split, path = %path.display(), "quarantined a pinned split file");
+        }
     }
 
     /// Task 8: the state and source version of each structure as of the

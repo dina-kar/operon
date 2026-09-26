@@ -2105,6 +2105,9 @@ impl FakeHot {
                 .expect("split bytes");
             let path = self.dir.path().join(format!("{}.split", split.ulid));
             std::fs::write(&path, &bytes).expect("write a split copy");
+            operon_query::text::SplitChecksums::of(&bytes)
+                .write_for(&path)
+                .expect("checksums");
             self.files.lock().expect("lock").insert(split.ulid, path);
         }
     }

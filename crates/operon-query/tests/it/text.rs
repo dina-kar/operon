@@ -1057,6 +1057,7 @@ async fn filter_bitmaps_cover_splits_and_tail() {
 #[derive(Debug)]
 struct LocalSplits {
     files: BTreeMap<ulid::Ulid, PathBuf>,
+    quarantined: std::sync::Mutex<Vec<ulid::Ulid>>,
 }
 
 impl HotTier for LocalSplits {
@@ -1069,6 +1070,17 @@ impl HotTier for LocalSplits {
     }
 
     fn record_access(&self, _: NamespaceId, _: CollectionId) {}
+
+    fn quarantine_split(
+        &self,
+        _: NamespaceId,
+        _: CollectionId,
+        split: ulid::Ulid,
+        path: &std::path::Path,
+    ) {
+        assert_eq!(self.files.get(&split).map(PathBuf::as_path), Some(path));
+        self.quarantined.lock().expect("lock").push(split);
+    }
 }
 
 #[tokio::test]
@@ -1097,13 +1109,19 @@ async fn the_hot_split_file_gives_identical_results() {
             .expect("split bytes");
         let path = dir.path().join(format!("{}.split", split.ulid));
         std::fs::write(&path, &bytes).expect("write");
+        operon_query::text::SplitChecksums::of(&bytes)
+            .write_for(&path)
+            .expect("checksums");
         files.insert(split.ulid, path);
     }
     let hot = RequestHot {
         enabled: true,
         used: Default::default(),
     };
-    let tier: Arc<dyn HotTier> = Arc::new(LocalSplits { files });
+    let tier: Arc<dyn HotTier> = Arc::new(LocalSplits {
+        files,
+        quarantined: Default::default(),
+    });
     let warm = Arc::new(
         reads
             .view(fixture.ns, &collection, &strong(), &hot, tier)
@@ -1141,6 +1159,90 @@ async fn the_hot_split_file_gives_identical_results() {
         bits(&top(&gone, query, 20).await)
     );
     assert!(gone.hot_used.kinds().is_empty());
+    reads.shutdown().await;
+    fixture.shutdown().await;
+}
+
+/// Row F3: a pinned file of the right size whose bytes changed after the
+/// download fails its block checksums, so the split is read remotely with
+/// identical answers (Tantivy can panic on such bytes, row 12.7), and the
+/// tier is told to quarantine the file. A file without checksums is not
+/// trusted either.
+#[tokio::test]
+async fn a_corrupt_hot_split_file_falls_back_and_is_quarantined() {
+    let mut rng = ChaCha8Rng::seed_from_u64(11);
+    let fixture = TailFixture::start(body_schema(), 2).await;
+    let docs: Vec<DocOp> = (0..120u64)
+        .map(|pk| body(pk, &words(&mut rng, &VOCABULARY[..20], 5)))
+        .collect();
+    fixture.append_all(&docs[..60]).await;
+    fixture.apply_link().await;
+    fixture.append_all(&docs[60..]).await;
+    fixture.apply_link().await;
+    let reads = reads(&fixture);
+    let collection = fixture.collection().await;
+    let cold = view(&fixture, &reads).await;
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let mut files = BTreeMap::new();
+    let splits = cold.snapshot.splits().to_vec();
+    assert!(splits.len() >= 2, "{splits:?}");
+    for (i, split) in splits.iter().enumerate() {
+        let (bytes, _) = fixture
+            .store
+            .get(&split_path(fixture.ns, fixture.cid, split.ulid))
+            .await
+            .expect("split bytes");
+        let path = dir.path().join(format!("{}.split", split.ulid));
+        let mut corrupt = bytes.to_vec();
+        if i == 0 {
+            // Checksums of the good bytes, then bytes in the middle change.
+            operon_query::text::SplitChecksums::of(&bytes)
+                .write_for(&path)
+                .expect("checksums");
+            let middle = corrupt.len() / 2;
+            for byte in &mut corrupt[middle..middle + 16] {
+                *byte = !*byte;
+            }
+        }
+        // Every other split has no checksums file at all.
+        std::fs::write(&path, &corrupt).expect("write");
+        files.insert(split.ulid, path);
+    }
+    let tier = Arc::new(LocalSplits {
+        files,
+        quarantined: Default::default(),
+    });
+    let hot = RequestHot {
+        enabled: true,
+        used: Default::default(),
+    };
+    let warm = Arc::new(
+        reads
+            .view(fixture.ns, &collection, &strong(), &hot, tier.clone())
+            .await
+            .expect("view"),
+    );
+    for query in (0..5)
+        .map(|_| random_query(&mut rng, &VOCABULARY[..20]))
+        .chain([matching("apple river")])
+    {
+        assert_eq!(
+            bits(&top(&cold, query.clone(), 20).await),
+            bits(&top(&warm, query.clone(), 20).await),
+            "{query:?}"
+        );
+    }
+    assert!(warm.hot_used.kinds().is_empty(), "no hot file served");
+    // Every file failed: the corrupt one and those without checksums.
+    let quarantined: BTreeSet<_> = tier
+        .quarantined
+        .lock()
+        .expect("lock")
+        .iter()
+        .copied()
+        .collect();
+    assert_eq!(quarantined, splits.iter().map(|s| s.ulid).collect());
     reads.shutdown().await;
     fixture.shutdown().await;
 }

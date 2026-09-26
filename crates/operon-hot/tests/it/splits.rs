@@ -16,6 +16,7 @@ use operon_hot::{
     prefetch_fragments_resuming,
 };
 use operon_query::hot::HotTier;
+use operon_query::text::SplitChecksums;
 use operon_quickwit::merge_policy::StableLogMergePolicyConfig;
 use operon_store::{Fault, Op};
 use operon_worker::run_once;
@@ -93,6 +94,49 @@ async fn pinned_splits_are_downloaded_whole_and_served() {
     // A second pass downloads nothing.
     let report = tier.reconcile_once().await.expect("reconcile");
     assert_eq!(report.pinned_splits, 0);
+    tier.shutdown().await;
+    f.shutdown().await;
+}
+
+/// Row F3: each pinned file has block checksums of the downloaded bytes;
+/// a file the query engine quarantines leaves the map at once and the next
+/// pass downloads it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_quarantined_split_file_is_downloaded_again() {
+    let f = Fixture::start().await;
+    f.commit(docs(0..50)).await;
+    f.pin(f.cid, TEXT).await;
+    let tier = f.tier().await;
+    tier.reconcile_once().await.expect("reconcile");
+    let ulid = f.manifest().await.splits[0].ulid;
+    let path = tier.split_file(f.ns, f.cid, ulid).expect("pinned");
+    let object = object(&f, &split_path(f.ns, f.cid, ulid)).await;
+    assert_eq!(
+        SplitChecksums::read_for(&path).expect("checksums"),
+        SplitChecksums::of(&object)
+    );
+    // Its bytes change after the download.
+    let mut bytes = std::fs::read(&path).expect("read");
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 0xff;
+    std::fs::write(&path, &bytes).expect("corrupt");
+
+    // Another path for the split (an older download) changes nothing.
+    tier.quarantine_split(f.ns, f.cid, ulid, Path::new("/elsewhere.split"));
+    assert_eq!(tier.split_file(f.ns, f.cid, ulid).as_ref(), Some(&path));
+    tier.quarantine_split(f.ns, f.cid, ulid, &path);
+    assert!(tier.split_file(f.ns, f.cid, ulid).is_none(), "quarantined");
+    assert_eq!(tier.counters().split_files_quarantined, 1);
+
+    let report = tier.reconcile_once().await.expect("reconcile");
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert_eq!(report.pinned_splits, 1);
+    let again = tier.split_file(f.ns, f.cid, ulid).expect("pinned again");
+    assert_eq!(Bytes::from(std::fs::read(&again).expect("read")), object);
+    assert_eq!(
+        SplitChecksums::read_for(&again).expect("checksums"),
+        SplitChecksums::of(&object)
+    );
     tier.shutdown().await;
     f.shutdown().await;
 }

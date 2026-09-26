@@ -755,6 +755,9 @@ async fn pinned_split_files_give_identical_sparse_results() {
             .expect("split bytes");
         let path = dir.path().join(format!("{}.split", split.ulid));
         std::fs::write(&path, &bytes).expect("write");
+        operon_query::text::SplitChecksums::of(&bytes)
+            .write_for(&path)
+            .expect("checksums");
         files.insert(split.ulid, path);
     }
     let ann_calls = Arc::new(AtomicUsize::new(0));
