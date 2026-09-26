@@ -157,12 +157,12 @@ The openraft backend gives every command one total order and one monotonic clock
 
 The contract change is **the first task of M2**, before any new backend:
 
-1. Amend the trait docs: the three relaxations above, the namespace on bare-id calls (D70, §10), paginated list methods and the scoped change feed (§5.4).
+1. Amend the trait docs: the three relaxations above, the namespace on bare-id calls (D70, §18 §10), paginated list methods and the scoped change feed (§5.4).
 2. Add conformance cases for each relaxation, and a `Backend::capabilities()` flag (transactions or single-item only, snapshot reads or read orders).
 3. Teach the linearizability checker the relaxed models: per-group atomicity of `commit_wal`, and the documented read orders.
 4. Move the openraft backend and every caller onto the new signatures. The M0 and M1 gates run unchanged.
 
-None of this changes an on-disk format. The openraft command encoding keeps its bare ids; the namespace is a call argument (§10).
+None of this changes an on-disk format. The openraft command encoding keeps its bare ids; the namespace is a call argument (§18 §10).
 
 ## 4. Testing the backends (D60, D61, D62)
 
