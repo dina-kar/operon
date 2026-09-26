@@ -88,11 +88,23 @@ impl CollectionGcRoots {
         for (collection, pointer) in collections {
             let cid = collection.id;
             let mut objects = BTreeSet::new();
+            let mut prefixes = Vec::new();
             match self
-                .collection_objects(store, ns, cid, pointer, clock_ms, &mut objects)
+                .collection_objects(
+                    store,
+                    ns,
+                    cid,
+                    pointer,
+                    clock_ms,
+                    &mut objects,
+                    &mut prefixes,
+                )
                 .await
             {
-                Ok(()) => keep.objects.extend(objects),
+                Ok(()) => {
+                    keep.objects.extend(objects);
+                    keep.prefixes.extend(prefixes);
+                }
                 Err(err) => {
                     let prefix = collection_prefix(ns, cid);
                     tracing::warn!(%prefix, %err, "gc keeps a collection whose objects it cannot read");
@@ -113,6 +125,11 @@ impl CollectionGcRoots {
     ///   what it references (a truncated page, a failed delete or a
     ///   cancelled run leaves the manifest, and then its objects too): a
     ///   later retention increase that walks back into it finds it whole.
+    ///
+    /// The hot artifact prefixes of those manifests go into `prefixes`
+    /// whole (M1.3 Task 5 rule 7, E50): nothing under them is listed or
+    /// deleted.
+    #[allow(clippy::too_many_arguments)]
     async fn collection_objects(
         &self,
         store: &Store,
@@ -121,6 +138,7 @@ impl CollectionGcRoots {
         pointer: Option<Pointer>,
         clock_ms: u64,
         keep: &mut BTreeSet<String>,
+        prefixes: &mut Vec<String>,
     ) -> Result<(), CollectionError> {
         let config = &self.ctx.config;
         let prefix = lance_prefix(ns, cid);
@@ -158,6 +176,7 @@ impl CollectionGcRoots {
             .await?;
             for (path, manifest) in chain {
                 keep_referenced(ns, cid, &manifest, keep);
+                keep_hot_artifacts(&manifest, prefixes);
                 if manifest.lance_version != 0 {
                     versions.insert(manifest.lance_version);
                 }
@@ -179,6 +198,7 @@ impl CollectionGcRoots {
                 Err(err) => return Err(err),
             };
             keep_referenced(ns, cid, &manifest, keep);
+            keep_hot_artifacts(&manifest, prefixes);
             if manifest.lance_version != 0 && !versions.contains(&manifest.lance_version) {
                 lingering.insert(manifest.lance_version);
             }
@@ -271,6 +291,16 @@ fn keep_referenced(
     }
     keep.extend(manifest.pk_delta.clone());
     keep.extend(manifest.dead_letters.clone());
+}
+
+/// Adds the prefix of every hot artifact `manifest` references to
+/// `prefixes`, once each.
+fn keep_hot_artifacts(manifest: &CollectionManifest, prefixes: &mut Vec<String>) {
+    for artifact in &manifest.hot_artifacts {
+        if !prefixes.contains(&artifact.prefix) {
+            prefixes.push(artifact.prefix.clone());
+        }
+    }
 }
 
 /// The path of an external row-id or row-version metadata file of
