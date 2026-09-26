@@ -48,8 +48,10 @@ xxhash-rust.workspace = true
 [features]
 # Test hooks (holding a commit at a step). Not part of the stable API.
 test-util = []
-# Named failpoints for the crash gate (`collection.after_*`). Off by default:
-# without it the failpoints compile to nothing.
+# Named failpoints for the crash gate (`collection.after_*`,
+# `collection.index.after_*`, and M1.3's `merge.after_split_put`,
+# `merge.after_manifest_put`, `merge.after_cas`). Off by default: without it
+# the failpoints compile to nothing.
 failpoints = [
     "dep:fail",
     "fail/failpoints",

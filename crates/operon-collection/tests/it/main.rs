@@ -6,6 +6,7 @@ mod gc;
 mod index_build;
 mod lance;
 mod manifest;
+mod merge;
 mod pk;
 mod snapshot;
 mod tantivy_schema;

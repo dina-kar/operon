@@ -307,20 +307,24 @@ impl fmt::Debug for CollectionTarget {
     }
 }
 
-fn millis(duration: Duration) -> u64 {
+pub(crate) fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// A new object's ULID, with the commit's start as its time: GC then sees
 /// it as no younger than it is.
-fn object_ulid(started_ms: u64) -> Ulid {
+pub(crate) fn object_ulid(started_ms: u64) -> Ulid {
     Ulid::from_parts(started_ms, Ulid::generate().random())
 }
 
 /// PUTs `bytes` create-only at our own unique `path`. An `AlreadyExists` is
 /// a retry of our own PUT (a lost acknowledgement) if the stored bytes are
 /// identical; if nothing is there, the original (retryable) error stands.
-async fn put_unique(store: &Store, path: &str, bytes: Bytes) -> Result<(), CollectionError> {
+pub(crate) async fn put_unique(
+    store: &Store,
+    path: &str,
+    bytes: Bytes,
+) -> Result<(), CollectionError> {
     match store.put_if_absent(path, bytes.clone()).await {
         Ok(_) => Ok(()),
         Err(err @ StoreError::AlreadyExists { .. }) => match store.get(path).await {

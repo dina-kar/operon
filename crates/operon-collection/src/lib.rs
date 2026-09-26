@@ -43,6 +43,11 @@
 //! indexes ([`PkGcRoots`]), and implicit-stream trimming below the oldest
 //! retained manifest ([`CollectionTrimSource`], Ruling 12).
 //!
+//! M1.3 Task 1: background maintenance ([`MaintenanceConfig`]): split
+//! merges with Quickwit's stable log merge policy ([`SplitMergeSource`],
+//! planned by [`plan_merges`]), which re-index the live docs of their
+//! inputs and commit under the manifest by the same CAS, with rebase.
+//!
 //! The collection schema types live in `operon_common::schema`, because the
 //! metastore's commands carry them (plan M1.1 Ruling 6); they are re-exported
 //! here, both as [`schema`] and at the crate root.
@@ -58,6 +63,7 @@ mod error;
 mod gc;
 mod index_build;
 mod lance;
+mod maintenance;
 mod manifest;
 mod paths;
 mod pk;
@@ -95,6 +101,10 @@ pub use gc::{CollectionGcRoots, PkGcRoots};
 pub use index_build::{
     INDEX_TASK_PREFIX, IndexBuildSource, IndexWork, PK_INDEX_NAME, plan_index_work,
     vector_index_name,
+};
+pub use maintenance::{
+    CollectionPoller, DueCollection, MERGE_TASK_PREFIX, MaintenanceConfig, MergePlan,
+    SplitMergeSource, plan_merges, row_id_runs, schema_for_split,
 };
 pub use manifest::{
     CollectionManifest, CommitKind, HotArtifactRef, MANIFEST_FORMAT_VERSION, MANIFEST_MAGIC,

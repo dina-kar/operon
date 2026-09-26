@@ -275,18 +275,7 @@ impl CollectionSnapshot {
 
     /// The deleted doc ids of `split` (empty without a delete bitmap).
     pub async fn deleted_docs(&self, split: &SplitRef) -> Result<RoaringBitmap, CollectionError> {
-        let Some(path) = &split.delete_bitmap else {
-            return Ok(RoaringBitmap::new());
-        };
-        let (bytes, _) = self.ctx.store.get(path).await?;
-        let (owner, doc_count, deleted) = decode_delete_bitmap(&bytes)?;
-        if owner != split.ulid || u64::from(doc_count) != split.doc_count {
-            return Err(CollectionError::Corrupt(format!(
-                "{path} is the bitmap of split {owner} with {doc_count} docs, not of split {} with {}",
-                split.ulid, split.doc_count
-            )));
-        }
-        Ok(deleted)
+        read_deleted_docs(&self.ctx.store, split).await
     }
 
     /// The documents at `row_ids`, in input order; `None` for a row id this
@@ -411,4 +400,25 @@ impl CollectionSnapshot {
             })
             .collect()
     }
+}
+
+/// The deleted doc ids of `split`, read from `store` (empty without a delete
+/// bitmap). A bitmap of another split, or of another doc count, is
+/// [`CollectionError::Corrupt`].
+pub(crate) async fn read_deleted_docs(
+    store: &Store,
+    split: &SplitRef,
+) -> Result<RoaringBitmap, CollectionError> {
+    let Some(path) = &split.delete_bitmap else {
+        return Ok(RoaringBitmap::new());
+    };
+    let (bytes, _) = store.get(path).await?;
+    let (owner, doc_count, deleted) = decode_delete_bitmap(&bytes)?;
+    if owner != split.ulid || u64::from(doc_count) != split.doc_count {
+        return Err(CollectionError::Corrupt(format!(
+            "{path} is the bitmap of split {owner} with {doc_count} docs, not of split {} with {}",
+            split.ulid, split.doc_count
+        )));
+    }
+    Ok(deleted)
 }
