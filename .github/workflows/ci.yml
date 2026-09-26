@@ -5,7 +5,8 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    # Nightly: the long simulation sweep (M0.4 plan Task 6).
+    # Nightly: the long simulation sweep (M0.4 plan Task 6) and the
+    # tail-merge property test (M1.2 plan Task 15).
     - cron: "17 2 * * *"
 
 permissions:
@@ -91,6 +92,11 @@ jobs:
         run: 'cargo test -p operon-sim --release --locked --test it sim::'
         env:
           SIM_SEEDS: "1000"
+      - name: tail merge against a full rebuild (256 cases, nightly)
+        if: github.event_name == 'schedule'
+        run: 'cargo test -p operon-query --release --locked --test it tail_vs_rebuild::'
+        env:
+          TAIL_PROP_CASES: "256"
 
   deny:
     name: licenses, advisories, sources
