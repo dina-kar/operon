@@ -186,7 +186,10 @@ impl HttpCluster {
     /// Node `id`'s state once it applied everything the leader has.
     pub(crate) async fn caught_up_state(&self, id: u64) -> MetaState {
         let leader = &self.members[&self.leader().await].node;
-        let index = leader.status().last_applied.unwrap_or(0);
+        // The state machine's applied index, not openraft's metrics: the
+        // metrics are published after the apply, so a write answered a
+        // moment ago may not be in `status().last_applied` yet.
+        let index = *leader.watch_applied().borrow();
         let node = &self.members[&id].node;
         assert!(node.wait_applied(index, WAIT).await, "node {id} lags");
         node.read(Consistency::Local, MetaState::clone)
@@ -479,11 +482,19 @@ async fn join_updates_a_changed_address() {
         join(&cluster.seeds(), 4, &new).await,
         "a new address changes the membership"
     );
+    // The membership view comes from openraft's metrics, published after
+    // the change: wait for it rather than read it once.
     let leader = cluster.leader().await;
-    assert_eq!(
-        cluster.members[&leader].node.membership().learners,
-        BTreeMap::from([(4, new.clone())])
-    );
+    let expected = BTreeMap::from([(4, new.clone())]);
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let learners = cluster.members[&leader].node.membership().learners;
+        if learners == expected {
+            break;
+        }
+        assert!(Instant::now() < deadline, "learners stayed {learners:?}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     assert!(!join(&cluster.seeds(), 4, &new).await);
     // The leader replicates to the new address.
     cluster.members[&1]
