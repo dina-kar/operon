@@ -337,12 +337,16 @@ async fn fragments_are_prefetched_into_the_range_cache() {
     assert!(report.prefetched_bytes > 0);
 
     let snapshot = f.snapshot().await;
-    let before = f.faulty.calls(Op::Get);
+    // Byte reads only: the caching object store passes HEADs (size and
+    // existence lookups) to the store by design, and whether Lance issues
+    // one depends on what its session caches still hold (row F1).
+    let byte_reads = |f: &Fixture| f.faulty.calls(Op::Get) - f.faulty.heads();
+    let (before, misses) = (byte_reads(&f), f.ctx.cache.stats().misses);
     let rows = snapshot.scan_all().await.expect("scan");
     assert_eq!(rows.len(), 299);
     assert_eq!(
-        f.faulty.calls(Op::Get),
-        before,
+        (byte_reads(&f), f.ctx.cache.stats().misses),
+        (before, misses),
         "the scan read the object store after the prefetch"
     );
     // Nothing more to read at the same version.
