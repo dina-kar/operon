@@ -116,7 +116,8 @@ A delete hides data at once but leaves its bytes in WAL objects, segments, Lance
 2. A worker's **forced purge** materializes the deletions (Lance compaction, a re-indexing merge of the affected splits, rewritten PK state and dead letters, rebuilt hot artifacts) and drops time travel before the erasure point.
 3. The implicit stream is **trimmed** past the erasure offset; segments and WAL objects below it are retired.
 4. **GC** deletes the retired objects after its grace period and evicts them from the RAM and NVMe caches explicitly.
-5. The **erasure log** keeps only key hashes, the request and completion times, and what was rewritten.
+5. On versioned buckets, GC deletes each noncurrent version of the retired and rewritten objects by version id, on the replica bucket too, and the erasure completes only after a version listing shows none remain. Lifecycle expiry is asynchronous and is only a backstop (§18 §9).
+6. The **erasure log** keeps keyed hashes of the keys (HMAC-SHA256 under a per-org key in the `ControlStore`), the request and completion times, and what was rewritten. It is readable only by the org's `admin` role and the operator's audit role.
 
 Defaults, owner-overridable (D69): a tagged manifest is rewritten onto a purged copy and the tag records it; completion within **30 days**, targeting days.
 
@@ -133,9 +134,9 @@ The M2 baseline, on every node:
 
 ## 6. Backup, DR and time travel
 
-- **Data** is already in object storage: enable bucket versioning + lifecycle; cross-region replication (S3 CRR / GCS dual-region / Azure GRS) for DR. **With versioning on, a lifecycle rule must expire noncurrent versions within the erasure deadline** (§4.1), or erased bytes survive in them.
+- **Data** is already in object storage: enable bucket versioning + lifecycle; cross-region replication (S3 CRR / GCS dual-region / Azure GRS) for DR. **With versioning on, an erasure deletes the noncurrent versions of the objects it retires by version id, in the replica bucket too, and verifies they are gone before it completes** (§4.1). A lifecycle rule that expires noncurrent versions within the erasure deadline is the backstop; S3 applies it asynchronously.
 - **Metadata (openraft):** meta snapshots to the bucket every N minutes + Raft log shipping; restore = new meta cluster from latest snapshot + log.
-- **Metadata (Postgres, DynamoDB, TiDB):** the backend's own backups and point-in-time recovery. Metadata holds no documents; erasure requests hold key hashes only.
+- **Metadata (Postgres, DynamoDB, TiDB):** the backend's own backups and point-in-time recovery. Metadata holds no documents; erasure requests hold keyed key hashes only.
 - A metadata restore to a point older than GC's grace period (§03 §7) references objects GC may have deleted since; bucket versioning recovers them.
 - **Restore from bucket** is an M2 drill: a new cluster is brought up from the bucket alone (openraft snapshots live in it), or from the bucket and the backend's backup.
 - **Point-in-time restore:** collections/graphs via retained manifests; tables via Iceberg snapshots; streams via retention.

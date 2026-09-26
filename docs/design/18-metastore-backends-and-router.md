@@ -74,7 +74,7 @@ What is copied from Lakekeeper, with its NOTICE, is listed in §11 §2. Lakekeep
 
 | Item | pk | sk | Attributes |
 |---|---|---|---|
-| Namespace by name | `nsname#<name>` | `-` | `id` |
+| Namespace by name | `nsname#<org_id>#<name>` | `-` | `id` |
 | Namespace | `ns#<id>` | `-` | `name`, `state` |
 | Id counter | `ctr#<kind>` | `-` | `n` (`ADD`; gaps allowed, D18) |
 | Stream, link or collection by name | `ns#<id>` | `sname#`, `lname#`, `cname#<name>` | `id` |
@@ -99,7 +99,7 @@ What is copied from Lakekeeper, with its NOTICE, is listed in §11 §2. Lakekeep
 - **`commit_wal`** commits per group of at most 32 chunks, one transaction per group, each with its own `walc#<object>#<group>` record (§3.1).
 - **`swap_segment`** touches about 2n + 3 items, so **at most ~45 WAL entries per swap**. The backend exposes that limit and the segmenter caps its runs.
 - **`trim_partition`** moves `log_start` forward first, then deletes entries below it in chunks. Each chunk is idempotent.
-- **`partition_index`** reads the head first with a consistent read, then queries entries, dropping any at or above `head.next`. That yields a valid prefix (§3.3).
+- **`partition_index`** reads the head first with a consistent read, then queries entries in `[log_start, head.next)`. A concurrent trim can delete entries at the low end while the query runs, so if the result does not start at `log_start` or has a gap, the backend re-reads the head and retries. Only a contiguous range from the head's `log_start` is returned (§3.3).
 - **Leases** are one conditional `UpdateItem` each, comparing owner, epoch and deadline in the condition.
 - **`cas_pointer`** without a fence on a non-collection key is one conditional `UpdateItem`. Otherwise it is a transaction: the update, a ConditionCheck of the lease epoch, a ConditionCheck that the collection is `live`.
 - **GC reads** query the `ret#` shards and batch-get `obj#` items instead of scanning index entries. The `obj#` counts are kept in the same transactions that change index entries.
@@ -132,7 +132,7 @@ The openraft backend gives every command one total order and one monotonic clock
 - A WAL object holds chunks for many partitions and namespaces (D25), with no cap on the number of chunks. One busy flush can exceed DynamoDB's 100 items, and under sharding its partitions live on different shards.
 - **New contract:** `commit_wal` is atomic per **partition group**: a DynamoDB transaction group, or a metastore shard. Each group commits idempotently through its own commit record keyed by `(object, group)`. The call returns success only when every group has committed.
 - A crash can leave an **unacknowledged** WAL object committed for some partitions and not others. The writer's retry, or the stale-commit rule (D27), settles the rest. Acknowledged writes are unaffected.
-- Visibility becomes atomic per partition. That is what Kafka and Elasticsearch `_bulk` promise, and what Neki ships with (no atomic cross-shard commits in its preview).
+- Visibility becomes atomic per partition. That is what Kafka promises for one produce request, and what Neki ships with (no atomic cross-shard commits in its preview). Elasticsearch `_bulk` promises less: each operation succeeds or fails on its own.
 - **One caller relies on cross-partition atomicity today:** M1.1's `LogWriter::append_many` puts every partition's batch of one collection write in one WAL object and one `CommitWal`, and its tests expect all-or-nothing. The contract therefore also says: **a backend keeps one stream's chunks of one WAL object in one group** while they fit (32 chunks on DynamoDB; always, under sharding, because a stream lives in one namespace and so one shard). For a collection with more partitions than fit in one DynamoDB group, the M2 contract task decides between documenting per-group atomicity for `append_many` and giving such a write a transaction of its own, up to DynamoDB's 100 items. It checks every other caller the same way.
 
 ### 3.2 Bounded-skew stamps and GC claims
@@ -141,7 +141,7 @@ The openraft backend gives every command one total order and one monotonic clock
 - **New contract:**
   1. Commands carry the proposer's stamp, `max(local clock, last observed stamp)`. The existing `ClockSkew` bound (§10 §2, default 5 min) keeps proposers within `max_clock_skew` of each other. The contract promises bounded skew, not one monotonic clock.
   2. WAL commit records are pruned only after `2·window + max_clock_skew` (with D27's 15-minute window: 35 minutes), so the "never committed twice" rule holds under skew.
-  3. **Explicit GC claims** replace clock-ordered GC safety for objects the metastore references. Before deleting an unreferenced object, GC writes a claim record for its path, conditionally. **Every command that makes an object reachable checks that no claim exists** for each path it adds: WAL objects in `commit_wal`, segments in `swap_segment`, the manifest path in `cas_pointer`. The command fails with a retryable error if one does. This is correct without any clock, and costs one conditional write per deleted object.
+  3. **Explicit GC claims** replace clock-ordered GC safety for objects the metastore references. Before deleting an unreferenced object, GC writes a claim record for its path. **The claim is written atomically with a check that the object is still unreferenced**: on DynamoDB, one transaction that puts `gcclaim#<path>` if absent and ConditionChecks that `obj#<path>` has no `refs` or `refs = 0`; on the SQL backends, the claim is a column of the object's reference row, set by an upsert that succeeds only while the count is zero, and every reference addition upserts the same row only while no claim is set, so the row lock orders them (no gap locks are needed, which TiDB lacks). **Every command that makes an object reachable checks, in the same transaction, that no claim exists** for each path it adds: WAL objects in `commit_wal`, segments in `swap_segment`, the manifest path in `cas_pointer`. The command fails with a retryable error if one does. A claim and a new reference therefore serialize: whichever commits first makes the other fail. This is correct without any clock, and costs one transaction per deleted object.
   4. Objects reachable only through a manifest (splits, Lance files, PK deltas) stay protected by the freshness check and the GC grace period. The grace's margin over `max_commit_delay` grows by `max_clock_skew`.
 - Lease expiry is judged against the proposer's stamp inside the condition, so a lease can be taken over up to `max_clock_skew` early or late. Lease holders already fence every effect with the epoch, so that changes latency, not safety.
 
@@ -334,7 +334,7 @@ Stages 1–3 are what breaks first and are cheap, so they ship in v1.0. The trai
 
 ## 6. Tenancy, API keys and quotas (D65)
 
-- **Model:** org (tenant and billing unit) → namespaces (the existing unit of isolation) → collections. Each namespace belongs to one org, and namespace names are unique within an org; the M2 plan fixes how the org qualifies the name in the `MetaStore`.
+- **Model:** org (tenant and billing unit) → namespaces (the existing unit of isolation) → collections. Each namespace belongs to one org, and namespace names are unique within an org, so name lookups are keyed by org and name (on DynamoDB, `nsname#<org_id>#<name>`, §2.3); the M2 plan adds the org to the trait's name lookups.
 - **`ControlStore`**, a trait separate from the data-plane `MetaStore`, so it can be hosted remotely (BYOC, §8). It holds orgs, API keys, role bindings, quotas, usage rollups and, from M2.x, the directory (§5.2). In M2 it runs on the cluster's metastore backend; in M2.x the hosted control plane serves it.
 - **API keys:** `loam_<key_id>_<secret>`. The store keeps `{key_id, org, sha256(secret), scopes, expiry, created_by, last_used}`, never the secret. Each surface's credential (§10 §4) resolves to a principal `{org, key or user, scopes}`. Gateways cache resolved keys for 30–60 s, and revocations are pushed through the `ControlStore`'s change feed. OIDC/JWT comes later.
 - **Quotas:**
@@ -414,12 +414,12 @@ Both modes ship in **M2.x (v1.1)**, after v1.0.
 3. **Stream trim.** Once older manifests are released, the implicit stream is trimmed past the erasure offset. Segments below it are retired, and each WAL object is retired once all its chunks are segmented or trimmed.
 4. **GC** deletes the retired objects after the grace period and **explicitly evicts their keys from the RAM and NVMe caches**, not only by LRU.
 5. **Tags** *(default, D69)*: an erasure **rewrites a tagged manifest onto a purged copy**; the tag records that it was rewritten, by which erasure and from which manifest version. Erasure wins over bit-exact reproducibility.
-6. **Proof:** an **erasure log** holds only key hashes, the request and completion times, and the objects rewritten or retired.
+6. **Proof:** an **erasure log** holds keyed key hashes, the request and completion times, and the objects rewritten or retired. A key hash is HMAC-SHA256 of the key's canonical encoding under a per-org erasure-log key, held in the `ControlStore` and wrapped by the deployment's KMS key where there is one. Each entry records its key version; rotation starts a new version, and destroying an org's keys makes its hashes unlinkable. The org can prove a key was erased by recomputing its HMAC, but a plain dictionary attack on guessable keys (email addresses) does not work. The hashes are pseudonymous, not anonymous: the log is readable only by the org's `admin` role and the operator's audit role, and is kept for a retention period the org configures (the M2 plan proposes the default).
 7. **Deadline** *(default, D69)*: completion within **30 days**, targeting days. Completion is bounded by `max(compaction deadline, retention override) + segmenter lag + GC grace`.
 8. **Crypto-shredding** *(default, D69)*: per-chunk envelope encryption moves forward from Phase B to **M2.x**. Because WAL objects span namespaces, this needs a data key per chunk (the note on D25). Destroying a namespace's key then makes its bytes unreadable everywhere at once, including WAL objects, noncurrent versions and backups.
-9. **Operations:** versioned buckets need a lifecycle rule that expires noncurrent versions within the deadline (§10 §6).
+9. **Versioned buckets:** S3 applies lifecycle expiry asynchronously, so the purge does not rely on it. GC deletes each noncurrent version of every object an erasure rewrites or retires by version id (`ListObjectVersions`, then `DeleteObject` with `versionId`), and the erasure completes only after a version listing shows none remain. `object_store` has no versioned list or delete (verify), so this is a `Store` extension over the provider SDKs. With cross-region replication, the same deletion runs against the replica bucket, since deletes by version id are not replicated (verify). A lifecycle rule that expires noncurrent versions stays as a backstop (§10 §6).
 
-The M2 gate: after an erasure completes, the key is unreadable through every surface, absent from every object in the bucket (a byte scan), from every retained or tagged manifest and from the caches, and the erasure log records it. Iceberg tables (M4) and changelog streams (M5) extend the path in their milestones.
+The M2 gate: after an erasure completes, the key is unreadable through every surface, absent from every object and object version in the bucket (a byte scan), from every retained or tagged manifest and from the caches, and the erasure log records it. Iceberg tables (M4) and changelog streams (M5) extend the path in their milestones.
 
 ## 10. Ids under sharding (D70, default)
 
