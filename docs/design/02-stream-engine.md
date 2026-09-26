@@ -1,6 +1,6 @@
 # 02 — Stream Engine
 
-Status: **Approved** · 2026-09-22 · revised 2026-09-25 (native streaming API, D43) · revised 2026-09-26 (the stream API core and OTLP logs ingest in M2, the Kafka gateway in M5, D72–D74)
+Status: **Approved** · 2026-09-22 · revised 2026-09-25 (native streaming API, D43) · revised 2026-09-26 (the stream API core and OTLP logs ingest in M2, the Kafka gateway in M5, D72–D74) · amended 2026-09-26 (envelope encryption of WAL chunks, D96; collection write backpressure, D86)
 
 Goal: a partitioned log with **AutoMQ-grade reliability** (RPO 0 on node and AZ loss, seconds-level failover, no data on broker disks) and a choice of latency/cost per stream, reached through Operon's native streaming API and, from M5, the Kafka wire protocol — and it is the internal spine for every other object in Operon.
 
@@ -47,6 +47,8 @@ producer ──► log node (same AZ, via zone-aware discovery)
 ```
 
 **WAL object format:** `header(magic, version, node_id, ulid, class) | chunk* | chunk_index | footer(crc32c, index_offset)`. Each chunk holds one partition's record batches and names its `encoding` (§5): Kafka's `RecordBatch` v2 byte format by default (a compact, CRC-checked, well-specified batch format), so the segmenter moves batches without re-encoding. Chunks are sorted by `(stream, partition)` (stream ids are cluster-unique). WAL objects live at the cluster level, `wal/<class>/<node_id>/<ulid>.wal`, since one object holds many namespaces (D25). The exact byte layout (format version 1) is in the [M0.3 plan](../plans/2026-09-24-m0.3-log-engine.md#task-2-records-kafka-recordbatch-v2-and-the-wal-object-format).
+
+**Encryption (M2, D96).** A namespace with a customer-managed key has its chunks envelope-encrypted, because one WAL object holds many namespaces and a per-object KMS key cannot cover it. Each such chunk is sealed with AES-256-GCM under its own data key; the data key is wrapped by the namespace's current key-encryption key, which the log node gets from the KMS once per namespace and hour and holds only in memory (stored wrapped at `ns/<id>/keys/<ulid>.key`). The chunk header carries the wrapped data key and the key's id, in WAL format version 2; readers still decode version 1. Chunks of namespaces without a key are written as today. The segmenter decrypts a chunk and writes its segment under `ns/<id>/` with the provider's per-object KMS key. Destroying the namespace key makes its chunks unreadable while the other chunks of the same object stay readable (crypto-shredding, D69).
 
 **Commit window:** `CommitWal` carries the WAL object's creation time (its ULID time). The sequencer dedupes a retried commit by object path, rejects a commit more than 15 minutes older than its clock (`StaleCommit`), and prunes dedupe records after 30 minutes; writers stop starting new commit attempts after 60 s. A retried commit therefore returns the first commit's offsets or is rejected; it is never committed twice (D27). A rejection proves nothing was committed only on a first attempt: after an attempt whose outcome was unknown, the first attempt may have committed the object and its dedupe record may since have been pruned, so the writer reports such a rejection as `CommitUnknown`. The meta leader refuses commands stamped more than 60 s ahead of its own clock, so one node with a fast clock cannot push the metastore clock forward and make every later commit stale (§10 §2).
 
@@ -103,7 +105,7 @@ Read amplification control: reads of recent data are coalesced per WAL object (o
 
 ## 7. Stream APIs
 
-Streams are reached through Operon's own API. The HTTP produce and long-poll fetch routes exist from M0.3. **M2 completes the core for v1.0** (D72): gRPC, idempotent producers, streaming subscribe, named consumers and stream admin. OTLP logs arrive through their own endpoint in M2 (§7.1). M5 adds Flight `DoGet` replay, changelog streams (§8.1) and the Kafka wire-protocol gateway (§7.2). Streams and namespaces are addressed by name.
+Streams are reached through Operon's own API. The HTTP produce and long-poll fetch routes exist from M0.3. **M2 completes the core for v1.0** (D72): gRPC, idempotent producers, streaming subscribe, named consumers and stream admin. OTLP logs arrive through their own endpoint in M2 (§7.1). M5 adds Flight `DoGet` replay, changelog streams (§8.1) and the Kafka wire-protocol gateway (§7.2). Streams and namespaces are addressed by name. Collection writes go through a collection's implicit stream and are refused with 429 and `Retry-After` while the collection's unapplied backlog is at or above its budget (D86); explicit streams have no apply backlog, and M2's ingest-bytes quota bounds them (D65).
 
 | Feature | Design | Phase |
 |---|---|---|
