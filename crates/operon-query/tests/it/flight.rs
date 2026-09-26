@@ -10,7 +10,7 @@ use operon_collection::ConsistencyToken;
 use operon_common::StreamId;
 use operon_query::flight::{
     StatementTicket, TICKET_MAGIC, TICKET_VERSION, decode_ticket, encode_ticket,
-    metadata_consistency, sql_info_data, ticket_consistency,
+    metadata_consistency, pace_accept_errors, sql_info_data, ticket_consistency,
 };
 use operon_query::{PIN_MANIFEST_METADATA, ReadConsistency, ServiceError};
 use proptest::prelude::*;
@@ -232,4 +232,26 @@ fn pin_metadata_selects_a_pinned_read() {
         ticket_consistency(&unpinned),
         Err(ServiceError::InvalidArgument(_))
     ));
+}
+
+#[tokio::test]
+async fn failed_accepts_are_paced() {
+    use futures::StreamExt;
+    let accepts = vec![
+        Err(std::io::Error::other("EMFILE")),
+        Err(std::io::Error::other("EMFILE")),
+        Ok(7),
+        Err(std::io::Error::other("EMFILE")),
+    ];
+    let pause = std::time::Duration::from_millis(50);
+    let started = std::time::Instant::now();
+    let paced: Vec<std::io::Result<i32>> =
+        pace_accept_errors(futures::stream::iter(accepts), pause)
+            .collect()
+            .await;
+    // Every accept is handed on, in order, each failure after a pause.
+    assert_eq!(paced.len(), 4);
+    assert_eq!(paced[2].as_ref().ok(), Some(&7));
+    assert!(paced.iter().filter(|a| a.is_err()).count() == 3);
+    assert!(started.elapsed() >= pause * 3, "{:?}", started.elapsed());
 }

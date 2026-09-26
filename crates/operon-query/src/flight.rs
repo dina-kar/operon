@@ -812,8 +812,35 @@ pub async fn serve_flight_sql(
         .layer(hot)
         .add_service(flight)
         .serve_with_incoming_shutdown(
-            tonic::transport::server::TcpIncoming::from(listener),
+            pace_accept_errors(
+                tonic::transport::server::TcpIncoming::from(listener),
+                ACCEPT_ERROR_PAUSE,
+            ),
             shutdown.cancelled_owned(),
         )
         .await
+}
+
+/// How long the Flight SQL listener waits after a failed accept.
+pub const ACCEPT_ERROR_PAUSE: Duration = Duration::from_millis(100);
+
+/// `incoming`, with a `pause` before each failed accept is handed on.
+/// tonic's accept loop retries a failed accept at once, so a persistent
+/// error (`EMFILE` while file descriptors run out) would otherwise spin a
+/// runtime worker.
+pub fn pace_accept_errors<T, S>(
+    incoming: S,
+    pause: Duration,
+) -> impl Stream<Item = std::io::Result<T>> + Send
+where
+    S: Stream<Item = std::io::Result<T>> + Send,
+    T: Send,
+{
+    incoming.then(move |accepted| async move {
+        if let Err(err) = &accepted {
+            tracing::debug!(%err, "Flight SQL accept failed");
+            tokio::time::sleep(pause).await;
+        }
+        accepted
+    })
 }
