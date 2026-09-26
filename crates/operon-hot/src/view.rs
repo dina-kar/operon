@@ -224,11 +224,13 @@ impl ViewInner {
             None => {
                 let mut hits =
                     artifact.search(query, k, IdFilter::Except(&self.excluded), params)?;
-                let appended = self.delta.appended();
-                if appended > 0 {
+                // An upper bound: it counts a batch before the index makes
+                // it searchable, so no later point goes uncounted.
+                let inserted = self.delta.inserted();
+                if inserted > 0 {
                     // Points appended for later manifests are not covered
                     // and are dropped below; ask for enough extra.
-                    let later = appended.saturating_sub(self.delta_len_at_creation);
+                    let later = inserted.saturating_sub(self.delta_len_at_creation);
                     let wanted = k.saturating_add(usize::try_from(later).unwrap_or(usize::MAX));
                     hits.extend(delta.search(
                         query,
