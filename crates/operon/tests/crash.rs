@@ -15,7 +15,11 @@
 //! at its offset, the committed collection must equal the fold of the
 //! stream (`fold_stream`, `verify_collection`) and the metastore's
 //! invariants must hold. Its rows cover every collection commit failpoint
-//! and both index-build failpoints.
+//! and both index-build failpoints. The maintenance scenario (plan M1.3
+//! Task 13) runs it with merges, compactions and hot artifact builds within
+//! seconds, over every merge, compaction and hot-build failpoint, and adds
+//! two checks: the Lance mainline stays at version 1, and every referenced
+//! hot artifact downloads.
 //!
 //! Runs only with `--features failpoints`:
 //! `cargo test -p operon --features failpoints --test crash`.
@@ -63,6 +67,11 @@ struct Dev {
 
 impl Dev {
     fn start(dir: &Path, failpoint: Option<(&str, u32)>) -> Self {
+        Self::start_with(dir, failpoint, &[])
+    }
+
+    /// [`Dev::start`] with `extra` flags after the gate's own.
+    fn start_with(dir: &Path, failpoint: Option<(&str, u32)>, extra: &[&str]) -> Self {
         // Through `sh`, to turn core dumps off: an armed failpoint aborts,
         // and dumping the core of a binary this large (Lance, DataFusion)
         // can take the host's core handler most of a minute, while the
@@ -112,6 +121,7 @@ impl Dev {
                 "--collection-index-poll-interval-ms",
                 "200",
             ])
+            .args(extra)
             .env("RUST_LOG", "error")
             .env_remove("OPERON_FAILPOINTS")
             .stdout(Stdio::piped())
@@ -1065,11 +1075,24 @@ async fn query_vector_index(ctx: &CollectionContext, docs: &Docs, what: &str) {
 /// the process dies, restarts it, and checks everything. An index-build
 /// point is checked until the restarted server has built the index.
 async fn collection_crash_at(point: &str, hit: u32) {
+    collection_crash_with(point, hit, &[]).await;
+}
+
+/// [`collection_crash_at`] with `extra` server flags on every start; with
+/// [`MAINTENANCE`], the maintenance checks run too.
+async fn collection_crash_with(point: &str, hit: u32, extra: &[&str]) {
     let index_point = point.starts_with("collection.index.");
     let dir = TempDir::new().expect("temp dir");
-    let keys = if index_point { INDEX_KEYS } else { COMMIT_KEYS };
+    // Maintenance needs splits to pile up: over 50 keys, rewrites delete
+    // whole splits as fast as link apply writes them, and no level ever
+    // holds the policy's 10 splits (row 13.2).
+    let keys = if index_point || extra == MAINTENANCE {
+        INDEX_KEYS
+    } else {
+        COMMIT_KEYS
+    };
     let docs = create_docs(dir.path(), keys).await;
-    let mut dev = Dev::start(dir.path(), Some((point, hit)));
+    let mut dev = Dev::start_with(dir.path(), Some((point, hit)), extra);
     let api = Api::new(&dev);
     let model = Mutex::new(DocModel::default());
     let deadline = Instant::now() + WAIT;
@@ -1095,7 +1118,7 @@ async fn collection_crash_at(point: &str, hit: u32) {
 
     let deadline = Instant::now() + WAIT;
     loop {
-        let dev = Dev::start(dir.path(), None);
+        let dev = Dev::start_with(dir.path(), None, extra);
         let api = Api::new(&dev);
         // The restarted server keeps taking writes, over the keys the
         // crashed commits wrote.
@@ -1108,6 +1131,9 @@ async fn collection_crash_at(point: &str, hit: u32) {
         dev.kill();
         let snapshot = model.lock().expect("lock").clone();
         let manifest = check_docs(dir.path(), &docs, &snapshot, point).await;
+        if extra == MAINTENANCE {
+            check_maintenance(dir.path(), &docs, &manifest, point).await;
+        }
         if !index_point || !manifest.vector_indexes.is_empty() {
             break;
         }
@@ -1144,6 +1170,12 @@ collection_crash_tests! {
 /// workload.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn random_sigkills_under_collection_load_lose_nothing() {
+    random_sigkills_with(&[]).await;
+}
+
+/// The collection SIGKILL loop with `extra` server flags; with
+/// [`MAINTENANCE`], the maintenance checks run too.
+async fn random_sigkills_with(extra: &[&str]) {
     let kills: u32 = std::env::var("CRASH_KILLS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -1152,13 +1184,17 @@ async fn random_sigkills_under_collection_load_lose_nothing() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0x5eed);
-    eprintln!("random SIGKILL loop under collection load: {kills} kills, seed {seed}");
+    eprintln!("random SIGKILL loop under collection load ({extra:?}): {kills} kills, seed {seed}");
     let mut rng = Lcg(seed);
     let dir = TempDir::new().expect("temp dir");
-    let docs = create_docs(dir.path(), COMMIT_KEYS).await;
+    let keys = match extra == MAINTENANCE {
+        true => INDEX_KEYS,
+        false => COMMIT_KEYS,
+    };
+    let docs = create_docs(dir.path(), keys).await;
     let model = Arc::new(Mutex::new(DocModel::default()));
     for kill in 0..kills {
-        let dev = Dev::start(dir.path(), None);
+        let dev = Dev::start_with(dir.path(), None, extra);
         let api = Api::new(&dev);
         let run_for = Duration::from_millis(200 + rng.next(1_300));
         let until = Instant::now() + run_for;
@@ -1175,17 +1211,116 @@ async fn random_sigkills_under_collection_load_lose_nothing() {
         }
         dev.kill();
         if kill % 5 == 4 {
-            let dev = Dev::start(dir.path(), None);
+            let dev = Dev::start_with(dir.path(), None, extra);
             settle_docs(&Api::new(&dev), &docs).await;
             dev.kill();
             let snapshot = model.lock().expect("lock").clone();
-            check_docs(dir.path(), &docs, &snapshot, &format!("after kill {kill}")).await;
+            let what = format!("after kill {kill}");
+            let manifest = check_docs(dir.path(), &docs, &snapshot, &what).await;
+            if extra == MAINTENANCE {
+                check_maintenance(dir.path(), &docs, &manifest, &what).await;
+            }
         }
     }
-    let dev = Dev::start(dir.path(), None);
+    let dev = Dev::start_with(dir.path(), None, extra);
     settle_docs(&Api::new(&dev), &docs).await;
     dev.kill();
     let snapshot = model.lock().expect("lock").clone();
-    check_docs(dir.path(), &docs, &snapshot, "after the last kill").await;
+    let manifest = check_docs(dir.path(), &docs, &snapshot, "after the last kill").await;
+    if extra == MAINTENANCE {
+        check_maintenance(dir.path(), &docs, &manifest, "after the last kill").await;
+    }
     check_meta(dir.path(), "after the last kill").await;
+}
+
+// The maintenance scenario (plan M1.3 Task 13): the collection scenario
+// with split merges, Lance compaction and hot artifact builds running
+// within seconds.
+
+/// Server flags that make merges, compactions and artifact builds happen
+/// within seconds (rule 1).
+const MAINTENANCE: &[&str] = &[
+    "--merge-poll-interval-ms",
+    "200",
+    "--merge-min-level-docs",
+    "10",
+    "--compaction-min-small-fragments",
+    "2",
+    "--compaction-target-rows",
+    "200",
+    "--hot-pin-all",
+    "--hot-build-poll-interval-ms",
+    "200",
+    "--hot-rebuild-max-staleness-ms",
+    "500",
+    "--hot-reconcile-interval-ms",
+    "100",
+];
+
+/// The maintenance checks besides [`check_docs`]: the Lance mainline never
+/// moved past version 1 (R7: every commit, compactions included, is
+/// detached), and every hot artifact the live manifest references
+/// downloads whole.
+async fn check_maintenance(dir: &Path, docs: &Docs, manifest: &CollectionManifest, what: &str) {
+    let store = bucket_store(dir);
+    let versions = format!("ns/{}/collections/{}/lance/_versions/", docs.ns, docs.cid);
+    let names: Vec<String> = store
+        .list(&versions)
+        .await
+        .expect("list the Lance versions")
+        .into_iter()
+        .filter_map(|info| info.path.rsplit('/').next().map(str::to_string))
+        .filter(|name| name.ends_with(".manifest"))
+        .collect();
+    let mainline: Vec<&String> = names.iter().filter(|n| !n.starts_with('d')).collect();
+    assert_eq!(
+        mainline,
+        vec![&format!("{:020}.manifest", u64::MAX - 1)],
+        "{what}: the Lance mainline moved: {names:?}"
+    );
+    for artifact in &manifest.hot_artifacts {
+        let local = TempDir::new().expect("temp dir");
+        operon_hot::download(&store, &artifact.prefix, local.path(), 4)
+            .await
+            .unwrap_or_else(|err| {
+                panic!(
+                    "{what}: the artifact {} does not download: {err}",
+                    artifact.prefix
+                )
+            });
+    }
+}
+
+async fn maintenance_crash_at(point: &str, hit: u32) {
+    collection_crash_with(point, hit, MAINTENANCE).await;
+}
+
+macro_rules! maintenance_crash_tests {
+    ($($name:ident: $point:literal @ $hit:literal,)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+            async fn $name() {
+                maintenance_crash_at($point, $hit).await;
+            }
+        )*
+    };
+}
+
+maintenance_crash_tests! {
+    abort_after_the_merge_split_put: "merge.after_split_put" @ 1,
+    abort_after_the_merge_manifest_put: "merge.after_manifest_put" @ 1,
+    abort_after_the_merge_cas: "merge.after_cas" @ 1,
+    abort_after_the_compaction_lance_commit: "compaction.after_lance_commit" @ 1,
+    abort_after_the_compaction_manifest_put: "compaction.after_manifest_put" @ 1,
+    abort_after_the_compaction_cas: "compaction.after_cas" @ 1,
+    abort_after_the_hot_artifact_put: "hot.after_artifact_put" @ 1,
+    abort_after_the_hot_manifest_put: "hot.after_manifest_put" @ 1,
+    abort_after_the_hot_cas: "hot.after_cas" @ 1,
+}
+
+/// Rule 1: SIGKILL at random times under the collection workload with
+/// maintenance and artifact builds running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn random_sigkills_under_maintenance_lose_nothing() {
+    random_sigkills_with(MAINTENANCE).await;
 }

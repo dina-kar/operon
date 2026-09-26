@@ -624,7 +624,9 @@ fn deadlines_below_grace(dir: &TempDir) -> operon::ServerConfig {
 }
 
 async fn refused_naming(config: operon::ServerConfig, field: &str) {
-    let err = Server::start(config).await.unwrap_err();
+    let err = Server::start(config)
+        .await
+        .expect_err("the config is refused");
     let operon::ServerError::Config(message) = &err else {
         panic!("expected a config error, got {err:?}");
     };
