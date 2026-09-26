@@ -21,7 +21,7 @@ Status: **Approved** (user) · 2026-09-24; the launch demo for the agent track. 
 | Item | Choice |
 |---|---|
 | Host | One bare-metal KVM host (e.g. 64 cores, 256 GiB RAM, 2 TB NVMe); Operon `standalone` on the same host or a second one |
-| Storage | One S3 bucket (MinIO for a local run) |
+| Storage | One S3 bucket (RustFS for a local run, D61) |
 | Sandboxes | `operon-sandbox` with the `microsandbox` backend; `firecracker` for the fleet variant (§15 §8) |
 | Harnesses | 34 Claude Code, 33 Codex, 33 opencode sessions, installed from their official channels at env-build time |
 | Tasks | 100 tasks from a fixed, public benchmark of real repository issues (e.g. a SWE-bench Verified subset over about 10 repositories; license to verify) |

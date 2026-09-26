@@ -2,8 +2,8 @@
 
 **Operon** is an open-source (Apache-2.0) **unified hybrid retrieval engine on object storage** (D50): stateless compute over open formats in one bucket, with a RAM + NVMe hot tier, serving vector, full-text and GraphRAG retrieval as one planned query. It speaks its native REST/gRPC API, Arrow Flight SQL, the Qdrant API and a targeted Elasticsearch subset (D42); keeps analytics in Iceberg tables that any engine can read; reaches streams through a native streaming API; and runs durable agent workflows through the Resonate protocol. It replaces the Elasticsearch + Qdrant + Neo4j (+ Kafka + ClickHouse) stack that AI apps deploy today by role, not by wire protocol.
 
-- **Status:** v0.2 — 2026-09-25 (revised after the 2026-09-25 [architecture review](../architecture-review-and-recommendations.md): decisions D42–D50)
-- **Approved:** all documents (§00–§13), 2026-09-23; §14–§16 and the Fluss-derived stream features (`arrow` encoding, changelog streams), 2026-09-24; the architecture review's revisions (narrowed protocol footprint, native graph, Iceberg-only analytics, native streams, pluggable metastore, new build order), 2026-09-25; §17 AI data ecosystem (D51–D56), 2026-09-25
+- **Status:** v0.3 — 2026-09-26 (revised after the 2026-09-25 [architecture review](../architecture-review-and-recommendations.md): decisions D42–D50; metastore backends, router, tenancy and erasure: D58–D70)
+- **Approved:** all documents (§00–§13), 2026-09-23; §14–§16 and the Fluss-derived stream features (`arrow` encoding, changelog streams), 2026-09-24; the architecture review's revisions (narrowed protocol footprint, native graph, Iceberg-only analytics, native streams, pluggable metastore, new build order), 2026-09-25; §17 AI data ecosystem (D51–D56), 2026-09-25; §18 metastore backends, tenancy and the namespace router (D58–D70; D67, D69 and D70 are defaults awaiting owner confirmation), 2026-09-26
 
 ## Reading order
 
@@ -21,18 +21,20 @@
 | 09 | [Links & workers](09-links-and-workers.md) | Declarative materialization (zero-ETL), exactly-once apply, background task scheduling | **Approved** |
 | 10 | [Operations](10-operations.md) | Deployment, metastore backends, multi-tenancy, security, observability, DR, upgrades, cost model | **Approved** |
 | 11 | [Buy vs build](11-buy-vs-build.md) | Every dependency with license, version, verdict; avoid list; what we build (the moat) | **Approved** |
-| 12 | [Roadmap, testing, risks](12-roadmap-testing-risks.md) | Milestones M0–M6 and exit gates (v1.0 = M2), testing strategy, risk register | **Approved** |
+| 12 | [Roadmap, testing, risks](12-roadmap-testing-risks.md) | Milestones M0–M6 and exit gates (v1.0 = M2, v1.1 = M2.x cloud and BYOC), testing strategy, risk register | **Approved** |
 | 13 | [Decision log](13-decision-log.md) | Decisions made so far and open questions | Living |
 | 14 | [Durable execution](14-durable-execution.md) | Resonate protocol surface: durable promises, tasks and schedules on the bucket; phases, consistency, cost | **Approved** (direction) |
 | 15 | [Agent workspaces](15-agent-workspaces.md) | Operon as the state plane for coding-agent sandboxes: Git on the bucket, copy-on-write environments, registry proxy, caches, sandbox runtimes, sessions as durable executions, MCP gateway with tool retrieval | **Approved** |
 | 16 | [Agent fleet demo](16-agent-fleet-demo.md) | 100 Claude Code / Codex / opencode sessions on one host and one bucket: density, durability, tool-retrieval savings, analytics with tokscale parity | **Approved** |
 | 17 | [AI data ecosystem](17-ai-data-ecosystem.md) | Operon as a source and sink for AI labs' data pipelines: integration map (Ray Data, Polars, PySpark on Spark 4 and Sail, PyTorch/JAX, Spice, Iceberg engines), scan pinning, retained dataset tags, Python SDK extras, what is not built | **Approved** |
+| 18 | [Metastore backends, tenancy and the namespace router](18-metastore-backends-and-router.md) | Postgres, DynamoDB and TiDB backends; the relaxed `MetaStore` contract; conformance, fault matrices and CI targets (floci, Alternator, RustFS); the router for millions of namespaces; orgs, API keys and quotas; the `Authorizer` trait and OpenFGA; BYOC; GDPR erasure; ids under sharding | **Approved** (three defaults pending) |
 
 ## Glossary
 
 | Term | Meaning |
 |---|---|
-| **Namespace** | Tenant/database boundary. Unit of isolation, quota, encryption key, and routing. |
+| **Org** | Tenant and billing unit (D65): owns namespaces, API keys, role bindings and quotas, held in the `ControlStore`. |
+| **Namespace** | Database boundary inside an org. Unit of isolation, quota, encryption key, routing and metastore sharding. |
 | **Stream** | Partitioned, ordered, offset-addressed log. Every write in Operon lands in a stream (explicit or implicit); explicit streams are read and written through the native streaming API and Flight. |
 | **Partition** | Ordered unit of a stream; offsets are dense per partition. |
 | **Table** | Columnar analytical dataset, stored as an **Iceberg** table catalogued in Lakekeeper; queried through Flight SQL and the native API, and readable by any Iceberg engine. |
@@ -47,7 +49,7 @@
 | **WAL class** | Durability/latency class for a stream: `standard`, `express`, `quorum` (see §02). |
 | **Journal** | A 3-replica Raft group (one node per AZ) that hosts the `quorum` WAL for a set of partitions. |
 | **Manifest** | Immutable description of an object's durable state at a version; the pointer to the current manifest lives in the metastore. |
-| **MetaStore** | The semantic metastore trait in `operon-common` (D47): domain operations (WAL commit, catalog, manifest-pointer CAS, leases and fencing), implemented by embedded openraft (default), Postgres (M2) and FoundationDB (M6). |
+| **MetaStore** | The semantic metastore trait in `operon-common` (D47): domain operations (WAL commit, catalog, manifest-pointer CAS, leases and fencing), implemented by embedded openraft (default), Postgres and DynamoDB (M2) and TiDB (M6), under the relaxed contract of D59. |
 | **Scan plan** | A collection resolved (at the current manifest, a manifest version, a consistency token or a dataset tag) into what an external reader needs: the manifest version, the Lance dataset URI and detached version id, the fragments with row counts, per-fragment Flight tickets, and the tail if one exists (D53, §17 §3). |
 | **Dataset tag** | A named, immutable pointer to one collection manifest (from M4, one Iceberg snapshot) that GC retains until the tag is deleted; tagged reads never need the tail (D52, §17 §4). |
 | **Split** | Immutable Tantivy index bundle with a hotcache footer (Quickwit design). |

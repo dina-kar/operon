@@ -45,7 +45,7 @@ The foundation code built in M0 and M1.1 demonstrates world-class systems progra
 
 ### The Protocol Triage Matrix
 
-"Status in Roadmap" is the roadmap as reviewed; "Adopted as" is the decision that superseded it (D42–D46, [§12](./design/12-roadmap-testing-risks.md)).
+"Status in Roadmap" is the roadmap as reviewed; "Adopted as" records the decisions that superseded it (D42–D46, D48 and D49, [§12](./design/12-roadmap-testing-risks.md)).
 
 | Surface / Protocol | Status in Roadmap | Strategic Recommendation | Rationale | Adopted as |
 |---|---|---|---|---|
