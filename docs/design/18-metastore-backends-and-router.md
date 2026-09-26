@@ -374,7 +374,7 @@ Stages 1–3 are what breaks first and are cheap, so they ship in v1.0. The trai
   | Request rate per namespace, per surface | Token bucket at the rendezvous owner of the placement key (§5.3), which receives most of that key's traffic; fallback: a bucket per gateway sized quota ÷ gateways |
   | Ingest bytes/s | Token bucket at the gateway |
   | Concurrent queries | A cost-weighted semaphore per collection at its owner, 16 slots by default (text, filter and ANN queries 1; exact vector 2; aggregations, `group_by` and SQL scans 4), with an 800 ms wait before 429 (D98); a namespace-wide semaphore at the gateway |
-| Unapplied data per collection | At write admission, from the collection's backlog (records past `applied` and their log bytes); M1.3 enforces fixed defaults (1 000 000 records, 128 MiB), M2 reads per-namespace and per-collection values from here (D86) |
+  | Unapplied data per collection | At write admission, from the collection's backlog (records past `applied` and their log bytes); M1.3 enforces fixed defaults (1 000 000 records, 128 MiB), M2 reads per-namespace and per-collection values from here (D86) |
   | Storage bytes | Soft limit at write admission, computed periodically from partition bytes and manifest sizes, including bytes held only by tags (§17 §4.3) |
   | Metadata operations (collection creates, alias updates, leases per namespace) | Rate limit, protecting the shared metastore; matters most on DynamoDB's per-item limits and on Postgres |
 
