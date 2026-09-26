@@ -894,6 +894,16 @@ impl HotTierImpl {
         self.inner.heat.estimate(ns, cid)
     }
 
+    /// Halves the heat sketch `windows` times now, as if that many heat
+    /// windows had passed. Tests drive cooling with it instead of the wall
+    /// clock (CI fix C1); the wall-clock decay still applies on top.
+    #[doc(hidden)]
+    pub fn decay_heat_windows(&self, windows: u32) {
+        for _ in 0..windows.min(8) {
+            self.inner.heat.decay();
+        }
+    }
+
     /// Every budgeted structure this node holds (rule 3): loaded artifacts,
     /// their delta indexes and pinned splits, with their class and heat.
     pub fn resident(&self) -> Vec<Resident> {

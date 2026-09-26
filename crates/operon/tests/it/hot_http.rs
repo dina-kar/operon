@@ -343,14 +343,16 @@ async fn hot_pin_all_pins_every_collection() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn warm_prefetches_an_unpinned_collection() {
-    let api = start(|config| config.hot.heat_window = Duration::from_millis(200)).await;
+    // Warm heat (64) lasts five windows: at 1 s the pinned text stays
+    // visible for seconds even on a starved runner (CI fix C1).
+    let api = start(|config| config.hot.heat_window = Duration::from_secs(1)).await;
     docs(&api, 40).await;
     let body = api
         .post(&format!("{DOCS}/warm"), json!({}))
         .await
         .expect(StatusCode::ACCEPTED);
     assert_eq!(body["hot"]["owner"]["local"], true, "{body}");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + WAIT;
     loop {
         if state(&collection(&api).await, "text") == "ready" {
             break;
