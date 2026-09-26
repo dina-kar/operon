@@ -199,6 +199,18 @@ async fn write_get_scroll_count_round_trip_over_http() {
         keys(&documents[0]),
         ["fields", "id", "partition", "seq_no", "source", "vectors"]
     );
+    // Maps keep insertion order (M1.3 row E58): `id` stays where the serde
+    // form has `pk`, and the source's keys come back as they were written.
+    let order = |value: &Value| -> Vec<String> {
+        value
+            .as_object()
+            .expect("an object")
+            .keys()
+            .cloned()
+            .collect()
+    };
+    assert_eq!(order(&documents[0])[0], "id");
+    assert_eq!(order(&documents[0]["source"]), ["body", "tenant", "n"]);
     assert_eq!(documents[0]["id"], 1);
     assert_eq!(documents[0]["source"]["body"], "refund policy");
     assert_eq!(documents[0]["vectors"]["embedding"], json!([1.0, 0.0, 0.0]));

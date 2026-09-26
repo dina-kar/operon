@@ -29,7 +29,7 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | SQL parsing | sqlparser-rs | Apache-2.0 | — | SQL (through DataFusion) | — |
 | Qdrant API types | Qdrant OpenAPI + protobuf | Apache-2.0 | 1.19 | Qdrant gateway | — |
 | Bitmaps | roaring-rs (`roaring`) | Apache-2.0/MIT | 0.11 | Delete bitmaps, filter bitmaps | — |
-| HNSW hot tier | **qdrant-edge** | Apache-2.0 | =0.8.0 (M1.3) | HNSW artifacts behind Operon's `HnswIndex` (R20) | Enables `serde_json/preserve_order`, which vendored Quickwit code must not see; M1.3 Task 0 resolves it (M1.1 ruling P5) |
+| HNSW hot tier | **qdrant-edge** | Apache-2.0 | =0.8.0 (M1.3) | HNSW artifacts behind Operon's `HnswIndex` (R20) | Enables `serde_json/preserve_order`; the workspace turns it on for every build, and the vendored Quickwit code passes with it (M1.1 ruling P5, M1.3 row E58) |
 | MCP server | **rmcp** | Apache-2.0 | 3.4.1 (M1.6) | The W0 MCP server (§15) | — |
 | Tokenizers | lindera, jieba-rs, ICU4X | MIT/Apache | — | Analyzers | — |
 | SQL client (M2, M6) | **sqlx** (features `postgres`, `mysql`) | MIT OR Apache-2.0 | 0.9.0 | `operon-meta-postgres` (M2) and `operon-meta-tidb` over the MySQL protocol (M6) behind `MetaStore` (D58) | Lakekeeper's choice: compile-time-checked `query!` macros with offline data in CI (`SQLX_OFFLINE=true`) and `sqlx::migrate` migrations; one client for both SQL backends. Replaces the tokio-postgres option. `tikv-client` 0.4 is not used (§5) |

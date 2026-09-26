@@ -7,8 +7,9 @@
 //! vendored files import (`quickwit-common`, `-proto`, `-config`, `-metastore`). See
 //! `NOTICE`.
 //!
-//! The workspace must never enable `serde_json/preserve_order`: the vendored code relies
-//! on `serde_json::Map` being sorted (`tests/canary.rs`).
+//! The workspace enables `serde_json/preserve_order` (M1.3 row E58), so `serde_json::Map`
+//! keeps insertion order; the vendored code does not rely on sorted maps
+//! (`tests/it/canary.rs`).
 
 pub mod datetime;
 pub mod directories;

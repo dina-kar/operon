@@ -7,15 +7,23 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+# The qdrant-edge engine. `operon-hot`'s feature `hnsw` enables it.
+qdrant = ["dep:qdrant-edge"]
+
 [dependencies]
 crc32c.workspace = true
 operon-common.workspace = true
+qdrant-edge = { workspace = true, optional = true }
 roaring.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# The tests run the qdrant-edge engine too.
+operon-hnsw = { path = ".", features = ["qdrant"] }
+qdrant-edge.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
 tempfile.workspace = true

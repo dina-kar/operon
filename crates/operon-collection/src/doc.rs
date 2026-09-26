@@ -208,7 +208,8 @@ fn delete_path(source: &mut Map<String, Value>, path: &str) {
             _ => return,
         }
     }
-    object.remove(last);
+    // `shift_remove` keeps the order of the keys that remain (M1.3 row E58).
+    object.shift_remove(last);
 }
 
 /// `Some` sets the entry, `None` removes it.
