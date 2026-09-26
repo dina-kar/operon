@@ -17,24 +17,30 @@ base64.workspace = true
 bytes.workspace = true
 clap.workspace = true
 fail = { workspace = true, optional = true }
+http.workspace = true
 operon-cache.workspace = true
 operon-collection.workspace = true
 operon-common.workspace = true
 operon-link.workspace = true
 operon-log.workspace = true
 operon-meta.workspace = true
+operon-query.workspace = true
 operon-store.workspace = true
 operon-worker.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tower.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 ulid.workspace = true
 url.workspace = true
 
 [features]
+default = ["flight"]
+# The Arrow Flight SQL listener (Task 12 serves it; `--flight-sql-listen`).
+flight = []
 # Named failpoints for the crash gate (M0.4 Task 5): with it, the binary
 # reads OPERON_FAILPOINTS and OPERON_FAILPOINT_HIT. Off by default, so release
 # builds contain no failpoints.

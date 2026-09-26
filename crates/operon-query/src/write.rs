@@ -97,6 +97,20 @@ fn validate_op(schema: &CollectionSchema, i: usize, op: &DocOp) -> Result<(), Se
     Ok(())
 }
 
+/// The index of the op an atomic write's refusal names: every error the
+/// atomic validation returns starts its message with `op {i}: ` (the native
+/// API answers it with `"index": i`, Task 11 rule 1).
+pub fn rejected_op_index(err: &ServiceError) -> Option<usize> {
+    let message = match err {
+        ServiceError::InvalidArgument(message) => message,
+        ServiceError::SchemaViolation { message, .. } => message,
+        _ => return None,
+    };
+    let rest = message.strip_prefix("op ")?;
+    let (index, _) = rest.split_once(": ")?;
+    index.parse().ok()
+}
+
 /// A writer's refusal of one op (rule 8.6).
 fn rejected(err: OpError) -> ServiceError {
     match err {
@@ -335,7 +349,7 @@ impl CollectionService {
             fields: Vec::new(),
         };
         let hot = self.request_hot();
-        let docs = self
+        let (docs, _) = self
             .get_in(
                 ns_id,
                 collection,

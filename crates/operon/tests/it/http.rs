@@ -716,6 +716,9 @@ impl Dev {
                 "127.0.0.1:0",
                 "--flush-interval-ms",
                 "20",
+                // Parallel servers must not share Flight SQL's fixed port.
+                "--flight-sql-listen",
+                "127.0.0.1:0",
             ])
             .arg("--data-dir")
             .arg(dir.path())
@@ -906,7 +909,7 @@ async fn the_link_endpoint_shows_version_and_applied_for_collections() {
         manifests: ManifestCache::new(config.manifest_cache_entries),
         config,
     };
-    let factory = Arc::new(CollectionTargetFactory::new(ctx));
+    let factory = Arc::new(CollectionTargetFactory::new(ctx.clone()));
     let registry = TargetRegistry::new()
         .with(Arc::new(CounterTargetFactory::new(
             store.clone(),
@@ -919,6 +922,12 @@ async fn the_link_endpoint_shows_version_and_applied_for_collections() {
         reader: reader.clone(),
         store: store.clone(),
         registry: registry.clone(),
+        collections: operon_query::CollectionService::new(
+            ctx.clone(),
+            operon_collection::CollectionWriter::new(meta.clone(), writer.clone()),
+            reader.clone(),
+            operon_query::ServiceConfig::default(),
+        ),
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -998,7 +1007,13 @@ async fn the_link_endpoint_shows_version_and_applied_for_collections() {
 fn a_build_without_failpoints_refuses_to_arm_them() {
     let dir = TempDir::new().unwrap();
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_operon"))
-        .args(["dev", "--listen", "127.0.0.1:0"])
+        .args([
+            "dev",
+            "--listen",
+            "127.0.0.1:0",
+            "--flight-sql-listen",
+            "127.0.0.1:0",
+        ])
         .arg("--data-dir")
         .arg(dir.path())
         .env("OPERON_FAILPOINTS", "wal.after_put")
@@ -1025,4 +1040,125 @@ fn a_build_without_failpoints_refuses_to_arm_them() {
         std::thread::sleep(Duration::from_millis(50));
     };
     assert!(!status.success());
+}
+
+/// Ruling 17 (rule 4): a record produced onto an implicit stream must be
+/// keyed by a primary key of the partition it is produced to.
+#[tokio::test]
+async fn a_record_for_the_wrong_partition_of_an_implicit_stream_is_rejected() {
+    use operon_collection::{PrimaryKey, partition_of};
+
+    let dir = TempDir::new().unwrap();
+    let server = Server::start(config(&dir, lazy_segmenter())).await.unwrap();
+    let api = Api::new(&server);
+    let (status, info) = api
+        .post(
+            "/v1/namespaces/acme/collections",
+            json!({"name": "kb", "schema": {"fields": [], "vectors": [], "dynamic": "ignore"}, "partitions": 2}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{info}");
+    let id = info["id"].as_u64().unwrap();
+    let path =
+        |p: u32| format!("/v1/namespaces/acme/streams/_collection.kb.{id}/partitions/{p}/records");
+    let pk = PrimaryKey::U64(1);
+    let home = partition_of(&pk, 2);
+    let key = BASE64.encode(pk.canonical());
+    let value = BASE64.encode(b"x");
+
+    let (status, body) = api
+        .post(
+            &path(1 - home),
+            json!({"records": [{"key": key, "value": value}]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_argument");
+    assert_eq!(
+        body["message"],
+        format!("record 0: key does not belong to partition {}", 1 - home)
+    );
+    // A missing key, or one that is no primary key, is refused the same way.
+    for record in [
+        json!({"value": value}),
+        json!({"key": BASE64.encode(b"\xffjunk"), "value": value}),
+    ] {
+        let (status, body) = api
+            .post(
+                &path(home),
+                json!({"records": [{"key": key, "value": value}, record]}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            body["message"],
+            format!("record 1: key does not belong to partition {home}")
+        );
+    }
+    // The key's own partition is accepted, with a token header.
+    let response = reqwest::Client::new()
+        .post(format!("http://{}{}", server.local_addr(), path(home)))
+        .json(&json!({"records": [{"key": key, "value": value}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().contains_key("operon-consistency-token"));
+    server.shutdown().await.unwrap();
+}
+
+/// Rule 6 (M1.6 W14, M1.7 A4): the dev binary prints the Flight SQL line
+/// once its listener is bound.
+#[test]
+fn the_dev_binary_prints_the_flight_sql_line() {
+    use std::io::BufRead;
+
+    let dir = TempDir::new().unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_operon"))
+        .args([
+            "dev",
+            "--listen",
+            "127.0.0.1:0",
+            "--flight-sql-listen",
+            "127.0.0.1:0",
+        ])
+        .arg("--data-dir")
+        .arg(dir.path())
+        .env("RUST_LOG", "warn")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn operon");
+    let stdout = child.stdout.take().expect("stdout");
+    let (lines_tx, lines_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if lines_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut http = None;
+    let mut flight = None;
+    while flight.is_none() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let Ok(line) = lines_rx.recv_timeout(left) else {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("no Flight SQL line within 60 s (http: {http:?})");
+        };
+        if let Some(addr) = line.strip_prefix("operon listening on http://") {
+            http = Some(addr.to_string());
+        } else if let Some(addr) = line.strip_prefix("operon flight sql listening on grpc://") {
+            flight = Some(addr.to_string());
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(http.is_some(), "the HTTP line comes first");
+    let flight: SocketAddr = flight.unwrap().parse().expect("an address");
+    assert!(flight.ip().is_loopback());
+    assert_ne!(flight.port(), 0, "the bound port, not the requested one");
 }

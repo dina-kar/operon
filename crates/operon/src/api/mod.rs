@@ -1,28 +1,41 @@
-//! The native HTTP/JSON API (M0.3 plan, Task 7). Namespaces and streams are
-//! addressed by name; record keys and values are base64.
+//! The native HTTP/JSON API. Namespaces and streams are addressed by name;
+//! record keys and values are base64 (M0.3 plan, Task 7). Collections,
+//! documents, queries and SQL go through `CollectionService` (plan M1.2
+//! Task 11): [`collections`], [`query`] and [`sql`].
+
+mod collections;
+mod errors;
+mod query;
+mod sql;
 
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 use axum::extract::rejection::{BytesRejection, PathRejection, QueryRejection};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::Bytes;
+use operon_collection::{ConsistencyToken, PrimaryKey, partition_of};
 use operon_common::meta::{
-    ApplyError, Consistency, MetaError, MetaStore, Retention, StreamState, TargetRef, WalClass,
+    Collection, Consistency, MetaStore, Retention, StreamState, TargetRef, WalClass,
 };
 use operon_common::{NamespaceId, StreamId};
-use operon_link::{COUNTER_KIND, CounterTable, LinkError, TargetRegistry};
-use operon_log::{FetchRequest, LogError, LogReader, LogWriter, Record};
+use operon_link::{COUNTER_KIND, CounterTable, TargetRegistry};
+use operon_log::{FetchRequest, LogReader, LogWriter, Record};
+use operon_query::hot::HotLayer;
+use operon_query::{CollectionService, ReadConsistency};
 use operon_store::Store;
 use serde::Deserialize;
 use serde_json::{Value, json};
+
+pub use errors::ApiError;
 
 /// The default `max_bytes` of a fetch: 1 MiB.
 const DEFAULT_MAX_BYTES: usize = 1024 * 1024;
@@ -34,6 +47,12 @@ pub const MAX_FETCH_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 /// The longest a fetch may long-poll.
 const MAX_WAIT: Duration = Duration::from_secs(60);
+/// The prefix of implicit stream names (`_collection.<name>.<id>`).
+const IMPLICIT_STREAM_PREFIX: &str = "_collection.";
+
+/// `Operon-Consistency-Token` (row 0.21: `CONSISTENCY_TOKEN_HEADER` is mixed
+/// case, which `HeaderName` refuses).
+pub const CONSISTENCY_TOKEN: HeaderName = HeaderName::from_static("operon-consistency-token");
 
 /// What the handlers share.
 #[derive(Clone, Debug)]
@@ -45,10 +64,15 @@ pub struct AppState {
     pub store: Store,
     /// The link targets, by kind: describes every registered link kind.
     pub registry: TargetRegistry,
+    /// Collections, documents, queries and SQL (plan M1.2).
+    pub collections: Arc<CollectionService>,
 }
 
-/// The API's routes.
+/// The API's routes, inside `HotLayer` (the `Operon-Hot` switch, with the
+/// service's `hot_default` for requests without it).
 pub fn router(state: AppState) -> Router {
+    let hot = HotLayer::new(state.collections.config().hot_default);
+    let collection = "/v1/namespaces/{ns}/collections/{c}";
     Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -61,10 +85,43 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/namespaces/{ns}/links", post(create_link))
         .route("/v1/namespaces/{ns}/links/{link}", get(describe_link))
+        .route(
+            "/v1/namespaces/{ns}/collections",
+            post(collections::create).get(collections::list),
+        )
+        .route(
+            collection,
+            get(collections::describe).delete(collections::drop),
+        )
+        .route(
+            &format!("{collection}/fields"),
+            post(collections::add_fields),
+        )
+        .route(
+            &format!("{collection}/versions"),
+            get(collections::versions),
+        )
+        .route("/v1/namespaces/{ns}/aliases", post(collections::aliases))
+        .route(&format!("{collection}/documents"), post(collections::write))
+        .route(
+            &format!("{collection}/documents/get"),
+            post(collections::get_documents),
+        )
+        .route(
+            &format!("{collection}/documents/scroll"),
+            post(collections::scroll),
+        )
+        .route(
+            &format!("{collection}/documents/count"),
+            post(collections::count),
+        )
+        .route("/v1/namespaces/{ns}/query", post(query::search))
+        .route("/v1/namespaces/{ns}/sql", post(sql::sql))
         .fallback(no_route)
         .method_not_allowed_fallback(method_not_allowed)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
+        .layer(hot)
 }
 
 async fn no_route() -> ApiError {
@@ -81,167 +138,47 @@ async fn method_not_allowed(method: axum::http::Method) -> ApiError {
     )
 }
 
-/// Turns an axum extractor rejection (a bad path segment, query, or body,
-/// including a body over the limit) into the API's JSON error body, keeping
-/// its status.
-fn rejected(status: StatusCode, message: String) -> ApiError {
-    let code = if status.is_server_error() {
-        "internal"
-    } else {
-        "invalid_argument"
-    };
-    ApiError::new(status, code, message)
-}
-
-impl From<PathRejection> for ApiError {
-    fn from(err: PathRejection) -> Self {
-        rejected(err.status(), err.body_text())
-    }
-}
-
-impl From<QueryRejection> for ApiError {
-    fn from(err: QueryRejection) -> Self {
-        rejected(err.status(), err.body_text())
-    }
-}
-
-impl From<BytesRejection> for ApiError {
-    fn from(err: BytesRejection) -> Self {
-        rejected(err.status(), err.body_text())
-    }
-}
-
-/// An error response: `{"error": code, "message": ...}` plus any extra fields.
-#[derive(Debug)]
-pub struct ApiError {
-    status: StatusCode,
-    code: &'static str,
-    message: String,
-    extra: serde_json::Map<String, Value>,
-}
-
-impl ApiError {
-    fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            status,
-            code,
-            message: message.into(),
-            extra: serde_json::Map::new(),
-        }
-    }
-
-    fn invalid(message: impl Into<String>) -> Self {
-        Self::new(StatusCode::BAD_REQUEST, "invalid_argument", message)
-    }
-
-    fn not_found(message: impl Into<String>) -> Self {
-        Self::new(StatusCode::NOT_FOUND, "not_found", message)
-    }
-
-    fn with(mut self, key: &str, value: impl Into<Value>) -> Self {
-        self.extra.insert(key.to_string(), value.into());
-        self
-    }
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        let mut body = serde_json::Map::new();
-        body.insert("error".to_string(), Value::from(self.code));
-        body.insert("message".to_string(), Value::from(self.message));
-        body.extend(self.extra);
-        (self.status, axum::Json(Value::Object(body))).into_response()
-    }
-}
-
-fn unavailable(message: impl Into<String>) -> ApiError {
-    ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "unavailable", message)
-}
-
-fn internal(message: impl Into<String>) -> ApiError {
-    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", message)
-}
-
-impl From<MetaError> for ApiError {
-    fn from(err: MetaError) -> Self {
-        let message = err.to_string();
-        match err {
-            MetaError::Rejected(apply) => match apply {
-                ApplyError::InvalidArgument(_) => ApiError::invalid(message),
-                ApplyError::NamespaceExists(id) => {
-                    ApiError::new(StatusCode::CONFLICT, "already_exists", message).with("id", id.0)
-                }
-                ApplyError::StreamExists(id) => {
-                    ApiError::new(StatusCode::CONFLICT, "already_exists", message).with("id", id.0)
-                }
-                ApplyError::LinkExists(id) => {
-                    ApiError::new(StatusCode::CONFLICT, "already_exists", message).with("id", id.0)
-                }
-                ApplyError::CollectionExists(id) => {
-                    ApiError::new(StatusCode::CONFLICT, "already_exists", message).with("id", id.0)
-                }
-                ApplyError::NameTaken(_) => {
-                    ApiError::new(StatusCode::CONFLICT, "already_exists", message)
-                }
-                ApplyError::NamespaceNotFound(_)
-                | ApplyError::StreamNotFound(_)
-                | ApplyError::PartitionNotFound { .. }
-                | ApplyError::CollectionNotFound(_)
-                | ApplyError::UnknownCollection(_) => ApiError::not_found(message),
-                ApplyError::IncompatibleSchema(_) => ApiError::invalid(message),
-                // The message names the current version.
-                ApplyError::SchemaVersionMismatch { .. } => {
-                    ApiError::new(StatusCode::CONFLICT, "conflict", message)
-                }
-                _ => internal(message),
-            },
-            MetaError::NotLeader { .. }
-            | MetaError::Timeout
-            | MetaError::Unavailable(_)
-            | MetaError::ClockSkew { .. } => unavailable(message),
-            _ => internal(message),
-        }
-    }
-}
-
-impl From<LogError> for ApiError {
-    fn from(err: LogError) -> Self {
-        let message = err.to_string();
-        match err {
-            LogError::InvalidArgument(_) => ApiError::invalid(message),
-            LogError::UnknownStream(_) | LogError::UnknownPartition { .. } => {
-                ApiError::not_found(message)
-            }
-            LogError::OffsetOutOfRange {
-                requested,
-                log_start_offset,
-                high_watermark,
-            } => ApiError::new(
-                StatusCode::RANGE_NOT_SATISFIABLE,
-                "offset_out_of_range",
-                message,
-            )
-            .with("offset", requested)
-            .with("log_start_offset", log_start_offset)
-            .with("high_watermark", high_watermark),
-            // Nothing (or possibly something) was committed; a retry is the
-            // caller's call, and the condition is transient.
-            LogError::Backpressure
-            | LogError::CommitUnknown(_)
-            | LogError::Closed
-            | LogError::Store(_)
-            | LogError::Cache(_) => unavailable(message),
-            LogError::Meta(meta) => meta.into(),
-            LogError::Task(_) => internal(message),
-            LogError::Corrupt(_) | LogError::UnsupportedEncoding(_) => internal(message),
-        }
-    }
-}
-
 type ApiResult = Result<Response, ApiError>;
 
 fn parse_json<T: serde::de::DeserializeOwned>(body: &Bytes) -> Result<T, ApiError> {
     serde_json::from_slice(body).map_err(|e| ApiError::invalid(format!("bad request body: {e}")))
+}
+
+/// `response` with `Operon-Consistency-Token: token`.
+fn with_token(mut response: Response, token: &ConsistencyToken) -> Response {
+    if let Ok(value) = HeaderValue::from_str(&token.to_string()) {
+        response.headers_mut().insert(CONSISTENCY_TOKEN, value);
+    }
+    response
+}
+
+/// The consistency of a read (rule 1): the `Operon-Consistency-Token`
+/// request header turns a `strong`, `eventual` or absent body consistency
+/// into `AtLeast(header)`, merges into an `at_least` one, and loses to a
+/// `pinned` one.
+fn read_consistency(
+    headers: &HeaderMap,
+    body: Option<ReadConsistency>,
+) -> Result<ReadConsistency, ApiError> {
+    let Some(value) = headers.get(&CONSISTENCY_TOKEN) else {
+        return Ok(body.unwrap_or_default());
+    };
+    let text = value.to_str().map_err(|_| {
+        ApiError::invalid("invalid Operon-Consistency-Token header: not visible ASCII")
+    })?;
+    let header = ConsistencyToken::from_str(text).map_err(|err| {
+        ApiError::invalid(format!("invalid Operon-Consistency-Token header: {err}"))
+    })?;
+    Ok(match body {
+        None | Some(ReadConsistency::Strong | ReadConsistency::Eventual) => {
+            ReadConsistency::AtLeast(header)
+        }
+        Some(ReadConsistency::AtLeast(mut token)) => {
+            token.merge(&header);
+            ReadConsistency::AtLeast(token)
+        }
+        Some(pinned @ ReadConsistency::Pinned { .. }) => pinned,
+    })
 }
 
 async fn health() -> StatusCode {
@@ -414,14 +351,23 @@ async fn produce(
     let partition = parse_partition(&partition)?;
     let request: Produce = parse_json(&body)?;
     let id = stream_id(&*state.meta, &ns, &stream).await?;
+    let owner = if stream.starts_with(IMPLICIT_STREAM_PREFIX) {
+        Some(implicit_collection(&*state.meta, &ns, &stream, id).await?)
+    } else {
+        None
+    };
     let mut records = Vec::with_capacity(request.records.len());
-    for record in request.records {
+    for (i, record) in request.records.into_iter().enumerate() {
         let mut headers = Vec::with_capacity(record.headers.len());
         for header in record.headers {
             headers.push((header.key, decode_b64("header value", header.value)?));
         }
+        let key = decode_b64("key", record.key)?;
+        if let Some(collection) = &owner {
+            check_implicit_key(collection, partition, i, key.as_deref())?;
+        }
         records.push(Record {
-            key: decode_b64("key", record.key)?,
+            key,
             value: decode_b64("value", record.value)?,
             headers,
             // A negative timestamp gets the writer's clock.
@@ -429,12 +375,56 @@ async fn produce(
         });
     }
     let ack = state.writer.append(id, partition, records).await?;
-    Ok(axum::Json(json!({
+    let response = axum::Json(json!({
         "base_offset": ack.base_offset,
         "last_offset": ack.last_offset,
         "token": [{ "stream": id.0, "partition": partition, "offset": ack.last_offset }],
     }))
-    .into_response())
+    .into_response();
+    // As a collection write's token: the next offset of the partition.
+    let token = ConsistencyToken(vec![(id, partition, ack.last_offset + 1)]);
+    Ok(with_token(response, &token))
+}
+
+/// The collection whose implicit stream is `stream` (rule 4.1, through
+/// `Collection.stream`).
+async fn implicit_collection(
+    meta: &dyn MetaStore,
+    ns: &str,
+    stream: &str,
+    id: StreamId,
+) -> Result<Collection, ApiError> {
+    let namespace = namespace_id(meta, ns).await?;
+    meta.collections(Consistency::Local, Some(namespace))
+        .await?
+        .into_iter()
+        .find(|collection| collection.stream == id)
+        .ok_or_else(|| {
+            ApiError::not_found(format!(
+                "stream {ns}/{stream} belongs to no collection; it was dropped"
+            ))
+        })
+}
+
+/// Rule 4.2: a record produced onto `collection`'s implicit stream must be
+/// keyed by a primary key of `partition` (Ruling 17), or the link would
+/// break per-key order.
+fn check_implicit_key(
+    collection: &Collection,
+    partition: u32,
+    i: usize,
+    key: Option<&[u8]>,
+) -> Result<(), ApiError> {
+    let belongs = key
+        .and_then(|key| PrimaryKey::from_canonical(key).ok())
+        .is_some_and(|pk| partition_of(&pk, collection.partitions) == partition);
+    if belongs {
+        Ok(())
+    } else {
+        Err(ApiError::invalid(format!(
+            "record {i}: key does not belong to partition {partition}"
+        )))
+    }
 }
 
 fn query_number<T: std::str::FromStr>(
@@ -502,25 +492,6 @@ async fn fetch(
         "log_start_offset": response.log_start_offset,
     }))
     .into_response())
-}
-
-impl From<LinkError> for ApiError {
-    fn from(err: LinkError) -> Self {
-        let message = err.to_string();
-        match err {
-            LinkError::Meta(meta) => meta.into(),
-            LinkError::Log(log) => log.into(),
-            LinkError::NotFound(_) => ApiError::not_found(message),
-            LinkError::Store(_) | LinkError::Blocked(_) => unavailable(message),
-            LinkError::Corrupt(_) => internal(message),
-            LinkError::Target {
-                retryable: true, ..
-            } => unavailable(message),
-            LinkError::Target {
-                retryable: false, ..
-            } => internal(message),
-        }
-    }
 }
 
 #[derive(Deserialize)]

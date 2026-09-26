@@ -1,6 +1,6 @@
 //! One Operon process: a single-node metastore, the log, the range cache,
-//! a worker running the background tasks, and the native HTTP API (design
-//! §10 §1).
+//! a worker running the background tasks, the collection service, the
+//! native HTTP API and the Flight SQL listener (design §10 §1).
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -10,7 +10,8 @@ use std::time::Duration;
 use operon_cache::{RangeCache, RangeCacheConfig};
 use operon_collection::{
     CollectionConfig, CollectionContext, CollectionGcRoots, CollectionTargetFactory,
-    CollectionTrimSource, IndexBuildSource, LanceConfig, LanceEnv, ManifestCache, PkGcRoots,
+    CollectionTrimSource, CollectionWriter, IndexBuildSource, LanceConfig, LanceEnv, ManifestCache,
+    PkGcRoots,
 };
 use operon_common::meta::MetaStore;
 use operon_link::{CounterTargetFactory, LinkApplySource, LinkConfig, LinkGcRoots, TargetRegistry};
@@ -20,6 +21,7 @@ use operon_log::{
     SegmenterSource,
 };
 use operon_meta::{MetaClient, MetaClientConfig, MetaConfig, MetaNode, Router, SystemClock};
+use operon_query::{CollectionService, ServiceConfig};
 use operon_store::Store;
 use operon_worker::{Worker, WorkerConfig, WorkerHandle};
 use tokio::sync::oneshot;
@@ -63,6 +65,13 @@ pub struct ServerConfig {
     pub worker_poll_interval: Duration,
     /// The worker's task lease TTL. Default 30 s.
     pub worker_lease_ttl: Duration,
+    /// The collection service: partitions, the hot default, tails, reads,
+    /// search and SQL limits.
+    pub query: ServiceConfig,
+    /// Where Flight SQL listens (with the `flight` feature); `None` (the
+    /// default here) serves no Flight SQL. `operon dev` and `standalone`
+    /// set it.
+    pub flight_sql: Option<SocketAddr>,
 }
 
 impl ServerConfig {
@@ -83,6 +92,8 @@ impl ServerConfig {
             snapshot_every: 10_000,
             worker_poll_interval: Duration::from_secs(1),
             worker_lease_ttl: Duration::from_secs(30),
+            query: ServiceConfig::default(),
+            flight_sql: None,
         }
     }
 
@@ -147,11 +158,63 @@ pub struct Server {
     meta_store: Arc<dyn MetaStore>,
     writer: LogWriter,
     cache: RangeCache,
-    collections: CollectionContext,
+    collection_context: CollectionContext,
     collection_factory: Arc<CollectionTargetFactory>,
+    collections: Arc<CollectionService>,
     worker: WorkerHandle,
     http: JoinHandle<()>,
     stop_http: oneshot::Sender<()>,
+    flight: Option<Flight>,
+}
+
+/// The running Flight SQL listener.
+#[derive(Debug)]
+struct Flight {
+    addr: SocketAddr,
+    task: JoinHandle<()>,
+    stop: oneshot::Sender<()>,
+}
+
+impl Flight {
+    /// Serves `listener` until stopped.
+    ///
+    /// Task 12 serves Flight SQL here. Until then the listener is bound (so
+    /// `--flight-sql-listen` and the startup line work) and every
+    /// connection is closed at once.
+    fn start(listener: tokio::net::TcpListener, addr: SocketAddr) -> Self {
+        let (stop, mut stopped) = oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut stopped => break,
+                    accepted = listener.accept() => {
+                        if let Err(err) = accepted {
+                            tracing::debug!(%err, "Flight SQL accept failed");
+                        }
+                    }
+                }
+            }
+        });
+        Self { addr, task, stop }
+    }
+
+    async fn stop(self) {
+        let _ = self.stop.send(());
+        let _ = self.task.await;
+    }
+}
+
+/// Where Flight SQL listens: `config.flight_sql` with the `flight` feature,
+/// never without it.
+fn flight_addr(config: &ServerConfig) -> Option<SocketAddr> {
+    if cfg!(feature = "flight") {
+        config.flight_sql
+    } else {
+        if config.flight_sql.is_some() {
+            tracing::warn!("this build has no Flight SQL (the flight feature is off)");
+        }
+        None
+    }
 }
 
 /// The object store URL for a config: its bucket, or a directory in the data
@@ -219,22 +282,32 @@ impl Server {
         );
         let meta_store: Arc<dyn MetaStore> = meta.clone().into();
         let cache = RangeCache::new(store.clone(), config.cache.clone()).await?;
+        let bind = |addr: SocketAddr| async move {
+            let bound = async {
+                let listener = tokio::net::TcpListener::bind(addr).await?;
+                let local_addr = listener.local_addr()?;
+                Ok::<_, std::io::Error>((listener, local_addr))
+            }
+            .await;
+            bound.map_err(|source| ServerError::Listen { addr, source })
+        };
         let bound = async {
-            let listener = tokio::net::TcpListener::bind(config.listen).await?;
-            let local_addr = listener.local_addr()?;
-            Ok::<_, std::io::Error>((listener, local_addr))
+            let http = bind(config.listen).await?;
+            // Flight SQL listens after the HTTP API (rule 5.3).
+            let flight = match flight_addr(&config) {
+                Some(addr) => Some(bind(addr).await?),
+                None => None,
+            };
+            Ok::<_, ServerError>((http, flight))
         }
         .await;
-        let (listener, local_addr) = match bound {
+        let ((listener, local_addr), flight_listener) = match bound {
             Ok(bound) => bound,
-            Err(source) => {
+            Err(err) => {
                 if let Err(err) = cache.close().await {
                     tracing::warn!(%err, "closing the cache after a failed start");
                 }
-                return Err(ServerError::Listen {
-                    addr: config.listen,
-                    source,
-                });
+                return Err(err);
             }
         };
 
@@ -254,7 +327,7 @@ impl Server {
         let mut collection = config.collection.clone();
         collection.max_commit_delay = config.link.max_commit_delay;
         collection.keep_manifests = config.gc.keep_manifests;
-        let collections = CollectionContext {
+        let collection_context = CollectionContext {
             meta: meta_store.clone(),
             store: store.clone(),
             cache: cache.clone(),
@@ -262,7 +335,7 @@ impl Server {
             manifests: ManifestCache::new(collection.manifest_cache_entries),
             config: collection,
         };
-        let collection_factory = Arc::new(CollectionTargetFactory::new(collections.clone()));
+        let collection_factory = Arc::new(CollectionTargetFactory::new(collection_context.clone()));
         let registry = TargetRegistry::new()
             .with(Arc::new(CounterTargetFactory::new(
                 store.clone(),
@@ -280,25 +353,36 @@ impl Server {
             cache.clone(),
             config.segmenter.clone(),
         )));
-        worker.add_source(Arc::new(IndexBuildSource::new(collections.clone())));
+        worker.add_source(Arc::new(IndexBuildSource::new(collection_context.clone())));
         worker.add_source(Arc::new(RetentionSource::new(config.retention.clone())));
-        worker.add_source(Arc::new(CollectionTrimSource::new(collections.clone())));
+        worker.add_source(Arc::new(CollectionTrimSource::new(
+            collection_context.clone(),
+        )));
         worker.add_source(Arc::new(GcSource::with_roots(
             store.clone(),
             config.gc.clone(),
             vec![
                 Arc::new(LinkGcRoots),
-                Arc::new(CollectionGcRoots::new(collections.clone())),
+                Arc::new(CollectionGcRoots::new(collection_context.clone())),
                 Arc::new(PkGcRoots),
             ],
         )));
         let worker = worker.start();
+        // Rule 5.1: after the collection context, before the router, on the
+        // reader built above (the server keeps none, row 0.52).
+        let collections = CollectionService::new(
+            collection_context.clone(),
+            CollectionWriter::new(meta_store.clone(), writer.clone()),
+            reader.clone(),
+            config.query.clone(),
+        );
         let app = api::router(AppState {
             meta: meta_store.clone(),
             writer: writer.clone(),
             reader,
             store: store.clone(),
             registry,
+            collections: collections.clone(),
         });
         let (stop_http, stopped) = oneshot::channel::<()>();
         let http = tokio::spawn(async move {
@@ -310,6 +394,7 @@ impl Server {
             }
         });
         tracing::info!(%local_addr, "operon is serving");
+        let flight = flight_listener.map(|(listener, addr)| Flight::start(listener, addr));
         Ok(Self {
             local_addr,
             node,
@@ -317,11 +402,13 @@ impl Server {
             meta_store,
             writer,
             cache,
-            collections,
+            collection_context,
             collection_factory,
+            collections,
             worker,
             http,
             stop_http,
+            flight,
         })
     }
 
@@ -345,7 +432,17 @@ impl Server {
     /// The collection storage context the server's tasks run on; M1.2 builds
     /// its `CollectionService` on it.
     pub fn collection_context(&self) -> &CollectionContext {
-        &self.collections
+        &self.collection_context
+    }
+
+    /// The collection service behind the native API.
+    pub fn collections(&self) -> Arc<CollectionService> {
+        self.collections.clone()
+    }
+
+    /// The address Flight SQL listens on, when it does.
+    pub fn flight_sql_addr(&self) -> Option<SocketAddr> {
+        self.flight.as_ref().map(|flight| flight.addr)
     }
 
     /// The server's log writer; M1.2 builds its `CollectionWriter` on it.
@@ -353,12 +450,17 @@ impl Server {
         &self.writer
     }
 
-    /// Stops accepting requests, flushes the writer (buffered appends are
+    /// Stops accepting requests, stops Flight SQL, stops the collection
+    /// service's tails, flushes the writer (buffered appends are
     /// acknowledged), stops the worker (releasing its task leases), closes
-    /// the collection targets' PK index handles, waits for
-    /// in-flight requests (up to 10 s), and shuts the metastore down.
+    /// the collection targets' PK index handles, waits for in-flight
+    /// requests (up to 10 s), and shuts the metastore down (rule 5.4).
     pub async fn shutdown(self) -> Result<(), ServerError> {
         let _ = self.stop_http.send(());
+        if let Some(flight) = self.flight {
+            flight.stop().await;
+        }
+        self.collections.shutdown().await;
         if let Err(err) = self.writer.shutdown().await {
             tracing::warn!(%err, "the final flush failed");
         }

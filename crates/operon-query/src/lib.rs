@@ -46,9 +46,12 @@ pub use ir::{
     TotalRelation, TrackTotalHits,
 };
 pub use json::alias_actions_from_json;
-pub use service::{CREATED_AT_ANNOTATION, CollectionService, ServiceConfig, SqlConfig};
+pub use service::{
+    CREATED_AT_ANNOTATION, CollectionService, ScrollPage, ServiceConfig, SqlConfig, forwarded_token,
+};
 pub use types::{
     AliasAction, CollectionInfo, ManifestInfo, OpPosition, OpResult, PinnedRead, Projection,
     SourceFilter, StoredDoc, WriteOptions, WriteResult,
 };
 pub use validate::{SearchLimits, validate_request};
+pub use write::rejected_op_index;

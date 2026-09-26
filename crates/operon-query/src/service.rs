@@ -11,8 +11,8 @@ use std::sync::{Arc, PoisonError, RwLock, Weak};
 use std::time::Duration;
 
 use operon_collection::{
-    CollectionContext, CollectionSchema, CollectionWriter, FieldSpec, PrimaryKey, VectorSpec,
-    live_manifest, retained_chain,
+    CollectionContext, CollectionSchema, CollectionWriter, ConsistencyToken, FieldSpec, PrimaryKey,
+    VectorSpec, live_manifest, retained_chain,
 };
 use operon_common::meta::{
     AliasAction, ApplyError, Collection, CollectionHead, Consistency, MetaError,
@@ -136,6 +136,20 @@ async fn forwarded<T>(
             None
         }
         result => Some(result),
+    }
+}
+
+/// A scroll page (the documents and the key to continue after) with the
+/// read token of its view.
+pub type ScrollPage = ((Vec<StoredDoc>, Option<PrimaryKey>), ConsistencyToken);
+
+/// The read token of a read a remote owner served: the `RemoteReads`
+/// contract returns none for get, count and scroll, so the request's own
+/// token stands in (the token of `AtLeast` or `Pinned`, else empty).
+pub fn forwarded_token(consistency: &ReadConsistency) -> ConsistencyToken {
+    match consistency {
+        ReadConsistency::AtLeast(token) | ReadConsistency::Pinned { token, .. } => token.clone(),
+        ReadConsistency::Strong | ReadConsistency::Eventual => ConsistencyToken::default(),
     }
 }
 
@@ -708,6 +722,23 @@ impl CollectionService {
         select: &Projection,
         consistency: ReadConsistency,
     ) -> Result<Vec<Option<StoredDoc>>, ServiceError> {
+        self.get_with_token(ns, name, pks, select, consistency)
+            .await
+            .map(|(docs, _)| docs)
+    }
+
+    /// [`CollectionService::get`], with the read token of the view the
+    /// documents come from (the native API's `read_token`, Task 11). A read
+    /// served by a remote owner carries the request's own token
+    /// ([`forwarded_token`]).
+    pub async fn get_with_token(
+        &self,
+        ns: &str,
+        name: &str,
+        pks: &[PrimaryKey],
+        select: &Projection,
+        consistency: ReadConsistency,
+    ) -> Result<(Vec<Option<StoredDoc>>, ConsistencyToken), ServiceError> {
         let hot = self.request_hot();
         self.check_get(pks)?;
         let (ns_id, collection) = self.resolve(ns, name).await?;
@@ -721,7 +752,7 @@ impl CollectionService {
                 consistency.clone(),
             );
             if let Some(result) = forwarded(&hot, "get", call).await {
-                return result;
+                return result.map(|docs| (docs, forwarded_token(&consistency)));
             }
         }
         self.get_in(ns_id, &collection, pks, select, &consistency, &hot)
@@ -742,6 +773,7 @@ impl CollectionService {
         let (ns_id, collection) = self.resolve(ns, name).await?;
         self.get_in(ns_id, &collection, pks, select, &consistency, &hot)
             .await
+            .map(|(docs, _)| docs)
     }
 
     pub(crate) async fn get_in(
@@ -752,12 +784,13 @@ impl CollectionService {
         select: &Projection,
         consistency: &ReadConsistency,
         hot: &RequestHot,
-    ) -> Result<Vec<Option<StoredDoc>>, ServiceError> {
+    ) -> Result<(Vec<Option<StoredDoc>>, ConsistencyToken), ServiceError> {
         let view = self
             .reads
             .view(ns_id, collection, consistency, hot, self.hot_tier(hot))
             .await?;
-        self.planner.get(&view, pks, select).await
+        let docs = self.planner.get(&view, pks, select).await?;
+        Ok((docs, view.read_token))
     }
 
     /// The live documents matching `filter` (every live document without one).
@@ -768,6 +801,20 @@ impl CollectionService {
         filter: Option<Query>,
         consistency: ReadConsistency,
     ) -> Result<u64, ServiceError> {
+        self.count_with_token(ns, name, filter, consistency)
+            .await
+            .map(|(count, _)| count)
+    }
+
+    /// [`CollectionService::count`], with the read token of its view (as
+    /// [`CollectionService::get_with_token`]).
+    pub async fn count_with_token(
+        &self,
+        ns: &str,
+        name: &str,
+        filter: Option<Query>,
+        consistency: ReadConsistency,
+    ) -> Result<(u64, ConsistencyToken), ServiceError> {
         let hot = self.request_hot();
         let (ns_id, collection) = self.resolve(ns, name).await?;
         if let Some((owner, remote)) = self.remote_owner(ns_id, collection.id) {
@@ -779,7 +826,7 @@ impl CollectionService {
                 consistency.clone(),
             );
             if let Some(result) = forwarded(&hot, "count", call).await {
-                return result;
+                return result.map(|count| (count, forwarded_token(&consistency)));
             }
         }
         self.count_in(ns_id, &collection, filter, &consistency, &hot)
@@ -798,6 +845,7 @@ impl CollectionService {
         let (ns_id, collection) = self.resolve(ns, name).await?;
         self.count_in(ns_id, &collection, filter, &consistency, &hot)
             .await
+            .map(|(count, _)| count)
     }
 
     async fn count_in(
@@ -807,12 +855,15 @@ impl CollectionService {
         filter: Option<Query>,
         consistency: &ReadConsistency,
         hot: &RequestHot,
-    ) -> Result<u64, ServiceError> {
-        let view = self
-            .reads
-            .view(ns_id, collection, consistency, hot, self.hot_tier(hot))
-            .await?;
-        self.planner.count(Arc::new(view), filter).await
+    ) -> Result<(u64, ConsistencyToken), ServiceError> {
+        let view = Arc::new(
+            self.reads
+                .view(ns_id, collection, consistency, hot, self.hot_tier(hot))
+                .await?,
+        );
+        let token = view.read_token.clone();
+        let count = self.planner.count(view, filter).await?;
+        Ok((count, token))
     }
 
     /// The next `limit` documents after `after` in primary-key order that
@@ -828,6 +879,24 @@ impl CollectionService {
         select: &Projection,
         consistency: ReadConsistency,
     ) -> Result<(Vec<StoredDoc>, Option<PrimaryKey>), ServiceError> {
+        self.scroll_with_token(ns, name, filter, after, limit, select, consistency)
+            .await
+            .map(|(page, _)| page)
+    }
+
+    /// [`CollectionService::scroll`], with the read token of its view (as
+    /// [`CollectionService::get_with_token`]).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn scroll_with_token(
+        &self,
+        ns: &str,
+        name: &str,
+        filter: Option<Query>,
+        after: Option<PrimaryKey>,
+        limit: usize,
+        select: &Projection,
+        consistency: ReadConsistency,
+    ) -> Result<ScrollPage, ServiceError> {
         let hot = self.request_hot();
         self.check_scroll(limit)?;
         let (ns_id, collection) = self.resolve(ns, name).await?;
@@ -843,7 +912,7 @@ impl CollectionService {
                 consistency.clone(),
             );
             if let Some(result) = forwarded(&hot, "scroll", call).await {
-                return result;
+                return result.map(|page| (page, forwarded_token(&consistency)));
             }
         }
         let scroll = Scroll {
@@ -878,7 +947,9 @@ impl CollectionService {
             select,
             consistency: &consistency,
         };
-        self.scroll_in(ns_id, &collection, scroll, &hot).await
+        self.scroll_in(ns_id, &collection, scroll, &hot)
+            .await
+            .map(|(page, _)| page)
     }
 
     async fn scroll_in(
@@ -887,26 +958,30 @@ impl CollectionService {
         collection: &Collection,
         scroll: Scroll<'_>,
         hot: &RequestHot,
-    ) -> Result<(Vec<StoredDoc>, Option<PrimaryKey>), ServiceError> {
-        let view = self
-            .reads
-            .view(
-                ns_id,
-                collection,
-                scroll.consistency,
-                hot,
-                self.hot_tier(hot),
-            )
-            .await?;
-        self.planner
+    ) -> Result<ScrollPage, ServiceError> {
+        let view = Arc::new(
+            self.reads
+                .view(
+                    ns_id,
+                    collection,
+                    scroll.consistency,
+                    hot,
+                    self.hot_tier(hot),
+                )
+                .await?,
+        );
+        let token = view.read_token.clone();
+        let page = self
+            .planner
             .scroll(
-                Arc::new(view),
+                view,
                 scroll.filter,
                 scroll.after,
                 scroll.limit,
                 scroll.select,
             )
-            .await
+            .await?;
+        Ok((page, token))
     }
 
     // ----- Versions, pins, SQL, shutdown -----

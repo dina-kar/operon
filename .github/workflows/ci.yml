@@ -36,9 +36,19 @@ jobs:
           done
           deps=$(cargo tree -p operon-common -e normal --depth 1 --prefix none --locked | tail -n +2 | awk '{print $1}' | sort -u | tr '\n' ' ')
           test "$deps" = "async-trait serde thiserror tracing " || { echo "operon-common dependencies changed: $deps"; exit 1; }
-          if grep -rnwE 'MetaClient|MetaNode|MetaState|PartitionState' crates/operon-worker/src crates/operon-log/src crates/operon-link/src crates/operon-collection/src crates/operon-query/src crates/operon/src/api.rs; then
-            echo "downstream source names an openraft type (D47)"; exit 1
-          fi
+          # A missing path must fail the step: grep exits 2 for it, which an
+          # `if` would read as "no match" (row 0.87).
+          paths="crates/operon-worker/src crates/operon-log/src crates/operon-link/src crates/operon-collection/src crates/operon-query/src crates/operon/src/api"
+          for p in $paths; do
+            test -e "$p" || { echo "metastore boundary path $p does not exist"; exit 1; }
+          done
+          status=0
+          grep -rnwE 'MetaClient|MetaNode|MetaState|PartitionState' $paths || status=$?
+          case $status in
+            0) echo "downstream source names an openraft type (D47)"; exit 1 ;;
+            1) ;;
+            *) echo "the boundary grep failed ($status)"; exit 1 ;;
+          esac
       - name: test
         run: cargo test --workspace --locked
       - name: metastore encoding

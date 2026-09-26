@@ -78,6 +78,9 @@ impl Dev {
                 "127.0.0.1:0",
                 "--flush-interval-ms",
                 "10",
+                // Parallel servers must not share Flight SQL's fixed port.
+                "--flight-sql-listen",
+                "127.0.0.1:0",
             ])
             .arg("--data-dir")
             .arg(dir)
