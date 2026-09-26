@@ -41,6 +41,8 @@ Frontier AI labs run their data pipelines on a small set of tools: Ray Data for 
 
 Daft and Hugging Face `datasets` need nothing from Loam beyond scan pinning; they are listed so that the scan plan stays readable by any Lance reader that accepts a dataset URI and a version.
 
+Log shippers and stream tools (Fluent Bit, the OpenTelemetry Collector, Vector, RisingWave, Flink, Kafka Connect) are listed in §02 §7.3, with OTLP logs ingest in M2 (D73) and the Kafka gateway in M5 (D74).
+
 ## 3. Scan pinning (D53, M1.2)
 
 Loam commits Lance as **detached versions** (D34): the dataset's mainline holds only the empty version 1, and every collection manifest names its own detached `lance_version`. A plain `ray.data.read_lance(uri)` or `lance.dataset(uri)` therefore opens an empty dataset. Typed fields exist only in Tantivy (D36), and writes newer than the manifest are in the stream tail, not in Lance. External readers therefore get a pinned, consistent Lance version only by asking Loam for a **scan plan** (§03 §3.3).
@@ -189,7 +191,7 @@ token = sink.consistency_token
 - **Read.** `read_loam` requests a scan plan (§3) and builds a `ray.data.Datasource` whose `get_read_tasks(parallelism)` returns one read task per fragment (small fragments packed together up to `parallelism`), each with its live row count and size estimate as block metadata. Tasks read fragments directly with `lance-ray`'s fragment reader (Flight tickets when `mode="flight"`), apply their `row_filter` slice and the superseded-row set, and project typed fields from `_source`. Ray's projection and predicate pushdown hooks map onto `columns` and `filter`; the tail, when merged, is one extra read task.
 - **Write.** `LoamDatasink` implements `on_write_start` (checks or creates the collection), `write` (each task streams its blocks through Flight `DoPut` with a path descriptor, `["collections", c]`, and returns the merged `PutAck` token of its puts; M1.2 Task 13) and `on_write_complete` (merges every task's token into one consistency token, exposed as `sink.consistency_token`, which a following `read_loam(…, at=token)` or tag creation uses). `on_write_failed` has nothing to roll back: acknowledged batches are visible, and writes are upserts keyed by `_id`, so a retried Ray task or a rerun job converges to the same documents.
 - **Embedding backfills** write only the new vector column: the sink's `write="patch"` sends a `DoPut` write mode that maps each row to a `Patch` of the listed vectors instead of an `Upsert` (a `DoPut` option added in M2; verify against M1.2 Task 13's mapping). Large backfills run on the lab's own Ray cluster with `ray.data.llm`; Loam's `embed()` links (§09) serve continuous, smaller streams. Both are documented with an example.
-- Streams become a Ray source in M5, over the native streaming subscribe.
+- Streams become a Ray source in M5, over the native streaming subscribe (which ships in M2, D72).
 
 ### 5.4 Polars `scan_loam()` (M2, experimental)
 
