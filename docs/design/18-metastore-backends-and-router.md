@@ -1,6 +1,6 @@
 # 18 — Metastore Backends, Tenancy and the Namespace Router
 
-Status: **Approved (owner)** · 2026-09-26 (decisions D58–D70). Three parts are **defaults the owner has not yet confirmed** and may override: the OpenFGA timing (D67), the erasure policy (D69) and ids under sharding (D70). They are marked *(default)* below.
+Status: **Approved (owner)** · 2026-09-26 (decisions D58–D71; §3.5 and §5 amended by D75 and D76). Three parts are **defaults the owner has not yet confirmed** and may override: the OpenFGA timing (D67), the erasure policy (D69) and ids under sharding (D70). They are marked *(default)* below.
 
 Loam is the product name (D33). API keys carry the `loam_` prefix from the start. Crates keep their working names (`operon-*`) until the rename.
 
@@ -26,6 +26,8 @@ Markers: **(estimate)** is computed from code or specs, not measured. **(verify)
 | D69 | *(default)* Erasure rewrites tags onto purged copies; 30-day deadline; crypto-shredding in M2.x | M2, M2.x |
 | D70 | *(default)* Ids stay unsharded; calls that take a bare id gain the namespace in M2 | M2 |
 | D71 | FoundationDB is dropped from the roadmap | — |
+| D75 | One router for every resource kind: sharding by namespace whatever the kind; placement keys `(ns, kind, id[, shard])`; consumer-group coordination on the owner of `(ns, group)` | M2, M3, M4, M5, M6 |
+| D76 | Consistency tokens are a hard guarantee on every backend, during moves and under stale routing, but not a required client input | M2, M2.x, M6 |
 
 v1.0 stays M1 + M2 (D46), but M2 grows: a second new backend (DynamoDB), tenancy, erasure and the catalog-scale fixes. That growth is risk 25 in §12. A new milestone, **M2.x "cloud and BYOC" (v1.1)**, follows v1.0.
 
@@ -156,11 +158,23 @@ The openraft backend gives every command one total order and one monotonic clock
 The contract change is **the first task of M2**, before any new backend:
 
 1. Amend the trait docs: the three relaxations above, the namespace on bare-id calls (D70, §18 §10), paginated list methods and the scoped change feed (§5.4).
-2. Add conformance cases for each relaxation, and a `Backend::capabilities()` flag (transactions or single-item only, snapshot reads or read orders).
+2. Add conformance cases for each relaxation and for consistency tokens (§3.5), and a `Backend::capabilities()` flag (transactions or single-item only, snapshot reads or read orders).
 3. Teach the linearizability checker the relaxed models: per-group atomicity of `commit_wal`, and the documented read orders.
 4. Move the openraft backend and every caller onto the new signatures. The M0 and M1 gates run unchanged.
 
 None of this changes an on-disk format. The openraft command encoding keeps its bare ids; the namespace is a call argument (§18 §10).
+
+### 3.5 Consistency tokens hold on every backend (D76)
+
+A consistency token `{(stream, partition, offset)}` means the same thing on openraft, Postgres, DynamoDB and TiDB, under the relaxations above, during namespace moves and under stale routing. A read that presents a token sees every write the token covers, on any node:
+
+- **Offsets come from the metastore.** Only the metastore assigns offsets, and a write is acknowledged, with its token, only after every partition group it touched has committed (§3.1). Every offset in a token is committed before the client holds it.
+- **Per-partition order is kept.** Each partition's offsets are dense and ordered on every backend, so "visible up to offset *o*" has one meaning. Bounded-skew stamps (§3.2) order nothing a token relies on.
+- **Any serving node merges the tail up to the token.** The node reads the object's manifest (its applied offsets), then the partition heads in the documented read order (§3.3), and merges the log tail from the applied offsets up to the token. If a head it reads is below the token (a lagging replica, a cache, a stale shard), it re-reads it linearizably from the owning shard, or waits until the request's deadline. It never answers without the token's offsets.
+- **Moves and stale routing.** Ownership is a hint (§5.3), so a stale route reaches a node that can still serve. A move fences writes before it copies and flips the directory after the copy (§5.5), so both shards hold every offset acknowledged before the fence. Once the old shard's copy is removed, it answers `NamespaceMoved`, and the node refreshes its directory and retries.
+- **Clients may omit tokens.** Default single-object reads are strong without one, and `eventual` skips the tail. Tokens are needed only for reads through derived objects: tables, graphs, or another collection fed by a link.
+
+**Gate** (the conformance suite and the router): a write acknowledged with a token, then read with that token on every other node and on every backend, during a namespace move and with a stale directory, must be visible. It is staged with the router (§5.7): every node and backend, including a node routing from a stale membership view, in M2; a stale directory in M2.x; a namespace move in M6.
 
 ## 4. Testing the backends (D60, D61, D62)
 
@@ -260,7 +274,7 @@ It runs against `memory` and `file`, **RustFS on every PR**, floci S3 in the AWS
 - PRs touching the relevant paths: floci (full DynamoDB suite); Alternator (single-item subset); TiDB unistore (M6).
 - Nightly: real DynamoDB and S3, GCS, Azure; the AWS deployment job; toxiproxy soaks; `tiup playground` (M6); the crash gate and the M1.1 gates over RustFS.
 
-## 5. A router for millions of namespaces (D63)
+## 5. A router for millions of namespaces (D63, D75)
 
 ### 5.1 What breaks first today
 
@@ -277,15 +291,30 @@ The Raft write rate is not the problem: `commit_wal` scales with nodes × flushe
 ### 5.2 Components
 
 1. **Gateways**, stateless: authenticate, admit against quotas, resolve names through a directory cache, route.
-2. **The directory**, a small global store: org → namespaces, and namespace name → `{id, shard, state, size class}`. It is **versioned, replaced whole per change, and pushed or long-polled to gateways**, as Neki's data topology is (etcd, pushed to routers without restarts). It lives in the `ControlStore` (§6) on any backend.
-3. **Metastore shards**, reached through **`ShardedMetaStore: MetaStore`**, which routes each call by namespace. All of one namespace's data-plane metadata (catalog, heads, index, pointers, leases) lives in one shard. A shard is an openraft group (M6's multi-Raft), a Postgres database, or a DynamoDB or TiDB deployment, which partition natively. Cluster-level state (WAL commit records, WAL live counts, retired WAL objects) is kept per shard: a WAL object is retired once every shard's live count for it reaches zero.
+2. **The directory**, a small global store: org → namespaces, and namespace name → `{id, shard, state, size class}`. It knows only namespaces; no stream, collection, table or graph has an entry of its own (D75). It is **versioned, replaced whole per change, and pushed or long-polled to gateways**, as Neki's data topology is (etcd, pushed to routers without restarts). It lives in the `ControlStore` (§6) on any backend.
+3. **Metastore shards**, reached through **`ShardedMetaStore: MetaStore`**, which routes each call by namespace. All of one namespace's data-plane metadata lives in one shard, **whatever the resource kind** (D75): its streams, collections, Iceberg tables (M4) and graphs (M3), with their heads, index, pointers, consumers and leases. Operations across kinds in one namespace therefore stay atomic. A shard is an openraft group (M6's multi-Raft), a Postgres database, or a DynamoDB or TiDB deployment, which partition natively. Cluster-level state (WAL commit records, WAL live counts, retired WAL objects) is kept per shard: a WAL object is retired once every shard's live count for it reaches zero.
 4. **Query, log and worker nodes**, stateless as today.
 
-### 5.3 Placement
+### 5.3 Placement for every resource kind (D75)
+
+One router places every resource kind.
 
 - M1.3's rendezvous hashing stays (xxh3, zone-aware, *r* replicas; M1.3 Ruling 13).
+- **Placement key** `(ns, kind, id[, shard])`, on the same rendezvous hashing:
+
+  | Kind | Key | What affinity buys | Milestone |
+  |---|---|---|---|
+  | Stream partition (fetch, subscribe) | `(ns, stream, partition)` | Tail cache and segment cache hits | M2 |
+  | Collection | `(ns, collection)`; very large ones `(ns, collection, shard)` | Hot tier, pinned splits, HNSW artifacts | M1.3; `shard` in M6 |
+  | Iceberg table | `(ns, table)` | Query and compaction affinity (T0–T3) | M4 |
+  | Graph | `(ns, graph)` | Hot adjacency chunks | M3 |
+
+- **Size classes still apply:** small namespaces place by `ns` alone, so one node warms all of a tenant's objects together; large namespaces place each object by its key. Hot keys raise *r* (§04 §5).
 - **Bounded load:** when the top node is above its load threshold, the next rendezvous choice serves the request.
-- **Size-class placement keys:** small namespaces by `ns`, so one node warms all of a tenant's collections together; large collections by `(ns, cid)`, as today; very large collections by `(ns, cid, shard)`. Hot keys raise *r* (§04 §5).
+- **Writes need no routing.** The leaderless WAL lets any `log` node append for any partition (§02 §3), and the metastore orders the writes. A gateway sends a write to any `log` node in the client's zone.
+- **Consumer-group coordination** (native named consumers from M2, Kafka groups from M5) runs on the rendezvous owner of `(ns, group)`. Committed offsets live in the metastore, and offset commits are conditional (on the consumer's lease epoch or the group's generation), so coordination is correct even when the owner is wrong: a stale owner's commit fails.
+- **Workers own maintenance by the same keys:** segmenting and retention by `(ns, stream, partition)`, merges, compaction and index builds by `(ns, collection)`, Iceberg compaction by `(ns, table)`, sidecar builds by `(ns, graph)`. Leases still fence every task (§09).
+- **Quotas are keyed the same way** (§6): a key's request-rate bucket lives at the key's rendezvous owner, and a namespace-wide limit is shared among its keys' owners, with the per-gateway fallback.
 - **Ownership is a soft hint**, as in turbopuffer and M1.3 Ruling 14: correctness never depends on the owner, and any node can serve any namespace. A stale directory entry therefore routes suboptimally, never wrongly.
 
 ### 5.4 Metadata scaling
@@ -298,7 +327,7 @@ The Raft write rate is not the problem: `commit_wal` scales with nodes × flushe
 
 ### 5.5 Namespace moves are metadata-only
 
-All bulk bytes are already on the bucket under `ns/<id>/`, and a namespace's metadata is small. A move therefore copies only metadata: fence the namespace (its lease epoch), copy its rows to the target shard, flip the directory entry, unfence. Gateways **buffer** the namespace's writes during the flip, as Neki's routers do during cutover, so writes pause for milliseconds instead of failing. Neki and PgDog move data through logical replication into new shards; Loam never copies data.
+All bulk bytes are already on the bucket under `ns/<id>/`, and a namespace's metadata is small. A move therefore copies only metadata: fence the namespace (its lease epoch), copy its rows to the target shard, flip the directory entry, unfence. Gateways **buffer** the namespace's writes during the flip, as Neki's routers do during cutover, so writes pause for milliseconds instead of failing. The old shard serves reads for the namespace until its copy is removed, then answers `NamespaceMoved` (§3.5). Neki and PgDog move data through logical replication into new shards; Loam never copies data.
 
 ### 5.6 Failures
 
@@ -308,6 +337,7 @@ All bulk bytes are already on the bucket under `ns/<id>/`, and a namespace's met
 | One metastore shard is down | Only its namespaces' writes and linearizable reads stall; cached reads continue |
 | The directory is down | Gateways route from their cached copy (safe: ownership is a hint); namespace creates and moves pause |
 | A namespace is mid-move | Writes are fenced by the namespace lease's epoch; gateways retry after refreshing the directory |
+| Routing is stale (an old membership view or directory entry) | A non-owner serves the request with colder caches; consistency tokens still hold (§3.5) |
 
 ### 5.7 Staging
 
@@ -315,7 +345,7 @@ All bulk bytes are already on the bucket under `ns/<id>/`, and a namespace's met
 |---|---|---|
 | 1. Remove the O(N) readers | Paginated lists; the scoped change feed and an incremental `CatalogCache`; dirty-set maintenance | **M2** |
 | 2. openraft snapshot hygiene | Build snapshots without blocking apply and with at most one transient copy; snapshots past 5 GiB (a multipart `Store` put or a chunked snapshot; Q23); snapshot size and encode-time metrics | **M2** |
-| 3. Bounded load | On M1.3's rendezvous placement | **M2** |
+| 3. Bounded load and per-kind keys | On M1.3's rendezvous placement; placement keys for stream partitions and consumer coordination (D75; graphs in M3, tables in M4); the consistency-token gate across nodes and backends (§3.5) | **M2** |
 | 4. Nodes stop holding everything | The remote client with per-namespace caches of owned namespaces; the directory pushed to gateways, served by the hosted `ControlStore` | **M2.x** |
 | 5. Shard the metastore | `ShardedMetaStore`; metadata-only moves with gateway buffering; size-class placement keys; openraft's catalog out of the monolithic snapshot; per-shard GC state; the 1M-namespace gate | **M6** |
 
@@ -339,7 +369,7 @@ Stages 1–3 are what breaks first and are cheap, so they ship in v1.0. The trai
 
   | Quota | Enforced |
   |---|---|
-  | Request rate per namespace, per surface | Token bucket at the rendezvous owner, which receives most of a namespace's traffic; fallback: a bucket per gateway sized quota ÷ gateways |
+  | Request rate per namespace, per surface | Token bucket at the rendezvous owner of the placement key (§5.3), which receives most of that key's traffic; fallback: a bucket per gateway sized quota ÷ gateways |
   | Ingest bytes/s | Token bucket at the gateway |
   | Concurrent queries | Semaphore at the gateway and at the owner |
   | Storage bytes | Soft limit at write admission, computed periodically from partition bytes and manifest sizes, including bytes held only by tags (§17 §4.3) |

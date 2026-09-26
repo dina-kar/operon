@@ -147,12 +147,14 @@ Each surface is enabled individually (§10 §2). The Kafka wire protocol follows
 |---|---|
 | Within a stream partition | Total order; acknowledged writes durable per WAL class (§02) |
 | Single-object reads (default) | Strong: sees all writes acknowledged before the read began (via tail merge) |
-| Cross-object reads | Snapshot per object; with a consistency token, guaranteed to reflect the token's offsets in every object that derives from those streams |
+| Cross-object reads | Snapshot per object; with a consistency token, guaranteed to reflect the token's offsets in every object that derives from those streams, on every metastore backend and node, during namespace moves and under stale routing (D76) |
 | Atomic multi-record writes | Atomic per request within one stream (a native write batch, an ES `_bulk`, a Qdrant upsert — §02) |
 | External Iceberg readers | See Iceberg snapshots at commit cadence (default 10–60 s); no tail |
 | Durable promises and tasks (§14) | Linearizable per workflow origin; independent across origins; searches are surveys |
 | Changelog streams | Per key, change order = source commit order; exactly-once via fenced appends (§02 §8.1) |
 | Not provided | Multi-object serializable transactions; interactive OLTP transactions |
+
+**Consistency tokens are a hard guarantee, not a required input** (D76). A token means the same on openraft, Postgres, DynamoDB and TiDB under the relaxed contract (D59), during namespace moves and under stale routing: offsets come from the metastore, per-partition order is kept, and any serving node merges the tail up to the token (§18 §3.5). Clients may omit tokens. Default single-object reads are strong, and `eventual` skips the tail. Tokens are needed only for reads through derived objects: tables, graphs, or another collection fed by a link.
 
 ## 6. Object storage layout
 
