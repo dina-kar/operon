@@ -1,6 +1,6 @@
 # 06 — Search & Vector (Elasticsearch + Qdrant Pillars)
 
-Status: **Approved** · 2026-09-22
+Status: **Approved** · 2026-09-22 · revised 2026-09-25 (Elasticsearch Phase A trimmed to the framework suites, D48)
 
 Collections replace both Elasticsearch indexes and Qdrant collections. Durable tier: **Lance** (documents, vectors, scalar + IVF indexes) + **Tantivy splits** (inverted index, fast fields). Hot tier: **Qdrant-derived HNSW**, pinned splits, in-memory tail indexes (§04).
 
@@ -41,10 +41,10 @@ Dynamic mapping follows ES defaults for unknown fields (string → text + keywor
 ## 3. Read path and ranking
 
 - **BM25 / boolean / phrase / fuzzy:** `TantivySearchExec` over the manifest's splits + tail index, block-max WAND top-k per split, global merge.
-- **Aggregations:** Tantivy aggregation framework over fast fields (terms, histogram, date_histogram, range, stats/extended_stats, percentiles, cardinality, top_hits) — the same engine Quickwit uses for its ES-compatible aggregations.
 - **ANN:** `AnnExec` (hot HNSW if present, else Lance IVF + refine) + tail brute force.
 - **Hybrid:** RRF / weighted / DBSF fusion (§05).
-- **Highlighting:** Tantivy snippet generator on stored/positions data.
+- **Aggregations (ES Phase B):** Tantivy aggregation framework over fast fields (terms, histogram, date_histogram, range, stats/extended_stats, percentiles, cardinality, top_hits) — the same engine Quickwit uses for its ES-compatible aggregations.
+- **Highlighting (ES Phase B):** Tantivy snippet generator on stored/positions data.
 
 ## 4. Filtering strategy
 
@@ -79,18 +79,20 @@ Qdrant sparse vectors / ES `sparse_vector` need float-weighted inverted lists an
 
 ## 7. Elasticsearch compatibility scope
 
+Phase A is exactly what the gated LangChain and LlamaIndex Elasticsearch suites and BEIR send (D48; the M1.5 plan's conformance-surface table lists every construct and its sender). None of them sends aggregations, a point in time or highlighting, so those are Phase B; `_msearch` stays in Phase A because the BEIR harness batches its queries through it. There is no elasticsearch-py client-suite gate, and wildcard and `_all` index deletes are refused, as ES 8 does by default. Aliases may name several indices (D57): LangChain's cache tests put one alias on two indices with a write index.
+
 | Area | Phase A (M1) | Phase B | Out of scope |
 |---|---|---|---|
-| Document APIs | `_doc` index/get/delete, `_bulk`, `_mget`, `_update` (partial doc) | `_update_by_query`, `_delete_by_query` | `_reindex` from remote |
-| Search | `_search`, `_count`, `_msearch`, `search_after`, PIT, `from/size`, `sort`, `_source` filtering, highlighting | `scroll`, `collapse`, suggesters (term/completion) | Percolator, scripts in queries |
-| Query DSL | `match`, `match_phrase`, `multi_match`, `bool`, `term(s)`, `range`, `exists`, `prefix`, `wildcard`, `fuzzy`, `ids`, `query_string` (simple), `knn` | `nested`, `function_score` (field_value_factor, decay), `more_like_this`, `simple_query_string` | Painless scripting, `script_score` with arbitrary scripts |
-| Aggregations | `terms`, `histogram`, `date_histogram`, `range`, `stats`, `avg/sum/min/max`, `cardinality`, `percentiles`, `top_hits` | `composite`, `filters`, `significant_terms`, pipeline aggs (subset) | `scripted_metric` |
-| Index admin | create/delete index (wildcard deletes allowed by default), mappings, aliases, `_cat/indices`, `_cluster/health` (synthetic); the endpoints elasticsearch-py's test fixture `wipe_cluster` calls, answered as an empty cluster (`_snapshot`, `_data_stream`, `_template`, `_index_template`, `_cluster/settings`, `_cluster/pending_tasks`) | index templates, analyzers config | ILM, snapshots API (use Operon versions), ingest pipelines, CCR/CCS |
-| Tooling | elasticsearch-py/js/java clients; LangChain/LlamaIndex ES vector stores | OpenSearch clients (verify divergence) | Kibana |
+| Document APIs | `_doc` index/create/get/delete, `_create`, `_bulk`, `_mget`, `_update` (partial doc, upsert), `_delete_by_query` (LlamaIndex and LangChain delete through it) | `_update_by_query` | `_reindex` from remote |
+| Search | `_search`, `_count`, `_msearch`, `from/size`, `sort`, `search_after` (without PIT), `_source` filtering, `track_total_hits`, comma-list multi-index search | point in time, highlighting, `scroll`, `collapse`, suggesters (term/completion) | Percolator, scripts in queries |
+| Query DSL | `match`, `match_phrase`, `multi_match`, `bool`, `term(s)`, `range`, `exists`, `prefix`, `wildcard`, `fuzzy`, `ids`, `query_string` (simple), `constant_score`, `knn` (top level and as a query), hybrid query + `knn` and RRF (`retriever.rrf`, legacy `rank.rrf`), the fixed LangChain/elasticsearch-py `script_score` vector scripts | `nested`, `function_score` (field_value_factor, decay), `more_like_this`, `simple_query_string` | Painless scripting, `script_score` with arbitrary scripts |
+| Aggregations | — | `terms`, `histogram`, `date_histogram`, `range`, `stats`, `avg/sum/min/max`, `cardinality`, `percentiles`, `top_hits`; then `composite`, `filters`, `significant_terms`, pipeline aggs (subset) | `scripted_metric` |
+| Index admin | create/delete/exists/get index (concrete names and comma lists) with mappings and settings at creation, `_mapping` get/put, aliases over one or more indices with at most one write index (`is_write_index`; `_aliases` actions are atomic; reads fan out over every member, writes go to the write index; D57), `GET /_all`, `_refresh` (no-op), `GET /`, `_cluster/health` (synthetic), `_license` (synthetic), `_ml/trained_models/{id}/_infer` (404: Operon runs no models) | `_cat/indices`, `_flush`, `_settings` endpoints, wildcard deletes, alias filters and routing, index templates, analyzers config | ILM, snapshots API (use Operon versions), ingest pipelines, CCR/CCS |
+| Tooling | LangChain and LlamaIndex ES vector stores (and LangChain's ES retrievers, chat history and caches), over elasticsearch-py 8.19; BEIR | elasticsearch-py/js/java client suites; OpenSearch clients (verify divergence) | Kibana |
 
-Implementation starts from **Quickwit's ES-compatible API crates** (DSL parsing → Tantivy queries, aggregation request/response mapping), forked and extended with `_doc`-level CRUD, upserts and `knn`.
+Implementation starts from **Quickwit's ES-compatible API crates** (DSL parsing → Tantivy queries; aggregation request/response mapping in Phase B), forked and extended with `_doc`-level CRUD, upserts and `knn`.
 
-**Conformance:** client library integration tests + framework integration tests. Before vendoring Elastic's REST YAML spec tests, verify their license (Elastic relicensed in 2024: AGPL/SSPL/ELv2 options).
+**Conformance:** the LangChain and LlamaIndex ES integration suites, run unmodified, and BEIR (M1 exit gates, §12). Before vendoring Elastic's REST YAML spec tests, verify their license (Elastic relicensed in 2024: AGPL/SSPL/ELv2 options).
 
 ## 8. Qdrant compatibility scope
 
