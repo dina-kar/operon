@@ -36,6 +36,7 @@ macro_rules! for_each_case {
             reacquire_after_expiry_keeps_the_epoch,
             takeover_bumps_the_epoch_and_fences_the_old_holder,
             a_ttl_above_the_limit_is_invalid,
+            leases_with_prefix_lists_only_that_prefix,
             // pointers
             cas_create_then_update,
             cas_mismatch_carries_the_current_pointer,
@@ -51,6 +52,10 @@ macro_rules! for_each_case {
             aliases_apply_atomically_and_resolve,
             collection_head_reads_pointer_bounds_and_clock,
             collection_for_link_finds_the_implicit_link,
+            // hot
+            collection_hot_defaults_and_set_is_retry_safe,
+            collection_hot_needs_the_collection_in_its_namespace,
+            a_dropped_collection_forgets_its_hot_config,
             // gc
             retired_expired_respects_grace,
             forget_objects_removes_retired_entries,

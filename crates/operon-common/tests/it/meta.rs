@@ -183,8 +183,8 @@ mod dyn_compatible {
 
     use async_trait::async_trait;
     use operon_common::meta::{
-        AliasAction, Collection, CollectionHead, CollectionRoots, Consistency, Fence, Lease,
-        LeaseGrant, Link, LinkHead, LinkId, MetaChanges, MetaResult, MetaStore, Namespace,
+        AliasAction, Collection, CollectionHead, CollectionRoots, Consistency, Fence, HotConfig,
+        Lease, LeaseGrant, Link, LinkHead, LinkId, MetaChanges, MetaResult, MetaStore, Namespace,
         PartitionIndex, Pointer, PointerCas, Retention, SegmentSwap, Stream, StreamState,
         TargetRef, Tracked, WalClass, WalCommit,
     };
@@ -335,6 +335,13 @@ mod dyn_compatible {
         async fn lease(&self, _: Consistency, _: &str) -> MetaResult<Option<Lease>> {
             unimplemented!()
         }
+        async fn leases_with_prefix(
+            &self,
+            _: Consistency,
+            _: &str,
+        ) -> MetaResult<Vec<(String, Lease)>> {
+            unimplemented!()
+        }
         async fn cas_pointer(&self, _: PointerCas) -> Tracked<u64> {
             unimplemented!()
         }
@@ -421,6 +428,22 @@ mod dyn_compatible {
             _: Consistency,
             _: Option<NamespaceId>,
         ) -> MetaResult<Vec<CollectionHead>> {
+            unimplemented!()
+        }
+        async fn set_collection_hot(
+            &self,
+            _: NamespaceId,
+            _: CollectionId,
+            _: HotConfig,
+        ) -> MetaResult<()> {
+            unimplemented!()
+        }
+        async fn collection_hot(
+            &self,
+            _: Consistency,
+            _: NamespaceId,
+            _: CollectionId,
+        ) -> MetaResult<HotConfig> {
             unimplemented!()
         }
         async fn retired_expired(&self, _: u64) -> MetaResult<Vec<String>> {

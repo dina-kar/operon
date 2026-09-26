@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use operon_common::meta::{
-    AliasAction, ApplyError, Consistency, Fence, Freshness, LeaseGrant, LinkId, MetaError,
-    Retention, TargetRef, WalChunk, WalClass,
+    AliasAction, ApplyError, Consistency, Fence, Freshness, HotConfig, LeaseGrant, LinkId,
+    MetaError, Retention, TargetRef, WalChunk, WalClass,
 };
 use operon_common::schema::CollectionSchema;
 use operon_common::{CollectionId, NamespaceId, StreamId};
@@ -683,6 +683,21 @@ impl MetaClient {
             .await?
         {
             Reply::AliasesUpdated => Ok(()),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
+        }
+    }
+
+    /// Sets a collection's hot configuration ([`Command::SetCollectionHot`]).
+    pub async fn set_collection_hot(
+        &self,
+        collection: CollectionId,
+        hot: HotConfig,
+    ) -> Result<(), MetaError> {
+        match self
+            .write(Command::SetCollectionHot { collection, hot })
+            .await?
+        {
+            Reply::CollectionHotSet => Ok(()),
             other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }

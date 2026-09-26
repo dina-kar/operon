@@ -8,8 +8,16 @@
 //! Run with `OPERON_BLESS_GOLDEN=1` to (re)write the files under
 //! `tests/golden/`; otherwise they compare against the committed bytes.
 //! The files are never re-blessed after Task 1 (Global Constraints).
+//!
+//! M1.3 (Task 4, Ruling 20) appends `Command::SetCollectionHot` and
+//! `Reply::CollectionHotSet` and snapshot format 6. Its own golden files
+//! (`commands-m1.3.bin`, `replies-m1.3.bin`, `snapshot-m1.3.bin`) continue
+//! from the state the base lists leave; the base files are pinned by
+//! SHA-256 (row E41) and never re-blessed. Bless only the new files:
+//! `OPERON_BLESS_GOLDEN=1 cargo test -p operon-meta --test it m1_3`.
 
 use std::collections::BTreeMap;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use operon_common::schema::{
@@ -18,9 +26,10 @@ use operon_common::schema::{
 };
 use operon_common::{CollectionId, NamespaceId, StreamId};
 use operon_meta::{
-    AliasAction, ApplyError, Command, Fence, Freshness, LeaseGrant, LinkId, MetaState, Pointer,
-    Reply, Retention, TargetRef, WalChunk, WalClass,
+    AliasAction, ApplyError, Command, Fence, Freshness, HotConfig, LeaseGrant, LinkId, MetaState,
+    Pointer, Reply, Retention, TargetRef, WalChunk, WalClass,
 };
+use sha2::{Digest, Sha256};
 
 const GOLDEN_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden");
 
@@ -651,6 +660,7 @@ fn every_command_variant_is_in_the_golden_list() {
             Command::DropCollection { .. } => "DropCollection",
             Command::UpdateCollectionSchema { .. } => "UpdateCollectionSchema",
             Command::UpdateAliases { .. } => "UpdateAliases",
+            Command::SetCollectionHot { .. } => "SetCollectionHot",
         };
         seen.insert(name);
     }
@@ -658,6 +668,18 @@ fn every_command_variant_is_in_the_golden_list() {
         seen.len(),
         18,
         "every Command variant must have a value in golden_commands(): {seen:?}"
+    );
+    for command in golden_commands_m1_3() {
+        let name = match command {
+            Command::SetCollectionHot { .. } => "SetCollectionHot",
+            _ => continue,
+        };
+        seen.insert(name);
+    }
+    assert_eq!(
+        seen.len(),
+        19,
+        "golden_commands_m1_3() must hold every M1.3 Command variant: {seen:?}"
     );
 }
 
@@ -747,4 +769,276 @@ fn the_golden_wal_snapshot_decodes_to_the_same_state() {
     let decoded =
         operon_meta::state_from_snapshot_bytes(&golden).expect("decode golden wal snapshot");
     assert_eq!(decoded, state);
+}
+
+// ----- M1.3 (Task 4, Ruling 20) -----
+
+/// SHA-256 of every golden file present at M1.3's branch base (row E41; a
+/// snapshot file's crc32c is a constant residue, so it cannot fingerprint).
+const BASE_GOLDEN_SHA256: [(&str, &str); 4] = [
+    (
+        "commands.bin",
+        "5f47b867441cb30efdb041c2cade8eed877468034484af934dbbb429bc2add18",
+    ),
+    (
+        "replies.bin",
+        "405904b48b111732a9011afafe719efe1d8803baba4ae6316a3881e025053be9",
+    ),
+    (
+        "snapshot-v5.bin",
+        "32d79732a38c8d56487fd28d5eb5c32458d907b33ca9c63ae4bf893bb7498a71",
+    ),
+    (
+        "snapshot-v5-wal.bin",
+        "afeef5880a2e596c9fe6359b2aecd72a8a67d624368b039e76b636b6550d5b43",
+    ),
+];
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+#[test]
+fn the_base_golden_files_are_unchanged() {
+    for (name, want) in BASE_GOLDEN_SHA256 {
+        let bytes = std::fs::read(golden_path(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(sha256_hex(&bytes), want, "{name} changed");
+    }
+}
+
+const VECTORS_AND_FRAGMENTS: HotConfig = HotConfig {
+    vectors: true,
+    text: false,
+    fragments: true,
+};
+const TEXT: HotConfig = HotConfig {
+    vectors: false,
+    text: true,
+    fragments: false,
+};
+const EVERYTHING: HotConfig = HotConfig {
+    vectors: true,
+    text: true,
+    fragments: true,
+};
+
+/// Continues from the state [`golden_commands`] leaves: creates two
+/// collections (ids 2 and 3), sets a configuration with each flag on at
+/// least once, clears one (removing its entry), sets it again, and ends by
+/// dropping the other hot collection, so collection 2 keeps its
+/// configuration.
+fn golden_commands_m1_3() -> Vec<Command> {
+    let ns1 = NamespaceId(1);
+    let create = |name: &str| Command::CreateCollection {
+        namespace: ns1,
+        name: name.to_string(),
+        schema: golden_schema(),
+        partitions: 2,
+    };
+    let set = |id: u64, hot: HotConfig| Command::SetCollectionHot {
+        collection: CollectionId(id),
+        hot,
+    };
+    vec![
+        create("hot-a"),
+        create("hot-b"),
+        set(2, VECTORS_AND_FRAGMENTS),
+        set(3, TEXT),
+        set(2, HotConfig::default()),
+        set(2, EVERYTHING),
+        Command::DropCollection {
+            namespace: ns1,
+            name: "hot-b".to_string(),
+            now_ms: 3_000,
+        },
+    ]
+}
+
+/// Every [`Reply`] variant M1.3 adds.
+fn golden_replies_m1_3() -> Vec<Result<Reply, ApplyError>> {
+    vec![Ok(Reply::CollectionHotSet)]
+}
+
+/// The state after [`golden_commands`] and then [`golden_commands_m1_3`].
+fn golden_state_m1_3() -> MetaState {
+    let mut state = golden_state();
+    for command in golden_commands_m1_3() {
+        state
+            .apply(command.clone())
+            .unwrap_or_else(|e| panic!("{command:?} failed to apply: {e}"));
+    }
+    state
+}
+
+/// A `match` over `Reply` with no wildcard arm: a new variant fails to
+/// compile here until it is in a golden list.
+#[test]
+fn every_reply_variant_is_in_the_golden_lists() {
+    let mut seen = std::collections::BTreeSet::new();
+    for reply in golden_replies()
+        .into_iter()
+        .chain(golden_replies_m1_3())
+        .filter_map(Result::ok)
+    {
+        let name = match reply {
+            Reply::NamespaceCreated(_) => "NamespaceCreated",
+            Reply::StreamCreated(_) => "StreamCreated",
+            Reply::LinkCreated(_) => "LinkCreated",
+            Reply::WalCommitted { .. } => "WalCommitted",
+            Reply::Lease(_) => "Lease",
+            Reply::LeaseReleased => "LeaseReleased",
+            Reply::PointerSet { .. } => "PointerSet",
+            Reply::RetentionSet => "RetentionSet",
+            Reply::SegmentSwapped => "SegmentSwapped",
+            Reply::Trimmed { .. } => "Trimmed",
+            Reply::Pruned { .. } => "Pruned",
+            Reply::Forgotten { .. } => "Forgotten",
+            Reply::CollectionCreated { .. } => "CollectionCreated",
+            Reply::CollectionDropped(_) => "CollectionDropped",
+            Reply::SchemaUpdated { .. } => "SchemaUpdated",
+            Reply::AliasesUpdated => "AliasesUpdated",
+            Reply::CollectionHotSet => "CollectionHotSet",
+        };
+        seen.insert(name);
+    }
+    assert_eq!(
+        seen.len(),
+        17,
+        "every Reply variant needs a golden value: {seen:?}"
+    );
+}
+
+#[test]
+fn m1_3_commands_encode_to_the_golden_bytes() {
+    let fresh = postcard::to_stdvec(&golden_commands_m1_3()).expect("encode");
+    let golden = golden_bytes("commands-m1.3.bin", &fresh);
+    assert_eq!(fresh, golden);
+}
+
+#[test]
+fn the_m1_3_golden_commands_decode_to_the_same_commands() {
+    let fresh = postcard::to_stdvec(&golden_commands_m1_3()).expect("encode");
+    let golden = golden_bytes("commands-m1.3.bin", &fresh);
+    let decoded: Vec<Command> = postcard::from_bytes(&golden).expect("decode");
+    assert_eq!(decoded, golden_commands_m1_3());
+}
+
+#[test]
+fn the_m1_3_golden_commands_apply_cleanly_after_the_base_lists() {
+    let mut state = golden_state();
+    for command in golden_commands_m1_3() {
+        let result = state.apply(command.clone());
+        assert!(result.is_ok(), "{command:?} => {result:?}");
+    }
+    assert!(state.check_invariants().is_empty());
+    assert_eq!(
+        state.hot_collections().collect::<Vec<_>>(),
+        vec![(CollectionId(2), EVERYTHING)]
+    );
+}
+
+#[test]
+fn m1_3_replies_encode_to_the_golden_bytes() {
+    let fresh = postcard::to_stdvec(&golden_replies_m1_3()).expect("encode");
+    let golden = golden_bytes("replies-m1.3.bin", &fresh);
+    assert_eq!(fresh, golden);
+}
+
+#[test]
+fn the_m1_3_golden_replies_decode() {
+    let fresh = postcard::to_stdvec(&golden_replies_m1_3()).expect("encode");
+    let golden = golden_bytes("replies-m1.3.bin", &fresh);
+    let decoded: Vec<Result<Reply, ApplyError>> = postcard::from_bytes(&golden).expect("decode");
+    assert_eq!(decoded, golden_replies_m1_3());
+}
+
+/// [`golden_commands`] ends by dropping its only collection, so the hot
+/// commands go in before that drop: set then cleared, or set and forgotten
+/// by the drop. Either way the state is the base's, and so are its bytes.
+#[test]
+fn a_state_without_hot_configuration_snapshots_as_before() {
+    let base = std::fs::read(golden_path("snapshot-v5.bin")).expect("snapshot-v5.bin");
+    let commands = golden_commands();
+    let (last, before_drop) = commands.split_last().expect("commands");
+    assert!(matches!(last, Command::DropCollection { .. }));
+    let set = |hot: HotConfig| Command::SetCollectionHot {
+        collection: CollectionId(1),
+        hot,
+    };
+    for hot_commands in [
+        vec![set(VECTORS_AND_FRAGMENTS), set(HotConfig::default())],
+        vec![set(EVERYTHING)],
+    ] {
+        let mut state = MetaState::default();
+        for command in before_drop
+            .iter()
+            .cloned()
+            .chain(hot_commands)
+            .chain([last.clone()])
+        {
+            state
+                .apply(command.clone())
+                .unwrap_or_else(|e| panic!("{command:?} failed to apply: {e}"));
+        }
+        assert_eq!(state, golden_state());
+        let bytes = operon_meta::snapshot_bytes(&state).expect("encode");
+        assert_eq!(bytes, base);
+    }
+}
+
+#[test]
+fn a_snapshot_with_hot_configuration_encodes_to_the_golden_m1_3_bytes() {
+    let fresh = operon_meta::snapshot_bytes(&golden_state_m1_3()).expect("encode");
+    assert_eq!(&fresh[8..12], &6u32.to_le_bytes());
+    let golden = golden_bytes("snapshot-m1.3.bin", &fresh);
+    assert_eq!(fresh, golden);
+}
+
+#[test]
+fn the_golden_m1_3_snapshot_decodes_to_the_same_state() {
+    let state = golden_state_m1_3();
+    let fresh = operon_meta::snapshot_bytes(&state).expect("encode");
+    let golden = golden_bytes("snapshot-m1.3.bin", &fresh);
+    let decoded = operon_meta::state_from_snapshot_bytes(&golden).expect("decode");
+    assert_eq!(decoded, state);
+}
+
+/// `bytes` (a snapshot) with its version set to `version`, `append` added
+/// after its body, and its crc32c trailer recomputed.
+fn reversioned(bytes: &[u8], version: u32, append: &[u8]) -> Vec<u8> {
+    let mut out = bytes[..bytes.len() - 4].to_vec();
+    out[8..12].copy_from_slice(&version.to_le_bytes());
+    out.extend_from_slice(append);
+    let crc = crc32c::crc32c(&out);
+    out.extend_from_slice(&crc.to_le_bytes());
+    out
+}
+
+#[test]
+fn a_version_v_plus_1_snapshot_without_hot_configuration_is_refused() {
+    let base = operon_meta::snapshot_bytes(&golden_state()).expect("encode");
+    // Nothing after the body, and an empty map (postcard: one zero byte).
+    for append in [&[][..], &[0u8][..]] {
+        let err = operon_meta::state_from_snapshot_bytes(&reversioned(&base, 6, append))
+            .expect_err("refused");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+    }
+    // Trailing bytes after the map are refused too.
+    let hot = operon_meta::snapshot_bytes(&golden_state_m1_3()).expect("encode");
+    let err =
+        operon_meta::state_from_snapshot_bytes(&reversioned(&hot, 6, &[0])).expect_err("refused");
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+}
+
+#[test]
+fn a_version_above_v_plus_1_is_unsupported() {
+    let hot = operon_meta::snapshot_bytes(&golden_state_m1_3()).expect("encode");
+    for version in [7u32, 8, u32::MAX] {
+        let err = operon_meta::state_from_snapshot_bytes(&reversioned(&hot, version, &[]))
+            .expect_err("refused");
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported, "{err}");
+    }
 }

@@ -121,8 +121,20 @@ impl MetaState {
     ///   has a collection's name;
     /// - every stream or link named with a leading `_` is a collection's;
     /// - every `collection/<id>` pointer names a collection of its namespace;
-    /// - `last_collection_id` is at least every collection id.
+    /// - `last_collection_id` is at least every collection id;
+    /// - every `collection_hot` entry is an existing collection's, and none
+    ///   is all false.
     fn check_collections(&self, violations: &mut Vec<String>) {
+        for (id, hot) in &self.collection_hot {
+            if !self.collections.contains_key(id) {
+                violations.push(format!("hot configuration of missing collection {id}"));
+            }
+            if !hot.any() {
+                violations.push(format!(
+                    "collection {id} has an all-false hot configuration"
+                ));
+            }
+        }
         let mut implicit_streams = BTreeSet::new();
         let mut implicit_links = BTreeSet::new();
         for (id, c) in &self.collections {

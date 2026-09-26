@@ -1,5 +1,6 @@
 mod catalog;
 mod collections;
+mod hot;
 mod invariants;
 mod leases;
 mod links;
@@ -11,8 +12,8 @@ mod sequencer;
 use std::collections::BTreeMap;
 
 use operon_common::meta::{
-    ApplyError, Collection, Lease, Link, LinkId, MAX_KEY_LEN, MAX_NAME_LEN, Namespace, Pointer,
-    Stream,
+    ApplyError, Collection, HotConfig, Lease, Link, LinkId, MAX_KEY_LEN, MAX_NAME_LEN, Namespace,
+    Pointer, Stream,
 };
 use operon_common::{CollectionId, NamespaceId, StreamId};
 use serde::{Deserialize, Serialize};
@@ -61,6 +62,12 @@ pub struct MetaState {
     /// Alias name → the collection it points at. An alias never has the
     /// name of a collection of its namespace.
     aliases: BTreeMap<(NamespaceId, String), CollectionId>,
+    /// Hot configuration per collection (M1.3 Ruling 7), non-default values
+    /// only. Serde skips it, so the derived encoding stays M1.1's; a snapshot
+    /// carries it only in format 6, written while it is non-empty (Ruling
+    /// 20).
+    #[serde(skip)]
+    collection_hot: BTreeMap<CollectionId, HotConfig>,
 }
 
 impl MetaState {
@@ -165,6 +172,9 @@ impl MetaState {
             } => self.update_collection_schema(collection, expected_version, schema),
             Command::UpdateAliases { namespace, actions } => {
                 self.update_aliases(namespace, actions)
+            }
+            Command::SetCollectionHot { collection, hot } => {
+                self.set_collection_hot(collection, hot)
             }
         }
     }
