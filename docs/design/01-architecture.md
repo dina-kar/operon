@@ -133,7 +133,7 @@ Each surface is enabled individually (§10 §2). The Kafka wire protocol follows
 ## 4. Data flow
 
 ### 4.1 Write (any protocol)
-1. Gateway authenticates and translates the request into a logical write against a stream (explicit or implicit). A collection write is admitted only while the collection's unapplied backlog (records past `applied` and their bytes) is under its budget; otherwise it is refused with HTTP 429 or gRPC `RESOURCE_EXHAUSTED` and `Retry-After` (D86).
+1. Gateway authenticates and translates the request into a logical write against a stream (explicit or implicit). A collection write is admitted only while the collection's unapplied backlog (records past `applied` and their bytes) is under its budget; otherwise it is refused with HTTP 429 or gRPC `RESOURCE_EXHAUSTED` and `Retry-After` (D86). A bulk load may send `Operon-Backpressure: off`, which admits writes up to 4× the budget; while the backlog is above the budget, strong reads may fall back to range tails or answer `Unavailable`, and `Eventual` keeps serving.
 2. A `log` node appends to the WAL per the stream's class and obtains dense offsets from meta (or from its journal for `quorum`).
 3. The client is acknowledged with a **consistency token** `{(stream, partition, offset)…}`.
 4. Workers asynchronously apply links: build Lance fragments + Tantivy splits, append Iceberg data files, update adjacency — each commit atomically records its applied offset.

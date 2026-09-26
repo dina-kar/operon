@@ -29,7 +29,7 @@ Dynamic mapping follows ES defaults for unknown fields (string → text + keywor
 
 ## 2. Write path
 
-1. Gateway (`_bulk`, `_doc`, Qdrant `upsert`, native) validates and appends operations to the collection's implicit stream; responds with a consistency token (ES `refresh=wait_for` waits for tail visibility, which is immediate). While the collection's unapplied backlog is at its budget (records past `applied`, and their bytes), the write is refused with 429 or `RESOURCE_EXHAUSTED` and `Retry-After` (M1.3, D86).
+1. Gateway (`_bulk`, `_doc`, Qdrant `upsert`, native) validates and appends operations to the collection's implicit stream; responds with a consistency token (ES `refresh=wait_for` waits for tail visibility, which is immediate). While the collection's unapplied backlog is at its budget (records past `applied`, and their bytes), the write is refused with 429 or `RESOURCE_EXHAUSTED` and `Retry-After` (M1.3, D86). The bulk-load override (`Operon-Backpressure: off`, or `operon-backpressure: off` in Flight metadata) applies to these writes and admits them up to 4× the budget; above the budget, strong reads may use range tails or answer `Unavailable`.
 2. Collection-link worker consumes batches (target 16–128 MiB or 1–5 s):
    - Resolves upserts/deletes via the PK index (latest-wins per key, in partition order).
    - Records that cannot be decoded, sit on the wrong partition or violate the current schema are **dead letters**: skipped, counted in the manifest's `dead_letters_total`, logged, and written to one `deadletters/…dlq` object per commit that lives as long as its manifest (M1.1 Ruling 11).
