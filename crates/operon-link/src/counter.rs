@@ -127,7 +127,7 @@ pub(crate) fn manifest_version(path: &str) -> Option<u64> {
 
 /// The pointer holding the current manifest path: `link/<link_id>`.
 pub(crate) fn pointer_key(link: LinkId) -> String {
-    format!("link/{link}")
+    operon_common::meta::link_pointer_key(link)
 }
 
 fn millis(duration: Duration) -> u64 {

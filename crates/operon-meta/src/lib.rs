@@ -10,7 +10,6 @@ mod clock;
 mod codec;
 mod command;
 mod db;
-mod error;
 mod log_store;
 mod network;
 mod node;
@@ -22,22 +21,23 @@ mod types;
 pub use client::{MetaClient, MetaClientConfig};
 pub use clock::{Clock, ManualClock, SystemClock};
 #[cfg(feature = "test-util")]
-pub use codec::snapshot_round_trip;
-pub use command::{ApplyError, Command, Reply, StaleLag, log_stale_object};
+pub use codec::{snapshot_bytes, snapshot_round_trip, state_from_snapshot_bytes};
+pub use command::{Command, Reply};
 pub use db::LocalDb;
-pub use error::MetaError;
 pub use log_store::LogStore;
 pub use network::Router;
-pub use node::{Consistency, MetaConfig, MetaNode, RaftStatus};
-pub use raft::{EntryReply, NodeId, SnapshotData, TypeConfig};
-pub use state::{MAX_KEY_LEN, MAX_LEASE_TTL_MS, MAX_NAME_LEN, MAX_PARTITIONS, MetaState};
-pub use state_machine::StateMachineStore;
-pub use types::{
-    AliasAction, COLLECTION_KIND, Collection, EntryKind, Fence, Freshness, IndexEntry, Lease,
-    LeaseGrant, Link, LinkId, MAX_COLLECTION_NAME_LEN, Namespace, PartitionState, Pointer,
-    Retention, Stream, TargetRef, WAL_COMMIT_WINDOW_MS, WalChunk, WalClass, WalCommitRecord,
-    collection_pk_prefix, collection_pointer_key, collection_prefix, implicit_name,
+pub use node::{MetaConfig, MetaNode, RaftStatus};
+pub use operon_common::meta::{
+    AliasAction, ApplyError, COLLECTION_KIND, Collection, Consistency, EntryKind, Fence, Freshness,
+    IndexEntry, Lease, LeaseGrant, Link, LinkId, MAX_COLLECTION_NAME_LEN, MAX_KEY_LEN,
+    MAX_LEASE_TTL_MS, MAX_NAME_LEN, MAX_PARTITIONS, MetaError, Namespace, Pointer, Retention,
+    StaleLag, Stream, TargetRef, WAL_COMMIT_WINDOW_MS, WalChunk, WalClass, collection_pk_prefix,
+    collection_pointer_key, collection_prefix, implicit_name, log_stale_object,
 };
+pub use raft::{EntryReply, NodeId, SnapshotData, TypeConfig};
+pub use state::MetaState;
+pub use state_machine::StateMachineStore;
+pub use types::{PartitionState, WalCommitRecord};
 
 /// Evaluates a named failpoint (M0.4 Task 5). With the `failpoints` feature
 /// the `fail` crate may act on it (the crash gate aborts the process there);

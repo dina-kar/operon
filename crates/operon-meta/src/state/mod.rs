@@ -10,22 +10,15 @@ mod sequencer;
 
 use std::collections::BTreeMap;
 
+use operon_common::meta::{
+    ApplyError, Collection, Lease, Link, LinkId, MAX_KEY_LEN, MAX_NAME_LEN, Namespace, Pointer,
+    Stream,
+};
 use operon_common::{CollectionId, NamespaceId, StreamId};
 use serde::{Deserialize, Serialize};
 
-use crate::command::{ApplyError, Command, Reply};
-use crate::types::{
-    Collection, Lease, Link, LinkId, Namespace, PartitionState, Pointer, Stream, WalCommitRecord,
-};
-
-/// Longest namespace or stream name, in bytes.
-pub const MAX_NAME_LEN: usize = 255;
-/// Most partitions a stream may have.
-pub const MAX_PARTITIONS: u32 = 10_000;
-/// Longest object path, lease key or pointer key, in bytes.
-pub const MAX_KEY_LEN: usize = 1024;
-/// Longest lease a holder may take or renew for: one hour.
-pub const MAX_LEASE_TTL_MS: u64 = 3_600_000;
+use crate::command::{Command, Reply};
+use crate::types::{PartitionState, WalCommitRecord};
 
 /// The metastore state machine.
 ///

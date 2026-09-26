@@ -369,7 +369,7 @@ impl SegmentTask {
                 crate::failpoint!("seg.after_swap");
                 Ok(Attempt::Swapped)
             }
-            Ok(other) => Err(MetaError::UnexpectedReply(other).into()),
+            Ok(other) => Err(MetaError::UnexpectedReply(format!("{other:?}")).into()),
             // A rejection of the first attempt means the swap was never
             // applied (a retry of an applied swap succeeds), so the segment
             // is unreferenced. After an attempt with an unknown outcome the

@@ -6,8 +6,12 @@
 //!
 //! [`schema`] holds the collection schema types: the metastore's commands
 //! carry them, and `operon-collection` re-exports them.
+//!
+//! [`meta`] holds the metastore's shared types: catalog records, errors and
+//! consistency levels, moved from `operon-meta` (M1.2a plan).
 
 mod id;
+pub mod meta;
 pub mod schema;
 
 pub use id::{CollectionId, NamespaceId, ParseIdError, StreamId};

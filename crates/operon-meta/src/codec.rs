@@ -87,17 +87,31 @@ pub fn snapshot_round_trip(state: &MetaState) -> io::Result<MetaState> {
     decode_snapshot(&bytes).map(|(_, state)| state)
 }
 
+/// `encode_snapshot` with `SnapshotMeta::default()`. Only with the
+/// `test-util` feature.
+#[cfg(feature = "test-util")]
+pub fn snapshot_bytes(state: &MetaState) -> io::Result<Vec<u8>> {
+    encode_snapshot(&SnapshotMeta::default(), state)
+}
+
+/// `decode_snapshot`, dropping the meta. Only with the `test-util` feature.
+#[cfg(feature = "test-util")]
+pub fn state_from_snapshot_bytes(bytes: &[u8]) -> io::Result<MetaState> {
+    decode_snapshot(bytes).map(|(_, state)| state)
+}
+
 fn invalid_data(err: impl ToString) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, err.to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::command::Command;
-    use crate::types::{AliasAction, Retention, WalChunk, WalClass};
+    use operon_common::meta::{AliasAction, Retention, WalChunk, WalClass};
     use operon_common::schema::{CollectionSchema, DynamicMapping, FieldKind, FieldSpec};
     use operon_common::{NamespaceId, StreamId};
+
+    use super::*;
+    use crate::command::Command;
 
     fn collection(name: &str) -> Command {
         Command::CreateCollection {
@@ -145,7 +159,7 @@ mod tests {
                 namespace: NamespaceId(1),
                 name: "counts".to_string(),
                 source: StreamId(1),
-                target: crate::types::TargetRef {
+                target: operon_common::meta::TargetRef {
                     kind: "counter".to_string(),
                     name: "counts".to_string(),
                 },
@@ -194,7 +208,7 @@ mod tests {
                 max_timestamp_ms: 5,
                 fence: None,
                 now_ms: 1_000,
-                fresh: crate::types::Freshness {
+                fresh: operon_common::meta::Freshness {
                     created_at_ms: 1_000,
                     max_age_ms: 60_000,
                 },

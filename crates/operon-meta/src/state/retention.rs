@@ -2,10 +2,10 @@
 //! WAL commit pruning and forgetting collected objects.
 
 use operon_common::StreamId;
+use operon_common::meta::{ApplyError, Fence, Retention, WAL_COMMIT_WINDOW_MS};
 
 use super::MetaState;
-use crate::command::{ApplyError, Reply};
-use crate::types::{Fence, Retention, WAL_COMMIT_WINDOW_MS};
+use crate::command::Reply;
 
 impl MetaState {
     pub(super) fn set_retention(

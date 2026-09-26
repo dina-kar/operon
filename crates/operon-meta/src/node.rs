@@ -10,13 +10,15 @@ use openraft::async_runtime::WatchReceiver;
 use openraft::error::{ClientWriteError, InitializeError, LinearizableReadError, RaftError};
 use openraft::metrics::WaitError;
 use openraft::{BasicNode, Raft, ReadPolicy, SnapshotPolicy};
+use operon_common::meta::{
+    Consistency, Fence, LeaseGrant, MetaError, Retention, WalChunk, WalClass,
+};
 use operon_common::{NamespaceId, StreamId};
 use operon_store::Store;
 
 use crate::clock::{Clock, SystemClock};
 use crate::command::{Command, Reply};
 use crate::db::LocalDb;
-use crate::error::MetaError;
 use crate::log_store::{LogStore, VOTE_KEY};
 use crate::network::{MetaRaft, NetworkFactory, Router};
 use crate::raft::NodeId;
@@ -24,7 +26,6 @@ use crate::state::MetaState;
 use crate::state_machine::{
     SNAPSHOT_POINTER_KEY, SnapshotIoCloser, StateMachineStore, StateReader,
 };
-use crate::types::{Fence, LeaseGrant, Retention, WalChunk, WalClass};
 
 /// How to start a meta node.
 #[derive(Clone, Debug)]
@@ -83,17 +84,6 @@ impl MetaConfig {
             snapshot_io_budget: Duration::from_secs(60),
         }
     }
-}
-
-/// How fresh a read must be.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Consistency {
-    /// Reflects every write acknowledged before the read began. Served only by
-    /// the leader, after it confirms its leadership with a quorum.
-    Linearizable,
-    /// Whatever this node has applied so far; may be stale on a follower or on
-    /// a leader that has been cut off.
-    Local,
 }
 
 /// A node's Raft progress, for monitoring and tests. Indexes are Raft log indexes.
@@ -368,7 +358,7 @@ impl MetaNode {
     /// attempt's effect, for example [`ApplyError::NamespaceExists`] with the
     /// id the first attempt created.
     ///
-    /// [`ApplyError::NamespaceExists`]: crate::ApplyError::NamespaceExists
+    /// [`ApplyError::NamespaceExists`]: operon_common::meta::ApplyError::NamespaceExists
     ///
     /// A leader refuses a command stamped more than
     /// [`MetaConfig::max_clock_skew`] ahead of its own clock with
@@ -456,7 +446,7 @@ impl MetaNode {
         };
         match self.write(command).await? {
             Reply::NamespaceCreated(id) => Ok(id),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -476,7 +466,7 @@ impl MetaNode {
         };
         match self.write(command).await? {
             Reply::StreamCreated(id) => Ok(id),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -495,7 +485,7 @@ impl MetaNode {
         };
         match self.write(command).await? {
             Reply::WalCommitted { base_offsets } => Ok(base_offsets),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -513,7 +503,7 @@ impl MetaNode {
         };
         match self.write(command).await? {
             Reply::Lease(grant) => Ok(grant),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -533,7 +523,7 @@ impl MetaNode {
         };
         match self.write(command).await? {
             Reply::Lease(grant) => Ok(grant),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -545,7 +535,7 @@ impl MetaNode {
         };
         match self.write(command).await? {
             Reply::LeaseReleased => Ok(()),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -568,7 +558,7 @@ impl MetaNode {
         };
         match self.write(command).await? {
             Reply::PointerSet { version } => Ok(version),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 

@@ -4,11 +4,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use operon_common::CollectionId;
-
-use super::MetaState;
-use crate::types::{
+use operon_common::meta::{
     COLLECTION_KIND, COLLECTION_POINTER_PREFIX, EntryKind, Retention, WalClass, implicit_name,
 };
+
+use super::MetaState;
 
 impl MetaState {
     /// Checks the invariants every sequence of commands must keep, and

@@ -1,8 +1,10 @@
 //! The stream sequencer: dense offsets and the offset index (design §02 §3).
 
+use operon_common::meta::{ApplyError, EntryKind, IndexEntry, WAL_COMMIT_WINDOW_MS, WalChunk};
+
 use super::{MetaState, validate_key};
-use crate::command::{ApplyError, Reply};
-use crate::types::{EntryKind, IndexEntry, WAL_COMMIT_WINDOW_MS, WalChunk, WalCommitRecord};
+use crate::command::Reply;
+use crate::types::WalCommitRecord;
 
 impl MetaState {
     pub(super) fn commit_wal(
