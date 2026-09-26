@@ -18,6 +18,13 @@
 //!
 //! - `ServiceError::Timeout` carries no duration, so its message is
 //!   `Timeout: request timed out` (row T1-1).
+//! - Snapshots are manifest versions: create names the newest retained
+//!   version and writes nothing, and download, recover and delete are
+//!   unsupported (Rulings 15, 19).
+//! - Shard, replica, WAL, optimizer and strict-mode settings are accepted,
+//!   stored and echoed, but change nothing; `PATCH /collections/{c}` answers
+//!   `true` for them and changes nothing (Ruling 16). Cluster info is
+//!   synthetic: one active local shard (Task 3).
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -37,7 +44,8 @@ pub mod ids;
 pub mod model;
 mod reads;
 mod rest;
-mod schema;
+pub mod schema;
+pub mod snapshots;
 
 pub use ctx::RequestCtx;
 pub use error::GatewayError;
