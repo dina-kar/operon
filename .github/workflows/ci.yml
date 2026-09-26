@@ -104,3 +104,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
+
+  web:
+    name: console and @loam/ui
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: the generated API types match the contract
+        run: pnpm gen:api && git diff --exit-code -- apps/console/src/api/schema.d.ts
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm build
