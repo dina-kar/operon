@@ -355,6 +355,7 @@ fn client_config() -> MetaClientConfig {
     MetaClientConfig {
         retry_deadline: Duration::from_secs(5),
         backoff: Duration::from_millis(20),
+        ..MetaClientConfig::default()
     }
 }
 

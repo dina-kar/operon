@@ -28,6 +28,10 @@ pub struct DeltaIndex {
     /// while this lock is held for writing.
     scanned: RwLock<RoaringTreemap>,
     appended: AtomicU64,
+    /// Points handed to the index, counted before `append` makes them
+    /// searchable: an upper bound on the points the index holds, which
+    /// searches size their over-fetch from.
+    inserted: AtomicU64,
     since_optimize: AtomicU64,
     optimizing: AtomicBool,
     /// Serializes extensions.
@@ -74,6 +78,7 @@ impl DeltaIndex {
             index,
             scanned: RwLock::new(RoaringTreemap::new()),
             appended: AtomicU64::new(0),
+            inserted: AtomicU64::new(0),
             since_optimize: AtomicU64::new(0),
             optimizing: AtomicBool::new(false),
             extending: tokio::sync::Mutex::new(()),
@@ -93,6 +98,12 @@ impl DeltaIndex {
     /// Points appended so far.
     pub fn appended(&self) -> u64 {
         self.appended.load(Ordering::Acquire)
+    }
+
+    /// An upper bound on the points the index holds: counted before each
+    /// append makes its points searchable (a failed append leaves it over).
+    pub(crate) fn inserted(&self) -> u64 {
+        self.inserted.load(Ordering::Acquire)
     }
 
     /// The scanned rows and the appended count, read together.
@@ -188,6 +199,9 @@ impl DeltaIndex {
             }
             let count = points.len() as u64;
             if !points.is_empty() {
+                // Before `append`: a search of an older view may run while
+                // the batch is searchable but not yet counted in `appended`.
+                self.inserted.fetch_add(count, Ordering::AcqRel);
                 let index = self.index.clone();
                 tokio::task::spawn_blocking(move || index.append(points))
                     .await

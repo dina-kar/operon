@@ -9,6 +9,7 @@ authors.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+axum.workspace = true
 bytes.workspace = true
 crc32c.workspace = true
 fail = { workspace = true, optional = true }
@@ -18,6 +19,7 @@ operon-common.workspace = true
 operon-store.workspace = true
 postcard.workspace = true
 redb.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
