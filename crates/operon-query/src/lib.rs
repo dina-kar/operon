@@ -17,6 +17,7 @@
 //! Task 8: aggregations and highlighting ([`exec::aggs`],
 //! [`text::highlight`]). Task 9: [`CollectionService`], the one facade
 //! every gateway uses ([`service`], [`write`], [`catalog_cache`]).
+//! Task 10: the SQL catalog and the search table functions ([`sql`]).
 
 pub mod catalog_cache;
 pub mod error;
@@ -28,6 +29,7 @@ pub mod placement;
 pub mod read;
 pub mod service;
 pub mod sparse;
+pub mod sql;
 pub mod tail;
 pub mod text;
 pub mod types;

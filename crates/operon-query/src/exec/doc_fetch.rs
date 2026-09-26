@@ -109,6 +109,136 @@ fn vector_at(column: &ArrayRef, name: &str, row: usize) -> Result<Option<Vec<f32
     Ok(Some(values.values().to_vec()))
 }
 
+/// The Lance columns that serve [`FetchColumns`] on one Lance version:
+/// asked-for vectors the version lacks are left out (M1.1 Ruling 5).
+pub(crate) struct LanceColumns {
+    /// Column names to read, without `_rowid`.
+    pub names: Vec<String>,
+    source: bool,
+    /// (column, name in the schema) of every dense vector read.
+    dense: Vec<(String, String)>,
+    /// (column, name in the schema) of every sparse vector read.
+    sparse: Vec<(String, String)>,
+}
+
+impl LanceColumns {
+    pub(crate) fn new(
+        dataset: &lance::Dataset,
+        schema: &operon_collection::CollectionSchema,
+        columns: &FetchColumns,
+    ) -> Self {
+        let present = |column: &str| dataset.schema().field(column).is_some();
+        let mut names: Vec<String> = vec![PK_COLUMN.to_string()];
+        if columns.source {
+            names.push(SOURCE_COLUMN.to_string());
+        }
+        names.push(INGEST_PARTITION_COLUMN.to_string());
+        names.push(INGEST_OFFSET_COLUMN.to_string());
+        let dense: Vec<(String, String)> = columns
+            .vectors
+            .iter()
+            .filter_map(|i| Some((vector_column(*i), schema.vectors.get(*i)?.name.clone())))
+            .filter(|(column, _)| present(column))
+            .collect();
+        let sparse: Vec<(String, String)> = columns
+            .sparse
+            .iter()
+            .filter_map(|i| {
+                Some((
+                    sparse_column(*i),
+                    schema.sparse_vectors.get(*i)?.name.clone(),
+                ))
+            })
+            .filter(|(column, _)| present(column))
+            .collect();
+        names.extend(dense.iter().map(|(column, _)| column.clone()));
+        names.extend(sparse.iter().map(|(column, _)| column.clone()));
+        Self {
+            names,
+            source: columns.source,
+            dense,
+            sparse,
+        }
+    }
+
+    /// The rows of a Lance batch read with these columns plus `_rowid`, in
+    /// batch order.
+    pub(crate) fn decode(&self, batch: &RecordBatch) -> Result<Vec<FetchedRow>, ServiceError> {
+        let row_ids = required(batch, ROW_ID)?
+            .as_primitive_opt::<UInt64Type>()
+            .ok_or_else(|| corrupt(format!("{ROW_ID} is not UInt64")))?;
+        let pks: &BinaryArray = required(batch, PK_COLUMN)?
+            .as_binary_opt::<i32>()
+            .ok_or_else(|| corrupt(format!("{PK_COLUMN} is not Binary")))?;
+        let sources: Option<&BinaryArray> = if self.source {
+            Some(
+                required(batch, SOURCE_COLUMN)?
+                    .as_binary_opt::<i32>()
+                    .ok_or_else(|| corrupt(format!("{SOURCE_COLUMN} is not Binary")))?,
+            )
+        } else {
+            None
+        };
+        let partitions: &UInt32Array = required(batch, INGEST_PARTITION_COLUMN)?
+            .as_primitive_opt::<UInt32Type>()
+            .ok_or_else(|| corrupt(format!("{INGEST_PARTITION_COLUMN} is not UInt32")))?;
+        let offsets: &UInt64Array = required(batch, INGEST_OFFSET_COLUMN)?
+            .as_primitive_opt::<UInt64Type>()
+            .ok_or_else(|| corrupt(format!("{INGEST_OFFSET_COLUMN} is not UInt64")))?;
+        let dense_columns: Vec<(&ArrayRef, &str, &str)> = self
+            .dense
+            .iter()
+            .map(|(column, name)| Ok((required(batch, column)?, column.as_str(), name.as_str())))
+            .collect::<Result<_, ServiceError>>()?;
+        let sparse_columns: Vec<(&StructArray, &str)> = self
+            .sparse
+            .iter()
+            .map(|(column, name)| {
+                let array = required(batch, column)?
+                    .as_struct_opt()
+                    .ok_or_else(|| corrupt(format!("{column} is not a Struct")))?;
+                Ok((array, name.as_str()))
+            })
+            .collect::<Result<_, ServiceError>>()?;
+        let mut out = Vec::with_capacity(batch.num_rows());
+        for row in 0..batch.num_rows() {
+            let row_id = row_ids.value(row);
+            let pk = PrimaryKey::from_canonical(pks.value(row))
+                .map_err(|err| corrupt(format!("{PK_COLUMN} of row {row_id}: {err}")))?;
+            let source = match sources {
+                Some(sources) => Some(
+                    serde_json::from_slice::<Map<String, Value>>(sources.value(row)).map_err(
+                        |err| corrupt(format!("{SOURCE_COLUMN} of row {row_id}: {err}")),
+                    )?,
+                ),
+                None => None,
+            };
+            let mut vectors = BTreeMap::new();
+            for (column, column_name, name) in &dense_columns {
+                if let Some(vector) = vector_at(column, column_name, row)? {
+                    vectors.insert(name.to_string(), vector);
+                }
+            }
+            let mut sparse_vectors = BTreeMap::new();
+            for (column, name) in &sparse_columns {
+                if let Some(vector) = sparse_at(column, row)? {
+                    sparse_vectors.insert(name.to_string(), vector);
+                }
+            }
+            out.push(FetchedRow {
+                row_id,
+                pk,
+                source,
+                vectors,
+                sparse_vectors,
+                seq_no: offsets.value(row),
+                partition: partitions.value(row),
+            });
+        }
+        Ok(out)
+    }
+}
+
 /// The durable rows `ids` (distinct, ascending) of the view's Lance version.
 async fn fetch_durable(
     view: &ReadView,
@@ -121,34 +251,8 @@ async fn fetch_durable(
     let Some(dataset) = view.snapshot.dataset() else {
         return Err(missing(ids[0]));
     };
-    let schema = &view.collection.schema;
-    let present = |column: &str| dataset.schema().field(column).is_some();
-    let mut names: Vec<String> = vec![PK_COLUMN.to_string()];
-    if columns.source {
-        names.push(SOURCE_COLUMN.to_string());
-    }
-    names.push(INGEST_PARTITION_COLUMN.to_string());
-    names.push(INGEST_OFFSET_COLUMN.to_string());
-    // (column, name in the schema) of every asked-for vector the version has.
-    let dense: Vec<(String, String)> = columns
-        .vectors
-        .iter()
-        .filter_map(|i| Some((vector_column(*i), schema.vectors.get(*i)?.name.clone())))
-        .filter(|(column, _)| present(column))
-        .collect();
-    let sparse: Vec<(String, String)> = columns
-        .sparse
-        .iter()
-        .filter_map(|i| {
-            Some((
-                sparse_column(*i),
-                schema.sparse_vectors.get(*i)?.name.clone(),
-            ))
-        })
-        .filter(|(column, _)| present(column))
-        .collect();
-    names.extend(dense.iter().map(|(column, _)| column.clone()));
-    names.extend(sparse.iter().map(|(column, _)| column.clone()));
+    let lance_columns = LanceColumns::new(dataset, &view.collection.schema, columns);
+    let mut names = lance_columns.names.clone();
     names.push(ROW_ID.to_string());
     let projection = dataset
         .schema()
@@ -158,77 +262,11 @@ async fn fetch_durable(
         .take_rows(ids, ProjectionRequest::from_schema(projection))
         .await
         .map_err(lance_error)?;
-    let row_ids = required(&batch, ROW_ID)?
-        .as_primitive_opt::<UInt64Type>()
-        .ok_or_else(|| corrupt(format!("{ROW_ID} is not UInt64")))?;
-    let pks: &BinaryArray = required(&batch, PK_COLUMN)?
-        .as_binary_opt::<i32>()
-        .ok_or_else(|| corrupt(format!("{PK_COLUMN} is not Binary")))?;
-    let sources: Option<&BinaryArray> = if columns.source {
-        Some(
-            required(&batch, SOURCE_COLUMN)?
-                .as_binary_opt::<i32>()
-                .ok_or_else(|| corrupt(format!("{SOURCE_COLUMN} is not Binary")))?,
-        )
-    } else {
-        None
-    };
-    let partitions: &UInt32Array = required(&batch, INGEST_PARTITION_COLUMN)?
-        .as_primitive_opt::<UInt32Type>()
-        .ok_or_else(|| corrupt(format!("{INGEST_PARTITION_COLUMN} is not UInt32")))?;
-    let offsets: &UInt64Array = required(&batch, INGEST_OFFSET_COLUMN)?
-        .as_primitive_opt::<UInt64Type>()
-        .ok_or_else(|| corrupt(format!("{INGEST_OFFSET_COLUMN} is not UInt64")))?;
-    let dense_columns: Vec<(&ArrayRef, &str, &str)> = dense
-        .iter()
-        .map(|(column, name)| Ok((required(&batch, column)?, column.as_str(), name.as_str())))
-        .collect::<Result<_, ServiceError>>()?;
-    let sparse_columns: Vec<(&StructArray, &str)> = sparse
-        .iter()
-        .map(|(column, name)| {
-            let array = required(&batch, column)?
-                .as_struct_opt()
-                .ok_or_else(|| corrupt(format!("{column} is not a Struct")))?;
-            Ok((array, name.as_str()))
-        })
-        .collect::<Result<_, ServiceError>>()?;
-    let mut out = HashMap::with_capacity(batch.num_rows());
-    for row in 0..batch.num_rows() {
-        let row_id = row_ids.value(row);
-        let pk = PrimaryKey::from_canonical(pks.value(row))
-            .map_err(|err| corrupt(format!("{PK_COLUMN} of row {row_id}: {err}")))?;
-        let source = match sources {
-            Some(sources) => Some(
-                serde_json::from_slice::<Map<String, Value>>(sources.value(row))
-                    .map_err(|err| corrupt(format!("{SOURCE_COLUMN} of row {row_id}: {err}")))?,
-            ),
-            None => None,
-        };
-        let mut vectors = BTreeMap::new();
-        for (column, column_name, name) in &dense_columns {
-            if let Some(vector) = vector_at(column, column_name, row)? {
-                vectors.insert(name.to_string(), vector);
-            }
-        }
-        let mut sparse_vectors = BTreeMap::new();
-        for (column, name) in &sparse_columns {
-            if let Some(vector) = sparse_at(column, row)? {
-                sparse_vectors.insert(name.to_string(), vector);
-            }
-        }
-        out.insert(
-            row_id,
-            FetchedRow {
-                row_id,
-                pk,
-                source,
-                vectors,
-                sparse_vectors,
-                seq_no: offsets.value(row),
-                partition: partitions.value(row),
-            },
-        );
-    }
+    let out: HashMap<u64, FetchedRow> = lance_columns
+        .decode(&batch)?
+        .into_iter()
+        .map(|row| (row.row_id, row))
+        .collect();
     if let Some(id) = ids.iter().find(|id| !out.contains_key(id)) {
         return Err(missing(*id));
     }
@@ -245,11 +283,20 @@ fn fetch_tail(
         .tail
         .doc(row_id)
         .ok_or_else(|| ServiceError::Internal(format!("tail row {row_id} is not in the view")))?;
+    tail_row(&view.collection.schema, &entry, columns)
+}
+
+/// The tail entry `entry`, projected to `columns`.
+pub(crate) fn tail_row(
+    schema: &operon_collection::CollectionSchema,
+    entry: &crate::tail::TailDoc,
+    columns: &FetchColumns,
+) -> Result<FetchedRow, ServiceError> {
+    let row_id = entry.row_id;
     let doc = entry
         .doc
         .as_ref()
         .ok_or_else(|| ServiceError::Internal(format!("tail row {row_id} is a delete")))?;
-    let schema = &view.collection.schema;
     let vectors = columns
         .vectors
         .iter()

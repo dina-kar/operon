@@ -107,7 +107,6 @@ pub struct CollectionService {
     pub(crate) catalog: CatalogCache,
     pub(crate) config: ServiceConfig,
     /// The service itself, for the SQL catalog of Task 10.
-    #[allow(dead_code)]
     pub(crate) this: Weak<CollectionService>,
 }
 
@@ -263,7 +262,7 @@ impl CollectionService {
     }
 
     /// The hot tier a read uses: none when the request switched it off.
-    fn hot_tier(&self, hot: &RequestHot) -> Arc<dyn HotTier> {
+    pub(crate) fn hot_tier(&self, hot: &RequestHot) -> Arc<dyn HotTier> {
         if hot.enabled {
             self.hot
                 .read()
@@ -969,14 +968,34 @@ impl CollectionService {
         self.sql_context_with(ns, ReadConsistency::Strong)
     }
 
-    /// A read-only SQL context over namespace `ns` at `consistency`. Task 10
-    /// registers the namespace's catalog; until then the context is empty.
+    /// A read-only SQL context over namespace `ns` at `consistency` (Task 10
+    /// rule 1): the namespace's catalog, the search table functions and the
+    /// retriever descriptors. Every scan resolves its view when it executes,
+    /// with `consistency` and the hot scope current now.
     pub fn sql_context_with(
         &self,
-        _ns: &str,
-        _consistency: ReadConsistency,
+        ns: &str,
+        consistency: ReadConsistency,
     ) -> datafusion::prelude::SessionContext {
-        datafusion::prelude::SessionContext::new()
+        match self.this.upgrade() {
+            Some(service) => crate::sql::context(service, ns, consistency),
+            // Only while the service is being dropped.
+            None => datafusion::prelude::SessionContext::new(),
+        }
+    }
+
+    /// The view of `collection` for a SQL scan: `consistency` with the hot
+    /// scope `hot`.
+    pub(crate) async fn view_for(
+        &self,
+        ns_id: NamespaceId,
+        collection: &Collection,
+        consistency: &ReadConsistency,
+        hot: &RequestHot,
+    ) -> Result<crate::read::ReadView, ServiceError> {
+        self.reads
+            .view(ns_id, collection, consistency, hot, self.hot_tier(hot))
+            .await
     }
 
     /// Stops every tail and the catalog cache's refresh task.
