@@ -31,6 +31,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tower.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -39,7 +40,7 @@ url.workspace = true
 
 [features]
 default = ["flight"]
-# The Arrow Flight SQL listener (Task 12 serves it; `--flight-sql-listen`).
+# Serve Arrow Flight SQL (Task 12; `--flight-sql-listen`).
 flight = []
 # Named failpoints for the crash gate (M0.4 Task 5): with it, the binary
 # reads OPERON_FAILPOINTS and OPERON_FAILPOINT_HIT. Off by default, so release
@@ -55,9 +56,14 @@ failpoints = [
 
 [dev-dependencies]
 arrow-array.workspace = true
+arrow-flight.workspace = true
+arrow-schema.workspace = true
+futures.workspace = true
 object_store.workspace = true
+prost.workspace = true
 reqwest.workspace = true
 tempfile.workspace = true
+tonic.workspace = true
 
 [lints]
 workspace = true

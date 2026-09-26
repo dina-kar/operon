@@ -21,11 +21,13 @@ use operon_log::{
     SegmenterSource,
 };
 use operon_meta::{MetaClient, MetaClientConfig, MetaConfig, MetaNode, Router, SystemClock};
+use operon_query::flight::{FlightConfig, serve_flight_sql};
 use operon_query::{CollectionService, ServiceConfig};
 use operon_store::Store;
 use operon_worker::{Worker, WorkerConfig, WorkerHandle};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
 use crate::api::{self, AppState};
@@ -72,6 +74,8 @@ pub struct ServerConfig {
     /// default here) serves no Flight SQL. `operon dev` and `standalone`
     /// set it.
     pub flight_sql: Option<SocketAddr>,
+    /// How Flight SQL bounds its statements.
+    pub flight: FlightConfig,
 }
 
 impl ServerConfig {
@@ -94,6 +98,7 @@ impl ServerConfig {
             worker_lease_ttl: Duration::from_secs(30),
             query: ServiceConfig::default(),
             flight_sql: None,
+            flight: FlightConfig::default(),
         }
     }
 
@@ -167,40 +172,43 @@ pub struct Server {
     flight: Option<Flight>,
 }
 
-/// The running Flight SQL listener.
+/// The running Flight SQL server.
 #[derive(Debug)]
 struct Flight {
     addr: SocketAddr,
     task: JoinHandle<()>,
-    stop: oneshot::Sender<()>,
+    stop: CancellationToken,
 }
 
 impl Flight {
-    /// Serves `listener` until stopped.
-    ///
-    /// Task 12 serves Flight SQL here. Until then the listener is bound (so
-    /// `--flight-sql-listen` and the startup line work) and every
-    /// connection is closed at once.
-    fn start(listener: tokio::net::TcpListener, addr: SocketAddr) -> Self {
-        let (stop, mut stopped) = oneshot::channel::<()>();
-        let task = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = &mut stopped => break,
-                    accepted = listener.accept() => {
-                        if let Err(err) = accepted {
-                            tracing::debug!(%err, "Flight SQL accept failed");
-                        }
-                    }
-                }
-            }
-        });
+    /// Serves Flight SQL over `collections` on `listener` until stopped
+    /// (Task 12).
+    fn start(
+        listener: tokio::net::TcpListener,
+        addr: SocketAddr,
+        collections: Arc<CollectionService>,
+        config: FlightConfig,
+    ) -> Self {
+        let stop = CancellationToken::new();
+        let task = tokio::spawn(serve(listener, collections, config, stop.clone()));
         Self { addr, task, stop }
     }
 
+    /// Stops accepting calls and waits for the calls in flight.
     async fn stop(self) {
-        let _ = self.stop.send(());
+        self.stop.cancel();
         let _ = self.task.await;
+    }
+}
+
+async fn serve(
+    listener: tokio::net::TcpListener,
+    collections: Arc<CollectionService>,
+    config: FlightConfig,
+    stop: CancellationToken,
+) {
+    if let Err(err) = serve_flight_sql(listener, collections, config, stop).await {
+        tracing::error!(%err, "Flight SQL server failed");
     }
 }
 
@@ -394,7 +402,9 @@ impl Server {
             }
         });
         tracing::info!(%local_addr, "operon is serving");
-        let flight = flight_listener.map(|(listener, addr)| Flight::start(listener, addr));
+        let flight = flight_listener.map(|(listener, addr)| {
+            Flight::start(listener, addr, collections.clone(), config.flight.clone())
+        });
         Ok(Self {
             local_addr,
             node,

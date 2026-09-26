@@ -45,12 +45,26 @@ pub struct Native {
 
 impl Native {
     pub async fn start() -> Self {
+        Self::start_with(|_| {}).await
+    }
+
+    /// [`Self::start`], with Flight SQL on an ephemeral port.
+    pub async fn start_flight() -> Self {
+        Self::start_with(|config| {
+            config.flight_sql = Some(SocketAddr::from(([127, 0, 0, 1], 0)));
+        })
+        .await
+    }
+
+    /// [`Self::start`], with `edit` applied to the config.
+    pub async fn start_with(edit: impl FnOnce(&mut ServerConfig)) -> Self {
         let dir = TempDir::new().expect("temp dir");
         let mut config = ServerConfig::new(dir.path());
         config.listen = SocketAddr::from(([127, 0, 0, 1], 0));
         config.log.flush_interval = Duration::from_millis(20);
         config.worker_poll_interval = Duration::from_millis(50);
         config.link.batch_interval = Duration::ZERO;
+        edit(&mut config);
         let server = Server::start(config).await.expect("start");
         Self {
             base: format!("http://{}", server.local_addr()),
