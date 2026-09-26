@@ -1355,7 +1355,7 @@ fn skipped_offsets(
 /// Step 10 of every collection commit: PUTs `manifest` create-only at a new
 /// path for its version, named with its `created_at_ms` (the commit's
 /// start); returns the path.
-pub(crate) async fn put_manifest(
+pub async fn put_manifest(
     ctx: &CollectionContext,
     ns: NamespaceId,
     manifest: &CollectionManifest,
@@ -1375,10 +1375,12 @@ pub(crate) async fn put_manifest(
     Ok(path)
 }
 
-/// Steps 11 and 12 of every collection commit (link apply and index builds
-/// commit through the same CAS, R9): the pointer `collection/<cid>` moves
-/// from `parent_version` to the manifest at `path`.
-pub(crate) struct PointerCas<'a> {
+/// Steps 11 and 12 of every collection commit (link apply, index builds,
+/// maintenance and hot artifact commits all commit through the same CAS,
+/// R9): the pointer `collection/<cid>` moves from `parent_version` to the
+/// manifest at `path`.
+#[derive(Debug)]
+pub struct PointerCas<'a> {
     pub ns: NamespaceId,
     pub cid: CollectionId,
     pub parent_version: u64,
@@ -1398,11 +1400,7 @@ impl PointerCas<'_> {
     /// with `fence` and the freshness `(started, max_age)`. A lost
     /// acknowledgement is recognised: the pointer names our manifest, which
     /// only we could have written (a unique path).
-    pub(crate) async fn run(
-        &self,
-        ctx: &CollectionContext,
-        fence: &Fence,
-    ) -> Result<u64, CommitError> {
+    pub async fn run(&self, ctx: &CollectionContext, fence: &Fence) -> Result<u64, CommitError> {
         let (ns, cid, v, path) = (self.ns, self.cid, self.parent_version, self.path);
         let max_age = self.max_age;
         let took = ctx.meta.now_ms().saturating_sub(self.started);

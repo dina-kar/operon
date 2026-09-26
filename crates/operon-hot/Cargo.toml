@@ -18,18 +18,24 @@ test-util = ["operon-collection/test-util"]
 failpoints = ["dep:fail", "fail/failpoints", "operon-collection/failpoints"]
 
 [dependencies]
+arrow-array.workspace = true
+async-trait.workspace = true
 bytes.workspace = true
 crc32c.workspace = true
 fail = { workspace = true, optional = true }
 futures.workspace = true
+lance.workspace = true
 moka = { workspace = true, features = ["sync"] }
 operon-collection.workspace = true
 operon-common.workspace = true
 operon-hnsw.workspace = true
+operon-link.workspace = true
 operon-store.workspace = true
+operon-worker.workspace = true
 postcard.workspace = true
 roaring.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -37,8 +43,14 @@ ulid.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
+operon-cache.workspace = true
+operon-collection = { workspace = true, features = ["test-util"] }
 operon-hot = { path = ".", features = ["test-util"] }
+operon-link = { workspace = true, features = ["test-util"] }
+operon-log.workspace = true
 operon-meta = { workspace = true, features = ["test-util"] }
+operon-quickwit.workspace = true
+operon-worker = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
 
 [lints]
