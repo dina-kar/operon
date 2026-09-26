@@ -1,6 +1,7 @@
 mod common;
 
 mod codec;
+mod compaction;
 mod dynamic;
 mod gc;
 mod index_build;

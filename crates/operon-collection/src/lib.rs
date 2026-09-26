@@ -48,6 +48,10 @@
 //! planned by [`plan_merges`]), which re-index the live docs of their
 //! inputs and commit under the manifest by the same CAS, with rebase.
 //!
+//! Task 2: Lance compaction ([`LanceCompactionSource`]): Lance's planner and
+//! rewriter, committed as a detached `Rewrite` with real fragment ids, and
+//! rebased group by group.
+//!
 //! The collection schema types live in `operon_common::schema`, because the
 //! metastore's commands carry them (plan M1.1 Ruling 6); they are re-exported
 //! here, both as [`schema`] and at the crate root.
@@ -103,8 +107,10 @@ pub use index_build::{
     vector_index_name,
 };
 pub use maintenance::{
-    CollectionPoller, DueCollection, MERGE_TASK_PREFIX, MaintenanceConfig, MergePlan,
-    SplitMergeSource, plan_merges, row_id_runs, schema_for_split,
+    COMPACTION_TASK_PREFIX, CollectionPoller, DueCollection, LanceCompactionSource,
+    MERGE_TASK_PREFIX, MaintenanceConfig, MergePlan, SplitMergeSource, assign_fragment_ids,
+    compaction_options, needs_compaction, plan_merges, rebase_groups, row_id_runs,
+    schema_for_split,
 };
 pub use manifest::{
     CollectionManifest, CommitKind, HotArtifactRef, MANIFEST_FORMAT_VERSION, MANIFEST_MAGIC,

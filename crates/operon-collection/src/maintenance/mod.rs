@@ -2,7 +2,8 @@
 //! §5): split merges ([`SplitMergeSource`]) and Lance compaction, worker
 //! task sources at [`Priority::Compaction`](operon_worker::Priority), both
 //! committed under the collection manifest by the same fenced,
-//! freshness-checked pointer CAS as link apply, with rebase on `Conflict`.
+//! freshness-checked pointer CAS as link apply, with rebase on `Conflict`
+//! ([`LanceCompactionSource`]).
 //!
 //! Every source that scans collections proposes them the same way
 //! ([`CollectionPoller`], Task 1 rule 1): one `Local` read of every
@@ -10,8 +11,9 @@
 //! pointer moved since its last idle run, or that run is older than the
 //! poll interval.
 
+mod compaction;
 mod config;
-pub(crate) mod merge;
+mod merge;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -21,6 +23,10 @@ use std::time::{Duration, Instant};
 use operon_common::meta::{Consistency, MetaError, MetaStore};
 use operon_common::{CollectionId, NamespaceId};
 
+pub use compaction::{
+    COMPACTION_TASK_PREFIX, LanceCompactionSource, assign_fragment_ids, compaction_options,
+    needs_compaction, rebase_groups,
+};
 pub use config::MaintenanceConfig;
 pub use merge::{
     MERGE_TASK_PREFIX, MergePlan, SplitMergeSource, plan_merges, row_id_runs, schema_for_split,
