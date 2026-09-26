@@ -2,7 +2,7 @@
 //! Task 7; plan M1.2 Task 11 rule 3 and Ruling 17).
 
 use axum::extract::rejection::{BytesRejection, PathRejection, QueryRejection};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use operon_common::meta::{ApplyError, MetaError};
 use operon_link::LinkError;
@@ -11,7 +11,7 @@ use operon_query::ServiceError;
 use serde_json::Value;
 
 /// An error response: `{"error": code, "message": ...}` plus any extra
-/// fields.
+/// fields. Every 503 carries `Retry-After: 1`.
 #[derive(Debug)]
 pub struct ApiError {
     status: StatusCode,
@@ -60,7 +60,14 @@ impl IntoResponse for ApiError {
         body.insert("error".to_string(), Value::from(self.code));
         body.insert("message".to_string(), Value::from(self.message));
         body.extend(self.extra);
-        (self.status, axum::Json(Value::Object(body))).into_response()
+        let mut response = (self.status, axum::Json(Value::Object(body))).into_response();
+        // Every 503 succeeds on retry (Ruling 17).
+        if self.status == StatusCode::SERVICE_UNAVAILABLE {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        }
+        response
     }
 }
 
@@ -152,9 +159,17 @@ impl From<MetaError> for ApiError {
                 | ApplyError::CollectionNotFound(_)
                 | ApplyError::UnknownCollection(_) => ApiError::not_found(message),
                 ApplyError::IncompatibleSchema(_) => ApiError::invalid(message),
-                // The message names the current version.
-                ApplyError::SchemaVersionMismatch { .. } => conflict(message),
-                _ => internal(message),
+                // A conflict is the caller's to resolve, not a server bug
+                // (Ruling 17). The message names the current state.
+                ApplyError::VersionMismatch { .. }
+                | ApplyError::Fenced { .. }
+                | ApplyError::LeaseHeld { .. }
+                | ApplyError::LeaseLost { .. }
+                | ApplyError::SchemaVersionMismatch { .. } => conflict(message),
+                // These succeed on retry (Ruling 17).
+                ApplyError::StaleObject { .. }
+                | ApplyError::StaleCommit { .. }
+                | ApplyError::IndexMismatch { .. } => unavailable(message),
             },
             MetaError::NotLeader { .. }
             | MetaError::Timeout

@@ -1042,6 +1042,127 @@ fn a_build_without_failpoints_refuses_to_arm_them() {
     assert!(!status.success());
 }
 
+/// Ruling 17 (plan M1.2 Task 11 rule 3): every `ApplyError` variant's
+/// status and code, and `Retry-After: 1` on every 503.
+#[test]
+fn meta_conflicts_map_to_409_and_stale_objects_to_503() {
+    use axum::response::IntoResponse;
+    use operon::api::ApiError;
+    use operon_common::meta::LinkId;
+    use operon_common::meta::{ApplyError, MetaError};
+    use operon_common::{CollectionId, NamespaceId, StreamId};
+
+    let stream = StreamId(3);
+    let table: Vec<(ApplyError, u16, &str)> = vec![
+        (
+            ApplyError::InvalidArgument("x".into()),
+            400,
+            "invalid_argument",
+        ),
+        (
+            ApplyError::NamespaceExists(NamespaceId(1)),
+            409,
+            "already_exists",
+        ),
+        (
+            ApplyError::NamespaceNotFound(NamespaceId(1)),
+            404,
+            "not_found",
+        ),
+        (ApplyError::StreamExists(stream), 409, "already_exists"),
+        (ApplyError::StreamNotFound(stream), 404, "not_found"),
+        (ApplyError::LinkExists(LinkId(4)), 409, "already_exists"),
+        (
+            ApplyError::PartitionNotFound {
+                stream,
+                partition: 1,
+            },
+            404,
+            "not_found",
+        ),
+        (
+            ApplyError::LeaseHeld {
+                owner: "o".into(),
+                deadline_ms: 5,
+            },
+            409,
+            "conflict",
+        ),
+        (ApplyError::LeaseLost { key: "k".into() }, 409, "conflict"),
+        (
+            ApplyError::VersionMismatch { current: None },
+            409,
+            "conflict",
+        ),
+        (ApplyError::Fenced { lease: "l".into() }, 409, "conflict"),
+        (
+            ApplyError::IndexMismatch {
+                stream,
+                partition: 0,
+            },
+            503,
+            "unavailable",
+        ),
+        (
+            ApplyError::StaleCommit { object: "w".into() },
+            503,
+            "unavailable",
+        ),
+        (
+            ApplyError::StaleObject {
+                object: "o".into(),
+                created_at_ms: 1,
+                max_age_ms: 2,
+                clock_ms: 3,
+            },
+            503,
+            "unavailable",
+        ),
+        (
+            ApplyError::CollectionExists(CollectionId(5)),
+            409,
+            "already_exists",
+        ),
+        (
+            ApplyError::CollectionNotFound(CollectionId(5)),
+            404,
+            "not_found",
+        ),
+        (ApplyError::NameTaken("kb".into()), 409, "already_exists"),
+        (
+            ApplyError::IncompatibleSchema("x".into()),
+            400,
+            "invalid_argument",
+        ),
+        (
+            ApplyError::SchemaVersionMismatch {
+                collection: CollectionId(5),
+                current: 2,
+            },
+            409,
+            "conflict",
+        ),
+        (ApplyError::UnknownCollection("kb".into()), 404, "not_found"),
+    ];
+    for (apply, status, code) in table {
+        let label = format!("{apply:?}");
+        let err = ApiError::from(MetaError::Rejected(apply));
+        assert_eq!(err.status().as_u16(), status, "{label}");
+        assert_eq!(err.code(), code, "{label}");
+        let response = err.into_response();
+        let retry = response.headers().get("retry-after");
+        if status == 503 {
+            assert_eq!(retry.map(|v| v.as_bytes()), Some(&b"1"[..]), "{label}");
+        } else {
+            assert!(retry.is_none(), "{label}");
+        }
+    }
+    // M0's 503s get the header too.
+    let response = ApiError::from(MetaError::Timeout).into_response();
+    assert_eq!(response.status().as_u16(), 503);
+    assert_eq!(response.headers()["retry-after"], "1");
+}
+
 /// Ruling 17 (rule 4): a record produced onto an implicit stream must be
 /// keyed by a primary key of the partition it is produced to.
 #[tokio::test]
