@@ -25,6 +25,8 @@ pub mod budget;
 pub mod build;
 mod config;
 pub mod delta;
+#[cfg(feature = "test-util")]
+pub mod differential;
 mod error;
 pub mod heat;
 pub mod live;

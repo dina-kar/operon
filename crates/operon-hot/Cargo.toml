@@ -10,8 +10,9 @@ authors.workspace = true
 [features]
 # The qdrant-edge HNSW engine (`operon-hnsw/qdrant`).
 hnsw = ["operon-hnsw/qdrant"]
-# Test hooks (holding a build at a step). Not part of the stable API.
-test-util = ["operon-collection/test-util"]
+# Test hooks (holding a build at a step) and the hot on/off differential
+# harness (`differential`). Not part of the stable API.
+test-util = ["operon-collection/test-util", "dep:rand", "dep:rand_chacha"]
 # Named failpoints for the crash gate (`hot.after_artifact_put`,
 # `hot.after_manifest_put`, `hot.after_cas`). Off by default: without it the
 # failpoints compile to nothing.
@@ -37,6 +38,8 @@ operon-query.workspace = true
 operon-store.workspace = true
 operon-worker.workspace = true
 postcard.workspace = true
+rand = { workspace = true, optional = true }
+rand_chacha = { workspace = true, optional = true }
 reqwest.workspace = true
 roaring.workspace = true
 serde.workspace = true
