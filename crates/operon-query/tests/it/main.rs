@@ -4,6 +4,7 @@ mod aggs;
 mod ann;
 mod compile;
 mod flight;
+mod flight_ingest;
 mod ir_json;
 mod reads;
 mod search;

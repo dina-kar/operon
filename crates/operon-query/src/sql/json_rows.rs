@@ -30,7 +30,7 @@ pub fn rows_to_json(result: &SqlResult) -> Value {
                 batch
                     .columns()
                     .iter()
-                    .map(|column| cell(column, row))
+                    .map(|column| value_to_json(column.as_ref(), row))
                     .collect(),
             ));
         }
@@ -52,8 +52,8 @@ fn float32(x: f32) -> Value {
 }
 
 /// Arrow's display string of `array[row]`.
-fn display(array: &ArrayRef, row: usize) -> Value {
-    match ArrayFormatter::try_new(array.as_ref(), &FormatOptions::default()) {
+fn display(array: &dyn Array, row: usize) -> Value {
+    match ArrayFormatter::try_new(array, &FormatOptions::default()) {
         Ok(formatter) => Value::String(formatter.value(row).to_string()),
         Err(_) => Value::Null,
     }
@@ -99,13 +99,19 @@ fn timestamp(value: i64, unit: TimeUnit) -> Option<String> {
     ))
 }
 
-/// `array[row]` as JSON.
-fn cell(array: &ArrayRef, row: usize) -> Value {
+/// `array[row]` as JSON (rule 7): the per-value half of [`rows_to_json`],
+/// shared with Flight ingest (Task 13 rule 3). A null is `null`, and so is a
+/// non-finite float.
+pub fn value_to_json(array: &dyn Array, row: usize) -> Value {
     if array.is_null(row) {
         return Value::Null;
     }
     let values = |values: ArrayRef| -> Value {
-        Value::Array((0..values.len()).map(|i| cell(&values, i)).collect())
+        Value::Array(
+            (0..values.len())
+                .map(|i| value_to_json(values.as_ref(), i))
+                .collect(),
+        )
     };
     match array.data_type() {
         DataType::Null => Value::Null,
@@ -163,7 +169,7 @@ fn cell(array: &ArrayRef, row: usize) -> Value {
             let object: Map<String, Value> = fields
                 .iter()
                 .zip(array.columns())
-                .map(|(field, column)| (field.name().clone(), cell(column, row)))
+                .map(|(field, column)| (field.name().clone(), value_to_json(column.as_ref(), row)))
                 .collect();
             Value::Object(object)
         }
@@ -172,12 +178,17 @@ fn cell(array: &ArrayRef, row: usize) -> Value {
             let (keys, values) = (entries.column(0), entries.column(1));
             Value::Array(
                 (0..entries.len())
-                    .map(|i| json!({"key": cell(keys, i), "value": cell(values, i)}))
+                    .map(|i| {
+                        json!({
+                            "key": value_to_json(keys.as_ref(), i),
+                            "value": value_to_json(values.as_ref(), i),
+                        })
+                    })
                     .collect(),
             )
         }
         DataType::Dictionary(_, value_type) => match cast(&array.slice(row, 1), value_type) {
-            Ok(value) => cell(&value, 0),
+            Ok(value) => value_to_json(value.as_ref(), 0),
             Err(_) => display(array, row),
         },
         _ => display(array, row),

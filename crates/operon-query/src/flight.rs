@@ -20,27 +20,32 @@ use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
 use arrow_flight::sql::metadata::{SqlInfoData, SqlInfoDataBuilder};
-use arrow_flight::sql::server::FlightSqlService;
+use arrow_flight::sql::server::{DoPutError, FlightSqlService, PeekableFlightDataStream};
 use arrow_flight::sql::{
-    CommandGetCatalogs, CommandGetDbSchemas, CommandGetSqlInfo, CommandGetTableTypes,
-    CommandGetTables, CommandStatementQuery, ProstMessageExt, SqlInfo, SqlSupportedTransaction,
-    TicketStatementQuery,
+    Any, CommandGetCatalogs, CommandGetDbSchemas, CommandGetSqlInfo, CommandGetTableTypes,
+    CommandGetTables, CommandStatementIngest, CommandStatementQuery, ProstMessageExt, SqlInfo,
+    SqlSupportedTransaction, TicketStatementQuery,
 };
 use arrow_flight::{
-    FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse, Ticket,
+    FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse, PutResult,
+    Ticket,
 };
 use bytes::Bytes;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::execution::SendableRecordBatchStream;
 use futures::{Stream, StreamExt, TryStreamExt};
-use operon_collection::ConsistencyToken;
+use operon_collection::{ConsistencyToken, MAX_WRITE_OPS};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::error::ServiceError;
+use crate::flight_ingest::{
+    Acks, ID_TYPE_METADATA, IngestAction, Put, PutTarget, Sink, StreamProducer, ingest_action,
+    put_target_from_ingest, put_target_from_path,
+};
 use crate::hot::HotLayer;
 use crate::ir::ReadConsistency;
 use crate::service::CollectionService;
@@ -117,15 +122,39 @@ pub fn decode_ticket(bytes: &[u8]) -> Result<StatementTicket, ServiceError> {
 /// How Flight SQL bounds its work.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FlightConfig {
-    /// 10 min: how long one `DoGet` statement may plan and stream.
+    /// 10 min: how long one `DoGet` statement may plan and stream (a put
+    /// has no deadline).
     pub max_duration: Duration,
+    /// 64 MiB: the largest gRPC message the server decodes (Task 13 rule 5).
+    pub max_message_bytes: usize,
+    /// 10 000 rows per ingest chunk; 1..=`MAX_WRITE_OPS`.
+    pub put_chunk_rows: usize,
 }
 
 impl Default for FlightConfig {
     fn default() -> Self {
         Self {
             max_duration: Duration::from_secs(600),
+            max_message_bytes: 64 << 20,
+            put_chunk_rows: 10_000,
         }
+    }
+}
+
+impl FlightConfig {
+    /// Refuses a `put_chunk_rows` of 0 or above `MAX_WRITE_OPS`, and a
+    /// `max_message_bytes` of 0.
+    pub fn validate(&self) -> Result<(), String> {
+        if !(1..=MAX_WRITE_OPS).contains(&self.put_chunk_rows) {
+            return Err(format!(
+                "flight.put_chunk_rows must be 1..={MAX_WRITE_OPS}, got {}",
+                self.put_chunk_rows
+            ));
+        }
+        if self.max_message_bytes == 0 {
+            return Err("flight.max_message_bytes must be at least 1".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -157,7 +186,11 @@ pub fn sql_info_data() -> SqlInfoData {
     builder.append(SqlInfo::FlightSqlServerName, "operon");
     builder.append(SqlInfo::FlightSqlServerVersion, env!("CARGO_PKG_VERSION"));
     builder.append(SqlInfo::FlightSqlServerArrowVersion, ARROW_VERSION);
+    // SQL statements stay read-only; ingest is not a SQL statement (Task 13
+    // rule 8).
     builder.append(SqlInfo::FlightSqlServerReadOnly, true);
+    builder.append(SqlInfo::FlightSqlServerBulkIngestion, true);
+    builder.append(SqlInfo::FlightSqlServerIngestTransactionsSupported, false);
     builder.append(
         SqlInfo::FlightSqlServerTransaction,
         SqlSupportedTransaction::None as i32,
@@ -166,11 +199,13 @@ pub fn sql_info_data() -> SqlInfoData {
 }
 
 type DoGetStream = <OperonFlightSql as FlightService>::DoGetStream;
+type DoPutStream = <OperonFlightSql as FlightService>::DoPutStream;
 
 /// The Flight SQL service of one node.
 #[derive(Clone)]
 pub struct OperonFlightSql {
     service: Arc<CollectionService>,
+    streams: Option<Arc<dyn StreamProducer>>,
     config: FlightConfig,
     sql_info: Arc<SqlInfoData>,
 }
@@ -192,6 +227,16 @@ fn namespace_of<T>(request: &Request<T>) -> String {
         .filter(|ns| !ns.is_empty())
         .unwrap_or(DEFAULT_NAMESPACE)
         .to_string()
+}
+
+/// The request's [`ID_TYPE_METADATA`], for a string `_id` column whose field
+/// has none.
+fn id_type_of<T>(request: &Request<T>) -> Option<String> {
+    request
+        .metadata()
+        .get(ID_TYPE_METADATA)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
 }
 
 /// The consistency token of `request`, when it parses (rule 2).
@@ -261,9 +306,61 @@ impl OperonFlightSql {
     pub fn new(service: Arc<CollectionService>, config: FlightConfig) -> Self {
         Self {
             service,
+            streams: None,
             config,
             sql_info: Arc::new(sql_info_data()),
         }
+    }
+
+    /// Serves stream ingest through `streams` (Task 13 rule 7).
+    pub fn with_streams(self, streams: Arc<dyn StreamProducer>) -> Self {
+        Self {
+            streams: Some(streams),
+            ..self
+        }
+    }
+
+    /// The producer of stream puts, or `Unimplemented`.
+    fn producer(&self) -> Result<Arc<dyn StreamProducer>, Status> {
+        self.streams
+            .clone()
+            .ok_or_else(|| Status::unimplemented("stream ingest is not configured"))
+    }
+
+    /// Rule 2.1 for streams: the partition count, `None` when the stream is
+    /// missing.
+    async fn stream_partitions(
+        producer: &Arc<dyn StreamProducer>,
+        ns: &str,
+        name: &str,
+    ) -> Result<Option<u32>, Status> {
+        match producer.partitions(ns, name).await {
+            Ok(partitions) => Ok(Some(partitions)),
+            Err(ServiceError::NotFound { .. }) => Ok(None),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    /// Runs `put` over `data` in a task of its own, so a client that leaves
+    /// stops it only after the chunk in flight (Task 13 rule 5).
+    fn spawn_put(
+        mut put: Put,
+        data: PeekableFlightDataStream,
+        acks: Option<Acks>,
+    ) -> tokio::task::JoinHandle<Result<u64, Status>> {
+        tokio::spawn(async move {
+            let result = put.run(data, acks.as_ref()).await;
+            match result {
+                Ok(()) => Ok(put.written),
+                Err(err) => {
+                    let status = err.into_status(put.written);
+                    if let Some(acks) = &acks {
+                        let _ = acks.send(Err(status.clone())).await;
+                    }
+                    Err(status)
+                }
+            }
+        })
     }
 
     /// The namespaces a metadata command lists: `catalog` when it names
@@ -503,20 +600,158 @@ impl FlightSqlService for OperonFlightSql {
         )))
     }
 
+    /// Rule 1.1 (Task 13): a PATH descriptor (`Any` type URL `""`); every
+    /// other unknown command stays `Unimplemented`.
+    async fn do_put_fallback(
+        &self,
+        mut request: Request<PeekableFlightDataStream>,
+        message: Any,
+    ) -> Result<Response<DoPutStream>, Status> {
+        if !message.type_url.is_empty() {
+            return Err(Status::unimplemented(format!(
+                "do_put: The defined request is invalid: {}",
+                message.type_url
+            )));
+        }
+        let ns = namespace_of(&request);
+        let id_type = id_type_of(&request);
+        let path = match request.get_mut().peek().await {
+            Some(Ok(first)) => first
+                .flight_descriptor
+                .as_ref()
+                .map(|descriptor| descriptor.path.clone())
+                .unwrap_or_default(),
+            Some(Err(status)) => return Err(status.clone()),
+            None => Vec::new(),
+        };
+        let sink = match put_target_from_path(&path)? {
+            PutTarget::Collection { name } => {
+                let info = self.service.get_collection(&ns, &name).await?;
+                Sink::Collection {
+                    ns,
+                    name,
+                    schema: Some(info.schema),
+                    id_type,
+                }
+            }
+            PutTarget::Stream { name, partition } => {
+                let producer = self.producer()?;
+                let partitions = Self::stream_partitions(&producer, &ns, &name)
+                    .await?
+                    .ok_or_else(|| {
+                        status_of(&ServiceError::NotFound {
+                            kind: "stream",
+                            name: name.clone(),
+                        })
+                    })?;
+                Sink::Stream {
+                    ns,
+                    name,
+                    partitions,
+                    partition,
+                    producer,
+                }
+            }
+        };
+        let put = Put::new(self.service.clone(), sink, self.config.put_chunk_rows);
+        let (acks, received) = tokio::sync::mpsc::channel(4);
+        Self::spawn_put(put, request.into_inner(), Some(acks));
+        let stream = futures::stream::unfold(received, |mut received| async move {
+            let item = received.recv().await?.map(|ack| PutResult {
+                app_metadata: Bytes::from(
+                    serde_json::to_vec(&ack).expect("an acknowledgement serializes"),
+                ),
+            });
+            Some((item, received))
+        });
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    /// Rule 1.3 (Task 13).
+    async fn do_put_error_callback(
+        &self,
+        _request: Request<PeekableFlightDataStream>,
+        _error: DoPutError,
+    ) -> Result<Response<DoPutStream>, Status> {
+        Err(Status::invalid_argument(
+            "DoPut needs a flight descriptor in its first message",
+        ))
+    }
+
+    /// Rule 1.2 (Task 13): ADBC's `adbc_ingest`; answers the rows written.
+    async fn do_put_statement_ingest(
+        &self,
+        cmd: CommandStatementIngest,
+        request: Request<PeekableFlightDataStream>,
+    ) -> Result<i64, Status> {
+        let default_ns = namespace_of(&request);
+        let id_type = id_type_of(&request);
+        let (ns, target) = put_target_from_ingest(&cmd, &default_ns)?;
+        let options = cmd.table_definition_options.as_ref();
+        let sink = match target {
+            PutTarget::Collection { name } => {
+                let existing = match self.service.get_collection(&ns, &name).await {
+                    Ok(info) => Some(info.schema),
+                    Err(ServiceError::NotFound { .. }) => None,
+                    Err(err) => return Err(err.into()),
+                };
+                let target = PutTarget::Collection { name: name.clone() };
+                let schema = match ingest_action(options, &target, existing.is_some())? {
+                    IngestAction::Append => existing,
+                    IngestAction::Create => None,
+                };
+                Sink::Collection {
+                    ns,
+                    name,
+                    schema,
+                    id_type,
+                }
+            }
+            PutTarget::Stream { name, partition } => {
+                let producer = self.producer()?;
+                let partitions = Self::stream_partitions(&producer, &ns, &name).await?;
+                let target = PutTarget::Stream {
+                    name: name.clone(),
+                    partition,
+                };
+                ingest_action(options, &target, partitions.is_some())?;
+                Sink::Stream {
+                    ns,
+                    name,
+                    partitions: partitions.unwrap_or(1),
+                    partition,
+                    producer,
+                }
+            }
+        };
+        let put = Put::new(self.service.clone(), sink, self.config.put_chunk_rows);
+        let written = Self::spawn_put(put, request.into_inner(), None)
+            .await
+            .map_err(|err| Status::internal(format!("the put task failed: {err}")))??;
+        Ok(i64::try_from(written).unwrap_or(i64::MAX))
+    }
+
     /// The SQL info is fixed ([`sql_info_data`]).
     async fn register_sql_info(&self, _id: i32, _result: &SqlInfo) {}
 }
 
 /// Serves Flight SQL on `listener` until `shutdown` is cancelled, with the
-/// hot switch of `operon-hot` (rule 2).
+/// hot switch of `operon-hot` (rule 2), stream ingest through `streams`
+/// and messages of up to `config.max_message_bytes`.
 pub async fn serve_flight_sql(
     listener: tokio::net::TcpListener,
     service: Arc<CollectionService>,
+    streams: Option<Arc<dyn StreamProducer>>,
     config: FlightConfig,
     shutdown: CancellationToken,
 ) -> Result<(), tonic::transport::Error> {
     let hot = HotLayer::new(service.config().hot_default);
-    let flight = FlightServiceServer::new(OperonFlightSql::new(service, config));
+    let max_message_bytes = config.max_message_bytes;
+    let mut flight_sql = OperonFlightSql::new(service, config);
+    if let Some(streams) = streams {
+        flight_sql = flight_sql.with_streams(streams);
+    }
+    let flight = FlightServiceServer::new(flight_sql).max_decoding_message_size(max_message_bytes);
     tonic::transport::Server::builder()
         .layer(hot)
         .add_service(flight)

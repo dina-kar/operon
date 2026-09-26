@@ -26,7 +26,7 @@ use operon_common::meta::Collection;
 
 pub use catalog::{CollectionsSchema, NamespaceCatalog};
 pub use exprs::expr_to_query;
-pub use json_rows::rows_to_json;
+pub use json_rows::{rows_to_json, value_to_json};
 pub use provider::{CollectionProvider, CollectionScanExec, collection_arrow_schema};
 pub use udtf::{
     HybridSearchFunction, RerankFunction, RetrieverDescriptorUdf, RrfFunction, TextSearchFunction,

@@ -42,6 +42,7 @@ tonic.workspace = true
 tower.workspace = true
 tracing.workspace = true
 ulid.workspace = true
+xxhash-rust.workspace = true
 
 [features]
 # Test hooks (holding a tail's follower). Not part of the stable API.

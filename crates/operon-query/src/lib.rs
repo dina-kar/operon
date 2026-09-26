@@ -18,12 +18,14 @@
 //! [`text::highlight`]). Task 9: [`CollectionService`], the one facade
 //! every gateway uses ([`service`], [`write`], [`catalog_cache`]).
 //! Task 10: the SQL catalog and the search table functions ([`sql`]).
-//! Task 12: Arrow Flight SQL ([`flight`]).
+//! Task 12: Arrow Flight SQL ([`flight`]). Task 13: Flight `DoPut` bulk
+//! ingest into collections and streams ([`flight_ingest`]).
 
 pub mod catalog_cache;
 pub mod error;
 pub mod exec;
 pub mod flight;
+pub mod flight_ingest;
 pub mod hot;
 pub mod ir;
 pub mod json;
