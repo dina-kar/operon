@@ -24,6 +24,7 @@ bytes.workspace = true
 crc32c.workspace = true
 fail = { workspace = true, optional = true }
 futures.workspace = true
+http.workspace = true
 lance.workspace = true
 lance-table.workspace = true
 moka = { workspace = true, features = ["sync"] }
@@ -36,6 +37,7 @@ operon-query.workspace = true
 operon-store.workspace = true
 operon-worker.workspace = true
 postcard.workspace = true
+reqwest.workspace = true
 roaring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -48,6 +50,7 @@ xxhash-rust.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
 operon-collection = { workspace = true, features = ["test-util"] }
 operon-hot = { path = ".", features = ["test-util"] }
 operon-link = { workspace = true, features = ["test-util"] }

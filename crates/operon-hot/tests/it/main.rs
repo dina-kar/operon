@@ -4,6 +4,7 @@ mod build;
 mod common;
 mod placement;
 mod registry;
+mod remote;
 mod splits;
 mod tier;
 mod view;

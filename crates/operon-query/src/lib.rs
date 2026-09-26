@@ -57,9 +57,7 @@ pub use scan::{
     ScanColumn, ScanDeletionFile, ScanFile, ScanFragment, ScanOffsets, ScanPin, ScanPlan,
     ScanRequest,
 };
-pub use service::{
-    CREATED_AT_ANNOTATION, CollectionService, ScrollPage, ServiceConfig, SqlConfig, forwarded_token,
-};
+pub use service::{CREATED_AT_ANNOTATION, CollectionService, ScrollPage, ServiceConfig, SqlConfig};
 pub use types::{
     AliasAction, CollectionInfo, ManifestInfo, OpPosition, OpResult, PinnedRead, Projection,
     SourceFilter, StoredDoc, WriteOptions, WriteResult,
