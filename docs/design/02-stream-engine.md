@@ -105,7 +105,7 @@ Read amplification control: reads of recent data are coalesced per WAL object (o
 
 ## 7. Stream APIs
 
-Streams are reached through Operon's own API. The HTTP produce and long-poll fetch routes exist from M0.3. **M2 completes the core for v1.0** (D72): gRPC, idempotent producers, streaming subscribe, named consumers and stream admin. OTLP logs arrive through their own endpoint in M2 (§7.1). M5 adds Flight `DoGet` replay, changelog streams (§8.1) and the Kafka wire-protocol gateway (§7.2). Streams and namespaces are addressed by name. Collection writes go through a collection's implicit stream and are refused with 429 and `Retry-After` while the collection's unapplied backlog is over its budget (D86); explicit streams have no apply backlog, and M2's ingest-bytes quota bounds them (D65).
+Streams are reached through Operon's own API. The HTTP produce and long-poll fetch routes exist from M0.3. **M2 completes the core for v1.0** (D72): gRPC, idempotent producers, streaming subscribe, named consumers and stream admin. OTLP logs arrive through their own endpoint in M2 (§7.1). M5 adds Flight `DoGet` replay, changelog streams (§8.1) and the Kafka wire-protocol gateway (§7.2). Streams and namespaces are addressed by name. Collection writes go through a collection's implicit stream and are refused with 429 and `Retry-After` while the collection's unapplied backlog is at or above its budget (D86); explicit streams have no apply backlog, and M2's ingest-bytes quota bounds them (D65).
 
 | Feature | Design | Phase |
 |---|---|---|
