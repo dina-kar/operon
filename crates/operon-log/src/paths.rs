@@ -1,7 +1,7 @@
 //! Object paths of the log (design §01 §6, M0.3 plan ruling 4).
 
+use operon_common::meta::WalClass;
 use operon_common::{NamespaceId, StreamId};
-use operon_meta::WalClass;
 use ulid::Ulid;
 
 /// The path segment naming a WAL class.

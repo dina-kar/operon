@@ -9,11 +9,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use operon_cache::RangeCache;
-use operon_common::{NamespaceId, StreamId};
-use operon_meta::{
-    ApplyError, Command, Consistency, EntryKind, Freshness, IndexEntry, MetaClient, MetaError,
-    PartitionState, Reply, WalClass,
+use operon_common::meta::{
+    ApplyError, Consistency, EntryKind, Freshness, IndexEntry, MetaError, MetaStore,
+    PartitionIndex, SegmentSwap, WalClass, log_stale_object,
 };
+use operon_common::{NamespaceId, StreamId};
 use operon_store::Store;
 use operon_worker::{
     Candidate, Priority, RunResult, Task, TaskContext, TaskError, TaskKey, TaskOutcome, TaskSource,
@@ -91,7 +91,7 @@ fn millis(duration: Duration) -> u64 {
 /// The leading run of WAL entries of a partition (after its segments), up to
 /// `target_bytes`, if it is due: it holds `min_bytes`, or its oldest entry's
 /// newest timestamp is older than `cutoff`. Empty if nothing is due.
-fn due_run(state: &PartitionState, config: &SegmenterConfig, cutoff: i64) -> Vec<IndexEntry> {
+fn due_run(state: &PartitionIndex, config: &SegmenterConfig, cutoff: i64) -> Vec<IndexEntry> {
     let mut entries = Vec::new();
     let mut bytes = 0;
     for entry in state
@@ -167,19 +167,19 @@ impl SegmenterSource {
 
 /// The due run of one partition, as of a local read.
 async fn due(
-    meta: &MetaClient,
+    meta: &dyn MetaStore,
     config: &SegmenterConfig,
     stream: StreamId,
     partition: u32,
 ) -> Result<Vec<IndexEntry>, MetaError> {
     let cutoff =
         i64::try_from(meta.now_ms().saturating_sub(millis(config.max_wal_age))).unwrap_or(i64::MAX);
-    meta.read(Consistency::Local, |s| {
-        s.partition(stream, partition)
-            .map(|state| due_run(state, config, cutoff))
-            .unwrap_or_default()
-    })
-    .await
+    let index = meta
+        .partition_index(Consistency::Local, stream, partition, 0, None)
+        .await?;
+    Ok(index
+        .map(|state| due_run(&state, config, cutoff))
+        .unwrap_or_default())
 }
 
 #[async_trait]
@@ -188,17 +188,16 @@ impl TaskSource for SegmenterSource {
         Priority::Segmenting
     }
 
-    async fn candidates(&self, meta: &MetaClient) -> Result<Vec<Candidate>, TaskError> {
+    async fn candidates(&self, meta: &dyn MetaStore) -> Result<Vec<Candidate>, TaskError> {
         // One short read for the streams, then one per partition, so the scan
         // never holds the state lock for long.
         let streams: Vec<(NamespaceId, StreamId, u32)> = meta
-            .read(Consistency::Local, |s| {
-                s.all_streams()
-                    .filter(|st| st.class == WalClass::Standard)
-                    .map(|st| (st.namespace, st.id, st.partitions))
-                    .collect()
-            })
-            .await?;
+            .streams(Consistency::Local, None)
+            .await?
+            .into_iter()
+            .filter(|st| st.class == WalClass::Standard)
+            .map(|st| (st.namespace, st.id, st.partitions))
+            .collect();
         let mut candidates = Vec::new();
         for (namespace, stream, partitions) in streams {
             for partition in 0..partitions {
@@ -244,7 +243,7 @@ impl Task for SegmentTask {
     async fn run(&self, ctx: TaskContext) -> Result<TaskOutcome, TaskError> {
         let config = &self.shared.config;
         // Plan again: the candidate was computed at poll time.
-        let entries = due(&ctx.meta, config, self.stream, self.partition).await?;
+        let entries = due(&*ctx.meta, config, self.stream, self.partition).await?;
         if entries.is_empty() {
             return Ok(TaskOutcome::Idle);
         }
@@ -253,7 +252,7 @@ impl Task for SegmentTask {
                 self.shared.record(|r| r.segments += 1);
                 // Another run may be due already (a backlog longer than
                 // `target_bytes`).
-                let more = !due(&ctx.meta, config, self.stream, self.partition)
+                let more = !due(&*ctx.meta, config, self.stream, self.partition)
                     .await?
                     .is_empty();
                 Ok(if more {
@@ -343,7 +342,7 @@ impl SegmentTask {
             self.delete_unused(ctx, &path).await;
             return Ok(Attempt::Skipped);
         }
-        let command = Command::SwapSegment {
+        let swap = SegmentSwap {
             stream,
             partition,
             replaces: entries
@@ -354,7 +353,6 @@ impl SegmentTask {
             byte_range: footer.data,
             max_timestamp_ms,
             fence: Some(ctx.fence.clone()),
-            now_ms: ctx.meta.now_ms(),
             // Enforced when the swap is applied, so a swap delayed past the
             // deadline (retries, a frozen process) can never reference a
             // segment GC may have deleted (M0.4 review I1).
@@ -363,13 +361,13 @@ impl SegmentTask {
                 max_age_ms: millis(self.shared.config.swap_deadline),
             },
         };
-        let (result, earlier_unknown) = ctx.meta.write_tracked(command).await;
-        match result {
-            Ok(Reply::SegmentSwapped) => {
+        let tracked = ctx.meta.swap_segment(swap).await;
+        let earlier_unknown = tracked.earlier_unknown;
+        match tracked.result {
+            Ok(()) => {
                 crate::failpoint!("seg.after_swap");
                 Ok(Attempt::Swapped)
             }
-            Ok(other) => Err(MetaError::UnexpectedReply(format!("{other:?}")).into()),
             // A rejection of the first attempt means the swap was never
             // applied (a retry of an applied swap succeeds), so the segment
             // is unreferenced. After an attempt with an unknown outcome the
@@ -380,7 +378,7 @@ impl SegmentTask {
                 | ApplyError::Fenced { .. }
                 | ApplyError::StaleObject { .. }),
             )) => {
-                operon_meta::log_stale_object(&rejection, ctx.meta.now_ms());
+                log_stale_object(&rejection, ctx.meta.now_ms());
                 if !earlier_unknown {
                     self.delete_unused(ctx, &path).await;
                 }
@@ -401,14 +399,7 @@ impl SegmentTask {
     /// references nor retired the path.
     async fn delete_unused(&self, ctx: &TaskContext, path: &str) {
         let (stream, partition) = (self.stream, self.partition);
-        let known = ctx
-            .meta
-            .read(Consistency::Linearizable, |s| {
-                s.retired().any(|(p, _)| p == path)
-                    || s.partition(stream, partition)
-                        .is_some_and(|state| state.entries().any(|e| e.object == path))
-            })
-            .await;
+        let known = ctx.meta.segment_referenced(stream, partition, path).await;
         match known {
             Ok(false) => {
                 if let Err(err) = self.shared.store.delete(path).await {
@@ -425,23 +416,23 @@ impl SegmentTask {
 /// ([`operon_worker::run_once`]), for tests and tools.
 #[derive(Clone, Debug)]
 pub struct Segmenter {
-    meta: MetaClient,
+    meta: Arc<dyn MetaStore>,
     owner: String,
     source: SegmenterSource,
 }
 
 impl Segmenter {
     /// `owner` names this process incarnation in leases; it must be unique
-    /// per process (see `Command::AcquireLease`).
+    /// per process (see [`MetaStore::acquire_lease`]).
     pub fn new(
-        meta: MetaClient,
+        meta: impl Into<Arc<dyn MetaStore>>,
         store: Store,
         cache: RangeCache,
         owner: impl Into<String>,
         config: SegmenterConfig,
     ) -> Self {
         Self {
-            meta,
+            meta: meta.into(),
             owner: owner.into(),
             source: SegmenterSource::new(store, cache, config),
         }
@@ -457,7 +448,7 @@ impl Segmenter {
     pub async fn run_once(&self) -> Result<SegmenterReport, LogError> {
         let before = self.source.report();
         let results = operon_worker::run_once(
-            &self.meta,
+            self.meta.clone(),
             &self.owner,
             self.source.shared.config.lease_ttl,
             &self.source,

@@ -26,7 +26,6 @@ operon-cache.workspace = true
 operon-common.workspace = true
 operon-link.workspace = true
 operon-log.workspace = true
-operon-meta.workspace = true
 operon-pk.workspace = true
 operon-quickwit.workspace = true
 operon-store.workspace = true
@@ -56,7 +55,6 @@ failpoints = [
     "fail/failpoints",
     "operon-link/failpoints",
     "operon-log/failpoints",
-    "operon-meta/failpoints",
 ]
 
 [build-dependencies]
@@ -70,6 +68,16 @@ operon-meta = { workspace = true, features = ["test-util"] }
 operon-worker = { workspace = true, features = ["test-util"] }
 proptest.workspace = true
 tempfile.workspace = true
+
+# The named-failpoint tests are process-global (arming a failpoint would
+# crash every other test running alongside), so they are their own binary;
+# `#![cfg(feature = "failpoints")]` in tests/it_failpoints/target_failpoints.rs
+# already compiles it to nothing without the feature, and this makes cargo
+# skip building the binary entirely in that case.
+[[test]]
+name = "it_failpoints"
+path = "tests/it_failpoints/main.rs"
+required-features = ["failpoints"]
 
 [lints]
 workspace = true

@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use bytes::{Bytes, BytesMut};
 use operon_common::StreamId;
-use operon_meta::WalClass;
+use operon_common::meta::WalClass;
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 

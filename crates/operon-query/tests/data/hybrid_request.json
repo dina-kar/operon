@@ -1,0 +1,49 @@
+{
+  "collection": "kb",
+  "consistency": "strong",
+  "retrievers": [
+    {
+      "vector": {
+        "field": "embedding",
+        "query": [1.0, 0.0, 0.0],
+        "k": 10,
+        "params": {
+          "exact": false,
+          "nprobes": null,
+          "refine_factor": null,
+          "ef": null,
+          "oversampling": null,
+          "distance": null
+        },
+        "filter": null
+      }
+    },
+    {
+      "text": {
+        "query": {
+          "match": {
+            "field": "body",
+            "text": "refund",
+            "operator": "or",
+            "minimum_should_match": null,
+            "fuzziness": null,
+            "analyzer": null
+          }
+        },
+        "k": 10
+      }
+    }
+  ],
+  "fusion": {"rrf": {"k": 60}},
+  "filter": null,
+  "sort": [],
+  "offset": 0,
+  "limit": 3,
+  "search_after": null,
+  "score_threshold": null,
+  "select": {"source": "all", "vectors": [], "fields": []},
+  "aggregations": null,
+  "highlight": null,
+  "group_by": null,
+  "track_total_hits": "none"
+}

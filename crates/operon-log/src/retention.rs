@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use operon_common::StreamId;
-use operon_meta::{ApplyError, Consistency, Fence, MetaClient, MetaError, PartitionState};
+use operon_common::meta::{ApplyError, Consistency, Fence, MetaError, MetaStore, PartitionIndex};
 use operon_worker::{
     Candidate, Priority, RunResult, Task, TaskContext, TaskError, TaskKey, TaskOutcome, TaskSource,
 };
@@ -46,7 +46,7 @@ pub struct RetentionReport {
 
 /// Where retention would move one partition's log start, if anywhere.
 fn trim_point(
-    state: &PartitionState,
+    state: &PartitionIndex,
     max_age_ms: Option<u64>,
     max_bytes: Option<u64>,
     now_ms: u64,
@@ -87,28 +87,24 @@ fn fenced(err: MetaError) -> TaskError {
 
 /// Trims every partition whose policy says so, then prunes WAL commit
 /// records older than twice the commit window, all fenced by `fence`.
-async fn apply(meta: &MetaClient, fence: &Fence) -> Result<RetentionReport, TaskError> {
+async fn apply(meta: &dyn MetaStore, fence: &Fence) -> Result<RetentionReport, TaskError> {
     let now = meta.now_ms();
     // One short read for the policies, then one per partition, so the scan
     // never holds the state lock for long.
-    let policies: Vec<(StreamId, u32, operon_meta::Retention)> = meta
-        .read(Consistency::Local, |s| {
-            s.all_streams()
-                .filter(|st| st.retention.max_age_ms.is_some() || st.retention.max_bytes.is_some())
-                .map(|st| (st.id, st.partitions, st.retention))
-                .collect()
-        })
-        .await?;
+    let policies: Vec<(StreamId, u32, operon_common::meta::Retention)> = meta
+        .streams(Consistency::Local, None)
+        .await?
+        .into_iter()
+        .filter(|st| st.retention.max_age_ms.is_some() || st.retention.max_bytes.is_some())
+        .map(|st| (st.id, st.partitions, st.retention))
+        .collect();
     let mut report = RetentionReport::default();
     for (stream, partitions, policy) in policies {
         for partition in 0..partitions {
             let before = meta
-                .read(Consistency::Local, |s| {
-                    s.partition(stream, partition).and_then(|state| {
-                        trim_point(state, policy.max_age_ms, policy.max_bytes, now)
-                    })
-                })
-                .await?;
+                .partition_index(Consistency::Local, stream, partition, 0, None)
+                .await?
+                .and_then(|state| trim_point(&state, policy.max_age_ms, policy.max_bytes, now));
             if let Some(before) = before {
                 meta.trim_partition(stream, partition, before, Some(fence.clone()))
                     .await
@@ -181,7 +177,7 @@ impl TaskSource for RetentionSource {
         Priority::Maintenance
     }
 
-    async fn candidates(&self, _meta: &MetaClient) -> Result<Vec<Candidate>, TaskError> {
+    async fn candidates(&self, _meta: &dyn MetaStore) -> Result<Vec<Candidate>, TaskError> {
         let due = self
             .shared
             .last_run
@@ -204,7 +200,7 @@ impl Task for RetentionTask {
             .last_run
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
-        let report = apply(&ctx.meta, &ctx.fence).await?;
+        let report = apply(&*ctx.meta, &ctx.fence).await?;
         if report.trimmed > 0 || report.pruned > 0 {
             tracing::debug!(?report, "retention run");
         }
@@ -223,16 +219,20 @@ impl Task for RetentionTask {
 /// tools.
 #[derive(Clone, Debug)]
 pub struct Retention {
-    meta: MetaClient,
+    meta: Arc<dyn MetaStore>,
     owner: String,
     source: RetentionSource,
 }
 
 impl Retention {
     /// `owner` names this process incarnation in the task lease.
-    pub fn new(meta: MetaClient, owner: impl Into<String>, config: RetentionConfig) -> Self {
+    pub fn new(
+        meta: impl Into<Arc<dyn MetaStore>>,
+        owner: impl Into<String>,
+        config: RetentionConfig,
+    ) -> Self {
         Self {
-            meta,
+            meta: meta.into(),
             owner: owner.into(),
             source: RetentionSource::new(config),
         }
@@ -252,17 +252,21 @@ impl Retention {
             fn priority(&self) -> Priority {
                 Priority::Maintenance
             }
-            async fn candidates(&self, _meta: &MetaClient) -> Result<Vec<Candidate>, TaskError> {
+            async fn candidates(&self, _meta: &dyn MetaStore) -> Result<Vec<Candidate>, TaskError> {
                 Ok(vec![self.0.clone()])
             }
         }
         let before = self.source.report();
         let ttl = (self.source.shared.config.interval * 3)
             .clamp(Duration::from_secs(1), Duration::from_secs(3600));
-        let results =
-            operon_worker::run_once(&self.meta, &self.owner, ttl, &Once(self.source.task()))
-                .await
-                .map_err(LogError::Task)?;
+        let results = operon_worker::run_once(
+            self.meta.clone(),
+            &self.owner,
+            ttl,
+            &Once(self.source.task()),
+        )
+        .await
+        .map_err(LogError::Task)?;
         let after = self.source.report();
         let mut report = RetentionReport {
             trimmed: after.trimmed - before.trimmed,

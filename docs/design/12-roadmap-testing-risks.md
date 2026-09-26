@@ -26,7 +26,7 @@ Build order follows the pain point and the shortest path to production: **hybrid
 2. **Object-store fault injection:** an `object_store` wrapper injecting latency, 5xx, throttling (503 SlowDown), 412/409 on conditional writes, partial reads, and crashes between PUT and commit.
 3. **Crash-consistency tests:** kill -9 at instrumented failpoints (`fail` crate) across write, segment, commit, compaction and GC paths.
 4. **Property-based tests (`proptest`):** WAL/segment encode/decode, offset index, manifest evolution, deletion bitmap algebra, CSR build vs. naive adjacency, tail merge vs. full rebuild.
-5. **Metastore conformance (D47):** one test suite written against `trait MetaStore` — sequencer, catalog, manifest CAS, leases and fencing, with the linearizability checker — runs against every backend (openraft single-node and 3-node, Postgres from M2, FoundationDB from M6). The seeded simulation and the crash/fault gates run on each backend.
+5. **Metastore conformance (D47):** one test suite written against `trait MetaStore` — sequencer, catalog, manifest CAS, leases and fencing, with the linearizability checker — runs against every backend (openraft single-node and 3-node, Postgres from M2, FoundationDB from M6). The seeded simulation and the crash/fault gates run on each backend. The suite is the `operon-meta-conformance` crate; each backend expands `metastore_conformance!` in its tests (M1.2a).
 6. **Differential testing:**
    - Hot tier on/off must return identical results (random disabling in CI).
    - Operon vs. reference engines: ES (BM25 rankings on fixed corpora), Qdrant (recall), a naive-adjacency reference (graph expansion on fixture graphs), DuckDB over the same Iceberg tables (analytical query results), DataFusion-on-Parquet baseline.

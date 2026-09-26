@@ -40,9 +40,9 @@ use lance_index::vector::sq::builder::SQBuildParams;
 use lance_index::{IndexParams, IndexType};
 use lance_linalg::distance::DistanceType;
 use lance_table::format::IndexMetadata;
+use operon_common::meta::{Collection, Consistency, Fence, MetaStore};
 use operon_common::{CollectionId, NamespaceId};
 use operon_link::CommitError;
-use operon_meta::{Collection, Consistency, Fence, MetaClient, collection_pointer_key};
 use operon_worker::{
     Candidate, Priority, Task, TaskContext, TaskError, TaskKey, TaskOutcome, TaskSource,
 };
@@ -450,17 +450,16 @@ impl TaskSource for IndexBuildSource {
         Priority::Compaction
     }
 
-    async fn candidates(&self, meta: &MetaClient) -> Result<Vec<Candidate>, TaskError> {
+    async fn candidates(&self, meta: &dyn MetaStore) -> Result<Vec<Candidate>, TaskError> {
         let collections: Vec<(NamespaceId, CollectionId, u64)> = meta
-            .read(Consistency::Local, |s| {
-                s.all_collections()
-                    .filter_map(|c| {
-                        let pointer = s.pointer(c.namespace, &collection_pointer_key(c.id))?;
-                        Some((c.namespace, c.id, pointer.version))
-                    })
-                    .collect()
+            .collection_heads(Consistency::Local, None)
+            .await?
+            .into_iter()
+            .filter_map(|head| {
+                let version = head.pointer?.version;
+                Some((head.collection.namespace, head.collection.id, version))
             })
-            .await?;
+            .collect();
         let interval = self.shared.ctx.config.index_poll_interval;
         let mut checked = self
             .shared
@@ -546,10 +545,9 @@ impl IndexTask {
         Ok(self
             .ctx()
             .meta
-            .read(Consistency::Local, |s| {
-                s.collection(cid).filter(|c| c.namespace == ns).cloned()
-            })
-            .await?)
+            .collection(Consistency::Local, cid)
+            .await?
+            .filter(|c| c.namespace == ns))
     }
 
     /// The live manifest's version (`Linearizable`; 0 before the first
@@ -557,7 +555,7 @@ impl IndexTask {
     async fn base(&self) -> Result<(u64, Option<Base>), CollectionError> {
         let ctx = self.ctx();
         let live = live_manifest(
-            &ctx.meta,
+            &*ctx.meta,
             &ctx.store,
             &ctx.manifests,
             self.ns,

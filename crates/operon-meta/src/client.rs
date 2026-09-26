@@ -16,7 +16,7 @@ use tokio::sync::watch;
 
 use crate::clock::Clock;
 use crate::command::{Command, Reply};
-use crate::node::MetaNode;
+use crate::node::{AttemptError, MetaNode};
 use crate::raft::NodeId;
 use crate::state::MetaState;
 
@@ -172,11 +172,12 @@ impl MetaClient {
 
     /// Runs `op` against the leader, retrying as the type docs describe.
     /// Also returns whether an attempt before the last one failed with an
-    /// error that leaves a write's outcome unknown.
+    /// error that leaves a write's outcome unknown: every retryable error
+    /// except a refusal before proposing ([`AttemptError::refused`]).
     async fn on_leader<T, F, Fut>(&self, op: F) -> (Result<T, MetaError>, bool)
     where
         F: Fn(MetaNode) -> Fut,
-        Fut: Future<Output = Result<T, MetaError>>,
+        Fut: Future<Output = Result<T, AttemptError>>,
     {
         let deadline = Instant::now() + self.inner.config.retry_deadline;
         let mut backoff = self.inner.config.backoff;
@@ -191,8 +192,21 @@ impl MetaClient {
                     self.remember_leader(node.id());
                     return (Ok(value), earlier_unknown);
                 }
-                Err(err) if !is_retryable(&err) => return (Err(err), earlier_unknown),
-                Err(err) => err,
+                Err(attempt) if !is_retryable(&attempt.error) => {
+                    return (Err(attempt.error), earlier_unknown);
+                }
+                Err(attempt) => {
+                    // A node that refused before proposing (it did not believe
+                    // it was the leader) never appended the command to its
+                    // log, so the attempt definitely did not apply. Every
+                    // other retryable failure, a `NotLeader` from a node that
+                    // lost leadership after proposing included, leaves the
+                    // attempt's outcome unknown.
+                    if !attempt.refused {
+                        earlier_unknown = true;
+                    }
+                    attempt.error
+                }
             };
             // A fresh hint to another node is followed at once; anything else
             // waits out the backoff first, so two nodes that disagree about the
@@ -208,7 +222,6 @@ impl MetaClient {
             {
                 target = next;
                 followed_hint = true;
-                earlier_unknown = true;
                 continue;
             }
             target = hinted.unwrap_or((target + 1) % count);
@@ -217,7 +230,6 @@ impl MetaClient {
             if remaining.is_zero() {
                 return (Err(err), earlier_unknown);
             }
-            earlier_unknown = true;
             tracing::debug!(%err, ?backoff, "metastore request failed; retrying");
             tokio::time::sleep(backoff.min(remaining)).await;
             backoff = (backoff * 2).min(MAX_BACKOFF);
@@ -231,17 +243,23 @@ impl MetaClient {
 
     /// Like [`MetaClient::write`], and also says whether an earlier attempt of
     /// this call failed with an error that leaves its outcome unknown
-    /// (`NotLeader`, `Timeout` or `Unavailable`). When it did, a rejection of
-    /// the final attempt does not prove the command was never applied: for
-    /// example a retried `CommitWal` whose commit record has since been pruned
-    /// is rejected as stale although the first attempt committed it.
+    /// (`Timeout`, `Unavailable`, or a `NotLeader` that may follow the
+    /// proposal). When it did, a rejection of the final attempt does not
+    /// prove the command was never applied: for example a retried `CommitWal`
+    /// whose commit record has since been pruned is rejected as stale
+    /// although the first attempt committed it. A node that does not believe
+    /// it is the leader refuses with `NotLeader` before proposing; that
+    /// refusal never sets it, because the attempt definitely did not apply.
+    /// A `NotLeader` from openraft after the command reached a leader does
+    /// set it: openraft also answers a write it already proposed that way
+    /// when leadership changes before the reply.
     pub async fn write_tracked(&self, command: Command) -> (Result<Reply, MetaError>, bool) {
         self.on_leader(|node| {
             let command = command.clone();
             async move {
-                let reply = node.write(command).await?;
+                let reply = node.write_attempt(command).await?;
                 if self.take_lost_ack() {
-                    return Err(MetaError::Timeout);
+                    return Err(MetaError::Timeout.into());
                 }
                 Ok(reply)
             }
@@ -263,7 +281,7 @@ impl MetaClient {
                 let leader = self
                     .on_leader(|node| async move {
                         node.read(Consistency::Linearizable, |_| ()).await?;
-                        Ok(node)
+                        Ok::<_, AttemptError>(node)
                     })
                     .await
                     .0?;

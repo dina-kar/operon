@@ -27,8 +27,40 @@ jobs:
         run: cargo fmt --all --check
       - name: clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: metastore boundary
+        run: |
+          for c in operon-worker operon-log operon-link operon-collection operon-query; do
+            if cargo tree -p "$c" -e normal --prefix none --locked | grep -q '^operon-meta v'; then
+              echo "$c depends on operon-meta outside dev-dependencies (D47)"; exit 1
+            fi
+          done
+          deps=$(cargo tree -p operon-common -e normal --depth 1 --prefix none --locked | tail -n +2 | awk '{print $1}' | sort -u | tr '\n' ' ')
+          test "$deps" = "async-trait serde thiserror tracing " || { echo "operon-common dependencies changed: $deps"; exit 1; }
+          # A missing path must fail the step: grep exits 2 for it, which an
+          # `if` would read as "no match" (row 0.87).
+          paths="crates/operon-worker/src crates/operon-log/src crates/operon-link/src crates/operon-collection/src crates/operon-query/src crates/operon/src/api"
+          for p in $paths; do
+            test -e "$p" || { echo "metastore boundary path $p does not exist"; exit 1; }
+          done
+          status=0
+          grep -rnwE 'MetaClient|MetaNode|MetaState|PartitionState' $paths || status=$?
+          case $status in
+            0) echo "downstream source names an openraft type (D47)"; exit 1 ;;
+            1) ;;
+            *) echo "the boundary grep failed ($status)"; exit 1 ;;
+          esac
       - name: test
         run: cargo test --workspace --locked
+      - name: metastore encoding
+        run: 'cargo test -p operon-meta --test it encoding:: --locked'
+      - name: metastore conformance
+        run: 'cargo test -p operon-meta --test it conformance:: --locked'
+      - name: log with failpoints
+        run: cargo test -p operon-log --features failpoints --locked
+      - name: link with failpoints
+        run: cargo test -p operon-link --features failpoints --locked
+      - name: collection with failpoints
+        run: cargo test -p operon-collection --features failpoints --locked
 
   crash-gate:
     name: kill -9 crash gate
@@ -56,7 +88,7 @@ jobs:
         run: cargo test -p operon-sim --release --locked
       - name: simulation (1000 seeds x 300 steps, nightly)
         if: github.event_name == 'schedule'
-        run: cargo test -p operon-sim --release --locked --test sim
+        run: 'cargo test -p operon-sim --release --locked --test it sim::'
         env:
           SIM_SEEDS: "1000"
 

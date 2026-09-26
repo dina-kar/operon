@@ -179,4 +179,9 @@ impl MetaState {
     pub fn retired(&self) -> impl Iterator<Item = (&str, u64)> {
         self.retired.iter().map(|(path, at)| (path.as_str(), *at))
     }
+
+    /// Whether `path` is in the retired set, without scanning it.
+    pub fn is_retired(&self, path: &str) -> bool {
+        self.retired.contains_key(path)
+    }
 }

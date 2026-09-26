@@ -12,8 +12,8 @@ use lance::dataset::{ProjectionRequest, ROW_ID};
 use lance::deps::datafusion::prelude::{col, lit};
 use lance::deps::datafusion::scalar::ScalarValue;
 use operon_cache::RangeCache;
+use operon_common::meta::{Collection, CollectionHead, Consistency, MetaStore};
 use operon_common::{CollectionId, NamespaceId};
-use operon_meta::{Collection, Consistency, MetaClient, collection_pointer_key};
 use operon_store::Store;
 use operon_text::{OperonStorage, decode_delete_bitmap};
 use roaring::RoaringBitmap;
@@ -35,7 +35,7 @@ use crate::pk::PrimaryKey;
 /// Everything collection storage needs. Cheap to clone.
 #[derive(Clone)]
 pub struct CollectionContext {
-    pub meta: MetaClient,
+    pub meta: Arc<dyn MetaStore>,
     pub store: Store,
     pub cache: RangeCache,
     pub lance: LanceEnv,
@@ -98,13 +98,18 @@ impl fmt::Debug for CollectionSnapshot {
     }
 }
 
-/// The collection `cid` of namespace `ns`, else `NotFound`.
-fn found(
+/// The collection `cid` of namespace `ns` with its pointer and the metastore
+/// clock, in one metastore read with `consistency`; else `NotFound`.
+async fn head(
+    ctx: &CollectionContext,
     ns: NamespaceId,
     cid: CollectionId,
-    collection: Option<Collection>,
-) -> Result<Collection, CollectionError> {
-    collection
+    consistency: Consistency,
+) -> Result<CollectionHead, CollectionError> {
+    ctx.meta
+        .collection_head(consistency, cid)
+        .await?
+        .filter(|head| head.collection.namespace == ns)
         .ok_or_else(|| CollectionError::NotFound(format!("collection {cid} in namespace {ns}")))
 }
 
@@ -118,17 +123,11 @@ impl CollectionSnapshot {
         cid: CollectionId,
         consistency: Consistency,
     ) -> Result<Self, CollectionError> {
-        let key = collection_pointer_key(cid);
-        let (collection, pointer) = ctx
-            .meta
-            .read(consistency, |state| {
-                (
-                    state.collection(cid).filter(|c| c.namespace == ns).cloned(),
-                    state.pointer(ns, &key).cloned(),
-                )
-            })
-            .await?;
-        let collection = found(ns, cid, collection)?;
+        let CollectionHead {
+            collection,
+            pointer,
+            ..
+        } = head(ctx, ns, cid, consistency).await?;
         match pointer {
             None => {
                 let empty = Arc::new(CollectionManifest::empty(cid));
@@ -159,18 +158,12 @@ impl CollectionSnapshot {
         cid: CollectionId,
         version: u64,
     ) -> Result<Self, CollectionError> {
-        let key = collection_pointer_key(cid);
-        let (collection, pointer, clock_ms) = ctx
-            .meta
-            .read(Consistency::Linearizable, |state| {
-                (
-                    state.collection(cid).filter(|c| c.namespace == ns).cloned(),
-                    state.pointer(ns, &key).cloned(),
-                    state.clock_ms(),
-                )
-            })
-            .await?;
-        let collection = found(ns, cid, collection)?;
+        let CollectionHead {
+            collection,
+            pointer,
+            clock_ms,
+            ..
+        } = head(ctx, ns, cid, Consistency::Linearizable).await?;
         let Some(pointer) = pointer else {
             if version == 0 {
                 let empty = Arc::new(CollectionManifest::empty(cid));

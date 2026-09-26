@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use operon_common::meta::{Consistency, Link, LinkId, MetaStore};
 use operon_log::{FetchRequest, LogError, LogReader};
-use operon_meta::{Consistency, Link, LinkId, MetaClient};
 use operon_worker::{
     Candidate, Priority, Task, TaskContext, TaskError, TaskKey, TaskOutcome, TaskSource,
 };
@@ -50,6 +50,7 @@ impl Default for LinkConfig {
 const FETCH_BYTES: usize = 1024 * 1024;
 
 struct Shared {
+    meta: Arc<dyn MetaStore>,
     reader: LogReader,
     registry: TargetRegistry,
     config: LinkConfig,
@@ -80,9 +81,15 @@ impl std::fmt::Debug for LinkApplySource {
 }
 
 impl LinkApplySource {
-    pub fn new(reader: LogReader, registry: TargetRegistry, config: LinkConfig) -> Self {
+    pub fn new(
+        meta: impl Into<Arc<dyn MetaStore>>,
+        reader: LogReader,
+        registry: TargetRegistry,
+        config: LinkConfig,
+    ) -> Self {
         Self {
             shared: Arc::new(Shared {
+                meta: meta.into(),
                 reader,
                 registry,
                 config,
@@ -128,26 +135,23 @@ impl TaskSource for LinkApplySource {
         Priority::LinkApply
     }
 
-    async fn candidates(&self, meta: &MetaClient) -> Result<Vec<Candidate>, TaskError> {
-        let links: Vec<(Link, Vec<u64>)> = meta
-            .read(Consistency::Local, |s| {
-                s.all_links()
-                    .map(|l| {
-                        let hwms = s
-                            .stream(l.source)
-                            .map(|st| {
-                                (0..st.partitions)
-                                    .map(|p| {
-                                        s.partition(l.source, p).map_or(0, |ps| ps.high_watermark())
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        (l.clone(), hwms)
-                    })
-                    .collect()
-            })
-            .await?;
+    async fn candidates(&self, meta: &dyn MetaStore) -> Result<Vec<Candidate>, TaskError> {
+        let all_links = meta.links(Consistency::Local, None).await?;
+        let mut links: Vec<(Link, Vec<u64>)> = Vec::with_capacity(all_links.len());
+        for link in all_links {
+            let hwms = meta
+                .stream_state(Consistency::Local, link.source)
+                .await?
+                .map(|state| {
+                    state
+                        .partitions
+                        .into_iter()
+                        .map(|p| p.map_or(0, |bounds| bounds.high_watermark))
+                        .collect()
+                })
+                .unwrap_or_default();
+            links.push((link, hwms));
+        }
         let seen = self
             .shared
             .applied
@@ -181,7 +185,7 @@ impl TaskSource for LinkApplySource {
             if caught_up {
                 continue;
             }
-            let target = match factory.open(meta, &link) {
+            let target = match factory.open(&self.shared.meta, &link) {
                 Ok(target) => target,
                 // One link's target failing to open must not stop the others.
                 Err(err) => {
@@ -228,16 +232,15 @@ impl ApplyTask {
     /// limits. Returns the batch and whether a limit stopped it.
     async fn gather(
         &self,
-        meta: &MetaClient,
+        meta: &dyn MetaStore,
         state: &TargetState,
     ) -> Result<(ApplyBatch, bool), LinkError> {
         let config = &self.shared.config;
         let stream = self.link.source;
         let partitions = meta
-            .read(Consistency::Local, |s| {
-                s.stream(stream).map(|st| st.partitions)
-            })
+            .stream(Consistency::Local, stream)
             .await?
+            .map(|st| st.partitions)
             .ok_or_else(|| LinkError::NotFound(format!("stream {stream}")))?;
         let mut batch = ApplyBatch::default();
         let mut bytes = 0usize;
@@ -320,7 +323,7 @@ impl Task for ApplyTask {
             let state = self.target.load().await.map_err(failed)?;
             self.seen(&state);
             // 2. Records from each partition's applied offset.
-            let (batch, full) = self.gather(&ctx.meta, &state).await.map_err(failed)?;
+            let (batch, full) = self.gather(&*ctx.meta, &state).await.map_err(failed)?;
             let advances = batch
                 .applied_after
                 .iter()

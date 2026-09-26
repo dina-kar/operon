@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
+use operon_common::meta::Fence;
 use operon_log::OffsetRecord;
-use operon_meta::Fence;
 
 use crate::error::LinkError;
 

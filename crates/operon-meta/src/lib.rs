@@ -4,6 +4,9 @@
 //! stream sequencer and offset index, leases, manifest pointers, links, and
 //! the collection catalog. Every change is a [`Command`] applied in Raft log
 //! order, so every replica computes the same state (design §01 §3.2, §02 §3).
+//!
+//! [`MetaClient`] implements [`operon_common::meta::MetaStore`], the semantic
+//! trait every crate outside the composition roots uses (D47).
 
 mod client;
 mod clock;
@@ -16,6 +19,7 @@ mod node;
 mod raft;
 mod state;
 mod state_machine;
+mod store;
 mod types;
 
 pub use client::{MetaClient, MetaClientConfig};
