@@ -111,7 +111,7 @@ Every crate reaches the metastore through **`trait MetaStore`** in `operon-commo
 | **DynamoDB** | `operon-meta-dynamodb` | M2 | AWS-native and serverless deployments; the hosted control plane's store (M2.x) |
 | **TiDB** | `operon-meta-tidb` | M6 | Metadata beyond one Postgres primary: scale-out, strongly consistent SQL over the MySQL protocol |
 
-FoundationDB, planned for M6 by D47, is on the Phase C list, on demand (D58). Every backend serves the same relaxed contract (D59): `commit_wal` is atomic per partition group, commands carry bounded-skew stamps with GC claims instead of one monotonic clock, and composite reads follow documented read orders. The openraft backend is stronger, but callers rely only on the relaxed contract. One conformance suite, with the linearizability checker, runs against every backend, each backend has its own fault matrix, and the crash and fault gates run on each (§12 §2 item 5, §18 §4). The directory, the sharded metastore and the placement rules for millions of namespaces are in §18 §5.
+Every backend serves the same relaxed contract (D59): `commit_wal` is atomic per partition group, commands carry bounded-skew stamps with GC claims instead of one monotonic clock, and composite reads follow documented read orders. The openraft backend is stronger, but callers rely only on the relaxed contract. One conformance suite, with the linearizability checker, runs against every backend, each backend has its own fault matrix, and the crash and fault gates run on each (§12 §2 item 5, §18 §4). The directory, the sharded metastore and the placement rules for millions of namespaces are in §18 §5.
 
 ### 3.3 Protocol surfaces
 

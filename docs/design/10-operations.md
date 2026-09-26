@@ -31,7 +31,7 @@ The metastore is chosen per cluster behind `trait MetaStore` (§01 §3.2, D47):
 | `tidb` | M6 | A TiDB cluster or TiDB Cloud, over the MySQL protocol | TiKV's Raft replication | TiDB's BR backups and point-in-time recovery |
 | `remote` | M2.x | `operon-meta-remote` to the hosted control plane (BYOC-managed-meta) | The control plane's | The control plane's |
 
-FoundationDB is no longer planned; it is on the Phase C list, on demand (D58). Every backend serves the same relaxed contract (D59, §18 §3).
+Every backend serves the same relaxed contract (D59, §18 §3).
 
 A cluster does not switch backends in place in v1.0; moving an existing cluster between backends is not yet designed.
 

@@ -12,7 +12,7 @@ Markers: **(estimate)** is computed from code or specs, not measured. **(verify)
 
 | # | Decision | Milestone |
 |---|---|---|
-| D58 | Postgres **and** DynamoDB metastore backends in v1.0; TiDB (MySQL protocol, sqlx) replaces FoundationDB in M6; FoundationDB moves to Phase C | M2, M6 |
+| D58 | Postgres **and** DynamoDB metastore backends in v1.0; TiDB (MySQL protocol, sqlx) in M6 | M2, M6 |
 | D59 | The `MetaStore` contract is relaxed: `commit_wal` is atomic per partition group; one monotonic clock becomes bounded-skew stamps plus GC claims; composite reads document a safe read order | M2 (first task) |
 | D60 | Backend CI: floci runs the full DynamoDB suite, Alternator 6.2.3 the single-item subset, a fault matrix per backend, a nightly AWS deployment job | M2 |
 | D61 | RustFS 1.0 replaces MinIO as the default self-hosted object store and becomes a per-PR CI target | M2 |
@@ -25,6 +25,7 @@ Markers: **(estimate)** is computed from code or specs, not measured. **(verify)
 | D68 | A GDPR erasure path | M2 |
 | D69 | *(default)* Erasure rewrites tags onto purged copies; 30-day deadline; crypto-shredding in M2.x | M2, M2.x |
 | D70 | *(default)* Ids stay unsharded; calls that take a bare id gain the namespace in M2 | M2 |
+| D71 | FoundationDB is dropped from the roadmap | — |
 
 v1.0 stays M1 + M2 (D46), but M2 grows: a second new backend (DynamoDB), tenancy, erasure and the catalog-scale fixes. That growth is risk 25 in §12. A new milestone, **M2.x "cloud and BYOC" (v1.1)**, follows v1.0.
 
@@ -37,10 +38,11 @@ v1.0 stays M1 + M2 (D46), but M2 grows: a second new backend (DynamoDB), tenancy
 | openraft + redb | `operon-meta` | Default (M0) | `operon dev`, standalone, clusters of 3 or 5 `meta` nodes |
 | **Postgres** | `operon-meta-postgres` | **M2 (v1.0)** | Deployments that run managed Postgres (RDS, Aurora, Cloud SQL, Azure Database) |
 | **DynamoDB** | `operon-meta-dynamodb` | **M2 (v1.0)** | AWS-native and serverless deployments; the natural store for the hosted control plane (M2.x), as WarpStream uses it |
-| **TiDB** | `operon-meta-tidb` | **M6** | Metadata that outgrows one Postgres primary; TiDB Cloud is managed. Replaces FoundationDB's M6 role |
-| FoundationDB | — | Phase C, on demand | Not planned (§2.5) |
+| **TiDB** | `operon-meta-tidb` | **M6** | Metadata that outgrows one Postgres primary; TiDB Cloud is managed |
 
 Every backend implements the same `MetaStore` trait (D47) under the relaxed contract (§3), and passes one conformance suite, the linearizability checks and its own fault matrix (§4).
+
+FoundationDB was considered and dropped: TiDB, DynamoDB and Postgres plus the sharded metastore cover its roles; it needs native `libfdb_c` on every host and has no managed offering (D71).
 
 ### 2.2 Postgres: Lakekeeper's patterns
 
@@ -118,10 +120,6 @@ What is copied from Lakekeeper, with its NOTICE, is listed in §11 §2. Lakekeep
 - **CI.** `pingcap/tidb:v8.5.x` with unistore per PR; `tiup playground` (real PD and TiKV) nightly.
 - **Sharing with Postgres.** The schema design, the conformance and fault harness, and the commit-token logic are shared. The SQL is not: the dialects differ (`RETURNING`, upserts, error codes; Q24), and the crates stay separate.
 - **Change feed.** No LISTEN/NOTIFY; TiCDC is too heavy. It polls, as DynamoDB does.
-
-### 2.5 Why FoundationDB moves to Phase C
-
-D47 gave FoundationDB the M6 role: very high metadata rates and scale-out. TiDB and DynamoDB, together with the sharded metastore (§5), cover that role. FoundationDB needs the native `libfdb_c` client on every host at a version that matches the cluster, and no large cloud offers it managed. Its one unique strength, native watches, does not justify a fourth backend. It stays on the Phase C list, reconsidered on demand.
 
 ## 3. The relaxed `MetaStore` contract (D59)
 

@@ -60,7 +60,6 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | Component | Crate | License | Version | Possible role | Notes |
 |---|---|---|---|---|---|
 | Query federation | **datafusion-federation** (from Spice) | Apache-2.0 | =0.5.5 (the last release on DataFusion 54; 0.5.6+ need 55) | M4: pushing whole sub-plans to remote SQL sources | Evaluate in the M4 plan; like every DataFusion extension it moves in lockstep (risk 21). `datafusion-table-providers` 0.13.1 (Apache-2.0, DataFusion ^54) is the companion crate if connectors are ever needed |
-| FoundationDB client | `foundationdb` crate (foundationdb-rs) over `libfdb_c` | MIT/Apache-2.0; `libfdb_c` Apache-2.0 | 0.11.0 | A FoundationDB metastore backend, Phase C on demand (D58) | Removed from M6: TiDB and DynamoDB cover its role; it needs `libfdb_c` at the cluster's API version on every host, and no large cloud offers FoundationDB managed |
 
 ## 2. Fork (take code, own the fork)
 
