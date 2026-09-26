@@ -107,7 +107,7 @@ Server-side filtering keeps one filter evaluator (Tantivy, R5 of the M1 overview
 
 | Stage | Direct fragment reads |
 |---|---|
-| M1 (`operon dev`, local filesystem or MinIO) | No vending: the reader uses the object-store configuration its operator already has; the plan carries only the endpoint |
+| M1 (`operon dev`, local filesystem or RustFS) | No vending: the reader uses the object-store configuration its operator already has; the plan carries only the endpoint |
 | M2 (v1.0) | **Credential vending**: with `credentials: true` and the `read` permission on the collection (§10 §4), the plan carries short-lived, read-only object-store credentials scoped to the collection's `lance/` prefix: an S3 STS session with an inline session policy, a GCS downscoped token (Credential Access Boundaries), or an Azure user-delegation SAS (verify each), as Lakekeeper vends table credentials. The SDK refreshes them before expiry through a `refresh` call on the plan |
 
 Direct reads bypass per-request authorization inside a collection, so credentials are vended only to principals whose read is unrestricted on that collection; a principal with field-level masking (Phase B) or any other restricted read gets Flight tickets only, and Loam enforces the restriction on the Flight path.

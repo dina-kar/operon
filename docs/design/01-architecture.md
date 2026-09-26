@@ -82,7 +82,7 @@ One binary, `operon`, runs any combination of five roles. All roles except `meta
              meta:        trait MetaStore (§3.2) — namespaces, schemas, stream offsets
                           & segment index, consumer offsets, leases, manifest pointers,
                           link state. Default: embedded openraft (meta role);
-                          Postgres (M2) or FoundationDB (M6) as external backends.
+                          Postgres or DynamoDB (M2), TiDB (M6) as external backends.
              catalog:     Lakekeeper (Iceberg REST) — for Iceberg tables; external engines use it too
 ```
 
@@ -94,7 +94,7 @@ One binary, `operon`, runs any combination of five roles. All roles except `meta
 | `log` | Accept writes, write WAL, request offset assignment, serve recent fetches; host `quorum` journals | `quorum` WAL tail only (replicated) | Ingest bandwidth |
 | `query` | Execute reads/queries; own the hot tier for its routed objects | Cache + hot tier (derived) | Query load, hot data size |
 | `worker` | Background tasks (§09) | None (leases in meta) | Ingest volume, index/compaction backlog |
-| `meta` | Metadata state machine (openraft backend only) | Raft log + snapshots (→ S3) | Metadata op rate (sharded later) |
+| `meta` | Metadata state machine (openraft backend only) | Raft log + snapshots (→ S3) | Metadata op rate (sharded by namespace in M6, §18 §5) |
 
 Small deployments run everything in one process (`operon dev` / `operon standalone`); large ones split roles into separately autoscaled pools.
 
@@ -107,10 +107,11 @@ Every crate reaches the metastore through **`trait MetaStore`** in `operon-commo
 | Backend | Crate | Milestone | Use |
 |---|---|---|---|
 | Embedded **openraft** (redb log, snapshots in the bucket; KRaft / ClickHouse Keeper style) | `operon-meta` | Default (M0) | `operon dev`, standalone, and clusters of 3 or 5 `meta` nodes; no external dependency |
-| **Postgres** | `operon-meta-postgres` | M2 | Deployments that already run managed Postgres (RDS/Aurora, Cloud SQL, Azure Database); no `meta` role to operate. Schema and throughput ceiling are open (Q17) |
-| **FoundationDB** | `operon-meta-fdb` | M6 | Very high metadata rates and multi-region deployments |
+| **Postgres** | `operon-meta-postgres` | M2 | Deployments that already run managed Postgres (RDS/Aurora, Cloud SQL, Azure Database); no `meta` role to operate. Follows Lakekeeper's patterns; the throughput ceiling is open (Q17) |
+| **DynamoDB** | `operon-meta-dynamodb` | M2 | AWS-native and serverless deployments; the hosted control plane's store (M2.x) |
+| **TiDB** | `operon-meta-tidb` | M6 | Metadata beyond one Postgres primary: scale-out, strongly consistent SQL over the MySQL protocol |
 
-One conformance suite, with the linearizability checker, runs against every backend, and the crash and fault gates run on each (§12 §2 item 5).
+FoundationDB, planned for M6 by D47, is on the Phase C list, on demand (D58). Every backend serves the same relaxed contract (D59): `commit_wal` is atomic per partition group, commands carry bounded-skew stamps with GC claims instead of one monotonic clock, and composite reads follow documented read orders. The openraft backend is stronger, but callers rely only on the relaxed contract. One conformance suite, with the linearizability checker, runs against every backend, each backend has its own fault matrix, and the crash and fault gates run on each (§12 §2 item 5, §18 §4). The directory, the sharded metastore and the placement rules for millions of namespaces are in §18 §5.
 
 ### 3.3 Protocol surfaces
 
@@ -191,5 +192,5 @@ All data objects are immutable and named by ULID/version. Only metastore pointer
 | `log` node (quorum) | None for acknowledged data | Raft election in the journal (~1–3 s) |
 | One AZ | `standard`/`express`(multi-bucket)/`quorum` survive with RPO 0 | Capacity in remaining AZs |
 | Meta minority (openraft) | None | Raft |
-| Meta majority (openraft), or the external metastore unavailable | Writes and metadata-dependent reads stall; cached reads continue | openraft: restore from S3 snapshot + Raft log; Postgres/FoundationDB: the backend's own failover and backups (§10 §6) |
+| Meta majority (openraft), or the external metastore unavailable | Writes and metadata-dependent reads stall; cached reads continue | openraft: restore from S3 snapshot + Raft log; Postgres, DynamoDB, TiDB: the backend's own failover and backups (§10 §6) |
 | Object store regional outage | Unavailable | Cross-region replication + meta restore (§10) |
