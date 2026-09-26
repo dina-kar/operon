@@ -89,7 +89,7 @@ pub use operon_common::schema::{
     SparseVectorSpec, VectorElement, VectorIndexSpec, VectorSpec,
 };
 
-pub use crate::lance::{LANCE_SCHEME, LanceCommitter, LanceEnv};
+pub use crate::lance::{CachedObjectStore, LANCE_SCHEME, LanceCommitter, LanceEnv};
 pub use arrow_schema::{
     INGEST_OFFSET_COLUMN, INGEST_PARTITION_COLUMN, NewRow, PK_COLUMN, SOURCE_COLUMN, StoredRow,
     arrow_schema, base_arrow_schema, row_from_batch, sparse_column, to_record_batch, vector_column,
