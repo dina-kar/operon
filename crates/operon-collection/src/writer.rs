@@ -93,8 +93,13 @@ impl CollectionWriter {
     /// newer every op is validated again. Records go to
     /// `partition_of(pk, partitions)`, in input order within a partition.
     ///
-    /// A [`LogError`] fails the whole call, and nothing was written unless
-    /// it is [`LogError::CommitUnknown`].
+    /// Returns one [`OpResult`] per input op, including rejections that do not
+    /// prevent valid ops from being committed. The token is empty if none are
+    /// written. More than [`MAX_WRITE_OPS`] fails with [`WriteError::TooManyOps`]
+    /// before reading the collection; a missing collection or metastore read
+    /// failure also fails the whole call. A [`LogError`] fails the whole call:
+    /// no ops are committed unless it is [`LogError::CommitUnknown`], whose
+    /// commit outcome cannot be determined.
     pub async fn write(
         &self,
         namespace: NamespaceId,
