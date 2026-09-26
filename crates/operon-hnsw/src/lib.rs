@@ -22,7 +22,9 @@ use std::sync::Arc;
 pub use error::HnswError;
 pub use flat::{FLAT_ENGINE, FLAT_FILE, FLAT_MAGIC, FlatEngine, exact_score};
 #[cfg(feature = "qdrant")]
-pub use qdrant::{QDRANT_ENGINE, QdrantEngine, VECTOR_NAME, edge_config};
+pub use qdrant::{
+    APPENDABLE_SEARCH_THREADS, QDRANT_ENGINE, QdrantEngine, VECTOR_NAME, edge_config,
+};
 pub use types::{
     AppendableHnsw, BuildSpec, BuiltFiles, Distance, HnswBuilder, HnswEngine, HnswIndex,
     HnswParams, IdFilter, PayloadField, PayloadKind, PayloadValue, Point, Quantization,

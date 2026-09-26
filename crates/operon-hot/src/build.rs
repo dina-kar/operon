@@ -438,16 +438,40 @@ fn failed(err: impl Into<TierError>) -> TaskError {
     TaskError::failed(err.into())
 }
 
-/// Removes a build directory when dropped: every exit path of a run
-/// (rule 6), cancellation included.
+/// Removes a build directory when dropped: every exit path of a run (rule
+/// 6), cancellation included.
 struct DirGuard(PathBuf);
 
 impl Drop for DirGuard {
     fn drop(&mut self) {
-        if let Err(err) = std::fs::remove_dir_all(&self.0)
-            && err.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!(dir = %self.0.display(), %err, "removing a hot build directory");
+        remove_dir(&self.0);
+    }
+}
+
+/// Removes `dir` and everything under it; a missing directory is fine.
+fn remove_dir(dir: &Path) {
+    if let Err(err) = std::fs::remove_dir_all(dir)
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(dir = %dir.display(), %err, "removing a hot directory");
+    }
+}
+
+/// Removes a loaded artifact's or a delta index's local directory when its
+/// last user drops it (Task 6): on a blocking thread when a Tokio runtime is
+/// running, since that user may be a query on an async worker thread and the
+/// directory may hold gigabytes (row 6.7); inline otherwise.
+#[derive(Debug)]
+pub(crate) struct LocalCopy(pub(crate) PathBuf);
+
+impl Drop for LocalCopy {
+    fn drop(&mut self) {
+        let dir = std::mem::take(&mut self.0);
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                runtime.spawn_blocking(move || remove_dir(&dir));
+            }
+            Err(_) => remove_dir(&dir),
         }
     }
 }
@@ -897,10 +921,23 @@ fn batch_points(
     Ok(points)
 }
 
+/// The payload fields of an artifact's spec with their schema field
+/// indexes, recovered from their `f<field index>` keys (Ruling 3), so a
+/// delta index copies exactly the fields its artifact copied.
+pub(crate) fn spec_payload_fields(spec: &BuildSpec) -> Vec<(usize, PayloadField)> {
+    spec.payload_fields
+        .iter()
+        .filter_map(|field| {
+            let index = field.key.strip_prefix('f')?.parse().ok()?;
+            Some((index, field.clone()))
+        })
+        .collect()
+}
+
 /// The payload of one document: per field, its values from `_source`
 /// coerced to the field's kind; malformed values and nulls are skipped
 /// (rule 5.3), and a field without values is left out.
-fn payload(
+pub(crate) fn payload(
     schema: &CollectionSchema,
     fields: &[(usize, PayloadField)],
     source: &Map<String, Value>,

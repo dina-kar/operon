@@ -38,6 +38,14 @@ const SHARD_DIR: &str = "shard";
 const SEGMENTS_DIR: &str = "segments";
 /// The file `ReadOnlyEdgeShard::open_mmap` discovers segments from.
 const SEGMENTS_MANIFEST: &str = "segments_manifest.json";
+/// The search pool of a build shard, which is never searched (M1.3 row 6.1):
+/// every `EdgeShard` otherwise starts a pool of `num_cpus` threads.
+const BUILD_SEARCH_THREADS: usize = 1;
+/// The search pool of an appendable (delta) shard. A delta holds at most
+/// `delta_max_rows` points in a few segments, and qdrant-edge parallelises a
+/// search across segments, so more threads buy nothing, while one pool per
+/// loaded artifact and column would multiply threads.
+pub const APPENDABLE_SEARCH_THREADS: usize = 2;
 
 /// The qdrant-edge engine.
 #[derive(Clone, Copy, Debug, Default)]
@@ -175,8 +183,14 @@ fn upsert(points: Vec<Point>) -> UpdateOperation {
     ))
 }
 
-fn create_shard(spec: &BuildSpec, dir: &Path) -> Result<EdgeShard, HnswError> {
-    let config = edge_config(spec)?;
+/// A new shard in `dir` whose search pool has `search_threads` threads.
+fn create_shard(
+    spec: &BuildSpec,
+    dir: &Path,
+    search_threads: usize,
+) -> Result<EdgeShard, HnswError> {
+    let mut config = edge_config(spec)?;
+    config.max_search_threads = Some(search_threads);
     std::fs::create_dir_all(dir)?;
     let shard = EdgeShard::new(dir, config).map_err(engine_err)?;
     for field in &spec.payload_fields {
@@ -213,7 +227,7 @@ impl HnswEngine for QdrantEngine {
         work_dir: &Path,
     ) -> Result<Box<dyn HnswBuilder>, HnswError> {
         let shard_dir = work_dir.join(SHARD_DIR);
-        let shard = create_shard(spec, &shard_dir)?;
+        let shard = create_shard(spec, &shard_dir, BUILD_SEARCH_THREADS)?;
         Ok(Box::new(QdrantBuilder {
             dim: spec.dim,
             shard_dir,
@@ -241,7 +255,7 @@ impl HnswEngine for QdrantEngine {
         spec: &BuildSpec,
         work_dir: &Path,
     ) -> Result<Arc<dyn AppendableHnsw>, HnswError> {
-        let shard = create_shard(spec, work_dir)?;
+        let shard = create_shard(spec, work_dir, APPENDABLE_SEARCH_THREADS)?;
         Ok(Arc::new(AppendableQdrant {
             dim: spec.dim,
             distance: spec.distance,

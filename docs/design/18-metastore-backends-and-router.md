@@ -151,7 +151,7 @@ The openraft backend gives every command one total order and one monotonic clock
 - **New contract:** each composite read documents a **safe read order**. Parts that only grow (high watermarks, log starts, pointer versions) are read after the parts they must not lag. Example: read the pointer, then the partition heads. The tail can then only look longer than the manifest's applied offsets, never shorter, and a reader merges it correctly.
 - Each method's order is written in the trait docs, justified, and checked by the linearizability checker.
 - Only DynamoDB needs this. Postgres (a single statement, or REPEATABLE READ) and TiDB (snapshot isolation) give real snapshots, and may keep using them.
-- GC's rule that "tags and retention are read from one metastore snapshot" (§03 §7) becomes a documented order: tags first, then retention.
+- GC's rule that "tags and retention are read from one metastore snapshot" (§03 §7) becomes a documented order: **retention first, then tags**. GC reads the pointer and the clock that decide retention, then the tags, and evaluates retention at that pointer and at that clock minus `max_clock_skew` (§3.2). A tag is created only on a manifest that is still retained, and a manifest's retention only lapses as the pointer and the clock advance, so a manifest tagged after GC's tag read was already retained at GC's retention read, and a tag created before the tag read is seen by it. Reading tags first is unsafe: a tag can land between the two reads on a manifest whose retention lapses before the retention read, and GC would collect a tagged manifest.
 
 ### 3.4 Where it lands
 
@@ -443,7 +443,7 @@ Both modes ship in **M2.x (v1.1)**, after v1.0.
 4. **GC** deletes the retired objects after the grace period and **explicitly evicts their keys from the RAM and NVMe caches**, not only by LRU.
 5. **Tags** *(default, D69)*: an erasure **rewrites a tagged manifest onto a purged copy**; the tag records that it was rewritten, by which erasure and from which manifest version. Erasure wins over bit-exact reproducibility.
 6. **Proof:** an **erasure log** holds keyed key hashes, the request and completion times, and the objects rewritten or retired. A key hash is HMAC-SHA256 of the key's canonical encoding under a per-org erasure-log key, held in the `ControlStore` and wrapped by the deployment's KMS key where there is one. Each entry records its key version; rotation starts a new version, and destroying an org's keys makes its hashes unlinkable. The org can prove a key was erased by recomputing its HMAC, but a plain dictionary attack on guessable keys (email addresses) does not work. The hashes are pseudonymous, not anonymous: the log is readable only by the org's `admin` role and the operator's audit role, and is kept for a retention period the org configures (the M2 plan proposes the default).
-7. **Deadline** *(default, D69)*: completion within **30 days**, targeting days. Completion is bounded by `max(compaction deadline, retention override) + segmenter lag + GC grace`.
+7. **Deadline** *(default, D69)*: completion within **30 days**. The expected completion time is bounded by `max(compaction deadline, retention override) + segmenter lag + GC grace`.
 8. **Crypto-shredding** *(default, D69)*: per-chunk envelope encryption moves forward from Phase B to **M2.x**. Because WAL objects span namespaces, this needs a data key per chunk (the note on D25). Destroying a namespace's key then makes its bytes unreadable everywhere at once, including WAL objects, noncurrent versions and backups.
 9. **Versioned buckets:** S3 applies lifecycle expiry asynchronously, so the purge does not rely on it. Objects are never overwritten in place: a rewrite writes a new object and retires the old one. GC deletes every version of every object an erasure retires, current and noncurrent, and every delete marker for it, by version id (`ListObjectVersions`, then `DeleteObject` with `versionId`); a plain delete would only add a delete marker and keep the data. The erasure completes only after a version listing shows no version or delete marker of those objects remains. `object_store` has no versioned list or delete (verify), so this is a `Store` extension over the provider SDKs. With cross-region replication, the same deletion runs against the replica bucket, since deletes by version id are not replicated (verify). A lifecycle rule that expires noncurrent versions stays as a backstop (§10 §6).
 
@@ -458,7 +458,7 @@ The M2 gate: after an erasure completes, the key is unreadable through every sur
 
 ## 11. Risks and open questions
 
-Risks 22–26 in §12 cover the relaxed contract, emulator fidelity, router complexity, v1.0 scope and erasure completeness. Open questions Q21–Q25 in §13 cover the shared OpenFGA store, floci's `TransactGetItems`, openraft snapshots at scale, TiDB dialect details and owner confirmation of the defaults.
+Risks 22–26 in §12 cover the relaxed contract, emulator fidelity, router complexity, v1.0 scope and erasure completeness. Open questions Q21–Q25 and Q27 in §13 cover the shared OpenFGA store, floci's `TransactGetItems`, openraft snapshots at scale, TiDB dialect details, owner confirmation of the defaults, and metadata restores after an erasure.
 
 ## 12. Sources
 

@@ -16,12 +16,13 @@ use operon_collection::{
 use operon_common::meta::HotConfig;
 use operon_common::{CollectionId, NamespaceId, StreamId};
 use operon_hnsw::{FlatEngine, HnswEngine};
-use operon_hot::{HotBuildConfig, HotBuildSource, TierError};
+use operon_hot::{HotBuildConfig, HotBuildSource, HotTierConfig, HotTierImpl, TierError};
 use operon_log::{LogConfig, LogReader, LogWriter};
 use operon_meta::{
     Clock, Consistency, LinkId, ManualClock, MetaClient, MetaClientConfig, MetaConfig, MetaNode,
     Router, SystemClock,
 };
+use operon_query::placement::{LocalOnly, Owner, Placement};
 use operon_store::{FaultyStore, Store};
 use operon_worker::{RunResult, TaskError, TaskKey, TaskOutcome, run_once};
 use serde_json::{Value, json};
@@ -269,6 +270,34 @@ impl Fixture {
         self.source_with(self.config())
     }
 
+    /// The fixture's hot tier configuration: local copies under the data
+    /// directory, and the defaults otherwise.
+    pub fn tier_config(&self) -> HotTierConfig {
+        HotTierConfig::new(self.data_dir.path())
+    }
+
+    /// A hot tier without its loop (passes run through `reconcile_once`),
+    /// over `FlatEngine`, owning every collection.
+    pub async fn tier(&self) -> HotTierImpl {
+        self.tier_with(
+            self.tier_config(),
+            Arc::new(LocalOnly),
+            Arc::new(FlatEngine),
+        )
+        .await
+    }
+
+    pub async fn tier_with(
+        &self,
+        config: HotTierConfig,
+        placement: Arc<dyn Placement>,
+        engine: Arc<dyn HnswEngine>,
+    ) -> HotTierImpl {
+        HotTierImpl::new(self.ctx.clone(), config, 1, placement, engine)
+            .await
+            .expect("hot tier")
+    }
+
     pub async fn pin(&self, cid: CollectionId, hot: HotConfig) {
         operon_common::meta::MetaStore::set_collection_hot(&self.meta.client, self.ns, cid, hot)
             .await
@@ -461,6 +490,19 @@ impl Fixture {
     pub async fn shutdown(self) {
         self.writer.shutdown().await.expect("log writer");
         self.meta.node.shutdown().await.expect("shutdown meta");
+    }
+}
+
+/// A placement that says another node owns every collection.
+#[derive(Debug)]
+pub struct Elsewhere;
+
+impl Placement for Elsewhere {
+    fn owner(&self, _: NamespaceId, _: CollectionId) -> Owner {
+        Owner::Remote {
+            node_id: 2,
+            addr: "127.0.0.1:1".parse().expect("an address"),
+        }
     }
 }
 

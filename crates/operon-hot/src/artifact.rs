@@ -410,21 +410,22 @@ pub async fn download(
     }
 
     let limit = descriptor.chunk_bytes;
-    let chunks = descriptor
-        .files
-        .iter()
-        .enumerate()
-        .flat_map(|(index, file)| (0..file.chunks).map(move |chunk| (index, chunk)));
+    // Owned paths: a stream over borrowing iterator adaptors makes the
+    // download future `Send` only for one lifetime, which a caller's spawned
+    // future cannot use.
+    let mut chunks = Vec::new();
+    for (index, file) in descriptor.files.iter().enumerate() {
+        for chunk in 0..file.chunks {
+            chunks.push((index, chunk, chunk_path(prefix, &file.path, chunk)));
+        }
+    }
     let mut frames = futures::stream::iter(chunks)
-        .map(|(index, chunk)| {
-            let path = chunk_path(prefix, &descriptor.files[index].path, chunk);
-            async move {
-                let frame = get_required(store, &path, &format!("missing chunk {path}")).await?;
-                let plain = tokio::task::spawn_blocking(move || decompress(&frame, limit))
-                    .await
-                    .map_err(|err| TierError::Other(format!("decompressing a chunk: {err}")))??;
-                Ok::<_, TierError>((index, chunk, plain))
-            }
+        .map(|(index, chunk, path)| async move {
+            let frame = get_required(store, &path, &format!("missing chunk {path}")).await?;
+            let plain = tokio::task::spawn_blocking(move || decompress(&frame, limit))
+                .await
+                .map_err(|err| TierError::Other(format!("decompressing a chunk: {err}")))??;
+            Ok::<_, TierError>((index, chunk, plain))
         })
         .buffered(parallelism.max(1));
     let mut writing: Option<Writing> = None;
