@@ -9,7 +9,12 @@ export type Column<T> = {
   width?: string;
 };
 
-/** A plain data table. `empty` renders in place of the body when there are no rows. */
+/**
+ * A plain data table. `empty` renders in place of the body when there are no
+ * rows. `onRowClick` is a pointer shortcut only: put a link or button to the
+ * same place in a cell, so keyboard and screen-reader users can reach it.
+ * Clicks on links and buttons inside the row are left to them.
+ */
 export function Table<T>({
   columns,
   rows,
@@ -48,7 +53,19 @@ export function Table<T>({
             <tr
               key={rowKey(row)}
               data-href={onRowClick ? '' : undefined}
-              onClick={onRowClick ? () => onRowClick(row) : undefined}
+              onClick={
+                onRowClick
+                  ? (e) => {
+                      if (
+                        (e.target as HTMLElement).closest(
+                          'a, button, input, select, textarea, label',
+                        )
+                      )
+                        return;
+                      onRowClick(row);
+                    }
+                  : undefined
+              }
             >
               {columns.map((c) => (
                 <td key={c.key} className={c.numeric ? 'loam-num' : undefined}>

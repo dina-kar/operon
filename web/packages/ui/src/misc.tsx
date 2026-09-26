@@ -141,6 +141,10 @@ export function Dialog({
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
+  // The native close event also fires when `open` turns false and the effect
+  // closes the dialog; only a dismissal while `open` is true reports onClose.
+  const openRef = useRef(open);
+  openRef.current = open;
   useEffect(() => {
     const d = ref.current;
     if (!d) return;
@@ -148,7 +152,12 @@ export function Dialog({
     if (!open && d.open) d.close();
   }, [open]);
   return (
-    <dialog ref={ref} className="loam-dialog" onClose={onClose} aria-labelledby={titleId}>
+    <dialog
+      ref={ref}
+      className="loam-dialog"
+      onClose={() => openRef.current && onClose()}
+      aria-labelledby={titleId}
+    >
       <div className="loam-dialog-head">
         <h2 id={titleId}>{title}</h2>
         <Button variant="quiet" size="icon" aria-label="Close" onClick={onClose}>

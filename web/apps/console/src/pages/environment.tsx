@@ -235,6 +235,7 @@ export function EnvironmentPage() {
                         r.response.ok ? `Revoked ${k.name}` : message(r.error),
                         r.response.ok ? 'success' : 'danger',
                       );
+                      if (r.response.ok) keys.reload();
                     }}
                   >
                     Revoke
@@ -259,6 +260,7 @@ export function EnvironmentPage() {
         protectedEnv={e.protected}
         open={newKey}
         onClose={() => setNewKey(false)}
+        onCreated={keys.reload}
       />
     </>
   );
@@ -270,11 +272,13 @@ function NewKey({
   protectedEnv,
   open,
   onClose,
+  onCreated,
 }: {
   project: string;
   environment: string;
   protectedEnv: boolean;
   open: boolean;
+  onCreated: () => void;
   onClose: () => void;
 }) {
   const sas = useLoad(
@@ -301,8 +305,10 @@ function NewKey({
       params: { path: { project, environment } },
       body: { name: name.trim(), service_account: sa || null, scopes, expires_in_days: days },
     });
-    if (r.data) setCreated(r.data);
-    else setError(message(r.error));
+    if (r.data) {
+      setCreated(r.data);
+      onCreated();
+    } else setError(message(r.error));
   };
 
   return (

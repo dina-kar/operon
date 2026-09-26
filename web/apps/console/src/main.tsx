@@ -21,7 +21,6 @@ const router = createBrowserRouter(
   [
     { path: '/sign-in', element: <SignInPage /> },
     { path: '/setup', element: <SetupPage /> },
-    { path: '/consent', element: <ConsentPage /> },
     {
       element: (
         <SessionGate>
@@ -29,6 +28,7 @@ const router = createBrowserRouter(
         </SessionGate>
       ),
       children: [
+        { path: 'consent', element: <ConsentPage /> },
         {
           element: <Shell />,
           children: [

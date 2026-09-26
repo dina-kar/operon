@@ -1,4 +1,4 @@
-import { type DependencyList, useCallback, useEffect, useState } from 'react';
+import { type DependencyList, useCallback, useEffect, useRef, useState } from 'react';
 import { message } from './client';
 
 export type Loaded<T> = {
@@ -16,10 +16,19 @@ export function useLoad<T>(load: () => Promise<Result<T> | T>, deps: DependencyL
     loading: true,
   });
   const [tick, setTick] = useState(0);
+  const lastDeps = useRef<DependencyList | undefined>(undefined);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the caller lists the deps
   useEffect(() => {
     let live = true;
-    setState((s) => ({ ...s, loading: true }));
+    // A reload keeps what is on screen; new deps (another project or
+    // environment) must not show the previous resource while loading.
+    const prev = lastDeps.current;
+    const same =
+      prev !== undefined &&
+      prev.length === deps.length &&
+      prev.every((d, i) => Object.is(d, deps[i]));
+    lastDeps.current = deps;
+    setState((s) => (same ? { ...s, loading: true } : { loading: true }));
     Promise.resolve(load())
       .then((r) => {
         if (!live) return;

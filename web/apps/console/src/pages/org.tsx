@@ -299,6 +299,7 @@ export function TeamsPage() {
                   body: { name: name.trim(), idp_group: group || null },
                 });
                 setCreating(false);
+                if (r.data) teams.reload();
                 toast(
                   r.data ? `Created ${name.trim()}` : message(r.error),
                   r.data ? 'success' : 'danger',
@@ -487,6 +488,7 @@ export function MembersPage() {
                 if (!email.includes('@')) return;
                 const r = await api.POST('/api/v1/org/invitations', { body: { email, role } });
                 setInviting(false);
+                if (r.data) invitations.reload();
                 toast(
                   r.data ? `Invited ${email}` : message(r.error),
                   r.data ? 'success' : 'danger',

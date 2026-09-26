@@ -175,7 +175,10 @@ function RegisterAgent({
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [owner, setOwner] = useState('');
-  const [env, setEnv] = useState('development');
+  const [envChoice, setEnv] = useState<string>();
+  const loadedEnvs = envs.data?.environments ?? [];
+  // Default to an environment that exists, preferring an unprotected one.
+  const env = envChoice ?? (loadedEnvs.find((e) => !e.protected) ?? loadedEnvs[0])?.slug ?? '';
   const [actions, setActions] = useState<Schemas['Action'][]>(['query']);
   const [ttl, setTtl] = useState(900);
   const [error, setError] = useState<string>();
@@ -186,6 +189,7 @@ function RegisterAgent({
     if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(name))
       return setError('Use lowercase letters, digits and dashes, like docs-qa.');
     if (!actions.length) return setError('Allow at least one action.');
+    if (!env) return setError('Pick an environment.');
     const team = teams.data?.teams.find((t) => t.id === owner);
     const r = await api.POST('/api/v1/projects/{project}/agents', {
       params: { path: { project } },
@@ -308,8 +312,8 @@ export function AgentPage() {
     [agent],
   );
   const audit = useLoad(
-    () => api.GET('/api/v1/audit', { params: { query: { project } } }),
-    [project],
+    () => api.GET('/api/v1/audit', { params: { query: { actor: agent, limit: 6 } } }),
+    [agent],
   );
   const [status, setStatus] = useState<Agent['status']>();
   const [confirm, setConfirm] = useState(false);
@@ -515,6 +519,7 @@ export function AgentPage() {
                         r.response.ok ? `Revoked ${t.jti}` : message(r.error),
                         r.response.ok ? 'success' : 'danger',
                       );
+                      if (r.response.ok) tokens.reload();
                     }}
                   >
                     Revoke
@@ -538,10 +543,7 @@ export function AgentPage() {
         </p>
       </Card>
       <Card title="Activity" flush style={{ marginTop: 16 }}>
-        <AuditTable
-          events={(audit.data?.events ?? []).filter((e) => e.actor.id === agentData.id).slice(0, 6)}
-          showProject={false}
-        />
+        <AuditTable events={audit.data?.events ?? []} showProject={false} />
       </Card>
 
       <Dialog

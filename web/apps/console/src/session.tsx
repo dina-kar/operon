@@ -1,6 +1,6 @@
 import { createContext, type ReactNode, useContext, useEffect, useState } from 'react';
 import { Navigate, useLocation } from 'react-router';
-import { api, type Schemas, setCsrfToken } from './api/client';
+import { api, message, type Schemas, setCsrfToken } from './api/client';
 
 type Ctx = {
   instance: Schemas['Instance'];
@@ -44,7 +44,11 @@ export function SessionGate({ children }: { children: ReactNode }) {
       if (!instance.data) throw new Error('The console API did not answer /api/v1/instance.');
       if (instance.data.setup_required) return setState({ kind: 'setup' });
       const session = await api.GET('/api/v1/session');
-      if (session.response.status === 401 || !session.data) return setState({ kind: 'signed-out' });
+      if (session.response.status === 401) return setState({ kind: 'signed-out' });
+      if (!session.data)
+        throw new Error(
+          `GET /api/v1/session answered ${session.response.status}: ${message(session.error)}`,
+        );
       setCsrfToken(session.data.csrf_token);
       const projects = await api.GET('/api/v1/projects');
       if (live)
@@ -66,7 +70,12 @@ export function SessionGate({ children }: { children: ReactNode }) {
   if (state.kind === 'loading') return <div className="boot" aria-busy="true" />;
   if (state.kind === 'setup') return <Navigate to="/setup" replace />;
   if (state.kind === 'signed-out')
-    return <Navigate to={`/sign-in?next=${encodeURIComponent(location.pathname)}`} replace />;
+    return (
+      <Navigate
+        to={`/sign-in?next=${encodeURIComponent(location.pathname + location.search)}`}
+        replace
+      />
+    );
   if (state.kind === 'error')
     return (
       <div className="boot-error">

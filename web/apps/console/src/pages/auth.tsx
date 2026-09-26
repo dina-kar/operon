@@ -5,6 +5,7 @@ import { useSearchParams } from 'react-router';
 import { api, message, type Schemas, setCsrfToken } from '../api/client';
 import { useLoad } from '../api/use';
 import { usePageTitle } from '../page';
+import { useSession } from '../session';
 
 function AuthFrame({
   title,
@@ -42,15 +43,22 @@ export function SignInPage() {
   const submit = async (ev: React.FormEvent) => {
     ev.preventDefault();
     setBusy(true);
-    const r = await api.POST('/api/v1/session', {
-      body: { email, password, ...(code ? { totp_code: code } : {}) },
-    });
-    setBusy(false);
-    if (r.data) {
-      setCsrfToken(r.data.csrf_token);
-      // A full load, so the session gate starts from the new cookie.
-      window.location.assign(`/ui${next.startsWith('/') ? next : '/'}`);
-    } else setError(message(r.error));
+    setError(undefined);
+    try {
+      const r = await api.POST('/api/v1/session', {
+        body: { email, password, ...(code ? { totp_code: code } : {}) },
+      });
+      if (r.data) {
+        setCsrfToken(r.data.csrf_token);
+        // A full load, so the session gate starts from the new cookie. Only
+        // same-origin paths are followed.
+        window.location.assign(`/ui${next.startsWith('/') && !next.startsWith('//') ? next : '/'}`);
+      } else setError(message(r.error));
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -143,20 +151,30 @@ export function SetupPage() {
     password: '',
   });
   const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
   const set = (k: keyof Schemas['SetupRequest']) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm({ ...form, [k]: e.target.value });
   const submit = async (ev: React.FormEvent) => {
     ev.preventDefault();
     if (form.password.length < 12) return setError('Use a password of at least 12 characters.');
-    const r = await api.POST('/api/v1/setup', { body: form });
-    if (r.data) window.location.assign('/ui/');
-    else setError(message(r.error));
+    setBusy(true);
+    setError(undefined);
+    try {
+      const r = await api.POST('/api/v1/setup', { body: form });
+      if (r.data) window.location.assign('/ui/');
+      else setError(message(r.error));
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
   };
   return (
     <AuthFrame title="Set up this install">
       <p className="muted">
-        The server printed a one-time setup token to its log when it started. It creates the
-        organization and its owner, then stops working.
+        When it started, the server wrote a one-time setup token to the file it named in its log,
+        readable only by the server's user. The token lasts an hour, creates the organization and
+        its owner, then stops working.
       </p>
       <form className="form" onSubmit={submit}>
         {error && (
@@ -207,7 +225,7 @@ export function SetupPage() {
             />
           )}
         </Field>
-        <Button variant="primary" type="submit" className="wide">
+        <Button variant="primary" type="submit" className="wide" disabled={busy}>
           Create organization
         </Button>
       </form>
@@ -216,46 +234,88 @@ export function SetupPage() {
 }
 
 /** The consent screen of user delegation (design §19 §5.2, flow 2). */
+/** The consent screen of user delegation (design §19 §5.2, flow 2). */
 export function ConsentPage() {
   usePageTitle('Allow access');
+  const { session } = useSession();
   const [params] = useSearchParams();
-  const client = params.get('client_id') ?? 'claude-code';
-  const scope = (params.get('scope') ?? 'query mcp:tools').split(' ').filter(Boolean);
-  const audience = params.get('audience') ?? 'code-index/development';
-  const [done, setDone] = useState<'allowed' | 'denied'>();
-  if (done)
+  const request = {
+    client_id: params.get('client_id') ?? '',
+    redirect_uri: params.get('redirect_uri') ?? '',
+    scope: params.get('scope') ?? '',
+    audience: params.get('audience') ?? '',
+    state: params.get('state') ?? '',
+    code_challenge: params.get('code_challenge') ?? '',
+    code_challenge_method: 'S256' as const,
+  };
+  const scopes = request.scope.split(' ').filter(Boolean);
+  const complete =
+    Boolean(
+      request.client_id && request.redirect_uri && request.audience && request.code_challenge,
+    ) && params.get('code_challenge_method') === 'S256';
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+
+  const decide = async (decision: 'allow' | 'deny') => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      const r = await api.POST('/api/v1/oauth/consent', { body: { ...request, decision } });
+      if (r.data) window.location.assign(r.data.redirect_to);
+      else setError(message(r.error));
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!complete)
     return (
-      <AuthFrame title={done === 'allowed' ? 'Access allowed' : 'Access denied'}>
-        <p className="muted">
-          {done === 'allowed'
-            ? `Return to ${client}. It now holds a token that acts as you, expires on its own, and never exceeds your rights.`
-            : `${client} got nothing. You can close this tab.`}
-        </p>
+      <AuthFrame title="This link is incomplete">
+        <Notice tone="danger" title="Missing authorization parameters">
+          Start again from the app that sent you here. A consent request needs a client, a redirect,
+          an environment and a PKCE S256 challenge.
+        </Notice>
       </AuthFrame>
     );
   return (
-    <AuthFrame title={`${client} wants to act as you`}>
+    <AuthFrame title={`${request.client_id} wants to act as you`}>
       <div className="consent">
         <div>
+          <span className="muted small">As</span>
+          <span>
+            {session.user.name} <span className="muted small">{session.user.email}</span>
+          </span>
+        </div>
+        <div>
           <span className="muted small">In</span>
-          <Badge>{audience}</Badge>
+          <Badge>{request.audience}</Badge>
         </div>
         <div>
           <span className="muted small">It may</span>
           <span className="chips">
-            {scope.map((s) => (
+            {scopes.map((s) => (
               <Badge key={s}>{s}</Badge>
             ))}
           </span>
         </div>
         <p className="muted small">
-          <KeyRound size={13} aria-hidden="true" /> Its token lasts at most the agent's lifetime cap
-          and is logged under both of you. Revoke it from the agent's page.
+          <KeyRound size={13} aria-hidden="true" /> Its token lasts at most the agent's lifetime
+          cap, never exceeds your rights, and is logged under both of you. Revoke it from the
+          agent's page.
         </p>
       </div>
+      {error && (
+        <Notice tone="danger" title="The decision didn't go through">
+          {error}
+        </Notice>
+      )}
       <div className="consent-actions">
-        <Button onClick={() => setDone('denied')}>Deny</Button>
-        <Button variant="primary" onClick={() => setDone('allowed')}>
+        <Button onClick={() => decide('deny')} disabled={busy}>
+          Deny
+        </Button>
+        <Button variant="primary" onClick={() => decide('allow')} disabled={busy}>
           Allow
         </Button>
       </div>

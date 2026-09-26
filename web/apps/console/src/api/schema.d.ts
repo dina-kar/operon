@@ -527,6 +527,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/oauth/consent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record the signed-in user's consent decision and get the client redirect */
+        post: operations["decideConsent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/.well-known/oauth-protected-resource": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Protected resource metadata (RFC 9728), for MCP clients */
+        get: operations["getProtectedResourceMetadata"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/.well-known/oauth-authorization-server": {
         parameters: {
             query?: never;
@@ -1006,6 +1040,31 @@ export interface components {
             token_endpoint_auth_methods_supported: string[];
             scopes_supported: string[];
             response_types_supported: string[];
+        };
+        /** @description RFC 9728. A 401 from a protected route carries WWW-Authenticate: Bearer resource_metadata="<this document's URL>". */
+        ProtectedResourceMetadata: {
+            resource: string;
+            authorization_servers: string[];
+            scopes_supported: string[];
+            bearer_methods_supported: string[];
+            resource_documentation: string;
+        };
+        /** @description The signed-in user's answer on the consent screen, carrying the authorize request's parameters. */
+        ConsentDecision: {
+            /** @enum {string} */
+            decision: "allow" | "deny";
+            client_id: string;
+            redirect_uri: string;
+            scope: string;
+            audience: string;
+            state: string;
+            code_challenge: string;
+            /** @enum {string} */
+            code_challenge_method: "S256";
+        };
+        ConsentResult: {
+            /** @description The client's redirect_uri with code and state, or with error=access_denied. */
+            redirect_to: string;
         };
         Jwks: {
             keys: {
@@ -2769,6 +2828,7 @@ export interface operations {
                 code_challenge_method: string;
                 scope: string;
                 state: string;
+                audience: string;
             };
             header?: never;
             path?: never;
@@ -2776,12 +2836,92 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description To /ui/consent */
+            /** @description To /ui/consent, with the request's parameters */
             302: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description A server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    decideConsent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConsentDecision"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConsentResult"];
+                };
+            };
+            /** @description A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description A server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getProtectedResourceMetadata: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProtectedResourceMetadata"];
+                };
             };
             /** @description A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited */
             "4XX": {

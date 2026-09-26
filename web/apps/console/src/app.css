@@ -1128,3 +1128,7 @@ code {
     transition: none;
   }
 }
+
+.consent .loam-badge {
+  width: fit-content;
+}
