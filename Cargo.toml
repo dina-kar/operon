@@ -100,6 +100,7 @@ operon-cache = { path = "crates/operon-cache", version = "0.0.1" }
 operon-collection = { path = "crates/operon-collection", version = "0.0.1" }
 operon-common = { path = "crates/operon-common", version = "0.0.1" }
 operon-hnsw = { path = "crates/operon-hnsw", version = "0.0.1" }
+operon-hot = { path = "crates/operon-hot", version = "0.0.1" }
 operon-link = { path = "crates/operon-link", version = "0.0.1" }
 operon-log = { path = "crates/operon-log", version = "0.0.1" }
 operon-meta = { path = "crates/operon-meta", version = "0.0.1" }
