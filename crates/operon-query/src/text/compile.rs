@@ -64,6 +64,10 @@ pub enum CompileMode {
 #[derive(Debug)]
 pub struct CompiledQuery {
     pub query: Box<dyn TantivyQuery>,
+    /// The same query in its rescoring form ([`canonical`]), which scores
+    /// every doc in one summation order whatever the split layout; set by
+    /// [`QueryCompiler::compile_search`] only.
+    pub rescore: Option<Box<dyn TantivyQuery>>,
     /// Everything the query reads, for the vendored `warmup` (rule 8).
     pub warmup: WarmupInfo,
     /// No leaf computes BM25.
@@ -117,7 +121,32 @@ impl<'a> QueryCompiler<'a> {
         query: &Query,
         filter: Option<&Query>,
     ) -> Result<CompiledQuery, ServiceError> {
+        self.build_with_filter(query, filter, false)
+    }
+
+    /// [`Self::compile_with_filter`], with the rescoring form of the query
+    /// in [`CompiledQuery::rescore`] (plan row 15.1): search prunes with
+    /// the first and scores its candidates with the second.
+    pub fn compile_search(
+        &self,
+        query: &Query,
+        filter: Option<&Query>,
+    ) -> Result<CompiledQuery, ServiceError> {
+        let mut compiled = self.build_with_filter(query, filter, false)?;
+        if !compiled.constant_score {
+            compiled.rescore = Some(self.build_with_filter(query, filter, true)?.query);
+        }
+        Ok(compiled)
+    }
+
+    fn build_with_filter(
+        &self,
+        query: &Query,
+        filter: Option<&Query>,
+        canonical: bool,
+    ) -> Result<CompiledQuery, ServiceError> {
         let mut build = Build::new(self, CompileMode::Scoring);
+        build.canonical = canonical;
         let mut compiled = build.query(query)?;
         if let Some(filter) = filter {
             let filter = build.query(filter)?;
@@ -322,6 +351,62 @@ fn id_of(value: &FieldValue) -> Option<PrimaryKey> {
     }
 }
 
+/// The rescoring form of a compiled query (plan row 15.1): every
+/// `BooleanQuery` becomes a left-deep chain of two-clause nodes, so that
+/// each Tantivy sum adds exactly two scores.
+///
+/// Tantivy's `Intersection` adds its scorers in per-segment cost order
+/// (doc frequencies), and its union adds them in an order that changes as
+/// scorers run out of postings, so a sum of three or more scores can differ
+/// in its last bits between split layouts. IEEE addition of two numbers
+/// commutes, so `((a + b) + c) + d` in clause order is the same whatever
+/// order each node takes its two children in. Match sets are unchanged:
+/// must clauses chain as nested musts, and should clauses as nested
+/// shoulds while `minimum_should_match` is at most 1. Queries it cannot
+/// rewrite keep Tantivy's order: shoulds with `minimum_should_match` ≥ 2,
+/// the children of a `BoostQuery` or `DisjunctionMaxQuery` built outside
+/// the compiler (a boosted `query_string` group), and a
+/// `DisjunctionMaxQuery` with a tie breaker over three or more disjuncts.
+pub fn canonical(query: Box<dyn TantivyQuery>) -> Box<dyn TantivyQuery> {
+    let Some(boolean) = query.downcast_ref::<BooleanQuery>() else {
+        return query;
+    };
+    let minimum = boolean.get_minimum_number_should_match();
+    let (mut must, mut should, mut must_not) = (Vec::new(), Vec::new(), Vec::new());
+    for (occur, clause) in boolean.clauses() {
+        let clause = canonical(clause.box_clone());
+        match occur {
+            Occur::Must => must.push(clause),
+            Occur::Should => should.push(clause),
+            Occur::MustNot => must_not.push(clause),
+        }
+    }
+    let mut clauses: Vec<(Occur, Boxed)> = Vec::new();
+    if let Some(must) = chain(Occur::Must, must) {
+        clauses.push((Occur::Must, must));
+    }
+    if minimum > 1 {
+        clauses.extend(should.into_iter().map(|q| (Occur::Should, q)));
+    } else if let Some(should) = chain(Occur::Should, should) {
+        clauses.push((Occur::Should, should));
+    }
+    clauses.extend(must_not.into_iter().map(|q| (Occur::MustNot, q)));
+    let mut out = BooleanQuery::new(clauses);
+    if minimum > 0 {
+        out.set_minimum_number_should_match(minimum);
+    }
+    Box::new(out)
+}
+
+/// `clauses` as a left-deep chain of two-clause `occur` nodes.
+fn chain(occur: Occur, clauses: Vec<Boxed>) -> Option<Boxed> {
+    let mut clauses = clauses.into_iter();
+    let first = clauses.next()?;
+    Some(clauses.fold(first, |acc, next| {
+        Box::new(BooleanQuery::new(vec![(occur, acc), (occur, next)]))
+    }))
+}
+
 /// The ES `minimum_should_match` of `optional` optional clauses: `"3"`,
 /// `"-1"`, `"75%"` or `"-25%"`, clamped to `0..=optional`.
 pub fn parse_minimum_should_match(spec: &str, optional: usize) -> Result<usize, ServiceError> {
@@ -440,6 +525,9 @@ struct Build<'c, 'a> {
     mode: CompileMode,
     warmup: WarmupInfo,
     bm25: bool,
+    /// Build the rescoring form: children are made [`canonical`] before a
+    /// wrapper hides them, and so is the result.
+    canonical: bool,
 }
 
 impl<'c, 'a> Build<'c, 'a> {
@@ -449,6 +537,17 @@ impl<'c, 'a> Build<'c, 'a> {
             mode,
             warmup: WarmupInfo::default(),
             bm25: false,
+            canonical: false,
+        }
+    }
+
+    /// `query` in the rescoring form when building it, before a wrapper
+    /// whose child Tantivy does not expose.
+    fn canon(&self, query: Boxed) -> Boxed {
+        if self.canonical {
+            canonical(query)
+        } else {
+            query
         }
     }
 
@@ -463,8 +562,10 @@ impl<'c, 'a> Build<'c, 'a> {
         // A required term lets the vendored warmup stop early and leave the
         // split cold (row 0.46).
         self.warmup.required_terms.clear();
+        let query = self.canon(query);
         CompiledQuery {
             query,
+            rescore: None,
             warmup: self.warmup,
             constant_score,
         }
@@ -705,7 +806,7 @@ impl<'c, 'a> Build<'c, 'a> {
             ),
             Query::Boost { query, boost } => {
                 let inner = self.query(query)?;
-                Ok(Box::new(BoostQuery::new(inner, *boost)))
+                Ok(Box::new(BoostQuery::new(self.canon(inner), *boost)))
             }
             Query::ConstantScore { query, score } => {
                 let inner = self.query(query)?;
@@ -898,7 +999,7 @@ impl<'c, 'a> Build<'c, 'a> {
                 MultiMatchKind::PhrasePrefix => self.phrase_prefix(name, text)?,
                 _ => self.match_query(name, text, operator, None, None, None)?,
             };
-            per_field.push(Box::new(BoostQuery::new(query, *boost)) as Boxed);
+            per_field.push(Box::new(BoostQuery::new(self.canon(query), *boost)) as Boxed);
         }
         if per_field.is_empty() {
             return Ok(empty());

@@ -153,6 +153,9 @@ pub(crate) struct Unit {
     pub searcher: Searcher,
     pub masks: Vec<RoaringBitmap>,
     pub query: Box<dyn tantivy::query::Query>,
+    /// The query's rescoring form, when the compiler made one
+    /// ([`CompiledQuery::rescore`]).
+    pub rescore: Option<Box<dyn tantivy::query::Query>>,
     pub is_tail: bool,
 }
 
@@ -197,18 +200,22 @@ pub(crate) async fn open_units_with(
     let splits = open_splits_with(view, &warm, parallelism).await?;
     let mut units = Vec::with_capacity(splits.len() + 1);
     for split in &splits {
+        let compiled = compile(split.searcher.schema())?;
         units.push(Unit {
             searcher: split.searcher.clone(),
             masks: split.segment_masks(),
-            query: compile(split.searcher.schema())?.query,
+            query: compiled.query,
+            rescore: compiled.rescore,
             is_tail: false,
         });
     }
     if let Some(searcher) = view.tail.searcher() {
+        let compiled = compile(searcher.schema())?;
         units.push(Unit {
             searcher: searcher.clone(),
             masks: tail_segment_masks(searcher, view.tail.live())?,
-            query: compile(searcher.schema())?.query,
+            query: compiled.query,
+            rescore: compiled.rescore,
             is_tail: true,
         });
     }

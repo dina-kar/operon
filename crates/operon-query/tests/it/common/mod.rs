@@ -1142,3 +1142,807 @@ impl Fixture {
         self.meta.shutdown().await;
     }
 }
+
+// ----- Task 15: the battery, random histories and the four placements -----
+
+/// The namespace of the Task 15 gates.
+pub const GATE_NS: &str = "acme";
+
+/// `title` Text standard, `tag` Keyword fast, `n` I64 fast, vector `v`
+/// (dim 4, Cosine), sparse `s` (Idf) and `t` (None); unmapped paths are
+/// ignored (Task 15).
+pub fn battery_schema() -> CollectionSchema {
+    let schema = CollectionSchema::new(
+        vec![
+            field(
+                "title",
+                FieldKind::Text {
+                    analyzer: "standard".to_string(),
+                    positions: true,
+                },
+            ),
+            field("tag", FieldKind::Keyword),
+            field("n", FieldKind::I64),
+        ],
+        vec![vector("v", 4)],
+        DynamicMapping::Ignore,
+    )
+    .with_sparse_vectors(vec![
+        operon_collection::SparseVectorSpec {
+            name: "s".to_string(),
+            modifier: operon_collection::SparseModifier::Idf,
+        },
+        operon_collection::SparseVectorSpec {
+            name: "t".to_string(),
+            modifier: operon_collection::SparseModifier::None,
+        },
+    ]);
+    schema.validate().expect("valid schema");
+    schema
+}
+
+/// The keys of the gates' key space (24 keys, then absent ones): u64,
+/// UUID and string keys in turn.
+pub fn mixed_key(i: usize) -> PrimaryKey {
+    match i % 3 {
+        0 => PrimaryKey::U64(i as u64 * 1_000_003),
+        1 => {
+            let mut bytes = [0u8; 16];
+            bytes[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            bytes[8..].copy_from_slice(&(!(i as u64)).to_be_bytes());
+            PrimaryKey::Uuid(bytes)
+        }
+        _ => PrimaryKey::Str(format!("key-{i:03}")),
+    }
+}
+
+/// The keys a history writes.
+pub const HISTORY_KEYS: usize = 24;
+/// The 40-word vocabulary of `title`.
+pub fn title_word(i: usize) -> String {
+    format!("w{i:02}")
+}
+const TAGS: [&str; 5] = ["red", "green", "blue", "cyan", "gray"];
+
+type GateRng = rand_chacha::ChaCha8Rng;
+
+/// Up to 12 words: each of the first four words with probability 1/2
+/// (sometimes twice), so conjunctions and phrases of them match, then 0–5
+/// of the other 36.
+fn random_title(rng: &mut GateRng) -> String {
+    use rand::Rng;
+    let mut words = Vec::new();
+    for i in 0..4 {
+        if rng.random_bool(0.5) {
+            words.push(title_word(i));
+            if rng.random_bool(0.2) {
+                words.push(title_word(i));
+            }
+        }
+    }
+    for _ in 0..rng.random_range(0..=5) {
+        words.push(title_word(rng.random_range(4..40)));
+    }
+    if words.is_empty() {
+        words.push(title_word(rng.random_range(0..40)));
+    }
+    words.join(" ")
+}
+
+fn random_n(rng: &mut GateRng) -> Option<Value> {
+    use rand::Rng;
+    let roll: f64 = rng.random();
+    if roll < 0.7 {
+        Some(Value::from(rng.random_range(0..10)))
+    } else if roll < 0.9 {
+        let len = rng.random_range(1..=3);
+        Some(Value::from(
+            (0..len)
+                .map(|_| rng.random_range(0..10))
+                .collect::<Vec<i64>>(),
+        ))
+    } else {
+        None
+    }
+}
+
+fn random_vector(rng: &mut GateRng) -> Vec<f32> {
+    use rand::Rng;
+    (0..4).map(|_| rng.random_range(-1.0f32..1.0)).collect()
+}
+
+/// 0–6 entries over 30 indices, zero weights included (possibly empty).
+fn random_sparse(rng: &mut GateRng) -> operon_collection::SparseVector {
+    use rand::Rng;
+    let n = if rng.random_bool(0.1) {
+        0
+    } else {
+        rng.random_range(1..=6)
+    };
+    let mut indices = std::collections::BTreeSet::new();
+    while indices.len() < n {
+        indices.insert(rng.random_range(0u32..30));
+    }
+    let values = indices
+        .iter()
+        .map(|_| {
+            if rng.random_bool(0.1) {
+                0.0
+            } else {
+                rng.random_range(0.01f32..1.0)
+            }
+        })
+        .collect();
+    operon_collection::SparseVector::new(indices.into_iter().collect(), values)
+        .expect("a valid sparse vector")
+}
+
+/// A whole document of the battery schema.
+pub fn random_document(rng: &mut GateRng, pk: PrimaryKey) -> Document {
+    use rand::Rng;
+    let mut source = Map::new();
+    source.insert("title".to_string(), Value::from(random_title(rng)));
+    source.insert(
+        "tag".to_string(),
+        Value::from(TAGS[rng.random_range(0..TAGS.len())]),
+    );
+    if let Some(n) = random_n(rng) {
+        source.insert("n".to_string(), n);
+    }
+    let mut vectors = BTreeMap::new();
+    if rng.random_bool(0.8) {
+        vectors.insert("v".to_string(), random_vector(rng));
+    }
+    let mut sparse_vectors = BTreeMap::new();
+    for name in ["s", "t"] {
+        if rng.random_bool(0.75) {
+            sparse_vectors.insert(name.to_string(), random_sparse(rng));
+        }
+    }
+    Document {
+        pk,
+        source,
+        vectors,
+        sparse_vectors,
+    }
+}
+
+/// A random valid history of `len` ops over [`HISTORY_KEYS`] keys (Task 15
+/// item 2): upserts with every battery field, patches in all three modes
+/// (with and without an upsert document, deleting keys and setting or
+/// deleting dense and sparse vectors), and 15 % deletes.
+pub fn random_history(rng: &mut GateRng, len: usize) -> Vec<DocOp> {
+    use rand::Rng;
+    let modes = [
+        PatchMode::MergeDeep,
+        PatchMode::MergeTop,
+        PatchMode::Replace,
+    ];
+    (0..len)
+        .map(|_| {
+            let pk = mixed_key(rng.random_range(0..HISTORY_KEYS));
+            let roll: f64 = rng.random();
+            if roll < 0.15 {
+                return DocOp::Delete(pk);
+            }
+            if roll < 0.60 {
+                return DocOp::Upsert(random_document(rng, pk));
+            }
+            let mut source = Map::new();
+            if rng.random_bool(0.5) {
+                source.insert("title".to_string(), Value::from(random_title(rng)));
+            }
+            if rng.random_bool(0.4) {
+                source.insert(
+                    "tag".to_string(),
+                    Value::from(TAGS[rng.random_range(0..TAGS.len())]),
+                );
+            }
+            if rng.random_bool(0.4)
+                && let Some(n) = random_n(rng)
+            {
+                source.insert("n".to_string(), n);
+            }
+            let delete_keys = match rng.random_range(0..10) {
+                0 => vec!["n".to_string()],
+                1 => vec!["tag".to_string()],
+                _ => Vec::new(),
+            };
+            let mut vectors = BTreeMap::new();
+            match rng.random_range(0..10) {
+                0..=2 => {
+                    vectors.insert("v".to_string(), Some(random_vector(rng)));
+                }
+                3 => {
+                    vectors.insert("v".to_string(), None);
+                }
+                _ => {}
+            }
+            let mut sparse_vectors = BTreeMap::new();
+            for name in ["s", "t"] {
+                match rng.random_range(0..10) {
+                    0 | 1 => {
+                        sparse_vectors.insert(name.to_string(), Some(random_sparse(rng)));
+                    }
+                    2 => {
+                        sparse_vectors.insert(name.to_string(), None);
+                    }
+                    _ => {}
+                }
+            }
+            let upsert = rng
+                .random_bool(0.3)
+                .then(|| random_document(rng, pk.clone()));
+            DocOp::Patch {
+                pk,
+                mode: modes[rng.random_range(0..3)],
+                source,
+                delete_keys,
+                vectors,
+                sparse_vectors,
+                upsert,
+            }
+        })
+        .collect()
+}
+
+/// One read of the battery.
+#[derive(Clone, Debug)]
+pub enum Probe {
+    Search(Box<operon_query::SearchRequest>),
+    Get(Vec<PrimaryKey>),
+    Count(Option<operon_query::Query>),
+    Scroll(Option<operon_query::Query>),
+}
+
+impl Probe {
+    /// Whether it has a vector retriever without `exact` or a metric
+    /// override (no probe of [`battery`] has one).
+    pub fn is_approximate(&self) -> bool {
+        use operon_query::Retriever;
+        let Probe::Search(request) = self else {
+            return false;
+        };
+        fn approximate(retriever: &Retriever) -> bool {
+            match retriever {
+                Retriever::Vector { params, .. } => !params.exact && params.distance.is_none(),
+                Retriever::Fused { inputs, .. } => inputs.iter().any(approximate),
+                Retriever::Rescore { input, .. } => approximate(input),
+                Retriever::Text { .. } | Retriever::Sparse { .. } => false,
+            }
+        }
+        request.retrievers.iter().any(approximate)
+    }
+}
+
+/// What every battery read projects: the source, every vector and the
+/// fields `n` and `tag`.
+pub fn battery_projection() -> operon_query::Projection {
+    operon_query::Projection {
+        source: operon_query::SourceFilter::All,
+        vectors: vec!["v".to_string(), "s".to_string(), "t".to_string()],
+        fields: vec!["n".to_string(), "tag".to_string()],
+    }
+}
+
+/// The fixed battery of Task 15 item 1 over `collection`: 40 probes, each
+/// with its name. Every retriever asks for 30 candidates, more than the key
+/// space holds, so no probe cuts at a k-th place. Every probe is exact.
+pub fn battery(collection: &str) -> Vec<(&'static str, Probe)> {
+    use operon_query::{
+        AnnParams, BoolOperator, FieldValue, Fusion, GroupBy, Highlight, HighlightField,
+        MissingOrder, MultiMatchKind, Query, Retriever, SearchRequest, SortKey, SortOrder,
+        SortValue, SparseParams, TrackTotalHits,
+    };
+    let words = |ids: &[usize]| {
+        ids.iter()
+            .map(|i| title_word(*i))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let matching = |ids: &[usize], operator: BoolOperator| Query::Match {
+        field: "title".to_string(),
+        text: words(ids),
+        operator,
+        minimum_should_match: None,
+        fuzziness: None,
+        analyzer: None,
+    };
+    let or = |ids: &[usize]| matching(ids, BoolOperator::Or);
+    let and = |ids: &[usize]| matching(ids, BoolOperator::And);
+    let term = |field: &str, value: &str| Query::Term {
+        field: field.to_string(),
+        value: FieldValue::Str(value.to_string()),
+    };
+    let range_n = |gte: i64, lt: i64| Query::Range {
+        field: "n".to_string(),
+        gt: None,
+        gte: Some(FieldValue::I64(gte)),
+        lt: Some(FieldValue::I64(lt)),
+        lte: None,
+    };
+    let text = |query: Query| Retriever::Text { query, k: 30 };
+    let query_vector = vec![0.3, -0.5, 0.8, 0.1];
+    let dense = |distance: Option<operon_collection::Distance>| Retriever::Vector {
+        field: "v".to_string(),
+        query: query_vector.clone(),
+        k: 30,
+        params: AnnParams {
+            exact: true,
+            distance,
+            ..AnnParams::default()
+        },
+        filter: None,
+    };
+    let sparse_query = |pairs: &[(u32, f32)]| {
+        operon_collection::SparseVector::new(
+            pairs.iter().map(|(i, _)| *i).collect(),
+            pairs.iter().map(|(_, v)| *v).collect(),
+        )
+        .expect("a valid sparse vector")
+    };
+    let s_query = sparse_query(&[(1, 0.5), (4, 0.8), (7, 0.3), (12, 1.0), (20, 0.6)]);
+    let sparse =
+        |field: &str, filter: Option<Query>, idf_corpus: Option<Query>| Retriever::Sparse {
+            field: field.to_string(),
+            query: if field == "s" {
+                s_query.clone()
+            } else {
+                sparse_query(&[(2, 0.4), (4, 0.9), (29, 0.2)])
+            },
+            k: 30,
+            filter,
+            params: SparseParams { idf_corpus },
+        };
+    let search = |retrievers: Vec<Retriever>, fusion: Option<Fusion>| {
+        let mut request = SearchRequest::new(collection);
+        request.retrievers = retrievers;
+        request.fusion = fusion;
+        request.limit = 30;
+        request.select = battery_projection();
+        request
+    };
+    let with = |mut request: SearchRequest, edit: &dyn Fn(&mut SearchRequest)| {
+        edit(&mut request);
+        Probe::Search(Box::new(request))
+    };
+    let plain = |request: SearchRequest| Probe::Search(Box::new(request));
+    let sort_n = vec![SortKey::Field {
+        field: "n".to_string(),
+        order: SortOrder::Asc,
+        missing: MissingOrder::Last,
+    }];
+    let aggregation = |aggs: Value| {
+        let mut request = SearchRequest::new(collection);
+        request.limit = 0;
+        request.aggregations = Some(aggs);
+        Probe::Search(Box::new(request))
+    };
+    let highlight = HighlightField {
+        field: "title".to_string(),
+        pre_tag: "<em>".to_string(),
+        post_tag: "</em>".to_string(),
+        fragment_size: 100,
+        number_of_fragments: 5,
+    };
+    let count_filters = [
+        None,
+        Some(term("tag", "red")),
+        Some(range_n(3, 7)),
+        Some(Query::Exists {
+            field: "n".to_string(),
+        }),
+        Some(Query::Bool {
+            must: vec![],
+            should: vec![],
+            must_not: vec![term("tag", "gray")],
+            filter: vec![],
+            minimum_should_match: None,
+        }),
+        Some(or(&[0, 5])),
+    ];
+    let count_names = [
+        "count_all",
+        "count_term",
+        "count_range",
+        "count_exists",
+        "count_must_not",
+        "count_match",
+    ];
+    let mut probes = vec![
+        ("match_or", plain(search(vec![text(or(&[0, 3, 7]))], None))),
+        (
+            "match_and",
+            plain(search(vec![text(and(&[0, 1, 2]))], None)),
+        ),
+        (
+            "match_phrase",
+            plain(search(
+                vec![text(Query::MatchPhrase {
+                    field: "title".to_string(),
+                    text: words(&[0, 1]),
+                    slop: 0,
+                })],
+                None,
+            )),
+        ),
+        (
+            "multi_match",
+            plain(search(
+                vec![text(Query::MultiMatch {
+                    fields: vec![("title".to_string(), 1.0), ("tag".to_string(), 2.0)],
+                    text: format!("{} {} red", title_word(1), title_word(4)),
+                    kind: MultiMatchKind::MostFields,
+                    operator: BoolOperator::Or,
+                    tie_breaker: None,
+                })],
+                None,
+            )),
+        ),
+        (
+            "bool",
+            plain(search(
+                vec![text(Query::Bool {
+                    must: vec![or(&[0])],
+                    should: vec![or(&[1]), or(&[2]), or(&[5])],
+                    must_not: vec![term("tag", "gray")],
+                    filter: vec![range_n(1, 10)],
+                    minimum_should_match: None,
+                })],
+                None,
+            )),
+        ),
+        (
+            "filtered_text",
+            with(search(vec![text(or(&[0, 2, 4, 6, 8]))], None), &|r| {
+                r.filter = Some(term("tag", "red"))
+            }),
+        ),
+        (
+            "paged",
+            with(search(vec![text(or(&[0, 3, 7]))], None), &|r| {
+                r.offset = 5;
+                r.limit = 5;
+            }),
+        ),
+        (
+            "sort_field",
+            with(search(vec![text(or(&[0, 1, 2, 3]))], None), &|r| {
+                r.sort = sort_n.clone();
+                r.limit = 10;
+            }),
+        ),
+        (
+            "sort_search_after",
+            with(search(vec![text(or(&[0, 1, 2, 3]))], None), &|r| {
+                r.sort = sort_n.clone();
+                r.search_after = Some(vec![SortValue::I64(4)]);
+                r.limit = 10;
+            }),
+        ),
+        (
+            "sort_tag_desc_missing_first",
+            with(search(vec![text(Query::MatchAll)], None), &|r| {
+                r.sort = vec![SortKey::Field {
+                    field: "tag".to_string(),
+                    order: SortOrder::Desc,
+                    missing: MissingOrder::First,
+                }];
+            }),
+        ),
+        ("vector_cosine", plain(search(vec![dense(None)], None))),
+        (
+            "vector_dot",
+            plain(search(
+                vec![dense(Some(operon_collection::Distance::Dot))],
+                None,
+            )),
+        ),
+        (
+            "vector_euclid",
+            plain(search(
+                vec![dense(Some(operon_collection::Distance::Euclid))],
+                None,
+            )),
+        ),
+        (
+            "vector_manhattan",
+            plain(search(
+                vec![dense(Some(operon_collection::Distance::Manhattan))],
+                None,
+            )),
+        ),
+        (
+            "sparse_s",
+            plain(search(vec![sparse("s", None, None)], None)),
+        ),
+        (
+            "sparse_s_filtered",
+            plain(search(vec![sparse("s", Some(range_n(0, 6)), None)], None)),
+        ),
+        (
+            "sparse_s_idf_corpus",
+            plain(search(
+                vec![sparse("s", None, Some(term("tag", "red")))],
+                None,
+            )),
+        ),
+        (
+            "sparse_t",
+            plain(search(vec![sparse("t", None, None)], None)),
+        ),
+        (
+            "rrf_text_vector",
+            plain(search(
+                vec![text(or(&[0, 3, 7])), dense(None)],
+                Some(Fusion::Rrf { k: 60 }),
+            )),
+        ),
+        (
+            "dbsf_text_vector",
+            plain(search(
+                vec![text(and(&[0, 1, 2])), dense(None)],
+                Some(Fusion::Dbsf),
+            )),
+        ),
+        (
+            "rrf_dense_sparse",
+            plain(search(
+                vec![dense(None), sparse("s", None, None)],
+                Some(Fusion::Rrf { k: 60 }),
+            )),
+        ),
+        (
+            "dbsf_dense_sparse",
+            plain(search(
+                vec![dense(None), sparse("t", None, None)],
+                Some(Fusion::Dbsf),
+            )),
+        ),
+        (
+            "weighted_text_sparse",
+            plain(search(
+                vec![text(or(&[0, 3, 7])), sparse("s", None, None)],
+                Some(Fusion::WeightedSum {
+                    weights: vec![0.7, 0.3],
+                }),
+            )),
+        ),
+        (
+            "track_total_hits",
+            with(search(vec![text(or(&[0, 1]))], None), &|r| {
+                r.limit = 3;
+                r.track_total_hits = TrackTotalHits::Exact;
+            }),
+        ),
+        (
+            "group_by",
+            with(search(vec![text(or(&[0, 1, 2]))], None), &|r| {
+                r.group_by = Some(GroupBy {
+                    field: "tag".to_string(),
+                    group_size: 2,
+                    limit: 5,
+                })
+            }),
+        ),
+        (
+            "highlight",
+            with(search(vec![text(or(&[0, 3]))], None), &|r| {
+                r.highlight = Some(Highlight {
+                    fields: vec![highlight.clone()],
+                })
+            }),
+        ),
+        (
+            "get",
+            Probe::Get((0..HISTORY_KEYS + 3).map(mixed_key).collect()),
+        ),
+    ];
+    for (name, filter) in count_names.into_iter().zip(count_filters) {
+        probes.push((name, Probe::Count(filter)));
+    }
+    probes.push(("scroll_all", Probe::Scroll(None)));
+    probes.push(("scroll_filtered", Probe::Scroll(Some(range_n(2, 8)))));
+    probes.push((
+        "aggs_terms",
+        aggregation(serde_json::json!({"x": {"terms": {"field": "n", "size": 20}}})),
+    ));
+    probes.push((
+        "aggs_stats",
+        aggregation(serde_json::json!({"x": {"stats": {"field": "n"}}})),
+    ));
+    probes.push((
+        "aggs_histogram",
+        aggregation(serde_json::json!({"x": {"histogram": {"field": "n", "interval": 3}}})),
+    ));
+    probes.push((
+        "aggs_range",
+        aggregation(serde_json::json!({"x": {"range": {"field": "n", "ranges": [
+            {"to": 3}, {"from": 3, "to": 6}, {"from": 6}
+        ]}}})),
+    ));
+    probes.push((
+        "aggs_cardinality",
+        aggregation(serde_json::json!({"x": {"cardinality": {"field": "n"}}})),
+    ));
+    assert_eq!(probes.len(), 40, "the battery holds 40 probes");
+    probes
+}
+
+/// A search response as JSON without its read token and hot report, every
+/// hit's score as its `f32::to_bits`.
+pub fn response_json(response: &operon_query::SearchResponse) -> Value {
+    fn score_bits(hits: &mut Value, scores: impl Iterator<Item = f32>) {
+        let hits = hits.as_array_mut().expect("hits");
+        for (hit, score) in hits.iter_mut().zip(scores) {
+            hit["score"] = Value::from(score.to_bits());
+        }
+    }
+    let mut value = serde_json::to_value(response).expect("a response serializes");
+    let object = value.as_object_mut().expect("an object");
+    object.remove("read_token");
+    object.remove("hot_used");
+    score_bits(
+        &mut value["hits"],
+        response.hits.iter().map(|hit| hit.score),
+    );
+    if let Some(groups) = &response.groups {
+        for (i, group) in groups.iter().enumerate() {
+            score_bits(
+                &mut value["groups"][i]["hits"],
+                group.hits.iter().map(|hit| hit.score),
+            );
+        }
+    }
+    value
+}
+
+/// Runs `probe` over `collection` at `consistency`: its full JSON result
+/// (Task 15 item 1), or the error as `{"error": …}`.
+pub async fn run_probe(
+    service: &CollectionService,
+    collection: &str,
+    probe: &Probe,
+    consistency: &ReadConsistency,
+) -> Value {
+    let result = match probe {
+        Probe::Search(request) => {
+            let mut request = (**request).clone();
+            request.collection = collection.to_string();
+            request.consistency = consistency.clone();
+            service
+                .search(GATE_NS, request)
+                .await
+                .map(|response| response_json(&response))
+        }
+        Probe::Get(keys) => service
+            .get(
+                GATE_NS,
+                collection,
+                keys,
+                &battery_projection(),
+                consistency.clone(),
+            )
+            .await
+            .map(|docs| serde_json::to_value(docs).expect("docs serialize")),
+        Probe::Count(filter) => service
+            .count(GATE_NS, collection, filter.clone(), consistency.clone())
+            .await
+            .map(Value::from),
+        Probe::Scroll(filter) => {
+            let mut pages = Vec::new();
+            let mut after = None;
+            loop {
+                let page = service
+                    .scroll(
+                        GATE_NS,
+                        collection,
+                        filter.clone(),
+                        after.clone(),
+                        7,
+                        &battery_projection(),
+                        consistency.clone(),
+                    )
+                    .await;
+                match page {
+                    Ok((docs, next)) => {
+                        pages.push(serde_json::json!({
+                            "docs": docs,
+                            "next": next.as_ref().map(|pk| format!("{pk:?}")),
+                        }));
+                        match next {
+                            Some(next) => after = Some(next),
+                            None => break Ok(Value::Array(pages)),
+                        }
+                    }
+                    Err(err) => break Err(err),
+                }
+            }
+        }
+    };
+    result.unwrap_or_else(|err| serde_json::json!({"error": err.to_string()}))
+}
+
+/// `value` without the `seq_no` and `partition` of its stored documents,
+/// which a rebuild assigns anew (Task 15 item 2).
+pub fn without_positions(mut value: Value) -> Value {
+    fn strip(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                if map.contains_key("seq_no") && map.contains_key("partition") {
+                    map.remove("seq_no");
+                    map.remove("partition");
+                }
+                map.values_mut().for_each(strip);
+            }
+            Value::Array(items) => items.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    strip(&mut value);
+    value
+}
+
+/// The four placements of one history (Task 15 item 2).
+pub const PLACEMENTS: [&str; 4] = ["tail", "durable", "split", "rebuild"];
+
+/// Writes `ops` to `collection` in one request; every op is accepted.
+pub async fn write_ops(service: &CollectionService, collection: &str, ops: Vec<DocOp>) {
+    if ops.is_empty() {
+        return;
+    }
+    let result = service
+        .write(
+            GATE_NS,
+            collection,
+            ops,
+            operon_query::WriteOptions::default(),
+        )
+        .await
+        .expect("write");
+    for (i, op) in result.results.iter().enumerate() {
+        assert!(
+            !matches!(op, operon_query::OpResult::Rejected(_)),
+            "op {i} was refused: {op:?}"
+        );
+    }
+}
+
+/// Builds the four placements of `history` in `f`, each a collection of
+/// [`battery_schema`] with 3 partitions named after [`PLACEMENTS`]:
+/// - `tail`: every op written and never applied;
+/// - `durable`: every op written and applied in the commits that end at
+///   `cuts` (and at the end);
+/// - `split`: the first `split_at` ops written and applied, the rest
+///   written and not applied;
+/// - `rebuild`: one upsert per live key of the folded history, applied in
+///   one commit.
+///
+/// The link runs over every collection, so the collections are written in
+/// the order that leaves exactly this state: rebuild, durable, the split's
+/// prefix, then what is never applied.
+pub async fn build_placements(f: &Fixture, history: &[DocOp], cuts: &[usize], split_at: usize) {
+    let service = f.service();
+    for name in PLACEMENTS {
+        service
+            .create_collection(GATE_NS, name, battery_schema(), Some(3))
+            .await
+            .expect("create a placement");
+    }
+    let rebuilt: Vec<DocOp> = fold_history(history)
+        .into_values()
+        .map(DocOp::Upsert)
+        .collect();
+    write_ops(&service, "rebuild", rebuilt).await;
+    f.settle().await;
+    let mut start = 0;
+    for end in cuts.iter().copied().chain([history.len()]) {
+        write_ops(&service, "durable", history[start..end].to_vec()).await;
+        f.settle().await;
+        start = end;
+    }
+    write_ops(&service, "split", history[..split_at].to_vec()).await;
+    f.settle().await;
+    write_ops(&service, "split", history[split_at..].to_vec()).await;
+    write_ops(&service, "tail", history.to_vec()).await;
+}

@@ -322,6 +322,106 @@ async fn global_statistics_equal_a_single_split() {
     b.shutdown().await;
 }
 
+fn and_matching(text: &str) -> Query {
+    Query::Match {
+        field: "body".to_string(),
+        text: text.to_string(),
+        operator: BoolOperator::And,
+        minimum_should_match: None,
+        fuzziness: None,
+        analyzer: None,
+    }
+}
+
+/// Plan row 15.1: Tantivy sums a conjunction in per-segment cost order and
+/// a disjunction in an order that changes as its scorers run out, so
+/// without canonical rescoring these scores differ in their last bits
+/// between one split and many.
+#[tokio::test]
+async fn conjunctions_and_long_disjunctions_score_identically_across_layouts() {
+    // A small vocabulary, so conjunctions of 3–4 words match many docs.
+    let vocabulary = &VOCABULARY[..10];
+    let mut rng = ChaCha8Rng::seed_from_u64(15);
+    let final_docs: Vec<DocOp> = (0..240u64)
+        .map(|pk| {
+            let n = rng.random_range(4..=14);
+            doc_of(
+                PrimaryKey::U64(pk),
+                json!({"body": words(&mut rng, vocabulary, n), "n": pk % 5}),
+            )
+        })
+        .collect();
+    let a = TailFixture::start(body_schema(), 2).await;
+    a.append_all(&final_docs).await;
+    a.apply_link().await;
+    let b = TailFixture::start(body_schema(), 2).await;
+    let early: Vec<DocOp> = (0..30).map(|pk| body(pk, "apple river stone")).collect();
+    b.append_all(&early).await;
+    b.apply_link().await;
+    for chunk in [&final_docs[..17], &final_docs[17..90], &final_docs[90..150]] {
+        b.append_all(chunk).await;
+        b.apply_link().await;
+    }
+    b.append_all(&final_docs[150..]).await;
+    let (a_reads, b_reads) = (reads(&a), reads(&b));
+    let (a_view, b_view) = (view(&a, &a_reads).await, view(&b, &b_reads).await);
+    assert_eq!(a_view.snapshot.splits().len(), 1);
+    assert!(b_view.snapshot.splits().len() > 1);
+    assert_eq!(b_view.live_rows(), 240);
+
+    let mut queries = Vec::new();
+    for _ in 0..12 {
+        let n = rng.random_range(3..=4);
+        queries.push(and_matching(&words(&mut rng, vocabulary, n)));
+        let n = rng.random_range(5..=7);
+        queries.push(matching(&words(&mut rng, vocabulary, n)));
+    }
+    queries.push(Query::Bool {
+        must: vec![matching("apple"), matching("river"), matching("stone")],
+        should: vec![matching("cloud"), matching("table"), matching("green")],
+        must_not: vec![],
+        filter: vec![],
+        minimum_should_match: None,
+    });
+    let by_field_then_score = || {
+        EffectiveSort::of(&SearchRequest {
+            retrievers: vec![Retriever::Text {
+                query: Query::MatchAll,
+                k: 60,
+            }],
+            sort: vec![
+                SortKey::Field {
+                    field: "n".to_string(),
+                    order: SortOrder::Asc,
+                    missing: MissingOrder::Last,
+                },
+                SortKey::Score {
+                    order: SortOrder::Desc,
+                },
+            ],
+            ..SearchRequest::new("docs")
+        })
+        .expect("sort")
+    };
+    for query in &queries {
+        let a_hits = top(&a_view, query.clone(), 60).await;
+        assert!(!a_hits.is_empty(), "{query:?}");
+        assert_eq!(
+            bits(&a_hits),
+            bits(&top(&b_view, query.clone(), 60).await),
+            "{query:?}"
+        );
+        let field = |view| exec(view, query.clone(), 60, by_field_then_score());
+        let a_field = field(&a_view).search().await.expect("search");
+        let b_field = field(&b_view).search().await.expect("search");
+        assert_eq!(bits(&a_field), bits(&b_field), "field mode {query:?}");
+    }
+    a_reads.shutdown().await;
+    b_reads.shutdown().await;
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
 #[tokio::test]
 async fn superseded_versions_do_not_count_in_statistics() {
     let fixture = TailFixture::start(body_schema(), 1).await;

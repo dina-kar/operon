@@ -13,4 +13,5 @@ mod service;
 mod sparse;
 mod sql;
 mod tail;
+mod tail_vs_rebuild;
 mod text;

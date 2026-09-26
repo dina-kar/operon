@@ -487,6 +487,9 @@ pub async fn aggregate(
         .map_err(agg_error)?;
     let mut json = serde_json::to_value(final_result)
         .map_err(|err| ServiceError::Internal(format!("aggregation result: {err}")))?;
+    if let (Some(result), Some(request_aggs)) = (json.as_object_mut(), rewritten.as_object()) {
+        order_count_ties(result, request_aggs);
+    }
     // 5. `top_hits`.
     if !options.is_empty() {
         let request_aggs = rewritten.as_object().expect("an object");
@@ -495,6 +498,76 @@ pub async fn aggregate(
         }
     }
     Ok(json)
+}
+
+/// `terms` buckets ordered by count come back with equal counts in
+/// ascending key order, as ES orders them (plan row 15.3). Tantivy sorts
+/// the buckets of a hash map by count alone, so ties would otherwise follow
+/// the map's insertion history, which depends on the split layout. Walks
+/// `request` alongside, as [`visit_top_hits`] does. Ties at the `size`
+/// cut-off are still decided before this runs.
+fn order_count_ties(result: &mut Map<String, Value>, request: &Map<String, Value>) {
+    for (name, node) in request {
+        let (Some(node), Some(out)) = (
+            node.as_object(),
+            result.get_mut(name).and_then(Value::as_object_mut),
+        ) else {
+            continue;
+        };
+        if let Some(terms) = node.get("terms").and_then(Value::as_object) {
+            let descending = match terms.get("order").and_then(Value::as_object) {
+                None => Some(true),
+                Some(order) => match order.get("_count").and_then(Value::as_str) {
+                    Some("desc") => Some(true),
+                    Some("asc") => Some(false),
+                    _ => None,
+                },
+            };
+            if let (Some(descending), Some(Value::Array(buckets))) =
+                (descending, out.get_mut("buckets"))
+            {
+                buckets.sort_by(|a, b| {
+                    let (a_count, b_count) = (a["doc_count"].as_u64(), b["doc_count"].as_u64());
+                    let by_count = if descending {
+                        b_count.cmp(&a_count)
+                    } else {
+                        a_count.cmp(&b_count)
+                    };
+                    by_count.then_with(|| compare_keys(&a["key"], &b["key"]))
+                });
+            }
+        }
+        let Some(sub) = sub_aggs(node) else {
+            continue;
+        };
+        match out.get_mut("buckets") {
+            Some(Value::Array(buckets)) => {
+                for bucket in buckets.iter_mut().filter_map(Value::as_object_mut) {
+                    order_count_ties(bucket, sub);
+                }
+            }
+            Some(Value::Object(keyed)) => {
+                for bucket in keyed.values_mut().filter_map(Value::as_object_mut) {
+                    order_count_ties(bucket, sub);
+                }
+            }
+            _ => order_count_ties(out, sub),
+        }
+    }
+}
+
+/// Bucket keys in ascending order: numbers, then strings.
+fn compare_keys(a: &Value, b: &Value) -> std::cmp::Ordering {
+    match (a, b) {
+        (Value::Number(a), Value::Number(b)) => {
+            let (a, b) = (a.as_f64().unwrap_or(0.0), b.as_f64().unwrap_or(0.0));
+            a.total_cmp(&b)
+        }
+        (Value::Number(_), _) => std::cmp::Ordering::Less,
+        (_, Value::Number(_)) => std::cmp::Ordering::Greater,
+        (Value::String(a), Value::String(b)) => a.cmp(b),
+        _ => std::cmp::Ordering::Equal,
+    }
 }
 
 /// Rule 5: each `top_hits` hit's `_rowid` resolved with one fetch for the

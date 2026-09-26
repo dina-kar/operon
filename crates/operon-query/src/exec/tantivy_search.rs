@@ -3,11 +3,15 @@
 //! (Ruling 2), masking deleted and shadowed docs before any top-k cut.
 //!
 //! Score mode prunes with block-max WAND per index. WAND sums a doc's term
-//! scores in an order that depends on the postings around it, so every
-//! candidate is rescored with the query's plain scorer (the clause order),
-//! and hits are equal whatever the split layout. The pruning threshold sits
-//! a relative `SLACK` below the k-th best score so that rescoring cannot
-//! move a hit across it, and ties at the k-th score are kept.
+//! scores in an order that depends on the postings around it, and so do
+//! Tantivy's conjunctions (cost order) and unions (as scorers run out), so
+//! every candidate is rescored with the query's rescoring form
+//! ([`canonical`](crate::text::compile::canonical): two-clause nodes in
+//! clause order, plan row 15.1), and hits are equal whatever the split
+//! layout. The pruning threshold sits a relative `SLACK` below the k-th
+//! best score so that rescoring cannot move a hit across it, and ties at
+//! the k-th score are kept. Field mode scores with the rescoring form
+//! directly.
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeSet, BinaryHeap};
@@ -149,7 +153,7 @@ impl Inner {
     + 'a {
         move |schema| {
             QueryCompiler::new(&self.view.collection.schema, schema, tokenizers)
-                .compile_with_filter(&self.query, self.filter.as_ref())
+                .compile_search(&self.query, self.filter.as_ref())
         }
     }
 
@@ -277,27 +281,33 @@ struct Job {
 impl Job {
     fn search_unit(&self, unit: Unit) -> Result<Vec<Ranked>, ServiceError> {
         let schema = unit.searcher.schema();
-        let weight = match &self.stats {
-            Some(stats) => {
-                let provider = stats.provider(schema);
-                unit.query
-                    .weight(EnableScoring::enabled_from_statistics_provider(
-                        &provider,
-                        &unit.searcher,
-                    ))
+        let provider = self.stats.as_ref().map(|stats| stats.provider(schema));
+        let weigh = |query: &dyn tantivy::query::Query| {
+            match &provider {
+                Some(provider) => query.weight(EnableScoring::enabled_from_statistics_provider(
+                    provider,
+                    &unit.searcher,
+                )),
+                None => query.weight(EnableScoring::disabled_from_searcher(&unit.searcher)),
             }
-            None => unit
-                .query
-                .weight(EnableScoring::disabled_from_searcher(&unit.searcher)),
-        }
-        .map_err(tantivy_error)?;
+            .map_err(tantivy_error)
+        };
+        let weight = weigh(unit.query.as_ref())?;
+        // Scores come from the rescoring form (plan row 15.1).
+        let rescore = match (&unit.rescore, &provider) {
+            (Some(rescore), Some(_)) => Some(weigh(rescore.as_ref())?),
+            _ => None,
+        };
+        let scoring = rescore.as_deref().unwrap_or(weight.as_ref());
         let mut hits = Vec::new();
         for (segment, reader) in unit.searcher.segment_readers().iter().enumerate() {
             let masked = &unit.masks[segment];
             let columns = Columns::open(reader, &self.fields)?;
             let found = match self.sort.mode {
-                RankMode::Score => self.score_segment(weight.as_ref(), reader, masked, &columns)?,
-                RankMode::Field => self.field_segment(weight.as_ref(), reader, masked, &columns)?,
+                RankMode::Score => {
+                    self.score_segment(weight.as_ref(), scoring, reader, masked, &columns)?
+                }
+                RankMode::Field => self.field_segment(scoring, reader, masked, &columns)?,
             };
             hits.extend(found);
         }
@@ -325,11 +335,13 @@ impl Job {
         Ok(self.sort.is_after(&hit, after))
     }
 
-    /// Rule 4: block-max WAND top-k of one segment, keeping every candidate
-    /// at or above the threshold, then exact rescoring.
+    /// Rule 4: block-max WAND top-k of one segment with `weight`, keeping
+    /// every candidate at or above the threshold, then exact rescoring with
+    /// `rescore`.
     fn score_segment(
         &self,
         weight: &dyn Weight,
+        rescore: &dyn Weight,
         reader: &SegmentReader,
         masked: &RoaringBitmap,
         columns: &Columns,
@@ -376,7 +388,7 @@ impl Job {
         candidates.retain(|(_, score)| *score >= floor);
         candidates.sort_unstable_by_key(|(doc, _)| *doc);
         // Exact scores in the query's clause order.
-        let mut scorer = weight.scorer(reader, 1.0).map_err(tantivy_error)?;
+        let mut scorer = rescore.scorer(reader, 1.0).map_err(tantivy_error)?;
         let mut hits = Vec::with_capacity(candidates.len());
         for (doc, pruned) in candidates {
             let current = scorer.doc();
