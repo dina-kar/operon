@@ -1,0 +1,59 @@
+/*
+ * Loam tokens. Light mode stands on white; dark mode is humus with chalk
+ * text. Ochre is the only brand accent and means "fresh": the write path,
+ * the newest thing, focus. Sprout means built or healthy, gley planned or
+ * informational, oxide failed. Put the class `dark` on <html> for dark mode.
+ *
+ * Fonts: set --loam-font-sans and --loam-font-mono to your loaded faces
+ * (Archivo and Martian Mono); the fallbacks keep text readable without them.
+ */
+:root {
+  --op-bg: #ffffff;
+  --op-surface: #f9f9f7;
+  --op-raised: #f0f0ec;
+  --op-rule: #deded8;
+  --op-rule-soft: #ebebe6;
+  --op-ink: #1a1511;
+  --op-muted: #5b5044;
+  --op-faint: #8c8172;
+  --op-accent: #8a520a;
+  --op-accent-soft: #f6e4c4;
+  --op-accent-ink: #fff8ec;
+  --op-grow: #3f7426;
+  --op-grow-soft: #eaf1e1;
+  --op-grow-deep: #36602a;
+  --op-grow-on: #ffffff;
+  --op-info: #3c5a68;
+  --op-info-soft: #dde8eb;
+  --op-danger: #a63a20;
+  --op-danger-soft: #f8dcd2;
+
+  --op-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --loam-font-sans: "Archivo", "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
+  --loam-font-mono:
+    "Martian Mono", "Martian Mono Variable", ui-monospace, "SFMono-Regular", monospace;
+  color-scheme: light;
+}
+
+.dark {
+  --op-bg: #15110d;
+  --op-surface: #1c1713;
+  --op-raised: #25201a;
+  --op-rule: #372e26;
+  --op-rule-soft: #28211b;
+  --op-ink: #f4f5ee;
+  --op-muted: #a69985;
+  --op-faint: #6e6356;
+  --op-accent: #e4a24a;
+  --op-accent-soft: #33250f;
+  --op-accent-ink: #1a1206;
+  --op-grow: #9cc25e;
+  --op-grow-soft: #1d2a17;
+  --op-grow-deep: #36602a;
+  --op-grow-on: #f4f5ee;
+  --op-info: #8ea8b4;
+  --op-info-soft: #1b252a;
+  --op-danger: #e0664a;
+  --op-danger-soft: #361a12;
+  color-scheme: dark;
+}

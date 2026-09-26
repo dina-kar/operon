@@ -22,3 +22,10 @@ reference implementation (release 3, 25 Mar 2014), and
 crates/operon-text/tests/data/porter_voc.txt and porter_output.txt are his
 published test vocabulary and its stems. The site states that all the
 software there "is completely free for any purpose", free of charge.
+
+Archivo (https://github.com/Omnibus-Type/Archivo), Copyright 2020 The
+Archivo Project Authors, and Martian Mono
+(https://github.com/evilmartians/mono), Copyright 2020 The Martian Mono
+Project Authors, are bundled in the console build (web/apps/console) through
+Fontsource under the SIL Open Font License, Version 1.1
+(https://openfontlicense.org).

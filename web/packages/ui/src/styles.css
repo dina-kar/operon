@@ -1,0 +1,675 @@
+/*
+ * @loam/ui components. Square surfaces, round actions: panels keep hard
+ * corners like cut soil; anything you press is a pill. Every class starts
+ * with `loam-`, so the sheet can sit beside any other CSS.
+ */
+@import "./tokens.css";
+
+.loam-logo {
+  display: inline-flex;
+  align-items: flex-end;
+  color: var(--op-ink);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.loam-mono {
+  font-family: var(--loam-font-mono);
+}
+
+/* Buttons ------------------------------------------------------------------ */
+
+.loam-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 18px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  color: var(--op-ink);
+  background: none;
+  cursor: pointer;
+  text-decoration: none;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    transform 160ms var(--op-ease);
+}
+
+.loam-btn:active {
+  transform: translateY(1px);
+}
+
+.loam-btn:disabled,
+.loam-btn[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.loam-btn-primary {
+  color: var(--op-bg);
+  background: var(--op-ink);
+}
+
+.loam-btn-primary:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--op-ink) 86%, var(--op-bg));
+}
+
+.loam-btn-secondary {
+  border-color: var(--op-rule);
+}
+
+.loam-btn-secondary:hover:not(:disabled) {
+  border-color: var(--op-muted);
+}
+
+.loam-btn-quiet {
+  padding: 0 10px;
+  color: var(--op-muted);
+}
+
+.loam-btn-quiet:hover:not(:disabled) {
+  color: var(--op-ink);
+  background: var(--op-raised);
+}
+
+.loam-btn-danger {
+  color: var(--op-danger);
+  border-color: color-mix(in oklab, var(--op-danger) 40%, transparent);
+}
+
+.loam-btn-danger:hover:not(:disabled) {
+  background: var(--op-danger-soft);
+}
+
+.loam-btn-sm {
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: 0.8rem;
+}
+
+.loam-btn-icon {
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+}
+
+/* Status tags and badges ------------------------------------------------------ */
+
+.loam-status {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 9px 2px 7px;
+  border-radius: 999px;
+  font-family: var(--loam-font-mono);
+  font-size: 0.68rem;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.loam-status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  background: currentColor;
+}
+
+.loam-status-done {
+  color: var(--op-grow);
+  background: var(--op-grow-soft);
+}
+
+.loam-status-progress {
+  color: var(--op-accent);
+  background: var(--op-accent-soft);
+}
+
+.loam-status-progress::before {
+  animation: loam-pulse 1.6s ease-in-out infinite;
+}
+
+.loam-status-planned {
+  color: var(--op-info);
+  background: var(--op-info-soft);
+}
+
+.loam-status-failed {
+  color: var(--op-danger);
+  background: var(--op-danger-soft);
+}
+
+.loam-status-neutral {
+  color: var(--op-muted);
+  background: var(--op-raised);
+}
+
+@keyframes loam-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.loam-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 7px;
+  border: 1px solid var(--op-rule-soft);
+  border-radius: 4px;
+  font-family: var(--loam-font-mono);
+  font-size: 0.7rem;
+  line-height: 1.6;
+  color: var(--op-muted);
+  background: var(--op-surface);
+  white-space: nowrap;
+}
+
+/* Cards --------------------------------------------------------------------- */
+
+.loam-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--op-rule-soft);
+  background: var(--op-surface);
+}
+
+.loam-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 46px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--op-rule-soft);
+  background: var(--op-raised);
+}
+
+.loam-card-head h2,
+.loam-card-head h3 {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 540;
+}
+
+.loam-card-head > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.loam-card-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  flex: 1;
+  padding: 16px;
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.loam-card-flush {
+  padding: 0;
+}
+
+.loam-card-body > p {
+  margin: 0;
+  color: var(--op-muted);
+}
+
+/* Grain ------------------------------------------------------------------------ */
+
+.loam-grain {
+  position: absolute;
+  inset: 0;
+  display: block;
+  pointer-events: none;
+}
+
+.loam-grain canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Empty states ---------------------------------------------------------------- */
+
+.loam-empty {
+  position: relative;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 6px;
+  min-height: 180px;
+  padding: 28px;
+  overflow: hidden;
+  text-align: center;
+  border: 1px dashed var(--op-rule);
+  background: var(--op-bg);
+}
+
+.loam-empty > :not(.loam-grain) {
+  position: relative;
+}
+
+.loam-empty strong {
+  font-weight: 540;
+}
+
+.loam-empty p {
+  margin: 0;
+  max-width: 42ch;
+  font-size: 0.86rem;
+  color: var(--op-muted);
+}
+
+.loam-empty .loam-grain {
+  opacity: 0.45;
+  mask-image: radial-gradient(ellipse at center, transparent 30%, #000 85%);
+}
+
+.loam-empty-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* Fields ------------------------------------------------------------------------ */
+
+.loam-field {
+  display: grid;
+  gap: 6px;
+}
+
+.loam-field > label,
+.loam-field > .loam-field-label {
+  font-size: 0.84rem;
+  font-weight: 500;
+}
+
+.loam-field-hint {
+  font-size: 0.78rem;
+  color: var(--op-muted);
+}
+
+.loam-field-error {
+  font-size: 0.78rem;
+  color: var(--op-danger);
+}
+
+.loam-input {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid var(--op-rule);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--op-ink);
+  background: var(--op-bg);
+  transition: border-color 150ms ease;
+}
+
+.loam-input::placeholder {
+  color: var(--op-faint);
+}
+
+.loam-input:hover {
+  border-color: var(--op-muted);
+}
+
+.loam-input:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--op-accent) 60%, transparent);
+  outline-offset: 1px;
+  border-color: var(--op-accent);
+}
+
+.loam-input[aria-invalid="true"] {
+  border-color: var(--op-danger);
+}
+
+select.loam-input {
+  appearance: none;
+  padding-right: 32px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--op-muted) 50%),
+    linear-gradient(135deg, var(--op-muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 16px) 55%,
+    calc(100% - 11px) 55%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+}
+
+textarea.loam-input {
+  min-height: 90px;
+  resize: vertical;
+}
+
+.loam-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+
+.loam-check input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--op-ink);
+}
+
+/* Tables ------------------------------------------------------------------------ */
+
+.loam-table-wrap {
+  overflow-x: auto;
+}
+
+.loam-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.loam-table th {
+  padding: 9px 16px;
+  font-family: var(--loam-font-mono);
+  font-size: 0.66rem;
+  font-weight: 400;
+  text-align: left;
+  color: var(--op-faint);
+  border-bottom: 1px solid var(--op-rule-soft);
+  white-space: nowrap;
+}
+
+.loam-table td {
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--op-rule-soft);
+  vertical-align: middle;
+}
+
+.loam-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.loam-table tbody tr {
+  transition: background-color 120ms ease;
+}
+
+.loam-table tbody tr[data-href] {
+  cursor: pointer;
+}
+
+.loam-table tbody tr:hover {
+  background: color-mix(in oklab, var(--op-raised) 60%, transparent);
+}
+
+.loam-table .loam-num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.loam-table-primary {
+  display: grid;
+  gap: 2px;
+}
+
+.loam-table-primary strong {
+  font-weight: 520;
+}
+
+.loam-table-primary span {
+  font-size: 0.8rem;
+  color: var(--op-muted);
+}
+
+/* Stats ------------------------------------------------------------------------ */
+
+.loam-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+}
+
+.loam-stat {
+  display: grid;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--op-rule-soft);
+  background: var(--op-surface);
+}
+
+.loam-stat > span {
+  font-family: var(--loam-font-mono);
+  font-size: 0.66rem;
+  color: var(--op-faint);
+}
+
+.loam-stat > strong {
+  font-size: 1.5rem;
+  font-weight: 520;
+  font-stretch: 112%;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.loam-stat > small {
+  font-size: 0.78rem;
+  color: var(--op-muted);
+}
+
+/* Notices ---------------------------------------------------------------------- */
+
+.loam-notice {
+  display: flex;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--op-rule-soft);
+  border-left: 3px solid var(--op-info);
+  background: var(--op-surface);
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+.loam-notice strong {
+  font-weight: 560;
+}
+
+.loam-notice p {
+  margin: 2px 0 0;
+  color: var(--op-muted);
+}
+
+.loam-notice-warn {
+  border-left-color: var(--op-accent);
+}
+
+.loam-notice-danger {
+  border-left-color: var(--op-danger);
+}
+
+.loam-notice-success {
+  border-left-color: var(--op-grow);
+}
+
+/* Snippets ------------------------------------------------------------------------ */
+
+.loam-snippet {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 0;
+  padding: 11px 12px 11px 14px;
+  border: 1px solid var(--op-rule-soft);
+  background: var(--op-bg);
+  font-family: var(--loam-font-mono);
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+.loam-snippet code {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.loam-snippet-prompt {
+  color: var(--op-accent);
+  user-select: none;
+}
+
+.loam-secret {
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+/* Meter ------------------------------------------------------------------------------ */
+
+.loam-meter {
+  height: 6px;
+  background: var(--op-raised);
+  overflow: hidden;
+}
+
+.loam-meter > span[aria-hidden] {
+  display: block;
+  height: 100%;
+  background: var(--op-ink);
+  transform-origin: left;
+  animation: loam-grow 900ms var(--op-ease) both;
+}
+
+.loam-meter[data-level="high"] > span[aria-hidden] {
+  background: var(--op-accent);
+}
+
+.loam-meter[data-level="full"] > span[aria-hidden] {
+  background: var(--op-danger);
+}
+
+@keyframes loam-grow {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+/* Avatar ------------------------------------------------------------------------------- */
+
+.loam-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--op-ink);
+  background: var(--op-raised);
+  border: 1px solid var(--op-rule-soft);
+}
+
+.loam-avatar[data-kind="agent"] {
+  border-radius: 4px;
+  color: var(--op-accent);
+  background: var(--op-accent-soft);
+  border-color: transparent;
+}
+
+.loam-avatar[data-kind="team"] {
+  border-radius: 4px;
+}
+
+.loam-avatar[data-kind="service_account"] {
+  border-radius: 4px;
+  color: var(--op-info);
+  background: var(--op-info-soft);
+  border-color: transparent;
+}
+
+/* Dialog ---------------------------------------------------------------------------------- */
+
+.loam-dialog {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100dvh - 64px);
+  padding: 0;
+  border: 1px solid var(--op-rule);
+  color: var(--op-ink);
+  background: var(--op-bg);
+  box-shadow: 0 32px 64px -24px rgb(0 0 0 / 0.5);
+}
+
+.loam-dialog::backdrop {
+  background: rgb(10 8 6 / 0.55);
+}
+
+.loam-dialog[open] {
+  animation: loam-rise 240ms var(--op-ease) both;
+}
+
+.loam-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--op-rule-soft);
+}
+
+.loam-dialog-head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 560;
+}
+
+.loam-dialog-body {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+.loam-dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--op-rule-soft);
+  background: var(--op-surface);
+}
+
+@keyframes loam-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loam-status-progress::before,
+  .loam-meter > span[aria-hidden],
+  .loam-dialog[open] {
+    animation: none;
+  }
+}
