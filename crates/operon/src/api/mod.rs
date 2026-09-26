@@ -60,6 +60,14 @@ const IMPLICIT_STREAM_PREFIX: &str = "_collection.";
 /// case, which `HeaderName` refuses).
 pub const CONSISTENCY_TOKEN: HeaderName = HeaderName::from_static("operon-consistency-token");
 
+/// The backlog a collection write was admitted at (or refused over), on
+/// every write response (Task 15 rule 5).
+pub const UNAPPLIED_RECORDS_HEADER: &str = "Operon-Unapplied-Records";
+pub const UNAPPLIED_BYTES_HEADER: &str = "Operon-Unapplied-Bytes";
+/// The request header whose value `off` admits a write up to
+/// `override_factor` × the budget (`Override::Bulk`); any other value is 400.
+pub const BACKPRESSURE_HEADER: &str = "Operon-Backpressure";
+
 /// What the handlers share.
 #[derive(Clone, Debug)]
 pub struct AppState {

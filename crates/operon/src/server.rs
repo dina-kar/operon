@@ -275,6 +275,7 @@ impl ServerConfig {
             cluster.validate()?;
         }
         self.flight.validate().map_err(ServerError::Config)?;
+        self.validate_backpressure()?;
         self.gc
             .check_deadlines(&[
                 ("segmenter.swap_deadline", self.segmenter.swap_deadline),
@@ -290,6 +291,37 @@ impl ServerConfig {
                 ),
             ])
             .map_err(|err| ServerError::Config(err.to_string()))
+    }
+}
+
+impl ServerConfig {
+    /// Task 15 rule 8: the byte budget at most half the live tail (so a
+    /// backlog at the budget fits the tail and strong reads need no range
+    /// tail), non-zero budgets, `override_factor >= 1` and
+    /// `min_retry_after <= max_retry_after`.
+    fn validate_backpressure(&self) -> Result<(), ServerError> {
+        let b = &self.query.backpressure;
+        let config = |message: String| Err(ServerError::Config(message));
+        let half_tail = (self.query.tail.max_bytes / 2) as u64;
+        if b.max_unapplied_bytes > half_tail {
+            return config(format!(
+                "--max-unapplied-bytes {} is over half the tail's bound ({half_tail} of {} bytes)",
+                b.max_unapplied_bytes, self.query.tail.max_bytes
+            ));
+        }
+        if b.max_unapplied_records == 0 || b.max_unapplied_bytes == 0 {
+            return config("the unapplied-data budgets must be above 0".to_string());
+        }
+        if b.override_factor < 1 {
+            return config("backpressure.override_factor must be at least 1".to_string());
+        }
+        if b.min_retry_after > b.max_retry_after {
+            return config(format!(
+                "backpressure.min_retry_after {:?} is over max_retry_after {:?}",
+                b.min_retry_after, b.max_retry_after
+            ));
+        }
+        Ok(())
     }
 }
 

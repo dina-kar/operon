@@ -1050,12 +1050,14 @@ impl PutError {
         if written == 0 {
             return status;
         }
-        Status::new(
+        // The metadata (a refusal's `retry-after-ms`) stays.
+        Status::with_metadata(
             status.code(),
             format!(
                 "{} ({written} rows were written before the failure)",
                 status.message()
             ),
+            status.metadata().clone(),
         )
     }
 }

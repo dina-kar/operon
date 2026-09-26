@@ -969,3 +969,68 @@ async fn a_stalled_put_does_not_hang_shutdown() {
     .await;
     assert!(ended.is_ok(), "the put's answer stream ends");
 }
+
+/// Task 15 rule 2: every chunk of a collection put is admitted against the
+/// unapplied-data budget; a refused chunk ends the put with
+/// `RESOURCE_EXHAUSTED` and `retry-after-ms`, and the acknowledged batches
+/// stand.
+#[tokio::test]
+async fn flight_do_put_is_refused_at_the_budget() {
+    let api = Native::start_with(|config| {
+        config.flight_sql = Some(std::net::SocketAddr::from(([127, 0, 0, 1], 0)));
+        // The link never commits within the test.
+        config.link.batch_interval = std::time::Duration::from_secs(3600);
+        config.link.batch_records = 1_000_000;
+        config.query.backpressure.max_unapplied_records = 5;
+        config.query.backpressure.refresh_interval = std::time::Duration::ZERO;
+    })
+    .await;
+    create_kb(&api, "bp", "ignore").await;
+    let mut client = flight(&api, "bp").await;
+    let (acks, err) = put(
+        &mut client,
+        &["collections", "kb"],
+        vec![
+            kb_batch(0..5, "a", None),
+            kb_batch(5..10, "b", None),
+            kb_batch(10..15, "c", None),
+        ],
+        None,
+    )
+    .await;
+    assert_eq!(acks.len(), 1, "{acks:?}");
+    let err = err.expect("the put is refused");
+    assert_eq!(code(&err), Code::ResourceExhausted, "{err}");
+    let FlightError::Tonic(status) = &err else {
+        panic!("expected a status");
+    };
+    let retry: u64 = status
+        .metadata()
+        .get(operon_query::flight::RETRY_AFTER_METADATA)
+        .expect("retry-after-ms")
+        .to_str()
+        .expect("text")
+        .parse()
+        .expect("a number");
+    assert!((1_000..=30_000).contains(&retry), "{retry}");
+    assert!(message(&err).ends_with("(5 rows were written before the failure)"));
+    let docs = get(&api, "bp", (0..5).collect(), None).await;
+    assert!(docs.iter().all(|doc| !doc.is_null()));
+    let docs = get(&api, "bp", (5..15).collect(), None).await;
+    assert!(docs.iter().all(Value::is_null));
+
+    // The override admits the put up to 4 × the budget.
+    client
+        .add_header(operon_query::flight::BACKPRESSURE_METADATA, "off")
+        .expect("header");
+    let (acks, err) = put(
+        &mut client,
+        &["collections", "kb"],
+        vec![kb_batch(5..10, "b", None)],
+        None,
+    )
+    .await;
+    assert!(err.is_none(), "{err:?}");
+    assert_eq!(acks.len(), 1);
+    api.shutdown().await;
+}

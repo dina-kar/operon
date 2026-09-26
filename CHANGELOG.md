@@ -41,6 +41,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - `operon` (M1.2): the native collection routes (`…/collections`, `…/fields`, `…/versions`, `/v1/namespaces/{ns}/aliases`), document routes (`…/documents`, `…/documents/get`, `…/documents/scroll`, `…/documents/count`), the hybrid query route (`POST /v1/namespaces/{ns}/query`), the SQL route (`POST /v1/namespaces/{ns}/sql`) and the scan plan route (`POST …/collections/{c}/scan`); the Flight SQL listener with `--flight-sql-listen` and `--no-flight-sql`; `--hot on|off` and the `Operon-Hot` request header.
 - `operon-log` (M1.2): ranged WAL fetches: `LogReader` learns each chunk's batch boundaries and reads from the batch that holds the requested offset instead of the whole chunk.
 - CI (M1.2): the nightly `sim` job also runs the tail-merge property test with 256 cases.
+- Per-collection unapplied-data budget and write backpressure: HTTP 429 / `RESOURCE_EXHAUSTED` with `Retry-After`, `Operon-Unapplied-Records` and `Operon-Unapplied-Bytes` headers, the `Operon-Backpressure: off` override, `--backpressure` and `--max-unapplied-*` flags, `unapplied_bytes` and `backpressure` in `CollectionInfo` (D86).
 
 ### Changed
 - Workspace (M1.1): `serde_json` is built with `float_roundtrip`, so `_source` floats survive exactly.

@@ -167,6 +167,10 @@ impl Tuning {
         }
         if let Some(v) = self.tail_max_bytes {
             config.query.tail.max_bytes = v;
+            // The byte budget stays at most half the tail (Task 15 rule 8;
+            // row 15.5).
+            let budget = &mut config.query.backpressure.max_unapplied_bytes;
+            *budget = (*budget).min((v / 2) as u64);
         }
         if let Some(v) = self.consistency_wait_ms {
             config.query.read.consistency_wait = ms(v);
@@ -203,7 +207,7 @@ impl Tuning {
     }
 }
 
-/// `--hot on|off` (and `--maintenance on|off`).
+/// `--hot on|off` (and `--maintenance on|off`, `--backpressure on|off`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum HotSwitch {
     On,
@@ -238,6 +242,18 @@ struct Native {
     /// Memory the hot tier may use, in bytes [default: 8 GiB].
     #[arg(long)]
     hot_ram_bytes: Option<u64>,
+    /// Whether collection writes are refused (429) while a collection's
+    /// unapplied data is over its budget.
+    #[arg(long, value_enum, default_value = "on")]
+    backpressure: HotSwitch,
+    /// Unapplied records per collection before writes are refused
+    /// [default: 1000000].
+    #[arg(long)]
+    max_unapplied_records: Option<u64>,
+    /// Unapplied bytes per collection before writes are refused, at most
+    /// half the tail's bound [default: 128 MiB].
+    #[arg(long)]
+    max_unapplied_bytes: Option<u64>,
 }
 
 impl Native {
@@ -259,6 +275,14 @@ impl Native {
         }
         if let Some(v) = self.hot_ram_bytes {
             config.hot.ram_bytes = v;
+        }
+        let backpressure = &mut config.query.backpressure;
+        backpressure.enabled = self.backpressure == HotSwitch::On;
+        if let Some(v) = self.max_unapplied_records {
+            backpressure.max_unapplied_records = v;
+        }
+        if let Some(v) = self.max_unapplied_bytes {
+            backpressure.max_unapplied_bytes = v;
         }
     }
 }
@@ -646,10 +670,42 @@ mod tests {
         );
         let config = dev_config(&["--tail-max-bytes", "4096", "--consistency-wait-ms", "250"]);
         assert_eq!(config.query.tail.max_bytes, 4096);
+        assert_eq!(config.query.backpressure.max_unapplied_bytes, 2048);
+        config.validate().expect("a lowered budget");
         assert_eq!(
             config.query.read.consistency_wait,
             Duration::from_millis(250)
         );
+    }
+
+    #[test]
+    fn backpressure_flags_set_the_config() {
+        let config = dev_config(&[]);
+        assert!(config.query.backpressure.enabled);
+        assert_eq!(config.query.backpressure.max_unapplied_records, 1_000_000);
+        assert_eq!(config.query.backpressure.max_unapplied_bytes, 128 << 20);
+        let config = dev_config(&[
+            "--backpressure",
+            "off",
+            "--max-unapplied-records",
+            "7",
+            "--max-unapplied-bytes",
+            "1000",
+        ]);
+        assert!(!config.query.backpressure.enabled);
+        assert_eq!(config.query.backpressure.max_unapplied_records, 7);
+        assert_eq!(config.query.backpressure.max_unapplied_bytes, 1000);
+        assert!(Cli::try_parse_from(["operon", "dev", "--backpressure", "maybe"]).is_err());
+        let cli = Cli::try_parse_from([
+            "operon",
+            "standalone",
+            "--bucket",
+            "file:///tmp/b",
+            "--max-unapplied-records",
+            "9",
+        ])
+        .expect("parse");
+        assert_eq!(config_of(cli).query.backpressure.max_unapplied_records, 9);
     }
 
     fn config_of(cli: Cli) -> ServerConfig {
