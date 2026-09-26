@@ -212,6 +212,7 @@ pub(super) async fn write(
     let opts = WriteOptions {
         report_existence: request.report_existence,
         atomic: true,
+        ..WriteOptions::default()
     };
     let result = state
         .collections

@@ -40,14 +40,14 @@ fn not_found(name: &str) -> ServiceError {
 fn reported() -> WriteOptions {
     WriteOptions {
         report_existence: true,
-        atomic: false,
+        ..WriteOptions::default()
     }
 }
 
 fn atomic() -> WriteOptions {
     WriteOptions {
-        report_existence: false,
         atomic: true,
+        ..WriteOptions::default()
     }
 }
 

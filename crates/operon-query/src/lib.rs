@@ -22,6 +22,7 @@
 //! ingest into collections and streams ([`flight_ingest`]). Task 14: scan
 //! pinning, a collection resolved into a pinned scan plan ([`scan`], D53).
 
+pub mod backlog;
 pub mod catalog_cache;
 pub mod error;
 pub mod exec;
@@ -43,6 +44,10 @@ pub mod validate;
 pub mod vector;
 pub mod write;
 
+pub use backlog::{
+    Backlog, BacklogMonitor, BackpressureConfig, BackpressureCounters, BackpressureState,
+    BackpressureStatus, Override,
+};
 pub use catalog_cache::CatalogCache;
 pub use error::{NOT_FOUND_KINDS, ServiceError};
 pub use ir::{

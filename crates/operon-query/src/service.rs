@@ -20,6 +20,7 @@ use operon_common::meta::{
 use operon_common::{CollectionId, NamespaceId};
 use operon_log::LogReader;
 
+use crate::backlog::{Backlog, BacklogMonitor, BackpressureConfig};
 use crate::catalog_cache::CatalogCache;
 use crate::error::ServiceError;
 use crate::exec::planner::{SearchConfig, SearchPlanner};
@@ -81,6 +82,8 @@ pub struct ServiceConfig {
     /// scan plan's `lance.uri` is it plus `lance_prefix`, Task 14 rule 4);
     /// `None` by default, and the server sets its bucket URL.
     pub lance_base_url: Option<String>,
+    /// The unapplied-data budget of collection writes (Task 15, D86).
+    pub backpressure: BackpressureConfig,
 }
 
 impl Default for ServiceConfig {
@@ -97,6 +100,7 @@ impl Default for ServiceConfig {
             max_scroll_limit: 10_000,
             schema_retries: 5,
             lance_base_url: None,
+            backpressure: BackpressureConfig::default(),
         }
     }
 }
@@ -111,6 +115,7 @@ pub struct CollectionService {
     pub(crate) hot: RwLock<Arc<dyn HotTier>>,
     pub(crate) placement: RwLock<(Arc<dyn Placement>, Arc<dyn RemoteReads>)>,
     pub(crate) catalog: CatalogCache,
+    pub(crate) backlog: BacklogMonitor,
     pub(crate) config: ServiceConfig,
     /// The service itself, for the SQL catalog of Task 10.
     pub(crate) this: Weak<CollectionService>,
@@ -195,6 +200,7 @@ impl CollectionService {
             ),
             planner: SearchPlanner::new(config.search.clone(), config.ann.clone()),
             catalog: CatalogCache::start(ctx.meta.clone()),
+            backlog: BacklogMonitor::new(ctx.clone(), config.backpressure.clone()),
             hot: RwLock::new(Arc::new(NoHotTier)),
             placement: RwLock::new((Arc::new(LocalOnly), Arc::new(NoRemoteReads))),
             ctx,
@@ -217,6 +223,19 @@ impl CollectionService {
 
     pub fn config(&self) -> &ServiceConfig {
         &self.config
+    }
+
+    /// The backlog measurements and write admission (Task 15).
+    pub fn backlog_monitor(&self) -> &BacklogMonitor {
+        &self.backlog
+    }
+
+    /// The backlog of collection (or alias) `name` as admission last
+    /// measured it (at most `refresh_interval` ago): the backlog headers of
+    /// a refused write (Task 15 rule 5).
+    pub async fn collection_backlog(&self, ns: &str, name: &str) -> Result<Backlog, ServiceError> {
+        let (ns_id, collection) = self.resolve(ns, name).await?;
+        self.backlog.backlog(ns_id, &collection).await
     }
 
     /// The names of the collections and aliases of every namespace (Task 10).
@@ -558,6 +577,10 @@ impl CollectionService {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
             .status(collection.namespace, collection.id);
+        let backlog = self
+            .backlog
+            .backlog(collection.namespace, collection)
+            .await?;
         Ok(CollectionInfo {
             id: collection.id,
             name: collection.name.clone(),
@@ -572,6 +595,8 @@ impl CollectionService {
             created_at_ms,
             link_lag_records: link_lag(&head, &applied),
             hot,
+            unapplied_bytes: backlog.bytes,
+            backpressure: self.backlog.status(backlog),
         })
     }
 
