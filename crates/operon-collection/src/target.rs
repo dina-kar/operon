@@ -29,12 +29,12 @@ use bytes::Bytes;
 use futures::{StreamExt, TryStreamExt};
 use lance::dataset::transaction::Operation;
 use lance::index::DatasetIndexExt;
+use operon_common::meta::{
+    ApplyError, COLLECTION_KIND, Collection, Consistency, Fence, Freshness, Link, LinkId,
+    MetaError, MetaStore, collection_pk_prefix, collection_pointer_key, log_stale_object,
+};
 use operon_common::{CollectionId, NamespaceId};
 use operon_link::{ApplyBatch, CommitError, LinkError, LinkTarget, LinkTargetFactory, TargetState};
-use operon_meta::{
-    ApplyError, COLLECTION_KIND, Collection, Consistency, Fence, Freshness, Link, LinkId,
-    MetaClient, MetaError, collection_pk_prefix, collection_pointer_key, log_stale_object,
-};
 use operon_pk::{PkError, PkIndex, PkIndexConfig};
 use operon_store::{Store, StoreError};
 use roaring::RoaringBitmap;
@@ -198,8 +198,12 @@ impl LinkTargetFactory for CollectionTargetFactory {
     }
 
     /// The cached target of `link`, created on first use. It reads and
-    /// commits through the context's metastore client; `meta` is unused.
-    fn open(&self, _meta: &MetaClient, link: &Link) -> Result<Arc<dyn LinkTarget>, LinkError> {
+    /// commits through the context's metastore; `meta` is unused.
+    fn open(
+        &self,
+        _meta: &Arc<dyn MetaStore>,
+        link: &Link,
+    ) -> Result<Arc<dyn LinkTarget>, LinkError> {
         let mut targets = self.targets.lock().unwrap_or_else(PoisonError::into_inner);
         let target = targets.entry(link.id).or_insert_with(|| {
             Arc::new(CollectionTarget {
@@ -530,7 +534,7 @@ impl CollectionTarget {
         let link = self.link;
         self.ctx
             .meta
-            .read(consistency, |s| s.collection_for_link(link).cloned())
+            .collection_for_link(consistency, link)
             .await?
             .ok_or_else(|| CollectionError::NotFound(format!("collection of link {link}")))
     }
@@ -539,7 +543,7 @@ impl CollectionTarget {
     async fn live(&self, cid: CollectionId) -> Result<Parent, CollectionError> {
         let ctx = &self.ctx;
         let live = live_manifest(
-            &ctx.meta,
+            &*ctx.meta,
             &ctx.store,
             &ctx.manifests,
             self.namespace,
@@ -1413,15 +1417,16 @@ impl PointerCas<'_> {
         };
         let result = ctx
             .meta
-            .cas_pointer_fresh(
-                ns,
-                &collection_pointer_key(cid),
-                (v > 0).then_some(v),
-                path,
-                Some(fence.clone()),
-                Some(fresh),
-            )
-            .await;
+            .cas_pointer(operon_common::meta::PointerCas {
+                namespace: ns,
+                key: collection_pointer_key(cid),
+                expected: (v > 0).then_some(v),
+                value: path.to_string(),
+                fence: Some(fence.clone()),
+                fresh: Some(fresh),
+            })
+            .await
+            .into_result();
         let version = match result {
             Ok(version) => version,
             Err(MetaError::Rejected(ApplyError::VersionMismatch {

@@ -252,7 +252,7 @@ fn link_source(f: &Fixture, reader: LogReader) -> LinkApplySource {
         f.store.clone(),
         config.max_commit_delay,
     )));
-    LinkApplySource::new(reader, registry, config)
+    LinkApplySource::new(f.meta.clone(), reader, registry, config)
 }
 
 /// Link apply whose registry serves only collections, so it runs only the
@@ -264,7 +264,7 @@ fn collection_link_source(f: &Fixture, reader: LogReader) -> LinkApplySource {
         ..LinkConfig::default()
     };
     let registry = TargetRegistry::new().with(f.collection_factory.clone());
-    LinkApplySource::new(reader, registry, config)
+    LinkApplySource::new(f.meta.clone(), reader, registry, config)
 }
 
 fn field(name: &str, kind: FieldKind) -> FieldSpec {
@@ -412,7 +412,7 @@ impl Fixture {
             .expect("collection");
         let collection_config = CollectionConfig::default();
         let collections = CollectionContext {
-            meta: meta.clone(),
+            meta: meta.clone().into(),
             store: store.clone(),
             cache: RangeCache::new(store.clone(), RangeCacheConfig::default())
                 .await

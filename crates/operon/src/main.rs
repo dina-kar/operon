@@ -70,6 +70,12 @@ struct Tuning {
     /// How often an idle collection is checked for index work.
     #[arg(long, hide = true)]
     collection_index_poll_interval_ms: Option<u64>,
+    /// Most bytes one collection's tail index holds.
+    #[arg(long, hide = true)]
+    tail_max_bytes: Option<usize>,
+    /// How long strong and at-least-token reads wait for the tail.
+    #[arg(long, hide = true)]
+    consistency_wait_ms: Option<u64>,
 }
 
 impl Tuning {
@@ -126,6 +132,47 @@ impl Tuning {
         if let Some(v) = self.collection_index_poll_interval_ms {
             config.collection.index_poll_interval = ms(v);
         }
+        if let Some(v) = self.tail_max_bytes {
+            config.query.tail.max_bytes = v;
+        }
+        if let Some(v) = self.consistency_wait_ms {
+            config.query.read.consistency_wait = ms(v);
+        }
+    }
+}
+
+/// `--hot on|off`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum HotSwitch {
+    On,
+    Off,
+}
+
+/// The native surfaces beside the HTTP API, shared by `dev` and
+/// `standalone`.
+#[derive(Debug, clap::Args)]
+struct Native {
+    /// Address of the Arrow Flight SQL listener [default: 127.0.0.1:8082
+    /// for dev, 0.0.0.0:8082 for standalone].
+    #[arg(long, conflicts_with = "no_flight_sql")]
+    flight_sql_listen: Option<SocketAddr>,
+    /// Serve no Flight SQL.
+    #[arg(long)]
+    no_flight_sql: bool,
+    /// Whether reads use the hot tier when a request does not say
+    /// (`Operon-Hot`).
+    #[arg(long, value_enum, default_value = "on")]
+    hot: HotSwitch,
+}
+
+impl Native {
+    fn apply(&self, config: &mut ServerConfig, default_flight: SocketAddr) {
+        config.flight_sql = if self.no_flight_sql {
+            None
+        } else {
+            Some(self.flight_sql_listen.unwrap_or(default_flight))
+        };
+        config.query.hot_default = self.hot == HotSwitch::On;
     }
 }
 
@@ -143,6 +190,8 @@ enum Command {
         #[arg(long)]
         flush_interval_ms: Option<u64>,
         #[command(flatten)]
+        native: Native,
+        #[command(flatten)]
         tuning: Box<Tuning>,
     },
     /// Run everything in one process, with data in an object-store bucket.
@@ -156,8 +205,21 @@ enum Command {
         /// Address of the HTTP API.
         #[arg(long, default_value = "127.0.0.1:8080")]
         listen: SocketAddr,
+        #[command(flatten)]
+        native: Native,
     },
 }
+
+/// Flight SQL's default address for `operon dev`.
+const DEV_FLIGHT_SQL: SocketAddr = SocketAddr::V4(std::net::SocketAddrV4::new(
+    std::net::Ipv4Addr::LOCALHOST,
+    8082,
+));
+/// Flight SQL's default address for `operon standalone`.
+const STANDALONE_FLIGHT_SQL: SocketAddr = SocketAddr::V4(std::net::SocketAddrV4::new(
+    std::net::Ipv4Addr::UNSPECIFIED,
+    8082,
+));
 
 fn config(command: Command) -> ServerConfig {
     match command {
@@ -165,6 +227,7 @@ fn config(command: Command) -> ServerConfig {
             data_dir,
             listen,
             flush_interval_ms,
+            native,
             tuning,
         } => {
             let mut config = ServerConfig::new(data_dir);
@@ -172,6 +235,7 @@ fn config(command: Command) -> ServerConfig {
             if let Some(ms) = flush_interval_ms {
                 config.log.flush_interval = Duration::from_millis(ms);
             }
+            native.apply(&mut config, DEV_FLIGHT_SQL);
             tuning.apply(&mut config);
             config
         }
@@ -179,10 +243,12 @@ fn config(command: Command) -> ServerConfig {
             bucket,
             data_dir,
             listen,
+            native,
         } => {
             let mut config = ServerConfig::new(data_dir);
             config.listen = listen;
             config.bucket = Some(bucket);
+            native.apply(&mut config, STANDALONE_FLIGHT_SQL);
             config
         }
     }
@@ -275,6 +341,10 @@ async fn main() -> ExitCode {
         }
     };
     println!("operon listening on http://{}", server.local_addr());
+    // M1.6 W14, M1.7 A4: printed once the listener is bound.
+    if let Some(addr) = server.flight_sql_addr() {
+        println!("operon flight sql listening on grpc://{addr}");
+    }
     shutdown_signal().await;
     tracing::info!("shutting down");
     match server.shutdown().await {
@@ -307,6 +377,46 @@ mod tests {
         assert_eq!(config.collection.max_commit_delay, half);
         assert_eq!(config.collection.index_commit_delay, half);
         config.validate().expect("valid");
+    }
+
+    #[test]
+    fn flight_sql_and_hot_flags_set_the_config() {
+        let config = dev_config(&[]);
+        assert_eq!(config.flight_sql, Some("127.0.0.1:8082".parse().unwrap()));
+        assert!(config.query.hot_default);
+        let config = dev_config(&["--flight-sql-listen", "127.0.0.1:9000", "--hot=off"]);
+        assert_eq!(config.flight_sql, Some("127.0.0.1:9000".parse().unwrap()));
+        assert!(!config.query.hot_default);
+        let config = dev_config(&["--no-flight-sql", "--hot", "on"]);
+        assert_eq!(config.flight_sql, None);
+        assert!(config.query.hot_default);
+        assert!(
+            Cli::try_parse_from([
+                "operon",
+                "dev",
+                "--no-flight-sql",
+                "--flight-sql-listen",
+                "127.0.0.1:1"
+            ])
+            .is_err()
+        );
+        assert!(Cli::try_parse_from(["operon", "dev", "--hot", "maybe"]).is_err());
+        let cli = Cli::try_parse_from(["operon", "standalone", "--bucket", "file:///tmp/b"])
+            .expect("parse");
+        assert_eq!(
+            config_of(cli).flight_sql,
+            Some("0.0.0.0:8082".parse().unwrap())
+        );
+        let config = dev_config(&["--tail-max-bytes", "4096", "--consistency-wait-ms", "250"]);
+        assert_eq!(config.query.tail.max_bytes, 4096);
+        assert_eq!(
+            config.query.read.consistency_wait,
+            Duration::from_millis(250)
+        );
+    }
+
+    fn config_of(cli: Cli) -> ServerConfig {
+        config(cli.command)
     }
 
     #[test]

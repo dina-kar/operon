@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use async_trait::async_trait;
+use operon_common::meta::{ApplyError, Consistency, Fence, MetaError, MetaStore, Pointer};
 use operon_common::{CollectionId, NamespaceId, StreamId};
-use operon_meta::{ApplyError, Consistency, Fence, MetaClient, MetaError, collection_pointer_key};
 use operon_worker::{
     Candidate, Priority, Task, TaskContext, TaskError, TaskKey, TaskOutcome, TaskSource,
 };
@@ -69,12 +69,13 @@ impl TaskSource for CollectionTrimSource {
         Priority::Maintenance
     }
 
-    async fn candidates(&self, meta: &MetaClient) -> Result<Vec<Candidate>, TaskError> {
+    async fn candidates(&self, meta: &dyn MetaStore) -> Result<Vec<Candidate>, TaskError> {
         let collections: Vec<(NamespaceId, CollectionId)> = meta
-            .read(Consistency::Local, |s| {
-                s.all_collections().map(|c| (c.namespace, c.id)).collect()
-            })
-            .await?;
+            .collections(Consistency::Local, None)
+            .await?
+            .into_iter()
+            .map(|c| (c.namespace, c.id))
+            .collect();
         let interval = self.ctx.config.trim_interval;
         let mut last_run = self.last_run.lock().unwrap_or_else(PoisonError::into_inner);
         let live: BTreeSet<CollectionId> = collections.iter().map(|(_, cid)| *cid).collect();
@@ -106,7 +107,7 @@ struct Seen {
     stream: StreamId,
     /// The log start of each partition.
     log_starts: Vec<u64>,
-    pointer: Option<operon_meta::Pointer>,
+    pointer: Option<Pointer>,
     clock_ms: u64,
 }
 
@@ -147,26 +148,18 @@ impl TrimTask {
     async fn trim(&self, fence: &Fence) -> Result<TaskOutcome, TaskError> {
         let ctx = &self.source.ctx;
         let (ns, cid) = (self.ns, self.cid);
-        let key = collection_pointer_key(cid);
         // The pointer and the clock in one `Linearizable` read.
         let seen = ctx
             .meta
-            .read(Consistency::Linearizable, |s| {
-                let collection = s.collection(cid).filter(|c| c.namespace == ns)?;
-                let log_starts = (0..collection.partitions)
-                    .map(|p| {
-                        s.partition(collection.stream, p)
-                            .map_or(0, |state| state.log_start_offset())
-                    })
-                    .collect();
-                Some(Seen {
-                    stream: collection.stream,
-                    log_starts,
-                    pointer: s.pointer(ns, &key).cloned(),
-                    clock_ms: s.clock_ms(),
-                })
-            })
-            .await?;
+            .collection_head(Consistency::Linearizable, cid)
+            .await?
+            .filter(|head| head.collection.namespace == ns)
+            .map(|head| Seen {
+                stream: head.collection.stream,
+                log_starts: head.log_start_offsets,
+                pointer: head.pointer,
+                clock_ms: head.clock_ms,
+            });
         // A dropped collection, or one without a commit yet.
         let Some(Seen {
             stream,

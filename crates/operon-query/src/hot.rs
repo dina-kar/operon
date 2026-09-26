@@ -1,0 +1,432 @@
+//! The hot tier as the query engine sees it (plan M1.2 Task 1; overview
+//! A13, A19, A23): the fixed [`HotTier`]/[`HotAnn`] contract M1.3
+//! implements, the per-request hot switch carried by a task-local scope
+//! (Ruling 11), the [`HotLayer`] that sets it from the `Operon-Hot` header and
+//! reports `Operon-Hot-Used`, and what a read reports about the hot
+//! structures it used.
+
+use std::collections::BTreeSet;
+use std::future::Future;
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Context, Poll};
+
+use operon_common::{CollectionId, NamespaceId};
+use roaring::RoaringTreemap;
+use serde::{Deserialize, Serialize};
+
+use crate::error::ServiceError;
+
+/// The hot tier of this node. The first three methods are the fixed contract
+/// (overview §6.9); `status` is an addition with a default.
+pub trait HotTier: Send + Sync + std::fmt::Debug {
+    /// An ANN index for `column` reflecting manifest `source_version <= manifest_version`; None → durable path.
+    fn ann(
+        &self,
+        ns: NamespaceId,
+        cid: CollectionId,
+        column: &str,
+        manifest_version: u64,
+    ) -> Option<Arc<dyn HotAnn>>;
+    /// A local file holding the whole split when it is pinned on this node; None → range reads through the cache.
+    fn split_file(&self, ns: NamespaceId, cid: CollectionId, split: ulid::Ulid) -> Option<PathBuf>;
+    /// Access accounting for promotion (called once per read of a collection).
+    fn record_access(&self, ns: NamespaceId, cid: CollectionId);
+    /// Addition (provided): the hot status reported by `GET …/collections/{c}`.
+    fn status(&self, _ns: NamespaceId, _cid: CollectionId) -> HotStatus {
+        HotStatus::default()
+    }
+}
+
+/// A hot ANN artifact of one vector column.
+#[async_trait::async_trait]
+pub trait HotAnn: Send + Sync + std::fmt::Debug {
+    fn source_version(&self) -> u64;
+    /// Row ids covered by the artifact; rows outside are searched on the durable path and merged.
+    fn covered(&self) -> &RoaringTreemap;
+    /// Approximate top-k over covered rows, restricted to `allow` when given; scores are approximate (the caller rescores exactly, R12).
+    async fn search(
+        &self,
+        query: &[f32],
+        k: usize,
+        allow: Option<&RoaringTreemap>,
+        ef: Option<u32>,
+    ) -> Result<Vec<(u64, f32)>, HotError>;
+}
+
+/// No hot tier: every read takes the durable path.
+#[derive(Debug, Default)]
+pub struct NoHotTier;
+
+impl HotTier for NoHotTier {
+    fn ann(&self, _: NamespaceId, _: CollectionId, _: &str, _: u64) -> Option<Arc<dyn HotAnn>> {
+        None
+    }
+
+    fn split_file(&self, _: NamespaceId, _: CollectionId, _: ulid::Ulid) -> Option<PathBuf> {
+        None
+    }
+
+    fn record_access(&self, _: NamespaceId, _: CollectionId) {}
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum HotError {
+    #[error("hot artifact unavailable: {0}")]
+    Unavailable(String),
+    #[error("hot artifact failed: {0}")]
+    Failed(String),
+}
+
+/// A hot structure a read can use; declaration order is the sorted order of
+/// the `Operon-Hot-Used` header. Fragment prefetch (H1) is never reported
+/// (overview A19).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HotKind {
+    Hnsw,
+    Splits,
+}
+
+/// The `hot` value of `CollectionInfo`. M1.3's `GET …/collections/{c}`
+/// handler replaces it with the owner's full status, a superset whose
+/// `vectors`, `text` and `fragments` objects each carry these `state` and
+/// `source_version` keys.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HotStatus {
+    pub vectors: HotState,
+    pub text: HotState,
+    pub fragments: HotState,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HotState {
+    pub state: HotStateKind,
+    /// The manifest version the structure reflects.
+    pub source_version: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HotStateKind {
+    #[default]
+    Off,
+    Building,
+    Ready,
+}
+
+impl HotKind {
+    /// The snake-case name, as in the `Operon-Hot-Used` header.
+    pub fn name(self) -> &'static str {
+        match self {
+            HotKind::Hnsw => "hnsw",
+            HotKind::Splits => "splits",
+        }
+    }
+}
+
+/// The hot structures one request used. Clones share one set.
+#[derive(Clone, Debug, Default)]
+pub struct HotUsed(Arc<Mutex<BTreeSet<HotKind>>>);
+
+impl HotUsed {
+    pub fn record(&self, kind: HotKind) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(kind);
+    }
+
+    pub fn kinds(&self) -> BTreeSet<HotKind> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The recorded kinds joined with `,` in [`HotKind`] order, or `none`.
+    pub fn header_value(&self) -> String {
+        let kinds = self.kinds();
+        if kinds.is_empty() {
+            return "none".to_string();
+        }
+        kinds
+            .into_iter()
+            .map(HotKind::name)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+/// The hot switch of one request and what it used.
+#[derive(Clone, Debug)]
+pub struct RequestHot {
+    pub enabled: bool,
+    pub used: HotUsed,
+}
+
+tokio::task_local! {
+    static HOT_SCOPE: RequestHot;
+}
+
+/// Runs `fut` with `hot` as the request's hot scope.
+pub async fn scope<F: Future>(hot: RequestHot, fut: F) -> F::Output {
+    HOT_SCOPE.scope(hot, fut).await
+}
+
+/// The current request's hot scope; `None` outside one.
+pub fn current() -> Option<RequestHot> {
+    HOT_SCOPE.try_with(RequestHot::clone).ok()
+}
+
+/// The request header that switches the hot tier (gRPC metadata of the same
+/// name too).
+pub const HOT_HEADER: &str = "operon-hot";
+/// The response header naming the hot structures used.
+pub const HOT_USED_HEADER: &str = "operon-hot-used";
+
+/// `on` → true, `off` → false (ASCII case-insensitive); else `InvalidArgument`.
+pub fn parse_hot_header(value: &str) -> Result<bool, ServiceError> {
+    if value.eq_ignore_ascii_case("on") {
+        Ok(true)
+    } else if value.eq_ignore_ascii_case("off") {
+        Ok(false)
+    } else {
+        Err(ServiceError::InvalidArgument(format!(
+            "invalid Operon-Hot header: {value} (expected on or off)"
+        )))
+    }
+}
+
+/// Sets each request's hot scope from `Operon-Hot` and reports
+/// `Operon-Hot-Used` (Ruling 11).
+#[derive(Clone, Debug)]
+pub struct HotLayer {
+    default_enabled: bool,
+}
+
+impl HotLayer {
+    /// `default_enabled` applies to requests without the header.
+    pub fn new(default_enabled: bool) -> Self {
+        Self { default_enabled }
+    }
+}
+
+impl<S> tower::Layer<S> for HotLayer {
+    type Service = HotService<S>;
+
+    fn layer(&self, inner: S) -> HotService<S> {
+        HotService {
+            inner,
+            default_enabled: self.default_enabled,
+        }
+    }
+}
+
+/// The service [`HotLayer`] makes.
+#[derive(Clone, Debug)]
+pub struct HotService<S> {
+    inner: S,
+    default_enabled: bool,
+}
+
+/// The gRPC content type of `request`'s answer: `application/grpc` for a
+/// native gRPC call (`application/grpc`, `application/grpc+proto`, …),
+/// `application/grpc-web` or `application/grpc-web-text` for gRPC-Web
+/// (whose trailers-only answer also travels in headers); `None` otherwise.
+fn grpc_content_type<B>(request: &http::Request<B>) -> Option<&'static str> {
+    let value = request.headers().get(http::header::CONTENT_TYPE)?;
+    let value = String::from_utf8_lossy(value.as_bytes()).to_ascii_lowercase();
+    let media = value.split(';').next().unwrap_or("").trim();
+    let is = |kind: &str| media == kind || media.starts_with(&format!("{kind}+"));
+    if is("application/grpc-web-text") {
+        Some("application/grpc-web-text")
+    } else if is("application/grpc-web") {
+        Some("application/grpc-web")
+    } else if is("application/grpc") {
+        Some("application/grpc")
+    } else {
+        None
+    }
+}
+
+/// Percent-encodes a `grpc-message` value (gRPC over HTTP/2: every byte
+/// outside printable ASCII, and `%`).
+fn grpc_message(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    for byte in message.bytes() {
+        if (0x20..=0x7e).contains(&byte) && byte != b'%' {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// The response to an invalid `Operon-Hot` header: 400 with the
+/// `invalid_argument` JSON body, or for a gRPC or gRPC-Web call a
+/// trailers-only response of its content type with `grpc-status` 3
+/// (`INVALID_ARGUMENT`).
+fn bad_header<R>(err: &ServiceError, grpc: Option<&'static str>) -> http::Response<HotBody<R>> {
+    let message = match err {
+        ServiceError::InvalidArgument(message) => message.clone(),
+        other => other.to_string(),
+    };
+    if let Some(content_type) = grpc {
+        let mut response = http::Response::new(HotBody::rejected(None));
+        let headers = response.headers_mut();
+        headers.insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static(content_type),
+        );
+        headers.insert("grpc-status", http::HeaderValue::from_static("3"));
+        if let Ok(value) = http::HeaderValue::from_str(&grpc_message(&message)) {
+            headers.insert("grpc-message", value);
+        }
+        return response;
+    }
+    let body = serde_json::json!({"error": "invalid_argument", "message": message}).to_string();
+    let mut response = http::Response::new(HotBody::rejected(Some(bytes::Bytes::from(body))));
+    *response.status_mut() = http::StatusCode::BAD_REQUEST;
+    response.headers_mut().insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("application/json"),
+    );
+    response
+}
+
+/// The response body of [`HotService`]: the inner body, polled inside the
+/// request's hot scope so that work a streaming body defers still sees it,
+/// or the rejection of an invalid header.
+///
+/// `Operon-Hot-Used` is a response header, computed when the inner service
+/// returns. A body that ends with trailers (every gRPC response) also gets
+/// the header in its trailers, computed when they are sent, so work done
+/// while the body streams is reported there.
+#[derive(Debug)]
+pub struct HotBody<B> {
+    kind: HotBodyKind<B>,
+}
+
+#[derive(Debug)]
+enum HotBodyKind<B> {
+    Inner { body: B, hot: RequestHot },
+    Rejected(Option<bytes::Bytes>),
+}
+
+impl<B> HotBody<B> {
+    fn inner(body: B, hot: RequestHot) -> Self {
+        Self {
+            kind: HotBodyKind::Inner { body, hot },
+        }
+    }
+
+    fn rejected(body: Option<bytes::Bytes>) -> Self {
+        Self {
+            kind: HotBodyKind::Rejected(body),
+        }
+    }
+}
+
+impl<B> http_body::Body for HotBody<B>
+where
+    B: http_body::Body<Data = bytes::Bytes> + Unpin,
+{
+    type Data = bytes::Bytes;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, B::Error>>> {
+        match &mut self.get_mut().kind {
+            HotBodyKind::Inner { body, hot } => {
+                let polled =
+                    HOT_SCOPE.sync_scope(hot.clone(), || Pin::new(&mut *body).poll_frame(cx));
+                match polled {
+                    Poll::Ready(Some(Ok(mut frame))) => {
+                        if let Some(trailers) = frame.trailers_mut()
+                            && !trailers.contains_key(HOT_USED_HEADER)
+                            && let Ok(value) = http::HeaderValue::from_str(&hot.used.header_value())
+                        {
+                            trailers.insert(HOT_USED_HEADER, value);
+                        }
+                        Poll::Ready(Some(Ok(frame)))
+                    }
+                    other => other,
+                }
+            }
+            HotBodyKind::Rejected(bytes) => {
+                Poll::Ready(bytes.take().map(|b| Ok(http_body::Frame::data(b))))
+            }
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        match &self.kind {
+            HotBodyKind::Inner { body, .. } => body.is_end_stream(),
+            HotBodyKind::Rejected(bytes) => bytes.is_none(),
+        }
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        match &self.kind {
+            HotBodyKind::Inner { body, .. } => body.size_hint(),
+            HotBodyKind::Rejected(bytes) => {
+                http_body::SizeHint::with_exact(bytes.as_ref().map_or(0, |b| b.len() as u64))
+            }
+        }
+    }
+}
+
+impl<S, B, R> tower::Service<http::Request<B>> for HotService<S>
+where
+    S: tower::Service<http::Request<B>, Response = http::Response<R>> + Clone + Send + 'static,
+    S::Future: Send + 'static,
+    S::Error: Send + 'static,
+    B: Send + 'static,
+    R: Send + 'static,
+{
+    type Response = http::Response<HotBody<R>>;
+    type Error = S::Error;
+    type Future =
+        Pin<Box<dyn Future<Output = Result<http::Response<HotBody<R>>, S::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), S::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: http::Request<B>) -> Self::Future {
+        let enabled = match request.headers().get(HOT_HEADER) {
+            None => Ok(self.default_enabled),
+            Some(value) => parse_hot_header(&String::from_utf8_lossy(value.as_bytes())),
+        };
+        let enabled = match enabled {
+            Ok(enabled) => enabled,
+            Err(err) => {
+                let response = bad_header(&err, grpc_content_type(&request));
+                return Box::pin(async move { Ok(response) });
+            }
+        };
+        // The clone that was polled ready serves this call.
+        let clone = self.inner.clone();
+        let mut inner = std::mem::replace(&mut self.inner, clone);
+        let used = HotUsed::default();
+        let hot = RequestHot {
+            enabled,
+            used: used.clone(),
+        };
+        Box::pin(async move {
+            let response = scope(hot.clone(), async move { inner.call(request).await }).await?;
+            let mut response = response.map(|body| HotBody::inner(body, hot));
+            if !response.headers().contains_key(HOT_USED_HEADER)
+                && let Ok(value) = http::HeaderValue::from_str(&used.header_value())
+            {
+                response.headers_mut().insert(HOT_USED_HEADER, value);
+            }
+            Ok(response)
+        })
+    }
+}

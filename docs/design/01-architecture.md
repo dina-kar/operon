@@ -104,6 +104,8 @@ Streams generate high-rate metadata: offset assignment per flush, consumer offse
 
 Every crate reaches the metastore through **`trait MetaStore`** in `operon-common` (D47), as `Arc<dyn MetaStore>` from M1.2a. The trait is semantic, not raw KV: it exposes the domain operations Operon needs — WAL commit and segment swap, trims and retention, catalog operations and schema evolution (namespaces, streams, collections, aliases, links), manifest-pointer CAS, leases and fencing, and retired-object tracking for GC. Each backend implements the sequencer, fencing and CAS natively instead of rebuilding them over bytes (the Lakekeeper model: one catalog trait, several database backends).
 
+As built (M1.2a): the trait and its records live in `operon_common::meta`; the openraft `MetaClient` implements it in `operon-meta/src/store.rs`. Only the composition roots (`operon`, `operon-sim`) depend on `operon-meta`; the CI step `metastore boundary` enforces it. Reads are named domain queries that each return one consistent state; `commit_wal`, `swap_segment` and `cas_pointer` report whether an earlier attempt had an unknown outcome; `watch_changes` is the long-poll wake-up. Raft administration (node start, membership, snapshots, status) stays on the openraft types.
+
 | Backend | Crate | Milestone | Use |
 |---|---|---|---|
 | Embedded **openraft** (redb log, snapshots in the bucket; KRaft / ClickHouse Keeper style) | `operon-meta` | Default (M0) | `operon dev`, standalone, and clusters of 3 or 5 `meta` nodes; no external dependency |

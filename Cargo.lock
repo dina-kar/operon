@@ -4393,6 +4393,7 @@ dependencies = [
  "bytes",
  "clap",
  "fail",
+ "http",
  "object_store 0.14.2",
  "operon-cache",
  "operon-collection",
@@ -4400,6 +4401,7 @@ dependencies = [
  "operon-link",
  "operon-log",
  "operon-meta",
+ "operon-query",
  "operon-store",
  "operon-worker",
  "reqwest 0.12.28",
@@ -4408,6 +4410,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "ulid 3.0.0",
@@ -4555,6 +4558,7 @@ dependencies = [
  "openraft",
  "operon-common",
  "operon-meta",
+ "operon-meta-conformance",
  "operon-store",
  "postcard",
  "proptest",
@@ -4564,6 +4568,17 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "operon-meta-conformance"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "operon-common",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "tokio",
 ]
 
 [[package]]
@@ -4577,6 +4592,51 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "operon-query"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "datafusion",
+ "futures",
+ "http",
+ "http-body",
+ "lance",
+ "lance-linalg",
+ "moka",
+ "object_store 0.14.2",
+ "operon-cache",
+ "operon-collection",
+ "operon-common",
+ "operon-link",
+ "operon-log",
+ "operon-meta",
+ "operon-query",
+ "operon-quickwit",
+ "operon-store",
+ "operon-text",
+ "operon-worker",
+ "postcard",
+ "proptest",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "roaring",
+ "serde",
+ "serde_json",
+ "tantivy",
+ "tantivy-fst",
+ "tempfile",
+ "thiserror 2.0.20",
+ "time",
+ "tokio",
+ "tower",
+ "tracing",
+ "ulid 3.0.0",
 ]
 
 [[package]]
@@ -4627,6 +4687,7 @@ dependencies = [
  "operon-link",
  "operon-log",
  "operon-meta",
+ "operon-meta-conformance",
  "operon-store",
  "operon-worker",
  "rand 0.9.5",

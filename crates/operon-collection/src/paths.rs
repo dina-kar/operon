@@ -15,8 +15,8 @@
 //! (`Ulid::from_parts(meta.now_ms(), Ulid::generate().random())`), so GC
 //! reads its age from its name (`operon_log::gc::object_time_ms`).
 
+use operon_common::meta::collection_prefix;
 use operon_common::{CollectionId, NamespaceId};
-use operon_meta::collection_prefix;
 use ulid::Ulid;
 
 /// `ns/<ns>/collections/<cid>/manifests/<version:020>-<ulid>.pb`.

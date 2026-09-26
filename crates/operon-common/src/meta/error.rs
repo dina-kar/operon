@@ -153,7 +153,7 @@ pub fn log_stale_object(err: &ApplyError, proposer_now_ms: u64) {
     );
 }
 
-/// Errors returned by `MetaNode`.
+/// Errors a metastore implementation can return.
 #[derive(Debug, thiserror::Error)]
 pub enum MetaError {
     /// The command was applied and rejected by the state machine; nothing changed.
@@ -182,9 +182,9 @@ pub enum MetaError {
     #[error("metastore unavailable: {0}")]
     Unavailable(String),
     /// The leader refused to propose a command stamped `stamped_ms`, more
-    /// than `MetaConfig::max_clock_skew` ahead of its own clock `leader_ms`.
-    /// Nothing was proposed; fix the proposer's clock. Not retried by
-    /// `MetaClient`.
+    /// than the metastore's configured maximum clock skew ahead of its own
+    /// clock `leader_ms`. Nothing was proposed; fix the proposer's clock. Not
+    /// retried by a `MetaStore` implementation's client.
     #[error("clock skew: command stamped {stamped_ms} ms, leader clock {leader_ms} ms")]
     ClockSkew { stamped_ms: u64, leader_ms: u64 },
     /// The node-local database or the snapshot store failed.

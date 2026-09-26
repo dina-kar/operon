@@ -17,6 +17,7 @@ operon-common.workspace = true
 operon-link.workspace = true
 operon-log.workspace = true
 operon-meta.workspace = true
+operon-meta-conformance.workspace = true
 operon-store.workspace = true
 operon-worker.workspace = true
 rand.workspace = true

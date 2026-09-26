@@ -379,25 +379,46 @@ impl MetaNode {
     /// [`MetaConfig::max_clock_skew`] ahead of its own clock with
     /// [`MetaError::ClockSkew`], before proposing it.
     pub async fn write(&self, command: Command) -> Result<Reply, MetaError> {
-        self.check_clock(&command)?;
+        self.write_attempt(command)
+            .await
+            .map_err(|attempt| attempt.error)
+    }
+
+    /// [`MetaNode::write`], also saying whether the node refused the command
+    /// before proposing it ([`AttemptError::refused`]).
+    ///
+    /// A node that does not believe it is the leader refuses with
+    /// [`MetaError::NotLeader`] before proposing, so that attempt definitely
+    /// did not apply. A `NotLeader` from openraft itself is not a refusal:
+    /// openraft also answers a write it already proposed this way (when this
+    /// node loses leadership, or purges the entry's log range after installing
+    /// a snapshot, before the reply), so its outcome is unknown.
+    pub(crate) async fn write_attempt(&self, command: Command) -> Result<Reply, AttemptError> {
+        let leader = self.inner.raft.metrics().borrow_watched().current_leader;
+        if leader != Some(self.inner.id) {
+            return Err(AttemptError::before_proposal(MetaError::NotLeader {
+                leader,
+            }));
+        }
+        self.check_clock(&command)
+            .map_err(AttemptError::before_proposal)?;
         let write = self.inner.raft.client_write(command);
         let result = tokio::time::timeout(self.inner.request_timeout, write)
             .await
             .map_err(|_| MetaError::Timeout)?;
         match result {
             Ok(response) => match response.data {
-                Some(reply) => Ok(reply?),
-                None => Err(unavailable("a command entry produced no reply")),
+                Some(reply) => Ok(reply.map_err(MetaError::from)?),
+                None => Err(unavailable("a command entry produced no reply").into()),
             },
-            // openraft also answers a write it already proposed this way, when
-            // this node loses leadership (or purges the entry's log range after
-            // installing a snapshot) before the reply: the outcome is unknown.
+            // Possibly after proposing (see above): the outcome is unknown.
             Err(RaftError::APIError(ClientWriteError::ForwardToLeader(forward))) => {
                 Err(MetaError::NotLeader {
                     leader: forward.leader_id,
-                })
+                }
+                .into())
             }
-            Err(e) => Err(unavailable(e)),
+            Err(e) => Err(unavailable(e).into()),
         }
     }
 
@@ -628,6 +649,34 @@ impl MetaNode {
             // A dropped sender also means the database is closed.
             Ok(_) => Ok(()),
             Err(_) => Err(unavailable("local database still in use after shutdown")),
+        }
+    }
+}
+
+/// A failed write attempt on one node ([`MetaNode::write_attempt`]).
+#[derive(Debug)]
+pub(crate) struct AttemptError {
+    pub(crate) error: MetaError,
+    /// The node refused the command before proposing it, so the attempt
+    /// definitely did not apply. When false, a retryable error leaves the
+    /// attempt's outcome unknown.
+    pub(crate) refused: bool,
+}
+
+impl AttemptError {
+    fn before_proposal(error: MetaError) -> Self {
+        Self {
+            error,
+            refused: true,
+        }
+    }
+}
+
+impl From<MetaError> for AttemptError {
+    fn from(error: MetaError) -> Self {
+        Self {
+            error,
+            refused: false,
         }
     }
 }
