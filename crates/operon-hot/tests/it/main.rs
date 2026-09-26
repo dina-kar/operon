@@ -2,6 +2,8 @@ mod artifact;
 mod budget;
 mod build;
 mod common;
+mod placement;
+mod registry;
 mod splits;
 mod tier;
 mod view;

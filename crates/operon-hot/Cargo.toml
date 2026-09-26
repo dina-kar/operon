@@ -1,6 +1,6 @@
 [package]
 name = "operon-hot"
-description = "Operon's hot tier: HNSW artifacts built from collection manifests, per-manifest views of them with delta indexes, and (later) pinning and placement."
+description = "Operon's hot tier: HNSW artifacts built from collection manifests, per-manifest views of them with delta indexes, pinned splits, budgets, the node registry, placement and read forwarding."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

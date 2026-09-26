@@ -114,7 +114,7 @@ pub struct Meta {
 }
 
 impl Meta {
-    async fn start(clock: Arc<dyn Clock>) -> Self {
+    pub async fn start(clock: Arc<dyn Clock>) -> Self {
         let dir = TempDir::new().expect("temp dir");
         let mut config = MetaConfig::new(1, dir.path(), Store::in_memory());
         config.clock = clock.clone();
