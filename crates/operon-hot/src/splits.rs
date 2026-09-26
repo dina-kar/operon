@@ -217,6 +217,12 @@ impl PinnedSplits {
     }
 
     pub(crate) fn insert(&self, key: SplitKey, path: PathBuf, size: u64, now: Instant) {
+        // A split pinned again at the path of an evicted one: that
+        // eviction's linger must not delete the new file.
+        self.lingering
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(lingering, _)| lingering != &path);
         self.map
             .write()
             .unwrap_or_else(PoisonError::into_inner)
@@ -360,5 +366,30 @@ pub(crate) async fn delete_files(files: Vec<PathBuf>) {
     .await;
     if let Err(err) = deleted {
         tracing::warn!(%err, "deleting pinned splits");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_split_pinned_again_is_not_deleted_by_its_eviction_linger() {
+        let pinned = PinnedSplits::new(PathBuf::from("/nonexistent/splits"));
+        let (ns, cid, ulid) = (NamespaceId(1), CollectionId(2), Ulid::from_parts(1, 2));
+        let key = (ns, cid, ulid);
+        let path = pinned.local_path(ns, cid, ulid);
+        let start = Instant::now();
+        pinned.insert(key, path.clone(), 10, start);
+        pinned.evict(&key, start);
+        // Pinned again within the linger, at the same path.
+        pinned.insert(key, path.clone(), 10, start);
+        let linger = Duration::from_secs(60);
+        let later = start + linger + Duration::from_secs(1);
+        pinned.touch(ns, cid, [ulid], later);
+        assert!(pinned.expire(linger, later).is_empty());
+        assert_eq!(pinned.path(ns, cid, ulid), None, "not served yet");
+        pinned.set_serving(ns, cid, true);
+        assert_eq!(pinned.path(ns, cid, ulid), Some(path));
     }
 }
