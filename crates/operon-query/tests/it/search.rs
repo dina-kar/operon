@@ -1343,6 +1343,56 @@ async fn field_mode_groups_fill_past_the_page_window() {
 }
 
 #[tokio::test]
+async fn field_mode_group_windows_stop_at_the_max_window() {
+    // The same data as above, with `max_window` 10: the window grows from 6
+    // to 10 and stops there, so only key 0's group is found (the first 40
+    // matches in `n` order all share it).
+    let ops: Vec<DocOp> = (0..60)
+        .map(|pk| {
+            let g = if pk < 40 { 0 } else { pk % 3 };
+            plain(pk, json!({"body": "apple", "n": pk, "payload": {"g": g}}))
+        })
+        .collect();
+    let setup = Setup::new(search_schema(), commits_of(ops, 2), vec![]).await;
+    let view = setup.view().await;
+    let planner = SearchPlanner::new(
+        SearchConfig {
+            limits: operon_query::SearchLimits {
+                max_window: 10,
+                ..Default::default()
+            },
+            ..SearchConfig::default()
+        },
+        AnnConfig::default(),
+    );
+    let response = planner
+        .search(
+            view.clone(),
+            SearchRequest {
+                retrievers: vec![text(matching("body", "apple"), 10)],
+                sort: by_n(),
+                limit: 10,
+                group_by: Some(GroupBy {
+                    field: "payload.g".to_string(),
+                    group_size: 2,
+                    limit: 3,
+                }),
+                ..request()
+            },
+        )
+        .await
+        .expect("search");
+    let got: Vec<(FieldValue, Vec<u64>)> = response
+        .groups
+        .expect("groups")
+        .into_iter()
+        .map(|group| (group.key, u64s(&group.hits)))
+        .collect();
+    assert_eq!(got, vec![(FieldValue::I64(0), vec![0, 1])]);
+    setup.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_field_sort_with_a_vector_retriever_is_invalid() {
     let setup = Setup::new(search_schema(), vec![], vec![]).await;
     let view = setup.view().await;

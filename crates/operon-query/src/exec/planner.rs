@@ -541,10 +541,17 @@ impl SearchPlanner {
                 };
                 // Grouping needs enough matches to fill its groups: start at
                 // `limit × group_size` and double the window while the
-                // groups are not full and more matches exist.
+                // groups are not full and more matches exist, up to
+                // `max_window` (validation keeps `offset + limit` within it).
+                let max_window = self.config.limits.max_window;
                 let mut window = request.offset + request.limit;
                 if let Some(group_by) = &request.group_by {
-                    window = window.max(group_by.limit.saturating_mul(group_by.group_size));
+                    window = window.max(
+                        group_by
+                            .limit
+                            .saturating_mul(group_by.group_size)
+                            .min(max_window),
+                    );
                 }
                 let hits = loop {
                     let exec = TantivySearchExec::new(
@@ -561,15 +568,15 @@ impl SearchPlanner {
                     let Some(group_by) = &request.group_by else {
                         break hits;
                     };
-                    if hits.len() < window {
-                        break hits;
-                    }
+                    // Every exit keeps the groups it computed, so they are
+                    // not grouped again below.
                     let groups = group(&view, &hits, group_by, &columns).await?;
-                    if groups_full(&groups, group_by) {
+                    if hits.len() < window || window >= max_window || groups_full(&groups, group_by)
+                    {
                         prepared = Some(groups);
                         break hits;
                     }
-                    window = window.saturating_mul(2);
+                    window = window.saturating_mul(2).min(max_window);
                 };
                 let domain = if request.retrievers.is_empty() {
                     Domain::Filter
