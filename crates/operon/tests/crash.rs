@@ -57,6 +57,16 @@ const LOGS_PARTITIONS: u32 = 2;
 /// How long a failpoint may take to be hit, and background work to settle.
 const WAIT: Duration = Duration::from_secs(90);
 
+/// The gate's GC grace: short, so GC races the background work. It also
+/// sets every freshness deadline to half of it (750 ms).
+const GC_GRACE_MS: &str = "1500";
+
+/// A GC grace for rows whose failpoint sits behind a build's freshness
+/// deadline (index builds, merges, compactions, hot builds): their deadlines
+/// become 5 s, so a build on a starved CI runner still commits and reaches
+/// the failpoint instead of ending `Blocked` on every retry (CI fix C2).
+const BUILD_GC_GRACE: &[&str] = &["--gc-grace-ms", "10000"];
+
 /// A running `operon dev` child process.
 struct Dev {
     child: Child,
@@ -104,8 +114,6 @@ impl Dev {
                 "1500",
                 "--retention-interval-ms",
                 "200",
-                "--gc-grace-ms",
-                "1500",
                 "--gc-interval-ms",
                 "300",
                 "--link-batch-interval-ms",
@@ -123,7 +131,11 @@ impl Dev {
                 "--collection-index-poll-interval-ms",
                 "200",
             ])
-            .args(extra)
+            .args(extra);
+        if !extra.contains(&"--gc-grace-ms") {
+            command.args(["--gc-grace-ms", GC_GRACE_MS]);
+        }
+        command
             .env("RUST_LOG", "error")
             .env_remove("OPERON_FAILPOINTS")
             .stdout(Stdio::piped())
@@ -1077,18 +1089,23 @@ async fn query_vector_index(ctx: &CollectionContext, docs: &Docs, what: &str) {
 /// the process dies, restarts it, and checks everything. An index-build
 /// point is checked until the restarted server has built the index.
 async fn collection_crash_at(point: &str, hit: u32) {
-    collection_crash_with(point, hit, &[]).await;
+    let extra: &[&str] = match point.starts_with("collection.index.") {
+        true => BUILD_GC_GRACE,
+        false => &[],
+    };
+    collection_crash_with(point, hit, extra).await;
 }
 
-/// [`collection_crash_at`] with `extra` server flags on every start; with
-/// [`MAINTENANCE`], the maintenance checks run too.
+/// [`collection_crash_at`] with `extra` server flags on every start; when
+/// they start with [`MAINTENANCE`], the maintenance checks run too.
 async fn collection_crash_with(point: &str, hit: u32, extra: &[&str]) {
     let index_point = point.starts_with("collection.index.");
+    let maintenance = extra.starts_with(MAINTENANCE);
     let dir = TempDir::new().expect("temp dir");
     // Maintenance needs splits to pile up: over 50 keys, rewrites delete
     // whole splits as fast as link apply writes them, and no level ever
     // holds the policy's 10 splits (row 13.2).
-    let keys = if index_point || extra == MAINTENANCE {
+    let keys = if index_point || maintenance {
         INDEX_KEYS
     } else {
         COMMIT_KEYS
@@ -1133,7 +1150,7 @@ async fn collection_crash_with(point: &str, hit: u32, extra: &[&str]) {
         dev.kill();
         let snapshot = model.lock().expect("lock").clone();
         let manifest = check_docs(dir.path(), &docs, &snapshot, point).await;
-        if extra == MAINTENANCE {
+        if maintenance {
             check_maintenance(dir.path(), &docs, &manifest, point).await;
         }
         if !index_point || !manifest.vector_indexes.is_empty() {
@@ -1175,9 +1192,10 @@ async fn random_sigkills_under_collection_load_lose_nothing() {
     random_sigkills_with(&[]).await;
 }
 
-/// The collection SIGKILL loop with `extra` server flags; with
-/// [`MAINTENANCE`], the maintenance checks run too.
+/// The collection SIGKILL loop with `extra` server flags; when they start
+/// with [`MAINTENANCE`], the maintenance checks run too.
 async fn random_sigkills_with(extra: &[&str]) {
+    let maintenance = extra.starts_with(MAINTENANCE);
     let kills: u32 = std::env::var("CRASH_KILLS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -1189,7 +1207,7 @@ async fn random_sigkills_with(extra: &[&str]) {
     eprintln!("random SIGKILL loop under collection load ({extra:?}): {kills} kills, seed {seed}");
     let mut rng = Lcg(seed);
     let dir = TempDir::new().expect("temp dir");
-    let keys = match extra == MAINTENANCE {
+    let keys = match maintenance {
         true => INDEX_KEYS,
         false => COMMIT_KEYS,
     };
@@ -1219,7 +1237,7 @@ async fn random_sigkills_with(extra: &[&str]) {
             let snapshot = model.lock().expect("lock").clone();
             let what = format!("after kill {kill}");
             let manifest = check_docs(dir.path(), &docs, &snapshot, &what).await;
-            if extra == MAINTENANCE {
+            if maintenance {
                 check_maintenance(dir.path(), &docs, &manifest, &what).await;
             }
         }
@@ -1229,7 +1247,7 @@ async fn random_sigkills_with(extra: &[&str]) {
     dev.kill();
     let snapshot = model.lock().expect("lock").clone();
     let manifest = check_docs(dir.path(), &docs, &snapshot, "after the last kill").await;
-    if extra == MAINTENANCE {
+    if maintenance {
         check_maintenance(dir.path(), &docs, &manifest, "after the last kill").await;
     }
     check_meta(dir.path(), "after the last kill").await;
@@ -1294,7 +1312,11 @@ async fn check_maintenance(dir: &Path, docs: &Docs, manifest: &CollectionManifes
 }
 
 async fn maintenance_crash_at(point: &str, hit: u32) {
-    collection_crash_with(point, hit, MAINTENANCE).await;
+    // Every maintenance row's failpoint is reached only by a build that
+    // commits within its deadline (CI fix C2); the SIGKILL loop keeps the
+    // short grace, so GC still races maintenance there.
+    let extra = [MAINTENANCE, BUILD_GC_GRACE].concat();
+    collection_crash_with(point, hit, &extra).await;
 }
 
 macro_rules! maintenance_crash_tests {
