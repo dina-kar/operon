@@ -12,10 +12,14 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
+use std::ops::Range;
 use std::sync::Arc;
 
 use arrow_array::{Array, BinaryArray, RecordBatch, UInt64Array};
 use arrow_schema::Schema as ArrowSchema;
+use bytes::Bytes;
+use futures::StreamExt;
+use futures::stream::BoxStream;
 use lance::Dataset;
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::rowids::get_row_id_index;
@@ -27,8 +31,15 @@ use lance_io::object_store::providers::ObjectStoreProvider;
 use lance_io::object_store::{ObjectStore, ObjectStoreParams, ObjectStoreRegistry};
 use lance_table::format::{Fragment, is_detached_version};
 use lance_table::io::commit::{CommitHandler, ConditionalPutCommitHandler};
+use object_store::path::Path;
+use object_store::{
+    Attributes, CopyOptions, Extensions, GetOptions, GetRange, GetResult, GetResultPayload,
+    ListResult, MultipartUpload, ObjectMeta, PutMultipartOptions, PutOptions, PutPayload,
+    PutResult, RenameOptions,
+};
+use operon_cache::{CacheError, RangeCache};
 use operon_common::{CollectionId, NamespaceId};
-use operon_store::Store;
+use operon_store::{Store, StoreError};
 use url::Url;
 
 use crate::arrow_schema::{
@@ -70,11 +81,11 @@ impl fmt::Debug for LanceEnv {
     }
 }
 
-/// Hands Lance the Operon store for `operon://<authority>/…` URLs; the URL
-/// path is the path within the store.
+/// Hands Lance the Operon store (or a [`CachedObjectStore`] over it) for
+/// `operon://<authority>/…` URLs; the URL path is the path within the store.
 #[derive(Debug)]
 struct OperonStoreProvider {
-    store: Store,
+    inner: Arc<dyn object_store::ObjectStore>,
     authority: String,
     io_parallelism: usize,
 }
@@ -95,7 +106,7 @@ impl ObjectStoreProvider for OperonStoreProvider {
         let location = Url::parse(&format!("{LANCE_SCHEME}://{}/", self.authority))
             .map_err(|err| lance::Error::invalid_input(err.to_string()))?;
         Ok(ObjectStore::new(
-            self.store.inner().clone(),
+            self.inner.clone(),
             location,
             None,
             None,
@@ -123,12 +134,29 @@ impl LanceEnv {
     /// An environment with a fresh authority (a lowercase ULID) and its own
     /// Lance session.
     pub fn new(store: Store, config: LanceConfig) -> Self {
+        let inner = store.inner().clone();
+        Self::over(store, inner, config)
+    }
+
+    /// Like [`LanceEnv::new`], but every Lance read of a byte range goes
+    /// through `cache` (Ruling 9): Lance files are create-only and never
+    /// rewritten, so caching them by path is safe. Writes, lists, deletes
+    /// and conditional reads go to `store` unchanged.
+    pub fn with_cache(store: Store, cache: RangeCache, config: LanceConfig) -> Self {
+        let inner: Arc<dyn object_store::ObjectStore> =
+            Arc::new(CachedObjectStore::new(store.inner().clone(), cache));
+        Self::over(store, inner, config)
+    }
+
+    /// An environment whose Lance I/O goes through `inner` (the store's own
+    /// object store, or a cache over it).
+    fn over(store: Store, inner: Arc<dyn object_store::ObjectStore>, config: LanceConfig) -> Self {
         let authority = ulid::Ulid::generate().to_string().to_lowercase();
         let registry = Arc::new(ObjectStoreRegistry::empty());
         registry.insert(
             LANCE_SCHEME,
             Arc::new(OperonStoreProvider {
-                store: store.clone(),
+                inner,
                 authority: authority.clone(),
                 io_parallelism: config.io_parallelism,
             }),
@@ -462,4 +490,183 @@ pub(crate) async fn pk_row_ids(
             Ok((pks.value(row).to_vec(), row_ids.value(row)))
         })
         .collect()
+}
+
+/// An `object_store` over `inner` that serves ranged and whole-object GETs
+/// from `cache` (Task 2 rule 5): a GET with no precondition, no version and
+/// `head == false` is read from the cache; every other call (heads, puts,
+/// multipart uploads, lists, deletes, copies, renames, conditional GETs) goes
+/// to `inner` unchanged. Only for stores whose objects are never rewritten
+/// in place, like Lance's.
+#[derive(Clone, Debug)]
+pub struct CachedObjectStore {
+    inner: Arc<dyn object_store::ObjectStore>,
+    cache: RangeCache,
+}
+
+impl CachedObjectStore {
+    pub fn new(inner: Arc<dyn object_store::ObjectStore>, cache: RangeCache) -> Self {
+        Self { inner, cache }
+    }
+}
+
+impl fmt::Display for CachedObjectStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CachedObjectStore({})", self.inner)
+    }
+}
+
+/// Whether `options` is a plain read: no precondition, no version, not a
+/// HEAD.
+fn plain_read(options: &GetOptions) -> bool {
+    options.if_match.is_none()
+        && options.if_none_match.is_none()
+        && options.if_modified_since.is_none()
+        && options.if_unmodified_since.is_none()
+        && options.version.is_none()
+        && !options.head
+}
+
+/// A missing object is `NotFound`, as `object_store` reports it; any other
+/// cache failure is `Generic`.
+fn cache_error(err: CacheError) -> object_store::Error {
+    match err {
+        CacheError::Store(StoreError::NotFound { path }) => object_store::Error::NotFound {
+            path: path.clone(),
+            source: Box::new(StoreError::NotFound { path }),
+        },
+        other => object_store::Error::Generic {
+            store: "CachedObjectStore",
+            source: Box::new(other),
+        },
+    }
+}
+
+/// The bytes `range` asks for of an object of `size` bytes, as
+/// `object_store` defines them (a bounded range past the end is cut at the
+/// end); `None` for a range `object_store` refuses, which `inner` then
+/// answers with its own error.
+fn resolve_range(range: Option<&GetRange>, size: u64) -> Option<Range<u64>> {
+    let resolved = match range {
+        None => return Some(0..size),
+        Some(GetRange::Bounded(r)) => r.start..r.end.min(size),
+        Some(GetRange::Offset(offset)) => *offset..size,
+        Some(GetRange::Suffix(n)) => size.saturating_sub(*n)..size,
+    };
+    (resolved.start < resolved.end).then_some(resolved)
+}
+
+#[async_trait::async_trait]
+impl object_store::ObjectStore for CachedObjectStore {
+    async fn put_opts(
+        &self,
+        location: &Path,
+        payload: PutPayload,
+        opts: PutOptions,
+    ) -> object_store::Result<PutResult> {
+        self.inner.put_opts(location, payload, opts).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &Path,
+        opts: PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &Path,
+        options: GetOptions,
+    ) -> object_store::Result<GetResult> {
+        if !plain_read(&options) {
+            return self.inner.get_opts(location, options).await;
+        }
+        let path = location.as_ref();
+        let size = self.cache.size(path).await.map_err(cache_error)?;
+        let Some(range) = resolve_range(options.range.as_ref(), size) else {
+            return self.inner.get_opts(location, options).await;
+        };
+        let bytes = self
+            .cache
+            .read(path, range.clone())
+            .await
+            .map_err(cache_error)?;
+        let payload: BoxStream<'static, object_store::Result<Bytes>> =
+            futures::stream::once(async move { Ok(bytes) }).boxed();
+        Ok(GetResult {
+            payload: GetResultPayload::Stream(payload),
+            meta: ObjectMeta {
+                location: location.clone(),
+                // Lance files never change, so their age is never asked.
+                last_modified: Default::default(),
+                size,
+                e_tag: None,
+                version: None,
+            },
+            range,
+            attributes: Attributes::default(),
+            extensions: Extensions::default(),
+        })
+    }
+
+    async fn get_ranges(
+        &self,
+        location: &Path,
+        ranges: &[Range<u64>],
+    ) -> object_store::Result<Vec<Bytes>> {
+        let path = location.as_ref();
+        let mut out = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            out.push(
+                self.cache
+                    .read(path, range.clone())
+                    .await
+                    .map_err(cache_error)?,
+            );
+        }
+        Ok(out)
+    }
+
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, object_store::Result<Path>>,
+    ) -> BoxStream<'static, object_store::Result<Path>> {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+
+    fn list_with_offset(
+        &self,
+        prefix: Option<&Path>,
+        offset: &Path,
+    ) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+        self.inner.list_with_offset(prefix, offset)
+    }
+
+    async fn list_with_delimiter(&self, prefix: Option<&Path>) -> object_store::Result<ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &Path,
+        to: &Path,
+        options: CopyOptions,
+    ) -> object_store::Result<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
+
+    async fn rename_opts(
+        &self,
+        from: &Path,
+        to: &Path,
+        options: RenameOptions,
+    ) -> object_store::Result<()> {
+        self.inner.rename_opts(from, to, options).await
+    }
 }
