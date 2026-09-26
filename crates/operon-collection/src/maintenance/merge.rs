@@ -30,6 +30,7 @@ use operon_worker::{
     Candidate, Priority, Task, TaskContext, TaskError, TaskKey, TaskOutcome, TaskSource,
 };
 use roaring::RoaringBitmap;
+use tantivy::TantivyDocument;
 use ulid::Ulid;
 
 use super::{CollectionPoller, MaintenanceConfig};
@@ -41,7 +42,8 @@ use crate::paths::{delete_bitmap_path, split_path};
 use crate::schema::{CollectionSchema, DynamicMapping, FieldKind};
 use crate::snapshot::{CollectionContext, CollectionSnapshot, read_deleted_docs};
 use crate::tantivy_schema::{
-    count_companion, date_companion, null_companion, tantivy_layout, text_companion, to_tantivy_doc,
+    TantivyLayout, count_companion, date_companion, null_companion, tantivy_layout, text_companion,
+    to_tantivy_doc,
 };
 #[cfg(feature = "test-util")]
 use crate::target::CollectionCommitHook;
@@ -52,6 +54,9 @@ use crate::values::check_document;
 
 /// The prefix of a merge task's key: `TaskKey::new(ns, "collection-merge/<cid>")`.
 pub const MERGE_TASK_PREFIX: &str = "collection-merge/";
+
+/// `take_rows` batches of re-indexed documents queued for the split writer.
+const STREAM_BATCHES: usize = 2;
 
 /// One merge: its input splits, ascending by ULID; `purge` when a single
 /// split is rewritten only to drop its deleted docs.
@@ -73,7 +78,9 @@ const NEVER_MATURE_TIMESTAMP: i64 = i64::MAX;
 /// Per `schema_version`, the stable log merge policy plans over the splits'
 /// live doc counts; a split is mature (never merged) when it holds
 /// `split_num_docs_target` live docs or was created `maturation_period`
-/// before `now_ms`. Then every split outside those merges with at least
+/// before `now_ms`. Each operation is cut to its smallest inputs within
+/// `max_merge_docs` and `max_merge_bytes`, and dropped if fewer than two
+/// remain. Then every split outside those merges with at least
 /// `purge_min_deleted` deleted docs, and a deleted share of at least
 /// `purge_deleted_ppm`, is purged alone. Plans are ordered by their smallest
 /// input.
@@ -124,11 +131,16 @@ pub fn plan_merges(
             })
             .collect();
         for operation in policy.operations(&mut metas) {
-            let mut inputs: Vec<Ulid> = operation
+            let chosen: Vec<&SplitRef> = operation
                 .splits
                 .iter()
                 .filter_map(|meta| Ulid::from_string(meta.split_id()).ok())
+                .filter_map(|ulid| splits.iter().copied().find(|s| s.ulid == ulid))
                 .collect();
+            let mut inputs = bounded(chosen, config);
+            if inputs.len() < 2 {
+                continue;
+            }
             inputs.sort_unstable();
             merging.extend(inputs.iter().copied());
             plans.push(MergePlan {
@@ -150,6 +162,28 @@ pub fn plan_merges(
     }
     plans.sort_by_key(|plan| plan.inputs.first().copied());
     plans
+}
+
+/// The inputs of one policy operation that one merge takes: its smallest
+/// splits (by live docs, then ULID) while their live docs stay within
+/// `max_merge_docs` and their bytes within `max_merge_bytes`. A merge holds
+/// its output split in memory while it builds it, so this bounds it; the
+/// splits left out are planned again once the merged split has landed.
+fn bounded(mut splits: Vec<&SplitRef>, config: &MaintenanceConfig) -> Vec<Ulid> {
+    let live = |split: &SplitRef| split.doc_count.saturating_sub(split.deleted_count);
+    splits.sort_by_key(|split| (live(split), split.ulid));
+    let (mut docs, mut bytes) = (0u64, 0u64);
+    let mut inputs = Vec::with_capacity(splits.len());
+    for split in splits {
+        let next_docs = docs.saturating_add(live(split));
+        let next_bytes = bytes.saturating_add(split.size_bytes);
+        if next_docs > config.max_merge_docs || next_bytes > config.max_merge_bytes {
+            break;
+        }
+        (docs, bytes) = (next_docs, next_bytes);
+        inputs.push(split.ulid);
+    }
+    inputs
 }
 
 /// Whether every Tantivy field of collection field `kind` named `name`
@@ -485,7 +519,6 @@ impl MergeTask {
         fence: &Fence,
     ) -> Result<Merged, TaskError> {
         let cid = self.cid;
-        let started = self.ctx().meta.now_ms();
         let parent = snapshot.manifest();
         let parent_path = snapshot.manifest_path().ok_or_else(|| {
             failed(CollectionError::Internal(format!(
@@ -542,14 +575,17 @@ impl MergeTask {
             ))));
         }
 
-        // 4.–5. The merged split.
-        let merged = match rows.is_empty() {
-            true => None,
-            false => Some(
-                self.build(snapshot, &inputs, &schema, &rows, started)
+        // 4.–5. The merged split. The commit's clock starts once it is
+        // built, so a long build cannot outrun `commit_delay`.
+        let (merged, started) = match rows.is_empty() {
+            true => (None, self.ctx().meta.now_ms()),
+            false => {
+                let (split, started) = self
+                    .build(snapshot, &inputs, &schema, &rows, fence)
                     .await
-                    .map_err(failed)?,
-            ),
+                    .map_err(failed)?;
+                (Some(split), started)
+            }
         };
         self.step(CollectionCommitStep::AfterSplitPut, fence).await;
         tracing::info!(
@@ -572,21 +608,80 @@ impl MergeTask {
     }
 
     /// Takes `rows` from Lance, re-indexes them with `schema`, and PUTs the
-    /// split (Task 1 rules 3.4 and 3.5).
+    /// split (Task 1 rules 3.4 and 3.5). The documents stream into the split
+    /// writer on a blocking thread, one `take_rows` batch at a time. Returns
+    /// the split and the commit's start: `meta.now_ms()` read after the
+    /// build, which names the split and its `created_at_ms`.
     async fn build(
         &self,
         snapshot: &CollectionSnapshot,
         inputs: &Inputs,
         schema: &CollectionSchema,
         rows: &[u64],
-        started: u64,
-    ) -> Result<SplitRef, CollectionError> {
+        fence: &Fence,
+    ) -> Result<(SplitRef, u64), CollectionError> {
         let ctx = self.ctx();
         let (ns, cid) = (self.ns, self.cid);
         let layout = tantivy_layout(schema);
-        let mut docs = Vec::with_capacity(rows.len());
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<TantivyDocument>>(STREAM_BATCHES);
+        let tantivy_schema = layout.schema.clone();
+        let writer = tokio::task::spawn_blocking(move || {
+            let docs = std::iter::from_fn(move || rx.blocking_recv()).flatten();
+            operon_text::build_split_from(tantivy_schema, docs)
+        });
+        let fed = self.feed(snapshot, inputs, schema, &layout, rows, tx).await;
+        let built = writer
+            .await
+            .map_err(|err| CollectionError::Internal(format!("building a merged split: {err}")));
+        // A feeding error explains a short build; report it first.
+        fed?;
+        let built = built??;
+        if built.doc_count != rows.len() as u64 {
+            return Err(CollectionError::Internal(format!(
+                "a merged split has {} docs, not the {} rows",
+                built.doc_count,
+                rows.len()
+            )));
+        }
+        self.step(CollectionCommitStep::AfterSplitBuild, fence)
+            .await;
+        let started = ctx.meta.now_ms();
+        let ulid = object_ulid(started);
+        let size_bytes = built.bytes.len() as u64;
+        put_unique(&ctx.store, &split_path(ns, cid, ulid), built.bytes).await?;
+        let schema_version = inputs.splits.first().map_or(0, |s| s.schema_version);
+        let merge_ops = inputs.splits.iter().map(|s| s.merge_ops).max().unwrap_or(0);
+        let split = SplitRef {
+            ulid,
+            doc_count: built.doc_count,
+            deleted_count: 0,
+            size_bytes,
+            footer_range: built.footer_range,
+            row_id_ranges: row_id_runs(rows),
+            delete_bitmap: None,
+            schema_version,
+            created_at_ms: started,
+            merge_ops: merge_ops + 1,
+        };
+        Ok((split, started))
+    }
+
+    /// Sends the re-indexed documents of `rows`, in order, one `take_rows`
+    /// batch per message; stops early if the writer is gone (its error
+    /// is the build's).
+    async fn feed(
+        &self,
+        snapshot: &CollectionSnapshot,
+        inputs: &Inputs,
+        schema: &CollectionSchema,
+        layout: &TantivyLayout,
+        rows: &[u64],
+        tx: tokio::sync::mpsc::Sender<Vec<TantivyDocument>>,
+    ) -> Result<(), CollectionError> {
+        let cid = self.cid;
         for chunk in rows.chunks(self.config().take_batch_rows.max(1)) {
             let found = snapshot.take_rows(chunk).await?;
+            let mut docs = Vec::with_capacity(chunk.len());
             for (&row_id, stored) in chunk.iter().zip(found) {
                 let Some(stored) = stored else {
                     let owner = inputs
@@ -610,40 +705,13 @@ impl MergeTask {
                         "row {row_id} of collection {cid} no longer fits its split's schema: {rejection:?}"
                     ))
                 })?;
-                docs.push(to_tantivy_doc(&layout, schema, &doc, &extracted, row_id));
+                docs.push(to_tantivy_doc(layout, schema, &doc, &extracted, row_id));
+            }
+            if tx.send(docs).await.is_err() {
+                break;
             }
         }
-        let tantivy_schema = layout.schema.clone();
-        let built =
-            tokio::task::spawn_blocking(move || operon_text::build_split(tantivy_schema, docs))
-                .await
-                .map_err(|err| {
-                    CollectionError::Internal(format!("building a merged split: {err}"))
-                })??;
-        if built.doc_count != rows.len() as u64 {
-            return Err(CollectionError::Internal(format!(
-                "a merged split has {} docs, not the {} rows",
-                built.doc_count,
-                rows.len()
-            )));
-        }
-        let ulid = object_ulid(started);
-        let size_bytes = built.bytes.len() as u64;
-        put_unique(&ctx.store, &split_path(ns, cid, ulid), built.bytes).await?;
-        let schema_version = inputs.splits.first().map_or(0, |s| s.schema_version);
-        let merge_ops = inputs.splits.iter().map(|s| s.merge_ops).max().unwrap_or(0);
-        Ok(SplitRef {
-            ulid,
-            doc_count: built.doc_count,
-            deleted_count: 0,
-            size_bytes,
-            footer_range: built.footer_range,
-            row_id_ranges: row_id_runs(rows),
-            delete_bitmap: None,
-            schema_version,
-            created_at_ms: started,
-            merge_ops: merge_ops + 1,
-        })
+        Ok(())
     }
 
     /// Commits `merged` (or only the removal of the inputs) on `base`,

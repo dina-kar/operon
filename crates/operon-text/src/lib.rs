@@ -29,5 +29,7 @@ pub use bitmap::{
 };
 pub use error::TextError;
 pub use porter::porter_stem;
-pub use split::{BuiltSplit, SPLIT_WRITER_MEMORY, build_split, open_split, warm_up_all};
+pub use split::{
+    BuiltSplit, SPLIT_WRITER_MEMORY, build_split, build_split_from, open_split, warm_up_all,
+};
 pub use storage::OperonStorage;

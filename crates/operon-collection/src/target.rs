@@ -79,6 +79,9 @@ const LOOKUP_PARALLELISM: usize = 64;
 pub enum CollectionCommitStep {
     /// After the Lance commit (`collection.after_lance_commit`).
     AfterLanceCommit,
+    /// After a split merge built its split, before the commit's clock
+    /// starts and before the split PUT (no failpoint; M1.3 plan row R32.2).
+    AfterSplitBuild,
     /// After the split and the delete bitmaps (`collection.after_split_put`).
     AfterSplitPut,
     /// After the manifest PUT (`collection.after_manifest_put`).
@@ -513,6 +516,7 @@ impl CollectionTarget {
             CollectionCommitStep::AfterPkWrite => {
                 crate::failpoint!("collection.after_pk_write");
             }
+            CollectionCommitStep::AfterSplitBuild => {}
         }
         #[cfg(feature = "test-util")]
         if let Some(hook) = &self.hook {
