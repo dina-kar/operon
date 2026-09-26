@@ -280,7 +280,7 @@ pub struct OperonFlightSql {
     config: FlightConfig,
     sql_info: Arc<SqlInfoData>,
     /// The put tasks, so a shutdown can wait for them.
-    puts: TaskTracker,
+    puts: PutTasks,
     /// Cancelled when the server shuts down; stops the puts.
     stop: CancellationToken,
 }
@@ -374,7 +374,7 @@ impl OperonFlightSql {
             streams: None,
             config,
             sql_info: Arc::new(sql_info_data()),
-            puts: TaskTracker::new(),
+            puts: PutTasks::new(),
             stop: CancellationToken::new(),
         }
     }
@@ -382,7 +382,7 @@ impl OperonFlightSql {
     /// Tracks the put tasks in `puts` and stops them once `stop` is
     /// cancelled: a put waiting for a message stops at once, one writing
     /// stops before its next chunk.
-    pub fn with_put_tasks(self, puts: TaskTracker, stop: CancellationToken) -> Self {
+    pub fn with_put_tasks(self, puts: PutTasks, stop: CancellationToken) -> Self {
         Self { puts, stop, ..self }
     }
 
@@ -827,7 +827,7 @@ pub async fn serve_flight_sql(
     config: FlightConfig,
     shutdown: CancellationToken,
 ) -> Result<(), tonic::transport::Error> {
-    let puts = TaskTracker::new();
+    let puts = PutTasks::new();
     serve_flight_sql_tracked(listener, service, streams, config, shutdown, puts).await
 }
 
@@ -835,14 +835,15 @@ pub async fn serve_flight_sql(
 /// cancelled the puts stop (a put waiting for a message at once, one
 /// writing before its next chunk), and the server waits for them after the
 /// calls in flight. A caller that gives up waiting for the server can still
-/// wait for `puts` before it stops what the puts write through.
+/// wait for `puts` before it stops what the puts write through, and abort
+/// them ([`PutTasks::abort`]) if they do not finish.
 pub async fn serve_flight_sql_tracked(
     listener: tokio::net::TcpListener,
     service: Arc<CollectionService>,
     streams: Option<Arc<dyn StreamProducer>>,
     config: FlightConfig,
     shutdown: CancellationToken,
-    puts: TaskTracker,
+    puts: PutTasks,
 ) -> Result<(), tonic::transport::Error> {
     let hot = HotLayer::new(service.config().hot_default);
     let max_message_bytes = config.max_message_bytes;
@@ -866,6 +867,58 @@ pub async fn serve_flight_sql_tracked(
     puts.close();
     puts.wait().await;
     result
+}
+
+/// The `DoPut` tasks of a Flight SQL server. A put outlives the call that
+/// started it (it stops only before its next chunk), so a shutdown waits
+/// for them with [`PutTasks::wait`]; one that is still writing past the
+/// shutdown's grace period is dropped with [`PutTasks::abort`], so nothing
+/// writes after the collection service and the log writer stop.
+#[derive(Clone, Debug, Default)]
+pub struct PutTasks {
+    tracker: TaskTracker,
+    abort: CancellationToken,
+}
+
+impl PutTasks {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Runs `put` as a tracked task. Once [`PutTasks::abort`] is called it
+    /// is dropped at its next await point and answers `Unavailable`.
+    pub fn spawn<T: Send + 'static>(
+        &self,
+        put: impl Future<Output = Result<T, Status>> + Send + 'static,
+    ) -> tokio::task::JoinHandle<Result<T, Status>> {
+        let abort = self.abort.clone();
+        self.tracker.spawn(async move {
+            tokio::select! {
+                biased;
+                () = abort.cancelled() => Err(Status::unavailable(
+                    "the put was aborted: the server is shutting down",
+                )),
+                result = put => result,
+            }
+        })
+    }
+
+    /// Lets [`PutTasks::wait`] return once every put has finished (puts
+    /// can still be spawned).
+    pub fn close(&self) -> bool {
+        self.tracker.close()
+    }
+
+    /// Waits until the set is closed and every put has finished.
+    pub async fn wait(&self) {
+        self.tracker.wait().await;
+    }
+
+    /// Drops every running put (and any spawned later) at its next await
+    /// point.
+    pub fn abort(&self) {
+        self.abort.cancel();
+    }
 }
 
 /// How long the Flight SQL listener waits after a failed accept.

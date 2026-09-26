@@ -70,7 +70,9 @@ rmcp = { version = "3.4.1", features = ["server", "transport-streamable-http-ser
 roaring = "0.11"
 rustc-hash = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["float_roundtrip"] }
+# `preserve_order`: qdrant-edge needs it, and Cargo unifies features, so the
+# whole workspace uses one insertion-ordered map type (M1.3 row E58).
+serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
 serde_json_borrow = "0.9"
 serde_with = "3"
 slatedb = { version = "0.16", default-features = false }
@@ -92,9 +94,11 @@ unicode-segmentation = "1.13"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+zstd = "0.13"
 operon-cache = { path = "crates/operon-cache", version = "0.0.1" }
 operon-collection = { path = "crates/operon-collection", version = "0.0.1" }
 operon-common = { path = "crates/operon-common", version = "0.0.1" }
+operon-hnsw = { path = "crates/operon-hnsw", version = "0.0.1" }
 operon-link = { path = "crates/operon-link", version = "0.0.1" }
 operon-log = { path = "crates/operon-log", version = "0.0.1" }
 operon-meta = { path = "crates/operon-meta", version = "0.0.1" }

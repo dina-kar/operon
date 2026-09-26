@@ -30,7 +30,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: metastore boundary
         run: |
-          for c in operon-worker operon-log operon-link operon-collection operon-query; do
+          for c in operon-worker operon-log operon-link operon-collection operon-query operon-hnsw; do
             if cargo tree -p "$c" -e normal --prefix none --locked | grep -q '^operon-meta v'; then
               echo "$c depends on operon-meta outside dev-dependencies (D47)"; exit 1
             fi
@@ -39,7 +39,7 @@ jobs:
           test "$deps" = "async-trait serde thiserror tracing " || { echo "operon-common dependencies changed: $deps"; exit 1; }
           # A missing path must fail the step: grep exits 2 for it, which an
           # `if` would read as "no match" (row 0.87).
-          paths="crates/operon-worker/src crates/operon-log/src crates/operon-link/src crates/operon-collection/src crates/operon-query/src crates/operon/src/api"
+          paths="crates/operon-worker/src crates/operon-log/src crates/operon-link/src crates/operon-collection/src crates/operon-query/src crates/operon-hnsw/src crates/operon/src/api"
           for p in $paths; do
             test -e "$p" || { echo "metastore boundary path $p does not exist"; exit 1; }
           done

@@ -9,7 +9,7 @@ use datafusion::arrow::array::{
 use operon_collection::ConsistencyToken;
 use operon_common::StreamId;
 use operon_query::flight::{
-    StatementTicket, TICKET_MAGIC, TICKET_VERSION, decode_ticket, encode_ticket,
+    PutTasks, StatementTicket, TICKET_MAGIC, TICKET_VERSION, decode_ticket, encode_ticket,
     metadata_consistency, pace_accept_errors, sql_info_data, ticket_consistency,
 };
 use operon_query::{PIN_MANIFEST_METADATA, ReadConsistency, ServiceError};
@@ -254,4 +254,45 @@ async fn failed_accepts_are_paced() {
     assert_eq!(paced[2].as_ref().ok(), Some(&7));
     assert!(paced.iter().filter(|a| a.is_err()).count() == 3);
     assert!(started.elapsed() >= pause * 3, "{:?}", started.elapsed());
+}
+
+/// A put stuck inside a write is dropped by `abort`, so a shutdown that
+/// gave up waiting stops it before the writer closes (review of #29).
+#[tokio::test]
+async fn aborted_puts_are_dropped_and_answer_unavailable() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    struct Dropped(Arc<AtomicBool>);
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    let puts = PutTasks::new();
+    let finished = puts.spawn(async { Ok::<u64, tonic::Status>(3) });
+    let dropped = Arc::new(AtomicBool::new(false));
+    let guard = Dropped(dropped.clone());
+    let stuck = puts.spawn(async move {
+        let _guard = guard;
+        std::future::pending::<Result<u64, tonic::Status>>().await
+    });
+    assert_eq!(finished.await.expect("join").expect("put"), 3);
+
+    puts.close();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), puts.wait())
+            .await
+            .is_err(),
+        "a stuck put keeps wait pending"
+    );
+    puts.abort();
+    tokio::time::timeout(Duration::from_secs(5), puts.wait())
+        .await
+        .expect("wait returns once the stuck put is aborted");
+    assert!(dropped.load(Ordering::SeqCst), "the stuck put was dropped");
+    let status = stuck.await.expect("join").expect_err("aborted");
+    assert_eq!(status.code(), tonic::Code::Unavailable);
 }
