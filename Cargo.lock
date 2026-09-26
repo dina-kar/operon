@@ -4658,6 +4658,7 @@ dependencies = [
  "http-body",
  "lance",
  "lance-linalg",
+ "lance-table",
  "moka",
  "object_store 0.14.2",
  "operon-cache",

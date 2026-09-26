@@ -121,7 +121,7 @@ fn tagged<'a>(v: &'a Value, what: &str) -> Result<(&'a str, Option<&'a Value>), 
     }
 }
 
-fn distance_name(distance: Distance) -> &'static str {
+pub(crate) fn distance_name(distance: Distance) -> &'static str {
     match distance {
         Distance::Cosine => "cosine",
         Distance::Dot => "dot",

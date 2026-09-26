@@ -7,6 +7,7 @@ mod flight;
 mod flight_ingest;
 mod ir_json;
 mod reads;
+mod scan;
 mod search;
 mod service;
 mod sparse;

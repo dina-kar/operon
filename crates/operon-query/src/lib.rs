@@ -19,7 +19,8 @@
 //! every gateway uses ([`service`], [`write`], [`catalog_cache`]).
 //! Task 10: the SQL catalog and the search table functions ([`sql`]).
 //! Task 12: Arrow Flight SQL ([`flight`]). Task 13: Flight `DoPut` bulk
-//! ingest into collections and streams ([`flight_ingest`]).
+//! ingest into collections and streams ([`flight_ingest`]). Task 14: scan
+//! pinning, a collection resolved into a pinned scan plan ([`scan`], D53).
 
 pub mod catalog_cache;
 pub mod error;
@@ -31,6 +32,7 @@ pub mod ir;
 pub mod json;
 pub mod placement;
 pub mod read;
+pub mod scan;
 pub mod service;
 pub mod sparse;
 pub mod sql;
@@ -50,6 +52,11 @@ pub use ir::{
     TotalRelation, TrackTotalHits,
 };
 pub use json::alias_actions_from_json;
+pub use scan::{
+    ColumnRole, DeletionKind, LanceVersionRef, PIN_MANIFEST_METADATA, PK_ENCODING, ScanAt,
+    ScanColumn, ScanDeletionFile, ScanFile, ScanFragment, ScanOffsets, ScanPin, ScanPlan,
+    ScanRequest,
+};
 pub use service::{
     CREATED_AT_ANNOTATION, CollectionService, ScrollPage, ServiceConfig, SqlConfig, forwarded_token,
 };

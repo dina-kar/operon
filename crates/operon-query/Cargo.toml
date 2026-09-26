@@ -20,6 +20,7 @@ http.workspace = true
 http-body.workspace = true
 lance.workspace = true
 lance-linalg.workspace = true
+lance-table.workspace = true
 moka = { workspace = true, features = ["sync"] }
 operon-collection.workspace = true
 operon-common.workspace = true

@@ -1,15 +1,20 @@
-//! Flight SQL without a network (plan M1.2 Task 12): statement tickets and
-//! the declared SQL info.
+//! Flight SQL without a network (plan M1.2 Task 12): statement tickets,
+//! the declared SQL info, and the pinned reads of request metadata (Task 14
+//! rule 6).
 
 use arrow_flight::sql::{CommandGetSqlInfo, SqlInfo, SqlSupportedTransaction};
 use datafusion::arrow::array::{
     Array, BooleanArray, Int32Array, StringArray, UInt32Array, UnionArray,
 };
-use operon_query::ServiceError;
+use operon_collection::ConsistencyToken;
+use operon_common::StreamId;
 use operon_query::flight::{
-    StatementTicket, TICKET_MAGIC, TICKET_VERSION, decode_ticket, encode_ticket, sql_info_data,
+    StatementTicket, TICKET_MAGIC, TICKET_VERSION, decode_ticket, encode_ticket,
+    metadata_consistency, sql_info_data, ticket_consistency,
 };
+use operon_query::{PIN_MANIFEST_METADATA, ReadConsistency, ServiceError};
 use proptest::prelude::*;
+use tonic::metadata::MetadataMap;
 
 fn invalid(bytes: &[u8]) {
     match decode_ticket(bytes) {
@@ -35,10 +40,16 @@ proptest! {
         namespace in "[a-z0-9_-]{0,24}",
         query in ".{0,200}",
         token in proptest::option::of("v1:[0-9a-z:.,]{0,40}"),
+        pinned_manifest in proptest::option::of(any::<u64>()),
         flip in any::<prop::sample::Index>(),
         bit in 0u8..8,
     ) {
-        let ticket = StatementTicket { namespace, query, token };
+        let ticket = StatementTicket {
+            namespace,
+            query,
+            token,
+            pinned_manifest,
+        };
         let bytes = encode_ticket(&ticket);
         prop_assert_eq!(&bytes[..4], TICKET_MAGIC);
         prop_assert_eq!(decode_ticket(&bytes).expect("decodes"), ticket);
@@ -59,6 +70,7 @@ fn tickets_reject_versions_trailing_bytes_and_truncation() {
         namespace: "w".to_string(),
         query: "SELECT 1".to_string(),
         token: None,
+        pinned_manifest: None,
     };
     let bytes = encode_ticket(&ticket).to_vec();
     let body = bytes[..bytes.len() - 4].to_vec();
@@ -142,4 +154,82 @@ fn sql_info_declares_read_only() {
             .value(0),
         SqlSupportedTransaction::None as i32
     );
+}
+
+fn metadata(entries: &[(&'static str, &str)]) -> MetadataMap {
+    let mut map = MetadataMap::new();
+    for (key, value) in entries {
+        map.insert(*key, value.parse().expect("ASCII metadata"));
+    }
+    map
+}
+
+#[test]
+fn pin_metadata_selects_a_pinned_read() {
+    const TOKEN: &str = "operon-consistency-token";
+    let token = ConsistencyToken(vec![(StreamId(9), 0, 4), (StreamId(9), 1, 2)]);
+    let text = token.to_string();
+    let message = format!(
+        "{PIN_MANIFEST_METADATA} needs a canonical manifest version and operon-consistency-token"
+    );
+    let refused = |entries: &[(&'static str, &str)]| match metadata_consistency(&metadata(entries))
+    {
+        Err(ServiceError::InvalidArgument(got)) => assert_eq!(got, message, "{entries:?}"),
+        other => panic!("{entries:?}: expected InvalidArgument, got {other:?}"),
+    };
+
+    // Both keys: a pinned read.
+    let pinned = ReadConsistency::Pinned {
+        manifest_version: 3,
+        token: token.clone(),
+    };
+    let both = metadata(&[(PIN_MANIFEST_METADATA, "3"), (TOKEN, &text)]);
+    assert_eq!(metadata_consistency(&both).expect("pinned"), pinned);
+    assert_eq!(
+        metadata_consistency(&metadata(&[(PIN_MANIFEST_METADATA, "0"), (TOKEN, &text)]))
+            .expect("pinned at 0"),
+        ReadConsistency::Pinned {
+            manifest_version: 0,
+            token: token.clone(),
+        }
+    );
+    // The token alone reads at least it; nothing reads strong (rule 2).
+    assert_eq!(
+        metadata_consistency(&metadata(&[(TOKEN, &text)])).expect("at least"),
+        ReadConsistency::AtLeast(token.clone())
+    );
+    assert_eq!(
+        metadata_consistency(&MetadataMap::new()).expect("strong"),
+        ReadConsistency::Strong
+    );
+
+    // The manifest key alone, a non-canonical version, or a token that does
+    // not parse: refused.
+    refused(&[(PIN_MANIFEST_METADATA, "3")]);
+    refused(&[(PIN_MANIFEST_METADATA, "01"), (TOKEN, &text)]);
+    refused(&[(PIN_MANIFEST_METADATA, "+3"), (TOKEN, &text)]);
+    refused(&[(PIN_MANIFEST_METADATA, ""), (TOKEN, &text)]);
+    refused(&[
+        (PIN_MANIFEST_METADATA, "18446744073709551616"),
+        (TOKEN, &text),
+    ]);
+    refused(&[(PIN_MANIFEST_METADATA, "3"), (TOKEN, "garbage")]);
+
+    // The ticket carries the pin, so DoGet reads the same state.
+    let ticket = StatementTicket {
+        namespace: "w".to_string(),
+        query: "SELECT 1".to_string(),
+        token: Some(text.clone()),
+        pinned_manifest: Some(3),
+    };
+    let decoded = decode_ticket(&encode_ticket(&ticket)).expect("decodes");
+    assert_eq!(ticket_consistency(&decoded).expect("pinned"), pinned);
+    let unpinned = StatementTicket {
+        token: None,
+        ..ticket
+    };
+    assert!(matches!(
+        ticket_consistency(&unpinned),
+        Err(ServiceError::InvalidArgument(_))
+    ));
 }

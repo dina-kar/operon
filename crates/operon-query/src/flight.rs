@@ -48,6 +48,7 @@ use crate::flight_ingest::{
 };
 use crate::hot::HotLayer;
 use crate::ir::ReadConsistency;
+use crate::scan::PIN_MANIFEST_METADATA;
 use crate::service::CollectionService;
 use crate::sql::{COLLECTIONS_SCHEMA, collection_arrow_schema, execute_read_only, plan_read_only};
 
@@ -76,6 +77,75 @@ pub struct StatementTicket {
     /// The consistency token of the `GetFlightInfo` (Display form); `None`
     /// reads `Strong`.
     pub token: Option<String>,
+    /// The `operon-pin-manifest` of the `GetFlightInfo`: with `token`, the
+    /// statement reads `Pinned` (Task 14 rule 6).
+    pub pinned_manifest: Option<u64>,
+}
+
+/// The read of a statement ticket: `Pinned` with a pinned manifest (which
+/// needs a token), `AtLeast` with a token alone, else `Strong`. A token that
+/// does not parse, or a pinned manifest without a token, is an invalid
+/// ticket.
+pub fn ticket_consistency(ticket: &StatementTicket) -> Result<ReadConsistency, ServiceError> {
+    let invalid = || ServiceError::InvalidArgument("invalid statement ticket".to_string());
+    let token = match &ticket.token {
+        Some(text) => Some(ConsistencyToken::from_str(text).map_err(|_| invalid())?),
+        None => None,
+    };
+    match (ticket.pinned_manifest, token) {
+        (Some(manifest_version), Some(token)) => Ok(ReadConsistency::Pinned {
+            manifest_version,
+            token,
+        }),
+        (Some(_), None) => Err(invalid()),
+        (None, token) => Ok(consistency_of(token)),
+    }
+}
+
+/// The read a statement's request metadata asks for (rule 2, Task 14 rule
+/// 6): `operon-pin-manifest` with `operon-consistency-token` reads
+/// `Pinned`, the token alone `AtLeast` and neither `Strong`. A token that
+/// does not parse reads `Strong`; a pinned manifest without a (parsable)
+/// token, or one that is not a canonical decimal u64, is `InvalidArgument`.
+pub fn metadata_consistency(
+    metadata: &tonic::metadata::MetadataMap,
+) -> Result<ReadConsistency, ServiceError> {
+    let (token, pinned_manifest) = statement_read(metadata)?;
+    Ok(match (pinned_manifest, token) {
+        (Some(manifest_version), Some(token)) => ReadConsistency::Pinned {
+            manifest_version,
+            token,
+        },
+        (_, token) => consistency_of(token),
+    })
+}
+
+/// A canonical decimal u64: digits only, without a leading zero (but `0`).
+fn canonical_u64(text: &str) -> Option<u64> {
+    let canonical = !text.is_empty()
+        && text.bytes().all(|b| b.is_ascii_digit())
+        && (text == "0" || !text.starts_with('0'));
+    canonical.then(|| text.parse().ok()).flatten()
+}
+
+/// The token and pinned manifest of a statement's metadata.
+fn statement_read(
+    metadata: &tonic::metadata::MetadataMap,
+) -> Result<(Option<ConsistencyToken>, Option<u64>), ServiceError> {
+    let token = metadata
+        .get(CONSISTENCY_METADATA)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|text| ConsistencyToken::from_str(text).ok());
+    let Some(pin) = metadata.get(PIN_MANIFEST_METADATA) else {
+        return Ok((token, None));
+    };
+    let pinned = pin.to_str().ok().and_then(canonical_u64);
+    match (pinned, token) {
+        (Some(version), Some(token)) => Ok((Some(token), Some(version))),
+        _ => Err(ServiceError::InvalidArgument(format!(
+            "{PIN_MANIFEST_METADATA} needs a canonical manifest version and {CONSISTENCY_METADATA}"
+        ))),
+    }
 }
 
 /// `TICKET_MAGIC | u16 LE version | postcard(ticket) | crc32c u32 LE` over
@@ -239,16 +309,6 @@ fn id_type_of<T>(request: &Request<T>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The consistency token of `request`, when it parses (rule 2).
-fn token_of<T>(request: &Request<T>) -> Option<ConsistencyToken> {
-    let text = request
-        .metadata()
-        .get(CONSISTENCY_METADATA)?
-        .to_str()
-        .ok()?;
-    ConsistencyToken::from_str(text).ok()
-}
-
 fn consistency_of(token: Option<ConsistencyToken>) -> ReadConsistency {
     match token {
         Some(token) => ReadConsistency::AtLeast(token),
@@ -401,15 +461,16 @@ impl FlightSqlService for OperonFlightSql {
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         let namespace = namespace_of(&request);
-        let token = token_of(&request);
+        let (token, pinned_manifest) = statement_read(request.metadata())?;
         let ticket = StatementTicket {
             namespace,
             query: query.query,
             token: token.as_ref().map(ToString::to_string),
+            pinned_manifest,
         };
         let ctx = self
             .service
-            .sql_context_with(&ticket.namespace, consistency_of(token));
+            .sql_context_with(&ticket.namespace, ticket_consistency(&ticket)?);
         let frame = plan_read_only(&ctx, &ticket.query).await?;
         let schema: Schema = frame.schema().as_arrow().clone();
         let handle = TicketStatementQuery {
@@ -434,16 +495,11 @@ impl FlightSqlService for OperonFlightSql {
         _request: Request<Ticket>,
     ) -> Result<Response<DoGetStream>, Status> {
         let ticket = decode_ticket(&ticket.statement_handle)?;
-        let token = match &ticket.token {
-            Some(text) => Some(ConsistencyToken::from_str(text).map_err(|_| {
-                ServiceError::InvalidArgument("invalid statement ticket".to_string())
-            })?),
-            None => None,
-        };
+        let consistency = ticket_consistency(&ticket)?;
         let deadline = tokio::time::Instant::now() + self.config.max_duration;
         let ctx = self
             .service
-            .sql_context_with(&ticket.namespace, consistency_of(token));
+            .sql_context_with(&ticket.namespace, consistency);
         let stream = tokio::time::timeout_at(deadline, async {
             let frame = plan_read_only(&ctx, &ticket.query).await?;
             execute_read_only(frame).await

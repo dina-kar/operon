@@ -364,6 +364,26 @@ impl Storage {
         let paths = Arc::new(PathStore::default());
         let faulty = Arc::new(FaultyStore::new(paths.clone()));
         let store = Store::new(faulty.clone());
+        Self::start_over(meta, config, paths, faulty, store).await
+    }
+
+    /// [`Self::start`] over a `file://` store in `dir` (`paths` and
+    /// `faulty` are not in its path).
+    pub async fn start_local(meta: &Meta, config: CollectionConfig, dir: &std::path::Path) -> Self {
+        let paths = Arc::new(PathStore::default());
+        let faulty = Arc::new(FaultyStore::new(paths.clone()));
+        let store = Store::from_url(&file_url(dir), Vec::<(String, String)>::new())
+            .expect("a file:// store");
+        Self::start_over(meta, config, paths, faulty, store).await
+    }
+
+    async fn start_over(
+        meta: &Meta,
+        config: CollectionConfig,
+        paths: Arc<PathStore>,
+        faulty: Arc<FaultyStore>,
+        store: Store,
+    ) -> Self {
         let writer = LogWriter::start(
             meta.client.clone(),
             store.clone(),
@@ -843,6 +863,114 @@ impl TailFixture {
     }
 }
 
+/// `file://<dir>/` (`dir` canonicalized, so it is absolute).
+pub fn file_url(dir: &std::path::Path) -> String {
+    let dir = dir.canonicalize().expect("an existing directory");
+    let mut url = format!("file://{}", dir.display());
+    if !url.ends_with('/') {
+        url.push('/');
+    }
+    url
+}
+
+/// A seeded write history over `keys` keys of mixed types (u64, UUID and
+/// string keys in turn): upserts and re-upserts, patches in all three modes
+/// (some with an upsert document, some of missing keys), and about 15 %
+/// deletes. Every source is a JSON object with a number, a string and a
+/// nested object, so the patch modes differ (Task 14; Task 15 item 2 reuses
+/// it).
+pub fn mixed_history(seed: u64, ops: usize, keys: usize) -> Vec<DocOp> {
+    use rand::{Rng, SeedableRng};
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(seed);
+    let key = |i: usize| match i % 3 {
+        0 => PrimaryKey::U64(i as u64 * 1_000_003),
+        1 => {
+            let mut bytes = [0u8; 16];
+            bytes[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            bytes[8..].copy_from_slice(&(!(i as u64)).to_be_bytes());
+            PrimaryKey::Uuid(bytes)
+        }
+        _ => PrimaryKey::Str(format!("key-{i:03}")),
+    };
+    let source = |rng: &mut rand_chacha::ChaCha8Rng| {
+        let n: i64 = rng.random_range(-1_000..1_000);
+        let word = ["alpha", "beta", "gamma", "delta"][rng.random_range(0..4)];
+        let mut nested = Map::new();
+        if rng.random_bool(0.5) {
+            nested.insert("a".to_string(), Value::from(rng.random_range(0..10)));
+        }
+        if rng.random_bool(0.5) {
+            nested.insert("b".to_string(), Value::from(word));
+        }
+        let mut map = Map::new();
+        if rng.random_bool(0.8) {
+            map.insert("n".to_string(), Value::from(n));
+        }
+        if rng.random_bool(0.8) {
+            map.insert("word".to_string(), Value::from(word));
+        }
+        map.insert("nested".to_string(), Value::Object(nested));
+        map
+    };
+    let modes = [
+        PatchMode::MergeDeep,
+        PatchMode::MergeTop,
+        PatchMode::Replace,
+    ];
+    (0..ops)
+        .map(|i| {
+            let pk = key(rng.random_range(0..keys));
+            let roll: f64 = rng.random();
+            if roll < 0.15 {
+                DocOp::Delete(pk)
+            } else if roll < 0.50 {
+                let upsert = rng.random_bool(0.3).then(|| Document {
+                    pk: pk.clone(),
+                    source: source(&mut rng),
+                    vectors: BTreeMap::new(),
+                    sparse_vectors: BTreeMap::new(),
+                });
+                let delete_keys = if rng.random_bool(0.2) {
+                    vec!["nested.a".to_string()]
+                } else {
+                    Vec::new()
+                };
+                DocOp::Patch {
+                    pk,
+                    mode: modes[i % 3],
+                    source: source(&mut rng),
+                    delete_keys,
+                    vectors: BTreeMap::new(),
+                    sparse_vectors: BTreeMap::new(),
+                    upsert,
+                }
+            } else {
+                DocOp::Upsert(Document {
+                    pk,
+                    source: source(&mut rng),
+                    vectors: BTreeMap::new(),
+                    sparse_vectors: BTreeMap::new(),
+                })
+            }
+        })
+        .collect()
+}
+
+/// The live documents after `history`: the per-key latest-wins [`fold`] of
+/// each key's ops in order.
+///
+/// [`fold`]: operon_collection::fold
+pub fn fold_history(history: &[DocOp]) -> BTreeMap<PrimaryKey, Document> {
+    let mut by_key: BTreeMap<PrimaryKey, Vec<&DocOp>> = BTreeMap::new();
+    for op in history {
+        by_key.entry(op.pk().clone()).or_default().push(op);
+    }
+    by_key
+        .into_iter()
+        .filter_map(|(pk, ops)| operon_collection::fold(None, ops).map(|doc| (pk, doc)))
+        .collect()
+}
+
 /// The service fixture (plan M1.2 Task 9 tests): a one-node metastore, the
 /// storage, M1.1's link and index sources run on demand or continuously,
 /// and a `CollectionService` over them. It creates no namespace and no
@@ -899,8 +1027,31 @@ impl Fixture {
     }
 
     pub async fn start_with(config: ServiceConfig) -> Self {
+        Self::start_configured(config, CollectionConfig::default()).await
+    }
+
+    /// [`Self::start_with`], with the collection storage's `collection`
+    /// config (retention, kept manifests).
+    pub async fn start_configured(config: ServiceConfig, collection: CollectionConfig) -> Self {
         let meta = Meta::start().await;
-        let storage = Storage::start(&meta, CollectionConfig::default()).await;
+        let storage = Storage::start(&meta, collection).await;
+        Self::over(meta, storage, config)
+    }
+
+    /// The fixture over a `file://` bucket in `dir`, with `lance_base_url =
+    /// file://<dir>/` (Task 14): the Lance datasets are readable with the
+    /// `lance` crate alone.
+    pub async fn with_local_bucket(dir: &std::path::Path) -> Self {
+        let meta = Meta::start().await;
+        let storage = Storage::start_local(&meta, CollectionConfig::default(), dir).await;
+        let config = ServiceConfig {
+            lance_base_url: Some(file_url(dir)),
+            ..ServiceConfig::default()
+        };
+        Self::over(meta, storage, config)
+    }
+
+    fn over(meta: Meta, storage: Storage, config: ServiceConfig) -> Self {
         let writer = CollectionWriter::new(meta.client.clone(), storage.writer.clone());
         let service =
             CollectionService::new(storage.ctx.clone(), writer, storage.reader.clone(), config);

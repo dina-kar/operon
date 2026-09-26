@@ -27,6 +27,7 @@ use crate::hot::{self, HotTier, HotUsed, NoHotTier, RequestHot};
 use crate::ir::{Query, ReadConsistency, SearchRequest, SearchResponse};
 use crate::placement::{LocalOnly, NoRemoteReads, Owner, Placement, RemoteReads};
 use crate::read::{ReadConfig, Reads};
+use crate::scan::{ScanAt, ScanPlan};
 use crate::tail::TailConfig;
 use crate::types::{CollectionInfo, ManifestInfo, PinnedRead, Projection, StoredDoc};
 use crate::validate::validate_request;
@@ -76,6 +77,10 @@ pub struct ServiceConfig {
     pub max_scroll_limit: usize,
     /// 5 compare-and-set attempts per schema update (Ruling 18).
     pub schema_retries: u32,
+    /// The object store URL the collections' Lance datasets live under (a
+    /// scan plan's `lance.uri` is it plus `lance_prefix`, Task 14 rule 4);
+    /// `None` by default, and the server sets its bucket URL.
+    pub lance_base_url: Option<String>,
 }
 
 impl Default for ServiceConfig {
@@ -91,6 +96,7 @@ impl Default for ServiceConfig {
             max_get_keys: 10_000,
             max_scroll_limit: 10_000,
             schema_retries: 5,
+            lance_base_url: None,
         }
     }
 }
@@ -1069,6 +1075,19 @@ impl CollectionService {
             manifest_version,
             token,
         })
+    }
+
+    /// The scan plan of `at` for collection (or alias) `name_or_alias` (Task
+    /// 14, D53): the Lance version a manifest names, its fragments and
+    /// columns, the tail it lacks, and a pin that reads the requested state.
+    /// Never forwarded: it reads no tail.
+    pub async fn scan_plan(
+        &self,
+        ns: &str,
+        name_or_alias: &str,
+        at: ScanAt,
+    ) -> Result<ScanPlan, ServiceError> {
+        self.plan_scan(ns, name_or_alias, at).await
     }
 
     /// A read-only SQL context over namespace `ns` at `Strong` consistency.
