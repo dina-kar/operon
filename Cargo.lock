@@ -5423,6 +5423,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "operon-hot"
+version = "0.0.1"
+dependencies = [
+ "arrow-array",
+ "async-trait",
+ "bytes",
+ "crc32c",
+ "fail",
+ "futures",
+ "lance",
+ "moka",
+ "operon-cache",
+ "operon-collection",
+ "operon-common",
+ "operon-hnsw",
+ "operon-hot",
+ "operon-link",
+ "operon-log",
+ "operon-meta",
+ "operon-quickwit",
+ "operon-store",
+ "operon-worker",
+ "postcard",
+ "roaring",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "ulid 3.0.0",
+ "zstd",
+]
+
+[[package]]
 name = "operon-link"
 version = "0.0.1"
 dependencies = [
@@ -5493,6 +5528,7 @@ dependencies = [
  "proptest",
  "redb",
  "serde",
+ "sha2",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",

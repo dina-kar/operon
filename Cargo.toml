@@ -75,6 +75,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
 serde_json_borrow = "0.9"
 serde_with = "3"
+sha2 = "0.11"
 slatedb = { version = "0.16", default-features = false }
 tantivy = { version = "=0.26.2", default-features = false, features = ["quickwit", "mmap", "stopwords", "stemmer", "lz4-compression", "zstd-compression", "columnar-zstd-compression"] }
 tantivy-fst = "0.5"
@@ -99,6 +100,7 @@ operon-cache = { path = "crates/operon-cache", version = "0.0.1" }
 operon-collection = { path = "crates/operon-collection", version = "0.0.1" }
 operon-common = { path = "crates/operon-common", version = "0.0.1" }
 operon-hnsw = { path = "crates/operon-hnsw", version = "0.0.1" }
+operon-hot = { path = "crates/operon-hot", version = "0.0.1" }
 operon-link = { path = "crates/operon-link", version = "0.0.1" }
 operon-log = { path = "crates/operon-log", version = "0.0.1" }
 operon-meta = { path = "crates/operon-meta", version = "0.0.1" }

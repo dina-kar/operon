@@ -227,6 +227,35 @@ pub struct Collection {
     pub link: LinkId,
 }
 
+/// Which hot structures a collection keeps (design §04 §4; M1.3 Ruling 7).
+/// All false by default. Stored per collection by `SetCollectionHot`; an
+/// all-false configuration is the same as none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct HotConfig {
+    /// HNSW artifacts of the dense vectors.
+    pub vectors: bool,
+    /// Split files pinned on local NVMe.
+    pub text: bool,
+    /// Lance fragments prefetched into the range cache.
+    pub fragments: bool,
+}
+
+impl HotConfig {
+    /// Whether any structure is on.
+    pub fn any(&self) -> bool {
+        self.vectors || self.text || self.fragments
+    }
+
+    /// Field-by-field OR.
+    pub fn or(self, other: HotConfig) -> HotConfig {
+        HotConfig {
+            vectors: self.vectors || other.vectors,
+            text: self.text || other.text,
+            fragments: self.fragments || other.fragments,
+        }
+    }
+}
+
 /// One change of `Command::UpdateAliases`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AliasAction {

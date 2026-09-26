@@ -14,6 +14,13 @@ pub struct MaintenanceConfig {
     /// A split of this many live docs or more is mature: it never merges
     /// again (it can still be purged).
     pub split_num_docs_target: usize,
+    /// The most live docs one merge re-indexes: the policy's operation is
+    /// cut to its smallest inputs that fit (a merge holds its output split
+    /// in memory while it builds it). A purge is never cut.
+    pub max_merge_docs: u64,
+    /// The most input bytes (`size_bytes`, deleted docs included) one merge
+    /// reads, cut like `max_merge_docs`.
+    pub max_merge_bytes: u64,
     /// A split outside every merge with at least this many deleted docs...
     pub purge_min_deleted: u64,
     /// ...and at least this share of deleted docs (parts per million) is
@@ -53,6 +60,8 @@ impl Default for MaintenanceConfig {
                 maturation_period: Duration::from_hours(48),
             },
             split_num_docs_target: 10_000_000,
+            max_merge_docs: 10_000_000,
+            max_merge_bytes: 1 << 30,
             purge_min_deleted: 1_000,
             purge_deleted_ppm: 300_000,
             compaction: true,

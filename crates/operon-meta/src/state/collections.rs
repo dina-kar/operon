@@ -124,6 +124,7 @@ impl MetaState {
             return Ok(Reply::CollectionDropped(None));
         };
         self.aliases.retain(|_, target| *target != id);
+        self.collection_hot.remove(&id);
         self.remove_stream(collection.stream);
         self.remove_link(collection.link);
         self.pointers

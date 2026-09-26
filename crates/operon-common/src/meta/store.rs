@@ -55,8 +55,8 @@ use crate::meta::error::MetaResult;
 #[cfg(doc)]
 use crate::meta::error::{ApplyError, MetaError};
 use crate::meta::types::{
-    AliasAction, Collection, Fence, Lease, LeaseGrant, Link, LinkId, Namespace, Pointer, Retention,
-    Stream, TargetRef, WalClass,
+    AliasAction, Collection, Fence, HotConfig, Lease, LeaseGrant, Link, LinkId, Namespace, Pointer,
+    Retention, Stream, TargetRef, WalClass,
 };
 use crate::meta::views::{
     CollectionHead, CollectionRoots, LinkHead, PartitionIndex, PointerCas, SegmentSwap,
@@ -380,6 +380,15 @@ pub trait MetaStore: Send + Sync + fmt::Debug + 'static {
     /// The lease on `key`, if it was ever taken.
     async fn lease(&self, consistency: Consistency, key: &str) -> MetaResult<Option<Lease>>;
 
+    /// Every lease whose key starts with `prefix`, in key order, released
+    /// and expired ones included (callers check [`Lease::is_held_at`]), from
+    /// one state (M1.3 Ruling 12).
+    async fn leases_with_prefix(
+        &self,
+        consistency: Consistency,
+        prefix: &str,
+    ) -> MetaResult<Vec<(String, Lease)>>;
+
     // ----- Manifest pointers -----
 
     /// Sets a pointer if its current version is `expected` (`None`: it must
@@ -517,6 +526,29 @@ pub trait MetaStore: Send + Sync + fmt::Debug + 'static {
         consistency: Consistency,
         namespace: Option<NamespaceId>,
     ) -> MetaResult<Vec<CollectionHead>>;
+
+    /// Sets the hot configuration of collection `collection` of `namespace`
+    /// (M1.3 Task 4; E63); an all-false `hot` clears it. Rejected with
+    /// [`ApplyError::CollectionNotFound`] when there is no such collection in
+    /// `namespace`. Setting the same value again succeeds, so a retry is
+    /// safe.
+    async fn set_collection_hot(
+        &self,
+        namespace: NamespaceId,
+        collection: CollectionId,
+        hot: HotConfig,
+    ) -> MetaResult<()>;
+
+    /// The hot configuration of collection `collection` of `namespace`: the
+    /// default (all false) when none is set. Rejected with
+    /// [`ApplyError::CollectionNotFound`] when there is no such collection in
+    /// `namespace`.
+    async fn collection_hot(
+        &self,
+        consistency: Consistency,
+        namespace: NamespaceId,
+        collection: CollectionId,
+    ) -> MetaResult<HotConfig>;
 
     // ----- Garbage collection -----
     //
