@@ -1,5 +1,6 @@
 //! The error every hot-tier operation returns.
 
+use operon_cache::CacheError;
 use operon_collection::CollectionError;
 use operon_common::meta::MetaError;
 use operon_hnsw::HnswError;
@@ -12,6 +13,8 @@ pub enum TierError {
     Collection(#[from] CollectionError),
     #[error("store: {0}")]
     Store(#[from] StoreError),
+    #[error("range cache: {0}")]
+    Cache(#[from] CacheError),
     #[error("metastore: {0}")]
     Meta(#[from] MetaError),
     #[error("hnsw: {0}")]
@@ -36,6 +39,8 @@ impl TierError {
         match self {
             TierError::Collection(err) => err.is_retryable(),
             TierError::Store(err) => err.is_retryable(),
+            TierError::Cache(CacheError::Store(err)) => err.is_retryable(),
+            TierError::Cache(_) => false,
             TierError::Meta(err) => matches!(
                 err,
                 MetaError::NotLeader { .. } | MetaError::Timeout | MetaError::Unavailable(_)

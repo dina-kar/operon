@@ -290,6 +290,11 @@ impl RangeCache {
             .map_err(|e| CacheError::Cache(e.to_string()))
     }
 
+    /// The block size: reads fetch and cache whole blocks of this many bytes.
+    pub fn block_size(&self) -> u64 {
+        self.block_size
+    }
+
     /// Current hit/miss counters.
     pub fn stats(&self) -> CacheStats {
         CacheStats {

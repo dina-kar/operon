@@ -25,7 +25,9 @@ crc32c.workspace = true
 fail = { workspace = true, optional = true }
 futures.workspace = true
 lance.workspace = true
+lance-table.workspace = true
 moka = { workspace = true, features = ["sync"] }
+operon-cache.workspace = true
 operon-collection.workspace = true
 operon-common.workspace = true
 operon-hnsw.workspace = true
@@ -42,10 +44,10 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 ulid.workspace = true
+xxhash-rust.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
-operon-cache.workspace = true
 operon-collection = { workspace = true, features = ["test-util"] }
 operon-hot = { path = ".", features = ["test-util"] }
 operon-link = { workspace = true, features = ["test-util"] }
@@ -53,6 +55,7 @@ operon-log.workspace = true
 operon-meta = { workspace = true, features = ["test-util"] }
 operon-quickwit.workspace = true
 operon-worker = { workspace = true, features = ["test-util"] }
+proptest.workspace = true
 tempfile.workspace = true
 
 [lints]

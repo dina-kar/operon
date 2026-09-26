@@ -8,7 +8,9 @@
 //! - [`tier`], [`live`], [`view`] and [`delta`]: [`HotTierImpl`], which
 //!   loads the artifacts of the hot collections this node owns and serves
 //!   per-manifest views of them, each with a delta index of the rows
-//!   inserted since.
+//!   inserted since;
+//! - [`splits`] and [`prefetch`]: whole split files pinned on local NVMe,
+//!   and Lance files read ahead into the range cache (Ruling 9).
 //!
 //! This crate reaches the metastore only through
 //! [`MetaStore`](operon_common::meta::MetaStore) (D47).
@@ -19,6 +21,8 @@ mod config;
 pub mod delta;
 mod error;
 pub mod live;
+pub mod prefetch;
+pub mod splits;
 pub mod tier;
 pub mod view;
 
@@ -38,6 +42,10 @@ pub use config::{HotBuildConfig, HotTierConfig};
 pub use delta::{DeltaIndex, Extension};
 pub use error::TierError;
 pub use live::{DeletedDocsCache, live_rows, live_rows_cached};
+pub use prefetch::{
+    FragmentProgress, PrefetchPass, prefetch_fragments, prefetch_fragments_resuming,
+};
+pub use splits::{PinnedSplits, SPLIT_PIECE_BYTES, download_split};
 pub use tier::{HotTierImpl, ReconcileReport, TierCounters};
 pub use view::{ColumnView, LoadedArtifact};
 
