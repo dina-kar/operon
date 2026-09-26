@@ -232,7 +232,7 @@ fn golden_schema() -> CollectionSchema {
 /// `snapshot-v5.bin` pin `EntryKind::Segment` only, never `EntryKind::Wal`
 /// (CodeRabbit PR11). [`golden_wal_commands`], [`golden_wal_state`] and
 /// `snapshot-v5-wal.bin` pin the `Wal` encoding separately.
-fn golden_commands() -> Vec<Command> {
+pub(crate) fn golden_commands() -> Vec<Command> {
     let ns1 = NamespaceId(1);
     let stream1 = StreamId(1);
     let fence = Fence {
@@ -830,7 +830,7 @@ const EVERYTHING: HotConfig = HotConfig {
 /// least once, clears one (removing its entry), sets it again, and ends by
 /// dropping the other hot collection, so collection 2 keeps its
 /// configuration.
-fn golden_commands_m1_3() -> Vec<Command> {
+pub(crate) fn golden_commands_m1_3() -> Vec<Command> {
     let ns1 = NamespaceId(1);
     let create = |name: &str| Command::CreateCollection {
         namespace: ns1,

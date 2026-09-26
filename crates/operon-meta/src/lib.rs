@@ -17,9 +17,11 @@ mod log_store;
 mod network;
 mod node;
 mod raft;
+pub mod rpc;
 mod state;
 mod state_machine;
 mod store;
+mod transport;
 mod types;
 
 pub use client::{MetaClient, MetaClientConfig};
@@ -30,7 +32,7 @@ pub use command::{Command, Reply};
 pub use db::LocalDb;
 pub use log_store::LogStore;
 pub use network::Router;
-pub use node::{MetaConfig, MetaNode, RaftStatus};
+pub use node::{MembershipView, MetaConfig, MetaNode, RaftStatus};
 pub use operon_common::meta::{
     AliasAction, ApplyError, COLLECTION_KIND, Collection, Consistency, EntryKind, Fence, Freshness,
     HotConfig, IndexEntry, Lease, LeaseGrant, Link, LinkId, MAX_COLLECTION_NAME_LEN, MAX_KEY_LEN,
@@ -41,6 +43,7 @@ pub use operon_common::meta::{
 pub use raft::{EntryReply, NodeId, SnapshotData, TypeConfig};
 pub use state::MetaState;
 pub use state_machine::StateMachineStore;
+pub use transport::{HttpTransport, HttpTransportConfig, Transport};
 pub use types::{PartitionState, WalCommitRecord};
 
 /// Evaluates a named failpoint (M0.4 Task 5). With the `failpoints` feature

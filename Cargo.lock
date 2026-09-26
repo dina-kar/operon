@@ -5522,6 +5522,7 @@ name = "operon-meta"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "axum",
  "bytes",
  "crc32c",
  "fail",
@@ -5534,6 +5535,7 @@ dependencies = [
  "postcard",
  "proptest",
  "redb",
+ "reqwest 0.12.28",
  "serde",
  "sha2",
  "tempfile",

@@ -4,14 +4,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use openraft::async_runtime::WatchReceiver;
-use openraft::error::{ClientWriteError, InitializeError, LinearizableReadError, RaftError};
+use openraft::error::{
+    ChangeMembershipError, ClientWriteError, InitializeError, LinearizableReadError, RaftError,
+};
 use openraft::metrics::WaitError;
-use openraft::{BasicNode, Raft, ReadPolicy, SnapshotPolicy};
+use openraft::{BasicNode, ChangeMembers, Raft, ReadPolicy, SnapshotPolicy};
 use operon_common::meta::{
-    Consistency, Fence, LeaseGrant, MetaError, Retention, WalChunk, WalClass,
+    ApplyError, Consistency, Fence, LeaseGrant, MetaError, Retention, WalChunk, WalClass,
 };
 use operon_common::{NamespaceId, StreamId};
 use operon_store::Store;
@@ -26,6 +29,7 @@ use crate::state::MetaState;
 use crate::state_machine::{
     SNAPSHOT_POINTER_KEY, SnapshotIoCloser, StateMachineStore, StateReader,
 };
+use crate::transport::{AddressBook, HttpNetworkFactory, Transport, watch_addresses};
 
 /// How to start a meta node.
 #[derive(Clone, Debug)]
@@ -86,6 +90,14 @@ impl MetaConfig {
     }
 }
 
+/// The nodes of the effective membership, with their addresses (empty for
+/// an in-process node).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MembershipView {
+    pub voters: BTreeMap<NodeId, String>,
+    pub learners: BTreeMap<NodeId, String>,
+}
+
 /// A node's Raft progress, for monitoring and tests. Indexes are Raft log indexes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RaftStatus {
@@ -105,7 +117,11 @@ struct Inner {
     db_closed: tokio::sync::watch::Receiver<bool>,
     /// Lets `shutdown` cut short snapshot uploads that are being retried.
     snapshot_io: SnapshotIoCloser,
-    router: Router,
+    /// The in-process router this node is registered with, if any.
+    router: Option<Router>,
+    /// Test hook ([`MetaNode::set_partitioned`]): while set, the HTTP routes
+    /// answer 503 and outgoing HTTP RPCs are dropped.
+    partitioned: Arc<AtomicBool>,
     clock: Arc<dyn Clock>,
     request_timeout: Duration,
     max_clock_skew: Duration,
@@ -150,7 +166,14 @@ async fn check_fresh_start(config: &MetaConfig, db: &LocalDb) -> Result<(), Meta
     {
         return Ok(());
     }
-    let prefix = format!("{}/", config.snapshot_prefix.trim_end_matches('/'));
+    // Only this node's own snapshots (M1.3 E47): a voter first started after
+    // a peer snapshotted, or a new learner, has none, and a node that lost
+    // its data directory still finds its own.
+    let prefix = format!(
+        "{}/{}/",
+        config.snapshot_prefix.trim_end_matches('/'),
+        config.node_id
+    );
     let existing = config
         .store
         .list(&prefix)
@@ -175,9 +198,17 @@ impl MetaNode {
     /// [`MetaNode::initialize`] (here or on a peer) before it can serve requests.
     ///
     /// A node with no local state refuses to start if the snapshot store
-    /// already holds snapshots, unless
+    /// already holds snapshots of this node, unless
     /// [`MetaConfig::allow_fresh_start_with_existing_snapshots`] is set.
     pub async fn start(config: MetaConfig, router: &Router) -> Result<Self, MetaError> {
+        Self::start_with(config, Transport::InProcess(router.clone())).await
+    }
+
+    /// [`MetaNode::start`] over any [`Transport`]. Over HTTP, peers are
+    /// reached at their addresses in the membership
+    /// ([`MetaNode::initialize_with`], [`crate::rpc::join`]), and the caller
+    /// serves [`crate::rpc::router`] on this node's address.
+    pub async fn start_with(config: MetaConfig, transport: Transport) -> Result<Self, MetaError> {
         if config.snapshot_every == 0 {
             return Err(MetaError::Config(
                 "snapshot_every must be at least 1".to_string(),
@@ -205,16 +236,31 @@ impl MetaNode {
         sm.set_io_budget(config.snapshot_io_budget);
         let state = sm.reader();
         let snapshot_io = sm.closer();
-        let network = NetworkFactory::new(router.clone(), config.node_id);
-        let raft = Raft::new(
-            config.node_id,
-            Arc::new(raft_config),
-            network,
-            LogStore::new(db),
-            sm,
-        )
-        .await
-        .map_err(unavailable)?;
+        let partitioned = Arc::new(AtomicBool::new(false));
+        let raft_config = Arc::new(raft_config);
+        let log = LogStore::new(db);
+        let (raft, router) = match transport {
+            Transport::InProcess(router) => {
+                let network = NetworkFactory::new(router.clone(), config.node_id);
+                let raft = Raft::new(config.node_id, raft_config, network, log, sm).await;
+                (raft, Some(router))
+            }
+            Transport::Http(transport) => {
+                let addresses = AddressBook::default();
+                let network = HttpNetworkFactory {
+                    transport,
+                    from: config.node_id,
+                    addresses: addresses.clone(),
+                    partitioned: partitioned.clone(),
+                };
+                let raft = Raft::new(config.node_id, raft_config, network, log, sm).await;
+                if let Ok(raft) = &raft {
+                    watch_addresses(raft, addresses);
+                }
+                (raft, None)
+            }
+        };
+        let raft = raft.map_err(unavailable)?;
         // `Raft::new` has already re-applied the committed entries after the
         // snapshot (the log store persists the commit index), so local reads
         // see the pre-restart state. Wait for the core's first metrics too, so
@@ -227,7 +273,9 @@ impl MetaNode {
             )
             .await
             .map_err(unavailable)?;
-        router.register(config.node_id, raft.clone());
+        if let Some(router) = &router {
+            router.register(config.node_id, raft.clone());
+        }
 
         Ok(Self {
             inner: Arc::new(Inner {
@@ -236,7 +284,8 @@ impl MetaNode {
                 state,
                 db_closed,
                 snapshot_io,
-                router: router.clone(),
+                router,
+                partitioned,
                 clock: config.clock,
                 request_timeout: config.request_timeout,
                 max_clock_skew: config.max_clock_skew,
@@ -252,15 +301,32 @@ impl MetaNode {
         &self,
         members: impl IntoIterator<Item = NodeId>,
     ) -> Result<(), MetaError> {
+        let nodes: BTreeMap<NodeId, BasicNode> = members
+            .into_iter()
+            .map(|id| (id, BasicNode::default()))
+            .collect();
+        self.initialize_nodes(nodes).await
+    }
+
+    /// [`MetaNode::initialize`] with each member's `host:port`, which peers
+    /// connect to over HTTP.
+    pub async fn initialize_with(
+        &self,
+        members: BTreeMap<NodeId, String>,
+    ) -> Result<(), MetaError> {
+        let nodes = members
+            .into_iter()
+            .map(|(id, addr)| (id, BasicNode::new(addr)))
+            .collect();
+        self.initialize_nodes(nodes).await
+    }
+
+    async fn initialize_nodes(&self, nodes: BTreeMap<NodeId, BasicNode>) -> Result<(), MetaError> {
         let raft = &self.inner.raft;
-        let members: BTreeSet<NodeId> = members.into_iter().collect();
+        let members: BTreeSet<NodeId> = nodes.keys().copied().collect();
         if raft.is_initialized().await.map_err(unavailable)? {
             return self.check_voters(&members).await;
         }
-        let nodes: BTreeMap<NodeId, BasicNode> = members
-            .iter()
-            .map(|id| (*id, BasicNode::default()))
-            .collect();
         match raft.initialize(nodes).await {
             Ok(()) => Ok(()),
             Err(RaftError::APIError(InitializeError::NotAllowed(_))) => {
@@ -294,6 +360,10 @@ impl MetaNode {
 
     pub fn id(&self) -> NodeId {
         self.inner.id
+    }
+
+    pub(crate) fn raft(&self) -> &MetaRaft {
+        &self.inner.raft
     }
 
     /// Watches the index of the last log entry this node has applied (0 before
@@ -394,6 +464,28 @@ impl MetaNode {
     /// node loses leadership, or purges the entry's log range after installing
     /// a snapshot, before the reply), so its outcome is unknown.
     pub(crate) async fn write_attempt(&self, command: Command) -> Result<Reply, AttemptError> {
+        let (reply, _) = self.write_indexed_attempt(command).await?;
+        Ok(reply.map_err(MetaError::from)?)
+    }
+
+    /// Proposes a command, waits until it is applied, and returns its result
+    /// with its Raft log index. A rejected command took a log index too, so
+    /// it is `Ok((Err(..), index))`. Errors as [`MetaNode::write`].
+    pub async fn write_indexed(
+        &self,
+        command: Command,
+    ) -> Result<(Result<Reply, ApplyError>, u64), MetaError> {
+        self.write_indexed_attempt(command)
+            .await
+            .map_err(|attempt| attempt.error)
+    }
+
+    /// [`MetaNode::write_indexed`], also saying whether the node refused the
+    /// command before proposing it ([`MetaNode::write_attempt`]).
+    pub(crate) async fn write_indexed_attempt(
+        &self,
+        command: Command,
+    ) -> Result<(Result<Reply, ApplyError>, u64), AttemptError> {
         let leader = self.inner.raft.metrics().borrow_watched().current_leader;
         if leader != Some(self.inner.id) {
             return Err(AttemptError::before_proposal(MetaError::NotLeader {
@@ -408,7 +500,7 @@ impl MetaNode {
             .map_err(|_| MetaError::Timeout)?;
         match result {
             Ok(response) => match response.data {
-                Some(reply) => Ok(reply.map_err(MetaError::from)?),
+                Some(reply) => Ok((reply, response.log_id.index)),
                 None => Err(unavailable("a command entry produced no reply").into()),
             },
             // Possibly after proposing (see above): the outcome is unknown.
@@ -474,6 +566,157 @@ impl MetaNode {
             }
         }
         Ok(self.inner.state.read(f))
+    }
+
+    /// The index a linearizable read must have applied, from this node as
+    /// the leader (`ensure_linearizable(ReadIndex)`); [`MetaError::NotLeader`]
+    /// on any other node.
+    pub async fn read_index(&self) -> Result<u64, MetaError> {
+        let leader = self.inner.raft.metrics().borrow_watched().current_leader;
+        if leader != Some(self.inner.id) {
+            return Err(MetaError::NotLeader { leader });
+        }
+        let confirm = self.inner.raft.ensure_linearizable(ReadPolicy::ReadIndex);
+        let result = tokio::time::timeout(self.inner.request_timeout, confirm)
+            .await
+            .map_err(|_| MetaError::Timeout)?;
+        match result {
+            Ok(read) => Ok(read.log_id().index),
+            Err(RaftError::APIError(LinearizableReadError::ForwardToLeader(forward))) => {
+                Err(MetaError::NotLeader {
+                    leader: forward.leader_id,
+                })
+            }
+            Err(e) => Err(unavailable(e)),
+        }
+    }
+
+    /// The leader this node knows of, with its address in the membership
+    /// (`None` when it has none, as in process).
+    pub fn leader(&self) -> Option<(NodeId, Option<String>)> {
+        let metrics = self.inner.raft.metrics();
+        let m = metrics.borrow_watched();
+        let leader = m.current_leader?;
+        let addr = m
+            .membership_config
+            .get_node(&leader)
+            .map(|node| node.addr.clone())
+            .filter(|addr| !addr.is_empty());
+        Some((leader, addr))
+    }
+
+    /// The effective membership, as of this node's latest metrics.
+    pub fn membership(&self) -> MembershipView {
+        let metrics = self.inner.raft.metrics();
+        let m = metrics.borrow_watched();
+        let membership = m.membership_config.membership();
+        let addr = |id: &NodeId| {
+            membership
+                .get_node(id)
+                .map(|node| node.addr.clone())
+                .unwrap_or_default()
+        };
+        MembershipView {
+            voters: membership.voter_ids().map(|id| (id, addr(&id))).collect(),
+            learners: membership.learner_ids().map(|id| (id, addr(&id))).collect(),
+        }
+    }
+
+    /// Whether this node believes it is the leader.
+    pub fn is_leader(&self) -> bool {
+        self.inner.raft.metrics().borrow_watched().current_leader == Some(self.inner.id)
+    }
+
+    /// Waits until this replica applied `index`; false on timeout.
+    pub async fn wait_applied(&self, index: u64, timeout: Duration) -> bool {
+        let mut applied = self.inner.state.watch_applied();
+        tokio::time::timeout(timeout, applied.wait_for(|applied| *applied >= index))
+            .await
+            .is_ok_and(|seen| seen.is_ok())
+    }
+
+    /// Whether Raft still runs here (not shut down, no fatal error).
+    pub(crate) fn is_running(&self) -> bool {
+        self.inner
+            .raft
+            .metrics()
+            .borrow_watched()
+            .running_state
+            .is_ok()
+    }
+
+    /// For tests: cuts this node off over HTTP while `partitioned` is true.
+    /// Its [`crate::rpc::router`] answers every request with 503, and its
+    /// outgoing Raft RPCs fail as unreachable. In-process nodes use
+    /// [`Router::isolate`] instead. Only with the `test-util` feature.
+    #[cfg(feature = "test-util")]
+    pub fn set_partitioned(&self, partitioned: bool) {
+        self.inner.partitioned.store(partitioned, Ordering::SeqCst);
+    }
+
+    pub(crate) fn is_partitioned(&self) -> bool {
+        self.inner.partitioned.load(Ordering::SeqCst)
+    }
+
+    /// Adds `node_id` at `addr` as a learner, or updates its address
+    /// (M1.3 Task 9 rule 5). Leader only; true if the membership changed.
+    /// Adding a learner blocks until it has caught up.
+    pub(crate) async fn join_member(
+        &self,
+        node_id: NodeId,
+        addr: &str,
+    ) -> Result<MembershipChange, MetaError> {
+        if !self.is_leader() {
+            return Ok(MembershipChange::NotLeader);
+        }
+        let current = self.membership();
+        let known = current
+            .voters
+            .get(&node_id)
+            .or_else(|| current.learners.get(&node_id));
+        let result = match known {
+            Some(known) if known == addr => return Ok(MembershipChange::Done { changed: false }),
+            Some(_) => {
+                let nodes = BTreeMap::from([(node_id, BasicNode::new(addr))]);
+                self.inner
+                    .raft
+                    .change_membership(ChangeMembers::SetNodes(nodes), true)
+                    .await
+            }
+            None => {
+                self.inner
+                    .raft
+                    .add_learner(node_id, BasicNode::new(addr), true)
+                    .await
+            }
+        };
+        membership_result(result)
+    }
+
+    /// Removes the learner `node_id`; refuses a voter (voters change in M2).
+    /// Leader only; true if the membership changed.
+    pub(crate) async fn leave_member(
+        &self,
+        node_id: NodeId,
+    ) -> Result<MembershipChange, MetaError> {
+        if !self.is_leader() {
+            return Ok(MembershipChange::NotLeader);
+        }
+        let current = self.membership();
+        if current.voters.contains_key(&node_id) {
+            return Ok(MembershipChange::Refused(
+                "voters are changed in M2".to_string(),
+            ));
+        }
+        if !current.learners.contains_key(&node_id) {
+            return Ok(MembershipChange::Done { changed: false });
+        }
+        let result = self
+            .inner
+            .raft
+            .change_membership(ChangeMembers::RemoveNodes(BTreeSet::from([node_id])), false)
+            .await;
+        membership_result(result)
     }
 
     pub async fn create_namespace(&self, name: &str) -> Result<NamespaceId, MetaError> {
@@ -638,7 +881,9 @@ impl MetaNode {
         // First, so a snapshot upload being retried cannot hold up Raft's
         // shutdown or keep the local database open.
         self.inner.snapshot_io.close();
-        self.inner.router.unregister(self.inner.id);
+        if let Some(router) = &self.inner.router {
+            router.unregister(self.inner.id);
+        }
         self.inner.raft.shutdown().await.map_err(unavailable)?;
         // openraft's state machine and snapshot tasks may still hold storage
         // handles for a moment after the core stops.
@@ -664,7 +909,7 @@ pub(crate) struct AttemptError {
 }
 
 impl AttemptError {
-    fn before_proposal(error: MetaError) -> Self {
+    pub(crate) fn before_proposal(error: MetaError) -> Self {
         Self {
             error,
             refused: true,
@@ -678,5 +923,35 @@ impl From<MetaError> for AttemptError {
             error,
             refused: false,
         }
+    }
+}
+
+/// What a membership request did on the leader.
+#[derive(Debug)]
+pub(crate) enum MembershipChange {
+    Done { changed: bool },
+    NotLeader,
+    Refused(String),
+}
+
+fn membership_result<T>(
+    result: Result<
+        T,
+        RaftError<crate::raft::TypeConfig, ClientWriteError<crate::raft::TypeConfig>>,
+    >,
+) -> Result<MembershipChange, MetaError> {
+    match result {
+        Ok(_) => Ok(MembershipChange::Done { changed: true }),
+        Err(RaftError::APIError(ClientWriteError::ForwardToLeader(_))) => {
+            Ok(MembershipChange::NotLeader)
+        }
+        // Another change is still being committed: retry later.
+        Err(RaftError::APIError(ClientWriteError::ChangeMembershipError(
+            e @ ChangeMembershipError::InProgress(_),
+        ))) => Err(unavailable(e)),
+        Err(RaftError::APIError(ClientWriteError::ChangeMembershipError(e))) => {
+            Ok(MembershipChange::Refused(e.to_string()))
+        }
+        Err(e) => Err(unavailable(e)),
     }
 }

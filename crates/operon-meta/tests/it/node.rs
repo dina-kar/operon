@@ -485,21 +485,30 @@ async fn a_node_without_local_state_refuses_to_start_over_existing_snapshots() {
     node.shutdown().await.unwrap();
 
     // The same node on a replaced (empty) data directory would start an empty
-    // metastore, reissue ids and later overwrite the snapshots. So would any
-    // other node id pointed at this bucket.
-    for id in [1, 2] {
-        let empty = TempDir::new().unwrap();
-        let err = MetaNode::start(
-            MetaConfig::new(id, empty.path(), store.clone()),
-            &Router::new(),
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            matches!(&err, MetaError::Config(msg) if msg.contains("snapshot")),
-            "{err:?}"
-        );
-    }
+    // metastore, reissue ids and later overwrite its snapshots.
+    let empty = TempDir::new().unwrap();
+    let err = MetaNode::start(
+        MetaConfig::new(1, empty.path(), store.clone()),
+        &Router::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&err, MetaError::Config(msg) if msg.contains("snapshot")),
+        "{err:?}"
+    );
+
+    // Only a node's own snapshots count (M1.3 E47): another node id, such as
+    // a voter first started after a peer snapshotted, or a new learner,
+    // starts empty and receives the leader's state.
+    let other = TempDir::new().unwrap();
+    let peer = MetaNode::start(
+        MetaConfig::new(2, other.path(), store.clone()),
+        &Router::new(),
+    )
+    .await
+    .expect("another node id starts");
+    peer.shutdown().await.unwrap();
 
     // An operator who knows the snapshots are stale can override the check.
     let empty = TempDir::new().unwrap();

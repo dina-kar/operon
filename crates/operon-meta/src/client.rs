@@ -18,7 +18,9 @@ use crate::clock::Clock;
 use crate::command::{Command, Reply};
 use crate::node::{AttemptError, MetaNode};
 use crate::raft::NodeId;
+use crate::rpc::{META_READ_INDEX, META_WRITE, WireReadIndex, WireWrite, post_error};
 use crate::state::MetaState;
+use crate::transport::{HttpTransport, PostError};
 
 /// The longest wait between two attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(1);
@@ -33,6 +35,10 @@ pub struct MetaClientConfig {
     /// The first wait between attempts; it doubles after each attempt, up to
     /// 1 s. Default 50 ms.
     pub backoff: Duration,
+    /// How long a networked client ([`MetaClient::networked`]) waits for its
+    /// local replica to apply a write the leader applied, before returning
+    /// the reply anyway. Default 5 s.
+    pub apply_wait: Duration,
 }
 
 impl Default for MetaClientConfig {
@@ -40,9 +46,28 @@ impl Default for MetaClientConfig {
         Self {
             retry_deadline: Duration::from_secs(10),
             backoff: Duration::from_millis(50),
+            apply_wait: Duration::from_secs(5),
         }
     }
 }
+
+/// How a networked client reaches the leader (M1.3 Ruling 10).
+struct Remote {
+    transport: HttpTransport,
+    /// The leader's address from the last `NotLeader` answer that had one.
+    hint: Mutex<Option<String>>,
+}
+
+/// Where one attempt of a networked request goes.
+enum Target {
+    /// The local replica is the leader.
+    Local,
+    /// The leader at this address.
+    Remote(String),
+}
+
+/// A failed networked attempt, with the leader address its answer named.
+type NetError = (AttemptError, Option<String>);
 
 struct Inner {
     /// The local node first, then its peers.
@@ -53,6 +78,9 @@ struct Inner {
     leader: Mutex<Option<NodeId>>,
     /// Test hook: the next successful writes report `Timeout` instead.
     lost_acks: AtomicU32,
+    /// Set for a networked client: writes and linearizable reads reach the
+    /// leader over HTTP instead of through `nodes`.
+    remote: Option<Remote>,
 }
 
 /// A metastore client for a process that runs a meta node: reads are served
@@ -112,6 +140,36 @@ impl MetaClient {
                 config,
                 leader: Mutex::new(None),
                 lost_acks: AtomicU32::new(0),
+                remote: None,
+            }),
+        }
+    }
+
+    /// A client over this process's replica `local` (a voter or a learner)
+    /// that reaches the leader over HTTP (M1.3 Ruling 10): `Local` reads
+    /// read `local`; a linearizable read asks the leader for a read index
+    /// and waits until `local` applied it; a write is forwarded to the
+    /// leader, and the client waits (up to
+    /// [`MetaClientConfig::apply_wait`]) until `local` applied it. When
+    /// `local` is the leader, both run on it directly. Its `MetaStore`
+    /// implementation is the same as for [`MetaClient::new`].
+    pub fn networked(
+        local: MetaNode,
+        transport: HttpTransport,
+        clock: Arc<dyn Clock>,
+        config: MetaClientConfig,
+    ) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                nodes: vec![local],
+                clock,
+                config,
+                leader: Mutex::new(None),
+                lost_acks: AtomicU32::new(0),
+                remote: Some(Remote {
+                    transport,
+                    hint: Mutex::new(None),
+                }),
             }),
         }
     }
@@ -254,6 +312,9 @@ impl MetaClient {
     /// set it: openraft also answers a write it already proposed that way
     /// when leadership changes before the reply.
     pub async fn write_tracked(&self, command: Command) -> (Result<Reply, MetaError>, bool) {
+        if let Some(remote) = &self.inner.remote {
+            return self.write_networked(remote, command).await;
+        }
         self.on_leader(|node| {
             let command = command.clone();
             async move {
@@ -277,6 +338,9 @@ impl MetaClient {
     ) -> Result<T, MetaError> {
         match consistency {
             Consistency::Local => self.local().read(Consistency::Local, f).await,
+            Consistency::Linearizable if self.inner.remote.is_some() => {
+                self.read_networked(f).await
+            }
             Consistency::Linearizable => {
                 let leader = self
                     .on_leader(|node| async move {
@@ -290,6 +354,199 @@ impl MetaClient {
                 leader.read(Consistency::Local, f).await
             }
         }
+    }
+
+    /// Where a networked attempt goes: the local replica if it is the
+    /// leader, else a leader just hinted, the leader the local replica
+    /// knows, or the last hint.
+    fn network_target(&self, remote: &Remote, pending: &mut Option<String>) -> Option<Target> {
+        let local = self.local();
+        if local.is_leader() {
+            return Some(Target::Local);
+        }
+        if let Some(addr) = pending.take() {
+            return Some(Target::Remote(addr));
+        }
+        if let Some((_, Some(addr))) = local.leader() {
+            return Some(Target::Remote(addr));
+        }
+        remote
+            .hint
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .map(Target::Remote)
+    }
+
+    /// [`MetaClient::on_leader`] for a networked client: retries `op` on
+    /// the leader as the type docs describe. A fresh leader address in a
+    /// `NotLeader` answer is followed at once, once; everything else waits
+    /// out the backoff first.
+    async fn on_network_leader<T, F, Fut>(
+        &self,
+        remote: &Remote,
+        op: F,
+    ) -> (Result<T, MetaError>, bool)
+    where
+        F: Fn(Target) -> Fut,
+        Fut: Future<Output = Result<T, NetError>>,
+    {
+        let deadline = Instant::now() + self.inner.config.retry_deadline;
+        let mut backoff = self.inner.config.backoff;
+        let mut pending = None;
+        let mut followed_hint = false;
+        let mut earlier_unknown = false;
+        loop {
+            let (attempt, hinted) = match self.network_target(remote, &mut pending) {
+                // No leader known: nothing was sent.
+                None => (
+                    AttemptError::before_proposal(MetaError::NotLeader { leader: None }),
+                    None,
+                ),
+                Some(target) => match op(target).await {
+                    Ok(value) => return (Ok(value), earlier_unknown),
+                    Err((attempt, _)) if !is_retryable(&attempt.error) => {
+                        return (Err(attempt.error), earlier_unknown);
+                    }
+                    Err(failed) => failed,
+                },
+            };
+            if !attempt.refused {
+                earlier_unknown = true;
+            }
+            if let Some(addr) = hinted {
+                *remote.hint.lock().unwrap_or_else(PoisonError::into_inner) = Some(addr.clone());
+                if !followed_hint {
+                    pending = Some(addr);
+                    followed_hint = true;
+                    continue;
+                }
+            }
+            followed_hint = false;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return (Err(attempt.error), earlier_unknown);
+            }
+            tracing::debug!(err = %attempt.error, ?backoff, "metastore request failed; retrying");
+            tokio::time::sleep(backoff.min(remaining)).await;
+            backoff = (backoff * 2).min(MAX_BACKOFF);
+        }
+    }
+
+    /// A write through a networked client (M1.3 Task 9 rule 6).
+    async fn write_networked(
+        &self,
+        remote: &Remote,
+        command: Command,
+    ) -> (Result<Reply, MetaError>, bool) {
+        let timeout = remote.transport.config().request_timeout;
+        let apply_wait = self.inner.config.apply_wait;
+        self.on_network_leader(remote, |target| {
+            let command = command.clone();
+            async move {
+                let local = self.local();
+                let reply = match target {
+                    Target::Local => {
+                        let (reply, _) = local
+                            .write_indexed_attempt(command)
+                            .await
+                            .map_err(|attempt| (attempt, None))?;
+                        reply
+                    }
+                    Target::Remote(addr) => {
+                        let answer = remote
+                            .transport
+                            .post::<_, WireWrite>(&addr, META_WRITE, &command, timeout)
+                            .await
+                            .map_err(|err| (forward_error(err), None))?;
+                        match answer {
+                            WireWrite::Applied { reply, log_index } => {
+                                if !local.wait_applied(log_index, apply_wait).await {
+                                    tracing::debug!(
+                                        log_index,
+                                        "the local replica has not applied a forwarded write yet"
+                                    );
+                                }
+                                reply
+                            }
+                            WireWrite::NotLeader { leader, refused } => {
+                                let error = MetaError::NotLeader {
+                                    leader: leader.as_ref().map(|(id, _)| *id),
+                                };
+                                let addr = leader.and_then(|(_, addr)| addr);
+                                return Err((AttemptError { error, refused }, addr));
+                            }
+                            WireWrite::Timeout => return Err((MetaError::Timeout.into(), None)),
+                            WireWrite::Unavailable(msg) => {
+                                return Err((MetaError::Unavailable(msg).into(), None));
+                            }
+                            WireWrite::ClockSkew {
+                                stamped_ms,
+                                leader_ms,
+                            } => {
+                                let error = MetaError::ClockSkew {
+                                    stamped_ms,
+                                    leader_ms,
+                                };
+                                return Err((AttemptError::before_proposal(error), None));
+                            }
+                        }
+                    }
+                };
+                if self.take_lost_ack() {
+                    return Err((MetaError::Timeout.into(), None));
+                }
+                reply.map_err(|e| (MetaError::Rejected(e).into(), None))
+            }
+        })
+        .await
+    }
+
+    /// A linearizable read through a networked client (M1.3 Task 9 rule
+    /// 6): the leader's read index, then the local replica once it has
+    /// applied it. A replica that does not catch up within the transport's
+    /// request timeout answers `Unavailable("replica lagging")`, never an
+    /// older state.
+    async fn read_networked<T>(&self, f: impl FnOnce(&MetaState) -> T) -> Result<T, MetaError> {
+        let Some(remote) = &self.inner.remote else {
+            unreachable!("only a networked client reads through the network");
+        };
+        let timeout = remote.transport.config().request_timeout;
+        let index = self
+            .on_network_leader(remote, |target| async move {
+                match target {
+                    Target::Local => self
+                        .local()
+                        .read_index()
+                        .await
+                        .map_err(|e| (AttemptError::from(e), None)),
+                    Target::Remote(addr) => {
+                        let answer = remote
+                            .transport
+                            .post::<_, WireReadIndex>(&addr, META_READ_INDEX, &(), timeout)
+                            .await
+                            .map_err(|err| (post_error(err).into(), None))?;
+                        match answer {
+                            WireReadIndex::Index(index) => Ok(index),
+                            WireReadIndex::NotLeader { leader } => {
+                                let error = MetaError::NotLeader {
+                                    leader: leader.as_ref().map(|(id, _)| *id),
+                                };
+                                Err((error.into(), leader.and_then(|(_, addr)| addr)))
+                            }
+                            WireReadIndex::Unavailable(msg) => {
+                                Err((MetaError::Unavailable(msg).into(), None))
+                            }
+                        }
+                    }
+                }
+            })
+            .await
+            .0?;
+        if !self.local().wait_applied(index, timeout).await {
+            return Err(MetaError::Unavailable("replica lagging".to_string()));
+        }
+        self.local().read(Consistency::Local, f).await
     }
 
     pub async fn create_namespace(&self, name: &str) -> Result<NamespaceId, MetaError> {
@@ -699,6 +956,21 @@ impl MetaClient {
         {
             Reply::CollectionHotSet => Ok(()),
             other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
+        }
+    }
+}
+
+/// A forwarded write that failed at the transport. A request that never
+/// reached the leader, or that it refused unhandled (503), did not apply; any
+/// other failure after sending leaves its outcome unknown (`Timeout`).
+fn forward_error(err: PostError) -> AttemptError {
+    match err {
+        PostError::NotSent(msg) | PostError::Refused(msg) => {
+            AttemptError::before_proposal(MetaError::Unavailable(msg))
+        }
+        PostError::Unknown(msg) | PostError::Decode(msg) => {
+            tracing::debug!(msg, "a forwarded write's outcome is unknown");
+            MetaError::Timeout.into()
         }
     }
 }
