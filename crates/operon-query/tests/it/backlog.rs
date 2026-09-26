@@ -346,6 +346,22 @@ fn retry_after_follows_the_apply_rate() {
     assert_eq!(retry_after(&config, backlog, 100.0), Duration::from_secs(8));
 }
 
+#[test]
+fn an_inverted_retry_after_range_does_not_panic() {
+    let config = BackpressureConfig {
+        min_retry_after: Duration::from_secs(30),
+        max_retry_after: Duration::from_secs(1),
+        ..BackpressureConfig::default()
+    };
+    let backlog = Backlog {
+        records: 2_000_000,
+        bytes: 1 << 20,
+    };
+    for rate in [0.0, 100.0, 1e9] {
+        assert_eq!(retry_after(&config, backlog, rate), Duration::from_secs(1));
+    }
+}
+
 #[tokio::test]
 async fn disabled_backpressure_never_refuses() {
     let (f, service, _, _) = with_docs(
@@ -371,12 +387,15 @@ async fn disabled_backpressure_never_refuses() {
 async fn the_measurement_is_cached_for_the_refresh_interval() {
     let (f, service, ns, collection) = with_docs(ServiceConfig::default(), tail_schema()).await;
     write(&service, ops(0..3)).await.expect("write");
-    // A monitor of its own, so the write's measurement does not count.
+    // A monitor of its own, so the write's measurement does not count; a
+    // long refresh interval, so a slow runner cannot make one go stale.
     let monitor = Arc::new(BacklogMonitor::new(
         f.storage.ctx.clone(),
-        BackpressureConfig::default(),
+        BackpressureConfig {
+            refresh_interval: Duration::from_secs(60),
+            ..BackpressureConfig::default()
+        },
     ));
-    let started = std::time::Instant::now();
     let admissions: Vec<_> = (0..100)
         .map(|_| {
             let (monitor, collection) = (monitor.clone(), collection.clone());
@@ -387,11 +406,6 @@ async fn the_measurement_is_cached_for_the_refresh_interval() {
         let backlog = admission.await.expect("join").expect("admitted");
         assert_eq!(backlog.records, 3);
     }
-    assert!(
-        started.elapsed() < Duration::from_millis(250),
-        "{:?}",
-        started.elapsed()
-    );
     assert_eq!(monitor.refreshes(), 1, "one collection_head read");
     f.shutdown().await;
 }

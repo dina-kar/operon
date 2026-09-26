@@ -719,7 +719,22 @@ impl Server {
         // Resolved before the join, so a name that does not resolve adds no
         // learner (PR #40 review).
         let addr = resolve(&cluster.advertise).await?;
-        let join_changed = meta_rpc::join(
+        // A learner that never registered has no node lease, so the
+        // membership task would never evict it: after a failed start, leave
+        // (PR #40 review). That includes a failed join, which may have added
+        // the learner anyway (a timeout while it caught up, PR #42 review);
+        // leaving a node that is not a member changes nothing.
+        let leave_after_failure = async || {
+            if roles.meta {
+                return;
+            }
+            let left =
+                meta_rpc::leave(&transport, &seeds, LeaveRequest { node_id }, LEAVE_WAIT).await;
+            if let Err(err) = left {
+                tracing::warn!(%err, "leaving the metastore membership after a failed start");
+            }
+        };
+        let joined = meta_rpc::join(
             &transport,
             &seeds,
             JoinRequest {
@@ -728,9 +743,16 @@ impl Server {
             },
             cluster.join_deadline,
         )
-        .await?;
+        .await;
+        let join_changed = match joined {
+            Ok(changed) => changed,
+            Err(err) => {
+                leave_after_failure().await;
+                return Err(err.into());
+            }
+        };
         tracing::info!(node_id, changed = join_changed, "joined the metastore");
-        let joined = Self::start_joined(
+        let started = Self::start_joined(
             config,
             cluster,
             roles,
@@ -742,16 +764,10 @@ impl Server {
             join_changed,
         )
         .await;
-        if joined.is_err() && !roles.meta {
-            // A learner that never registered has no node lease, so the
-            // membership task would never evict it: leave now (PR #40 review).
-            let left =
-                meta_rpc::leave(&transport, &seeds, LeaveRequest { node_id }, LEAVE_WAIT).await;
-            if let Err(err) = left {
-                tracing::warn!(%err, "leaving the metastore membership after a failed start");
-            }
+        if started.is_err() {
+            leave_after_failure().await;
         }
-        joined
+        started
     }
 
     /// Rule 3 steps 5–8, after the join.

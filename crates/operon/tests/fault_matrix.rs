@@ -1328,20 +1328,44 @@ fn unblessed(components: &[Component], results: &Results) -> Vec<String> {
 /// comma-separated), or every component.
 fn selected() -> Vec<Component> {
     match std::env::var("FAULT_MATRIX_COMPONENTS") {
-        Ok(names) => {
-            let names: BTreeSet<&str> = names.split(',').map(str::trim).collect();
-            let chosen: Vec<Component> = COMPONENTS
-                .into_iter()
-                .filter(|c| names.contains(format!("{c:?}").as_str()))
-                .collect();
-            assert!(
-                !chosen.is_empty(),
-                "FAULT_MATRIX_COMPONENTS names no component"
-            );
-            chosen
-        }
+        Ok(names) => select(&names).unwrap_or_else(|err| panic!("FAULT_MATRIX_COMPONENTS: {err}")),
         Err(_) => COMPONENTS.to_vec(),
     }
+}
+
+/// The components `names` lists; an unknown name is an error, so a typo
+/// cannot silently skip (or leave unblessed) a component's rows.
+fn select(names: &str) -> Result<Vec<Component>, String> {
+    let names: BTreeSet<&str> = names
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect();
+    let known: BTreeSet<String> = COMPONENTS.iter().map(|c| format!("{c:?}")).collect();
+    let unknown: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|name| !known.contains(*name))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(format!("unknown components {unknown:?}; known: {known:?}"));
+    }
+    if names.is_empty() {
+        return Err("names no component".to_string());
+    }
+    Ok(COMPONENTS
+        .into_iter()
+        .filter(|c| names.contains(format!("{c:?}").as_str()))
+        .collect())
+}
+
+#[test]
+fn an_unknown_component_name_is_refused() {
+    let first = format!("{:?}", COMPONENTS[0]);
+    assert_eq!(select(&first), Ok(vec![COMPONENTS[0]]));
+    let err = select(&format!("{first},HotBuld")).expect_err("a typo");
+    assert!(err.contains("HotBuld"), "{err}");
+    assert!(select(" , ").is_err());
 }
 
 /// Per (component, op, fault): the outcomes on the first and second call.

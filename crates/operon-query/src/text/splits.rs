@@ -197,6 +197,12 @@ async fn open_one(
                 // Demoted and deleted after the lookup: read it remotely.
                 tracing::info!(split = %split.ulid, %err, "the hot split file is gone; reading the split remotely");
             }
+            Err(HotFileError::Request(err)) => {
+                // The request's own warm-up failed (it names an unknown
+                // field, say): the file is not at fault, so keep it and let
+                // the remote path answer.
+                tracing::debug!(split = %split.ulid, %err, "the request's warm-up failed on the hot split file; reading the split remotely");
+            }
             Err(HotFileError::Bad(err)) => {
                 // Corrupt, or not this split (row F3): never trust it again.
                 tracing::warn!(split = %split.ulid, path = %path.display(), %err, "the hot split file failed; quarantining it and reading the split remotely");
@@ -241,6 +247,9 @@ enum HotFileError {
     Gone(ServiceError),
     /// It opened but failed: checksums, footer or warm-up.
     Bad(ServiceError),
+    /// The request's warm-up could not be compiled against the file's
+    /// schema: a fault of the request, not of the file.
+    Request(ServiceError),
 }
 
 /// Opens and warms the hot file `path` of `split`.
@@ -257,7 +266,8 @@ async fn open_hot(
     }
     let index = open_local(path, split).await.map_err(HotFileError::Bad)?;
     let searcher = searcher_of(&index).map_err(HotFileError::Bad)?;
-    warm(&searcher, split, warmups)
+    let info = warmups(searcher.schema()).map_err(HotFileError::Request)?;
+    warm_with(&searcher, split, &info)
         .await
         .map_err(HotFileError::Bad)?;
     Ok(searcher)
@@ -270,7 +280,16 @@ async fn warm(
     warmups: &Warmups<'_>,
 ) -> Result<(), ServiceError> {
     let info = warmups(searcher.schema())?;
-    operon_quickwit::search::warmup(searcher, &info)
+    warm_with(searcher, split, &info).await
+}
+
+/// Warms `searcher` with `info`.
+async fn warm_with(
+    searcher: &Searcher,
+    split: &SplitRef,
+    info: &WarmupInfo,
+) -> Result<(), ServiceError> {
+    operon_quickwit::search::warmup(searcher, info)
         .await
         .map(|_| ())
         .map_err(|err| ServiceError::Unavailable(format!("warming split {}: {err:#}", split.ulid)))
