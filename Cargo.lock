@@ -5674,6 +5674,7 @@ dependencies = [
  "operon-log",
  "operon-meta",
  "operon-meta-conformance",
+ "operon-query",
  "operon-store",
  "operon-worker",
  "rand 0.9.5",

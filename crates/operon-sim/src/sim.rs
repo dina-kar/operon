@@ -18,8 +18,8 @@ use operon_collection::{
     VectorSpec, WriteError, fold_stream, live_manifest, split_path, verify_collection,
 };
 use operon_common::meta::{
-    ApplyError, Consistency, MetaError, MetaStore, PointerCas, Retention, TargetRef, Tracked,
-    WalChunk, WalClass, WalCommit,
+    ApplyError, Collection, Consistency, MetaError, MetaStore, PointerCas, Retention, TargetRef,
+    Tracked, WalChunk, WalClass, WalCommit,
 };
 use operon_common::{CollectionId, NamespaceId, StreamId};
 use operon_link::{
@@ -33,6 +33,7 @@ use operon_log::{
 use operon_meta::{
     MetaClient, MetaClientConfig, MetaConfig, MetaNode, MetaState, Router, SystemClock,
 };
+use operon_query::{BacklogMonitor, BackpressureConfig, Override, ServiceError};
 use operon_store::{FaultRates, FaultyStore, Store};
 use operon_worker::{Worker, WorkerConfig, WorkerHandle};
 use rand::{Rng, SeedableRng};
@@ -160,6 +161,9 @@ pub struct SimStats {
     pub merges: u64,
     /// Lance compactions among them.
     pub compactions: u64,
+    /// Doc writes refused over the unapplied-data budget (plan M1.3 Task
+    /// 15): not acknowledged, nothing written.
+    pub throttled_writes: u64,
 }
 
 /// The result of one run.
@@ -1031,13 +1035,31 @@ async fn raw_doc_append(
     }
 }
 
+/// The simulation's write budget (plan M1.3 Task 15): 50 unapplied records.
+fn backpressure_config() -> BackpressureConfig {
+    BackpressureConfig {
+        max_unapplied_records: 50,
+        ..BackpressureConfig::default()
+    }
+}
+
+/// A client's doc write path: admission against the budget, then the
+/// `CollectionWriter`.
+#[derive(Clone)]
+struct DocWriter {
+    writer: CollectionWriter,
+    monitor: Arc<BacklogMonitor>,
+    collection: Collection,
+}
+
 /// One `CollectionWriter::write`, recorded as acked, unknown or failed.
 /// The schema-invalid ops go straight to the stream ([`raw_doc_append`]),
-/// the others through `writer`.
+/// the others are admitted against the budget, then go through `writer`;
+/// a refused write is recorded as not acknowledged (Task 15).
 #[allow(clippy::too_many_arguments)]
 async fn doc_write(
     rec: Arc<Recorder>,
-    writer: CollectionWriter,
+    writer: DocWriter,
     log: LogWriter,
     ns: NamespaceId,
     collection: CollectionId,
@@ -1062,7 +1084,25 @@ async fn doc_write(
                 .and_then(|r| r.value.map(|v| v.to_vec()))
         })
         .collect();
-    match writer.write(ns, collection, ops).await {
+    match writer
+        .monitor
+        .admit(ns, &writer.collection, Override::None)
+        .await
+    {
+        Ok(_) => {}
+        Err(ServiceError::ResourceExhausted { .. }) => {
+            lock(&rec.stats).throttled_writes += 1;
+            lock(&rec.doc_ids_failed).extend(ids);
+            return;
+        }
+        // The measurement failed (a fault burst): nothing was written.
+        Err(_) => {
+            lock(&rec.stats).doc_writes_failed += 1;
+            lock(&rec.doc_ids_failed).extend(ids);
+            return;
+        }
+    }
+    match writer.writer.write(ns, collection, ops).await {
         Ok(outcome) => {
             lock(&rec.stats).doc_writes_acked += 1;
             lock(&rec.doc_ids_acked).extend(ids);
@@ -1154,12 +1194,24 @@ async fn drive(
         .map_err(|e| e.to_string())?;
         writers.push(writer);
     }
-    let doc_writers: Vec<CollectionWriter> = cluster
-        .clients
-        .iter()
-        .enumerate()
-        .map(|(c, meta)| CollectionWriter::new(meta.clone(), writers[c % writers.len()].clone()))
-        .collect();
+    // Plan M1.3 Task 15: each client admits its doc writes against a small
+    // unapplied-data budget, as a gateway's `CollectionService` does.
+    let docs_record = cluster.clients[0]
+        .collection(Consistency::Linearizable, cluster.docs)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("the docs collection is missing")?;
+    let mut doc_writers: Vec<DocWriter> = Vec::new();
+    for (c, meta) in cluster.clients.iter().enumerate() {
+        doc_writers.push(DocWriter {
+            writer: CollectionWriter::new(meta.clone(), writers[c % writers.len()].clone()),
+            monitor: Arc::new(BacklogMonitor::new(
+                cluster.collection_context(c).await?,
+                backpressure_config(),
+            )),
+            collection: docs_record.clone(),
+        });
+    }
     let reader = cluster.reader(0).await?;
     let mut restarts = 0u64;
     let mut worker = Some(
