@@ -2,11 +2,12 @@
 //! fixed [`Placement`] contract, the [`RemoteReads`] transport M1.3
 //! implements, and their single-node defaults.
 
-use operon_collection::PrimaryKey;
+use operon_collection::{ConsistencyToken, PrimaryKey};
 use operon_common::{CollectionId, NamespaceId};
 
 use crate::error::ServiceError;
 use crate::ir::{Query, ReadConsistency, SearchRequest, SearchResponse};
+use crate::service::ScrollPage;
 use crate::types::{Projection, StoredDoc};
 
 /// Which node owns a collection's reads.
@@ -29,7 +30,9 @@ pub enum Owner {
 /// An implementation forwards `hot::current()`'s `enabled` flag and records
 /// the owner's reported `Operon-Hot-Used` kinds into `current().used`.
 /// `CollectionService` calls it inside the request's hot scope (or one with
-/// the server default when the request has none).
+/// the server default when the request has none). Get, count and scroll
+/// return the owner's read token with their result (M1.3 E55); a search
+/// carries it in its response.
 #[async_trait::async_trait]
 pub trait RemoteReads: Send + Sync + std::fmt::Debug {
     async fn search(
@@ -47,7 +50,7 @@ pub trait RemoteReads: Send + Sync + std::fmt::Debug {
         pks: Vec<PrimaryKey>,
         select: Projection,
         consistency: ReadConsistency,
-    ) -> Result<Vec<Option<StoredDoc>>, ServiceError>;
+    ) -> Result<(Vec<Option<StoredDoc>>, ConsistencyToken), ServiceError>;
 
     async fn count(
         &self,
@@ -56,7 +59,7 @@ pub trait RemoteReads: Send + Sync + std::fmt::Debug {
         name: &str,
         filter: Option<Query>,
         consistency: ReadConsistency,
-    ) -> Result<u64, ServiceError>;
+    ) -> Result<(u64, ConsistencyToken), ServiceError>;
 
     #[allow(clippy::too_many_arguments)]
     async fn scroll(
@@ -69,7 +72,7 @@ pub trait RemoteReads: Send + Sync + std::fmt::Debug {
         limit: usize,
         select: Projection,
         consistency: ReadConsistency,
-    ) -> Result<(Vec<StoredDoc>, Option<PrimaryKey>), ServiceError>;
+    ) -> Result<ScrollPage, ServiceError>;
 }
 
 /// Every collection is owned by this node.
@@ -109,7 +112,7 @@ impl RemoteReads for NoRemoteReads {
         _: Vec<PrimaryKey>,
         _: Projection,
         _: ReadConsistency,
-    ) -> Result<Vec<Option<StoredDoc>>, ServiceError> {
+    ) -> Result<(Vec<Option<StoredDoc>>, ConsistencyToken), ServiceError> {
         Err(no_transport())
     }
 
@@ -120,7 +123,7 @@ impl RemoteReads for NoRemoteReads {
         _: &str,
         _: Option<Query>,
         _: ReadConsistency,
-    ) -> Result<u64, ServiceError> {
+    ) -> Result<(u64, ConsistencyToken), ServiceError> {
         Err(no_transport())
     }
 
@@ -134,7 +137,7 @@ impl RemoteReads for NoRemoteReads {
         _: usize,
         _: Projection,
         _: ReadConsistency,
-    ) -> Result<(Vec<StoredDoc>, Option<PrimaryKey>), ServiceError> {
+    ) -> Result<ScrollPage, ServiceError> {
         Err(no_transport())
     }
 }

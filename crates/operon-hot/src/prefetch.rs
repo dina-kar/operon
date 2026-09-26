@@ -79,6 +79,18 @@ pub async fn prefetch_fragments_resuming(
     max_bytes: u64,
 ) -> Result<PrefetchPass, TierError> {
     let files = dataset_files(cache, store, lance_prefix, dataset).await?;
+    // Forget files this version no longer lists: Lance files are
+    // create-only, so no later version needs them again, and `done` would
+    // otherwise grow with every compaction.
+    let current: HashSet<&str> = files.iter().map(|(path, _)| path.as_str()).collect();
+    progress.done.retain(|path| current.contains(path.as_str()));
+    if progress
+        .partial
+        .as_ref()
+        .is_some_and(|(path, _)| !current.contains(path.as_str()))
+    {
+        progress.partial = None;
+    }
     let total = files.iter().map(|(_, size)| size).sum();
     let piece = PREFETCH_PIECE_BLOCKS
         .saturating_mul(cache.block_size())

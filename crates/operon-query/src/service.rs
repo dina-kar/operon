@@ -149,16 +149,6 @@ async fn forwarded<T>(
 /// read token of its view.
 pub type ScrollPage = ((Vec<StoredDoc>, Option<PrimaryKey>), ConsistencyToken);
 
-/// The read token of a read a remote owner served: the `RemoteReads`
-/// contract returns none for get, count and scroll, so the request's own
-/// token stands in (the token of `AtLeast` or `Pinned`, else empty).
-pub fn forwarded_token(consistency: &ReadConsistency) -> ConsistencyToken {
-    match consistency {
-        ReadConsistency::AtLeast(token) | ReadConsistency::Pinned { token, .. } => token.clone(),
-        ReadConsistency::Strong | ReadConsistency::Eventual => ConsistencyToken::default(),
-    }
-}
-
 fn collection_not_found(name: &str) -> ServiceError {
     ServiceError::NotFound {
         kind: "collection",
@@ -768,8 +758,7 @@ impl CollectionService {
 
     /// [`CollectionService::get`], with the read token of the view the
     /// documents come from (the native API's `read_token`, Task 11). A read
-    /// served by a remote owner carries the request's own token
-    /// ([`forwarded_token`]).
+    /// served by a remote owner carries the owner's token (M1.3 E55).
     pub async fn get_with_token(
         &self,
         ns: &str,
@@ -791,7 +780,7 @@ impl CollectionService {
                 consistency.clone(),
             );
             if let Some(result) = forwarded(&hot, "get", call).await {
-                return result.map(|docs| (docs, forwarded_token(&consistency)));
+                return result;
             }
         }
         self.get_in(ns_id, &collection, pks, select, &consistency, &hot)
@@ -807,12 +796,26 @@ impl CollectionService {
         select: &Projection,
         consistency: ReadConsistency,
     ) -> Result<Vec<Option<StoredDoc>>, ServiceError> {
+        self.get_local_with_token(ns, name, pks, select, consistency)
+            .await
+            .map(|(docs, _)| docs)
+    }
+
+    /// [`CollectionService::get_local`], with the read token of its view
+    /// (what a forwarded get answers, M1.3 E55).
+    pub async fn get_local_with_token(
+        &self,
+        ns: &str,
+        name: &str,
+        pks: &[PrimaryKey],
+        select: &Projection,
+        consistency: ReadConsistency,
+    ) -> Result<(Vec<Option<StoredDoc>>, ConsistencyToken), ServiceError> {
         let hot = self.request_hot();
         self.check_get(pks)?;
         let (ns_id, collection) = self.resolve(ns, name).await?;
         self.get_in(ns_id, &collection, pks, select, &consistency, &hot)
             .await
-            .map(|(docs, _)| docs)
     }
 
     pub(crate) async fn get_in(
@@ -865,7 +868,7 @@ impl CollectionService {
                 consistency.clone(),
             );
             if let Some(result) = forwarded(&hot, "count", call).await {
-                return result.map(|count| (count, forwarded_token(&consistency)));
+                return result;
             }
         }
         self.count_in(ns_id, &collection, filter, &consistency, &hot)
@@ -880,11 +883,23 @@ impl CollectionService {
         filter: Option<Query>,
         consistency: ReadConsistency,
     ) -> Result<u64, ServiceError> {
+        self.count_local_with_token(ns, name, filter, consistency)
+            .await
+            .map(|(count, _)| count)
+    }
+
+    /// [`CollectionService::count_local`], with the read token of its view.
+    pub async fn count_local_with_token(
+        &self,
+        ns: &str,
+        name: &str,
+        filter: Option<Query>,
+        consistency: ReadConsistency,
+    ) -> Result<(u64, ConsistencyToken), ServiceError> {
         let hot = self.request_hot();
         let (ns_id, collection) = self.resolve(ns, name).await?;
         self.count_in(ns_id, &collection, filter, &consistency, &hot)
             .await
-            .map(|(count, _)| count)
     }
 
     async fn count_in(
@@ -951,7 +966,7 @@ impl CollectionService {
                 consistency.clone(),
             );
             if let Some(result) = forwarded(&hot, "scroll", call).await {
-                return result.map(|page| (page, forwarded_token(&consistency)));
+                return result;
             }
         }
         let scroll = Scroll {
@@ -976,6 +991,23 @@ impl CollectionService {
         select: &Projection,
         consistency: ReadConsistency,
     ) -> Result<(Vec<StoredDoc>, Option<PrimaryKey>), ServiceError> {
+        self.scroll_local_with_token(ns, name, filter, after, limit, select, consistency)
+            .await
+            .map(|(page, _)| page)
+    }
+
+    /// [`CollectionService::scroll_local`], with the read token of its view.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn scroll_local_with_token(
+        &self,
+        ns: &str,
+        name: &str,
+        filter: Option<Query>,
+        after: Option<PrimaryKey>,
+        limit: usize,
+        select: &Projection,
+        consistency: ReadConsistency,
+    ) -> Result<ScrollPage, ServiceError> {
         let hot = self.request_hot();
         self.check_scroll(limit)?;
         let (ns_id, collection) = self.resolve(ns, name).await?;
@@ -986,9 +1018,7 @@ impl CollectionService {
             select,
             consistency: &consistency,
         };
-        self.scroll_in(ns_id, &collection, scroll, &hot)
-            .await
-            .map(|(page, _)| page)
+        self.scroll_in(ns_id, &collection, scroll, &hot).await
     }
 
     async fn scroll_in(

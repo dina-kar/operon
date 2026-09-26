@@ -13,8 +13,9 @@
 //!   and Lance files read ahead into the range cache (Ruling 9);
 //! - [`budget`] and [`heat`]: what a node keeps when NVMe, RAM or open
 //!   artifacts run out, and the heat that promotes and demotes collections;
-//! - [`status`] and [`placement`]: the hot status of a collection, and the
-//!   single-node placement.
+//! - [`status`]: the hot status of a collection;
+//! - [`registry`], [`placement`] and [`remote`]: node leases, rendezvous
+//!   ownership, and reads forwarded to the owning node.
 //!
 //! This crate reaches the metastore only through
 //! [`MetaStore`](operon_common::meta::MetaStore) (D47).
@@ -29,6 +30,8 @@ pub mod heat;
 pub mod live;
 pub mod placement;
 pub mod prefetch;
+pub mod registry;
+pub mod remote;
 pub mod splits;
 pub mod status;
 pub mod tier;
@@ -55,9 +58,19 @@ pub use delta::{DeltaIndex, Extension};
 pub use error::TierError;
 pub use heat::HeatSketch;
 pub use live::{DeletedDocsCache, live_rows, live_rows_cached};
-pub use placement::AlwaysLocal;
+pub use placement::{
+    AlwaysLocal, PlacementImpl, PlacementKey, ResourceKind, SUSPECT_FOR, owners, ranking,
+    rendezvous_score,
+};
 pub use prefetch::{
     FragmentProgress, PrefetchPass, prefetch_fragments, prefetch_fragments_resuming,
+};
+pub use registry::{
+    NODE_LEASE_PREFIX, NodeDescriptor, NodeRegistry, RegistryConfig, Roles, node_lease_key,
+};
+pub use remote::{
+    ForwardCounters, ForwardStats, READ_OPS, READS_PATH, RemoteReadsConfig, RemoteReadsImpl,
+    WireError, from_wire, serve_forwarded, to_wire,
 };
 pub use splits::{PinnedSplits, SPLIT_PIECE_BYTES, download_split};
 pub use status::{

@@ -1,7 +1,10 @@
 //! One Operon process: a single-node metastore, the log, the range cache,
 //! a worker running the background tasks, the collection service, the
-//! native HTTP API and the Flight SQL listener (design §10 §1).
+//! native HTTP API and the Flight SQL listener (design §10 §1); or, with
+//! [`ServerConfig::cluster`], one node of `operon cluster` running the
+//! components of its roles (plan M1.3 Task 11).
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,25 +18,36 @@ use operon_collection::{
 };
 use operon_common::meta::MetaStore;
 use operon_hnsw::HnswEngine;
-use operon_hot::{AlwaysLocal, HotBuildConfig, HotBuildSource, HotTierConfig, HotTierImpl};
+use operon_hot::{
+    AlwaysLocal, ForwardStats, HotBuildConfig, HotBuildSource, HotTierConfig, HotTierImpl,
+    NodeDescriptor, NodeRegistry, PlacementImpl, RegistryConfig, RemoteReadsConfig,
+    RemoteReadsImpl, Roles,
+};
 use operon_link::{CounterTargetFactory, LinkApplySource, LinkConfig, LinkGcRoots, TargetRegistry};
 use operon_log::gc::{GcConfig, GcSource};
 use operon_log::{
     LogConfig, LogReader, LogWriter, RetentionConfig, RetentionSource, SegmenterConfig,
     SegmenterSource,
 };
-use operon_meta::{MetaClient, MetaClientConfig, MetaConfig, MetaNode, Router, SystemClock};
+use operon_meta::rpc::{self as meta_rpc, JoinRequest, LeaveRequest};
+use operon_meta::{
+    HttpTransport, HttpTransportConfig, MetaClient, MetaClientConfig, MetaConfig, MetaNode, Router,
+    SystemClock, Transport,
+};
 use operon_query::flight::{FlightConfig, PutTasks, serve_flight_sql_tracked};
 use operon_query::flight_ingest::StreamProducer;
+use operon_query::placement::Placement;
 use operon_query::{CollectionService, ServiceConfig};
 use operon_store::Store;
-use operon_worker::{Worker, WorkerConfig, WorkerHandle};
+use operon_worker::{TaskSource, Worker, WorkerConfig, WorkerHandle};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
-use crate::api::{self, AppState, NativeStreamProducer};
+use crate::api::internal::NodeInfo;
+use crate::api::{self, AppState, ForwardedReads, NativeStreamProducer};
+use crate::cluster::{self, ClusterInfo, LateRouter, MembershipSource};
 
 /// The meta node id of a single-process Operon.
 const NODE_ID: u64 = 1;
@@ -41,6 +55,122 @@ const NODE_ID: u64 = 1;
 const LEADER_WAIT: Duration = Duration::from_secs(30);
 /// How long shutdown lets in-flight HTTP requests (such as long-polls) finish.
 const HTTP_GRACE: Duration = Duration::from_secs(10);
+/// How long a cluster node waits for a leader after joining (rule 3.5).
+const CLUSTER_LEADER_WAIT: Duration = Duration::from_secs(30);
+/// How long a leaving learner tries to reach the leader at shutdown.
+const LEAVE_WAIT: Duration = Duration::from_secs(10);
+
+/// One node of `operon cluster` (plan M1.3 Task 11; Ruling 15).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClusterConfig {
+    pub node_id: u64,
+    pub roles: Roles,
+    /// Where other nodes reach this one (`host:port`; default `--listen`).
+    pub advertise: String,
+    /// The `meta` nodes: id → `host:port`.
+    pub peers: BTreeMap<u64, String>,
+    /// Empty when unset.
+    pub zone: String,
+    /// Owners per collection (1).
+    pub replication: usize,
+    pub registry: RegistryConfig,
+    pub transport: HttpTransportConfig,
+    /// How long the start-up join may retry (120 s).
+    pub join_deadline: Duration,
+    /// A learner whose node lease expired this long ago is removed (10 min).
+    pub learner_expiry: Duration,
+    /// How often the `meta-membership` task runs (60 s).
+    pub membership_interval: Duration,
+}
+
+impl ClusterConfig {
+    /// The defaults for node `node_id` with `roles`, reachable at
+    /// `advertise`, in a cluster whose `meta` nodes are `peers`.
+    pub fn new(
+        node_id: u64,
+        roles: Roles,
+        advertise: impl Into<String>,
+        peers: BTreeMap<u64, String>,
+    ) -> Self {
+        Self {
+            node_id,
+            roles,
+            advertise: advertise.into(),
+            peers,
+            zone: String::new(),
+            replication: 1,
+            registry: RegistryConfig::default(),
+            transport: HttpTransportConfig::default(),
+            join_deadline: Duration::from_secs(120),
+            learner_expiry: Duration::from_secs(600),
+            membership_interval: Duration::from_secs(60),
+        }
+    }
+
+    /// Rule 1.
+    pub fn validate(&self) -> Result<(), ServerError> {
+        let config = |message: String| Err(ServerError::Config(message));
+        if self.roles.is_empty() {
+            return config("--roles must name at least one role".to_string());
+        }
+        if self.peers.is_empty() {
+            return config("--peers must name at least one meta node".to_string());
+        }
+        for (id, addr) in &self.peers {
+            if !cluster::is_host_port(addr) {
+                return config(format!(
+                    "--peers: node {id}'s address {addr:?} is not host:port"
+                ));
+            }
+        }
+        if !cluster::is_host_port(&self.advertise) {
+            return config(format!("--advertise {:?} is not host:port", self.advertise));
+        }
+        if let Ok(addr) = self.advertise.parse::<SocketAddr>()
+            && addr.ip().is_unspecified()
+        {
+            return config(format!(
+                "--advertise {addr} is an unspecified address; set --advertise to an address other nodes can reach"
+            ));
+        }
+        match (self.roles.meta, self.peers.get(&self.node_id)) {
+            (true, None) => {
+                return config(format!(
+                    "node {} has the meta role but is not in --peers",
+                    self.node_id
+                ));
+            }
+            (true, Some(addr)) if *addr != self.advertise => {
+                return config(format!(
+                    "node {}'s --peers address {addr} differs from --advertise {}",
+                    self.node_id, self.advertise
+                ));
+            }
+            (false, Some(_)) => {
+                return config(format!(
+                    "node {} is in --peers but has no meta role",
+                    self.node_id
+                ));
+            }
+            _ => {}
+        }
+        if self.replication == 0 {
+            return config("--replication must be at least 1".to_string());
+        }
+        Ok(())
+    }
+
+    /// The roles the node runs: `gateway` adds `log` (the node that receives
+    /// a write appends it).
+    pub fn effective_roles(&self) -> Roles {
+        let mut roles = self.roles;
+        if roles.gateway && !roles.log {
+            tracing::info!("the gateway role adds the log role");
+            roles.log = true;
+        }
+        roles
+    }
+}
 
 /// How to run a single-process Operon.
 #[derive(Clone, Debug)]
@@ -93,6 +223,9 @@ pub struct ServerConfig {
     /// without it, no artifact is built unless this is set). Tests set
     /// `FlatEngine`.
     pub hnsw_engine: Option<Arc<dyn HnswEngine>>,
+    /// `None`: `dev` or `standalone` (one node, every role). `Some`: one
+    /// node of `operon cluster` (plan M1.3 Task 11).
+    pub cluster: Option<ClusterConfig>,
 }
 
 impl ServerConfig {
@@ -121,6 +254,7 @@ impl ServerConfig {
             query: ServiceConfig::default(),
             flight_sql: None,
             flight: FlightConfig::default(),
+            cluster: None,
         }
     }
 
@@ -137,6 +271,9 @@ impl ServerConfig {
     /// its new objects strictly within it (M0.4 ruling E7, re-review m1;
     /// plan M1.1 Ruling 22).
     pub fn validate(&self) -> Result<(), ServerError> {
+        if let Some(cluster) = &self.cluster {
+            cluster.validate()?;
+        }
         self.flight.validate().map_err(ServerError::Config)?;
         self.gc
             .check_deadlines(&[
@@ -192,11 +329,52 @@ pub struct Server {
     collection_context: CollectionContext,
     collection_factory: Arc<CollectionTargetFactory>,
     collections: Arc<CollectionService>,
-    worker: WorkerHandle,
-    /// The hot tier, unless `--hot off`.
+    /// `None` on a cluster node without the `worker` role.
+    worker: Option<WorkerHandle>,
+    /// The hot tier, unless `--hot off` (or no `query` role).
     hot: Option<HotTierImpl>,
     http: JoinHandle<()>,
     stop_http: oneshot::Sender<()>,
+    flight: Option<Flight>,
+    /// Cluster mode only.
+    cluster: Option<ClusterRuntime>,
+}
+
+/// What a cluster node keeps for its shutdown.
+#[derive(Debug)]
+struct ClusterRuntime {
+    node_id: u64,
+    roles: Roles,
+    registry: Arc<NodeRegistry>,
+    transport: HttpTransport,
+    seeds: Vec<String>,
+    late: LateRouter,
+}
+
+/// How [`Server::assemble`] wires a node: single-node modes pass every role,
+/// `AlwaysLocal` and no extras.
+struct NodeSetup {
+    node_id: u64,
+    roles: Roles,
+    meta_store: Arc<dyn MetaStore>,
+    placement: Arc<dyn Placement>,
+    /// The routed service's placement and transport (cluster mode).
+    routing: Option<(Arc<PlacementImpl>, Arc<RemoteReadsImpl>)>,
+    forward_stats: Arc<ForwardStats>,
+    extra_sources: Vec<Arc<dyn TaskSource>>,
+    node_info: Option<Arc<dyn NodeInfo>>,
+}
+
+/// Everything [`Server::assemble`] started, and the node's router.
+struct Assembled {
+    writer: LogWriter,
+    cache: RangeCache,
+    collection_context: CollectionContext,
+    collection_factory: Arc<CollectionTargetFactory>,
+    collections: Arc<CollectionService>,
+    worker: Option<WorkerHandle>,
+    hot: Option<HotTierImpl>,
+    app: axum::Router,
     flight: Option<Flight>,
 }
 
@@ -313,7 +491,9 @@ fn bucket_url(config: &ServerConfig) -> Result<String, ServerError> {
 
 impl Server {
     /// Opens (or creates) the data directory, starts the metastore, the log
-    /// and its background loops, and serves the HTTP API.
+    /// and its background loops, and serves the HTTP API; with
+    /// `config.cluster`, starts one cluster node instead (plan M1.3 Task 11
+    /// rule 3).
     ///
     /// On failure, everything already started is stopped again (the
     /// metastore releases its local database), so a retry in the same process
@@ -321,6 +501,9 @@ impl Server {
     pub async fn start(config: ServerConfig) -> Result<Self, ServerError> {
         config.validate()?;
         config.log.validate()?;
+        if config.cluster.is_some() {
+            return Self::start_cluster(config).await;
+        }
         let store = Store::from_url(&bucket_url(&config)?, Vec::<(String, String)>::new())?;
         let mut meta_config = MetaConfig::new(NODE_ID, config.data_dir.join("meta"), store.clone());
         meta_config.snapshot_every = config.snapshot_every;
@@ -336,16 +519,12 @@ impl Server {
         }
     }
 
-    /// Everything after the meta node started. Every fallible step runs
-    /// before any task is spawned, so a failure leaves only the meta node
-    /// (and the cache, closed here) to stop.
+    /// Everything after the single meta node started.
     async fn start_on(
         node: MetaNode,
         store: Store,
         mut config: ServerConfig,
     ) -> Result<Self, ServerError> {
-        // Scan plans name the Lance datasets under the bucket (Task 14 rule 8).
-        config.query.lance_base_url = Some(bucket_url(&config)?);
         // A no-op once the node is initialized, so restarts keep their state.
         node.initialize([NODE_ID]).await?;
         node.wait_for_leader(LEADER_WAIT).await?;
@@ -356,41 +535,273 @@ impl Server {
             MetaClientConfig::default(),
         );
         let meta_store: Arc<dyn MetaStore> = meta.clone().into();
-        let cache = RangeCache::new(store.clone(), config.cache.clone()).await?;
-        let bind = |addr: SocketAddr| async move {
-            let bound = async {
-                let listener = tokio::net::TcpListener::bind(addr).await?;
-                let local_addr = listener.local_addr()?;
-                Ok::<_, std::io::Error>((listener, local_addr))
-            }
-            .await;
-            bound.map_err(|source| ServerError::Listen { addr, source })
+        let (listener, local_addr) = bind(config.listen).await?;
+        let setup = NodeSetup {
+            node_id: NODE_ID,
+            roles: Roles::all(),
+            meta_store: meta_store.clone(),
+            placement: Arc::new(AlwaysLocal),
+            routing: None,
+            forward_stats: Arc::new(ForwardStats::default()),
+            extra_sources: Vec::new(),
+            node_info: None,
         };
-        let bound = async {
-            let http = bind(config.listen).await?;
-            // Flight SQL listens after the HTTP API (rule 5.3).
-            let flight = match flight_addr(&config) {
-                Some(addr) => Some(bind(addr).await?),
-                None => None,
-            };
-            Ok::<_, ServerError>((http, flight))
-        }
+        let parts = Self::assemble(&mut config, store, setup).await?;
+        let (stop_http, stopped) = oneshot::channel::<()>();
+        let app = parts.app;
+        let http = tokio::spawn(async move {
+            let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
+                let _ = stopped.await;
+            });
+            if let Err(err) = serve.await {
+                tracing::error!(%err, "HTTP server failed");
+            }
+        });
+        tracing::info!(%local_addr, "operon is serving");
+        Ok(Self {
+            local_addr,
+            node,
+            meta,
+            meta_store,
+            writer: parts.writer,
+            cache: parts.cache,
+            collection_context: parts.collection_context,
+            collection_factory: parts.collection_factory,
+            collections: parts.collections,
+            worker: parts.worker,
+            hot: parts.hot,
+            http,
+            stop_http,
+            flight: parts.flight,
+            cluster: None,
+        })
+    }
+
+    /// Rule 3: one cluster node. The metastore routes are served (with
+    /// `/health`, and `503` for everything else) as soon as `--listen` is
+    /// bound, so peers reach the replica during bootstrap.
+    async fn start_cluster(mut config: ServerConfig) -> Result<Self, ServerError> {
+        let cluster = config.cluster.clone().expect("cluster mode");
+        let roles = cluster.effective_roles();
+        let node_id = cluster.node_id;
+        config.log.node_id = node_id;
+        let store = Store::from_url(&bucket_url(&config)?, Vec::<(String, String)>::new())?;
+        let (listener, local_addr) = bind(config.listen).await?;
+        let transport = HttpTransport::new(cluster.transport)?;
+        let mut meta_config = MetaConfig::new(node_id, config.data_dir.join("meta"), store.clone());
+        meta_config.snapshot_every = config.snapshot_every;
+        // A learner may start empty over existing snapshots (Task 9 rule 7).
+        meta_config.allow_fresh_start_with_existing_snapshots = !roles.meta;
+        let node = MetaNode::start_with(meta_config, Transport::Http(transport.clone())).await?;
+        let late = LateRouter::default();
+        let early = {
+            let late = late.clone();
+            meta_rpc::router(node.clone())
+                .route(
+                    "/health",
+                    axum::routing::get(|| async { http::StatusCode::OK }),
+                )
+                .fallback(move |request: axum::extract::Request| late.clone().handle(request))
+        };
+        let (stop_http, stopped) = oneshot::channel::<()>();
+        let http = tokio::spawn(async move {
+            let serve = axum::serve(listener, early).with_graceful_shutdown(async move {
+                let _ = stopped.await;
+            });
+            if let Err(err) = serve.await {
+                tracing::error!(%err, "HTTP server failed");
+            }
+        });
+        let started = Self::start_cluster_on(
+            &mut config,
+            &cluster,
+            roles,
+            node.clone(),
+            store,
+            transport.clone(),
+            late.clone(),
+        )
         .await;
-        let ((listener, local_addr), flight_listener) = match bound {
-            Ok(bound) => bound,
+        match started {
+            Ok((meta, meta_store, registry, parts)) => {
+                tracing::info!(%local_addr, node_id, %roles, "operon cluster node is serving");
+                Ok(Self {
+                    local_addr,
+                    node,
+                    meta,
+                    meta_store,
+                    writer: parts.writer,
+                    cache: parts.cache,
+                    collection_context: parts.collection_context,
+                    collection_factory: parts.collection_factory,
+                    collections: parts.collections,
+                    worker: parts.worker,
+                    hot: parts.hot,
+                    http,
+                    stop_http,
+                    flight: parts.flight,
+                    cluster: Some(ClusterRuntime {
+                        node_id,
+                        roles,
+                        registry,
+                        transport,
+                        seeds: cluster.peers.values().cloned().collect(),
+                        late,
+                    }),
+                })
+            }
             Err(err) => {
-                if let Err(err) = cache.close().await {
-                    tracing::warn!(%err, "closing the cache after a failed start");
+                if let Err(shutdown) = node.shutdown().await {
+                    tracing::warn!(%shutdown, "stopping the metastore after a failed start");
                 }
+                let _ = stop_http.send(());
+                http.abort();
+                Err(err)
+            }
+        }
+    }
+
+    /// Rule 3 steps 4–8.
+    #[allow(clippy::too_many_arguments)]
+    async fn start_cluster_on(
+        config: &mut ServerConfig,
+        cluster: &ClusterConfig,
+        roles: Roles,
+        node: MetaNode,
+        store: Store,
+        transport: HttpTransport,
+        late: LateRouter,
+    ) -> Result<(MetaClient, Arc<dyn MetaStore>, Arc<NodeRegistry>, Assembled), ServerError> {
+        let node_id = cluster.node_id;
+        let lowest = cluster.peers.keys().next().copied();
+        if roles.meta && lowest == Some(node_id) {
+            // A no-op once initialized.
+            node.initialize_with(cluster.peers.clone()).await?;
+        }
+        let seeds: Vec<String> = cluster.peers.values().cloned().collect();
+        let join_changed = meta_rpc::join(
+            &transport,
+            &seeds,
+            JoinRequest {
+                node_id,
+                addr: cluster.advertise.clone(),
+            },
+            cluster.join_deadline,
+        )
+        .await?;
+        tracing::info!(node_id, changed = join_changed, "joined the metastore");
+        node.wait_for_leader(CLUSTER_LEADER_WAIT).await?;
+        let (meta, meta_store) = cluster::metastore(&node, &transport);
+        let addr = resolve(&cluster.advertise).await?;
+        let registry = NodeRegistry::register(
+            meta_store.clone(),
+            NodeDescriptor {
+                node_id,
+                incarnation: Ulid::generate(),
+                addr,
+                roles,
+                zone: cluster.zone.clone(),
+            },
+            cluster.registry,
+        )
+        .await?;
+        let placement = Arc::new(PlacementImpl::new(registry.clone(), cluster.replication));
+        let forward_stats = Arc::new(ForwardStats::default());
+        let remote = match RemoteReadsImpl::new(
+            placement.clone(),
+            forward_stats.clone(),
+            RemoteReadsConfig::default(),
+        ) {
+            Ok(remote) => Arc::new(remote),
+            Err(err) => {
+                registry.deregister().await;
+                return Err(err.into());
+            }
+        };
+        let mut extra_sources: Vec<Arc<dyn TaskSource>> = Vec::new();
+        if roles.worker {
+            extra_sources.push(Arc::new(MembershipSource::new(
+                node.clone(),
+                transport.clone(),
+                seeds,
+                cluster.learner_expiry,
+                cluster.membership_interval,
+            )));
+        }
+        let setup = NodeSetup {
+            node_id,
+            roles,
+            meta_store: meta_store.clone(),
+            placement: placement.clone(),
+            routing: Some((placement, remote)),
+            forward_stats,
+            extra_sources,
+            node_info: Some(Arc::new(ClusterInfo {
+                node: node.clone(),
+                join_changed,
+            })),
+        };
+        let parts = match Self::assemble(config, store, setup).await {
+            Ok(parts) => parts,
+            Err(err) => {
+                registry.deregister().await;
                 return Err(err);
             }
         };
+        late.set(parts.app.clone());
+        Ok((meta, meta_store, registry, parts))
+    }
 
-        // Validated above, so this cannot fail.
+    /// The components of a node, per its roles (Task 11 rule 2; single-node
+    /// modes run every role). Every fallible step runs before any task is
+    /// spawned, so a failure leaves only the caller's metastore to stop.
+    async fn assemble(
+        config: &mut ServerConfig,
+        store: Store,
+        setup: NodeSetup,
+    ) -> Result<Assembled, ServerError> {
+        let NodeSetup {
+            node_id,
+            roles,
+            meta_store,
+            placement,
+            routing,
+            forward_stats,
+            extra_sources,
+            node_info,
+        } = setup;
+        // Scan plans name the Lance datasets under the bucket (Task 14 rule 8).
+        config.query.lance_base_url = Some(bucket_url(config)?);
+        let cache = RangeCache::new(store.clone(), config.cache.clone()).await?;
+        // Flight SQL listens after the HTTP API (rule 5.3), on gateways only.
+        let flight_listener = match flight_addr(config).filter(|_| roles.gateway) {
+            Some(addr) => match bind(addr).await {
+                Ok(bound) => Some(bound),
+                Err(err) => {
+                    if let Err(err) = cache.close().await {
+                        tracing::warn!(%err, "closing the cache after a failed start");
+                    }
+                    return Err(err);
+                }
+            },
+            None => None,
+        };
+
+        // Validated above, so this cannot fail. A node without the `log`
+        // role still holds a writer (the service needs one), but serves no
+        // write route, so it never appends.
         let writer = LogWriter::start(meta_store.clone(), store.clone(), config.log.clone())?;
         let reader = LogReader::new(meta_store.clone(), cache.clone());
+        let stop_early = |writer: LogWriter, cache: RangeCache| async move {
+            if let Err(err) = writer.shutdown().await {
+                tracing::warn!(%err, "stopping the log writer after a failed start");
+            }
+            if let Err(err) = cache.close().await {
+                tracing::warn!(%err, "closing the cache after a failed start");
+            }
+        };
         // Unique per process incarnation, as leases require.
-        let owner = format!("node-{NODE_ID}-{}", Ulid::generate());
+        let owner = format!("node-{node_id}-{}", Ulid::generate());
         let mut worker = Worker::new(
             meta_store.clone(),
             WorkerConfig {
@@ -456,12 +867,7 @@ impl Server {
             match HotBuildSource::new(collection_context.clone(), hot_build, engine.clone()) {
                 Ok(source) => worker.add_source(Arc::new(source)),
                 Err(err) => {
-                    if let Err(err) = writer.shutdown().await {
-                        tracing::warn!(%err, "stopping the log writer after a failed start");
-                    }
-                    if let Err(err) = cache.close().await {
-                        tracing::warn!(%err, "closing the cache after a failed start");
-                    }
+                    stop_early(writer, cache).await;
                     return Err(err.into());
                 }
             }
@@ -479,30 +885,28 @@ impl Server {
                 Arc::new(PkGcRoots),
             ],
         )));
-        let hot = match config.hot.enabled {
+        for source in extra_sources {
+            worker.add_source(source);
+        }
+        let hot = match config.hot.enabled && roles.query {
             true => match HotTierImpl::start(
                 collection_context.clone(),
                 config.hot.clone(),
-                NODE_ID,
-                Arc::new(AlwaysLocal),
+                node_id,
+                placement.clone(),
                 engine,
             )
             .await
             {
                 Ok(tier) => Some(tier),
                 Err(err) => {
-                    if let Err(err) = writer.shutdown().await {
-                        tracing::warn!(%err, "stopping the log writer after a failed start");
-                    }
-                    if let Err(err) = cache.close().await {
-                        tracing::warn!(%err, "closing the cache after a failed start");
-                    }
+                    stop_early(writer, cache).await;
                     return Err(err.into());
                 }
             },
             false => None,
         };
-        let worker = worker.start();
+        let worker = roles.worker.then(|| worker.start());
         // Rule 5.1: after the collection context, before the router, on the
         // reader built above (the server keeps none, row 0.52).
         let collections = CollectionService::new(
@@ -514,12 +918,15 @@ impl Server {
         if let Some(tier) = &hot {
             collections.set_hot_tier(Arc::new(tier.clone()));
         }
+        if let Some((placement, remote)) = routing {
+            collections.set_placement(placement, remote);
+        }
         let internal = reqwest::Client::builder()
             .connect_timeout(api::hot::OWNER_CONNECT_TIMEOUT)
             .timeout(api::hot::OWNER_TIMEOUT)
             .build()
             .unwrap_or_default();
-        let app = api::router(AppState {
+        let state = AppState {
             meta: meta_store.clone(),
             writer: writer.clone(),
             reader,
@@ -527,21 +934,22 @@ impl Server {
             registry,
             collections: collections.clone(),
             hot: hot.clone(),
-            placement: Arc::new(AlwaysLocal),
-            node_id: NODE_ID,
+            placement,
+            node_id,
             internal,
             hot_pin_all: config.hot.pin_all,
-        });
-        let (stop_http, stopped) = oneshot::channel::<()>();
-        let http = tokio::spawn(async move {
-            let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
-                let _ = stopped.await;
-            });
-            if let Err(err) = serve.await {
-                tracing::error!(%err, "HTTP server failed");
-            }
-        });
-        tracing::info!(%local_addr, "operon is serving");
+            roles,
+            forwarded: roles.query.then(|| ForwardedReads {
+                service: collections.clone(),
+                stats: forward_stats.clone(),
+            }),
+            forward_stats,
+            node_info,
+        };
+        let app = match roles.gateway {
+            true => api::router(state),
+            false => api::internal_router(state),
+        };
         let flight = flight_listener.map(|(listener, addr)| {
             let streams: Arc<dyn StreamProducer> = Arc::new(NativeStreamProducer {
                 meta: meta_store.clone(),
@@ -555,11 +963,7 @@ impl Server {
                 config.flight.clone(),
             )
         });
-        Ok(Self {
-            local_addr,
-            node,
-            meta,
-            meta_store,
+        Ok(Assembled {
             writer,
             cache,
             collection_context,
@@ -567,8 +971,7 @@ impl Server {
             collections,
             worker,
             hot,
-            http,
-            stop_http,
+            app,
             flight,
         })
     }
@@ -619,11 +1022,41 @@ impl Server {
     /// Stops accepting requests, stops Flight SQL, stops the collection
     /// service's tails, flushes the writer (buffered appends are
     /// acknowledged), stops the worker (releasing its task leases), stops
-    /// the hot tier, closes
-    /// the collection targets' PK index handles, waits for in-flight
-    /// requests (up to 10 s), and shuts the metastore down (rule 5.4).
+    /// the hot tier, closes the collection targets' PK index handles, waits
+    /// for in-flight requests (up to 10 s), and shuts the metastore down
+    /// (rule 5.4).
+    ///
+    /// A cluster node first answers `503` on its client routes, releases
+    /// its node lease and, as a learner, leaves the membership; its
+    /// metastore routes keep serving until the replica stops (Task 11
+    /// rule 4).
     pub async fn shutdown(self) -> Result<(), ServerError> {
-        let _ = self.stop_http.send(());
+        let mut stop_http = Some(self.stop_http);
+        match &self.cluster {
+            Some(cluster) => {
+                cluster.late.close();
+                cluster.registry.deregister().await;
+                if !cluster.roles.meta {
+                    let left = meta_rpc::leave(
+                        &cluster.transport,
+                        &cluster.seeds,
+                        LeaveRequest {
+                            node_id: cluster.node_id,
+                        },
+                        LEAVE_WAIT,
+                    )
+                    .await;
+                    if let Err(err) = left {
+                        tracing::warn!(%err, "leaving the metastore membership");
+                    }
+                }
+            }
+            None => {
+                if let Some(stop) = stop_http.take() {
+                    let _ = stop.send(());
+                }
+            }
+        }
         if let Some(flight) = self.flight {
             flight.stop().await;
         }
@@ -631,7 +1064,9 @@ impl Server {
         if let Err(err) = self.writer.shutdown().await {
             tracing::warn!(%err, "the final flush failed");
         }
-        self.worker.stop().await;
+        if let Some(worker) = self.worker {
+            worker.stop().await;
+        }
         // The tier stops after the worker and before the metastore (Task 8
         // rule 5).
         if let Some(tier) = &self.hot {
@@ -639,14 +1074,46 @@ impl Server {
         }
         self.collection_factory.close().await;
         let mut http = self.http;
-        if tokio::time::timeout(HTTP_GRACE, &mut http).await.is_err() {
+        if stop_http.is_none() && tokio::time::timeout(HTTP_GRACE, &mut http).await.is_err() {
             tracing::warn!("in-flight requests did not finish; aborting them");
             http.abort();
         }
         if let Err(err) = self.cache.close().await {
             tracing::warn!(%err, "closing the cache failed");
         }
-        self.node.shutdown().await?;
+        let stopped = self.node.shutdown().await;
+        // A cluster node serves its metastore routes until the replica stops.
+        if let Some(stop) = stop_http.take() {
+            let _ = stop.send(());
+            if tokio::time::timeout(HTTP_GRACE, &mut http).await.is_err() {
+                http.abort();
+            }
+        }
+        stopped?;
         Ok(())
     }
+}
+
+/// Binds `addr`.
+async fn bind(addr: SocketAddr) -> Result<(tokio::net::TcpListener, SocketAddr), ServerError> {
+    let bound = async {
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let local_addr = listener.local_addr()?;
+        Ok::<_, std::io::Error>((listener, local_addr))
+    }
+    .await;
+    bound.map_err(|source| ServerError::Listen { addr, source })
+}
+
+/// `--advertise` as a socket address (E49): an `ip:port` as is, a host name
+/// resolved once (its first address).
+async fn resolve(advertise: &str) -> Result<SocketAddr, ServerError> {
+    if let Ok(addr) = advertise.parse() {
+        return Ok(addr);
+    }
+    tokio::net::lookup_host(advertise)
+        .await
+        .ok()
+        .and_then(|mut addrs| addrs.next())
+        .ok_or_else(|| ServerError::Config(format!("--advertise {advertise:?} does not resolve")))
 }

@@ -414,3 +414,43 @@ async fn prefetch_stops_at_max_bytes_and_resumes() {
     tier.shutdown().await;
     f.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn prefetch_progress_forgets_files_the_version_no_longer_lists() {
+    let f = Fixture::start_cached().await;
+    f.commit(docs(0..200)).await;
+    // Each delete replaces the fragment's deletion file.
+    f.commit(vec![DocOp::Delete(PrimaryKey::U64(7))]).await;
+    let old = f.snapshot().await.dataset().expect("a dataset").clone();
+    f.commit(vec![DocOp::Delete(PrimaryKey::U64(8))]).await;
+    let new = f.snapshot().await.dataset().expect("a dataset").clone();
+    let prefix = lance_prefix(f.ns, f.cid);
+    let mut progress = FragmentProgress::default();
+    for dataset in [&old, &new] {
+        let pass = prefetch_fragments_resuming(
+            &f.ctx.cache,
+            &f.store,
+            &prefix,
+            dataset,
+            &mut progress,
+            u64::MAX,
+        )
+        .await
+        .expect("prefetch");
+        assert!(pass.complete());
+    }
+    // The old version's deletion file was forgotten, so it is read again.
+    let again = prefetch_fragments_resuming(
+        &f.ctx.cache,
+        &f.store,
+        &prefix,
+        &old,
+        &mut progress,
+        u64::MAX,
+    )
+    .await
+    .expect("prefetch");
+    assert!(again.read > 0, "{again:?}");
+    assert!(again.read < again.total, "{again:?}");
+    f.shutdown().await;
+}
