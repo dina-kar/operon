@@ -32,7 +32,7 @@ The consequences:
 
 A single Rust engine that serves **hybrid retrieval** — dense and sparse vectors, BM25 full text, filters and graph expansion, fused in one DataFusion plan — from **open formats on object storage**, with **five first-class objects**: *streams, tables, collections, graphs, links*.
 
-Operon takes over the role each system plays in an AI retrieval stack, not its wire protocol. It speaks four protocols (D42): its **native REST/gRPC API**, **Arrow Flight SQL**, the **Qdrant** REST + gRPC API and a **targeted Elasticsearch subset**. It does not emulate Kafka, Neo4j or ClickHouse.
+Operon takes over the role each system plays in an AI retrieval stack, not its wire protocol. It speaks four protocols (D42): its **native REST/gRPC API**, **Arrow Flight SQL**, the **Qdrant** REST + gRPC API and a **targeted Elasticsearch subset**. It does not emulate Neo4j or ClickHouse. OTLP logs ingest joins them in v1.0 (D73), and a Kafka wire-protocol gateway in M5 (D74).
 
 | Role in the stack (today) | Operon object | Durable format | Surface | Milestone |
 |---|---|---|---|---|
@@ -40,7 +40,7 @@ Operon takes over the role each system plays in an AI retrieval stack, not its w
 | Keyword / hybrid search (Elasticsearch) | Collection (text) | Tantivy splits | ES subset: document APIs, `_bulk`, `_search` with the core Query DSL, `knn`, hybrid + RRF (D48) | M1 |
 | Graph expansion for GraphRAG (Neo4j) | Graph, mapped over collections and tables | CSR/CSC sidecars | `expand` stage in the native hybrid search API; `graph_expand` / `graph_neighbors` SQL table functions; Operon-native graph-store adapters for LightRAG and the LlamaIndex property graph (D44) | M3 |
 | Analytics, evals, dashboards (ClickHouse) | Table | **Apache Iceberg** (via Lakekeeper) | Flight SQL and the native API; DuckDB, Trino, Spark or ClickHouse through the Iceberg REST catalog (D45) | M4 |
-| Event ingest, agent traces (Kafka) | Stream | Operon log segments on S3 | Flight `DoPut` bulk ingest (D49); native streaming API over HTTP and gRPC (idempotent produce, streaming subscribe, named consumers; D72); OTLP logs ingest (D73); Flight `DoGet` replay (D43) | M1 (`DoPut` ingest), M2 (stream API, OTLP logs), M5 (replay) |
+| Event ingest, agent traces (Kafka) | Stream | Operon log segments on S3 | Flight `DoPut` bulk ingest (D49); native streaming API over HTTP and gRPC (idempotent produce, streaming subscribe, named consumers; D72); OTLP logs ingest (D73); Flight `DoGet` replay (D43); the Kafka wire protocol (D74) | M1 (`DoPut` ingest), M2 (stream API, OTLP logs), M5 (replay, Kafka) |
 | Connectors/CDC glue | Link, changelog stream | — | Declarative DDL; changelogs read through the native streaming API | M0 (links), M5 (changelogs) |
 | Temporal / queue + cron for agent runs | Durable promises (a service, §14) | One document per workflow origin on S3 | **Resonate protocol** (TS, Python, Rust, Go, Java SDKs) | M3 |
 
@@ -97,10 +97,10 @@ Primary buyer: platform teams at companies running AI apps at scale who are payi
 ## 7. What Operon is *not* (non-goals)
 
 - **Not an OLTP database.** No multi-statement interactive transactions with millisecond commits over mutable rows. Keep a Postgres for application state; stream its CDC into Operon.
-- **Not a Kafka, Neo4j or ClickHouse protocol emulator.** No Kafka wire protocol (deferred past v1.0, D43), no Bolt or Cypher (D44), no ClickHouse HTTP interface, dialect or MergeTree DDL (D45). Streams are reached through the native streaming API and Flight, graphs through native expansion, analytics through Iceberg and Flight SQL.
+- **Not a Neo4j or ClickHouse protocol emulator.** No Bolt or Cypher (D44), no ClickHouse HTTP interface, dialect or MergeTree DDL (D45). Graphs are reached through native expansion, analytics through Iceberg and Flight SQL. Streams are reached through the native streaming API and Flight, and from M5 through the Kafka wire protocol, without Kafka transactions (D74).
 - **Not a full Elasticsearch or Qdrant clone.** Compatibility is scoped by external conformance suites (client libraries, framework integrations; D13), not by feature parity. The Elasticsearch subset is what the LangChain and LlamaIndex ES suites and BEIR send (D48). No Kibana, Painless or full Query DSL.
 - **Not a general-purpose graph database.** 1–2 hop expansion, shortest path and graph algorithms as table functions, planned with the retrieval query; no graph query language and no deep recursive traversal.
-- **Not a stream processor.** Stateless transforms and mergeable aggregates in links, yes; windowed joins with checkpointed state, no. External stream processors can write their results as Iceberg tables through Lakekeeper; the RisingWave companion integration needs the Kafka surface and is deferred with it to Phase C (D43).
+- **Not a stream processor.** Stateless transforms and mergeable aggregates in links, yes; windowed joins with checkpointed state, no. External stream processors can write their results as Iceberg tables through Lakekeeper. RisingWave, the companion stream processor (D22), connects over the Kafka gateway in M5 (D74); before that it writes to Loam through its Elasticsearch, HTTP and Iceberg sinks (§02 §7.3).
 
 ## 8. Governance and business model (recommendation)
 

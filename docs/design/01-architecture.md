@@ -120,12 +120,13 @@ Every backend serves the same relaxed contract (D59): `commit_wal` is atomic per
 | Native REST | 8080 | All | Collections, the hybrid query (§05 §4), SQL; the MCP server (§15) is mounted at `/mcp`; the native streaming API (M0.3 routes, completed in M2, D72) | M1 |
 | Native gRPC | 8081 | All | The native API over gRPC, including streaming subscribe | M2 |
 | OTLP (HTTP / gRPC) | 4318 / 4317 | Streams (collections through links) | Logs only: OTLP/HTTP (protobuf, JSON) and OTLP/gRPC (D73, §02 §7.1) | M2 |
+| Kafka | 9092 | Streams | Produce, Fetch, ListOffsets, Metadata, ApiVersions; idempotent producers; consumer groups; no transactions (D74, §02 §7.2) | M5 |
 | Arrow Flight SQL | 8082 | Collections, tables, streams | SQL queries; Flight `DoPut` bulk ingest into collections and streams (D49), `DoGet` replay of streams (M5); used by the ADBC Flight SQL drivers | M1 |
 | Qdrant REST / gRPC | 6333 / 6334 | Collections | Qdrant API Phase A with sparse vectors (§06) | M1 |
 | Elasticsearch REST | 9200 | Collections | What the LangChain and LlamaIndex ES suites and BEIR send (D48, §06) | M1 |
 | Resonate HTTP | 8001 | Durable promises | The Resonate protocol (§14) | M3 |
 
-Each surface is enabled individually (§10 §2). The Kafka wire protocol is deferred past v1.0 (D43); there is no Bolt/Cypher (D44) or ClickHouse (D45) surface.
+Each surface is enabled individually (§10 §2). The Kafka wire protocol follows in M5 (D74); there is no Bolt/Cypher (D44) or ClickHouse (D45) surface.
 
 ## 4. Data flow
 

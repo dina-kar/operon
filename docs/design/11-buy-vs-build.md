@@ -1,6 +1,6 @@
 # 11 — Buy vs Build
 
-Status: **Approved** · research as of 2026-09-22 (Fluss and Resonate added 2026-09-24; revised 2026-09-25 after the architecture review: dependencies of the dropped Kafka, Bolt/Cypher and ClickHouse surfaces removed, metastore backends and ADBC added; AI data ecosystem integrations added the same day, §17, D51–D56; metastore backends, CI targets, RustFS and OpenFGA revised 2026-09-26, §18, D58–D70)
+Status: **Approved** · research as of 2026-09-22 (Fluss and Resonate added 2026-09-24; revised 2026-09-25 after the architecture review: dependencies of the dropped Kafka, Bolt/Cypher and ClickHouse surfaces removed, metastore backends and ADBC added; AI data ecosystem integrations added the same day, §17, D51–D56; metastore backends, CI targets, RustFS and OpenFGA revised 2026-09-26, §18, D58–D70; FoundationDB dropped, OTLP and Kafka dependencies added the same day, D71–D74)
 
 Rule: **buy (embed/fork) everything that is not the differentiator; build the serving layer that closed competitors keep closed.** Only Apache-2.0 / MIT / compatible permissive dependencies. No AGPL, BSL, SSPL or ELv2 code in the engine.
 
@@ -34,6 +34,7 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | Tokenizers | lindera, jieba-rs, ICU4X | MIT/Apache | — | Analyzers | — |
 | SQL client (M2, M6) | **sqlx** (features `postgres`, `mysql`) | MIT OR Apache-2.0 | 0.9.0 | `operon-meta-postgres` (M2) and `operon-meta-tidb` over the MySQL protocol (M6) behind `MetaStore` (D58) | Lakekeeper's choice: compile-time-checked `query!` macros with offline data in CI (`SQLX_OFFLINE=true`) and `sqlx::migrate` migrations; one client for both SQL backends. Replaces the tokio-postgres option. `tikv-client` 0.4 is not used (§5) |
 | DynamoDB client (M2) | **aws-sdk-dynamodb** | Apache-2.0 | 1.128.0 | `operon-meta-dynamodb` behind `MetaStore` (D58) | Custom endpoint for floci and Alternator (`endpoint_url`); one SDK interceptor injects the fault matrix's faults (D60); the SDK reuses `ClientRequestToken` only across its own retries, so application retries set it explicitly (§18 §2.3) |
+| OTLP protobufs (M2) | **opentelemetry-proto** (features `gen-tonic`, `logs`) | Apache-2.0 | 0.33.0 | Decoding OTLP/HTTP and OTLP/gRPC logs requests (D73, §02 §7.1) | Its prost and tonic versions must match the workspace's; pinned in the M2 plan (verify) |
 | OpenFGA client (M2.x) | **openfga-client** (vakamo-labs) | Apache-2.0 (no NOTICE) | 0.6 | The `OpenFga` implementation of the `Authorizer` trait (D66, D67) | gRPC only (tonic, prost 0.14; protos vendored, no protoc); helpers `TupleModelManager`, `read_all_pages`; maintained by Vakamo, Lakekeeper's vendor; tonic/prost versions must match the workspace's (verify at M2.x) |
 
 ### 1.1 Test and client-side dependencies
@@ -51,6 +52,7 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | Floci | **floci** (`floci/floci`) | MIT | CI service: the full DynamoDB conformance suite and the nightly AWS deployment job with S3, Lambda, SQS, EventBridge Scheduler and IAM enforcement (D60) | 2.1.0, pinned ≥ 2.1.0 (a Rust-SDK checksum bug was fixed in 2.1.0); seven months old, releases twice a month: new releases are checked against real AWS before the pin moves; never throws `TransactionConflictException` or throttles; `TransactGetItems` isolation is Q22 |
 | ScyllaDB Alternator | `scylladb/scylla:6.2.3` | AGPL-3.0 | CI service only, unmodified, never linked or distributed: the DynamoDB backend's single-item conformance subset with `--alternator-write-isolation always_use_lwt` (D60) | The last AGPL release; 2025.1+ is source-available (§5). No transactions. Not a production metastore |
 | DynamoDB Local | `amazon/dynamodb-local` | Proprietary (DynamoDB Local License Agreement) | Optional CI second opinion for the DynamoDB suite | 3.3.1; pulled in CI, never redistributed |
+| Kafka clients (test, M5) | librdkafka, franz-go, the Apache Kafka Java client | BSD-2-Clause, BSD-3-Clause, Apache-2.0 | Test-only: the M5 Kafka gateway gate runs their test suites against Loam, stage by stage (D74) | Which suite runs is fixed in the M5 plan; the Java client needs a JVM in CI |
 | Postgres, TiDB | `postgres:17`; `pingcap/tidb:v8.5.x` (unistore) and `tiup playground` | PostgreSQL; Apache-2.0 | CI services for the Postgres (M2) and TiDB (M6) backends | Containers run one at a time on the build machine |
 | RustFS | `rustfs/rustfs` | Apache-2.0 | Per-PR CI target for the `Store` provider conformance suite and the S3 fault matrix (D61); also the default self-hosted store (§4) | 1.0.0 (1.0.1 once released) |
 | Toxiproxy | `ghcr.io/shopify/toxiproxy` | MIT | Nightly end-to-end soaks of each container backend (`timeout`, `reset_peer`, `latency`, `down`) | 2.12.0; driven through its REST API with `reqwest` (the Rust clients are stale) |
@@ -59,6 +61,8 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 
 | Component | Crate | License | Version | Possible role | Notes |
 |---|---|---|---|---|---|
+| Kafka protocol codec | **kafka-protocol** (tychedelia/kafka-protocol-rs) | MIT/Apache-2.0 | 0.18.0 | M5: request and response types for the Kafka gateway, generated from Kafka's message schemas (D74) | Evaluate in the M5 plan against Nisshi's codec |
+| Kafka broker reference | **Nisshi**, formerly Tansu (`nisshi-io/nisshi` @ `0822346`) | Apache-2.0 | 0.7.0-pre.2 (2026-07-31; 0.6.0 is the last stable release) | M5: a reference for the Kafka gateway, and a buy candidate for its protocol layer (`nisshi-sans-io`) | Rust Kafka-compatible broker on S3, Postgres, SQLite or memory; pre-1.0 and renamed in 2026; its storage model is its own, so only the protocol layer could be taken; decided in the M5 plan |
 | Query federation | **datafusion-federation** (from Spice) | Apache-2.0 | =0.5.5 (the last release on DataFusion 54; 0.5.6+ need 55) | M4: pushing whole sub-plans to remote SQL sources | Evaluate in the M4 plan; like every DataFusion extension it moves in lockstep (risk 21). `datafusion-table-providers` 0.13.1 (Apache-2.0, DataFusion ^54) is the companion crate if connectors are ever needed |
 
 ## 2. Fork (take code, own the fork)
@@ -76,9 +80,10 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | System | License | What we learn |
 |---|---|---|
 | turbopuffer | Closed | WAL-on-S3 + async indexing + tail merge; SPFresh ANN; FTS v2 posting blocks; namespace-affinity caching as a soft hint (about 100k namespaces per node, 250M+ namespaces seen); BYOC with a pull-based ops agent (the BYOC-local-meta model, D64) |
-| WarpStream | Proprietary | Leaderless Kafka on S3, zone-aware routing, metadata-sequenced offsets (a control plane on DynamoDB, Spanner or Cosmos DB), multi-zonal Express WAL (verify); BYOC where only file metadata crosses to the control plane (the BYOC-managed-meta model, D64) |
+| WarpStream | Proprietary | Leaderless Kafka on S3 served by stateless agents (the model of the M5 Kafka gateway, D74), zone-aware routing, metadata-sequenced offsets (a control plane on DynamoDB, Spanner or Cosmos DB), multi-zonal Express WAL (verify); BYOC where only file metadata crosses to the control plane (the BYOC-managed-meta model, D64) |
 | StreamNative Ursa | Proprietary (open-sourcing promised) | Leaderless log protocol (TLA+), WAL → Iceberg compaction |
-| AutoMQ | Apache-2.0 (Java) | S3Stream WAL/cache split, EBS multi-attach failover + fencing, S3-proxied cross-AZ produce, Table Topic |
+| AutoMQ | Apache-2.0 (Java) | S3Stream WAL/cache split, EBS multi-attach failover + fencing, S3-proxied cross-AZ produce, Table Topic; Kafka compatibility on object storage (D74) |
+| Bufstream (Buf) | Proprietary | A Kafka-compatible broker on object storage with its metadata in a separate store (etcd, Postgres or Spanner; verify) and Iceberg-native topics: a reference for the M5 Kafka gateway (D74) |
 | ClickHouse / ClickHouse Cloud | Apache-2.0 / proprietary | MergeTree granules, sparse PK index, skip indexes, projections (for the Iceberg hot tier, §04 §3); SharedMergeTree, Shared Catalog, distributed cache |
 | StarRocks (shared-data mode) | Apache-2.0 | Stateless compute over Iceberg on S3 with a two-tier (RAM + NVMe) data cache: the pattern §04 applies to Lance, Tantivy and adjacency files as well |
 | Nebula Graph | Apache-2.0 | Distributed graph database with three stateful daemons (`metad`, `graphd`, multi-Raft `storaged` over RocksDB): what a separate GraphRAG graph store costs to operate, and why §07 keeps expansion inside the query engine |
@@ -113,7 +118,7 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | Sail | Apache-2.0 (Rust) | Spark Connect compute for PySpark curation jobs: reads collections through `format("loam")` (M2) and tables through Iceberg REST (M4 gate, D55) | Python data source; Iceberg REST | DataFusion version lockstep (§5) |
 | Ray | Apache-2.0 | Distributed curation, embedding backfills and batch inference over collections (M2) | Scan plans + Lance fragments; Flight `DoPut` | Python compute cluster, run by the user |
 
-Stream-processor companions (RisingWave, Arroyo, Flink) connect over the Kafka surface, which is deferred past v1.0 together with the RisingWave integration (D43).
+Stream-processor companions (RisingWave, Arroyo, Flink) connect over the Kafka gateway in M5, which brings back the RisingWave integration (D22, D74). Before M5, RisingWave writes to Loam through its Elasticsearch, HTTP and Iceberg sinks (§02 §7.3).
 
 ### 4.1 Candidates for agent workspaces (§15, proposed)
 

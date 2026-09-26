@@ -67,6 +67,7 @@ native = { rest = "0.0.0.0:8080", grpc = "0.0.0.0:8081", flight_sql = "0.0.0.0:8
 qdrant = { rest = "0.0.0.0:6333", grpc = "0.0.0.0:6334" }
 elasticsearch = { listen = "0.0.0.0:9200" }
 otlp = { http = "0.0.0.0:4318", grpc = "0.0.0.0:4317" }   # logs only (M2, D73)
+kafka = { listen = "0.0.0.0:9092" }   # Kafka wire protocol (M5, D74)
 resonate = { listen = "0.0.0.0:8001" }   # durable execution (§14); Resonate SDK default port
 admin = { listen = "0.0.0.0:8090" }      # /metrics, /health, diagnostic dump (§5); not a data surface
 
@@ -99,6 +100,7 @@ Security ships in M2, before v1.0; its gate is that unauthenticated and cross-te
   |---|---|
   | Native REST/gRPC, MCP | `Authorization: Bearer <token>` (gRPC metadata `authorization`) |
   | OTLP (logs) | `Authorization: Bearer <token>`, set in the exporter's headers (gRPC metadata `authorization`) |
+  | Kafka (M5) | SASL over TLS carrying the API key; the mechanism is Q26 |
   | Flight SQL | Bearer token in the `authorization` header (the ADBC drivers' token option); Flight basic-auth handshake returning a bearer token |
   | Qdrant | `api-key` header (REST and gRPC), as the Qdrant clients send |
   | Elasticsearch | `Authorization: ApiKey <key>` or basic auth, as the ES clients send |
