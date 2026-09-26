@@ -1,6 +1,6 @@
 # 01 — Architecture: Data Model and System Shape
 
-Status: **Approved** · 2026-09-22 (including amendments: Tantivy for text, Lance + hot HNSW for vectors, hot tier for Iceberg) · revised 2026-09-25 (architecture review: protocol surfaces D42–D45, `MetaStore` trait D47)
+Status: **Approved** · 2026-09-22 (including amendments: Tantivy for text, Lance + hot HNSW for vectors, hot tier for Iceberg) · revised 2026-09-25 (architecture review: protocol surfaces D42–D45, `MetaStore` trait D47) · amended 2026-09-26 (turbopuffer gap analysis: write backpressure, filter and conditional writes, branches, sharding, customer-managed keys; D86–D96)
 
 ---
 
@@ -133,7 +133,7 @@ Each surface is enabled individually (§10 §2). The Kafka wire protocol follows
 ## 4. Data flow
 
 ### 4.1 Write (any protocol)
-1. Gateway authenticates and translates the request into a logical write against a stream (explicit or implicit).
+1. Gateway authenticates and translates the request into a logical write against a stream (explicit or implicit). A collection write is admitted only while the collection's unapplied backlog (records past `applied` and their bytes) is under its budget; otherwise it is refused with HTTP 429 or gRPC `RESOURCE_EXHAUSTED` and `Retry-After` (D86).
 2. A `log` node appends to the WAL per the stream's class and obtains dense offsets from meta (or from its journal for `quorum`).
 3. The client is acknowledged with a **consistency token** `{(stream, partition, offset)…}`.
 4. Workers asynchronously apply links: build Lance fragments + Tantivy splits, append Iceberg data files, update adjacency — each commit atomically records its applied offset.
@@ -154,6 +154,10 @@ Each surface is enabled individually (§10 §2). The Kafka wire protocol follows
 | External Iceberg readers | See Iceberg snapshots at commit cadence (default 10–60 s); no tail |
 | Durable promises and tasks (§14) | Linearizable per workflow origin; independent across origins; searches are surveys |
 | Changelog streams | Per key, change order = source commit order; exactly-once via fenced appends (§02 §8.1) |
+| Filter writes (delete or patch by filter) | The filter is evaluated at one pin; each batch of 1 000 keys is atomic, the call is not. In M1 a key changed after the pin is still written; from M2 the filter is re-checked at apply (Read Committed) (D87, D89) |
+| Conditional writes (M2) | Decided at apply in partition offset order, by the same function in link apply and the tail; serializable per key (D89) |
+| Branches (M2) | A point-in-time copy of a retained manifest; isolated from the source after creation (D90) |
+| Sharded collections (M2.x) | A write is atomic across shards; strong and token reads see one token on every shard; `eventual` may see shards at different points (D95) |
 | Not provided | Multi-object serializable transactions; interactive OLTP transactions |
 
 **Consistency tokens are a hard guarantee, not a required input** (D76). A token means the same on openraft, Postgres, DynamoDB and TiDB under the relaxed contract (D59), during namespace moves and under stale routing: offsets come from the metastore, per-partition order is kept, and any serving node merges the tail up to the token (§18 §3.5). Clients may omit tokens. Default single-object reads are strong, and `eventual` skips the tail. Tokens are needed only for reads through derived objects: tables, graphs, or another collection fed by a link.
@@ -163,8 +167,9 @@ Each surface is enabled individually (§10 §2). The Kafka wire protocol follows
 ```
 s3://<bucket>/<cluster_prefix>/
   meta/snapshots/<node_id>/<raft_term>-<index>.snap # metastore snapshots, one set per meta node (D17; openraft backend)
-  wal/<class>/<node_id>/<ulid>.wal                  # standard/express WAL objects: multi-partition, multi-namespace (D25)
+  wal/<class>/<node_id>/<ulid>.wal                  # standard/express WAL objects: multi-partition, multi-namespace (D25); CMEK namespaces' chunks are envelope-encrypted (M2, D96)
   ns/<namespace_id>/
+    keys/<ulid>.key                                  # a CMEK namespace's wrapped key-encryption keys (M2, D96)
     streams/<stream_id>/<partition>/<base_offset:020>-<ulid>.seg
     collections/<collection_id>/
       lance/…                                        # Lance dataset (data/, _deletions/, _transactions/, _indices/, _versions/ incl. d<id>.manifest detached versions)
@@ -174,6 +179,7 @@ s3://<bucket>/<cluster_prefix>/
       pkdelta/<version:020>-<ulid>.pkd               # the keys one commit changed, for PK-index repair (OPPD)
       deadletters/<version:020>-<ulid>.dlq           # records one commit dead-lettered (OPDL)
       hot/hnsw/<column>/<source_version:020>-<ulid>/… # optional derived hot-tier artifacts (HNSW, M1.3)
+      shards/<shard>/…                               # a sharded collection (M2.x, D95): each shard's lance/, text/, manifests/, pkdelta/, deadletters/ and hot/
     graphs/<graph_id>/
       idmap/…                                        # SlateDB instance: external key → dense id
       adj/<source_ref>/<segment_ulid>.{csr,csc}
