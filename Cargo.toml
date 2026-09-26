@@ -23,12 +23,25 @@ bytes = "1"
 bytesize = "2.4"
 clap = { version = "4", features = ["derive"] }
 crc32c = "0.6"
-datafusion = "54.1"
+# Lance's feature set (no parquet or compression): adding operon-query does
+# not rebuild DataFusion for the workspace.
+datafusion = { version = "54.1", default-features = false, features = [
+    "crypto_expressions",
+    "datetime_expressions",
+    "encoding_expressions",
+    "nested_expressions",
+    "regex_expressions",
+    "sql",
+    "string_expressions",
+    "unicode_expressions",
+] }
 fail = "0.5"
 fnv = "1"
 foyer = "0.22"
 futures = "0.3"
 hex = "0.4"
+http = "1"
+http-body = "1"
 humantime = "2"
 indexmap = { version = "2", features = ["serde"] }
 itertools = "0.14"
@@ -71,6 +84,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", default-features = false }
 tonic = "0.14"
 tonic-prost-build = "0.14"
+tower = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ulid = "3"
@@ -84,7 +98,9 @@ operon-common = { path = "crates/operon-common", version = "0.0.1" }
 operon-link = { path = "crates/operon-link", version = "0.0.1" }
 operon-log = { path = "crates/operon-log", version = "0.0.1" }
 operon-meta = { path = "crates/operon-meta", version = "0.0.1" }
+operon-meta-conformance = { path = "crates/operon-meta-conformance", version = "0.0.1" }
 operon-pk = { path = "crates/operon-pk", version = "0.0.1" }
+operon-query = { path = "crates/operon-query", version = "0.0.1" }
 operon-quickwit = { path = "crates/operon-quickwit", version = "0.0.1" }
 operon-store = { path = "crates/operon-store", version = "0.0.1" }
 operon-text = { path = "crates/operon-text", version = "0.0.1" }

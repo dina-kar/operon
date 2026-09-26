@@ -1,6 +1,6 @@
 # 06 — Search & Vector (Elasticsearch + Qdrant Pillars)
 
-Status: **Approved** · 2026-09-22 · revised 2026-09-25 (Elasticsearch Phase A trimmed to the framework suites, D48)
+Status: **Approved** · 2026-09-22 · revised 2026-09-25 (Elasticsearch Phase A trimmed to the framework suites, D48) · amended 2026-09-26 (M1.2 as built)
 
 Collections replace both Elasticsearch indexes and Qdrant collections. Durable tier: **Lance** (documents, vectors, scalar + IVF indexes) + **Tantivy splits** (inverted index, fast fields). Hot tier: **Qdrant-derived HNSW**, pinned splits, in-memory tail indexes (§04).
 
@@ -41,6 +41,7 @@ Dynamic mapping follows ES defaults for unknown fields (string → text + keywor
 ## 3. Read path and ranking
 
 - **BM25 / boolean / phrase / fuzzy:** `TantivySearchExec` over the manifest's splits + tail index, block-max WAND top-k per split, global merge.
+- **BM25 statistics are global and live-only** (M1.2 Ruling 2): over every split of the manifest plus the tail, `total_num_docs` counts live, unshadowed rows, `doc_freq` counts postings minus deleted and shadowed docs, and `total_num_tokens` sums the midpoint of each live doc's fieldnorm bucket. A document's score therefore does not depend on where its history lives (Lucene counts deleted docs until a merge). WAND prunes with a small slack, and every candidate is rescored with a canonical form of the query whose Boolean nodes each add two scores, so scores are bit-identical across split layouts (M1.2 plan row 15.1).
 - **ANN:** `AnnExec` (hot HNSW if present, else Lance IVF + refine) + tail brute force.
 - **Hybrid:** RRF / weighted / DBSF fusion (§05).
 - **Aggregations (ES Phase B):** Tantivy aggregation framework over fast fields (terms, histogram, date_histogram, range, stats/extended_stats, percentiles, cardinality, top_hits) — the same engine Quickwit uses for its ES-compatible aggregations.
@@ -55,6 +56,8 @@ Dynamic mapping follows ES defaults for unknown fields (string → text + keywor
 | Broad | Post-filter with over-fetch factor, retry with larger k if under-filled |
 
 Selectivity is estimated from bitmap cardinalities (Tantivy/Lance scalar indexes) at plan time.
+
+As built (M1.2, Lance IVF; the hot HNSW arrives in M1.3): *very selective* is at most `max(1 000, full_scan_threshold_kb · 1024 / (4 · dim))` allowed durable rows (Qdrant's full-scan rule), scored exactly by brute force; *moderate* is at most 10 % of the durable rows, a prefiltered Lance index search; *broad* post-filters with `k · 1.5 / selectivity` candidates, retries once with 4× more, then prefilters. Tail documents are always scored by brute force, and shadowed rows never leave the durable path.
 
 ## 5. Vector tiers
 
@@ -74,6 +77,8 @@ Selectivity is estimated from bitmap cardinalities (Tantivy/Lance scalar indexes
 Qdrant sparse vectors / ES `sparse_vector` need float-weighted inverted lists and dot-product scoring.
 
 **M1 (owner decision 2026-09-25; M1 overview A26–A30, R22):** Qdrant sparse vectors ship in M1 with a simple, exact index. Each sparse field is a Lance column (`Struct<indices: List<u32>, values: List<f32>>`, the source of truth) and two hidden fields in every Tantivy split and in the tail's RAM index: a u64 postings field with one term per index (plus a presence term) and a bytes fast field holding the vector. A query unions the postings of its indices, masks deleted, shadowed and filtered documents, reads each candidate's vector and scores it exactly (Qdrant's dot product in f32, and Qdrant's IDF modifier `ln((N − df + 0.5)/(df + 0.5) + 1)` with `N` and `df` counted over the live documents of the read snapshot). No hot artifact: pinned splits serve it, so results are identical with the hot tier on and off. qdrant-edge's sparse index was not taken: it is private and local-directory-only. ES `sparse_vector` stays out of M1 (string token keys and Lucene's reduced-precision weights make it more than a mapping).
+
+**As built (M1.2):** `SparseExec` scores every candidate exactly (M1.2 Ruling 21): the union of the query indices' postings in `_sparse.<name>`, minus deleted and shadowed docs, intersected with the filter; `Σ q'ᵢ · wᵢ` over shared indices in ascending index order with f32 accumulation (Qdrant's `score_vectors`), `q'ᵢ = qᵢ · idfᵢ` for `Idf` fields. IDF statistics are live-only, like BM25's: `N` counts the live documents with the vector and `dfᵢ` the live postings of index *i*, over the manifest's splits and the tail, or over the `idf_corpus` filter's rows when a request sets one. Results are identical hot or cold and across split layouts.
 
 **Phase B:** a **custom sparse index** stored as split-adjacent posting files (quantized f16 weights, block-max metadata) with a MAXSCORE scorer — informed by turbopuffer's FTS v2 posting-block design — replaces the M1 split fields when collections outgrow exhaustive scoring; ES `sparse_vector` follows it.
 

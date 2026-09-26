@@ -1,5 +1,5 @@
+use operon_common::meta::MetaError;
 use operon_link::LinkError;
-use operon_meta::MetaError;
 use operon_pk::PkError;
 use operon_quickwit::storage::StorageErrorKind;
 use operon_store::StoreError;

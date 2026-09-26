@@ -12,9 +12,9 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use operon_common::StreamId;
-use operon_meta::{
-    ApplyError, Command, Consistency, MetaClient, MetaError, Reply, WAL_COMMIT_WINDOW_MS, WalChunk,
-    WalClass,
+use operon_common::meta::{
+    ApplyError, Consistency, MetaError, MetaStore, WAL_COMMIT_WINDOW_MS, WalChunk, WalClass,
+    WalCommit,
 };
 use operon_store::{Store, StoreError};
 use tokio::sync::{Notify, oneshot};
@@ -43,11 +43,11 @@ pub struct LogConfig {
     /// How long the writer keeps starting new attempts to commit a WAL
     /// object before its appends fail with [`LogError::CommitUnknown`].
     /// Default 60 s, at most a third of
-    /// [`WAL_COMMIT_WINDOW_MS`] (5 min). Each attempt is a
-    /// [`MetaClient`] write, which retries on its own for up to its
-    /// `retry_deadline` plus one request timeout, so a commit is given up
-    /// after at most `commit_retry_deadline` + the client's `retry_deadline`
-    /// + one request timeout (about 75 s with the defaults).
+    /// [`WAL_COMMIT_WINDOW_MS`] (5 min). Each attempt is a metastore write,
+    /// which retries on its own inside the implementation for up to its own
+    /// retry budget, so a commit is given up after at most
+    /// `commit_retry_deadline` plus that budget (about 75 s with the
+    /// openraft implementation's defaults).
     pub commit_retry_deadline: Duration,
     /// Most records one append may carry. Default 10 000.
     pub max_batch_records: usize,
@@ -152,7 +152,7 @@ impl State {
 }
 
 struct Shared {
-    meta: MetaClient,
+    meta: Arc<dyn MetaStore>,
     store: Store,
     config: LogConfig,
     state: Mutex<State>,
@@ -241,10 +241,14 @@ impl LogWriter {
     /// Starts the writer and its flush task. Fails with
     /// [`LogError::InvalidArgument`] if the config is invalid
     /// ([`LogConfig::validate`]).
-    pub fn start(meta: MetaClient, store: Store, config: LogConfig) -> Result<Self, LogError> {
+    pub fn start(
+        meta: impl Into<Arc<dyn MetaStore>>,
+        store: Store,
+        config: LogConfig,
+    ) -> Result<Self, LogError> {
         config.validate()?;
         let shared = Arc::new(Shared {
-            meta,
+            meta: meta.into(),
             store,
             config,
             state: Mutex::new(State::default()),
@@ -322,10 +326,9 @@ impl LogWriter {
         }
         let known = shared
             .meta
-            .read(Consistency::Local, |s| {
-                s.stream(stream).map(|st| (st.class, st.partitions))
-            })
-            .await?;
+            .stream(Consistency::Local, stream)
+            .await?
+            .map(|st| (st.class, st.partitions));
         let (class, partitions) = known.ok_or(LogError::UnknownStream(stream))?;
         if let Some(&partition) = seen.iter().find(|&&p| p >= partitions) {
             return Err(LogError::UnknownPartition { stream, partition });
@@ -633,26 +636,23 @@ async fn commit(
     let mut backoff = COMMIT_BACKOFF;
     let mut outcome_unknown = false;
     loop {
-        let command = Command::CommitWal {
-            object: path.to_string(),
-            created_at_ms,
-            chunks: chunks.clone(),
-        };
-        let (result, earlier_unknown) = shared.meta.write_tracked(command).await;
-        outcome_unknown |= earlier_unknown;
+        let tracked = shared
+            .meta
+            .commit_wal(WalCommit {
+                object: path.to_string(),
+                created_at_ms,
+                chunks: chunks.clone(),
+            })
+            .await;
+        outcome_unknown |= tracked.earlier_unknown;
         let unknown = |why: String| {
             FlushFailure::Unknown(format!(
                 "committing {path}: {why}, after an attempt whose outcome is unknown; \
                  the records may be committed"
             ))
         };
-        let err = match result {
-            Ok(Reply::WalCommitted { base_offsets }) => return Ok(base_offsets),
-            Ok(other) => {
-                return Err(FlushFailure::Unknown(format!(
-                    "committing {path}: unexpected reply {other:?}"
-                )));
-            }
+        let err = match tracked.result {
+            Ok(base_offsets) => return Ok(base_offsets),
             Err(MetaError::Rejected(err)) if outcome_unknown => {
                 return Err(unknown(format!("rejected: {err}")));
             }

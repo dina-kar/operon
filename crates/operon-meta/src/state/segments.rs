@@ -4,10 +4,11 @@
 use std::ops::Range;
 
 use operon_common::StreamId;
+use operon_common::meta::{ApplyError, EntryKind, Fence, Freshness, IndexEntry};
 
 use super::{MetaState, validate_key};
-use crate::command::{ApplyError, Reply};
-use crate::types::{EntryKind, Fence, Freshness, IndexEntry, PartitionState};
+use crate::command::Reply;
+use crate::types::PartitionState;
 
 impl MetaState {
     #[allow(clippy::too_many_arguments)]
@@ -177,5 +178,10 @@ impl MetaState {
     /// their retirement, in path order.
     pub fn retired(&self) -> impl Iterator<Item = (&str, u64)> {
         self.retired.iter().map(|(path, at)| (path.as_str(), *at))
+    }
+
+    /// Whether `path` is in the retired set, without scanning it.
+    pub fn is_retired(&self, path: &str) -> bool {
+        self.retired.contains_key(path)
     }
 }

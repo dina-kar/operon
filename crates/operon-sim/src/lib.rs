@@ -26,7 +26,10 @@
 //! replay exactly. The event schedule, though, is a function of the seed
 //! alone. A failure report carries the seed and the full schedule.
 
-pub mod linearizability;
 mod sim;
+
+/// The checker, which lives in `operon-meta-conformance` so a metastore
+/// backend can use it without this crate (M1.2a Ruling 14).
+pub use operon_meta_conformance::linearizability;
 
 pub use sim::{Event, Histories, SimConfig, SimReport, SimStats, run};

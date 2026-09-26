@@ -3,10 +3,11 @@
 //! `append_many` (overview §6.2, plan M1.1 Task 6).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use operon_common::meta::{Collection, Consistency, MetaError, MetaStore};
 use operon_common::{CollectionId, NamespaceId};
 use operon_log::{LogError, LogWriter, Record};
-use operon_meta::{Collection, Consistency, MetaClient, MetaError};
 
 use crate::codec::encode;
 use crate::doc::DocOp;
@@ -20,7 +21,7 @@ pub const MAX_WRITE_OPS: usize = 10_000;
 /// Writes document ops to collections. Cheap to clone.
 #[derive(Clone, Debug)]
 pub struct CollectionWriter {
-    meta: MetaClient,
+    meta: Arc<dyn MetaStore>,
     log: LogWriter,
 }
 
@@ -80,8 +81,11 @@ pub enum WriteError {
 type Checked = Result<(u32, Record), OpError>;
 
 impl CollectionWriter {
-    pub fn new(meta: MetaClient, log: LogWriter) -> Self {
-        Self { meta, log }
+    pub fn new(meta: impl Into<Arc<dyn MetaStore>>, log: LogWriter) -> Self {
+        Self {
+            meta: meta.into(),
+            log,
+        }
     }
 
     /// Validates `ops` and appends the valid ones to the collection's
@@ -187,13 +191,9 @@ impl CollectionWriter {
         id: CollectionId,
     ) -> Result<Collection, WriteError> {
         self.meta
-            .read(consistency, |state| {
-                state
-                    .collection(id)
-                    .filter(|c| c.namespace == namespace)
-                    .cloned()
-            })
+            .collection(consistency, id)
             .await?
+            .filter(|c| c.namespace == namespace)
             .ok_or(WriteError::CollectionNotFound(id))
     }
 }

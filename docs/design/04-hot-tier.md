@@ -1,6 +1,6 @@
 # 04 — Hot Tier & Caching
 
-Status: **Approved** · 2026-09-22
+Status: **Approved** · 2026-09-22 · amended 2026-09-26 (M1.2 as built)
 
 **Principle:** every object has a **durable tier** (open format on S3, source of truth) and a **hot tier** (derived, node-local, rebuildable acceleration + an in-memory tail). The hot tier can be lost at any time without affecting correctness; it only affects latency. The same model applies uniformly to streams, collections, tables (Iceberg) and graphs.
 
@@ -25,9 +25,9 @@ The layering is the pattern StarRocks' Data Cache established for Iceberg on S3 
 | Object | Durable tier | H2 hot structure | H3 tail |
 |---|---|---|---|
 | Stream | Segments / WAL objects | Recent segments pinned in RAM/NVMe; per-partition read-ahead | Recent record batches (written-through at produce); Arrow batches for `arrow`-encoded streams, shared with the object's tail index without decoding |
-| Collection — vectors | Lance IVF index + vectors | **HNSW** (Qdrant `lib/segment`-derived: HNSW, filterable-HNSW links, quantization) on NVMe/RAM | Small in-memory HNSW / flat index over tail points |
-| Collection — text | Tantivy splits on S3 | Splits pinned on NVMe (whole files), hotcaches in RAM | In-memory Tantivy index (RAM directory) over tail docs |
-| Collection — docs | Lance fragments | Hot fragments on NVMe | Tail docs in Arrow |
+| Collection — vectors | Lance IVF index + vectors | **HNSW** (Qdrant `lib/segment`-derived: HNSW, filterable-HNSW links, quantization) on NVMe/RAM | One RAM Tantivy index plus flat vectors per collection on the query node, folded latest-by-key over the durable state (M1.2); tail vectors are scored by brute force |
+| Collection — text | Tantivy splits on S3 | Splits pinned on NVMe (whole files), hotcaches in RAM | The same RAM Tantivy index (M1.2) |
+| Collection — docs | Lance fragments | Hot fragments on NVMe | The same index's latest document per key (M1.2) |
 | **Table (Iceberg)** | Parquet + Iceberg metadata | **Hot projections** (sorted columnar parts + sparse PK index + skip indexes + aggregate projections) on NVMe | Arrow buffers of rows beyond last Iceberg commit |
 | Graph | CSR/CSC sidecars | CSR/CSC chunks resident in RAM for hot vertex ranges; hot vertex-ID map | Edge-delta overlay (adds/deletes since last sidecar build) |
 | Durable execution (§14) | Origin documents | Canonical document bytes cached per origin, bounded by count and weight, revalidated with `If-None-Match: <etag>` on every read | — (every transition is a durable write) |
@@ -88,6 +88,7 @@ For each table scan: `hot projection @ S'` if present and `S'` ≥ required snap
 2. Hot structures carry the source version they reflect; stale structures are used only with an explicit, correct delta patch or not at all.
 3. Loss of a node's tail is safe: the tail is re-derivable from the log (offsets after the applied offset).
 4. Cache corruption is detected by per-block checksums; a failed checksum evicts and refetches from S3.
+5. Exact paths (text, filters, aggregations, fetch, scroll, counts, exact vectors) are identical with the hot tier on and off; approximate ANN returns exact scores (R12). M1.2 gates this with a fake hot tier (`hot_hooks`, `determinism`), and every returned vector score comes from Operon's own kernel, never from a hot artifact (M1.2 Ruling 3).
 
 ## 7. Latency targets (design goals, from reference systems)
 

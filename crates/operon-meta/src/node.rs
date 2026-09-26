@@ -10,13 +10,15 @@ use openraft::async_runtime::WatchReceiver;
 use openraft::error::{ClientWriteError, InitializeError, LinearizableReadError, RaftError};
 use openraft::metrics::WaitError;
 use openraft::{BasicNode, Raft, ReadPolicy, SnapshotPolicy};
+use operon_common::meta::{
+    Consistency, Fence, LeaseGrant, MetaError, Retention, WalChunk, WalClass,
+};
 use operon_common::{NamespaceId, StreamId};
 use operon_store::Store;
 
 use crate::clock::{Clock, SystemClock};
 use crate::command::{Command, Reply};
 use crate::db::LocalDb;
-use crate::error::MetaError;
 use crate::log_store::{LogStore, VOTE_KEY};
 use crate::network::{MetaRaft, NetworkFactory, Router};
 use crate::raft::NodeId;
@@ -24,7 +26,6 @@ use crate::state::MetaState;
 use crate::state_machine::{
     SNAPSHOT_POINTER_KEY, SnapshotIoCloser, StateMachineStore, StateReader,
 };
-use crate::types::{Fence, LeaseGrant, Retention, WalChunk, WalClass};
 
 /// How to start a meta node.
 #[derive(Clone, Debug)]
@@ -83,17 +84,6 @@ impl MetaConfig {
             snapshot_io_budget: Duration::from_secs(60),
         }
     }
-}
-
-/// How fresh a read must be.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Consistency {
-    /// Reflects every write acknowledged before the read began. Served only by
-    /// the leader, after it confirms its leadership with a quorum.
-    Linearizable,
-    /// Whatever this node has applied so far; may be stale on a follower or on
-    /// a leader that has been cut off.
-    Local,
 }
 
 /// A node's Raft progress, for monitoring and tests. Indexes are Raft log indexes.
@@ -314,6 +304,21 @@ impl MetaNode {
         self.inner.state.watch_applied()
     }
 
+    /// Completes once this node's Raft has stopped, after a
+    /// [`MetaNode::shutdown`] or a fatal error: nothing will be applied here
+    /// any more. For the `MetaStore` change watch.
+    pub(crate) async fn stopped(&self) {
+        let mut metrics = self.inner.raft.metrics();
+        loop {
+            if metrics.borrow_watched().running_state.is_err() {
+                return;
+            }
+            if metrics.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
     /// The leader this node currently knows of.
     pub async fn current_leader(&self) -> Option<NodeId> {
         self.inner.raft.current_leader().await
@@ -368,31 +373,52 @@ impl MetaNode {
     /// attempt's effect, for example [`ApplyError::NamespaceExists`] with the
     /// id the first attempt created.
     ///
-    /// [`ApplyError::NamespaceExists`]: crate::ApplyError::NamespaceExists
+    /// [`ApplyError::NamespaceExists`]: operon_common::meta::ApplyError::NamespaceExists
     ///
     /// A leader refuses a command stamped more than
     /// [`MetaConfig::max_clock_skew`] ahead of its own clock with
     /// [`MetaError::ClockSkew`], before proposing it.
     pub async fn write(&self, command: Command) -> Result<Reply, MetaError> {
-        self.check_clock(&command)?;
+        self.write_attempt(command)
+            .await
+            .map_err(|attempt| attempt.error)
+    }
+
+    /// [`MetaNode::write`], also saying whether the node refused the command
+    /// before proposing it ([`AttemptError::refused`]).
+    ///
+    /// A node that does not believe it is the leader refuses with
+    /// [`MetaError::NotLeader`] before proposing, so that attempt definitely
+    /// did not apply. A `NotLeader` from openraft itself is not a refusal:
+    /// openraft also answers a write it already proposed this way (when this
+    /// node loses leadership, or purges the entry's log range after installing
+    /// a snapshot, before the reply), so its outcome is unknown.
+    pub(crate) async fn write_attempt(&self, command: Command) -> Result<Reply, AttemptError> {
+        let leader = self.inner.raft.metrics().borrow_watched().current_leader;
+        if leader != Some(self.inner.id) {
+            return Err(AttemptError::before_proposal(MetaError::NotLeader {
+                leader,
+            }));
+        }
+        self.check_clock(&command)
+            .map_err(AttemptError::before_proposal)?;
         let write = self.inner.raft.client_write(command);
         let result = tokio::time::timeout(self.inner.request_timeout, write)
             .await
             .map_err(|_| MetaError::Timeout)?;
         match result {
             Ok(response) => match response.data {
-                Some(reply) => Ok(reply?),
-                None => Err(unavailable("a command entry produced no reply")),
+                Some(reply) => Ok(reply.map_err(MetaError::from)?),
+                None => Err(unavailable("a command entry produced no reply").into()),
             },
-            // openraft also answers a write it already proposed this way, when
-            // this node loses leadership (or purges the entry's log range after
-            // installing a snapshot) before the reply: the outcome is unknown.
+            // Possibly after proposing (see above): the outcome is unknown.
             Err(RaftError::APIError(ClientWriteError::ForwardToLeader(forward))) => {
                 Err(MetaError::NotLeader {
                     leader: forward.leader_id,
-                })
+                }
+                .into())
             }
-            Err(e) => Err(unavailable(e)),
+            Err(e) => Err(unavailable(e).into()),
         }
     }
 
@@ -456,7 +482,7 @@ impl MetaNode {
         };
         match self.write(command).await? {
             Reply::NamespaceCreated(id) => Ok(id),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -476,7 +502,7 @@ impl MetaNode {
         };
         match self.write(command).await? {
             Reply::StreamCreated(id) => Ok(id),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -495,7 +521,7 @@ impl MetaNode {
         };
         match self.write(command).await? {
             Reply::WalCommitted { base_offsets } => Ok(base_offsets),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -513,7 +539,7 @@ impl MetaNode {
         };
         match self.write(command).await? {
             Reply::Lease(grant) => Ok(grant),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -533,7 +559,7 @@ impl MetaNode {
         };
         match self.write(command).await? {
             Reply::Lease(grant) => Ok(grant),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -545,7 +571,7 @@ impl MetaNode {
         };
         match self.write(command).await? {
             Reply::LeaseReleased => Ok(()),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -568,7 +594,7 @@ impl MetaNode {
         };
         match self.write(command).await? {
             Reply::PointerSet { version } => Ok(version),
-            other => Err(MetaError::UnexpectedReply(other)),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }
 
@@ -623,6 +649,34 @@ impl MetaNode {
             // A dropped sender also means the database is closed.
             Ok(_) => Ok(()),
             Err(_) => Err(unavailable("local database still in use after shutdown")),
+        }
+    }
+}
+
+/// A failed write attempt on one node ([`MetaNode::write_attempt`]).
+#[derive(Debug)]
+pub(crate) struct AttemptError {
+    pub(crate) error: MetaError,
+    /// The node refused the command before proposing it, so the attempt
+    /// definitely did not apply. When false, a retryable error leaves the
+    /// attempt's outcome unknown.
+    pub(crate) refused: bool,
+}
+
+impl AttemptError {
+    fn before_proposal(error: MetaError) -> Self {
+        Self {
+            error,
+            refused: true,
+        }
+    }
+}
+
+impl From<MetaError> for AttemptError {
+    fn from(error: MetaError) -> Self {
+        Self {
+            error,
+            refused: false,
         }
     }
 }

@@ -34,13 +34,12 @@ use async_trait::async_trait;
 use lance_table::format::{Fragment, RowDatasetVersionMeta, RowIdMeta};
 use lance_table::io::deletion::relative_deletion_file_path;
 use lance_table::io::manifest::read_manifest_indexes;
+use operon_common::meta::{
+    CollectionRoots, MetaStore, Pointer, collection_pk_prefix, collection_prefix,
+};
 use operon_common::{CollectionId, NamespaceId};
 use operon_log::LogError;
 use operon_log::gc::{GcKeep, GcRoots, object_time_ms};
-use operon_meta::{
-    Consistency, MetaClient, MetaState, Pointer, collection_pk_prefix, collection_pointer_key,
-    collection_prefix,
-};
 use operon_store::{ObjectInfo, Store, StoreError};
 use operon_worker::TaskError;
 use uuid::Uuid;
@@ -72,26 +71,22 @@ impl CollectionGcRoots {
     /// come from one `Linearizable` read. Nothing is carried between calls.
     async fn keep(
         &self,
-        meta: &MetaClient,
+        meta: &dyn MetaStore,
         store: &Store,
         ns: NamespaceId,
     ) -> Result<GcKeep, CollectionError> {
-        type Seen = (Vec<(CollectionId, Option<Pointer>)>, u64, Vec<String>);
         let under = format!("ns/{ns}/collections/");
-        let (collections, clock_ms, retired): Seen = meta
-            .read(Consistency::Linearizable, |s| {
-                let collections = s
-                    .collections(ns)
-                    .map(|c| (c.id, s.pointer(ns, &collection_pointer_key(c.id)).cloned()))
-                    .collect();
-                (collections, s.clock_ms(), retired_prefixes(s, &under))
-            })
-            .await?;
+        let CollectionRoots {
+            clock_ms,
+            collections,
+            retired_prefixes,
+        } = meta.collection_roots(ns, &under).await?;
         let mut keep = GcKeep {
             objects: BTreeSet::new(),
-            prefixes: retired,
+            prefixes: retired_prefixes,
         };
-        for (cid, pointer) in collections {
+        for (collection, pointer) in collections {
+            let cid = collection.id;
             let mut objects = BTreeSet::new();
             match self
                 .collection_objects(store, ns, cid, pointer, clock_ms, &mut objects)
@@ -325,16 +320,6 @@ fn is_mainline_manifest(relative: &str) -> bool {
         .is_some_and(|stem| !stem.is_empty() && stem.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// The retired prefixes (paths ending in `/`) under `under`.
-fn retired_prefixes(state: &MetaState, under: &str) -> Vec<String> {
-    state
-        .retired()
-        .map(|(path, _)| path)
-        .filter(|path| path.starts_with(under) && path.ends_with('/'))
-        .map(str::to_string)
-        .collect()
-}
-
 fn log_error(err: CollectionError) -> LogError {
     match err {
         CollectionError::Store(err) => LogError::from(err),
@@ -357,7 +342,7 @@ impl GcRoots for CollectionGcRoots {
     /// call, so GC skips the prefix this run.
     async fn reachable(
         &self,
-        meta: &MetaClient,
+        meta: &dyn MetaStore,
         store: &Store,
         namespace: NamespaceId,
         _keep_manifests: usize,
@@ -392,22 +377,19 @@ impl GcRoots for PkGcRoots {
 
     async fn reachable(
         &self,
-        meta: &MetaClient,
+        meta: &dyn MetaStore,
         _store: &Store,
         namespace: NamespaceId,
         _keep_manifests: usize,
     ) -> Result<GcKeep, LogError> {
         let under = format!("ns/{namespace}/pk/");
-        let prefixes = meta
-            .read(Consistency::Linearizable, |s| {
-                let mut kept: Vec<String> = s
-                    .collections(namespace)
-                    .map(|c| collection_pk_prefix(namespace, c.id))
-                    .collect();
-                kept.extend(retired_prefixes(s, &under));
-                kept
-            })
-            .await?;
+        let roots = meta.collection_roots(namespace, &under).await?;
+        let mut prefixes: Vec<String> = roots
+            .collections
+            .iter()
+            .map(|(c, _)| collection_pk_prefix(namespace, c.id))
+            .collect();
+        prefixes.extend(roots.retired_prefixes);
         Ok(GcKeep {
             objects: BTreeSet::new(),
             prefixes,

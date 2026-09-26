@@ -1,6 +1,6 @@
 # 09 — Links & Workers
 
-Status: **Approved** · 2026-09-22
+Status: **Approved** · 2026-09-22 · amended 2026-09-26 (M1.2 as built)
 
 **Links** are Operon's zero-ETL mechanism: declared, continuously maintained materializations from streams into tables, collections and graphs. **Workers** are the stateless pool that executes links and all other background work.
 
@@ -92,4 +92,4 @@ CREATE LINK tickets_search
 ## 7. Backpressure
 
 - If link lag exceeds `max_lag`, the source stream can be configured to **throttle producers** (produce requests are delayed, then refused with a retryable `unavailable`) or to keep accepting (log absorbs, tail grows).
-- Tail memory is bounded per object on query nodes; when exceeded, strong reads fall back to reading the log range directly from segments (slower but correct).
+- Tail memory is bounded per object on query nodes; when exceeded, strong reads fall back to a range tail read directly from the log (bounded; `Unavailable` beyond the bound) — slower but correct (M1.2).

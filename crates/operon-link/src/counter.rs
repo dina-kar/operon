@@ -11,9 +11,9 @@
 //!   commit (M0.4 review M1); garbage collection removes it;
 //! - commit: a CAS of the pointer `link/<link_id>` from `version` to the new
 //!   manifest's path, fenced by the task lease and carrying the commit's
-//!   [`Freshness`](operon_meta::Freshness): the metastore refuses it once the
-//!   commit is older than `max_commit_delay`, so it can never reference an
-//!   object garbage collection may have deleted (M0.4 review I1).
+//!   [`Freshness`](operon_common::meta::Freshness): the metastore refuses it
+//!   once the commit is older than `max_commit_delay`, so it can never
+//!   reference an object garbage collection may have deleted (M0.4 review I1).
 //!
 //! Both objects are postcard bodies in Operon's envelope (magic, format
 //! version, crc32c trailer; M0.3 global constraints).
@@ -25,9 +25,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use operon_common::NamespaceId;
-use operon_meta::{
-    ApplyError, Consistency, Fence, Freshness, Link, LinkId, MetaClient, MetaError, Pointer,
-    log_stale_object,
+use operon_common::meta::{
+    ApplyError, Consistency, Fence, Freshness, Link, LinkId, MetaError, MetaStore, Pointer,
+    PointerCas, log_stale_object,
 };
 use operon_store::{Store, StoreError};
 use serde::de::DeserializeOwned;
@@ -127,7 +127,7 @@ pub(crate) fn manifest_version(path: &str) -> Option<u64> {
 
 /// The pointer holding the current manifest path: `link/<link_id>`.
 pub(crate) fn pointer_key(link: LinkId) -> String {
-    format!("link/{link}")
+    operon_common::meta::link_pointer_key(link)
 }
 
 fn millis(duration: Duration) -> u64 {
@@ -146,7 +146,7 @@ pub struct CounterSnapshot {
 /// A table of counters maintained by a link. Sums use wrapping `i64`
 /// arithmetic, so a table's sums do not depend on how records were batched.
 pub struct CounterTable {
-    meta: MetaClient,
+    meta: Arc<dyn MetaStore>,
     store: Store,
     namespace: NamespaceId,
     link: LinkId,
@@ -169,24 +169,23 @@ impl std::fmt::Debug for CounterTable {
 impl CounterTable {
     /// The table of link `name` in `namespace`.
     pub async fn open(
-        meta: MetaClient,
+        meta: impl Into<Arc<dyn MetaStore>>,
         store: Store,
         namespace: NamespaceId,
         name: &str,
     ) -> Result<Self, LinkError> {
+        let meta = meta.into();
         let link = meta
-            .read(Consistency::Local, |s| {
-                s.link_by_name(namespace, name).cloned()
-            })
+            .link_by_name(Consistency::Local, namespace, name)
             .await?
             .ok_or_else(|| LinkError::NotFound(format!("link {namespace}/{name}")))?;
         Ok(Self::for_link(meta, store, &link))
     }
 
     /// The table of `link`.
-    pub fn for_link(meta: MetaClient, store: Store, link: &Link) -> Self {
+    pub fn for_link(meta: impl Into<Arc<dyn MetaStore>>, store: Store, link: &Link) -> Self {
         Self {
-            meta,
+            meta: meta.into(),
             store,
             namespace: link.namespace,
             link: link.id,
@@ -255,9 +254,7 @@ impl CounterTable {
         let (namespace, key) = (self.namespace, pointer_key(self.link));
         Ok(self
             .meta
-            .read(Consistency::Linearizable, |s| {
-                s.pointer(namespace, &key).cloned()
-            })
+            .pointer(Consistency::Linearizable, namespace, &key)
             .await?)
     }
 
@@ -480,15 +477,16 @@ impl LinkTarget for CounterTable {
         };
         let version = match self
             .meta
-            .cas_pointer_fresh(
-                self.namespace,
-                &key,
+            .cas_pointer(PointerCas {
+                namespace: self.namespace,
+                key,
                 expected,
-                &path,
-                Some(fence.clone()),
-                Some(fresh),
-            )
+                value: path.clone(),
+                fence: Some(fence.clone()),
+                fresh: Some(fresh),
+            })
             .await
+            .into_result()
         {
             Ok(version) => version,
             // A lost acknowledgement: the pointer names our manifest, which

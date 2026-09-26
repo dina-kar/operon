@@ -6,8 +6,8 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use operon_common::meta::{Consistency, MetaStore, collection_pointer_key};
 use operon_common::{CollectionId, NamespaceId};
-use operon_meta::{Consistency, MetaClient, collection_pointer_key};
 use operon_store::{Store, StoreError};
 
 use crate::error::CollectionError;
@@ -79,7 +79,7 @@ pub(crate) async fn load_pointed(
 
 /// The pointer `collection/<cid>` and its manifest; None before the first commit.
 pub async fn live_manifest(
-    meta: &MetaClient,
+    meta: &dyn MetaStore,
     store: &Store,
     cache: &ManifestCache,
     ns: NamespaceId,
@@ -87,9 +87,7 @@ pub async fn live_manifest(
     consistency: Consistency,
 ) -> Result<Option<(String, Arc<CollectionManifest>)>, CollectionError> {
     let key = collection_pointer_key(cid);
-    let pointer = meta
-        .read(consistency, |state| state.pointer(ns, &key).cloned())
-        .await?;
+    let pointer = meta.pointer(consistency, ns, &key).await?;
     let Some(pointer) = pointer else {
         return Ok(None);
     };

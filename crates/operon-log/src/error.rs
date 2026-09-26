@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use operon_cache::CacheError;
 use operon_common::StreamId;
-use operon_meta::MetaError;
+use operon_common::meta::MetaError;
 use operon_store::StoreError;
 
 /// Errors returned by the log.

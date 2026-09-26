@@ -1,28 +1,28 @@
 use std::ops::Range;
 
+use operon_common::meta::{
+    AliasAction, Fence, Freshness, LeaseGrant, LinkId, Retention, TargetRef, WalChunk, WalClass,
+};
 use operon_common::schema::CollectionSchema;
 use operon_common::{CollectionId, NamespaceId, StreamId};
 use serde::{Deserialize, Serialize};
 
 use std::collections::BTreeMap;
 
-use crate::types::{
-    AliasAction, Fence, Freshness, LeaseGrant, LinkId, Pointer, Retention, TargetRef, WalChunk,
-    WalClass,
-};
-
 /// A change to the metastore. Commands are replicated through the Raft log and
 /// applied in log order by [`crate::MetaState::apply`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Command {
     /// Creates a namespace. Names are unique. A retry after a lost
-    /// acknowledgement fails with [`ApplyError::NamespaceExists`], which
-    /// carries the id the first attempt created.
+    /// acknowledgement fails with
+    /// [`ApplyError::NamespaceExists`](operon_common::meta::ApplyError::NamespaceExists),
+    /// which carries the id the first attempt created.
     CreateNamespace { name: String },
     /// Creates a stream in a namespace, with its retention policy. Names are
     /// unique within the namespace. A retry after a lost acknowledgement fails
-    /// with [`ApplyError::StreamExists`], which carries the id the first
-    /// attempt created.
+    /// with
+    /// [`ApplyError::StreamExists`](operon_common::meta::ApplyError::StreamExists),
+    /// which carries the id the first attempt created.
     CreateStream {
         namespace: NamespaceId,
         name: String,
@@ -32,8 +32,9 @@ pub enum Command {
     },
     /// Declares a link from stream `source` (in `namespace`) into `target`.
     /// Names are unique within the namespace. A retry after a lost
-    /// acknowledgement fails with [`ApplyError::LinkExists`], which carries
-    /// the id the first attempt created.
+    /// acknowledgement fails with
+    /// [`ApplyError::LinkExists`](operon_common::meta::ApplyError::LinkExists),
+    /// which carries the id the first attempt created.
     CreateLink {
         namespace: NamespaceId,
         name: String,
@@ -48,13 +49,15 @@ pub enum Command {
     ///
     /// `created_at_ms` is the WAL object's creation time (its ULID time). A
     /// commit of an object not seen before is rejected with
-    /// [`ApplyError::StaleCommit`] once `created_at_ms` is more than
-    /// [`WAL_COMMIT_WINDOW_MS`](crate::WAL_COMMIT_WINDOW_MS) behind the
-    /// metastore clock, and commit records are pruned only after twice that
-    /// ([`Command::PruneWalCommits`]). A retry therefore either returns the
-    /// first commit's offsets or is rejected; it never commits the object
-    /// twice. A rejected *retry* does not mean the first attempt failed: its
-    /// record may have been pruned (see [`ApplyError::StaleCommit`]).
+    /// [`ApplyError::StaleCommit`](operon_common::meta::ApplyError::StaleCommit)
+    /// once `created_at_ms` is more than
+    /// [`WAL_COMMIT_WINDOW_MS`](operon_common::meta::WAL_COMMIT_WINDOW_MS)
+    /// behind the metastore clock, and commit records are pruned only after
+    /// twice that ([`Command::PruneWalCommits`]). A retry therefore either
+    /// returns the first commit's offsets or is rejected; it never commits the
+    /// object twice. A rejected *retry* does not mean the first attempt
+    /// failed: its record may have been pruned (see
+    /// [`ApplyError::StaleCommit`](operon_common::meta::ApplyError::StaleCommit)).
     /// `created_at_ms` does not advance the metastore clock; the proposing
     /// leader refuses one too far in its future
     /// ([`MetaConfig::max_clock_skew`](crate::MetaConfig::max_clock_skew)).
@@ -78,11 +81,13 @@ pub enum Command {
     /// `segment` at `replaces[0].0` and succeeds without changing anything (a
     /// segment path contains a ULID, so it names one swap). Otherwise the fence
     /// is checked, and every replaced entry must still be a WAL entry of the
-    /// named object ([`ApplyError::IndexMismatch`] if a concurrent swap or trim
-    /// moved it), and the segment must still be fresh: once the metastore
-    /// clock (or `now_ms`) is past `fresh`, the swap is refused with
-    /// [`ApplyError::StaleObject`], because garbage collection may already
-    /// have deleted the segment.
+    /// named object
+    /// ([`ApplyError::IndexMismatch`](operon_common::meta::ApplyError::IndexMismatch)
+    /// if a concurrent swap or trim moved it), and the segment must still be
+    /// fresh: once the metastore clock (or `now_ms`) is past `fresh`, the swap
+    /// is refused with
+    /// [`ApplyError::StaleObject`](operon_common::meta::ApplyError::StaleObject),
+    /// because garbage collection may already have deleted the segment.
     SwapSegment {
         stream: StreamId,
         partition: u32,
@@ -98,9 +103,11 @@ pub enum Command {
     /// unreadable and drops the index entries wholly below it. The log start
     /// only moves forward, so a retry is a no-op that returns the same log
     /// start. With a `fence`, the trim is applied only while the fencing lease
-    /// is at the fence's epoch ([`ApplyError::Fenced`] otherwise, and nothing
-    /// changes); a retry whose fence was broken after the first attempt
-    /// applied is rejected, but the first attempt's trim stays.
+    /// is at the fence's epoch
+    /// ([`ApplyError::Fenced`](operon_common::meta::ApplyError::Fenced)
+    /// otherwise, and nothing changes); a retry whose fence was broken after
+    /// the first attempt applied is rejected, but the first attempt's trim
+    /// stays.
     TrimPartition {
         stream: StreamId,
         partition: u32,
@@ -137,8 +144,10 @@ pub enum Command {
     },
     /// Extends a held, unexpired lease by `ttl_ms` from `now_ms`. A retry
     /// after a lost acknowledgement extends it again from the retry's
-    /// `now_ms`, or fails with [`ApplyError::LeaseLost`] if the lease expired
-    /// in between, which the first attempt would not have prevented.
+    /// `now_ms`, or fails with
+    /// [`ApplyError::LeaseLost`](operon_common::meta::ApplyError::LeaseLost)
+    /// if the lease expired in between, which the first attempt would not
+    /// have prevented.
     RenewLease {
         key: String,
         owner: String,
@@ -149,8 +158,9 @@ pub enum Command {
     /// Re-takes an expired lease that nobody else took: if `owner` still
     /// holds the lease at `epoch` (not released and not taken over), its
     /// deadline becomes `now_ms + ttl_ms` and the epoch stays, whether or not
-    /// it had expired. Otherwise it fails with [`ApplyError::LeaseLost`] and
-    /// changes nothing. Fences at `epoch` stay valid throughout, because
+    /// it had expired. Otherwise it fails with
+    /// [`ApplyError::LeaseLost`](operon_common::meta::ApplyError::LeaseLost)
+    /// and changes nothing. Fences at `epoch` stay valid throughout, because
     /// expiry alone never broke them. A retry after a lost acknowledgement
     /// extends the deadline again (or fails the same way if someone took the
     /// lease in between), so it is safe. Worker tasks use it to keep running
@@ -173,13 +183,16 @@ pub enum Command {
     /// pointer must not exist yet) and, when `fence` is given, the fencing
     /// lease is still at the fence's epoch. The new version is `expected + 1`
     /// (or 1 for a new pointer). A retry after a lost acknowledgement fails
-    /// with [`ApplyError::VersionMismatch`]. A current pointer holding the
-    /// caller's value at `expected + 1` means the first attempt *may* have
-    /// succeeded: another writer may have written the same value. Callers
-    /// that must know write a unique value (for example a manifest path
-    /// containing a ULID). With `fresh`, the objects the new value makes
-    /// reachable must still be fresh at the metastore clock
-    /// ([`ApplyError::StaleObject`] otherwise).
+    /// with
+    /// [`ApplyError::VersionMismatch`](operon_common::meta::ApplyError::VersionMismatch).
+    /// A current pointer holding the caller's value at `expected + 1` means
+    /// the first attempt *may* have succeeded: another writer may have
+    /// written the same value. Callers that must know write a unique value
+    /// (for example a manifest path containing a ULID). With `fresh`, the
+    /// objects the new value makes reachable must still be fresh at the
+    /// metastore clock
+    /// ([`ApplyError::StaleObject`](operon_common::meta::ApplyError::StaleObject)
+    /// otherwise).
     CasPointer {
         namespace: NamespaceId,
         key: String,
@@ -189,17 +202,18 @@ pub enum Command {
         fresh: Option<Freshness>,
     },
     /// Creates a collection with its implicit stream and link, both named
-    /// [`implicit_name`](crate::implicit_name) (class `Standard`, default
-    /// retention, `partitions` partitions; the link's target is
-    /// `collection`/`name`), in one step. Names are unique within the
-    /// namespace across collections and aliases, and never start with `_`.
-    /// `schema` must be valid and at version 1.
+    /// [`implicit_name`](operon_common::meta::implicit_name) (class
+    /// `Standard`, default retention, `partitions` partitions; the link's
+    /// target is `collection`/`name`), in one step. Names are unique within
+    /// the namespace across collections and aliases, and never start with
+    /// `_`. `schema` must be valid and at version 1.
     ///
     /// A retry after a lost acknowledgement fails with
-    /// [`ApplyError::CollectionExists`], which carries the id the first
-    /// attempt created. A collection of that name with another schema or
-    /// partition count, or an alias of that name, gives
-    /// [`ApplyError::NameTaken`].
+    /// [`ApplyError::CollectionExists`](operon_common::meta::ApplyError::CollectionExists),
+    /// which carries the id the first attempt created. A collection of that
+    /// name with another schema or partition count, or an alias of that name,
+    /// gives
+    /// [`ApplyError::NameTaken`](operon_common::meta::ApplyError::NameTaken).
     CreateCollection {
         namespace: NamespaceId,
         name: String,
@@ -222,9 +236,9 @@ pub enum Command {
     /// which must extend it additively
     /// ([`CollectionSchema::check_additive`]); the new version is
     /// `expected_version + 1`. A stale `expected_version` fails with
-    /// [`ApplyError::SchemaVersionMismatch`]. A retry after a lost
-    /// acknowledgement finds the same schema at `expected_version + 1` and
-    /// succeeds.
+    /// [`ApplyError::SchemaVersionMismatch`](operon_common::meta::ApplyError::SchemaVersionMismatch).
+    /// A retry after a lost acknowledgement finds the same schema at
+    /// `expected_version + 1` and succeeds.
     UpdateCollectionSchema {
         collection: CollectionId,
         expected_version: u64,
@@ -276,153 +290,6 @@ pub enum Reply {
         version: u64,
     },
     AliasesUpdated,
-}
-
-/// Why a [`Command`] was rejected. A rejected command leaves the state unchanged.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
-pub enum ApplyError {
-    #[error("invalid argument: {0}")]
-    InvalidArgument(String),
-    /// Carries the existing id, so a retry after a lost acknowledgement can
-    /// recover it.
-    #[error("namespace already exists: {0}")]
-    NamespaceExists(NamespaceId),
-    #[error("namespace not found: {0}")]
-    NamespaceNotFound(NamespaceId),
-    /// Carries the existing id, so a retry after a lost acknowledgement can
-    /// recover it.
-    #[error("stream already exists: {0}")]
-    StreamExists(StreamId),
-    #[error("stream not found: {0}")]
-    StreamNotFound(StreamId),
-    /// Carries the existing id, so a retry after a lost acknowledgement can
-    /// recover it.
-    #[error("link already exists: {0}")]
-    LinkExists(LinkId),
-    #[error("partition not found: stream {stream} partition {partition}")]
-    PartitionNotFound { stream: StreamId, partition: u32 },
-    #[error("lease is held by {owner} until {deadline_ms}")]
-    LeaseHeld { owner: String, deadline_ms: u64 },
-    /// The caller no longer holds the lease at the epoch it named: it expired,
-    /// was released, or was taken over.
-    #[error("lease lost: {key}")]
-    LeaseLost { key: String },
-    /// Carries the current pointer, so a writer retrying after a lost
-    /// acknowledgement can check whether the current value is its own.
-    #[error("pointer version mismatch, current: {current:?}")]
-    VersionMismatch { current: Option<Pointer> },
-    #[error("fenced: lease {lease} is no longer at the given epoch")]
-    Fenced { lease: String },
-    /// A segment swap named index entries that are no longer there as given:
-    /// a concurrent swap or trim changed the partition's index.
-    #[error("index mismatch: stream {stream} partition {partition}")]
-    IndexMismatch { stream: StreamId, partition: u32 },
-    /// A WAL object is too old to commit (see [`Command::CommitWal`]), and no
-    /// commit record for it remains. On a first attempt its records were never
-    /// committed. On a retry after an attempt whose outcome was unknown, the
-    /// first attempt may have committed them and its record may since have
-    /// been pruned: the outcome is still unknown.
-    #[error("stale WAL commit: {object}")]
-    StaleCommit { object: String },
-    /// A command would reference an object created too long ago
-    /// ([`Freshness`]): garbage collection may already have deleted it.
-    /// Nothing changed; the object is left to garbage collection.
-    #[error(
-        "stale object {object}: created at {created_at_ms} ms, max age {max_age_ms} ms, metastore clock {clock_ms} ms"
-    )]
-    StaleObject {
-        object: String,
-        created_at_ms: u64,
-        max_age_ms: u64,
-        clock_ms: u64,
-    },
-    /// Carries the existing id, so a retry after a lost acknowledgement can
-    /// recover it.
-    #[error("collection already exists: {0}")]
-    CollectionExists(CollectionId),
-    #[error("collection not found: {0}")]
-    CollectionNotFound(CollectionId),
-    /// The name is held by a collection with another schema or partition
-    /// count, or by an alias.
-    #[error("name already taken: {0}")]
-    NameTaken(String),
-    #[error("incompatible schema update: {0}")]
-    IncompatibleSchema(String),
-    #[error("schema version mismatch: collection {collection} is at schema version {current}")]
-    SchemaVersionMismatch {
-        collection: CollectionId,
-        current: u64,
-    },
-    /// An alias action named a collection that does not exist.
-    #[error("unknown collection: {0}")]
-    UnknownCollection(String),
-}
-
-/// How far the proposer's clock lagged the metastore's, for a StaleObject refusal.
-///
-/// A proposer checks an object's deadline against its own clock before it
-/// proposes; the metastore checks it again against its clock when it
-/// applies. A refusal the proposer did not predict means the command took
-/// too long between the two checks, or the proposer's clock lags.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StaleLag {
-    /// `created_at_ms + max_age_ms`: the last metastore time the object was
-    /// fresh.
-    pub deadline_ms: u64,
-    /// The metastore clock when it refused the command.
-    pub clock_ms: u64,
-    /// The proposer's clock when it handled the refusal.
-    pub proposer_now_ms: u64,
-    /// `clock_ms - deadline_ms`: how late the command was applied.
-    pub late_by_ms: u64,
-    /// `clock_ms - proposer_now_ms`: how far the proposer's clock is behind
-    /// the metastore's (negative when ahead).
-    pub proposer_lag_ms: i64,
-}
-
-impl ApplyError {
-    /// `Some` for `StaleObject`, else `None`.
-    pub fn stale_lag(&self, proposer_now_ms: u64) -> Option<StaleLag> {
-        let ApplyError::StaleObject {
-            created_at_ms,
-            max_age_ms,
-            clock_ms,
-            ..
-        } = *self
-        else {
-            return None;
-        };
-        let deadline_ms = created_at_ms.saturating_add(max_age_ms);
-        let lag = i128::from(clock_ms) - i128::from(proposer_now_ms);
-        Some(StaleLag {
-            deadline_ms,
-            clock_ms,
-            proposer_now_ms,
-            late_by_ms: clock_ms.saturating_sub(deadline_ms),
-            proposer_lag_ms: i64::try_from(lag).unwrap_or(if lag < 0 {
-                i64::MIN
-            } else {
-                i64::MAX
-            }),
-        })
-    }
-}
-
-/// Logs a StaleObject refusal at WARN with every StaleLag field and the object path; no-op otherwise.
-pub fn log_stale_object(err: &ApplyError, proposer_now_ms: u64) {
-    let (ApplyError::StaleObject { object, .. }, Some(lag)) = (err, err.stale_lag(proposer_now_ms))
-    else {
-        return;
-    };
-    tracing::warn!(
-        %object,
-        deadline_ms = lag.deadline_ms,
-        clock_ms = lag.clock_ms,
-        proposer_now_ms = lag.proposer_now_ms,
-        late_by_ms = lag.late_by_ms,
-        proposer_lag_ms = lag.proposer_lag_ms,
-        "the metastore refused a stale object"
-    );
 }
 
 impl std::fmt::Display for Command {
@@ -498,34 +365,5 @@ impl std::fmt::Display for Command {
                 write!(f, "UpdateAliases({namespace}, {} actions)", actions.len())
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stale_lag_reports_the_proposers_lag() {
-        let stale = ApplyError::StaleObject {
-            object: "ns/1/streams/1/0/seg".to_string(),
-            created_at_ms: 1_000,
-            max_age_ms: 500,
-            clock_ms: 2_000,
-        };
-        assert_eq!(
-            stale.stale_lag(1_900),
-            Some(StaleLag {
-                deadline_ms: 1_500,
-                clock_ms: 2_000,
-                proposer_now_ms: 1_900,
-                late_by_ms: 500,
-                proposer_lag_ms: 100,
-            })
-        );
-        let fenced = ApplyError::Fenced {
-            lease: "task/gc".to_string(),
-        };
-        assert_eq!(fenced.stale_lag(1_900), None);
     }
 }

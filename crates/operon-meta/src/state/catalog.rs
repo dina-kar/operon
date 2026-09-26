@@ -1,10 +1,11 @@
 //! Namespaces and streams.
 
+use operon_common::meta::{ApplyError, MAX_PARTITIONS, Namespace, Retention, Stream, WalClass};
 use operon_common::{NamespaceId, StreamId};
 
-use super::{MAX_PARTITIONS, MetaState, refuse_reserved, validate_name};
-use crate::command::{ApplyError, Reply};
-use crate::types::{Namespace, PartitionState, Retention, Stream, WalClass};
+use super::{MetaState, refuse_reserved, validate_name};
+use crate::command::Reply;
+use crate::types::PartitionState;
 
 impl MetaState {
     pub(super) fn create_namespace(&mut self, name: String) -> Result<Reply, ApplyError> {

@@ -15,7 +15,6 @@ fail = { workspace = true, optional = true }
 futures.workspace = true
 operon-common.workspace = true
 operon-log.workspace = true
-operon-meta.workspace = true
 operon-store.workspace = true
 operon-worker.workspace = true
 postcard.workspace = true
@@ -30,7 +29,7 @@ ulid.workspace = true
 test-util = []
 # Named failpoints for the crash gate (M0.4 Task 5). Off by default: without
 # it the failpoints compile to nothing.
-failpoints = ["dep:fail", "fail/failpoints", "operon-log/failpoints", "operon-meta/failpoints"]
+failpoints = ["dep:fail", "fail/failpoints", "operon-log/failpoints"]
 
 [dev-dependencies]
 operon-cache.workspace = true

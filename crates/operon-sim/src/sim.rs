@@ -17,6 +17,10 @@ use operon_collection::{
     VectorIndexSpec, VectorSpec, WriteError, fold_stream, live_manifest, split_path,
     verify_collection,
 };
+use operon_common::meta::{
+    ApplyError, Consistency, MetaError, MetaStore, PointerCas, Retention, TargetRef, Tracked,
+    WalChunk, WalClass, WalCommit,
+};
 use operon_common::{CollectionId, NamespaceId, StreamId};
 use operon_link::{
     CounterTable, CounterTargetFactory, LinkApplySource, LinkConfig, LinkGcRoots, TargetRegistry,
@@ -27,8 +31,7 @@ use operon_log::{
     RetentionSource, SegmenterConfig, SegmenterSource,
 };
 use operon_meta::{
-    ApplyError, Command, Consistency, MetaClient, MetaClientConfig, MetaConfig, MetaError,
-    MetaNode, MetaState, Reply, Router, SystemClock, TargetRef, WalChunk, WalClass,
+    MetaClient, MetaClientConfig, MetaConfig, MetaNode, MetaState, Router, SystemClock,
 };
 use operon_store::{FaultRates, FaultyStore, Store};
 use operon_worker::{Worker, WorkerConfig, WorkerHandle};
@@ -279,7 +282,9 @@ impl Recorder {
 struct Cluster {
     router: Router,
     nodes: Vec<MetaNode>,
-    clients: Vec<MetaClient>,
+    /// One openraft client per node, as the trait object every component
+    /// and the whole workload use (Ruling 13).
+    clients: Vec<Arc<dyn MetaStore>>,
     _dirs: Vec<TempDir>,
     faults: Arc<FaultyStore>,
     store: Store,
@@ -395,7 +400,7 @@ impl Cluster {
             .wait_for_leader(WAIT)
             .await
             .map_err(|e| format!("no leader: {e}"))?;
-        let clients: Vec<MetaClient> = nodes
+        let clients: Vec<Arc<dyn MetaStore>> = nodes
             .iter()
             .map(|node| {
                 MetaClient::new(
@@ -404,6 +409,7 @@ impl Cluster {
                     Arc::new(SystemClock),
                     client_config(),
                 )
+                .into()
             })
             .collect();
         let faults = Arc::new(FaultyStore::random(
@@ -425,7 +431,10 @@ impl Cluster {
             let partitions = config.partitions;
             async move {
                 retry("create a stream", || async {
-                    match admin.create_stream(ns, name, partitions, class).await {
+                    match admin
+                        .create_stream(ns, name, partitions, class, Retention::default())
+                        .await
+                    {
                         Ok(id) | Err(MetaError::Rejected(ApplyError::StreamExists(id))) => Ok(id),
                         Err(err) => Err(err.to_string()),
                     }
@@ -458,12 +467,10 @@ impl Cluster {
             {
                 Ok((id, stream, _)) => Ok((id, stream)),
                 Err(MetaError::Rejected(ApplyError::CollectionExists(id))) => admin
-                    .read(Consistency::Linearizable, |s| {
-                        s.collection(id).map(|c| c.stream)
-                    })
+                    .collection(Consistency::Linearizable, id)
                     .await
                     .map_err(|e| e.to_string())?
-                    .map(|stream| (id, stream))
+                    .map(|c| (id, c.stream))
                     .ok_or_else(|| format!("collection {id} vanished")),
                 Err(err) => Err(err.to_string()),
             }
@@ -515,7 +522,7 @@ impl Cluster {
             .await
             .map_err(|e| e.to_string())?;
         let mut worker = Worker::new(
-            meta,
+            meta.clone(),
             WorkerConfig {
                 poll_interval: Duration::from_millis(20),
                 lease_ttl: Duration::from_secs(1),
@@ -531,6 +538,7 @@ impl Cluster {
             )))
             .with(collections.clone());
         worker.add_source(Arc::new(LinkApplySource::new(
+            meta,
             reader,
             registry,
             LinkConfig {
@@ -574,8 +582,8 @@ impl Cluster {
     }
 
     fn link_table(&self, client: usize) -> CounterTable {
-        let link = operon_meta::Link {
-            id: operon_meta::LinkId(1),
+        let link = operon_common::meta::Link {
+            id: operon_common::meta::LinkId(1),
             namespace: self.ns,
             name: "counts".to_string(),
             source: self.events,
@@ -658,14 +666,14 @@ async fn append(
 /// A direct `CommitWal` of `object` (one chunk of `records` records).
 async fn commit(
     rec: Arc<Recorder>,
-    meta: MetaClient,
+    meta: Arc<dyn MetaStore>,
     stream: StreamId,
     partition: u32,
     object: String,
     records: u32,
     client: u32,
 ) {
-    let command = Command::CommitWal {
+    let commit = WalCommit {
         object: object.clone(),
         created_at_ms: meta.now_ms(),
         chunks: vec![WalChunk {
@@ -677,15 +685,24 @@ async fn commit(
         }],
     };
     let invoke = rec.tick();
-    let (result, earlier_unknown) = meta.write_tracked(command).await;
+    let Tracked {
+        result,
+        earlier_unknown,
+    } = meta.commit_wal(commit).await;
     let complete = rec.tick();
     lock(&rec.stats).commits += 1;
     let outcome = match result {
-        Ok(Reply::WalCommitted { base_offsets }) if base_offsets.len() == 1 => {
+        Ok(base_offsets) if base_offsets.len() == 1 => {
             Outcome::Ok(SequencerOutput::BaseOffset(base_offsets[0]))
         }
         Ok(other) => {
-            rec.violation(format!("CommitWal {object}: unexpected reply {other:?}"));
+            rec.violation(format!(
+                "CommitWal {object}: unexpected base offsets {other:?}"
+            ));
+            return;
+        }
+        Err(MetaError::UnexpectedReply(other)) => {
+            rec.violation(format!("CommitWal {object}: unexpected reply {other}"));
             return;
         }
         // Definitely not applied.
@@ -710,12 +727,16 @@ async fn commit(
 }
 
 /// A linearizable read of a pointer, then a CAS from what it saw.
-async fn cas(rec: Arc<Recorder>, meta: MetaClient, ns: NamespaceId, key: String, client: u32) {
+async fn cas(
+    rec: Arc<Recorder>,
+    meta: Arc<dyn MetaStore>,
+    ns: NamespaceId,
+    key: String,
+    client: u32,
+) {
     let history = format!("pointer/{key}");
     let invoke = rec.tick();
-    let read = meta
-        .read(Consistency::Linearizable, |s| s.pointer(ns, &key).cloned())
-        .await;
+    let read = meta.pointer(Consistency::Linearizable, ns, &key).await;
     let complete = rec.tick();
     let Ok(current) = read else {
         return;
@@ -733,7 +754,7 @@ async fn cas(rec: Arc<Recorder>, meta: MetaClient, ns: NamespaceId, key: String,
     );
     let value = format!("v{}", rec.id());
     let expected = current.map(|p| p.version);
-    let command = Command::CasPointer {
+    let cas = PointerCas {
         namespace: ns,
         key: key.clone(),
         expected,
@@ -742,19 +763,22 @@ async fn cas(rec: Arc<Recorder>, meta: MetaClient, ns: NamespaceId, key: String,
         fresh: None,
     };
     let invoke = rec.tick();
-    let (result, earlier_unknown) = meta.write_tracked(command).await;
+    let Tracked {
+        result,
+        earlier_unknown,
+    } = meta.cas_pointer(cas).await;
     let complete = rec.tick();
     lock(&rec.stats).cas += 1;
     let outcome = match result {
-        Ok(Reply::PointerSet { version }) => Outcome::Ok(CasOutput::Ok(version)),
+        Ok(version) => Outcome::Ok(CasOutput::Ok(version)),
         // A mismatch after an attempt with an unknown outcome may be our
         // own first attempt's effect.
         Err(MetaError::Rejected(ApplyError::VersionMismatch { current })) if !earlier_unknown => {
             Outcome::Ok(CasOutput::Mismatch(current.map(|p| (p.version, p.value))))
         }
         Err(MetaError::Rejected(_) | MetaError::ClockSkew { .. }) if !earlier_unknown => return,
-        Ok(other) => {
-            rec.violation(format!("CasPointer {key}: unexpected reply {other:?}"));
+        Err(MetaError::UnexpectedReply(other)) => {
+            rec.violation(format!("CasPointer {key}: unexpected reply {other}"));
             return;
         }
         Err(_) => Outcome::Indeterminate,
@@ -779,17 +803,23 @@ async fn cas(rec: Arc<Recorder>, meta: MetaClient, ns: NamespaceId, key: String,
 /// A linearizable read of a partition's high watermark.
 async fn read_hwm(
     rec: Arc<Recorder>,
-    meta: MetaClient,
+    meta: Arc<dyn MetaStore>,
     stream: StreamId,
     partition: u32,
     client: u32,
 ) {
     let invoke = rec.tick();
+    // From the end, so the read carries the bounds and no index entry.
     let read = meta
-        .read(Consistency::Linearizable, |s| {
-            s.partition(stream, partition).map(|p| p.high_watermark())
-        })
-        .await;
+        .partition_index(
+            Consistency::Linearizable,
+            stream,
+            partition,
+            u64::MAX,
+            Some(0),
+        )
+        .await
+        .map(|index| index.map(|index| index.high_watermark()));
     let complete = rec.tick();
     if let Ok(Some(hwm)) = read {
         rec.sequencer(
@@ -1329,6 +1359,27 @@ async fn drive(
     Ok(())
 }
 
+/// The non-zero high watermarks of `stream`'s first `partitions`
+/// partitions, in one `Linearizable` read.
+async fn high_watermarks(
+    meta: &dyn MetaStore,
+    stream: StreamId,
+    partitions: u32,
+) -> Result<BTreeMap<u32, u64>, MetaError> {
+    let state = meta.stream_state(Consistency::Linearizable, stream).await?;
+    Ok(state
+        .map(|state| {
+            (0..partitions)
+                .zip(state.partitions)
+                .filter_map(|(p, bounds)| {
+                    let hwm = bounds?.high_watermark;
+                    (hwm > 0).then_some((p, hwm))
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
 /// Waits until the link has applied every committed record of `events`.
 async fn settle_link(cluster: &Cluster, rec: &Recorder) {
     let deadline = Instant::now() + WAIT;
@@ -1336,16 +1387,7 @@ async fn settle_link(cluster: &Cluster, rec: &Recorder) {
     let events = cluster.events;
     let partitions = cluster.partitions;
     loop {
-        let hwms = cluster.clients[0]
-            .read(Consistency::Linearizable, |s| {
-                (0..partitions)
-                    .filter_map(|p| {
-                        let hwm = s.partition(events, p)?.high_watermark();
-                        (hwm > 0).then_some((p, hwm))
-                    })
-                    .collect::<BTreeMap<u32, u64>>()
-            })
-            .await;
+        let hwms = high_watermarks(&*cluster.clients[0], events, partitions).await;
         if let (Ok(hwms), Ok(applied)) = (hwms, table.applied().await)
             && hwms == applied
         {
@@ -1372,18 +1414,9 @@ async fn settle_collection(cluster: &Cluster, rec: &Recorder) -> bool {
     let mut settled = false;
     let (stream, partitions) = (cluster.docs_stream, cluster.partitions);
     loop {
-        let hwms = cluster.clients[0]
-            .read(Consistency::Linearizable, |s| {
-                (0..partitions)
-                    .filter_map(|p| {
-                        let hwm = s.partition(stream, p)?.high_watermark();
-                        (hwm > 0).then_some((p, hwm))
-                    })
-                    .collect::<BTreeMap<u32, u64>>()
-            })
-            .await;
+        let hwms = high_watermarks(&*cluster.clients[0], stream, partitions).await;
         let applied = live_manifest(
-            &ctx.meta,
+            &*ctx.meta,
             &ctx.store,
             &ctx.manifests,
             cluster.ns,
@@ -1423,6 +1456,7 @@ async fn diagnose_collection_link(cluster: &Cluster, rec: &Recorder) {
     };
     let factory = Arc::new(CollectionTargetFactory::new(ctx.clone()));
     let source = LinkApplySource::new(
+        cluster.clients[0].clone(),
         LogReader::new(cluster.clients[0].clone(), ctx.cache.clone()),
         TargetRegistry::new().with(factory.clone()),
         LinkConfig {
@@ -1435,7 +1469,8 @@ async fn diagnose_collection_link(cluster: &Cluster, rec: &Recorder) {
     // Let the stopped workers' leases lapse.
     tokio::time::sleep(Duration::from_secs(2)).await;
     for attempt in 0..3 {
-        match operon_worker::run_once(&cluster.clients[0], "diagnosis", GRACE, &source).await {
+        match operon_worker::run_once(cluster.clients[0].clone(), "diagnosis", GRACE, &source).await
+        {
             Ok(results) => {
                 for (key, result) in results {
                     if !matches!(result, operon_worker::RunResult::Ran(Ok(_))) {
