@@ -1,6 +1,6 @@
 # 11 — Buy vs Build
 
-Status: **Approved** · research as of 2026-09-22 (Fluss and Resonate added 2026-09-24; revised 2026-09-25 after the architecture review: dependencies of the dropped Kafka, Bolt/Cypher and ClickHouse surfaces removed, metastore backends and ADBC added; AI data ecosystem integrations added the same day, §17, D51–D56)
+Status: **Approved** · research as of 2026-09-22 (Fluss and Resonate added 2026-09-24; revised 2026-09-25 after the architecture review: dependencies of the dropped Kafka, Bolt/Cypher and ClickHouse surfaces removed, metastore backends and ADBC added; AI data ecosystem integrations added the same day, §17, D51–D56; metastore backends, CI targets, RustFS and OpenFGA revised 2026-09-26, §18, D58–D70)
 
 Rule: **buy (embed/fork) everything that is not the differentiator; build the serving layer that closed competitors keep closed.** Only Apache-2.0 / MIT / compatible permissive dependencies. No AGPL, BSL, SSPL or ELv2 code in the engine.
 
@@ -32,8 +32,9 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | HNSW hot tier | **qdrant-edge** | Apache-2.0 | =0.8.0 (M1.3) | HNSW artifacts behind Operon's `HnswIndex` (R20) | Enables `serde_json/preserve_order`, which vendored Quickwit code must not see; M1.3 Task 0 resolves it (M1.1 ruling P5) |
 | MCP server | **rmcp** | Apache-2.0 | 3.4.1 (M1.6) | The W0 MCP server (§15) | — |
 | Tokenizers | lindera, jieba-rs, ICU4X | MIT/Apache | — | Analyzers | — |
-| Postgres client (M2) | **tokio-postgres** (rust-postgres), with a pool such as deadpool-postgres; alternative **sqlx** | MIT/Apache-2.0 (all three) | tokio-postgres 0.7 (verify at M2) | `operon-meta-postgres` behind `MetaStore` (D47) | Choice made in the M2 plan; tokio-postgres is the smaller dependency, sqlx adds compile-time-checked queries and migrations |
-| FoundationDB client (M6) | `foundationdb` crate (foundationdb-rs) over `libfdb_c` | MIT/Apache-2.0 (verify); `libfdb_c` Apache-2.0 | — | `operon-meta-fdb` behind `MetaStore` (D47) | Links a C client library whose version must match the cluster's API version |
+| SQL client (M2, M6) | **sqlx** (features `postgres`, `mysql`) | MIT OR Apache-2.0 | 0.9.0 | `operon-meta-postgres` (M2) and `operon-meta-tidb` over the MySQL protocol (M6) behind `MetaStore` (D58) | Lakekeeper's choice: compile-time-checked `query!` macros with offline data in CI (`SQLX_OFFLINE=true`) and `sqlx::migrate` migrations; one client for both SQL backends. Replaces the tokio-postgres option. `tikv-client` 0.4 is not used (§5) |
+| DynamoDB client (M2) | **aws-sdk-dynamodb** | Apache-2.0 | 1.128.0 | `operon-meta-dynamodb` behind `MetaStore` (D58) | Custom endpoint for floci and Alternator (`endpoint_url`); one SDK interceptor injects the fault matrix's faults (D60); the SDK reuses `ClientRequestToken` only across its own retries, so application retries set it explicitly (§18 §2.3) |
+| OpenFGA client (M2.x) | **openfga-client** (vakamo-labs) | Apache-2.0 (no NOTICE) | 0.6 | The `OpenFga` implementation of the `Authorizer` trait (D66, D67) | gRPC only (tonic, prost 0.14; protos vendored, no protoc); helpers `TupleModelManager`, `read_all_pages`; maintained by Vakamo, Lakekeeper's vendor; tonic/prost versions must match the workspace's (verify at M2.x) |
 
 ### 1.1 Test and client-side dependencies
 
@@ -47,12 +48,19 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | PySpark | **pyspark** ≥ 4.0 | Apache-2.0 | Python-SDK extra `loamdb[spark]`: the Python data source `format("loam")` on Apache Spark 4 and Sail (M2, D54); M2 gate client | Sail serves PySpark through Spark Connect (PySpark 4.2 per Sail 0.7.1; verify) |
 | PyTorch | **torch** | BSD-3-Clause | Python-SDK extra `loamdb[torch]` (lower bound only; the user's build is used) | Lance's `lance.torch.data` reader is the base of `loamdb.torch` |
 | Spice (test client) | spiceai/spiceai runtime | Apache-2.0 | Test-only: its Flight SQL connector runs against Operon in the M1.7 Flight SQL gate (D56) | Run as a separate process; never linked (§5) |
+| Floci | **floci** (`floci/floci`) | MIT | CI service: the full DynamoDB conformance suite and the nightly AWS deployment job with S3, Lambda, SQS, EventBridge Scheduler and IAM enforcement (D60) | 2.1.0, pinned ≥ 2.1.0 (a Rust-SDK checksum bug was fixed in 2.1.0); seven months old, releases twice a month: new releases are checked against real AWS before the pin moves; never throws `TransactionConflictException` or throttles; `TransactGetItems` isolation is Q22 |
+| ScyllaDB Alternator | `scylladb/scylla:6.2.3` | AGPL-3.0 | CI service only, unmodified, never linked or distributed: the DynamoDB backend's single-item conformance subset with `--alternator-write-isolation always_use_lwt` (D60) | The last AGPL release; 2025.1+ is source-available (§5). No transactions. Not a production metastore |
+| DynamoDB Local | `amazon/dynamodb-local` | Proprietary (DynamoDB Local License Agreement) | Optional CI second opinion for the DynamoDB suite | 3.3.1; pulled in CI, never redistributed |
+| Postgres, TiDB | `postgres:17`; `pingcap/tidb:v8.5.x` (unistore) and `tiup playground` | PostgreSQL; Apache-2.0 | CI services for the Postgres (M2) and TiDB (M6) backends | Containers run one at a time on the build machine |
+| RustFS | `rustfs/rustfs` | Apache-2.0 | Per-PR CI target for the `Store` provider conformance suite and the S3 fault matrix (D61); also the default self-hosted store (§4) | 1.0.0 (1.0.1 once released) |
+| Toxiproxy | `ghcr.io/shopify/toxiproxy` | MIT | Nightly end-to-end soaks of each container backend (`timeout`, `reset_peer`, `latency`, `down`) | 2.12.0; driven through its REST API with `reqwest` (the Rust clients are stale) |
 
 ### 1.2 Candidates (evaluated, not adopted)
 
 | Component | Crate | License | Version | Possible role | Notes |
 |---|---|---|---|---|---|
 | Query federation | **datafusion-federation** (from Spice) | Apache-2.0 | =0.5.5 (the last release on DataFusion 54; 0.5.6+ need 55) | M4: pushing whole sub-plans to remote SQL sources | Evaluate in the M4 plan; like every DataFusion extension it moves in lockstep (risk 21). `datafusion-table-providers` 0.13.1 (Apache-2.0, DataFusion ^54) is the companion crate if connectors are ever needed |
+| FoundationDB client | `foundationdb` crate (foundationdb-rs) over `libfdb_c` | MIT/Apache-2.0; `libfdb_c` Apache-2.0 | 0.11.0 | A FoundationDB metastore backend, Phase C on demand (D58) | Removed from M6: TiDB and DynamoDB cover its role; it needs `libfdb_c` at the cluster's API version on every host, and no large cloud offers FoundationDB managed |
 
 ## 2. Fork (take code, own the fork)
 
@@ -62,13 +70,14 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | **Qdrant** | Apache-2.0 | `qdrant-edge =0.8.0` behind `HnswIndex` (R20): HNSW, filterable-HNSW links, quantization, payload-filter planner; `lib/segment` is not vendored | Qdrant's storage is local-disk; we need the index code only, as a hot tier |
 | **RisingWave iceberg-rust fork** | Apache-2.0 | RowDelta/RewriteFiles, equality & position deletes | Upstream gaps; plan to converge on upstream |
 | **Resonate** (`resonatehq/resonate`, `impl/server/core`) | Apache-2.0 | `resonate-core` (protocol types, `ResonateServer` trait), `resonate-plugin`, `resonate-gateway-http`, `resonate-server-blob` (object-storage backend on `object_store` 0.14), HTTP push/poll transports; the differential and linearizability test harness (§14) | Not on crates.io (git-only, workspace 0.10.1); vendor-led by a seed-stage company with fast protocol evolution → pin a git revision, keep Operon's code behind the `ResonateServer` trait, replace `resonate-auth` with Operon auth |
+| **Lakekeeper** (`lakekeeper/lakekeeper` @ `b771dbf`) | Apache-2.0, with a NOTICE ("Copyright 2024-2026 Vakamo Inc.") | Copied and adapted, keeping the NOTICE (Apache-2.0 §4(d)) and marking changes: the v4.12 OpenFGA model components (`authz/openfga/v4.12/components/*.fga`) and the patterns of `authz-openfga`'s `migration.rs` and `reconcile.rs` (D66); from `lakekeeper-storage-postgres/src`, `tasks.rs` (SKIP LOCKED queue), `idempotency.rs` with its migration, `dbutils.rs` (SQLSTATE mapping), `advisory_lock.rs` and the conditional-UPDATE CAS of `tabular/table/commit.rs` (D58). Reference only: the `Authorizer` and `CatalogStore` traits and `authorizer.rs` | Coupled to Iceberg types and Lakekeeper's entities; `CatalogStore` threads one transaction through many calls, which Operon's one-call-one-transaction trait avoids (D47) |
 
 ## 3. Reference designs only (no code)
 
 | System | License | What we learn |
 |---|---|---|
-| turbopuffer | Closed | WAL-on-S3 + async indexing + tail merge; SPFresh ANN; FTS v2 posting blocks; namespace-affinity caching |
-| WarpStream | Proprietary | Leaderless Kafka on S3, zone-aware routing, metadata-sequenced offsets, multi-zonal Express WAL (verify) |
+| turbopuffer | Closed | WAL-on-S3 + async indexing + tail merge; SPFresh ANN; FTS v2 posting blocks; namespace-affinity caching as a soft hint (about 100k namespaces per node, 250M+ namespaces seen); BYOC with a pull-based ops agent (the BYOC-local-meta model, D64) |
+| WarpStream | Proprietary | Leaderless Kafka on S3, zone-aware routing, metadata-sequenced offsets (a control plane on DynamoDB, Spanner or Cosmos DB), multi-zonal Express WAL (verify); BYOC where only file metadata crosses to the control plane (the BYOC-managed-meta model, D64) |
 | StreamNative Ursa | Proprietary (open-sourcing promised) | Leaderless log protocol (TLA+), WAL → Iceberg compaction |
 | AutoMQ | Apache-2.0 (Java) | S3Stream WAL/cache split, EBS multi-attach failover + fencing, S3-proxied cross-AZ produce, Table Topic |
 | ClickHouse / ClickHouse Cloud | Apache-2.0 / proprietary | MergeTree granules, sparse PK index, skip indexes, projections (for the Iceberg hot tier, §04 §3); SharedMergeTree, Shared Catalog, distributed cache |
@@ -91,12 +100,16 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | MosaicML Streaming | Apache-2.0 | Elastic determinism (a seeded shuffle over canonical partitions, `num_canonical_nodes`) and mid-epoch resume: the model for `loamdb.torch`'s sampler (§17 §5.5) |
 | Sail (object-store shuffle) | Apache-2.0 | Stateless workers with blocking shuffle to object storage and checkpointing (0.7): a reference for M6's distributed shuffle |
 | TileDB | MIT (core) | Timestamped fragments and named retained snapshots (the idea behind dataset tags, D52); a tensor column type (Q19) |
+| Neki (PlanetScale) | Proprietary (public docs only) | A versioned data topology replaced whole and pushed to stateless routers; routers that buffer writes during cutover; no atomic cross-shard commits in its preview: references for the namespace directory and moves (D63, §18 §5.8) |
+| PgDog | **AGPL-3.0** (reference only; no code copied) | Rust Postgres router: shard routing, scatter-gather, two-phase commit with a coordinator WAL, resharding by logical replication, centroid-based vector sharding (`pgdog-vector`) (D63) |
 
 ## 4. Companions (run alongside, not embedded)
 
 | System | License | Role next to Operon | Integration surface | Why not embed |
 |---|---|---|---|---|
-| Lakekeeper | Apache-2.0 (Rust) | Iceberg REST catalog (bundled, M4) | Iceberg REST | Already listed in §1; separate process by design |
+| Lakekeeper | Apache-2.0 (Rust) | Iceberg REST catalog (bundled, M4); shares one OpenFGA store with Loam (D67, default) | Iceberg REST | Already listed in §1; separate process by design |
+| OpenFGA server | Apache-2.0 | Fine-grained authorization for the `OpenFga` authorizer (M2.x, D67) | gRPC through `openfga-client` | A separate service by design, shared with Lakekeeper |
+| RustFS | Apache-2.0 (contributions need a CLA with RustFS, Inc.; the commercial `license` feature is off by default) | The default local and self-hosted object store (D61), replacing MinIO | S3 API | A separate server; Loam reaches it through `object_store` like any S3 endpoint |
 | Spice | Apache-2.0 (Spice.ai Enterprise proprietary) | Federation and acceleration for agent apps, with Operon as a Flight SQL source (M1 gate, D56); also a competitor (§12 risk 11) | Flight SQL | Ships forks of DataFusion and arrow-rs (§5) |
 | Sail | Apache-2.0 (Rust) | Spark Connect compute for PySpark curation jobs: reads collections through `format("loam")` (M2) and tables through Iceberg REST (M4 gate, D55) | Python data source; Iceberg REST | DataFusion version lockstep (§5) |
 | Ray | Apache-2.0 | Distributed curation, embedding backfills and batch inference over collections (M2) | Scan plans + Lance fragments; Flight `DoPut` | Python compute cluster, run by the user |
@@ -132,6 +145,10 @@ Stream-processor companions (RisingWave, Arroyo, Flink) connect over the Kafka s
 | Moonlink (Mooncake) | BSL 1.1 | License; abandoned after Databricks acquisition |
 | Databend `ee/` directories | ELv2 | License (Apache core is fine to study) |
 | Bufstream, WarpStream | Proprietary | Closed |
+| MinIO (community) | AGPL-3.0 | Archived after maintenance mode (2025-12-03); was only ever a documented local store, never linked. Replaced by RustFS (D61) |
+| ScyllaDB 2025.1 and later | ScyllaDB Software License Agreement (source-available) | Caps use, bans DBaaS and competing use; only the AGPL 6.2.3 image is used, as a CI service (§1.1) |
+| LocalStack (2026) | Commercial; the single image needs an auth token | The Community edition ended 2026-03-23; floci replaces it (D60) |
+| `tikv-client` | Apache-2.0 | Needs a real PD and TiKV cluster and rebuilds in KV what TiDB's SQL layer provides; TiDB is reached over the MySQL protocol with sqlx (D58) |
 | Kuzu forks as core (Ladybug, RyuGraph, Bighorn) | MIT | C++, local-disk, single-writer — wrong architecture for stateless S3 compute |
 | Qdrant as storage | Apache-2.0 | Local-disk architecture (use its index code only) |
 | Quickwit as a service | Apache-2.0 | Append-only; duplicates our metastore/ingest (use its crates) |
@@ -154,7 +171,7 @@ These are what turbopuffer, LanceDB Enterprise, AutoMQ commercial and ClickHouse
 5. **Compatibility gateways**: Qdrant, the Elasticsearch subset scoped by the framework suites (D48), and Arrow Flight SQL with `DoPut` ingest (§05, §06).
 6. **Log engine** with `standard` / `express` (multi-zonal quorum) / `quorum` (Raft journals) WAL classes, leaderless sequencing, segmenting, `kafka`/`arrow` segment encodings, changelog streams with fenced appends, and the native streaming API with idempotent producers and named consumers (§02).
 7. **Links**: exactly-once declarative materialization with transforms and `embed()` (§09).
-8. **Pluggable metastore**: the semantic `MetaStore` trait with openraft, Postgres and FoundationDB backends, held to one conformance and linearizability suite (§01 §3.2, D47).
+8. **Pluggable metastore**: the semantic `MetaStore` trait with openraft, Postgres and DynamoDB backends (TiDB in M6), held to one conformance and linearizability suite and a fault matrix per backend, plus the sharded metastore and namespace router (§01 §3.2, §18, D47, D58–D63).
 9. **Iceberg hot tier**: T0 file index, hot projections (MergeTree-on-NVMe), real-time tail (§04 §3).
 10. **Iceberg DV writer / RowDelta** — contributed upstream to iceberg-rust.
 11. **Durable-execution integration**: the Resonate surface on Operon's store, auth and routing; in Phase B the change stream, search index, execution graph and cluster-wide timer shards (§14).
@@ -171,7 +188,8 @@ These are what turbopuffer, LanceDB Enterprise, AutoMQ commercial and ClickHouse
 - Graph: github.com/LadybugDB/ladybug · github.com/apache/incubator-graphar · github.com/HelixDB/helix-db · github.com/cwida/duckpgq-extension · github.com/vesoft-inc/nebula
 - Storage/infra: github.com/slatedb/slatedb · github.com/databendlabs/openraft · datafusion.apache.org · github.com/datafusion-contrib/datafusion-distributed · docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html
 - ClickHouse / StarRocks: clickhouse.com/blog/clickhouse-cloud-stateless-compute · clickhouse.com/blog/full-text-search-ga-release · docs.starrocks.io (data cache, shared-data mode)
-- Metastore backends and Flight SQL clients: github.com/sfackler/rust-postgres · github.com/launchbadge/sqlx · github.com/foundationdb-rs/foundationdb-rs · github.com/apache/arrow-adbc
+- Metastore backends and Flight SQL clients: github.com/launchbadge/sqlx · github.com/awslabs/aws-sdk-rust (`aws-sdk-dynamodb`) · github.com/pingcap/tidb · github.com/apache/arrow-adbc
+- CI targets, authorization and routing (§18 §12 has the full list): github.com/floci-io/floci · docs.scylladb.com/manual/stable/alternator/compatibility.html · github.com/rustfs/rustfs · github.com/Shopify/toxiproxy · github.com/vakamo-labs/openfga-client · github.com/openfga/openfga · planetscale.com/blog/the-architecture-of-neki · github.com/pgdogdev/pgdog
 - Fluss: github.com/apache/fluss · fluss.apache.org/blog/releases/0.9 · github.com/apache/fluss-rust · jack-vanlightly.com/blog/2025/9/2/understanding-apache-fluss
 - AI data ecosystem (§17 §9 has the full list): github.com/spiceai/spiceai · github.com/lakehq/sail (issue 2573) · docs.ray.io/en/latest/data/api/doc/ray.data.Datasource.html · github.com/lance-format/lance-ray · docs.pola.rs/api/python/stable/reference/api/polars.io.plugins.register_io_source.html · lance.org/integrations/pytorch · docs.mosaicml.com/projects/streaming/en/latest/distributed_training/elastic_determinism.html · docs.databricks.com/aws/en/archive/machine-learning/petastorm · github.com/TileDB-Inc/tiledb-rs
 - Resonate: github.com/resonatehq/resonate (`impl/server/core/crates/resonate-server-blob/README.md`, `impl/server/s3/docs/on-s3.md`, `spec/`) · resonatehq.io/durable-execution
