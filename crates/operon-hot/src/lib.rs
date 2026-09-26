@@ -12,7 +12,9 @@
 //! - [`splits`] and [`prefetch`]: whole split files pinned on local NVMe,
 //!   and Lance files read ahead into the range cache (Ruling 9);
 //! - [`budget`] and [`heat`]: what a node keeps when NVMe, RAM or open
-//!   artifacts run out, and the heat that promotes and demotes collections.
+//!   artifacts run out, and the heat that promotes and demotes collections;
+//! - [`status`] and [`placement`]: the hot status of a collection, and the
+//!   single-node placement.
 //!
 //! This crate reaches the metastore only through
 //! [`MetaStore`](operon_common::meta::MetaStore) (D47).
@@ -25,8 +27,10 @@ pub mod delta;
 mod error;
 pub mod heat;
 pub mod live;
+pub mod placement;
 pub mod prefetch;
 pub mod splits;
+pub mod status;
 pub mod tier;
 pub mod view;
 
@@ -51,10 +55,15 @@ pub use delta::{DeltaIndex, Extension};
 pub use error::TierError;
 pub use heat::HeatSketch;
 pub use live::{DeletedDocsCache, live_rows, live_rows_cached};
+pub use placement::AlwaysLocal;
 pub use prefetch::{
     FragmentProgress, PrefetchPass, prefetch_fragments, prefetch_fragments_resuming,
 };
 pub use splits::{PinnedSplits, SPLIT_PIECE_BYTES, download_split};
+pub use status::{
+    ColumnStatus, DetailedHotStatus, FragmentsStatus, HotStateKind, OwnerStatus, TextStatus,
+    VectorsStatus, disabled_status,
+};
 pub use tier::{HotTierImpl, ReconcileReport, TierCounters};
 pub use view::{ColumnView, LoadedArtifact};
 

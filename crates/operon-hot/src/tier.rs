@@ -140,6 +140,17 @@ pub(crate) struct OverBudget {
     pub(crate) text: bool,
 }
 
+/// What the last pass read of one owned, hot collection's live manifest
+/// (for `HotTier::status`, Task 8).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Seen {
+    pub(crate) manifest_version: u64,
+    pub(crate) lance_version: u64,
+    pub(crate) splits: Vec<Ulid>,
+    /// `VectorSpec.name` of each dense vector, in schema order.
+    pub(crate) vectors: Vec<String>,
+}
+
 /// A promotion lease this node holds.
 #[derive(Clone, Copy, Debug)]
 struct Promotion {
@@ -214,6 +225,8 @@ struct TierInner {
     over_budget: RwLock<HashMap<Key, OverBudget>>,
     /// The last load error of each column, until it loads.
     load_errors: RwLock<HashMap<(Key, String), String>>,
+    /// The last pass's view of each owned, hot collection's manifest.
+    seen: RwLock<HashMap<Key, Seen>>,
     counters: Counters,
     /// Serializes reconcile passes.
     reconciling: tokio::sync::Mutex<()>,
@@ -345,6 +358,7 @@ impl HotTierImpl {
                 info: RwLock::new(HashMap::new()),
                 over_budget: RwLock::new(HashMap::new()),
                 load_errors: RwLock::new(HashMap::new()),
+                seen: RwLock::new(HashMap::new()),
                 counters: Counters::default(),
                 reconciling: tokio::sync::Mutex::new(()),
                 currency: CurrencyCache::new(),
@@ -578,6 +592,7 @@ impl HotTierImpl {
 
         // 2. Load, extend, pin and prefetch.
         let mut over = HashMap::new();
+        let mut seen = HashMap::new();
         let mut keys: Vec<Key> = infos.keys().copied().collect();
         keys.sort_unstable();
         for (ns, cid) in keys {
@@ -592,6 +607,22 @@ impl HotTierImpl {
                     continue;
                 }
             };
+            let manifest = snapshot.manifest();
+            seen.insert(
+                (ns, cid),
+                Seen {
+                    manifest_version: manifest.version,
+                    lance_version: manifest.lance_version,
+                    splits: manifest.splits.iter().map(|split| split.ulid).collect(),
+                    vectors: snapshot
+                        .collection()
+                        .schema
+                        .vectors
+                        .iter()
+                        .map(|vector| vector.name.clone())
+                        .collect(),
+                },
+            );
             let mut flags = OverBudget::default();
             if serve.vectors
                 && let Err(err) = self
@@ -619,6 +650,13 @@ impl HotTierImpl {
             .over_budget
             .write()
             .unwrap_or_else(PoisonError::into_inner) = over;
+        {
+            let mut kept = inner.seen.write().unwrap_or_else(PoisonError::into_inner);
+            // A collection whose snapshot failed keeps what the pass before
+            // saw.
+            kept.retain(|key, _| infos.contains_key(key));
+            kept.extend(seen);
+        }
 
         // 3. Structures of collections no longer owned, hot or present.
         {
@@ -812,14 +850,39 @@ impl HotTierImpl {
                 inner.node_id
             )));
         }
+        self.mark_warm(ns, cid);
+        self.reconcile_once().await?;
+        Ok(())
+    }
+
+    /// [`warm`](Self::warm) without waiting: marks the collection warm now
+    /// and runs the pass in the background (the loop would pick it up at
+    /// its next pass anyway). The HTTP warm route uses it (Task 8).
+    pub fn start_warm(&self, ns: NamespaceId, cid: CollectionId) -> Result<(), TierError> {
+        if !self.inner.config.enabled {
+            return Err(TierError::Other(format!(
+                "the hot tier is off on node {}",
+                self.inner.node_id
+            )));
+        }
+        self.mark_warm(ns, cid);
+        let tier = self.clone();
+        tokio::spawn(async move {
+            if let Err(err) = tier.reconcile_once().await {
+                tracing::warn!(namespace = %ns, collection = %cid, %err, "the pass after a warm failed");
+            }
+        });
+        Ok(())
+    }
+
+    fn mark_warm(&self, ns: NamespaceId, cid: CollectionId) {
+        let inner = &*self.inner;
         inner.heat.raise_to(ns, cid, inner.config.promote_min_hits);
         inner
             .warm
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert((ns, cid));
-        self.reconcile_once().await?;
-        Ok(())
     }
 
     /// The heat of `(ns, cid)` (its sketch estimate).
@@ -1432,6 +1495,110 @@ impl HotTierImpl {
     }
 }
 
+/// Read access to the tier's state for the status (Task 8).
+impl HotTierImpl {
+    pub(crate) fn ctx(&self) -> &CollectionContext {
+        &self.inner.ctx
+    }
+
+    pub(crate) fn config(&self) -> &HotTierConfig {
+        &self.inner.config
+    }
+
+    pub(crate) fn node_id(&self) -> u64 {
+        self.inner.node_id
+    }
+
+    pub(crate) fn is_warm(&self, ns: NamespaceId, cid: CollectionId) -> bool {
+        self.inner
+            .warm
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&(ns, cid))
+    }
+
+    pub(crate) fn holds_promotion(&self, ns: NamespaceId, cid: CollectionId) -> bool {
+        self.inner
+            .promotions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(&(ns, cid))
+    }
+
+    pub(crate) fn last_info(&self, ns: NamespaceId, cid: CollectionId) -> Option<HotInfo> {
+        self.info(ns, cid)
+    }
+
+    pub(crate) fn last_seen(&self, ns: NamespaceId, cid: CollectionId) -> Option<Seen> {
+        self.inner
+            .seen
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&(ns, cid))
+            .cloned()
+    }
+
+    pub(crate) fn over_budget_of(&self, ns: NamespaceId, cid: CollectionId) -> OverBudget {
+        self.inner
+            .over_budget
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&(ns, cid))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// The loaded artifact's source version and delta size of `column`, and
+    /// its last load error.
+    pub(crate) fn column_facts(
+        &self,
+        ns: NamespaceId,
+        cid: CollectionId,
+        column: &str,
+    ) -> (Option<u64>, u64, Option<String>) {
+        let (source, delta) = self
+            .read_state()
+            .get(&(ns, cid))
+            .and_then(|columns| columns.get(column))
+            .map_or((None, 0), |state| {
+                (
+                    Some(state.artifact.descriptor.source_version),
+                    state.delta.appended(),
+                )
+            });
+        let error = self
+            .inner
+            .load_errors
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&((ns, cid), column.to_string()))
+            .cloned();
+        (source, delta, error)
+    }
+
+    /// How many of `splits` are pinned here.
+    pub(crate) fn pinned_count(&self, ns: NamespaceId, cid: CollectionId, splits: &[Ulid]) -> u64 {
+        splits
+            .iter()
+            .filter(|ulid| self.inner.splits.contains(&(ns, cid, **ulid)))
+            .count() as u64
+    }
+
+    /// The Lance version prefetched last and where it stands.
+    pub(crate) fn fragment_facts(
+        &self,
+        ns: NamespaceId,
+        cid: CollectionId,
+    ) -> Option<(u64, PrefetchPass)> {
+        self.inner
+            .fragments
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&(ns, cid))
+            .map(|state| (state.lance_version, state.last))
+    }
+}
+
 impl HotTier for HotTierImpl {
     fn ann(
         &self,
@@ -1471,6 +1638,12 @@ impl HotTier for HotTierImpl {
             .split_files_served
             .fetch_add(1, Ordering::Relaxed);
         Some(path)
+    }
+
+    /// Task 8: the state and source version of each structure as of the
+    /// last reconcile pass (no metastore read).
+    fn status(&self, ns: NamespaceId, cid: CollectionId) -> operon_query::hot::HotStatus {
+        self.pass_status(ns, cid)
     }
 
     /// Task 7 rule 4: one hit in the heat sketch.

@@ -5307,6 +5307,8 @@ dependencies = [
  "operon-cache",
  "operon-collection",
  "operon-common",
+ "operon-hnsw",
+ "operon-hot",
  "operon-link",
  "operon-log",
  "operon-meta",
