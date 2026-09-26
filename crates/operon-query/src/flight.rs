@@ -39,6 +39,7 @@ use operon_collection::{ConsistencyToken, MAX_WRITE_OPS};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::error::ServiceError;
@@ -278,6 +279,10 @@ pub struct OperonFlightSql {
     streams: Option<Arc<dyn StreamProducer>>,
     config: FlightConfig,
     sql_info: Arc<SqlInfoData>,
+    /// The put tasks, so a shutdown can wait for them.
+    puts: TaskTracker,
+    /// Cancelled when the server shuts down; stops the puts.
+    stop: CancellationToken,
 }
 
 impl std::fmt::Debug for OperonFlightSql {
@@ -369,7 +374,16 @@ impl OperonFlightSql {
             streams: None,
             config,
             sql_info: Arc::new(sql_info_data()),
+            puts: TaskTracker::new(),
+            stop: CancellationToken::new(),
         }
+    }
+
+    /// Tracks the put tasks in `puts` and stops them once `stop` is
+    /// cancelled: a put waiting for a message stops at once, one writing
+    /// stops before its next chunk.
+    pub fn with_put_tasks(self, puts: TaskTracker, stop: CancellationToken) -> Self {
+        Self { puts, stop, ..self }
     }
 
     /// Serves stream ingest through `streams` (Task 13 rule 7).
@@ -401,14 +415,25 @@ impl OperonFlightSql {
         }
     }
 
-    /// Runs `put` over `data` in a task of its own, so a client that leaves
-    /// stops it only after the chunk in flight (Task 13 rule 5).
+    /// A put into `sink`, stopped by the server's shutdown.
+    fn put(&self, sink: Sink) -> Put {
+        Put::new(
+            self.service.clone(),
+            sink,
+            self.config.put_chunk_rows,
+            self.stop.clone(),
+        )
+    }
+
+    /// Runs `put` over `data` in a tracked task of its own, so a client that
+    /// leaves stops it only after the chunk in flight (Task 13 rule 5).
     fn spawn_put(
+        &self,
         mut put: Put,
         data: PeekableFlightDataStream,
         acks: Option<Acks>,
     ) -> tokio::task::JoinHandle<Result<u64, Status>> {
-        tokio::spawn(async move {
+        self.puts.spawn(async move {
             let result = put.run(data, acks.as_ref()).await;
             match result {
                 Ok(()) => Ok(put.written),
@@ -709,9 +734,9 @@ impl FlightSqlService for OperonFlightSql {
                 }
             }
         };
-        let put = Put::new(self.service.clone(), sink, self.config.put_chunk_rows);
+        let put = self.put(sink);
         let (acks, received) = tokio::sync::mpsc::channel(4);
-        Self::spawn_put(put, request.into_inner(), Some(acks));
+        self.spawn_put(put, request.into_inner(), Some(acks));
         let stream = futures::stream::unfold(received, |mut received| async move {
             let item = received.recv().await?.map(|ack| PutResult {
                 app_metadata: Bytes::from(
@@ -780,8 +805,9 @@ impl FlightSqlService for OperonFlightSql {
                 }
             }
         };
-        let put = Put::new(self.service.clone(), sink, self.config.put_chunk_rows);
-        let written = Self::spawn_put(put, request.into_inner(), None)
+        let put = self.put(sink);
+        let written = self
+            .spawn_put(put, request.into_inner(), None)
             .await
             .map_err(|err| Status::internal(format!("the put task failed: {err}")))??;
         Ok(i64::try_from(written).unwrap_or(i64::MAX))
@@ -801,14 +827,32 @@ pub async fn serve_flight_sql(
     config: FlightConfig,
     shutdown: CancellationToken,
 ) -> Result<(), tonic::transport::Error> {
+    let puts = TaskTracker::new();
+    serve_flight_sql_tracked(listener, service, streams, config, shutdown, puts).await
+}
+
+/// [`serve_flight_sql`], with the put tasks in `puts`. Once `shutdown` is
+/// cancelled the puts stop (a put waiting for a message at once, one
+/// writing before its next chunk), and the server waits for them after the
+/// calls in flight. A caller that gives up waiting for the server can still
+/// wait for `puts` before it stops what the puts write through.
+pub async fn serve_flight_sql_tracked(
+    listener: tokio::net::TcpListener,
+    service: Arc<CollectionService>,
+    streams: Option<Arc<dyn StreamProducer>>,
+    config: FlightConfig,
+    shutdown: CancellationToken,
+    puts: TaskTracker,
+) -> Result<(), tonic::transport::Error> {
     let hot = HotLayer::new(service.config().hot_default);
     let max_message_bytes = config.max_message_bytes;
-    let mut flight_sql = OperonFlightSql::new(service, config);
+    let mut flight_sql =
+        OperonFlightSql::new(service, config).with_put_tasks(puts.clone(), shutdown.clone());
     if let Some(streams) = streams {
         flight_sql = flight_sql.with_streams(streams);
     }
     let flight = FlightServiceServer::new(flight_sql).max_decoding_message_size(max_message_bytes);
-    tonic::transport::Server::builder()
+    let result = tonic::transport::Server::builder()
         .layer(hot)
         .add_service(flight)
         .serve_with_incoming_shutdown(
@@ -818,7 +862,10 @@ pub async fn serve_flight_sql(
             ),
             shutdown.cancelled_owned(),
         )
-        .await
+        .await;
+    puts.close();
+    puts.wait().await;
+    result
 }
 
 /// How long the Flight SQL listener waits after a failed accept.

@@ -21,7 +21,7 @@ use operon_log::{
     SegmenterSource,
 };
 use operon_meta::{MetaClient, MetaClientConfig, MetaConfig, MetaNode, Router, SystemClock};
-use operon_query::flight::{FlightConfig, serve_flight_sql};
+use operon_query::flight::{FlightConfig, serve_flight_sql_tracked};
 use operon_query::flight_ingest::StreamProducer;
 use operon_query::{CollectionService, ServiceConfig};
 use operon_store::Store;
@@ -29,6 +29,7 @@ use operon_worker::{Worker, WorkerConfig, WorkerHandle};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use ulid::Ulid;
 
 use crate::api::{self, AppState, NativeStreamProducer};
@@ -181,6 +182,8 @@ struct Flight {
     addr: SocketAddr,
     task: JoinHandle<()>,
     stop: CancellationToken,
+    /// The `DoPut` tasks, which outlive an aborted `task`.
+    puts: TaskTracker,
 }
 
 impl Flight {
@@ -194,14 +197,41 @@ impl Flight {
         config: FlightConfig,
     ) -> Self {
         let stop = CancellationToken::new();
-        let task = tokio::spawn(serve(listener, collections, streams, config, stop.clone()));
-        Self { addr, task, stop }
+        let puts = TaskTracker::new();
+        let task = tokio::spawn(serve(
+            listener,
+            collections,
+            streams,
+            config,
+            stop.clone(),
+            puts.clone(),
+        ));
+        Self {
+            addr,
+            task,
+            stop,
+            puts,
+        }
     }
 
-    /// Stops accepting calls and waits for the calls in flight.
+    /// Stops accepting calls, waits up to [`HTTP_GRACE`] for the calls in
+    /// flight (a `DoGet` may stream for minutes) and aborts the rest, then
+    /// waits for the puts, which stop before their next chunk, so none
+    /// writes after the collection service and the writer stop.
     async fn stop(self) {
         self.stop.cancel();
-        let _ = self.task.await;
+        let mut task = self.task;
+        if tokio::time::timeout(HTTP_GRACE, &mut task).await.is_err() {
+            tracing::warn!("in-flight Flight SQL calls did not finish; aborting them");
+            task.abort();
+        }
+        self.puts.close();
+        if tokio::time::timeout(HTTP_GRACE, self.puts.wait())
+            .await
+            .is_err()
+        {
+            tracing::warn!("a Flight put did not finish its chunk in flight");
+        }
     }
 }
 
@@ -211,8 +241,11 @@ async fn serve(
     streams: Arc<dyn StreamProducer>,
     config: FlightConfig,
     stop: CancellationToken,
+    puts: TaskTracker,
 ) {
-    if let Err(err) = serve_flight_sql(listener, collections, Some(streams), config, stop).await {
+    let served =
+        serve_flight_sql_tracked(listener, collections, Some(streams), config, stop, puts).await;
+    if let Err(err) = served {
         tracing::error!(%err, "Flight SQL server failed");
     }
 }

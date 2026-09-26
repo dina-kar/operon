@@ -38,7 +38,7 @@ tantivy-fst.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
 tonic.workspace = true
 tower.workspace = true
 tracing.workspace = true

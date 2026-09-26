@@ -36,6 +36,7 @@ use operon_collection::{
 use operon_log::{AppendAck, Record};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use tokio_util::sync::CancellationToken;
 use tonic::Status;
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -1073,6 +1074,15 @@ pub(crate) struct Put {
     /// Rows acknowledged so far.
     pub(crate) written: u64,
     token: ConsistencyToken,
+    /// Cancelled when the server shuts down: the put stops while it waits
+    /// for a message and before its next chunk (the chunk in flight
+    /// finishes).
+    stop: CancellationToken,
+}
+
+/// The status of a put the server's shutdown stopped.
+fn shutting_down() -> PutError {
+    PutError::Status(Status::unavailable("the server is shutting down"))
 }
 
 /// Rewrites a refused chunk's `op {i}` as `batch {b} row {r}` (rule 6).
@@ -1120,13 +1130,19 @@ fn rewrite_record(err: ServiceError, batch: u64, rows: &BTreeMap<u32, Vec<usize>
 }
 
 impl Put {
-    pub(crate) fn new(service: Arc<CollectionService>, sink: Sink, chunk_rows: usize) -> Self {
+    pub(crate) fn new(
+        service: Arc<CollectionService>,
+        sink: Sink,
+        chunk_rows: usize,
+        stop: CancellationToken,
+    ) -> Self {
         Self {
             service,
             sink,
             chunk_rows,
             written: 0,
             token: ConsistencyToken::default(),
+            stop,
         }
     }
 
@@ -1174,7 +1190,8 @@ impl Put {
     /// Reads `data` to its end, writing every batch in chunks. `acks`, when
     /// set, gets each batch's acknowledgement once every chunk of it is
     /// written; once its receiver is gone the put stops before its next
-    /// chunk (acknowledged chunks stay written).
+    /// chunk (acknowledged chunks stay written). A shutdown stops it the
+    /// same way, with `Unavailable`.
     pub(crate) async fn run<S>(&mut self, data: S, acks: Option<&Acks>) -> Result<(), PutError>
     where
         S: Stream<Item = Result<FlightData, Status>> + Send + 'static,
@@ -1183,7 +1200,14 @@ impl Put {
             FlightDataDecoder::new(data.map_err(|status| FlightError::Tonic(Box::new(status))));
         let mut mapper: Option<Mapper> = None;
         let mut batch_no: u64 = 0;
-        while let Some(item) = decoder.next().await {
+        loop {
+            let item = tokio::select! {
+                item = decoder.next() => item,
+                () = self.stop.cancelled() => return Err(shutting_down()),
+            };
+            let Some(item) = item else {
+                break;
+            };
             let decoded = match item {
                 Ok(decoded) => decoded,
                 Err(FlightError::Tonic(status)) => return Err(PutError::Status(*status)),
@@ -1251,6 +1275,9 @@ impl Put {
         for range in chunk_ranges(ops.len(), self.chunk_rows) {
             if acks.is_some_and(|acks| acks.is_closed()) {
                 return Ok(None);
+            }
+            if self.stop.is_cancelled() {
+                return Err(shutting_down());
             }
             let chunk: Vec<DocOp> = ops.drain(..range.len()).collect();
             let result = self
@@ -1320,6 +1347,9 @@ impl Put {
         for range in chunk_ranges(rows.len(), self.chunk_rows) {
             if acks.is_some_and(|acks| acks.is_closed()) {
                 return Ok(None);
+            }
+            if self.stop.is_cancelled() {
+                return Err(shutting_down());
             }
             let mut grouped: BTreeMap<u32, (Vec<Record>, Vec<usize>)> = BTreeMap::new();
             for (row, (partition, record)) in rows.drain(..range.len()).enumerate() {

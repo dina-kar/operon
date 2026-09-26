@@ -931,3 +931,41 @@ async fn sql_info_declares_bulk_ingestion() {
     assert!(flag(SqlInfo::FlightSqlServerReadOnly));
     api.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_stalled_put_does_not_hang_shutdown() {
+    let api = Native::start_flight().await;
+    create_kb(&api, "w", "ignore").await;
+    let mut client = flight(&api, "w").await;
+    // One batch, then a client that never sends another message nor ends
+    // its stream.
+    let descriptor = FlightDescriptor::new_path(vec!["collections".into(), "kb".into()]);
+    let first = FlightDataEncoderBuilder::new()
+        .with_flight_descriptor(Some(descriptor))
+        .build(futures::stream::iter([Ok(kb_batch(0..10, "apple", None))]));
+    let data = first.chain(futures::stream::pending());
+    let mut responses = client.do_put(data).await.expect("the put starts");
+    let ack = responses
+        .next()
+        .await
+        .expect("an acknowledgement")
+        .expect("the first batch is written");
+    let ack: PutAck = serde_json::from_slice(&ack.app_metadata).expect("a PutAck");
+    assert_eq!((ack.batch, ack.rows), (0, 10));
+
+    // The put waits for its next message; shutdown stops it at once instead
+    // of waiting for the client (the #25 review): well within the 10 s grace
+    // after which the server would abort the calls in flight.
+    tokio::time::timeout(std::time::Duration::from_secs(8), api.shutdown())
+        .await
+        .expect("shutdown does not wait for the stalled put");
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Some(response) = responses.next().await {
+            if response.is_err() {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the put's answer stream ends");
+}
