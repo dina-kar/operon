@@ -24,6 +24,13 @@ allow = [
 confidence-threshold = 0.9
 unused-allowed-license = "allow"
 
+# stringmetrics (via httpmock, dev tooling in operon-console-mock) states its
+# license only as a LICENSE file: Apache-2.0.
+[[licenses.clarify]]
+crate = "stringmetrics"
+expression = "Apache-2.0"
+license-files = [{ path = "LICENSE", hash = 0x0fb72a18 }]
+
 [bans]
 multiple-versions = "allow"
 wildcards = "deny"
