@@ -283,6 +283,11 @@ impl ServerConfig {
                     "collection.index_commit_delay",
                     self.collection.index_commit_delay,
                 ),
+                ("maintenance.commit_delay", self.maintenance.commit_delay),
+                (
+                    "hot_build.artifact_commit_delay",
+                    self.hot_build.artifact_commit_delay,
+                ),
             ])
             .map_err(|err| ServerError::Config(err.to_string()))
     }

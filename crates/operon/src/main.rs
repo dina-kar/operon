@@ -43,7 +43,8 @@ struct Tuning {
     retention_interval_ms: Option<u64>,
     /// Garbage collection's grace period. Also sets every freshness deadline
     /// to half of it: the segmenter's swap deadline, the link (and
-    /// collection) commit delay and the collection index commit delay.
+    /// collection) commit delay, the collection index commit delay, the
+    /// maintenance commit delay and the hot artifact commit delay.
     #[arg(long, hide = true)]
     gc_grace_ms: Option<u64>,
     /// How often garbage collection runs.
@@ -134,6 +135,8 @@ impl Tuning {
             config.link.max_commit_delay = ms(v / 2);
             config.collection.max_commit_delay = ms(v / 2);
             config.collection.index_commit_delay = ms(v / 2);
+            config.maintenance.commit_delay = ms(v / 2);
+            config.hot_build.artifact_commit_delay = ms(v / 2);
         }
         if let Some(v) = self.gc_interval_ms {
             config.gc.interval = ms(v);
@@ -608,6 +611,8 @@ mod tests {
         assert_eq!(config.link.max_commit_delay, half);
         assert_eq!(config.collection.max_commit_delay, half);
         assert_eq!(config.collection.index_commit_delay, half);
+        assert_eq!(config.maintenance.commit_delay, half);
+        assert_eq!(config.hot_build.artifact_commit_delay, half);
         config.validate().expect("valid");
     }
 
