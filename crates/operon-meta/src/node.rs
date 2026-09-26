@@ -622,6 +622,14 @@ impl MetaNode {
         }
     }
 
+    /// The log index of the effective membership's entry (`None` before
+    /// the first one): unchanged by a no-op join (M1.3 Task 11).
+    pub fn membership_log_index(&self) -> Option<u64> {
+        let metrics = self.inner.raft.metrics();
+        let m = metrics.borrow_watched();
+        m.membership_config.log_id().as_ref().map(|id| id.index)
+    }
+
     /// Whether this node believes it is the leader.
     pub fn is_leader(&self) -> bool {
         self.inner.raft.metrics().borrow_watched().current_leader == Some(self.inner.id)
