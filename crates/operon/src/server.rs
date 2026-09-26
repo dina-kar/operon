@@ -22,6 +22,7 @@ use operon_log::{
 };
 use operon_meta::{MetaClient, MetaClientConfig, MetaConfig, MetaNode, Router, SystemClock};
 use operon_query::flight::{FlightConfig, serve_flight_sql};
+use operon_query::flight_ingest::StreamProducer;
 use operon_query::{CollectionService, ServiceConfig};
 use operon_store::Store;
 use operon_worker::{Worker, WorkerConfig, WorkerHandle};
@@ -30,7 +31,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
-use crate::api::{self, AppState};
+use crate::api::{self, AppState, NativeStreamProducer};
 
 /// The meta node id of a single-process Operon.
 const NODE_ID: u64 = 1;
@@ -74,7 +75,7 @@ pub struct ServerConfig {
     /// default here) serves no Flight SQL. `operon dev` and `standalone`
     /// set it.
     pub flight_sql: Option<SocketAddr>,
-    /// How Flight SQL bounds its statements.
+    /// How Flight SQL bounds its statements and its ingest.
     pub flight: FlightConfig,
 }
 
@@ -102,7 +103,8 @@ impl ServerConfig {
         }
     }
 
-    /// Rejects any freshness deadline at or above `gc.grace`:
+    /// Rejects an invalid `flight` config ([`FlightConfig::validate`]), then
+    /// any freshness deadline at or above `gc.grace`:
     /// `segmenter.swap_deadline`, `link.max_commit_delay` (which is also the
     /// collection commit delay: the server sets `collection.max_commit_delay`
     /// to it) and `collection.index_commit_delay`. Called first thing by
@@ -114,6 +116,7 @@ impl ServerConfig {
     /// its new objects strictly within it (M0.4 ruling E7, re-review m1;
     /// plan M1.1 Ruling 22).
     pub fn validate(&self) -> Result<(), ServerError> {
+        self.flight.validate().map_err(ServerError::Config)?;
         self.gc
             .check_deadlines(&[
                 ("segmenter.swap_deadline", self.segmenter.swap_deadline),
@@ -182,15 +185,16 @@ struct Flight {
 
 impl Flight {
     /// Serves Flight SQL over `collections` on `listener` until stopped
-    /// (Task 12).
+    /// (Task 12), with stream ingest through `streams` (Task 13).
     fn start(
         listener: tokio::net::TcpListener,
         addr: SocketAddr,
         collections: Arc<CollectionService>,
+        streams: Arc<dyn StreamProducer>,
         config: FlightConfig,
     ) -> Self {
         let stop = CancellationToken::new();
-        let task = tokio::spawn(serve(listener, collections, config, stop.clone()));
+        let task = tokio::spawn(serve(listener, collections, streams, config, stop.clone()));
         Self { addr, task, stop }
     }
 
@@ -204,10 +208,11 @@ impl Flight {
 async fn serve(
     listener: tokio::net::TcpListener,
     collections: Arc<CollectionService>,
+    streams: Arc<dyn StreamProducer>,
     config: FlightConfig,
     stop: CancellationToken,
 ) {
-    if let Err(err) = serve_flight_sql(listener, collections, config, stop).await {
+    if let Err(err) = serve_flight_sql(listener, collections, Some(streams), config, stop).await {
         tracing::error!(%err, "Flight SQL server failed");
     }
 }
@@ -403,7 +408,17 @@ impl Server {
         });
         tracing::info!(%local_addr, "operon is serving");
         let flight = flight_listener.map(|(listener, addr)| {
-            Flight::start(listener, addr, collections.clone(), config.flight.clone())
+            let streams: Arc<dyn StreamProducer> = Arc::new(NativeStreamProducer {
+                meta: meta_store.clone(),
+                writer: writer.clone(),
+            });
+            Flight::start(
+                listener,
+                addr,
+                collections.clone(),
+                streams,
+                config.flight.clone(),
+            )
         });
         Ok(Self {
             local_addr,

@@ -12,6 +12,7 @@ name = "operon"
 path = "src/main.rs"
 
 [dependencies]
+async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true
 bytes.workspace = true

@@ -52,6 +52,11 @@ impl ApiError {
     pub fn code(&self) -> &'static str {
         self.code
     }
+
+    /// The body's `message`.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 impl IntoResponse for ApiError {

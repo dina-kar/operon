@@ -7,6 +7,7 @@ mod collections;
 mod errors;
 mod query;
 mod sql;
+pub mod streams;
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -22,10 +23,8 @@ use axum::routing::{get, post};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::Bytes;
-use operon_collection::{ConsistencyToken, PrimaryKey, partition_of};
-use operon_common::meta::{
-    Collection, Consistency, MetaStore, Retention, StreamState, TargetRef, WalClass,
-};
+use operon_collection::ConsistencyToken;
+use operon_common::meta::{Consistency, MetaStore, Retention, StreamState, TargetRef, WalClass};
 use operon_common::{NamespaceId, StreamId};
 use operon_link::{COUNTER_KIND, CounterTable, TargetRegistry};
 use operon_log::{FetchRequest, LogReader, LogWriter, Record};
@@ -36,6 +35,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 pub use errors::ApiError;
+pub use streams::{NativeStreamProducer, produce_records};
 
 /// The default `max_bytes` of a fetch: 1 MiB.
 const DEFAULT_MAX_BYTES: usize = 1024 * 1024;
@@ -350,31 +350,34 @@ async fn produce(
     let (Path((ns, stream, partition)), body) = (path?, body?);
     let partition = parse_partition(&partition)?;
     let request: Produce = parse_json(&body)?;
-    let id = stream_id(&*state.meta, &ns, &stream).await?;
-    let owner = if stream.starts_with(IMPLICIT_STREAM_PREFIX) {
-        Some(implicit_collection(&*state.meta, &ns, &stream, id).await?)
-    } else {
-        None
-    };
     let mut records = Vec::with_capacity(request.records.len());
-    for (i, record) in request.records.into_iter().enumerate() {
+    for record in request.records {
         let mut headers = Vec::with_capacity(record.headers.len());
         for header in record.headers {
             headers.push((header.key, decode_b64("header value", header.value)?));
         }
-        let key = decode_b64("key", record.key)?;
-        if let Some(collection) = &owner {
-            check_implicit_key(collection, partition, i, key.as_deref())?;
-        }
         records.push(Record {
-            key,
+            key: decode_b64("key", record.key)?,
             value: decode_b64("value", record.value)?,
             headers,
             // A negative timestamp gets the writer's clock.
             timestamp_ms: record.timestamp_ms.unwrap_or(-1),
         });
     }
-    let ack = state.writer.append(id, partition, records).await?;
+    let acks = produce_records(
+        &state.meta,
+        &state.writer,
+        &ns,
+        &stream,
+        vec![(partition, records)],
+    )
+    .await?;
+    let ack = acks.into_iter().next().ok_or_else(|| {
+        ApiError::from(operon_log::LogError::CommitUnknown(
+            "no acknowledgement for an append".to_string(),
+        ))
+    })?;
+    let id = ack.stream;
     let response = axum::Json(json!({
         "base_offset": ack.base_offset,
         "last_offset": ack.last_offset,
@@ -384,47 +387,6 @@ async fn produce(
     // As a collection write's token: the next offset of the partition.
     let token = ConsistencyToken(vec![(id, partition, ack.last_offset + 1)]);
     Ok(with_token(response, &token))
-}
-
-/// The collection whose implicit stream is `stream` (rule 4.1, through
-/// `Collection.stream`).
-async fn implicit_collection(
-    meta: &dyn MetaStore,
-    ns: &str,
-    stream: &str,
-    id: StreamId,
-) -> Result<Collection, ApiError> {
-    let namespace = namespace_id(meta, ns).await?;
-    meta.collections(Consistency::Local, Some(namespace))
-        .await?
-        .into_iter()
-        .find(|collection| collection.stream == id)
-        .ok_or_else(|| {
-            ApiError::not_found(format!(
-                "stream {ns}/{stream} belongs to no collection; it was dropped"
-            ))
-        })
-}
-
-/// Rule 4.2: a record produced onto `collection`'s implicit stream must be
-/// keyed by a primary key of `partition` (Ruling 17), or the link would
-/// break per-key order.
-fn check_implicit_key(
-    collection: &Collection,
-    partition: u32,
-    i: usize,
-    key: Option<&[u8]>,
-) -> Result<(), ApiError> {
-    let belongs = key
-        .and_then(|key| PrimaryKey::from_canonical(key).ok())
-        .is_some_and(|pk| partition_of(&pk, collection.partitions) == partition);
-    if belongs {
-        Ok(())
-    } else {
-        Err(ApiError::invalid(format!(
-            "record {i}: key does not belong to partition {partition}"
-        )))
-    }
 }
 
 fn query_number<T: std::str::FromStr>(
