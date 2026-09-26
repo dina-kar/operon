@@ -1809,3 +1809,35 @@ mod hooks {
         ));
     }
 }
+
+/// Task 11 carry: a metastore that cannot take a write's log append now is
+/// `Unavailable` (503), as a direct metastore call is, not `Internal`.
+#[test]
+fn metastore_errors_of_an_append_are_unavailable() {
+    use operon_collection::WriteError;
+    use operon_common::meta::MetaError;
+    use operon_log::LogError;
+
+    let cases: [fn() -> MetaError; 4] = [
+        || MetaError::NotLeader { leader: Some(2) },
+        || MetaError::NotLeader { leader: None },
+        || MetaError::Timeout,
+        || MetaError::Unavailable("stopped".to_string()),
+    ];
+    for meta in cases {
+        let message = meta().to_string();
+        for err in [
+            ServiceError::from(LogError::Meta(meta())),
+            ServiceError::from(WriteError::Log(LogError::Meta(meta()))),
+        ] {
+            assert!(
+                matches!(&err, ServiceError::Unavailable(m) if m.contains(&message)),
+                "{message} → {err:?}"
+            );
+            assert_eq!(err.http_status(), 503);
+        }
+    }
+    // Other metastore errors keep the direct mapping.
+    let config = ServiceError::from(LogError::Meta(MetaError::Config("bad".to_string())));
+    assert!(matches!(config, ServiceError::Internal(_)), "{config:?}");
+}

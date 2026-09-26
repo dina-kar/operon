@@ -196,6 +196,10 @@ impl From<LogError> for ServiceError {
             | LogError::Store(_)
             | LogError::Cache(_)) => ServiceError::Unavailable(err.to_string()),
             LogError::InvalidArgument(message) => ServiceError::InvalidArgument(message),
+            // A metastore that cannot take the append now (no leader, a
+            // timeout, a stopped node) is retryable, as it is anywhere else
+            // (Task 11 carry): the same mapping as a direct metastore call.
+            LogError::Meta(err) => err.into(),
             other => ServiceError::Internal(other.to_string()),
         }
     }
