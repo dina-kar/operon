@@ -16,9 +16,10 @@ use std::sync::Arc;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::DataFusionError;
+use datafusion::execution::SendableRecordBatchStream;
 use datafusion::execution::context::SQLOptions;
 use datafusion::logical_expr::ScalarUDF;
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::prelude::{DataFrame, SessionConfig, SessionContext};
 use futures::StreamExt;
 use operon_common::NamespaceId;
 use operon_common::meta::Collection;
@@ -158,7 +159,7 @@ fn planning(err: DataFusionError) -> ServiceError {
 
 /// An execution error: the service error it carries; DataFusion's own
 /// errors of the statement (arithmetic, casts, plans) are the caller's.
-fn execution(err: DataFusionError) -> ServiceError {
+pub(crate) fn execution(err: DataFusionError) -> ServiceError {
     if let Some(service) = carried(&err) {
         return service;
     }
@@ -182,9 +183,13 @@ pub async fn run_read_only(
         .map_err(|_| ServiceError::Timeout)?
 }
 
-async fn run(ctx: &SessionContext, sql: &str, max_rows: usize) -> Result<SqlResult, ServiceError> {
-    // The search table functions plan synchronously against the catalog
-    // cache: bring the namespaces of this context up to date first.
+/// Plans `sql` read-only in `ctx` (rules 1 and 6) without running it.
+///
+/// The search table functions plan synchronously against the catalog cache,
+/// so the namespaces of the context are refreshed first: a collection
+/// created just before the statement is visible to it. Every served surface
+/// (REST, Flight SQL) plans through here.
+pub async fn plan_read_only(ctx: &SessionContext, sql: &str) -> Result<DataFrame, ServiceError> {
     for name in ctx.catalog_names() {
         if let Some(catalog) = ctx.catalog(&name)
             && let Some(catalog) = catalog.downcast_ref::<NamespaceCatalog>()
@@ -201,8 +206,19 @@ async fn run(ctx: &SessionContext, sql: &str, max_rows: usize) -> Result<SqlResu
     read_only_options().verify_plan(&plan).map_err(|err| {
         ServiceError::InvalidArgument(format!("only read-only queries are allowed: {err}"))
     })?;
-    let frame = ctx.execute_logical_plan(plan).await.map_err(planning)?;
-    let mut stream = frame.execute_stream().await.map_err(planning)?;
+    ctx.execute_logical_plan(plan).await.map_err(planning)
+}
+
+/// Starts executing a frame [`plan_read_only`] planned, as a stream.
+pub async fn execute_read_only(
+    frame: DataFrame,
+) -> Result<SendableRecordBatchStream, ServiceError> {
+    frame.execute_stream().await.map_err(planning)
+}
+
+async fn run(ctx: &SessionContext, sql: &str, max_rows: usize) -> Result<SqlResult, ServiceError> {
+    let frame = plan_read_only(ctx, sql).await?;
+    let mut stream = execute_read_only(frame).await?;
     let schema = stream.schema();
     let mut batches = Vec::new();
     let mut rows = 0;

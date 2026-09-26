@@ -426,6 +426,39 @@ impl CollectionService {
         self.info(ns, ns_id, collection.id, name_or_alias).await
     }
 
+    /// Every namespace name, sorted (Flight SQL `GetCatalogs`, Task 12).
+    pub async fn namespace_names(&self) -> Result<Vec<String>, ServiceError> {
+        let mut names: Vec<String> = self
+            .ctx
+            .meta
+            .namespaces(Consistency::Local)
+            .await?
+            .into_iter()
+            .map(|namespace| namespace.name)
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
+    /// The collection records of `ns` sorted by name, without the manifest
+    /// reads of [`Self::list_collections`]; `[]` for an absent namespace
+    /// (Flight SQL `GetTables`, Task 12).
+    pub async fn collection_records(&self, ns: &str) -> Result<Vec<Collection>, ServiceError> {
+        let Some(ns_id) = self.namespace_id(ns).await? else {
+            return Ok(Vec::new());
+        };
+        let mut collections: Vec<Collection> = self
+            .ctx
+            .meta
+            .collections(Consistency::Local, Some(ns_id))
+            .await?
+            .into_iter()
+            .filter(|collection| collection.namespace == ns_id)
+            .collect();
+        collections.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(collections)
+    }
+
     /// The collections of `ns` by name; `[]` for an absent namespace.
     pub async fn list_collections(&self, ns: &str) -> Result<Vec<CollectionInfo>, ServiceError> {
         let Some(ns_id) = self.namespace_id(ns).await? else {
