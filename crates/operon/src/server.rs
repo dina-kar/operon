@@ -684,6 +684,9 @@ impl Server {
             node.initialize_with(cluster.peers.clone()).await?;
         }
         let seeds: Vec<String> = cluster.peers.values().cloned().collect();
+        // Resolved before the join, so a name that does not resolve adds no
+        // learner (PR #40 review).
+        let addr = resolve(&cluster.advertise).await?;
         let join_changed = meta_rpc::join(
             &transport,
             &seeds,
@@ -695,9 +698,47 @@ impl Server {
         )
         .await?;
         tracing::info!(node_id, changed = join_changed, "joined the metastore");
+        let joined = Self::start_joined(
+            config,
+            cluster,
+            roles,
+            node,
+            store,
+            transport.clone(),
+            late,
+            addr,
+            join_changed,
+        )
+        .await;
+        if joined.is_err() && !roles.meta {
+            // A learner that never registered has no node lease, so the
+            // membership task would never evict it: leave now (PR #40 review).
+            let left =
+                meta_rpc::leave(&transport, &seeds, LeaveRequest { node_id }, LEAVE_WAIT).await;
+            if let Err(err) = left {
+                tracing::warn!(%err, "leaving the metastore membership after a failed start");
+            }
+        }
+        joined
+    }
+
+    /// Rule 3 steps 5–8, after the join.
+    #[allow(clippy::too_many_arguments)]
+    async fn start_joined(
+        config: &mut ServerConfig,
+        cluster: &ClusterConfig,
+        roles: Roles,
+        node: MetaNode,
+        store: Store,
+        transport: HttpTransport,
+        late: LateRouter,
+        addr: SocketAddr,
+        join_changed: bool,
+    ) -> Result<(MetaClient, Arc<dyn MetaStore>, Arc<NodeRegistry>, Assembled), ServerError> {
+        let node_id = cluster.node_id;
+        let seeds: Vec<String> = cluster.peers.values().cloned().collect();
         node.wait_for_leader(CLUSTER_LEADER_WAIT).await?;
         let (meta, meta_store) = cluster::metastore(&node, &transport);
-        let addr = resolve(&cluster.advertise).await?;
         let registry = NodeRegistry::register(
             meta_store.clone(),
             NodeDescriptor {
