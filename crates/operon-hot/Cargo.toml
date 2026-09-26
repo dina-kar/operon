@@ -1,6 +1,6 @@
 [package]
 name = "operon-hot"
-description = "Operon's hot tier: HNSW artifacts built from collection manifests, and (later) their serving, pinning and placement."
+description = "Operon's hot tier: HNSW artifacts built from collection manifests, per-manifest views of them with delta indexes, and (later) pinning and placement."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -30,6 +30,7 @@ operon-collection.workspace = true
 operon-common.workspace = true
 operon-hnsw.workspace = true
 operon-link.workspace = true
+operon-query.workspace = true
 operon-store.workspace = true
 operon-worker.workspace = true
 postcard.workspace = true
@@ -38,6 +39,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
 ulid.workspace = true
 zstd.workspace = true

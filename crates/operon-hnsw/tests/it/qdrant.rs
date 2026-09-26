@@ -5,9 +5,10 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use operon_hnsw::{
-    BuildSpec, BuiltFiles, Distance, FlatEngine, HnswEngine, HnswError, HnswIndex, IdFilter,
-    PayloadField, PayloadKind, PayloadValue, Point, QDRANT_ENGINE, QdrantEngine, Quantization,
-    SearchParams, VECTOR_NAME, default_engine, edge_config, engine_by_name, exact_score,
+    APPENDABLE_SEARCH_THREADS, BuildSpec, BuiltFiles, Distance, FlatEngine, HnswEngine, HnswError,
+    HnswIndex, IdFilter, PayloadField, PayloadKind, PayloadValue, Point, QDRANT_ENGINE,
+    QdrantEngine, Quantization, SearchParams, VECTOR_NAME, default_engine, edge_config,
+    engine_by_name, exact_score,
 };
 use qdrant_edge::EdgeShardRead as _;
 use rand::{Rng, SeedableRng};
@@ -362,6 +363,14 @@ fn the_appendable_index_is_correct_before_and_after_optimize() {
         .appendable(&spec, &dir.path().join("delta"))
         .expect("appendable");
     assert_eq!(index.len(), 0);
+    // Its search pool is capped (M1.3 row 6.1), not `num_cpus` threads.
+    let saved = std::fs::read(dir.path().join("delta/edge_config.json")).expect("edge config");
+    let saved: qdrant_edge::external::serde_json::Value =
+        qdrant_edge::external::serde_json::from_slice(&saved).expect("json");
+    assert_eq!(
+        saved["max_search_threads"].as_u64(),
+        Some(APPENDABLE_SEARCH_THREADS as u64)
+    );
     let mut all = points(&data);
     let second = all.split_off(1_000);
     index.append(all).expect("append");
