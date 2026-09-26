@@ -2241,7 +2241,7 @@
         ],
         "responses": {
           "302": {
-            "description": "To /ui/consent"
+            "description": "To /ui/consent, with the request's parameters"
           },
           "4XX": {
             "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
@@ -2320,8 +2320,109 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
+        "security": []
+      }
+    },
+    "/api/v1/oauth/consent": {
+      "post": {
+        "operationId": "decideConsent",
+        "summary": "Record the signed-in user's consent decision and get the client redirect",
+        "tags": [
+          "oauth"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsentResult"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsentDecision"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/.well-known/oauth-protected-resource": {
+      "get": {
+        "operationId": "getProtectedResourceMetadata",
+        "summary": "Protected resource metadata (RFC 9728), for MCP clients",
+        "tags": [
+          "oauth"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtectedResourceMetadata"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "A client error: invalid_argument, unauthenticated, permission_denied, not_found, already_exists, rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "A server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
         "security": []
       }
     },
@@ -4229,6 +4330,105 @@
           "token_endpoint_auth_methods_supported",
           "scopes_supported",
           "response_types_supported"
+        ],
+        "additionalProperties": false
+      },
+      "ProtectedResourceMetadata": {
+        "type": "object",
+        "properties": {
+          "resource": {
+            "type": "string"
+          },
+          "authorization_servers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scopes_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "bearer_methods_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "resource_documentation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "resource",
+          "authorization_servers",
+          "scopes_supported",
+          "bearer_methods_supported",
+          "resource_documentation"
+        ],
+        "additionalProperties": false,
+        "description": "RFC 9728. A 401 from a protected route carries WWW-Authenticate: Bearer resource_metadata=\"<this document's URL>\"."
+      },
+      "ConsentDecision": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny"
+            ]
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "redirect_uri": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "audience": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "code_challenge": {
+            "type": "string"
+          },
+          "code_challenge_method": {
+            "type": "string",
+            "enum": [
+              "S256"
+            ]
+          }
+        },
+        "required": [
+          "decision",
+          "client_id",
+          "redirect_uri",
+          "scope",
+          "audience",
+          "state",
+          "code_challenge",
+          "code_challenge_method"
+        ],
+        "additionalProperties": false,
+        "description": "The signed-in user's answer on the consent screen, carrying the authorize request's parameters."
+      },
+      "ConsentResult": {
+        "type": "object",
+        "properties": {
+          "redirect_to": {
+            "type": "string",
+            "description": "The client's redirect_uri with code and state, or with error=access_denied."
+          }
+        },
+        "required": [
+          "redirect_to"
         ],
         "additionalProperties": false
       },

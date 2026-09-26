@@ -541,8 +541,21 @@ pub fn routes(seed: &Value, signed_in: bool) -> Result<Vec<Route>> {
         }
     }
 
-    // Audit: per-project filters first (the first matching mock wins), then all.
+    // Audit: filtered mocks first (the first matching mock wins), then all.
     let audit = items(seed, "audit")?;
+    for agent in items(seed, "agents")? {
+        let id = str_field(agent, "id")?;
+        let events: Vec<&Value> = audit.iter().filter(|e| e["actor"]["id"] == id).collect();
+        let mut route = Route::json(
+            "GET",
+            "/api/v1/audit",
+            p("/audit"),
+            200,
+            json!({ "events": events, "next_before": null }),
+        );
+        route.query.push(("actor".to_string(), id.to_string()));
+        r.push(route);
+    }
     for project in items(seed, "projects")? {
         let slug = str_field(project, "slug")?;
         let events: Vec<&Value> = audit.iter().filter(|e| e["project"] == slug).collect();
@@ -572,10 +585,24 @@ pub fn routes(seed: &Value, signed_in: bool) -> Result<Vec<Route>> {
         200,
         example(seed, "token")?,
     ));
+    r.push(Route::json(
+        "POST",
+        "/api/v1/oauth/consent",
+        p("/oauth/consent"),
+        200,
+        example(seed, "consent")?,
+    ));
+    r.push(Route::json(
+        "GET",
+        "/.well-known/oauth-protected-resource",
+        "/.well-known/oauth-protected-resource".into(),
+        200,
+        get(seed, "protected_resource")?.clone(),
+    ));
     r.push(Route::redirect(
         "/api/v1/oauth/authorize",
         p("/oauth/authorize"),
-        "/ui/consent",
+        "/ui/consent?client_id=claude-code&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback&scope=query%20mcp%3Atools&audience=code-index%2Fdevelopment&state=mock&code_challenge=mock&code_challenge_method=S256",
     ));
     r.push(Route::json(
         "GET",

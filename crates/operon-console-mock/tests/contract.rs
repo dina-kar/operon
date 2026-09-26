@@ -75,17 +75,20 @@ fn every_mocked_body_matches_its_response_schema() {
                 );
                 checked += 1;
             }
-            (Some(_), true) if route.status >= 400 => {
-                // Errors use the shared Error schema through 4XX.
-                let mut errors = Vec::new();
-                let err = serde_json::json!({"$ref": "#/components/schemas/Error"});
-                validate(
-                    &contract,
-                    &err,
-                    route.body.as_ref().unwrap(),
-                    "$",
-                    &mut errors,
+            (Some(body), true) if route.status >= 400 => {
+                // An error status must be declared, exactly or as a range.
+                let range = format!("{}XX", route.status / 100);
+                let declared =
+                    &op["responses"][range.as_str()]["content"]["application/json"]["schema"];
+                assert!(
+                    !declared.is_null(),
+                    "{} {} answers {} but the contract declares neither it nor {range}",
+                    route.method,
+                    route.path,
+                    route.status,
                 );
+                let mut errors = Vec::new();
+                validate(&contract, declared, body, "$", &mut errors);
                 assert!(
                     errors.is_empty(),
                     "{} {}: {}",

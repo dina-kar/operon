@@ -5491,6 +5491,9 @@
       },
       "secret": "loam_n3w0k1_mock-secret-shown-once-9c2f41d7b8e6"
     },
+    "consent": {
+      "redirect_to": "http://127.0.0.1:33418/callback?code=mock_auth_code_7f3a&state=mock"
+    },
     "token": {
       "access_token": "eyJhbGciOiJFZERTQSIsImtpZCI6Im1vY2stMSJ9.eyJtb2NrIjp0cnVlfQ.mock-signature",
       "token_type": "Bearer",
@@ -5528,6 +5531,25 @@
     "response_types_supported": [
       "code"
     ]
+  },
+  "protected_resource": {
+    "resource": "http://localhost:8081/v1",
+    "authorization_servers": [
+      "http://localhost:8081"
+    ],
+    "scopes_supported": [
+      "collections:read",
+      "collections:write",
+      "documents:delete",
+      "query",
+      "streams:read",
+      "streams:produce",
+      "mcp:tools"
+    ],
+    "bearer_methods_supported": [
+      "header"
+    ],
+    "resource_documentation": "https://loams.dev/docs"
   },
   "jwks": {
     "keys": [

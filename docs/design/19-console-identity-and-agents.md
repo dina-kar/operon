@@ -87,7 +87,7 @@ Every token an agent holds and every call it makes is attributed to it in the au
 There are three flows, and none of them stores a secret in the agent's environment.
 
 1. **Workload-identity federation** (RFC 8693 token exchange). The agent's runtime already issues it an OIDC token: GitHub Actions, a Kubernetes service account, AWS, GCP or Azure workload identity, or a sandbox runtime. The agent posts that token to `POST /api/v1/oauth/token`. The gateway verifies it against a **trust policy** on the agent (issuer, audience, a subject pattern such as `repo:acme/search:ref:refs/heads/main`), then issues a Loam access token.
-2. **User delegation** (OAuth 2.1 authorization code with PKCE). An MCP client such as Claude Code or Codex sends the user to the console's consent screen, which shows the agent, the environments and the actions. The resulting token carries the user as the subject and the agent as the actor, and it can never exceed either one's rights. This is the flow the MCP authorization spec expects (verify: the 2026-07-28 revision). The console serves RFC 8414 metadata at `/.well-known/oauth-authorization-server`.
+2. **User delegation** (OAuth 2.1 authorization code with PKCE). An MCP client such as Claude Code or Codex discovers the authorization server the way the MCP authorization spec (2026-07-28) prescribes. A request without a token to a protected route gets `401` with `WWW-Authenticate: Bearer resource_metadata="<origin>/.well-known/oauth-protected-resource"`. That document (RFC 9728) names the resource, the authorization server and the supported scopes, and the server's own metadata is at `/.well-known/oauth-authorization-server` (RFC 8414). `GET /api/v1/oauth/authorize` sends the user to the console's consent screen, which runs inside a signed-in session and shows the agent, the environment and the actions. The user's answer goes to `POST /api/v1/oauth/consent`; the gateway issues a code (or `error=access_denied`) and returns the client's `redirect_uri`, which the console follows. The resulting token carries the user as the subject and the agent as the actor, and it can never exceed either one's rights.
 3. **Vending** from a parent token (§15 §8). A sandbox supervisor holding a token asks for a narrower one for a sandbox: fewer actions, one environment, a shorter TTL. Vended tokens can only attenuate.
 
 ### 5.3 Access tokens
@@ -114,13 +114,20 @@ API keys stay for SDK users and service accounts that cannot federate (§18 §6:
 
 | Method | In OSS | Notes |
 |---|---|---|
-| First-run setup | Yes | The server prints a one-time setup token to its log; `/ui/setup` creates the org and its owner with it, and the token then stops working |
+| First-run setup | Yes | See the lifecycle below; `/ui/setup` creates the org and its owner, and the token then stops working |
 | Email and password | Yes | argon2id (`argon2` 0.6); lockout after repeated failures; can be turned off once SSO works |
 | TOTP two-factor | Yes | `totp-rs` 6, with recovery codes; an org setting can require it |
 | OIDC single sign-on | Yes, several providers | Keycloak, Okta, Entra ID, Google Workspace, Authentik, Dex, GitHub (through Dex). Just-in-time provisioning, allowed email domains, group-to-team mapping. `openidconnect` 4 |
 | Passkeys (WebAuthn) | M2.x | `webauthn-rs` 0.5 (MPL-2.0, used unmodified as a separate crate) |
 | Magic links | No | They need SMTP, which many self-hosters do not run |
 | SAML, SCIM | No | Put an IdP in front: Keycloak brokers SAML to OIDC (product doc 08). SCIM is a Cloud and BYOC feature |
+
+**The setup token** is a bootstrap credential, so it never goes into a log sink:
+
+- **Generation:** 32 random bytes, created at startup only while no org exists; a restart before setup replaces it.
+- **Delivery:** it is written to `<data_dir>/setup-token` with mode `0600`, readable only by the server's user. The log says where the file is, never its content. It is also printed to the terminal only when standard error is an interactive TTY. Operators who automate installs pass their own token with `--setup-token-file`.
+- **Expiry:** 1 hour after it is created. Setup then needs a restart, which makes a new token.
+- **One use, atomically:** `/api/v1/setup` compares the token in constant time and, in the same `ControlStore` transaction that creates the org and its owner, deletes it and records that setup happened. A second request fails whether it races the first or comes later, and once an org exists the endpoint answers `404` whatever the token.
 
 **Sessions** are an `HttpOnly`, `Secure`, `SameSite=Lax` cookie holding an opaque id; the session lives in the `ControlStore` (12 hours idle, 30 days absolute). Mutating requests carry a CSRF token from `GET /api/v1/session`.
 
@@ -150,7 +157,7 @@ better-auth's plugin boundaries and its organization, team and invitation shapes
 
 ## 8. The contract and the mock (P9, P10)
 
-- **`api/console/openapi.json`** (OpenAPI 3.1) defines every `/api/v1` operation the console uses, plus the OAuth endpoints and the well-known documents. The console generates its TypeScript types from it (`openapi-typescript`); the gateway's handlers are tested against it in M2.
+- **`api/console/openapi.json`** (OpenAPI 3.1) defines every `/api/v1` operation the console uses, plus the OAuth endpoints (token exchange, authorize, the consent decision) and the well-known documents (RFC 9728 protected-resource metadata, RFC 8414 server metadata, JWKS). The console generates its TypeScript types from it (`openapi-typescript`); the gateway's handlers are tested against it in M2.
 - **The data API is not in it.** The console reads collections through the existing native API (`/v1/namespaces/{ns}/collections`, the M1.6 wire contract W6–W9), using the environment's namespace.
 - **`crates/operon-console-mock`** runs an `httpmock` server (MIT; used as a library, the `remote` feature) on a fixed port with **seed data**: one org (Acme), three teams, projects with development, staging and production environments, agents with trust policies and live tokens, API keys, audit events, usage series, and collections in the seeded namespaces. `cargo run -p operon-console-mock` serves it; `pnpm dev` in `web/` proxies `/api` and `/v1` to it.
 - **Two tests keep the three in step:** every contract operation has a mock, and every seed record carries its schema's required properties.
@@ -160,7 +167,7 @@ better-auth's plugin boundaries and its organization, team and invitation shapes
 
 1. **Amending D65** (P2) adds a level between org and namespace. The M2 plan must check that the directory (§18 §5.2) and name lookups keyed by `(org, name)` need nothing else: environments are metadata over namespaces, not a new routing key.
 2. **Token exchange is security-critical code we write.** Mitigations: RFC test vectors, a fuzz target for token parsing, and a review by someone outside the team before M2 ships.
-3. **MCP authorization** is still moving; the 2026-07-28 revision's requirements (resource indicators, protected-resource metadata) need checking (verify).
+3. **MCP authorization** is still moving; the contract follows the 2026-07-28 revision (protected-resource metadata, §5.2), and resource indicators (RFC 8707) need checking against it (verify).
 4. **Clock skew** matters for 15-minute tokens: verification allows 60 seconds.
 5. **Q:** should service accounts be able to federate in OSS in M2, or only agents? The proposal says both.
 6. **Q:** is one org per OSS install right for large companies that want separate orgs per business unit? The alternative is Cloud or BYOC.
