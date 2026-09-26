@@ -65,7 +65,7 @@ POST /v1/namespaces/acme/query
 }
 ```
 
-Plan: `FilterBitmapExec` → (`AnnExec` ‖ `TantivySearchExec`) → `FusionExec(RRF)` → `ExpandExec(2 hops)` → `DocFetchExec` → optional `RerankExec` (UDF calling an external model endpoint; pluggable, off by default) → `Limit`.
+Plan: `FilterBitmapExec` → (`AnnExec` ‖ `TantivySearchExec`) → `FusionExec(RRF)` → `Limit(seeds)` (`expand.seeds`, default 10, §07 §5.2) → `ExpandExec(2 hops)` → `DocFetchExec` → optional `RerankExec` (UDF calling an external model endpoint; pluggable, off by default) → `Limit`.
 
 `expand` and `rerank` are **M3 (D44)**: M1.2 refuses a body that carries either (`invalid_argument`).
 
