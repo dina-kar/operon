@@ -10,16 +10,20 @@
 //!   per-manifest views of them, each with a delta index of the rows
 //!   inserted since;
 //! - [`splits`] and [`prefetch`]: whole split files pinned on local NVMe,
-//!   and Lance files read ahead into the range cache (Ruling 9).
+//!   and Lance files read ahead into the range cache (Ruling 9);
+//! - [`budget`] and [`heat`]: what a node keeps when NVMe, RAM or open
+//!   artifacts run out, and the heat that promotes and demotes collections.
 //!
 //! This crate reaches the metastore only through
 //! [`MetaStore`](operon_common::meta::MetaStore) (D47).
 
 pub mod artifact;
+pub mod budget;
 pub mod build;
 mod config;
 pub mod delta;
 mod error;
+pub mod heat;
 pub mod live;
 pub mod prefetch;
 pub mod splits;
@@ -32,6 +36,10 @@ pub use artifact::{
     artifact_prefix, chunk_path, currency, decode_covered, decode_descriptor, download,
     effective_source_version, encode_covered, encode_descriptor, publish,
 };
+pub use budget::{
+    Budget, HotClass, Resident, StructureKind, may_evict, over_share_with, plan_admission,
+    plan_shrink,
+};
 #[cfg(feature = "test-util")]
 pub use build::HotBuildHook;
 pub use build::{
@@ -41,6 +49,7 @@ pub use build::{
 pub use config::{HotBuildConfig, HotTierConfig};
 pub use delta::{DeltaIndex, Extension};
 pub use error::TierError;
+pub use heat::HeatSketch;
 pub use live::{DeletedDocsCache, live_rows, live_rows_cached};
 pub use prefetch::{
     FragmentProgress, PrefetchPass, prefetch_fragments, prefetch_fragments_resuming,
