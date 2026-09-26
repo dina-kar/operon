@@ -1,6 +1,6 @@
 # 05 — Query Engine
 
-Status: **Approved** · 2026-09-22 · revised 2026-09-25 (frontends narrowed, D42/D44) · amended 2026-09-26 (M1.2 as built)
+Status: **Approved** · 2026-09-22 · revised 2026-09-25 (frontends narrowed, D42/D44) · amended 2026-09-26 (M1.2 as built) · amended 2026-09-26 (turbopuffer gap analysis: `eventual` under backpressure, the performance block, ranking expressions, weighted concurrency, sharded collections; D86, D88, D91, D92, D95, D98)
 
 All reads — native hybrid requests (including the graph `expand` stage), SQL over the native API and Flight SQL, ES `_search`, Qdrant `query` — compile to **Apache DataFusion** logical plans and execute on `query` nodes. DataFusion is embedded as a library; Operon adds catalogs, table providers, physical operators, optimizer rules and a distributed layer.
 
@@ -71,6 +71,12 @@ Plan: `FilterBitmapExec` → (`AnnExec` ‖ `TantivySearchExec`) → `FusionExec
 
 The `expand` stage is the GraphRAG path (D44): vector/BM25 seeds → 1–2 hops over a mapped graph → rerank, in one planned query.
 
+**Ranking expressions (M2, D91).** A request may add `rank`, an expression over `score`, numeric and date fields, constants, `saturate`, `decay` (gauss, exp, linear), `distance` (recency on dates), `if_match` (rank by filter) and `sum`/`max`/`min`/`product`/`weighted`. It runs after fusion, evaluated in f64 in a fixed order and rounded to f32, over D81's domains: every match with one text retriever and no vector retriever, else the fused candidates. ES `function_score` and Qdrant `formula` compile to it.
+
+**Performance block (M1.6, D92).** Every native search response carries `performance`: `server_total_ms`, `queue_ms`, `planning_ms`, `execution_ms`, `manifest_version`, `tail_records`, `stale_records` (`eventual` only), `rows_scanned` per retriever, `hot_used`, the H1 cache's hit and miss bytes and `hit_ratio`, and `object_store_requests`. The SQL response carries the timings. `POST …/collections/{c}/recall` (M1.7) measures ANN recall against the exact kernel on sampled stored vectors (D79, D92).
+
+**Limits (D88).** `k`, `offset + limit`, retrievers, fusion depth, query clauses and nesting depth are bounded; the values and errors are on the published limits page (`docs/guides/limits.md`), rendered from the enforced table and tested.
+
 The same retrieval is reachable from SQL. DataFusion 54 accepts only positional arguments for table functions in `FROM` (M1.2 Rulings 8 and 23), so the functions take them in Spice's order:
 
 ```sql
@@ -93,7 +99,8 @@ LIMIT 10;
 - If a consistency token is present, the required offsets define the tail range each object must merge: `(applied_offset, token_offset]`. Because the tail is read from the log, strong reads never wait for indexing.
 - **Levels** (M1.2): `Strong` (the default; a linearizable high-watermark read, then the tail caught up to it), `AtLeast(token)`, `Eventual` and `Pinned { manifest_version, token }`. A pin holds nothing in the metastore: it reads its manifest plus a range tail up to its token for as long as the manifest is retained, then fails with `NotFound { kind: "pin" }` (M1.2 Ruling 14, A6).
 - **Tail overlay rule** (M1.2 Ruling 1): a tail entry for key *k* in partition *p*, the latest op on *k* at offset *o*, overrides the durable state iff `o >= manifest.applied[p]`; entries below `applied` are already in the manifest and are dropped. One live tail therefore serves every manifest at or after its base. Reads the live tail cannot serve (a `Pinned` upper bound below its head, or an overflowed tail) build a *range tail* from the log over exactly `(applied, upper]`, cached per `(manifest, upper)`.
-- `consistency: "eventual"` reads the durable state plus whatever tail the node already holds (lowest latency; bounded staleness = link lag).
+- `consistency: "eventual"` reads the durable state plus whatever live tail the node already holds (lowest latency; bounded staleness = link lag). It never builds a range tail, so it reads at most `tail.max_bytes` of the backlog, and it reports the records it did not see in `performance.stale_records` (D86, amending D77).
+- **Backpressure keeps strong reads on the live tail** (D86): a collection refuses writes (429, `Retry-After`) while its unapplied backlog is at its budget, and the budget is at most half of `tail.max_bytes`, so a strong read does not need a range tail unless a bulk load overrode the budget.
 - All operators within one query use the same snapshot ⇒ repeatable results inside a query.
 
 ## 6. Distributed execution
@@ -102,12 +109,14 @@ LIMIT 10;
 - **Distributed** execution via **datafusion-distributed** (Arrow Flight between stages) for large scans, joins and aggregations: the coordinator splits file groups/split groups/vertex ranges by ownership (hot-tier affinity) and streams partial results.
 - Ballista is not used (batch/shuffle-to-disk oriented).
 - Top-k across shards: two-phase (local top-k′ → global merge) with k′ = k × safety factor for ANN.
+- **Sharded collections (M2.x, D95):** a query fans out to every shard's owner at one token; BM25 statistics are gathered from every shard and summed before any shard scores (D78 holds per collection), and vector scores stay exact (D79), so results do not depend on the shard count.
 
 ## 7. Resource management
 
 - Per-query memory pools (DataFusion `MemoryPool`) with per-namespace limits; spill to NVMe.
 - Admission control and priority classes: `interactive` (search/vector/graph), `analytical` (large scans), `background` (worker-internal). Interactive preempts analytical on shared nodes; large deployments separate pools.
 - Timeouts and cancellation propagate across distributed stages.
+- **Per-collection concurrency (M2, D98):** a semaphore per collection on its owner, 16 slots by default; text, filter and ANN queries take 1 slot, exact or brute-force vector queries 2, aggregations, `group_by` and SQL scans 4. A query waits up to 800 ms for its slots, then gets 429 with `Retry-After: 1`.
 
 ## 8. Frontends
 

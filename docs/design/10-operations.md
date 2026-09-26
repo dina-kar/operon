@@ -1,6 +1,6 @@
 # 10 — Operations
 
-Status: **Approved** · 2026-09-22 · revised 2026-09-25 (architecture review: surfaces D42–D45, M2 hardening D46, metastore backends D47) · revised 2026-09-26 (backends, RustFS, BYOC, tenancy, authorization, erasure: D58–D70, §18)
+Status: **Approved** · 2026-09-22 · revised 2026-09-25 (architecture review: surfaces D42–D45, M2 hardening D46, metastore backends D47) · revised 2026-09-26 (backends, RustFS, BYOC, tenancy, authorization, erasure: D58–D70, §18) · amended 2026-09-26 (turbopuffer gap analysis: backpressure and weighted concurrency quotas, customer-managed keys, audit events, SSO and private networking, performance and usage metrics, branches; D86, D90, D92, D96, D98, D100, D102, D103)
 
 ---
 
@@ -85,10 +85,10 @@ Each gateway is individually enabled; disabled gateways load no code paths (feat
 
 - **Tenancy model (M2, D65):** org (tenant and billing unit) → namespaces → collections. Each namespace belongs to one org. Orgs, API keys, role bindings, quotas and usage rollups live in the **`ControlStore`**, a trait separate from `MetaStore`, so BYOC can host it remotely (M2.x).
 - **Namespace isolation:** separate key prefixes, manifests, PK/ID-map instances, caches keyed by namespace; no cross-namespace reads without explicit grants.
-- **Quotas per org and per namespace:** M2 enforces request rate (per surface), ingest bytes/s, concurrent queries, storage bytes (a soft limit that counts bytes held only by tags) and metadata operations (collection creates, alias updates, leases), which protect the shared metastore (D65, §18 §6); CPU-seconds, hot-tier RAM/NVMe budget and worker task concurrency follow with fair share at scale (M6). A request over quota is refused with each surface's own throttling error (HTTP 429, gRPC `RESOURCE_EXHAUSTED`).
+- **Quotas per org and per namespace:** M2 enforces request rate (per surface), ingest bytes/s, concurrent queries, storage bytes (a soft limit that counts bytes held only by tags) and metadata operations (collection creates, alias updates, leases), which protect the shared metastore (D65, §18 §6), plus unapplied data per collection (the write backpressure budget that M1.3 enforces with fixed defaults, D86); concurrent queries are a cost-weighted semaphore per collection, 16 slots by default, with an 800 ms wait (D98); CPU-seconds, hot-tier RAM/NVMe budget and worker task concurrency follow with fair share at scale (M6). A request over quota is refused with each surface's own throttling error (HTTP 429, gRPC `RESOURCE_EXHAUSTED`).
 - **Fair scheduling:** weighted fair queuing in query admission and worker scheduling (§05 §7, §09 §6).
 - **Scale target:** 1M+ namespaces per cluster (M6 gate); a cold namespace costs only its S3 bytes plus a few KB of metadata. The path there is staged: M2 removes the O(N) catalog readers, M2.x lets nodes cache only the namespaces they own, M6 shards the metastore by namespace (D63, §18 §5).
-- **Encryption:** SSE-KMS per namespace key (bucket-level default), TLS for all traffic. Client-side envelope encryption with a data key per WAL chunk and per object moves forward from Phase B to M2.x, so that destroying a namespace's key erases it everywhere at once (crypto-shredding; D69, default).
+- **Encryption (M2, D96):** TLS for all traffic and bucket-default encryption at rest. A namespace may name a customer-managed KMS key at creation (AWS KMS, GCP Cloud KMS, Azure Key Vault, behind a `KeyProvider` trait). Objects under `ns/<id>/` are then written with the provider's per-object KMS key (S3 SSE-KMS key id, GCS `kmsKeyName`, Azure encryption scope), which external Lance readers with a grant on the key can still read. WAL objects span namespaces (D25), so their chunks are envelope-encrypted: a data key per chunk, wrapped by a per-namespace key-encryption key that the KMS issues once per namespace, node and hour and that is held in memory only (§02 §3). Caches key entries by namespace and encrypt CMEK namespaces' NVMe entries. Destroying or revoking the key makes the namespace's bytes unreadable everywhere at once, WAL chunks and noncurrent versions included (crypto-shredding; D69's encryption clause, decided by D96). Revocation is data loss, and a KMS outage fails only that namespace's requests, retryably. The key is fixed at creation; moving to another key is a copy (D90).
 
 ## 4. Security
 
@@ -106,9 +106,9 @@ Security ships in M2, before v1.0; its gate is that unauthenticated and cross-te
   | Elasticsearch | `Authorization: ApiKey <key>` or basic auth, as the ES clients send |
   | Resonate | Per-namespace auth replacing `resonate-auth` (§14; Q11) |
 
-  **TLS** on every listener; **mTLS** between nodes (and to an external metastore where the backend supports it), and optionally for clients (`client_ca`). OIDC/JWT validation is a later addition.
+  **TLS** on every listener; **mTLS** between nodes (and to an external metastore where the backend supports it), and optionally for clients (`client_ca`). OIDC/JWT validation for API callers, console SSO (SAML 2.0 and OIDC), per-org IP allowlists at the gateways, and AWS PrivateLink and GCP Private Service Connect endpoints come with the hosted service in M2.x (D102).
 - **AuthZ (M2):** every surface maps each request to `(action, resource)` and asks the **`Authorizer`** trait (`check`, `batch_check`, `filter_visible`, lifecycle hooks; D66). M2 ships `AllowAll` (dev) and built-in namespace-scoped **RBAC**: roles grant actions (`read`, `write`, `admin`) over namespaces and collections, with bindings in the `ControlStore`. Fine-grained authorization with **OpenFGA** (through `openfga-client`, with a model adapted from Lakekeeper's and a tenant fence) moves from M6 to **M2.x** with the control plane, sharing one OpenFGA store with Lakekeeper (D67, default). Tuple writes go through a transactional outbox, never before or after the resource's own commit (§18 §7). Field-level masking for collections/tables (Phase B).
-- **Audit:** every admin action and (optionally) every data access written to an audit stream in a system namespace.
+- **Audit (M2, D100):** one audit record per admin action or security event (API keys created and revoked, role bindings changed, failed authentications (rate-limited), namespaces and collections created and dropped, erasure requests and completions, key changes, backpressure overrides), written to the stream `_audit` of a system namespace, with the actor, org, action, resource, outcome, time, request id and source address and never document contents; kept 30 days by default and readable by the org's `admin` role. Data-access auditing is optional. M2.x adds a console view and exports to object storage, HTTPS, Datadog, Splunk and Sentinel.
 - **BYOC data boundary (M2.x, D64):** the hosted control plane may see namespace and collection names, schemas, object paths, offsets, pointers and lease keys, in clear; never documents, vectors, text or bucket credentials. GC runs inside the customer's VPC.
 - **Credential vending**: scoped, short-lived object-store credentials for direct Lance fragment reads through scan plans (M2, §17 §3) and for external Iceberg readers via Lakekeeper (M4).
 
@@ -135,6 +135,9 @@ The M2 baseline, on every node:
 - Key metrics: append and fetch latency per WAL class, link lag, compaction debt, cache hit ratio per layer (H0–H3) per namespace, S3 requests/bytes per namespace (cost attribution), hot-tier memory per object, query latency by surface (native, Flight SQL, Qdrant, ES), rejected requests by reason (auth, quota), metastore operation latency per backend, changelog lag, durable-execution transitions/s, conditional-write conflicts (412/409) and timer lag per namespace.
 - System tables: `system.queries`, `system.links`, `system.tasks`, `system.streams`, `system.collections`, `system.tables`, `system.parts`, `system.cache`, `system.namespaces`; from §14 Phase B, `system.durable_promises` and `system.durable_tasks` (`system.tasks` stays the worker task table).
 - Per-query profiles (DataFusion metrics tree) retrievable by query id.
+- **Per-response performance (M1.6, D92):** every native search response carries `performance` (timings, queue wait, tail and stale records, rows scanned per retriever, hot structures used, H1 cache hit ratio, object-store requests); `POST …/collections/{c}/recall` measures ANN recall on demand (M1.7), and M2 exports sampled continuous recall per collection.
+- **Backlog (M1.3, D86):** every collection write response carries `Operon-Unapplied-Records` and `Operon-Unapplied-Bytes`; `CollectionInfo` reports the backlog and the backpressure state; M2 exports them as gauges with a counter of throttled writes.
+- **Usage (M2, D103):** per-namespace logical bytes written, stored, queried and returned, queries and hot-tier GB-hours, rolled up in the `ControlStore`; the hosted service bills on them (M2.x).
 
 ## 6. Backup, DR and time travel
 
@@ -144,6 +147,7 @@ The M2 baseline, on every node:
 - A metadata restore to a point older than GC's grace period (§03 §7) references objects GC may have deleted since; bucket versioning recovers them.
 - **Restore from bucket** is an M2 drill: a new cluster is brought up from the bucket alone (openraft snapshots live in it), or from the bucket and the backend's backup.
 - **Point-in-time restore:** collections/graphs via retained manifests; tables via Iceberg snapshots; streams via retention.
+- **Branches and copies (D90):** a branch (M2) is a constant-time, isolated copy of a retained manifest, useful before a risky change; a copy (M2.x) writes a collection into another namespace, bucket, region or org under the target's key, as an asynchronous operation, and serves as a logical backup.
 - **Region failover (Phase C):** restore meta in the DR region against the replicated bucket; RPO = replication lag.
 
 ## 7. Upgrades

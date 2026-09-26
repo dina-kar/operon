@@ -1,6 +1,6 @@
 # 18 — Metastore Backends, Tenancy and the Namespace Router
 
-Status: **Approved (owner)** · 2026-09-26 (decisions D58–D71; §3.5 and §5 amended by D75 and D76). Three parts are **defaults the owner has not yet confirmed** and may override: the OpenFGA timing (D67), the erasure policy (D69) and ids under sharding (D70). They are marked *(default)* below.
+Status: **Approved (owner)** · 2026-09-26 (decisions D58–D71; §3.5 and §5 amended by D75 and D76; §5, §6 and §9 amended by D86, D90, D95, D96, D98 and D99 after the turbopuffer gap analysis). Three parts are **defaults the owner has not yet confirmed** and may override: the OpenFGA timing (D67), the erasure policy (D69) and ids under sharding (D70). They are marked *(default)* below.
 
 Loam is the product name (D33). API keys carry the `loam_` prefix from the start. Crates keep their working names (`operon-*`) until the rename.
 
@@ -305,7 +305,7 @@ One router places every resource kind.
   | Kind | Key | What affinity buys | Milestone |
   |---|---|---|---|
   | Stream partition (fetch, subscribe) | `(ns, stream, partition)` | Tail cache and segment cache hits | M2 |
-  | Collection | `(ns, collection)`; very large ones `(ns, collection, shard)` | Hot tier, pinned splits, HNSW artifacts | M1.3; `shard` in M6 |
+  | Collection | `(ns, collection)`; sharded ones `(ns, collection, shard)` (D95) | Hot tier, pinned splits, HNSW artifacts | M1.3; `shard` in M2.x (D95) |
   | Iceberg table | `(ns, table)` | Query and compaction affinity (T0–T3) | M4 |
   | Graph | `(ns, graph)` | Hot adjacency chunks | M3 |
 
@@ -319,7 +319,7 @@ One router places every resource kind.
 
 ### 5.4 Metadata scaling
 
-- **Paginated lists:** every list method takes `(after, limit)`.
+- **Paginated lists:** every list method takes `(prefix, after, limit)`, and the REST lists take `prefix`, `cursor` and `page_size` (default 100, at most 1 000) (D99).
 - **A scoped change feed:** a monotonic `catalog_version` with `changes_since(version)` returning the namespaces whose catalog changed, and `watch_changes` scoped to one namespace or to the catalog. `CatalogCache` then updates incrementally, and a `commit_wal` no longer wakes it.
 - **Dirty sets:** maintenance is driven by streams with new commits and collections with new manifests, not by full scans. It runs on the owning worker (rendezvous over worker nodes).
 - **Nodes cache only the namespaces they own**, loaded lazily through a remote client and invalidated by the scoped feed. No node holds the whole catalog, and every-node learners become optional. This is the same client as BYOC's remote metastore (§8).
@@ -349,6 +349,8 @@ All bulk bytes are already on the bucket under `ns/<id>/`, and a namespace's met
 | 4. Nodes stop holding everything | The remote client with per-namespace caches of owned namespaces; the directory pushed to gateways, served by the hosted `ControlStore` | **M2.x** |
 | 5. Shard the metastore | `ShardedMetaStore`; metadata-only moves with gateway buffering; size-class placement keys; openraft's catalog out of the monolithic snapshot; per-shard GC state; the 1M-namespace gate | **M6** |
 
+Collection shards come before stage 5: a sharded collection (M2.x, D95) needs only the `shard` in the collection's placement key and one manifest chain per shard, not a sharded metastore, because a collection's shards stay in one namespace and one partition group.
+
 Stages 1–3 are what breaks first and are cheap, so they ship in v1.0. The trait changes stage 5 needs (per-group `commit_wal`, bounded-skew stamps, the namespace on every call) land in M2's first task (§3.4), so M6 changes no trait signature. M1.2, which is being implemented, is not changed: its `CatalogCache` is replaced in M2.
 
 ### 5.8 What Loam takes from the reference systems
@@ -371,7 +373,8 @@ Stages 1–3 are what breaks first and are cheap, so they ship in v1.0. The trai
   |---|---|
   | Request rate per namespace, per surface | Token bucket at the rendezvous owner of the placement key (§5.3), which receives most of that key's traffic; fallback: a bucket per gateway sized quota ÷ gateways |
   | Ingest bytes/s | Token bucket at the gateway |
-  | Concurrent queries | Semaphore at the gateway and at the owner |
+  | Concurrent queries | A cost-weighted semaphore per collection at its owner, 16 slots by default (text, filter and ANN queries 1; exact vector 2; aggregations, `group_by` and SQL scans 4), with an 800 ms wait before 429 (D98); a namespace-wide semaphore at the gateway |
+| Unapplied data per collection | At write admission, from the collection's backlog (records past `applied` and their log bytes); M1.3 enforces fixed defaults (1 000 000 records, 128 MiB), M2 reads per-namespace and per-collection values from here (D86) |
   | Storage bytes | Soft limit at write admission, computed periodically from partition bytes and manifest sizes, including bytes held only by tags (§17 §4.3) |
   | Metadata operations (collection creates, alias updates, leases per namespace) | Rate limit, protecting the shared metastore; matters most on DynamoDB's per-item limits and on Postgres |
 
@@ -433,7 +436,7 @@ Both modes ship in **M2.x (v1.1)**, after v1.0.
 
 ## 9. GDPR erasure (D68, D69)
 
-**Where a document's bytes survive a delete:** the implicit stream's records (WAL objects that span namespaces, then segments); Lance fragments (a delete writes a deletion file); Tantivy splits (external delete bitmaps); PK deltas and the PK index (keys may be personal data); dead letters; superseded manifests kept for `time_travel_retention` (D38); **dataset tags, which pin manifests indefinitely** (D52); hot HNSW artifacts; the NVMe and RAM caches; noncurrent object versions if bucket versioning is on; from M4 and M5, Iceberg snapshots and changelog streams.
+**Where a document's bytes survive a delete:** the implicit stream's records (WAL objects that span namespaces, then segments); Lance fragments (a delete writes a deletion file); Tantivy splits (external delete bitmaps); PK deltas and the PK index (keys may be personal data); dead letters; superseded manifests kept for `time_travel_retention` (D38); **dataset tags, which pin manifests indefinitely** (D52); branches that share a source's objects (D90, M2); hot HNSW artifacts; the NVMe and RAM caches; noncurrent object versions if bucket versioning is on; from M4 and M5, Iceberg snapshots and changelog streams.
 
 **The path (M2):**
 
@@ -444,7 +447,7 @@ Both modes ship in **M2.x (v1.1)**, after v1.0.
 5. **Tags** *(default, D69)*: an erasure **rewrites a tagged manifest onto a purged copy**; the tag records that it was rewritten, by which erasure and from which manifest version. Erasure wins over bit-exact reproducibility.
 6. **Proof:** an **erasure log** holds keyed key hashes, the request and completion times, and the objects rewritten or retired. A key hash is HMAC-SHA256 of the key's canonical encoding under a per-org erasure-log key, held in the `ControlStore` and wrapped by the deployment's KMS key where there is one. Each entry records its key version; rotation starts a new version, and destroying an org's keys makes its hashes unlinkable. The org can prove a key was erased by recomputing its HMAC, but a plain dictionary attack on guessable keys (email addresses) does not work. The hashes are pseudonymous, not anonymous: the log is readable only by the org's `admin` role and the operator's audit role, and is kept for a retention period the org configures (the M2 plan proposes the default).
 7. **Deadline** *(default, D69)*: completion within **30 days**, targeting days. Completion is bounded by `max(compaction deadline, retention override) + segmenter lag + GC grace`.
-8. **Crypto-shredding** *(default, D69)*: per-chunk envelope encryption moves forward from Phase B to **M2.x**. Because WAL objects span namespaces, this needs a data key per chunk (the note on D25). Destroying a namespace's key then makes its bytes unreadable everywhere at once, including WAL objects, noncurrent versions and backups.
+8. **Crypto-shredding** (decided by D96, which settles D69's encryption clause): per-chunk envelope encryption ships in **M2** with customer-managed keys. Because WAL objects span namespaces, each chunk has its own data key, wrapped by the namespace's key-encryption key (the note on D25); objects under `ns/<id>/` use the provider's per-object KMS key (§10 §3). Destroying a namespace's key then makes its bytes unreadable everywhere at once, including WAL objects, noncurrent versions and backups, while other namespaces in the same WAL objects stay readable.
 9. **Versioned buckets:** S3 applies lifecycle expiry asynchronously, so the purge does not rely on it. GC deletes each noncurrent version of every object an erasure rewrites or retires by version id (`ListObjectVersions`, then `DeleteObject` with `versionId`), and the erasure completes only after a version listing shows none remain. `object_store` has no versioned list or delete (verify), so this is a `Store` extension over the provider SDKs. With cross-region replication, the same deletion runs against the replica bucket, since deletes by version id are not replicated (verify). A lifecycle rule that expires noncurrent versions stays as a backstop (§10 §6).
 
 The M2 gate: after an erasure completes, the key is unreadable through every surface, absent from every object and object version in the bucket (a byte scan), from every retained or tagged manifest and from the caches, and the erasure log records it. Iceberg tables (M4) and changelog streams (M5) extend the path in their milestones.
