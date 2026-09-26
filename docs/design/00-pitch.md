@@ -40,7 +40,7 @@ Operon takes over the role each system plays in an AI retrieval stack, not its w
 | Keyword / hybrid search (Elasticsearch) | Collection (text) | Tantivy splits | ES subset: document APIs, `_bulk`, `_search` with the core Query DSL, `knn`, hybrid + RRF (D48) | M1 |
 | Graph expansion for GraphRAG (Neo4j) | Graph, mapped over collections and tables | CSR/CSC sidecars | `expand` stage in the native hybrid search API; `graph_expand` / `graph_neighbors` SQL table functions; Operon-native graph-store adapters for LightRAG and the LlamaIndex property graph (D44) | M3 |
 | Analytics, evals, dashboards (ClickHouse) | Table | **Apache Iceberg** (via Lakekeeper) | Flight SQL and the native API; DuckDB, Trino, Spark or ClickHouse through the Iceberg REST catalog (D45) | M4 |
-| Event ingest, agent traces (Kafka) | Stream | Operon log segments on S3 | Flight `DoPut` bulk ingest (D49); native streaming API over HTTP and gRPC (idempotent produce, streaming subscribe, named consumers) and Flight `DoGet` replay (D43) | M1 (`DoPut` ingest), M5 |
+| Event ingest, agent traces (Kafka) | Stream | Operon log segments on S3 | Flight `DoPut` bulk ingest (D49); native streaming API over HTTP and gRPC (idempotent produce, streaming subscribe, named consumers; D72); OTLP logs ingest (D73); Flight `DoGet` replay (D43) | M1 (`DoPut` ingest), M2 (stream API, OTLP logs), M5 (replay) |
 | Connectors/CDC glue | Link, changelog stream | — | Declarative DDL; changelogs read through the native streaming API | M0 (links), M5 (changelogs) |
 | Temporal / queue + cron for agent runs | Durable promises (a service, §14) | One document per workflow origin on S3 | **Resonate protocol** (TS, Python, Rust, Go, Java SDKs) | M3 |
 

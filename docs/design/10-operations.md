@@ -66,6 +66,7 @@ warehouse = "prod"
 native = { rest = "0.0.0.0:8080", grpc = "0.0.0.0:8081", flight_sql = "0.0.0.0:8082" }   # MCP at /mcp on rest
 qdrant = { rest = "0.0.0.0:6333", grpc = "0.0.0.0:6334" }
 elasticsearch = { listen = "0.0.0.0:9200" }
+otlp = { http = "0.0.0.0:4318", grpc = "0.0.0.0:4317" }   # logs only (M2, D73)
 resonate = { listen = "0.0.0.0:8001" }   # durable execution (§14); Resonate SDK default port
 admin = { listen = "0.0.0.0:8090" }      # /metrics, /health, diagnostic dump (§5); not a data surface
 
@@ -90,13 +91,14 @@ Each gateway is individually enabled; disabled gateways load no code paths (feat
 
 ## 4. Security
 
-Security ships in M2, before v1.0; its gate is that unauthenticated and cross-tenant requests are rejected on every surface (native, Flight SQL, Qdrant, ES, MCP).
+Security ships in M2, before v1.0; its gate is that unauthenticated and cross-tenant requests are rejected on every surface (native, Flight SQL, Qdrant, ES, MCP, OTLP).
 
 - **AuthN (M2):** API keys on every surface, each carried the way that surface's clients already send credentials. A key has the form `loam_<key_id>_<secret>`; the `ControlStore` keeps only a hash of the secret, with the key's org, scopes, expiry, creator and last use. Gateways cache resolved keys for 30–60 s, and revocations are pushed through the `ControlStore`'s change feed (D65):
 
   | Surface | Credential |
   |---|---|
   | Native REST/gRPC, MCP | `Authorization: Bearer <token>` (gRPC metadata `authorization`) |
+  | OTLP (logs) | `Authorization: Bearer <token>`, set in the exporter's headers (gRPC metadata `authorization`) |
   | Flight SQL | Bearer token in the `authorization` header (the ADBC drivers' token option); Flight basic-auth handshake returning a bearer token |
   | Qdrant | `api-key` header (REST and gRPC), as the Qdrant clients send |
   | Elasticsearch | `Authorization: ApiKey <key>` or basic auth, as the ES clients send |
