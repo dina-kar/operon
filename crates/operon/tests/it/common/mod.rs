@@ -74,6 +74,11 @@ impl Native {
         }
     }
 
+    /// The server's data directory.
+    pub fn data_dir(&self) -> &std::path::Path {
+        self._dir.path()
+    }
+
     pub async fn call(
         &self,
         method: Method,

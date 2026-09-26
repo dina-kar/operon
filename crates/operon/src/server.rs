@@ -282,8 +282,10 @@ impl Server {
     async fn start_on(
         node: MetaNode,
         store: Store,
-        config: ServerConfig,
+        mut config: ServerConfig,
     ) -> Result<Self, ServerError> {
+        // Scan plans name the Lance datasets under the bucket (Task 14 rule 8).
+        config.query.lance_base_url = Some(bucket_url(&config)?);
         // A no-op once the node is initialized, so restarts keep their state.
         node.initialize([NODE_ID]).await?;
         node.wait_for_leader(LEADER_WAIT).await?;

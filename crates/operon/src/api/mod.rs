@@ -1,7 +1,8 @@
 //! The native HTTP/JSON API. Namespaces and streams are addressed by name;
 //! record keys and values are base64 (M0.3 plan, Task 7). Collections,
 //! documents, queries and SQL go through `CollectionService` (plan M1.2
-//! Task 11): [`collections`], [`query`] and [`sql`].
+//! Task 11): [`collections`], [`query`] and [`sql`]; so does the scan plan
+//! route (Task 14).
 
 mod collections;
 mod errors;
@@ -101,6 +102,7 @@ pub fn router(state: AppState) -> Router {
             &format!("{collection}/versions"),
             get(collections::versions),
         )
+        .route(&format!("{collection}/scan"), post(collections::scan))
         .route("/v1/namespaces/{ns}/aliases", post(collections::aliases))
         .route(&format!("{collection}/documents"), post(collections::write))
         .route(

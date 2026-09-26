@@ -11,7 +11,7 @@ use bytes::Bytes;
 use operon_collection::{DocOp, Document, PatchMode, PrimaryKey, SparseVector};
 use operon_query::json::{pk as json_pk, schema as json_schema};
 use operon_query::{
-    OpResult, Projection, Query, ReadConsistency, ServiceError, StoredDoc, WriteOptions,
+    OpResult, Projection, Query, ReadConsistency, ScanAt, ServiceError, StoredDoc, WriteOptions,
     alias_actions_from_json, rejected_op_index,
 };
 use serde::Deserialize;
@@ -121,6 +121,37 @@ pub(super) async fn versions(
     let Path((ns, name)) = path?;
     let versions = state.collections.versions(&ns, &name).await?;
     Ok(axum::Json(json!({ "versions": versions })).into_response())
+}
+
+/// `POST …/collections/{c}/scan` (Task 14, D53): body `{"at"?: At}` (an
+/// empty body is `{}`), answered with the scan plan and the pin's token in
+/// `Operon-Consistency-Token`. Any node serves it: planning reads no tail.
+pub(super) async fn scan(
+    State(state): State<AppState>,
+    path: Result<Path<(String, String)>, PathRejection>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult {
+    let (Path((ns, name)), body) = (path?, body?);
+    let request: Value = if body.iter().all(u8::is_ascii_whitespace) {
+        json!({})
+    } else {
+        parse_json(&body)?
+    };
+    let Value::Object(request) = request else {
+        return Err(ApiError::invalid("bad request body: expected an object"));
+    };
+    if let Some(key) = request.keys().find(|key| *key != "at") {
+        return Err(ApiError::invalid(format!(
+            "bad request body: unknown field `{key}`, expected `at`"
+        )));
+    }
+    let at = match request.get("at") {
+        None => ScanAt::Current,
+        Some(at) => ScanAt::from_json(at)?,
+    };
+    let plan = state.collections.scan_plan(&ns, &name, at).await?;
+    let token = plan.pin.token.clone();
+    Ok(with_token(axum::Json(plan).into_response(), &token))
 }
 
 #[derive(Deserialize)]
