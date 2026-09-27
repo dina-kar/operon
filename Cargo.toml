@@ -134,6 +134,7 @@ zstd = "0.13"
 operon-cache = { path = "crates/operon-cache", version = "0.0.1" }
 operon-collection = { path = "crates/operon-collection", version = "0.0.1" }
 operon-common = { path = "crates/operon-common", version = "0.0.1" }
+operon-durable = { path = "crates/operon-durable", version = "0.0.1" }
 operon-es = { path = "crates/operon-es", version = "0.0.1" }
 operon-hnsw = { path = "crates/operon-hnsw", version = "0.0.1" }
 operon-hot = { path = "crates/operon-hot", version = "0.0.1" }
