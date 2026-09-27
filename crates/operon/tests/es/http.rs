@@ -251,6 +251,20 @@ async fn the_hot_header_is_honoured() {
         Some("invalid Operon-Hot header [maybe] (expected on or off)"),
     );
     assert_eq!(a.header("x-elastic-product"), PRODUCT);
+    // `/i/_search` (Task 9): the search itself runs without hot structures.
+    let a = es
+        .send(Method::GET, "/i/_search", None, &[("operon-hot", "off")])
+        .await;
+    assert_eq!(a.status, StatusCode::OK, "{}", a.text);
+    assert_eq!(a.header("operon-hot-used"), "none");
+    let a = es
+        .send(Method::GET, "/i/_search", None, &[("operon-hot", "maybe")])
+        .await;
+    a.assert_error(
+        400,
+        "illegal_argument_exception",
+        Some("invalid Operon-Hot header [maybe] (expected on or off)"),
+    );
     es.server.shutdown().await.expect("shutdown");
 }
 

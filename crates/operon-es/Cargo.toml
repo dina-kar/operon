@@ -10,6 +10,7 @@ authors.workspace = true
 [dependencies]
 axum.workspace = true
 base64.workspace = true
+futures.workspace = true
 operon-collection.workspace = true
 operon-common.workspace = true
 operon-query.workspace = true

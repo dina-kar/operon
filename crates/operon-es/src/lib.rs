@@ -21,7 +21,8 @@
 //! - `read`: `GET`/`HEAD` `_doc` and `_source`, and `_mget`, with
 //!   `_source` filtering ([`doc::SourceFilter`]).
 //! - [`dsl`]: the Query DSL → the search IR.
-//! - [`search`]: search bodies and URL parameters → a [`search::SearchPlan`].
+//! - [`search`]: search bodies and URL parameters → a [`search::SearchPlan`],
+//!   and `_search`, `_count` and `_msearch` with ES scores.
 //!
 //! # Divergences from Elasticsearch 8.19
 //!
@@ -46,6 +47,14 @@
 //! - `query_string`'s `lenient` is accepted and not applied, and a
 //!   `multi_match` or `query_string` without fields searches the text (and,
 //!   for `multi_match`, keyword) fields only, not every field (row T7-5).
+//! - A search over several indices fails as a whole when one index fails
+//!   (for example a sort on a field one member does not map); ES answers
+//!   the other shards' hits with `_shards.failed` (row T9-6).
+//! - A `script_score` search with `min_score` counts the matches that pass
+//!   it among the top `from + size` only, `gte` when they fill that window
+//!   (row T9-5).
+//! - A sort key other than `_doc` after `_score` is refused: score ties are
+//!   broken by `_id` only; a `_doc` sort value is the `_id` (row T9-9).
 //! - The routes of Phase A that no task serves yet answer 501
 //!   `unsupported_operation_exception` (row T1-2); a `GET` or `HEAD` of a
 //!   missing index among them is 404 first.
@@ -248,6 +257,31 @@ impl EsGateway {
                 "/{index}/_mget",
                 get(read::mget_index).post(read::mget_index),
             )
+            // Task 9: searches.
+            .route(
+                "/_search",
+                get(search::exec::search_all).post(search::exec::search_all),
+            )
+            .route(
+                "/{index}/_search",
+                get(search::exec::search_index).post(search::exec::search_index),
+            )
+            .route(
+                "/_count",
+                get(search::exec::count_all).post(search::exec::count_all),
+            )
+            .route(
+                "/{index}/_count",
+                get(search::exec::count_index).post(search::exec::count_index),
+            )
+            .route(
+                "/_msearch",
+                get(search::exec::msearch_all).post(search::exec::msearch_all),
+            )
+            .route(
+                "/{index}/_msearch",
+                get(search::exec::msearch_index).post(search::exec::msearch_index),
+            )
             // Task 5: _bulk.
             .route("/_bulk", post(bulk::bulk).put(bulk::bulk))
             .route(
@@ -308,18 +342,6 @@ impl EsGateway {
 /// (row T1-2). A task that serves a route removes it here; axum panics on
 /// a method routed twice, so a forgotten row fails at router build time.
 const PENDING: &[(&str, &str, &str)] = &[
-    ("GET", "/_search", "9"),
-    ("POST", "/_search", "9"),
-    ("GET", "/{index}/_search", "9"),
-    ("POST", "/{index}/_search", "9"),
-    ("GET", "/_count", "9"),
-    ("POST", "/_count", "9"),
-    ("GET", "/{index}/_count", "9"),
-    ("POST", "/{index}/_count", "9"),
-    ("GET", "/_msearch", "9"),
-    ("POST", "/_msearch", "9"),
-    ("GET", "/{index}/_msearch", "9"),
-    ("POST", "/{index}/_msearch", "9"),
     ("POST", "/{index}/_update_by_query", "9a"),
     ("POST", "/{index}/_delete_by_query", "10"),
 ];

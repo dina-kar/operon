@@ -13,3 +13,5 @@ mod dsl;
 mod harness;
 #[cfg(feature = "es")]
 mod http;
+#[cfg(feature = "es")]
+mod search;
