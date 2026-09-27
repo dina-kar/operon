@@ -245,10 +245,33 @@ async fn a_consistency_token_in_metadata_is_honoured() {
         .await
         .expect_err("times out");
     assert_eq!(code(&err), Code::DeadlineExceeded, "{err}");
-    // A token that does not parse reads Strong.
-    let mut garbled = client(&api, Some("w")).await;
-    garbled.set_header(TOKEN, "c1:nope");
-    assert_eq!(count(&mut garbled, "kb").await, 6);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_unparsable_consistency_token_is_invalid_argument() {
+    let api = Native::start_flight().await;
+    let token = kb(&api, "w").await;
+    // A token that does not parse is refused, as REST answers 400 (O-M16-2).
+    for garbled in ["v1:nonsense", "c1:nope"] {
+        let mut client = client(&api, Some("w")).await;
+        client.set_header(TOKEN, garbled);
+        let err = query(&mut client, "SELECT 1").await.expect_err(garbled);
+        assert_eq!(code(&err), Code::InvalidArgument, "{garbled}: {err}");
+        assert!(
+            err.to_string().contains("invalid operon-consistency-token"),
+            "{garbled}: {err}"
+        );
+    }
+    // A valid token and no token still answer.
+    let mut with_token = client(&api, Some("w")).await;
+    with_token.set_header(TOKEN, &token);
+    let batches = query(&mut with_token, "SELECT 1 AS one")
+        .await
+        .expect("a valid token answers");
+    assert_eq!(i64s(&batches, "one"), [Some(1)]);
+    let mut plain = client(&api, Some("w")).await;
+    assert_eq!(count(&mut plain, "kb").await, 6);
     api.shutdown().await;
 }
 
