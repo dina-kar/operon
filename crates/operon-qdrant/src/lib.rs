@@ -93,12 +93,18 @@
 //!   the raw distances and so favours far points (Ruling 9).
 //! - `recommend` with `best_score` or `sum_scores`, `discover` and
 //!   `context` score the union of one candidate search per example (the
-//!   positives, or the target and each pair's positive; `best_score` without
-//!   positives reads the negatives'), each of `min(max(4 × (offset + limit),
-//!   100), max_candidates)` points, where Qdrant scores during its HNSW walk;
-//!   a point outside every neighbourhood is missed (Ruling 10). `sum_scores`
-//!   needs a positive, and a `context` query needs a pair, where Qdrant
-//!   accepts negatives alone and an empty context (row T8-7).
+//!   positives, or the target and each pair's positive; `best_score` and
+//!   `sum_scores` without positives read the negatives'), each of
+//!   `min(max(4 × (offset + limit), 100), max_candidates)` points, where
+//!   Qdrant scores during its HNSW walk; a point outside every neighbourhood
+//!   is missed (Ruling 10). With negatives only, the best points lie far
+//!   from the negatives, so their neighbourhoods rarely hold them: such a
+//!   query answers from a small candidate set (owner rulings on row T8-7).
+//!   An empty `context` scores `candidate_k` points of the filter 0 each, in
+//!   id order, where Qdrant returns the first points of its walk.
+//! - Refusal texts for example sets differ from Qdrant's: `No positive
+//!   examples given` for `average_vector` without a positive and for a
+//!   `recommend` without any example (row T8-7).
 //! - MMR's `candidates_limit` is capped at `max_candidates` (10,000), where
 //!   Qdrant refuses one over 16,384 (row T8-8).
 //! - Groups (Ruling 11, rows T9-2 and T9-3): a collect request leaves out

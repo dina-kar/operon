@@ -11,6 +11,7 @@ use serde::de::{DeserializeOwned, Error as _};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
+use crate::error::GatewayError;
 use crate::model::common::{Record, ScoredPoint, VectorInput, WithPayload, WithVector};
 use crate::model::filter::{Filter, OneOrMany};
 
@@ -475,6 +476,23 @@ pub struct DiscoverRequest {
     pub using: Option<String>,
     #[serde(default)]
     pub lookup_from: Option<LookupLocation>,
+}
+
+impl DiscoverRequest {
+    /// Qdrant's legacy discover needs a target or a context pair
+    /// (`qdrant:lib/collection/src/discovery.rs`), though the universal
+    /// query accepts an empty context (row T8-7).
+    pub fn check(&self) -> Result<(), GatewayError> {
+        if self.target.is_none() && self.context.as_ref().is_none_or(Vec::is_empty) {
+            return Err(no_discover_input());
+        }
+        Ok(())
+    }
+}
+
+/// The legacy discover without a target or a pair.
+pub(crate) fn no_discover_input() -> GatewayError {
+    GatewayError::BadRequest("target and/or context_pairs must be specified".to_string())
 }
 
 /// `{"searches": [...]}`, the legacy batches.

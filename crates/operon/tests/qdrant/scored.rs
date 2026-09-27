@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use crate::harness::Qd;
 use crate::query::{
     ab_random, assert_hits, brute, create, dense_input, error, grpc_hits, hits, ids, query,
-    query_raw, random_collection, sparse_collection, upsert,
+    random_collection, sparse_collection, upsert,
 };
 
 // ----- helpers -----
@@ -159,6 +159,12 @@ async fn recommend_sum_scores_matches_brute_force() {
     assert_hits(&got, &kept, 1e-4);
     assert_eq!(got.len(), 80);
     assert!(got.iter().all(|(_, s)| *s < t));
+    // Negatives only, which Qdrant accepts (owner ruling on row T8-7): the
+    // negatives' neighbourhoods are the candidates, here the whole
+    // collection (candidate_k = 4 × 80 ≥ 300).
+    let want = brute_scored(d, &points, &[30, 40], 80, |c| sum_scores(d, c, &[], &neg));
+    let body = json!({"query": {"recommend": {"negative": [30, 40], "strategy": "sum_scores"}}, "limit": 80});
+    assert_hits(&hits(&query(&qd, "s", body).await), &want, 1e-4);
 }
 
 // ----- discover, context -----
@@ -217,12 +223,11 @@ async fn context_matches_brute_force() {
         .await,
     );
     assert_hits(&got, &want, 1e-5);
-    let (status, reply) = query_raw(&qd, "c", json!({"query": {"context": []}})).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(
-        error(&reply),
-        "Wrong input: Context query requires at least one pair"
-    );
+    // An empty context scores every point 0, as in Qdrant (owner ruling on
+    // row T8-7).
+    let got = hits(&query(&qd, "c", json!({"query": {"context": []}, "limit": 5})).await);
+    assert_eq!(got.len(), 5);
+    assert!(got.iter().all(|(_, s)| *s == 0.0));
 }
 
 #[tokio::test]
@@ -621,6 +626,18 @@ async fn legacy_recommend_defaults_to_average_vector() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(error(&reply), "Wrong input: No positive examples given");
+    // The legacy discover needs a target or a pair (Qdrant's `discovery.rs`),
+    // though the universal query accepts an empty context.
+    for body in [json!({"limit": 3}), json!({"context": [], "limit": 3})] {
+        let (status, reply) = qd
+            .post("/collections/ld/points/discover", Some(body.clone()))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            error(&reply),
+            "Wrong input: target and/or context_pairs must be specified"
+        );
+    }
 }
 
 fn id(n: u64) -> pb::PointId {
@@ -791,4 +808,19 @@ async fn grpc_legacy_methods_match_rest() {
         .await
         .expect_err("empty target");
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    let err = client
+        .discover(pb::DiscoverPoints {
+            collection_name: "g".into(),
+            limit: 3,
+            ..Default::default()
+        })
+        .await
+        .expect_err("neither target nor pairs");
+    assert_eq!(
+        (err.code(), err.message()),
+        (
+            tonic::Code::InvalidArgument,
+            "Wrong input: target and/or context_pairs must be specified"
+        )
+    );
 }

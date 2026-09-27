@@ -1073,7 +1073,12 @@ async fn discover_points(
     QdrantQuery(params): QdrantQuery<ReadParams>,
     QdrantJson(request): QdrantJson<DiscoverRequest>,
 ) -> Response {
-    legacy(gw, collection, headers, params, request).await
+    let g = gw.clone();
+    serve(&gw, &headers, params.timeout, |ctx| async move {
+        request.check()?;
+        query::run_query(g, ctx, collection, request.into()).await
+    })
+    .await
 }
 
 /// `POST /collections/{c}/points/discover/batch`.
@@ -1084,6 +1089,15 @@ async fn discover_batch(
     QdrantQuery(params): QdrantQuery<ReadParams>,
     QdrantJson(batch): QdrantJson<Batch<DiscoverRequest>>,
 ) -> Response {
+    if let Some(e) = batch.searches.iter().find_map(|r| r.check().err()) {
+        return serve(
+            &gw,
+            &headers,
+            params.timeout,
+            |_| async move { Err::<(), _>(e) },
+        )
+        .await;
+    }
     legacy_batch(gw, collection, headers, params, batch).await
 }
 
