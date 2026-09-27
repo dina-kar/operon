@@ -9,7 +9,10 @@
 //! [`docs`], which run inside an `operon-tikv` transaction and return the
 //! [`WriteRecord`]s the commit journal needs. [`Limits`] holds R1's document
 //! and mutation limits. The sharded, sequenced commit journal (Task 9), its
-//! [`Tailer`] and its [`Janitor`] are in [`journal`].
+//! [`Tailer`] and its [`Janitor`] are in [`journal`]. [`LiveTxn`], its
+//! [`ReadSet`], the [`Function`] trait and the mutation and query
+//! [`Runner`] (Task 10) are in [`txn`]; the built-in `_system:*` functions
+//! are in [`system`], their argument shapes in [`query`].
 
 pub mod catalog;
 mod config;
@@ -19,6 +22,9 @@ pub mod ids;
 pub mod journal;
 pub mod keys;
 mod limits;
+pub mod query;
+pub mod system;
+pub mod txn;
 mod value;
 
 /// The `loam.live.v1` protobuf messages.
@@ -32,4 +38,5 @@ pub use ids::{DocId, IndexId, TableId};
 pub use journal::{Batch, Checkpoint, Janitor, JanitorReport, Journal, Tailer};
 pub use keys::{AppKeys, KeyRange};
 pub use limits::Limits;
+pub use txn::{FnKind, Function, LiveTxn, Mutated, Queried, ReadSet, Runner, RunnerOptions, Usage};
 pub use value::{LiveValue, fields_from_proto, fields_to_proto};

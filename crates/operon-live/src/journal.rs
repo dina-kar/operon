@@ -102,6 +102,21 @@ impl Journal {
         rng.random_range(0..self.shards)
     }
 
+    /// A shard drawn from `rng` uniformly among those other than `exclude`
+    /// (every shard when `exclude` is `None` or the journal has one shard).
+    /// A mutation's rerun excludes the shard its previous attempt drew, so a
+    /// shard-head conflict is not met again on the same head (R1 plan row
+    /// T10-2).
+    pub fn pick_other(&self, rng: &mut (impl Rng + ?Sized), exclude: Option<u16>) -> u16 {
+        match exclude {
+            Some(skip) if self.shards > 1 && skip < self.shards => {
+                let shard = rng.random_range(0..self.shards - 1);
+                if shard >= skip { shard + 1 } else { shard }
+            }
+            _ => self.pick(rng),
+        }
+    }
+
     /// Appends `entry` to a shard drawn from `rng`; returns the shard and the
     /// entry's sequence (the last one, if it was split: the shard's new
     /// head). The shard is drawn before the returned future runs, so `rng`
@@ -515,6 +530,8 @@ pub struct JanitorReport {
     /// Per shard, the sequence every live consumer has passed (the head
     /// when there is none) at the last pass.
     pub floors: Vec<u64>,
+    /// Expired idempotency records deleted (R1 plan Task 10 semantics 3).
+    pub expired_idempotency: u64,
 }
 
 #[derive(Debug, Default)]
@@ -527,7 +544,8 @@ struct TrimPass {
 
 /// Deletes journal entries every live consumer has passed once they are
 /// older than the retention (§20 §5.3). Checkpoints past their expiry are
-/// deleted and no longer hold entries.
+/// deleted and no longer hold entries. Each pass also deletes the app's
+/// expired idempotency records (§20 §5.1).
 #[derive(Debug, Clone)]
 pub struct Janitor {
     tikv: Tikv,
@@ -579,8 +597,52 @@ impl Janitor {
                 }
             }
         }
+        let mut from = self.journal.app.idempotency_records().lo;
+        loop {
+            let app = self.journal.app.clone();
+            let start = from.clone();
+            let pass = self
+                .tikv
+                .run(journal_txn("live.idempotency.sweep"), move |txn| {
+                    let app = app.clone();
+                    let start = start.clone();
+                    Box::pin(async move { lift(sweep_idempotency(txn, &app, start).await) })
+                })
+                .await?
+                .value?;
+            report.expired_idempotency += pass.0;
+            match pass.1 {
+                Some(next) => from = next,
+                None => break,
+            }
+        }
         Ok(report)
     }
+}
+
+/// Deletes the expired idempotency records among the next [`TRIM_BATCH`]
+/// from `from`; returns how many, and where the next pass starts (`None`
+/// at the end).
+async fn sweep_idempotency(
+    txn: &mut Txn,
+    app: &AppKeys,
+    from: Vec<u8>,
+) -> Result<(u64, Option<Vec<u8>>), LiveError> {
+    let now_ms = Tikv::physical_ms(&txn.start_ts());
+    let all = app.idempotency_records();
+    let (_, hi) = all.bounds();
+    let records = txn.scan(&from, hi, TRIM_BATCH).await?;
+    let next = (records.len() == TRIM_BATCH)
+        .then(|| records.last().map(|(k, _)| key_after(k)))
+        .flatten();
+    let mut deleted = 0;
+    for (key, value) in records {
+        if crate::txn::decode_idempotency(&value)?.expires_ms <= now_ms {
+            txn.delete(&key).await?;
+            deleted += 1;
+        }
+    }
+    Ok((deleted, next))
 }
 
 /// The options of the journal's own transactions.

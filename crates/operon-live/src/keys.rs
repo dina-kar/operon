@@ -12,13 +12,15 @@
 //! journal entry= prefix ‖ 0x04 ‖ 0x01 ‖ shard:u16 BE ‖ seq:u64 BE        → JournalEntry
 //! checkpoint   = prefix ‖ 0x04 ‖ 0x02 ‖ shard:u16 BE ‖ consumer
 //!                → seq:u64 BE ‖ expires_ms:u64 BE (0 = never)
-//! idempotency  = prefix ‖ 0x05 ‖ …   (Task 10)
+//! idempotency  = prefix ‖ 0x05 ‖ key_hash[16]                           → IdempotencyRecord
 //! ```
 //!
+//! `key_hash` is the first 16 bytes of SHA-256 of the idempotency key.
 //! Catalog kinds: `0x00` counters (`"table"`: the next table id, u32 BE),
 //! `0x01` a table's name (→ its id, u32 BE), `0x02` a table (name =
 //! id:u32 BE → `TableDef`), `0x03` the deployment pointer and `0x04` the
-//! deployed schema (both Task 13).
+//! deployed schema (both Task 13), `0x05` the app's own settings (empty
+//! name → `AppDef`: the journal shard count, Task 10).
 
 use operon_tikv::tuple;
 
@@ -53,6 +55,11 @@ pub const KIND_TABLE: u8 = 0x02;
 pub const KIND_DEPLOYMENT: u8 = 0x03;
 /// Catalog kind: the deployed schema (Task 13).
 pub const KIND_SCHEMA: u8 = 0x04;
+/// Catalog kind: the app's own settings (Task 10).
+pub const KIND_APP: u8 = 0x05;
+
+/// The length of an idempotency record's key hash.
+pub const IDEMPOTENCY_HASH_BYTES: usize = 16;
 
 /// A half-open key range `[lo, hi)`, keys relative to the handle's root. An
 /// empty `hi` means "to the end of the root" (as [`tuple::successor`]).
@@ -136,6 +143,11 @@ impl AppKeys {
     /// The deployed schema record (Task 13).
     pub fn schema(&self) -> Vec<u8> {
         self.catalog(KIND_SCHEMA, b"")
+    }
+
+    /// The app's settings record (its journal shard count).
+    pub fn app_def(&self) -> Vec<u8> {
+        self.catalog(KIND_APP, b"")
     }
 
     /// Every table record.
@@ -231,6 +243,35 @@ impl AppKeys {
     /// Every consumer checkpoint of a journal shard.
     pub fn journal_checkpoints(&self, shard: u16) -> KeyRange {
         prefix_range(self.journal_key(JOURNAL_CHECKPOINT, shard, 0))
+    }
+
+    /// Every journal key: heads, entries and checkpoints.
+    pub fn journal(&self) -> KeyRange {
+        prefix_range(self.with(JOURNAL, 0))
+    }
+
+    /// The idempotency record of a key hash.
+    pub fn idempotency(&self, hash: &[u8; IDEMPOTENCY_HASH_BYTES]) -> Vec<u8> {
+        let mut key = self.with(IDEMPOTENCY, IDEMPOTENCY_HASH_BYTES);
+        key.extend_from_slice(hash);
+        key
+    }
+
+    /// Every idempotency record.
+    pub fn idempotency_records(&self) -> KeyRange {
+        prefix_range(self.with(IDEMPOTENCY, 0))
+    }
+
+    /// The index entries of every table whose id is `first` or above (the
+    /// tables not created yet, when `first` is the table counter): a read
+    /// that found no table depends on them.
+    pub fn tables_from(&self, first: TableId) -> KeyRange {
+        let mut lo = self.with(INDEX, 4);
+        lo.extend_from_slice(&first.0.to_be_bytes());
+        KeyRange {
+            lo,
+            hi: tuple::successor(&self.with(INDEX, 0)),
+        }
     }
 
     /// The document id of a document key of `table`.
