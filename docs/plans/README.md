@@ -62,6 +62,14 @@ Design reference: [21 Loam Durable: embedded Resonate and durable patterns](../d
 
 M2 builds on D1's engine: GDPR erasure orchestration as a saga with its deadline sweep, and restore and online index backfill as operations (D143).
 
+## Track SC: the Loam Commons showcase suite (after the release)
+
+Design reference: [22 Loam Commons: an open-source showcase suite on Loam](../design/22-showcase-suite.md) (D-SC-1 … D-SC-10, numbers assigned at merge). Plane, Forgejo, Zulip, PostHog and GlitchTip, unmodified, behind Keycloak OIDC and one OpenFGA model, deployed on Loam and used to build Loam. The code lives in `dina-kar/loam-commons`; SC1 changes no engine code.
+
+| Plan | Scope | Depends on | Status |
+|---|---|---|---|
+| [SC1: Loam Commons](2026-09-28-sc1-showcase-suite.md) | Suite repo and license check; Keycloak realm and SSO for every app (Plane through Forgejo, PostHog behind forward-auth); the cross-app OpenFGA model; provisioning sagas and reconcile on Loam Durable; RustFS storage; Forgejo's issue search on Loam's ES API; OTLP logs; unified search, the Live activity feed and the MCP assistant; Compose and Helm; the dogfooding cutover | v1.0 (M1 + M2), the unified auth plan (Q30) implemented, §19 OIDC login, M2 OTLP logs (D73), D2 durable tenancy, R1/R2 sync API | Not started |
+
 ## Later milestones
 
 The roadmap was revised on 2026-09-25 after the [architecture review](../architecture-review-and-recommendations.md) (D42–D50), and on 2026-09-26 for the metastore backends, the namespace router, tenancy and erasure ([§18](../design/18-metastore-backends-and-router.md), D58–D70), then for streams, Kafka, routing and consistency tokens (D71–D76), and for the gaps a comparison with turbopuffer found (D86–D103: backpressure, filter writes and a limits page before launch; the P1 items in M2 and M2.x). **v1.0 is M1 plus M2, production hardening**, including the native stream API core and OTLP logs ingest (D72, D73). **v1.1 is M2.x, cloud and BYOC.** After them come M3 (native graph for GraphRAG; the Resonate durable-execution surface moved to track D, D145), M4 (analytics on Iceberg), M5 (the Kafka wire-protocol gateway with the RisingWave companion, changelog streams, `express` and Flight replay; D74) and M6 (scale). The Neo4j and ClickHouse protocol surfaces are no longer planned, and FoundationDB is dropped (D71). Plans for M2 onward will be written once M1 is done. Their scope and exit gates are in [12-roadmap-testing-risks.md](../design/12-roadmap-testing-risks.md).
