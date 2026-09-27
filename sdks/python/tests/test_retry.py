@@ -9,7 +9,6 @@ import httpx
 import pytest
 
 import operon
-from operon import _wire
 
 Step = httpx.Response | Exception
 
@@ -130,17 +129,15 @@ def test_a_503_on_a_collection_write_is_retried() -> None:
     written = {"token": "v1:s1/p0@1", "results": ["accepted"], "positions": [None]}
     script = Script(_unavailable(), _ok(written))
     delays: list[float] = []
-    request = _wire.Request(
-        "POST",
-        "/v1/namespaces/n/collections/c/documents",
-        json_body={"ops": [{"delete": {"id": 1}}], "report_existence": False},
-        idempotent=True,
-    )
     with _client(script, delays) as client:
-        response = client._transport.send(request)
-    assert response.json() == written
+        result = client.namespace("n").collection("c").delete([1])
+    assert result.results == ["accepted"]
     assert len(script.requests) == 2
-    assert json.loads(script.requests[1].content) == request.json_body
+    assert script.requests[1].url.path == "/v1/namespaces/n/collections/c/documents"
+    assert json.loads(script.requests[1].content) == {
+        "ops": [{"delete": {"id": 1}}],
+        "report_existence": False,
+    }
 
 
 def test_a_connect_error_is_retried_for_produce_too() -> None:

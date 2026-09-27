@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import operon
+from operon import schema
 
 REPO = Path(__file__).resolve().parents[3]
 LISTENING = re.compile(r"operon listening on (http://\S+)")
@@ -101,3 +102,49 @@ def ns_name(operon_url: str) -> str:
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.fixture
+def client(operon_url: str) -> Iterator[operon.Client]:
+    """A client of the spawned server."""
+    with operon.Client(operon_url) as c:
+        yield c
+
+
+@pytest.fixture
+def ns(client: operon.Client, ns_name: str) -> operon.Namespace:
+    """The fresh namespace as a handle."""
+    return client.namespace(ns_name)
+
+
+def kb_schema() -> operon.Schema:
+    """The fixture's `kb` collection (scenario.json step 6)."""
+    return operon.Schema(
+        fields=[schema.text("body"), schema.keyword("tenant"), schema.i64("n")],
+        vectors=[schema.vector("embedding", 3)],
+        dynamic="ignore",
+    )
+
+
+def kb_docs() -> list[operon.Document]:
+    """The fixture's first three documents (scenario.json step 10)."""
+    return [
+        operon.Document(
+            1, {"body": "refund policy", "tenant": "a", "n": 1}, {"embedding": [1.0, 0.0, 0.0]}
+        ),
+        operon.Document(
+            2, {"body": "shipping times", "tenant": "a", "n": 2}, {"embedding": [0.9, 0.1, 0.0]}
+        ),
+        operon.Document(
+            3, {"body": "refund window", "tenant": "b", "n": 3}, {"embedding": [0.0, 0.0, 1.0]}
+        ),
+    ]
+
+
+@pytest.fixture
+def kb(ns: operon.Namespace) -> operon.Collection:
+    """`kb` with its three documents written."""
+    ns.create_collection("kb", kb_schema(), partitions=2)
+    collection = ns.collection("kb")
+    collection.upsert(kb_docs())
+    return collection
