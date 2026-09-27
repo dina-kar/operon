@@ -1,7 +1,11 @@
 // Errors of the Live API (R1 plan Task 14, rows T7-5 and T13-18).
 import { Code, ConnectError } from "@connectrpc/connect";
 
-import { ErrorCode, type LiveError as WireError } from "./gen/loam/live/v1/live_pb.js";
+import {
+  ErrorCode,
+  LiveErrorSchema,
+  type LiveError as WireError,
+} from "./gen/loam/live/v1/live_pb.js";
 
 /** The wire codes of `loam.live.v1.ErrorCode`, without their prefix. */
 export type LiveErrorCode =
@@ -50,7 +54,9 @@ export function fromWireError(e: WireError): LiveError {
 }
 
 // Row T13-18: the server maps its codes onto Connect's; the reverse is exact
-// except that RESOURCE_EXHAUSTED also carries FUNCTION_OUT_OF_MEMORY.
+// except that RESOURCE_EXHAUSTED also carries FUNCTION_OUT_OF_MEMORY. Servers
+// attach the exact code as a `loam.live.v1.LiveError` detail (row T14-12), so
+// this mapping is the fallback for errors without one.
 const CONNECT: Partial<Record<Code, LiveErrorCode>> = {
   [Code.Canceled]: "CANCELED",
   [Code.InvalidArgument]: "INVALID_ARGUMENT",
@@ -67,6 +73,10 @@ const CONNECT: Partial<Record<Code, LiveErrorCode>> = {
 export function toLiveError(e: unknown): LiveError {
   if (e instanceof LiveError) return e;
   const c = ConnectError.from(e);
+  const detail = c.findDetails(LiveErrorSchema)[0];
+  if (detail !== undefined && detail.code !== ErrorCode.UNSPECIFIED && WIRE[detail.code]) {
+    return new LiveError(WIRE[detail.code], c.rawMessage, { cause: e });
+  }
   let code = CONNECT[c.code] ?? "INTERNAL";
   if (code === "RESOURCE_EXHAUSTED" && /out of memory/i.test(c.rawMessage)) {
     code = "FUNCTION_OUT_OF_MEMORY";
