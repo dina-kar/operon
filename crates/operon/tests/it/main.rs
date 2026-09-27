@@ -11,3 +11,4 @@ mod native_collections;
 mod native_query;
 mod native_scan;
 mod native_sql;
+mod sdk_wire;
