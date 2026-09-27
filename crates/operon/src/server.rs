@@ -236,6 +236,32 @@ pub struct ServerConfig {
     /// serves no Elasticsearch API; the CLI sets it unless `--no-es`.
     #[cfg(feature = "es")]
     pub es: Option<operon_es::EsConfig>,
+    /// The MCP endpoint's listener and settings (plan M1.6 Task 7, feature
+    /// `mcp`, Ruling 19), served on gateway nodes on a listener of its own.
+    /// `None` (the default here, row E20) serves no MCP; the CLI sets it
+    /// unless `--no-mcp`.
+    #[cfg(feature = "mcp")]
+    pub mcp: Option<McpServerConfig>,
+}
+
+/// Where and how the MCP endpoint is served (plan M1.6 Task 7, row E20).
+#[cfg(feature = "mcp")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpServerConfig {
+    /// The MCP listener (`--mcp-listen`, default `127.0.0.1:8083`).
+    pub listen: SocketAddr,
+    pub mcp: operon_mcp::McpConfig,
+}
+
+#[cfg(feature = "mcp")]
+impl Default for McpServerConfig {
+    /// `127.0.0.1:8083` and [`operon_mcp::McpConfig::default`].
+    fn default() -> Self {
+        Self {
+            listen: SocketAddr::from(([127, 0, 0, 1], 8083)),
+            mcp: operon_mcp::McpConfig::default(),
+        }
+    }
 }
 
 impl ServerConfig {
@@ -269,6 +295,8 @@ impl ServerConfig {
             qdrant: None,
             #[cfg(feature = "es")]
             es: None,
+            #[cfg(feature = "mcp")]
+            mcp: None,
         }
     }
 
@@ -289,6 +317,10 @@ impl ServerConfig {
             cluster.validate()?;
         }
         self.flight.validate().map_err(ServerError::Config)?;
+        #[cfg(feature = "mcp")]
+        if let Some(mcp) = &self.mcp {
+            mcp.mcp.validate()?;
+        }
         self.validate_backpressure()?;
         self.gc
             .check_deadlines(&[
@@ -380,6 +412,17 @@ pub enum ServerError {
         addr: SocketAddr,
         source: std::io::Error,
     },
+    /// The MCP settings are invalid (plan M1.6 Task 7).
+    #[cfg(feature = "mcp")]
+    #[error(transparent)]
+    Mcp(#[from] operon_mcp::McpConfigError),
+    /// The MCP listener could not be bound (plan M1.6 Task 7, row E20).
+    #[cfg(feature = "mcp")]
+    #[error("mcp listen on {addr}: {source}")]
+    McpListen {
+        addr: SocketAddr,
+        source: std::io::Error,
+    },
 }
 
 /// A running Operon process.
@@ -406,6 +449,8 @@ pub struct Server {
     qdrant: Option<Qdrant>,
     #[cfg(feature = "es")]
     es: Option<Es>,
+    #[cfg(feature = "mcp")]
+    mcp: Option<Mcp>,
     /// Cluster mode only.
     cluster: Option<ClusterRuntime>,
 }
@@ -450,6 +495,54 @@ struct Assembled {
     qdrant: Option<Qdrant>,
     #[cfg(feature = "es")]
     es: Option<Es>,
+    #[cfg(feature = "mcp")]
+    mcp: Option<Mcp>,
+}
+
+/// The running MCP listener (plan M1.6 Task 7, Ruling 19).
+#[cfg(feature = "mcp")]
+#[derive(Debug)]
+struct Mcp {
+    addr: SocketAddr,
+    task: JoinHandle<()>,
+    stop: CancellationToken,
+}
+
+#[cfg(feature = "mcp")]
+impl Mcp {
+    /// Serves `operon_mcp::service` at `config.path` on `listener`, on a
+    /// router of its own (the native router never nests it), until stopped.
+    fn start(
+        listener: tokio::net::TcpListener,
+        addr: SocketAddr,
+        collections: Arc<CollectionService>,
+        config: operon_mcp::McpConfig,
+    ) -> Result<Self, ServerError> {
+        let stop = CancellationToken::new();
+        let path = config.path.clone();
+        let service = operon_mcp::service(collections, config, stop.child_token())?;
+        let router = axum::Router::new().nest_service(&path, service);
+        let shutdown = stop.clone();
+        let task = tokio::spawn(async move {
+            let serve =
+                axum::serve(listener, router).with_graceful_shutdown(shutdown.cancelled_owned());
+            if let Err(err) = serve.await {
+                tracing::error!(%err, "MCP server failed");
+            }
+        });
+        Ok(Self { addr, task, stop })
+    }
+
+    /// Waits up to [`HTTP_GRACE`] for the requests in flight, then aborts
+    /// the rest.
+    async fn stop(self) {
+        self.stop.cancel();
+        let mut task = self.task;
+        if tokio::time::timeout(HTTP_GRACE, &mut task).await.is_err() {
+            tracing::warn!("in-flight MCP requests did not finish; aborting them");
+            task.abort();
+        }
+    }
 }
 
 /// The running Qdrant gateway (plan M1.4 Task 2).
@@ -682,6 +775,8 @@ impl Server {
             qdrant: parts.qdrant,
             #[cfg(feature = "es")]
             es: parts.es,
+            #[cfg(feature = "mcp")]
+            mcp: parts.mcp,
             cluster: None,
         })
     }
@@ -753,6 +848,8 @@ impl Server {
                     qdrant: parts.qdrant,
                     #[cfg(feature = "es")]
                     es: parts.es,
+                    #[cfg(feature = "mcp")]
+                    mcp: parts.mcp,
                     cluster: Some(ClusterRuntime {
                         node_id,
                         roles,
@@ -991,6 +1088,24 @@ impl Server {
             },
             None => None,
         };
+        // The MCP listener, next to the gateways' (plan M1.6 Task 7, row
+        // E20): bound here and served once the collection service exists.
+        #[cfg(feature = "mcp")]
+        let mcp_listener = match config.mcp.clone().filter(|_| roles.gateway) {
+            Some(mcp) => match tokio::net::TcpListener::bind(mcp.listen).await {
+                Ok(listener) => Some((mcp, listener)),
+                Err(source) => {
+                    if let Err(err) = cache.close().await {
+                        tracing::warn!(%err, "closing the cache after a failed start");
+                    }
+                    return Err(ServerError::McpListen {
+                        addr: mcp.listen,
+                        source,
+                    });
+                }
+            },
+            None => None,
+        };
 
         // Validated above, so this cannot fail. A node without the `log`
         // role still holds a writer (the service needs one), but serves no
@@ -1144,6 +1259,16 @@ impl Server {
                 operon_es::EsGateway::new(collections.clone(), es).serve(listener, stop.clone());
             Es { handle, stop }
         });
+        // The MCP config was validated first thing in `Server::start`, so
+        // this cannot fail.
+        #[cfg(feature = "mcp")]
+        let mcp = match mcp_listener {
+            Some((mcp, listener)) => {
+                let addr = listener.local_addr().unwrap_or(mcp.listen);
+                Some(Mcp::start(listener, addr, collections.clone(), mcp.mcp)?)
+            }
+            None => None,
+        };
         let internal = reqwest::Client::builder()
             .connect_timeout(api::hot::OWNER_CONNECT_TIMEOUT)
             .timeout(api::hot::OWNER_TIMEOUT)
@@ -1200,6 +1325,8 @@ impl Server {
             qdrant,
             #[cfg(feature = "es")]
             es,
+            #[cfg(feature = "mcp")]
+            mcp,
         })
     }
 
@@ -1259,6 +1386,12 @@ impl Server {
         self.es.as_ref().map(|es| es.handle.addr)
     }
 
+    /// The address the MCP endpoint listens on, when it does (Ruling 19).
+    #[cfg(feature = "mcp")]
+    pub fn mcp_addr(&self) -> Option<SocketAddr> {
+        self.mcp.as_ref().map(|mcp| mcp.addr)
+    }
+
     /// The server's log writer; M1.2 builds its `CollectionWriter` on it.
     pub fn log_writer(&self) -> &LogWriter {
         &self.writer
@@ -1286,6 +1419,11 @@ impl Server {
         if let Some(es) = &self.es {
             es.stop.cancel();
         }
+        // The MCP listener stops together with them (plan M1.6 Task 7).
+        #[cfg(feature = "mcp")]
+        if let Some(mcp) = &self.mcp {
+            mcp.stop.cancel();
+        }
         #[cfg(feature = "qdrant")]
         if let Some(qdrant) = self.qdrant {
             qdrant.stop.cancel();
@@ -1298,6 +1436,10 @@ impl Server {
             && let Err(err) = es.handle.stop_within(HTTP_GRACE).await
         {
             tracing::warn!(%err, "the Elasticsearch gateway stopped with an error");
+        }
+        #[cfg(feature = "mcp")]
+        if let Some(mcp) = self.mcp {
+            mcp.stop().await;
         }
         let mut stop_http = Some(self.stop_http);
         match &self.cluster {

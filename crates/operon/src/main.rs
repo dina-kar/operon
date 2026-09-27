@@ -248,6 +248,25 @@ struct Native {
     /// Serve no Elasticsearch API.
     #[arg(long)]
     no_es: bool,
+    /// Address of the MCP endpoint's own listener, served at /mcp
+    /// [default: 127.0.0.1:8083]. It is unauthenticated: keep it on
+    /// loopback.
+    #[arg(long, conflicts_with = "no_mcp")]
+    mcp_listen: Option<SocketAddr>,
+    /// The namespace of MCP requests without an `Operon-Namespace` header
+    /// [default: default].
+    #[arg(long, conflicts_with = "no_mcp")]
+    mcp_namespace: Option<String>,
+    /// A `Host` value the MCP endpoint answers; repeatable. When given,
+    /// replaces the default list (localhost, 127.0.0.1, ::1).
+    #[arg(long = "mcp-allowed-host", conflicts_with = "no_mcp")]
+    mcp_allowed_hosts: Vec<String>,
+    /// Serve only MCP 2026-07-28 and require its per-request metadata.
+    #[arg(long, conflicts_with = "no_mcp")]
+    mcp_strict_stateless: bool,
+    /// Serve no MCP endpoint.
+    #[arg(long)]
+    no_mcp: bool,
     /// Whether this node runs a hot tier, and whether reads use it when a
     /// request does not say (`Operon-Hot`).
     #[arg(long, value_enum, default_value = "on")]
@@ -288,6 +307,7 @@ impl Native {
         };
         self.apply_qdrant(config);
         self.apply_es(config);
+        self.apply_mcp(config);
         let hot = self.hot == HotSwitch::On;
         config.query.hot_default = hot;
         config.hot.enabled = hot;
@@ -356,6 +376,33 @@ impl Native {
     fn apply_es(&self, _config: &mut ServerConfig) {
         if self.es_listen.is_some() {
             tracing::warn!("this build has no Elasticsearch API (the es feature is off)");
+        }
+    }
+
+    /// The MCP endpoint on its own listener, unless `--no-mcp` (plan M1.6
+    /// Task 7, Ruling 19, row E20).
+    #[cfg(feature = "mcp")]
+    fn apply_mcp(&self, config: &mut ServerConfig) {
+        config.mcp = (!self.no_mcp).then(|| {
+            let mut mcp = operon::McpServerConfig::default();
+            if let Some(addr) = self.mcp_listen {
+                mcp.listen = addr;
+            }
+            if let Some(ns) = &self.mcp_namespace {
+                mcp.mcp.namespace = ns.clone();
+            }
+            if !self.mcp_allowed_hosts.is_empty() {
+                mcp.mcp.allowed_hosts = self.mcp_allowed_hosts.clone();
+            }
+            mcp.mcp.strict_stateless = self.mcp_strict_stateless;
+            mcp
+        });
+    }
+
+    #[cfg(not(feature = "mcp"))]
+    fn apply_mcp(&self, _config: &mut ServerConfig) {
+        if self.mcp_listen.is_some() {
+            tracing::warn!("this build has no MCP endpoint (the mcp feature is off)");
         }
     }
 }
@@ -665,7 +712,10 @@ async fn main() -> ExitCode {
         eprintln!("operon: {err}");
         return ExitCode::FAILURE;
     }
-    let server = match Server::start(config(cli.command)).await {
+    let config = config(cli.command);
+    #[cfg(feature = "mcp")]
+    let mcp_path = config.mcp.as_ref().map(|mcp| mcp.mcp.path.clone());
+    let server = match Server::start(config).await {
         Ok(server) => server,
         Err(err) => {
             eprintln!("operon: {err}");
@@ -683,6 +733,12 @@ async fn main() -> ExitCode {
     #[cfg(feature = "es")]
     if let Some(addr) = server.es_addr() {
         println!("operon es listening on http://{addr}");
+    }
+    // M1.6 Task 7 (row E20): before the HTTP line too.
+    #[cfg(feature = "mcp")]
+    if let Some(addr) = server.mcp_addr() {
+        let path = mcp_path.as_deref().unwrap_or("/mcp");
+        println!("operon mcp endpoint http://{addr}{path}");
     }
     println!("operon listening on http://{}", server.local_addr());
     // M1.6 W14, M1.7 A4: printed once the listener is bound.
@@ -707,6 +763,42 @@ mod tests {
     fn dev_config(args: &[&str]) -> ServerConfig {
         let cli = Cli::try_parse_from(["operon", "dev"].iter().chain(args)).expect("parse");
         config(cli.command)
+    }
+
+    /// Plan M1.6 Task 7 (row E20): MCP on its own loopback listener by
+    /// default in every mode, and the flags that change it.
+    #[cfg(feature = "mcp")]
+    #[test]
+    fn mcp_flags_set_the_config() {
+        let mcp = dev_config(&[]).mcp.expect("mcp on by default");
+        assert_eq!(mcp.listen, "127.0.0.1:8083".parse().unwrap());
+        assert_eq!(mcp.mcp, operon_mcp::McpConfig::default());
+        let cli = Cli::try_parse_from(["operon", "standalone", "--bucket", "file:///tmp/b"])
+            .expect("parse");
+        let standalone = config(cli.command).mcp.expect("mcp on standalone");
+        assert_eq!(standalone.listen, "127.0.0.1:8083".parse().unwrap());
+        assert_eq!(dev_config(&["--no-mcp"]).mcp, None);
+        let mcp = dev_config(&[
+            "--mcp-listen",
+            "127.0.0.1:9100",
+            "--mcp-namespace",
+            "agents",
+            "--mcp-allowed-host",
+            "box.local",
+            "--mcp-allowed-host",
+            "127.0.0.1",
+            "--mcp-strict-stateless",
+        ])
+        .mcp
+        .expect("mcp");
+        assert_eq!(mcp.listen, "127.0.0.1:9100".parse().unwrap());
+        assert_eq!(mcp.mcp.namespace, "agents");
+        assert_eq!(mcp.mcp.allowed_hosts, ["box.local", "127.0.0.1"]);
+        assert!(mcp.mcp.strict_stateless);
+        assert!(
+            Cli::try_parse_from(["operon", "dev", "--no-mcp", "--mcp-listen", "127.0.0.1:1"])
+                .is_err()
+        );
     }
 
     /// Ruling 22, controller ruling P2: `--gc-grace-ms` lowers every

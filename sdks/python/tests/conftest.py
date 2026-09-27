@@ -78,6 +78,7 @@ def operon_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[st
             str(data),
             "--no-qdrant",
             "--no-es",
+            "--no-mcp",
             "--flight-sql-listen",
             "127.0.0.1:0",
         ],

@@ -167,6 +167,7 @@ impl Qd {
             command.arg("--no-qdrant");
         }
         command.arg("--no-es");
+        command.arg("--no-mcp");
         let mut child = command
             .arg("--data-dir")
             .arg(dir.path())

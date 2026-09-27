@@ -43,6 +43,7 @@ def _start_operon():
             "20",
             "--no-qdrant",
             "--no-flight-sql",
+            "--no-mcp",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,

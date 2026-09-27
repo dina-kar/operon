@@ -100,6 +100,7 @@ impl Cluster {
                 "--no-flight-sql",
                 "--no-qdrant",
                 "--no-es",
+                "--no-mcp",
                 "--maintenance",
                 "off",
                 "--lease-ttl-ms",

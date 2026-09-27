@@ -50,6 +50,7 @@ export async function startOperon(opts: { flight?: boolean } = {}): Promise<Oper
     data,
     "--no-qdrant",
     "--no-es",
+    "--no-mcp",
     ...(flight ? ["--flight-sql-listen", "127.0.0.1:0"] : ["--no-flight-sql"]),
   ];
   const child = spawn(binary(), args, {

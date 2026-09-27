@@ -27,6 +27,7 @@ operon-hnsw.workspace = true
 operon-hot.workspace = true
 operon-link.workspace = true
 operon-log.workspace = true
+operon-mcp = { workspace = true, optional = true }
 operon-meta.workspace = true
 operon-qdrant = { workspace = true, optional = true }
 operon-query.workspace = true
@@ -45,11 +46,14 @@ ulid.workspace = true
 url.workspace = true
 
 [features]
-default = ["es", "flight", "hnsw", "qdrant"]
+default = ["es", "flight", "hnsw", "mcp", "qdrant"]
 # Serve the Elasticsearch REST API (plan M1.5; `--es-listen`).
 es = ["dep:operon-es"]
 # Serve Arrow Flight SQL (Task 12; `--flight-sql-listen`).
 flight = []
+# Serve the MCP tools on their own listener (plan M1.6 Task 7, Ruling 19;
+# `--mcp-listen`).
+mcp = ["dep:operon-mcp"]
 # Serve the Qdrant REST and gRPC APIs (plan M1.4; `--qdrant-listen`).
 qdrant = ["dep:operon-qdrant"]
 # The qdrant-edge HNSW engine for hot artifacts (M1.3); without it the hot
@@ -83,6 +87,8 @@ operon-es = { workspace = true, features = ["test-util"] }
 operon-qdrant = { workspace = true, features = ["test-util"] }
 proptest.workspace = true
 prost.workspace = true
+# The MCP client of the end-to-end MCP tests (plan M1.6 Task 7).
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 prost-types.workspace = true
 tempfile.workspace = true
 time.workspace = true
