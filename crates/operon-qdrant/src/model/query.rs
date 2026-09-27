@@ -403,6 +403,9 @@ pub struct SearchRequest {
     pub with_vector: Option<WithVector>,
     #[serde(default)]
     pub score_threshold: Option<f32>,
+    /// Refused as over the universal query (501, Ruling 15).
+    #[serde(default)]
+    pub shard_key: Option<Value>,
 }
 
 /// The legacy search vector: a bare dense vector (the default vector
@@ -450,6 +453,9 @@ pub struct RecommendRequest {
     pub using: Option<String>,
     #[serde(default)]
     pub lookup_from: Option<LookupLocation>,
+    /// Refused as over the universal query (501, Ruling 15).
+    #[serde(default)]
+    pub shard_key: Option<Value>,
 }
 
 /// `POST /collections/{c}/points/discover` (legacy); without a `target`
@@ -476,6 +482,9 @@ pub struct DiscoverRequest {
     pub using: Option<String>,
     #[serde(default)]
     pub lookup_from: Option<LookupLocation>,
+    /// Refused as over the universal query (501, Ruling 15).
+    #[serde(default)]
+    pub shard_key: Option<Value>,
 }
 
 impl DiscoverRequest {
@@ -526,6 +535,7 @@ impl From<SearchRequest> for QueryRequest {
             offset: r.offset,
             with_payload: r.with_payload,
             with_vector: r.with_vector,
+            shard_key: r.shard_key,
             ..QueryRequest::default()
         }
     }
@@ -551,6 +561,7 @@ impl From<RecommendRequest> for QueryRequest {
             with_payload: r.with_payload,
             with_vector: r.with_vector,
             lookup_from: r.lookup_from,
+            shard_key: r.shard_key,
             ..QueryRequest::default()
         }
     }
@@ -582,6 +593,7 @@ impl From<DiscoverRequest> for QueryRequest {
             with_payload: r.with_payload,
             with_vector: r.with_vector,
             lookup_from: r.lookup_from,
+            shard_key: r.shard_key,
             ..QueryRequest::default()
         }
     }

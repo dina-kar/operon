@@ -294,20 +294,31 @@ pub fn sparse_reference(
 /// the dot product for Dot and for Cosine (both vectors normalized first),
 /// `-Σ (aᵢ - bᵢ)²` for Euclid and `-Σ |aᵢ - bᵢ|` for Manhattan.
 pub fn raw_similarity(distance: Distance, a: &[f32], b: &[f32]) -> f32 {
+    if distance == Distance::Cosine {
+        let (mut a, mut b) = (a.to_vec(), b.to_vec());
+        cosine_normalize(&mut a);
+        cosine_normalize(&mut b);
+        return similarity(distance, &a, &b);
+    }
+    similarity(distance, a, b)
+}
+
+/// [`raw_similarity`] of vectors already normalized for Cosine, without
+/// copies: the gateway stores Cosine vectors normalized and normalizes
+/// every example and query vector (Ruling 8), so the scoring loops below
+/// use this (PR #53 review).
+fn similarity(distance: Distance, a: &[f32], b: &[f32]) -> f32 {
     match distance {
-        Distance::Dot => a.iter().zip(b).map(|(x, y)| x * y).sum(),
-        Distance::Cosine => {
-            let (mut a, mut b) = (a.to_vec(), b.to_vec());
-            cosine_normalize(&mut a);
-            cosine_normalize(&mut b);
-            a.iter().zip(&b).map(|(x, y)| x * y).sum()
-        }
+        Distance::Dot | Distance::Cosine => a.iter().zip(b).map(|(x, y)| x * y).sum(),
         Distance::Euclid => -a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum::<f32>(),
         Distance::Manhattan => -a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f32>(),
     }
 }
 
 // ----- gateway-scored queries (Task 8, Ruling 10) -----
+//
+// The scores below take vectors already normalized for Cosine, as the
+// gateway stores and checks them.
 
 /// Qdrant's `scaled_fast_sigmoid`: `0.5 × (x / (1 + |x|) + 1)`
 /// (`qdrant:lib/common/common/src/math.rs`).
@@ -346,7 +357,7 @@ pub fn average_vector(pos: &[Vec<f32>], neg: &[Vec<f32>]) -> Result<Vec<f32>, Ga
 /// The largest similarity of `c` to `vs`, `-inf` for none.
 fn max_similarity(distance: Distance, c: &[f32], vs: &[Vec<f32>]) -> f32 {
     vs.iter()
-        .map(|v| raw_similarity(distance, c, v))
+        .map(|v| similarity(distance, c, v))
         .fold(f32::NEG_INFINITY, |a, b| {
             if b.total_cmp(&a).is_gt() { b } else { a }
         })
@@ -364,7 +375,7 @@ pub fn best_score(distance: Distance, c: &[f32], pos: &[Vec<f32>], neg: &[Vec<f3
 /// `sum_scores`: `Σ sim(c, pos) - Σ sim(c, neg)` (`reco_query.rs`
 /// `RecoSumScoresQuery::score_by`).
 pub fn sum_scores(distance: Distance, c: &[f32], pos: &[Vec<f32>], neg: &[Vec<f32>]) -> f32 {
-    let sum = |vs: &[Vec<f32>]| -> f32 { vs.iter().map(|v| raw_similarity(distance, c, v)).sum() };
+    let sum = |vs: &[Vec<f32>]| -> f32 { vs.iter().map(|v| similarity(distance, c, v)).sum() };
     sum(pos) - sum(neg)
 }
 
@@ -379,11 +390,9 @@ pub fn discover_score(
 ) -> f32 {
     let rank: i32 = pairs
         .iter()
-        .map(|(p, n)| {
-            raw_similarity(distance, c, p).total_cmp(&raw_similarity(distance, c, n)) as i32
-        })
+        .map(|(p, n)| similarity(distance, c, p).total_cmp(&similarity(distance, c, n)) as i32)
         .sum();
-    rank as f32 + sigmoid(raw_similarity(distance, c, target))
+    rank as f32 + sigmoid(similarity(distance, c, target))
 }
 
 /// `context`: `Σ x / (1 + |x|)` over the pairs, with `x = min(sim(c, pos)
@@ -394,8 +403,7 @@ pub fn context_score(distance: Distance, c: &[f32], pairs: &[(Vec<f32>, Vec<f32>
         .iter()
         .map(|(p, n)| {
             let x =
-                (raw_similarity(distance, c, p) - raw_similarity(distance, c, n) - f32::EPSILON)
-                    .min(0.0);
+                (similarity(distance, c, p) - similarity(distance, c, n) - f32::EPSILON).min(0.0);
             x / (1.0 + x.abs())
         })
         .sum()
@@ -420,7 +428,7 @@ pub fn mmr_select(
     }
     let relevance: Vec<f32> = candidates
         .iter()
-        .map(|(_, v)| raw_similarity(distance, query, v))
+        .map(|(_, v)| similarity(distance, query, v))
         .collect();
     // `max_by_key` keeps the last of equal maxima.
     let argmax = |remaining: &[usize], key: &dyn Fn(usize) -> f32| -> usize {
@@ -441,7 +449,7 @@ pub fn mmr_select(
     while picked.len() < limit && !remaining.is_empty() {
         let last = candidates[picked[picked.len() - 1]].1.as_slice();
         for &i in &remaining {
-            let sim = raw_similarity(distance, &candidates[i].1, last);
+            let sim = similarity(distance, &candidates[i].1, last);
             if sim.total_cmp(&nearest_pick[i]).is_gt() {
                 nearest_pick[i] = sim;
             }

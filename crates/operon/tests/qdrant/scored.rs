@@ -640,6 +640,46 @@ async fn legacy_recommend_defaults_to_average_vector() {
     }
 }
 
+/// PR #53 review: the legacy REST bodies carry `shard_key` and refuse it
+/// with 501, as the universal query and the gRPC methods do.
+#[tokio::test]
+async fn legacy_routes_refuse_shard_keys() {
+    let qd = Qd::start().await;
+    random_collection(&qd, "sk", Distance::Dot, 2, 10, 210).await;
+    for (route, body) in [
+        (
+            "search",
+            json!({"vector": [1.0, 0.0], "limit": 3, "shard_key": "a"}),
+        ),
+        (
+            "search/batch",
+            json!({"searches": [{"vector": [1.0, 0.0], "limit": 3, "shard_key": "a"}]}),
+        ),
+        (
+            "recommend",
+            json!({"positive": [1], "limit": 3, "shard_key": "a"}),
+        ),
+        (
+            "discover",
+            json!({"target": 1, "limit": 3, "shard_key": "a"}),
+        ),
+        (
+            "search/groups",
+            json!({"vector": [1.0, 0.0], "group_by": "g", "limit": 2, "group_size": 1, "shard_key": "a"}),
+        ),
+        (
+            "recommend/groups",
+            json!({"positive": [1], "group_by": "g", "limit": 2, "group_size": 1, "shard_key": "a"}),
+        ),
+    ] {
+        let (status, reply) = qd
+            .post(&format!("/collections/sk/points/{route}"), Some(body))
+            .await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{route}: {reply}");
+        assert_eq!(error(&reply), "Unsupported in Operon: shard_key", "{route}");
+    }
+}
+
 fn id(n: u64) -> pb::PointId {
     pb::PointId {
         point_id_options: Some(pb::point_id::PointIdOptions::Num(n)),
