@@ -76,6 +76,17 @@ CREATE LINK tickets_search
 | Durable timer sweep (§14 Phase B) | Timer shard lease | Fires due promise/task/schedule deadlines |
 | Durable retention (§14) | Policy schedule | Deletes settled origin documents past retention |
 
+**As built in M1.3** (task keys under the lease `task/<key>`, with their priorities):
+
+| Task | Key | Priority | Trigger | Output |
+|---|---|---|---|---|
+| Split merge | `collection-merge/<cid>` (per namespace) | `Compaction` | `StableLogMergePolicy` plans a merge of splits with the same schema version, or a split with ≥ 30 % (and at least 1 000) deleted docs is rewritten alone; bounded by `max_merge_docs` (10 M) and `max_merge_bytes` (1 GiB) | One split re-indexed from `_source`, committed as a `Maintenance` manifest with rebase |
+| Lance compaction | `collection-compact/<cid>` (per namespace) | `Compaction` | Enough small fragments, or a fragment's deleted share over the threshold | Lance's rewrite committed as a detached version, then a `Maintenance` manifest |
+| Hot artifact build | `hot-build/<cid>/<i>` (per namespace; `i` the vector index) | `HotBuild` | A column pinned or promoted with no artifact, or a stale artifact past the rebuild threshold (M1.3 Ruling 16) | An HNSW artifact under `hot/hnsw/…`, referenced by a `Maintenance` manifest |
+| Learner eviction | `meta-membership` (cluster-wide) | `Maintenance` | Every 60 s in cluster mode | Removes metastore learners whose `node/<id>` lease has been expired for 10 min |
+
+Known limits carried to M2's resource budgets (§6): a merge streams its documents into the split writer, but the built index and the bundle are still in memory, so its peak memory is about twice the output split (bounded by `max_merge_bytes`, 1 GiB); a hot build's work directory, which can hold gigabytes, is removed synchronously on the task's thread (M1.3 rows R32.3, 5.6).
+
 ## 6. Scheduling
 
 - Tasks are **leases in meta** `(task_key, epoch, owner, deadline)`; workers pull tasks, renew leases, and are fenced by epoch.

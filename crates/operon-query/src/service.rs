@@ -20,6 +20,7 @@ use operon_common::meta::{
 use operon_common::{CollectionId, NamespaceId};
 use operon_log::LogReader;
 
+use crate::backlog::{Backlog, BacklogMonitor, BackpressureConfig};
 use crate::catalog_cache::CatalogCache;
 use crate::error::ServiceError;
 use crate::exec::planner::{SearchConfig, SearchPlanner};
@@ -81,6 +82,8 @@ pub struct ServiceConfig {
     /// scan plan's `lance.uri` is it plus `lance_prefix`, Task 14 rule 4);
     /// `None` by default, and the server sets its bucket URL.
     pub lance_base_url: Option<String>,
+    /// The unapplied-data budget of collection writes (Task 15, D86).
+    pub backpressure: BackpressureConfig,
 }
 
 impl Default for ServiceConfig {
@@ -97,6 +100,7 @@ impl Default for ServiceConfig {
             max_scroll_limit: 10_000,
             schema_retries: 5,
             lance_base_url: None,
+            backpressure: BackpressureConfig::default(),
         }
     }
 }
@@ -111,6 +115,7 @@ pub struct CollectionService {
     pub(crate) hot: RwLock<Arc<dyn HotTier>>,
     pub(crate) placement: RwLock<(Arc<dyn Placement>, Arc<dyn RemoteReads>)>,
     pub(crate) catalog: CatalogCache,
+    pub(crate) backlog: BacklogMonitor,
     pub(crate) config: ServiceConfig,
     /// The service itself, for the SQL catalog of Task 10.
     pub(crate) this: Weak<CollectionService>,
@@ -148,16 +153,6 @@ async fn forwarded<T>(
 /// A scroll page (the documents and the key to continue after) with the
 /// read token of its view.
 pub type ScrollPage = ((Vec<StoredDoc>, Option<PrimaryKey>), ConsistencyToken);
-
-/// The read token of a read a remote owner served: the `RemoteReads`
-/// contract returns none for get, count and scroll, so the request's own
-/// token stands in (the token of `AtLeast` or `Pinned`, else empty).
-pub fn forwarded_token(consistency: &ReadConsistency) -> ConsistencyToken {
-    match consistency {
-        ReadConsistency::AtLeast(token) | ReadConsistency::Pinned { token, .. } => token.clone(),
-        ReadConsistency::Strong | ReadConsistency::Eventual => ConsistencyToken::default(),
-    }
-}
 
 fn collection_not_found(name: &str) -> ServiceError {
     ServiceError::NotFound {
@@ -205,6 +200,7 @@ impl CollectionService {
             ),
             planner: SearchPlanner::new(config.search.clone(), config.ann.clone()),
             catalog: CatalogCache::start(ctx.meta.clone()),
+            backlog: BacklogMonitor::new(ctx.clone(), config.backpressure.clone()),
             hot: RwLock::new(Arc::new(NoHotTier)),
             placement: RwLock::new((Arc::new(LocalOnly), Arc::new(NoRemoteReads))),
             ctx,
@@ -227,6 +223,19 @@ impl CollectionService {
 
     pub fn config(&self) -> &ServiceConfig {
         &self.config
+    }
+
+    /// The backlog measurements and write admission (Task 15).
+    pub fn backlog_monitor(&self) -> &BacklogMonitor {
+        &self.backlog
+    }
+
+    /// The backlog of collection (or alias) `name` as admission last
+    /// measured it (at most `refresh_interval` ago): the backlog headers of
+    /// a refused write (Task 15 rule 5).
+    pub async fn collection_backlog(&self, ns: &str, name: &str) -> Result<Backlog, ServiceError> {
+        let (ns_id, collection) = self.resolve(ns, name).await?;
+        self.backlog.backlog(ns_id, &collection).await
     }
 
     /// The names of the collections and aliases of every namespace (Task 10).
@@ -568,6 +577,10 @@ impl CollectionService {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
             .status(collection.namespace, collection.id);
+        let backlog = self
+            .backlog
+            .backlog(collection.namespace, collection)
+            .await?;
         Ok(CollectionInfo {
             id: collection.id,
             name: collection.name.clone(),
@@ -582,6 +595,8 @@ impl CollectionService {
             created_at_ms,
             link_lag_records: link_lag(&head, &applied),
             hot,
+            unapplied_bytes: backlog.bytes,
+            backpressure: self.backlog.status(backlog),
         })
     }
 
@@ -768,8 +783,7 @@ impl CollectionService {
 
     /// [`CollectionService::get`], with the read token of the view the
     /// documents come from (the native API's `read_token`, Task 11). A read
-    /// served by a remote owner carries the request's own token
-    /// ([`forwarded_token`]).
+    /// served by a remote owner carries the owner's token (M1.3 E55).
     pub async fn get_with_token(
         &self,
         ns: &str,
@@ -791,7 +805,7 @@ impl CollectionService {
                 consistency.clone(),
             );
             if let Some(result) = forwarded(&hot, "get", call).await {
-                return result.map(|docs| (docs, forwarded_token(&consistency)));
+                return result;
             }
         }
         self.get_in(ns_id, &collection, pks, select, &consistency, &hot)
@@ -807,12 +821,26 @@ impl CollectionService {
         select: &Projection,
         consistency: ReadConsistency,
     ) -> Result<Vec<Option<StoredDoc>>, ServiceError> {
+        self.get_local_with_token(ns, name, pks, select, consistency)
+            .await
+            .map(|(docs, _)| docs)
+    }
+
+    /// [`CollectionService::get_local`], with the read token of its view
+    /// (what a forwarded get answers, M1.3 E55).
+    pub async fn get_local_with_token(
+        &self,
+        ns: &str,
+        name: &str,
+        pks: &[PrimaryKey],
+        select: &Projection,
+        consistency: ReadConsistency,
+    ) -> Result<(Vec<Option<StoredDoc>>, ConsistencyToken), ServiceError> {
         let hot = self.request_hot();
         self.check_get(pks)?;
         let (ns_id, collection) = self.resolve(ns, name).await?;
         self.get_in(ns_id, &collection, pks, select, &consistency, &hot)
             .await
-            .map(|(docs, _)| docs)
     }
 
     pub(crate) async fn get_in(
@@ -865,7 +893,7 @@ impl CollectionService {
                 consistency.clone(),
             );
             if let Some(result) = forwarded(&hot, "count", call).await {
-                return result.map(|count| (count, forwarded_token(&consistency)));
+                return result;
             }
         }
         self.count_in(ns_id, &collection, filter, &consistency, &hot)
@@ -880,11 +908,23 @@ impl CollectionService {
         filter: Option<Query>,
         consistency: ReadConsistency,
     ) -> Result<u64, ServiceError> {
+        self.count_local_with_token(ns, name, filter, consistency)
+            .await
+            .map(|(count, _)| count)
+    }
+
+    /// [`CollectionService::count_local`], with the read token of its view.
+    pub async fn count_local_with_token(
+        &self,
+        ns: &str,
+        name: &str,
+        filter: Option<Query>,
+        consistency: ReadConsistency,
+    ) -> Result<(u64, ConsistencyToken), ServiceError> {
         let hot = self.request_hot();
         let (ns_id, collection) = self.resolve(ns, name).await?;
         self.count_in(ns_id, &collection, filter, &consistency, &hot)
             .await
-            .map(|(count, _)| count)
     }
 
     async fn count_in(
@@ -951,7 +991,7 @@ impl CollectionService {
                 consistency.clone(),
             );
             if let Some(result) = forwarded(&hot, "scroll", call).await {
-                return result.map(|page| (page, forwarded_token(&consistency)));
+                return result;
             }
         }
         let scroll = Scroll {
@@ -976,6 +1016,23 @@ impl CollectionService {
         select: &Projection,
         consistency: ReadConsistency,
     ) -> Result<(Vec<StoredDoc>, Option<PrimaryKey>), ServiceError> {
+        self.scroll_local_with_token(ns, name, filter, after, limit, select, consistency)
+            .await
+            .map(|(page, _)| page)
+    }
+
+    /// [`CollectionService::scroll_local`], with the read token of its view.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn scroll_local_with_token(
+        &self,
+        ns: &str,
+        name: &str,
+        filter: Option<Query>,
+        after: Option<PrimaryKey>,
+        limit: usize,
+        select: &Projection,
+        consistency: ReadConsistency,
+    ) -> Result<ScrollPage, ServiceError> {
         let hot = self.request_hot();
         self.check_scroll(limit)?;
         let (ns_id, collection) = self.resolve(ns, name).await?;
@@ -986,9 +1043,7 @@ impl CollectionService {
             select,
             consistency: &consistency,
         };
-        self.scroll_in(ns_id, &collection, scroll, &hot)
-            .await
-            .map(|(page, _)| page)
+        self.scroll_in(ns_id, &collection, scroll, &hot).await
     }
 
     async fn scroll_in(

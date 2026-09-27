@@ -16,6 +16,7 @@ use operon_hot::{
     prefetch_fragments_resuming,
 };
 use operon_query::hot::HotTier;
+use operon_query::text::SplitChecksums;
 use operon_quickwit::merge_policy::StableLogMergePolicyConfig;
 use operon_store::{Fault, Op};
 use operon_worker::run_once;
@@ -33,6 +34,10 @@ const FRAGMENTS: HotConfig = HotConfig {
     text: false,
     fragments: true,
 };
+
+/// A linger that never passes during a test: tests expire it with
+/// `advance_clock` (CI fix C3).
+const LINGER: Duration = Duration::from_secs(24 * 60 * 60);
 
 fn config_with(f: &Fixture, linger: Duration) -> HotTierConfig {
     HotTierConfig {
@@ -97,14 +102,56 @@ async fn pinned_splits_are_downloaded_whole_and_served() {
     f.shutdown().await;
 }
 
+/// Row F3: each pinned file has block checksums of the downloaded bytes;
+/// a file the query engine quarantines leaves the map at once and the next
+/// pass downloads it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_quarantined_split_file_is_downloaded_again() {
+    let f = Fixture::start().await;
+    f.commit(docs(0..50)).await;
+    f.pin(f.cid, TEXT).await;
+    let tier = f.tier().await;
+    tier.reconcile_once().await.expect("reconcile");
+    let ulid = f.manifest().await.splits[0].ulid;
+    let path = tier.split_file(f.ns, f.cid, ulid).expect("pinned");
+    let object = object(&f, &split_path(f.ns, f.cid, ulid)).await;
+    assert_eq!(
+        SplitChecksums::read_for(&path).expect("checksums"),
+        SplitChecksums::of(&object)
+    );
+    // Its bytes change after the download.
+    let mut bytes = std::fs::read(&path).expect("read");
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 0xff;
+    std::fs::write(&path, &bytes).expect("corrupt");
+
+    // Another path for the split (an older download) changes nothing.
+    tier.quarantine_split(f.ns, f.cid, ulid, Path::new("/elsewhere.split"));
+    assert_eq!(tier.split_file(f.ns, f.cid, ulid).as_ref(), Some(&path));
+    tier.quarantine_split(f.ns, f.cid, ulid, &path);
+    assert!(tier.split_file(f.ns, f.cid, ulid).is_none(), "quarantined");
+    assert_eq!(tier.counters().split_files_quarantined, 1);
+
+    let report = tier.reconcile_once().await.expect("reconcile");
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert_eq!(report.pinned_splits, 1);
+    let again = tier.split_file(f.ns, f.cid, ulid).expect("pinned again");
+    assert_eq!(Bytes::from(std::fs::read(&again).expect("read")), object);
+    assert_eq!(
+        SplitChecksums::read_for(&again).expect("checksums"),
+        SplitChecksums::of(&object)
+    );
+    tier.shutdown().await;
+    f.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_split_leaving_the_manifest_is_removed_after_the_linger() {
     let f = Fixture::start().await;
     f.commit(docs(0..20)).await;
     f.commit(docs(20..40)).await;
     f.pin(f.cid, TEXT).await;
-    let linger = Duration::from_millis(100);
-    let tier = tier_with(&f, config_with(&f, linger)).await;
+    let tier = tier_with(&f, config_with(&f, LINGER)).await;
     tier.reconcile_once().await.expect("reconcile");
     let before = f.manifest().await.splits;
     let old: Vec<_> = before
@@ -146,7 +193,8 @@ async fn a_split_leaving_the_manifest_is_removed_after_the_linger() {
     for split in &after {
         assert!(tier.split_file(f.ns, f.cid, split.ulid).is_some());
     }
-    tokio::time::sleep(linger + Duration::from_millis(20)).await;
+    // Once the linger has passed they are removed.
+    tier.advance_clock(LINGER + Duration::from_secs(1));
     tier.reconcile_once().await.expect("reconcile");
     for (split, path) in before.iter().zip(&old) {
         assert!(tier.split_file(f.ns, f.cid, split.ulid).is_none());
@@ -270,7 +318,7 @@ async fn split_file_is_none_when_text_is_not_hot() {
     let f = Fixture::start().await;
     f.commit(docs(0..30)).await;
     let ulid = f.manifest().await.splits[0].ulid;
-    let tier = f.tier().await;
+    let tier = tier_with(&f, config_with(&f, LINGER)).await;
     f.pin(
         f.cid,
         HotConfig {
@@ -292,6 +340,13 @@ async fn split_file_is_none_when_text_is_not_hot() {
     tier.reconcile_once().await.expect("reconcile");
     assert!(tier.split_file(f.ns, f.cid, ulid).is_none(), "unpinned");
     assert!(path.exists(), "deleted before the linger");
+    tier.advance_clock(LINGER + Duration::from_secs(1));
+    tier.reconcile_once().await.expect("reconcile");
+    let lingered = path.clone();
+    eventually("the file is deleted after the linger", move || {
+        !lingered.exists()
+    })
+    .await;
 
     // Not owned, or disabled: never served.
     let elsewhere = f
@@ -337,12 +392,16 @@ async fn fragments_are_prefetched_into_the_range_cache() {
     assert!(report.prefetched_bytes > 0);
 
     let snapshot = f.snapshot().await;
-    let before = f.faulty.calls(Op::Get);
+    // Byte reads only: the caching object store passes HEADs (size and
+    // existence lookups) to the store by design, and whether Lance issues
+    // one depends on what its session caches still hold (row F1).
+    let byte_reads = |f: &Fixture| f.faulty.calls(Op::Get) - f.faulty.heads();
+    let (before, misses) = (byte_reads(&f), f.ctx.cache.stats().misses);
     let rows = snapshot.scan_all().await.expect("scan");
     assert_eq!(rows.len(), 299);
     assert_eq!(
-        f.faulty.calls(Op::Get),
-        before,
+        (byte_reads(&f), f.ctx.cache.stats().misses),
+        (before, misses),
         "the scan read the object store after the prefetch"
     );
     // Nothing more to read at the same version.
@@ -412,5 +471,45 @@ async fn prefetch_stops_at_max_bytes_and_resumes() {
     }
     assert_eq!((passes, sum), (3, total));
     tier.shutdown().await;
+    f.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn prefetch_progress_forgets_files_the_version_no_longer_lists() {
+    let f = Fixture::start_cached().await;
+    f.commit(docs(0..200)).await;
+    // Each delete replaces the fragment's deletion file.
+    f.commit(vec![DocOp::Delete(PrimaryKey::U64(7))]).await;
+    let old = f.snapshot().await.dataset().expect("a dataset").clone();
+    f.commit(vec![DocOp::Delete(PrimaryKey::U64(8))]).await;
+    let new = f.snapshot().await.dataset().expect("a dataset").clone();
+    let prefix = lance_prefix(f.ns, f.cid);
+    let mut progress = FragmentProgress::default();
+    for dataset in [&old, &new] {
+        let pass = prefetch_fragments_resuming(
+            &f.ctx.cache,
+            &f.store,
+            &prefix,
+            dataset,
+            &mut progress,
+            u64::MAX,
+        )
+        .await
+        .expect("prefetch");
+        assert!(pass.complete());
+    }
+    // The old version's deletion file was forgotten, so it is read again.
+    let again = prefetch_fragments_resuming(
+        &f.ctx.cache,
+        &f.store,
+        &prefix,
+        &old,
+        &mut progress,
+        u64::MAX,
+    )
+    .await
+    .expect("prefetch");
+    assert!(again.read > 0, "{again:?}");
+    assert!(again.read < again.total, "{again:?}");
     f.shutdown().await;
 }

@@ -5,8 +5,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use std::collections::BTreeMap;
+
 use clap::{Parser, Subcommand};
-use operon::{Server, ServerConfig};
+use operon::{ClusterConfig, Server, ServerConfig};
+use operon_hot::Roles;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -40,7 +43,8 @@ struct Tuning {
     retention_interval_ms: Option<u64>,
     /// Garbage collection's grace period. Also sets every freshness deadline
     /// to half of it: the segmenter's swap deadline, the link (and
-    /// collection) commit delay and the collection index commit delay.
+    /// collection) commit delay, the collection index commit delay, the
+    /// maintenance commit delay and the hot artifact commit delay.
     #[arg(long, hide = true)]
     gc_grace_ms: Option<u64>,
     /// How often garbage collection runs.
@@ -131,6 +135,8 @@ impl Tuning {
             config.link.max_commit_delay = ms(v / 2);
             config.collection.max_commit_delay = ms(v / 2);
             config.collection.index_commit_delay = ms(v / 2);
+            config.maintenance.commit_delay = ms(v / 2);
+            config.hot_build.artifact_commit_delay = ms(v / 2);
         }
         if let Some(v) = self.gc_interval_ms {
             config.gc.interval = ms(v);
@@ -161,6 +167,10 @@ impl Tuning {
         }
         if let Some(v) = self.tail_max_bytes {
             config.query.tail.max_bytes = v;
+            // The byte budget stays at most half the tail (Task 15 rule 8;
+            // row 15.5).
+            let budget = &mut config.query.backpressure.max_unapplied_bytes;
+            *budget = (*budget).min((v / 2) as u64);
         }
         if let Some(v) = self.consistency_wait_ms {
             config.query.read.consistency_wait = ms(v);
@@ -197,7 +207,7 @@ impl Tuning {
     }
 }
 
-/// `--hot on|off` (and `--maintenance on|off`).
+/// `--hot on|off` (and `--maintenance on|off`, `--backpressure on|off`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum HotSwitch {
     On,
@@ -232,6 +242,18 @@ struct Native {
     /// Memory the hot tier may use, in bytes [default: 8 GiB].
     #[arg(long)]
     hot_ram_bytes: Option<u64>,
+    /// Whether collection writes are refused (429) while a collection's
+    /// unapplied data is over its budget.
+    #[arg(long, value_enum, default_value = "on")]
+    backpressure: HotSwitch,
+    /// Unapplied records per collection before writes are refused
+    /// [default: 1000000].
+    #[arg(long)]
+    max_unapplied_records: Option<u64>,
+    /// Unapplied bytes per collection before writes are refused, at most
+    /// half the tail's bound [default: 128 MiB].
+    #[arg(long)]
+    max_unapplied_bytes: Option<u64>,
 }
 
 impl Native {
@@ -253,6 +275,14 @@ impl Native {
         }
         if let Some(v) = self.hot_ram_bytes {
             config.hot.ram_bytes = v;
+        }
+        let backpressure = &mut config.query.backpressure;
+        backpressure.enabled = self.backpressure == HotSwitch::On;
+        if let Some(v) = self.max_unapplied_records {
+            backpressure.max_unapplied_records = v;
+        }
+        if let Some(v) = self.max_unapplied_bytes {
+            backpressure.max_unapplied_bytes = v;
         }
     }
 }
@@ -289,6 +319,55 @@ enum Command {
         #[command(flatten)]
         native: Native,
     },
+    /// Run one node of a cluster: the roles given, a metastore replica over
+    /// HTTP, and data in an object-store bucket. `--listen` must be on a
+    /// private network: the internal routes are unauthenticated.
+    Cluster {
+        /// This node's id (unique in the cluster).
+        #[arg(long)]
+        node_id: u64,
+        /// A comma-separated subset of meta,log,query,worker,gateway.
+        #[arg(long, value_parser = parse_roles)]
+        roles: Roles,
+        /// Address of this node's HTTP listener (API, internal and metastore routes).
+        #[arg(long)]
+        listen: SocketAddr,
+        /// The ip:port other nodes reach this node at [default: --listen].
+        #[arg(long)]
+        advertise: Option<String>,
+        /// The meta nodes: id=host:port,…
+        #[arg(long, value_parser = operon::cluster::parse_peers)]
+        peers: BTreeMap<u64, String>,
+        /// Object store URL, such as s3://bucket/prefix, gs://bucket or file:///dir.
+        #[arg(long)]
+        bucket: String,
+        /// Holds the metastore replica's local database and the hot tier.
+        #[arg(long, default_value = ".operon")]
+        data_dir: PathBuf,
+        /// This node's zone; owners of a collection spread across zones.
+        #[arg(long, default_value = "")]
+        zone: String,
+        /// Owners per collection.
+        #[arg(long, default_value_t = 1)]
+        replication: usize,
+        /// How long appends are buffered before a WAL flush.
+        #[arg(long, hide = true)]
+        flush_interval_ms: Option<u64>,
+        /// The node registry's lease TTL.
+        #[arg(long, hide = true)]
+        registry_ttl_ms: Option<u64>,
+        /// How long a learner's node lease may be expired before the
+        /// learner is removed from the metastore.
+        #[arg(long, hide = true)]
+        learner_expiry_ms: Option<u64>,
+        /// How often the learner eviction task runs.
+        #[arg(long, hide = true)]
+        membership_interval_ms: Option<u64>,
+        #[command(flatten)]
+        native: Native,
+        #[command(flatten)]
+        tuning: Box<Tuning>,
+    },
     /// Warm a collection on the node that owns it (`POST …/warm`).
     Warm {
         /// `<namespace>/<collection>`.
@@ -310,8 +389,57 @@ const STANDALONE_FLIGHT_SQL: SocketAddr = SocketAddr::V4(std::net::SocketAddrV4:
     8082,
 ));
 
+fn parse_roles(s: &str) -> Result<Roles, String> {
+    Roles::parse(s).map_err(|err| err.to_string())
+}
+
 fn config(command: Command) -> ServerConfig {
     match command {
+        Command::Cluster {
+            node_id,
+            roles,
+            listen,
+            advertise,
+            peers,
+            bucket,
+            data_dir,
+            zone,
+            replication,
+            flush_interval_ms,
+            registry_ttl_ms,
+            learner_expiry_ms,
+            membership_interval_ms,
+            native,
+            tuning,
+        } => {
+            let ms = Duration::from_millis;
+            let mut config = ServerConfig::new(data_dir);
+            config.listen = listen;
+            config.bucket = Some(bucket);
+            if let Some(v) = flush_interval_ms {
+                config.log.flush_interval = ms(v);
+            }
+            native.apply(&mut config, STANDALONE_FLIGHT_SQL);
+            tuning.apply(&mut config);
+            let advertise = advertise.unwrap_or_else(|| listen.to_string());
+            let mut cluster = ClusterConfig::new(node_id, roles, advertise, peers);
+            cluster.zone = zone;
+            cluster.replication = replication;
+            if let Some(v) = registry_ttl_ms {
+                // Renew three times per TTL; refresh at least that often.
+                cluster.registry.lease_ttl = ms(v);
+                cluster.registry.renew_every = ms((v / 3).max(1));
+                cluster.registry.refresh_every = ms((v / 4).clamp(1, 1000));
+            }
+            if let Some(v) = learner_expiry_ms {
+                cluster.learner_expiry = ms(v);
+            }
+            if let Some(v) = membership_interval_ms {
+                cluster.membership_interval = ms(v);
+            }
+            config.cluster = Some(cluster);
+            config
+        }
         Command::Warm { .. } => unreachable!("operon warm starts no server"),
         Command::Dev {
             data_dir,
@@ -507,6 +635,8 @@ mod tests {
         assert_eq!(config.link.max_commit_delay, half);
         assert_eq!(config.collection.max_commit_delay, half);
         assert_eq!(config.collection.index_commit_delay, half);
+        assert_eq!(config.maintenance.commit_delay, half);
+        assert_eq!(config.hot_build.artifact_commit_delay, half);
         config.validate().expect("valid");
     }
 
@@ -540,10 +670,42 @@ mod tests {
         );
         let config = dev_config(&["--tail-max-bytes", "4096", "--consistency-wait-ms", "250"]);
         assert_eq!(config.query.tail.max_bytes, 4096);
+        assert_eq!(config.query.backpressure.max_unapplied_bytes, 2048);
+        config.validate().expect("a lowered budget");
         assert_eq!(
             config.query.read.consistency_wait,
             Duration::from_millis(250)
         );
+    }
+
+    #[test]
+    fn backpressure_flags_set_the_config() {
+        let config = dev_config(&[]);
+        assert!(config.query.backpressure.enabled);
+        assert_eq!(config.query.backpressure.max_unapplied_records, 1_000_000);
+        assert_eq!(config.query.backpressure.max_unapplied_bytes, 128 << 20);
+        let config = dev_config(&[
+            "--backpressure",
+            "off",
+            "--max-unapplied-records",
+            "7",
+            "--max-unapplied-bytes",
+            "1000",
+        ]);
+        assert!(!config.query.backpressure.enabled);
+        assert_eq!(config.query.backpressure.max_unapplied_records, 7);
+        assert_eq!(config.query.backpressure.max_unapplied_bytes, 1000);
+        assert!(Cli::try_parse_from(["operon", "dev", "--backpressure", "maybe"]).is_err());
+        let cli = Cli::try_parse_from([
+            "operon",
+            "standalone",
+            "--bucket",
+            "file:///tmp/b",
+            "--max-unapplied-records",
+            "9",
+        ])
+        .expect("parse");
+        assert_eq!(config_of(cli).query.backpressure.max_unapplied_records, 9);
     }
 
     fn config_of(cli: Cli) -> ServerConfig {
@@ -639,5 +801,86 @@ mod tests {
             Duration::from_millis(200)
         );
         assert!(dev_config(&["--collection-trim", "true"]).collection.trim);
+    }
+
+    fn cluster_config(args: &[&str]) -> Result<ServerConfig, clap::Error> {
+        Cli::try_parse_from(["operon", "cluster"].iter().chain(args)).map(config_of)
+    }
+
+    #[test]
+    fn cluster_flags_set_the_cluster_config() {
+        let base = [
+            "--node-id",
+            "2",
+            "--roles",
+            "query,meta",
+            "--listen",
+            "127.0.0.1:7002",
+            "--peers",
+            "1=127.0.0.1:7001,2=127.0.0.1:7002,3=10.0.0.3:7003",
+            "--bucket",
+            "file:///tmp/b",
+        ];
+        let config = cluster_config(&base).expect("parse");
+        let cluster = config.cluster.clone().expect("cluster");
+        assert_eq!(cluster.node_id, 2);
+        assert_eq!(cluster.roles.to_string(), "meta,query");
+        assert_eq!(cluster.advertise, "127.0.0.1:7002", "defaults to --listen");
+        assert_eq!(cluster.peers.len(), 3);
+        assert_eq!((cluster.replication, cluster.zone.as_str()), (1, ""));
+        assert_eq!(config.flight_sql, Some("0.0.0.0:8082".parse().unwrap()));
+        config.validate().expect("valid");
+
+        let mut args = base.to_vec();
+        args.extend([
+            "--no-flight-sql",
+            "--zone",
+            "a",
+            "--replication",
+            "2",
+            "--flush-interval-ms",
+            "20",
+            "--registry-ttl-ms",
+            "1500",
+            "--learner-expiry-ms",
+            "3000",
+            "--membership-interval-ms",
+            "500",
+            "--lease-ttl-ms",
+            "1500",
+            "--poll-interval-ms",
+            "50",
+        ]);
+        let config = cluster_config(&args).expect("parse");
+        let cluster = config.cluster.clone().expect("cluster");
+        assert_eq!(config.flight_sql, None);
+        assert_eq!((cluster.zone.as_str(), cluster.replication), ("a", 2));
+        assert_eq!(config.log.flush_interval, Duration::from_millis(20));
+        assert_eq!(cluster.registry.lease_ttl, Duration::from_millis(1500));
+        assert_eq!(cluster.registry.renew_every, Duration::from_millis(500));
+        assert_eq!(cluster.learner_expiry, Duration::from_millis(3000));
+        assert_eq!(cluster.membership_interval, Duration::from_millis(500));
+        assert_eq!(config.worker_lease_ttl, Duration::from_millis(1500));
+
+        assert!(cluster_config(&["--roles", "cook"]).is_err());
+        // Rule 1: a meta node must be in --peers, with its advertise address.
+        let invalid = |edit: &dyn Fn(&mut Vec<&str>)| {
+            let mut args = base.to_vec();
+            edit(&mut args);
+            let config = cluster_config(&args).expect("parse");
+            config.validate().expect_err("invalid").to_string()
+        };
+        let err = invalid(&|a| a[1] = "4");
+        assert!(err.contains("not in --peers"), "{err}");
+        let err = invalid(&|a| a.extend(["--advertise", "127.0.0.1:9999"]));
+        assert!(err.contains("differs from --advertise"), "{err}");
+        let err = invalid(&|a| a[3] = "query");
+        assert!(err.contains("no meta role"), "{err}");
+        let err = invalid(&|a| a[5] = "0.0.0.0:7002");
+        assert!(err.contains("unspecified"), "{err}");
+        let err = invalid(&|a| a[7] = "1=nowhere,2=127.0.0.1:7002");
+        assert!(err.contains("not host:port"), "{err}");
+        let err = invalid(&|a| a.extend(["--replication", "0"]));
+        assert!(err.contains("replication"), "{err}");
     }
 }
