@@ -15,14 +15,19 @@ default = []
 mysql = ["dep:resonate-server-mysql", "dep:rustls", "dep:sqlx"]
 
 [dependencies]
+async-trait.workspace = true
 resonate-base.workspace = true
 resonate-gateway-http.workspace = true
 resonate-plugin.workspace = true
+# Loam's own durable functions run on the Rust SDK over the in-process
+# network (D141); its reqwest defaults stay off (workspace).
+resonate-sdk.workspace = true
 resonate-server-mysql = { workspace = true, optional = true }
 resonate-server-sqlite.workspace = true
 resonate-transport-http-poll.workspace = true
 resonate-transport-http-push.workspace = true
 rustls = { workspace = true, optional = true, features = ["ring", "std"] }
+serde.workspace = true
 serde_json.workspace = true
 sqlx = { workspace = true, optional = true, features = ["mysql", "runtime-tokio", "tls-rustls"] }
 tokio.workspace = true

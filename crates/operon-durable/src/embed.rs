@@ -20,6 +20,7 @@ use serde_json::{Map, Value};
 
 use crate::config::{self, DurableConfig, DurableStore, Mode};
 use crate::error::DurableError;
+use crate::inproc::{self, InProcWorker};
 use crate::listen;
 use crate::registry;
 
@@ -42,6 +43,7 @@ pub struct DurableServer {
     shutdown_timeout: Duration,
     next_corr: AtomicU64,
     lock: Option<File>,
+    inproc: Option<Arc<InProcWorker>>,
 }
 
 impl fmt::Debug for DurableServer {
@@ -68,7 +70,8 @@ impl DurableServer {
         extra: &[&'static WorkerPlugin],
     ) -> Result<Self, DurableError> {
         listen::check_loopback(config.listen)?;
-        let (registry, configuration) = prepare(&config, extra, Mode::Serve)?;
+        let instance = inproc::next_instance();
+        let (registry, configuration) = prepare(&config, extra, Mode::Serve, Some(instance))?;
         let lock = match &config.store {
             DurableStore::Sqlite { path } => Some(lock_store(path)?),
             DurableStore::Mysql { .. } => None,
@@ -82,8 +85,10 @@ impl DurableServer {
         }
         listen::probe(config.listen)?;
         let options = Options::default().default_server("server_sqlite");
-        let running = resonate_base::build(&registry, &configuration, &options)
-            .map_err(|e| DurableError::Config(scrub_for(&config.store, &e)))?;
+        let built = resonate_base::build(&registry, &configuration, &options);
+        // Taken whatever `build` said, so a failed build parks nothing.
+        let inproc = inproc::take(instance);
+        let running = built.map_err(|e| DurableError::Config(scrub_for(&config.store, &e)))?;
         if let Err(e) = running.start(config.debug).await {
             // The port was free a moment ago: something took it in between.
             if e.contains("cannot bind") {
@@ -113,6 +118,7 @@ impl DurableServer {
             shutdown_timeout: config.shutdown_timeout,
             next_corr: AtomicU64::new(0),
             lock,
+            inproc,
         })
     }
 
@@ -122,7 +128,7 @@ impl DurableServer {
     /// itself must exist.
     pub async fn migrate(store: DurableStore) -> Result<(), DurableError> {
         let config = DurableConfig::new(store);
-        let (registry, configuration) = prepare(&config, &[], Mode::Migrate)?;
+        let (registry, configuration) = prepare(&config, &[], Mode::Migrate, None)?;
         #[cfg(feature = "mysql")]
         if let DurableStore::Mysql { tls, .. } = &config.store {
             crate::mysql::ensure_crypto_provider(*tls);
@@ -148,6 +154,11 @@ impl DurableServer {
     /// The server, for an in-process caller such as Loam's SDK network.
     pub fn server(&self) -> Arc<dyn ResonateServer> {
         Arc::clone(self.running.server())
+    }
+
+    /// The `worker_inproc` worker Loam's runtime subscribes to (D1 Task 6).
+    pub fn inproc(&self) -> Option<Arc<InProcWorker>> {
+        self.inproc.clone()
     }
 
     /// The listener's address.
@@ -239,6 +250,7 @@ fn prepare(
     config: &DurableConfig,
     extra: &[&'static WorkerPlugin],
     mode: Mode,
+    inproc: Option<u64>,
 ) -> Result<(Registry, Configuration), DurableError> {
     let registry = registry::with_workers(extra);
     registry.check().map_err(|errors| {
@@ -256,7 +268,7 @@ fn prepare(
             "this build has no MySQL durable store (the durable-mysql feature is off)".into(),
         ));
     }
-    let configuration = config::configuration(config, &registry::carried(&registry), mode)
+    let configuration = config::configuration(config, &registry::carried(&registry), mode, inproc)
         .map_err(|e| match e {
             DurableError::Config(message) => {
                 DurableError::Config(scrub_for(&config.store, &message))
