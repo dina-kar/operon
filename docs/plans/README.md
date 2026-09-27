@@ -62,6 +62,7 @@ Future plans, in their expected order (the split into plans is fixed when each m
 | M2 | `operon-meta-postgres` on Lakekeeper's patterns, with its fault matrix (D58, D60) | §18 §2.2, §18 §4 |
 | M2 | `operon-meta-dynamodb`, with the floci and Alternator CI jobs, its fault matrix and the nightly AWS deployment job (D58, D60, D62) | §18 §2.3, §18 §4 |
 | M2 | RustFS as the default self-hosted store; the `Store` provider suite and the S3 fault matrix over RustFS (D61) | §18 §4.4 |
+| M2 | The object-store fault matrix and the simulation on the TiKV metastore: a backend switch for both, which build openraft `MetaNode`s in process today (R1 plan rows T6-8, T7-2) | §18 §4, §20 §11 |
 | M2 | Tenancy: orgs and the `ControlStore`, API keys, the `Authorizer` trait with RBAC, quotas (D65, D66), including the unapplied-data budget as a quota (D86) and cost-weighted per-collection concurrency (D98); audit events (D100); usage counters in logical bytes (D103) | §18 §6–§7, §10 §3–§5 |
 | M2 | The GDPR erasure path (D68, D69) | §18 §9, §10 §4.1 |
 | M2 | The native stream API core: gRPC, idempotent producers, streaming subscribe, named consumers, stream admin, the plain-JSON produce body (D72); OTLP logs ingest (D73) | §02 §7, §02 §7.1, §02 §7.3 |
