@@ -675,6 +675,22 @@ fn gateway_scored_kinds_compile_to_their_plans() {
     let plan = compile(json!({"query": {"recommend": {"negative": [[1.0, 1.0], [-1.0, -1.0]], "strategy": "best_score"}}, "using": "e"}))
         .expect("compiles");
     assert_eq!(leg_queries(&plan), vec![(vec![-1.0, -1.0], true)]);
+    // A sum that overflows f32 is not searched (review of #62): on Euclid
+    // the scan goes away from the first negative, on Dot the sum leg goes.
+    let big = json!([[3.0e38, 1.0], [3.0e38, 1.0]]);
+    let plan = compile(
+        json!({"query": {"recommend": {"negative": big, "strategy": "sum_scores"}}, "using": "e"}),
+    )
+    .expect("compiles");
+    assert_eq!(leg_queries(&plan), vec![(vec![-3.0e38, -1.0], true)]);
+    let plan = compile(
+        json!({"query": {"recommend": {"negative": big, "strategy": "sum_scores"}}, "using": "d"}),
+    )
+    .expect("compiles");
+    assert_eq!(
+        leg_queries(&plan),
+        vec![(vec![-3.0e38, -1.0], false), (vec![-3.0e38, -1.0], false)]
+    );
     // An empty context is accepted, as in Qdrant: one filter-only leg,
     // every candidate scoring 0.
     let plan = compile(json!({"query": {"context": []}, "using": "d", "limit": 4, "filter": {"must": [{"key": "a", "match": {"value": 1}}]}}))
