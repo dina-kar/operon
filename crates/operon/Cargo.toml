@@ -25,6 +25,7 @@ operon-common.workspace = true
 operon-hnsw.workspace = true
 operon-hot.workspace = true
 operon-link.workspace = true
+operon-live = { workspace = true, optional = true }
 operon-log.workspace = true
 operon-meta.workspace = true
 operon-meta-tikv = { workspace = true, optional = true }
@@ -52,6 +53,10 @@ default = ["flight", "hnsw", "qdrant"]
 # ruling T7-3): it pulls in the git-pinned tikv-client (row R4), which the
 # default build must not. CI's TiKV jobs build with `--features tikv`.
 tikv = ["dep:operon-meta-tikv", "dep:operon-tikv"]
+# Loam Live (R1 plan Task 12): the `loam.live.v1` sync API on its own
+# loopback listener (`--live-*` on `dev` and `standalone`). Off by default
+# and enables `tikv` (owner ruling T8-2).
+live = ["tikv", "dep:operon-live"]
 # Serve Arrow Flight SQL (Task 12; `--flight-sql-listen`).
 flight = []
 # Serve the Qdrant REST and gRPC APIs (plan M1.4; `--qdrant-listen`).
