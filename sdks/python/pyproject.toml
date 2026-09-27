@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "operon-client"
+version = "0.0.1"
+description = "Python client for the Operon native REST API"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = ["httpx>=0.27,<1", "anyio>=4"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+flight = ["adbc-driver-flightsql>=1.12,<2", "adbc-driver-manager>=1.12,<2", "pyarrow>=18"]
+arrow = ["pyarrow>=18"]
+polars = ["polars>=1.3,<3", "pyarrow>=18"]
+
+[dependency-groups]
+dev = ["pytest>=9.1,<10", "mypy>=2.3,<3", "ruff>=0.16,<0.17"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/operon"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "ANN", "PT"]
+
+[tool.mypy]
+strict = true
+python_version = "3.10"
+
+[[tool.mypy.overrides]]
+module = ["adbc_driver_flightsql.*", "adbc_driver_manager.*", "lance.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["flight: needs the flight extra", "arrow: needs the arrow extra"]
