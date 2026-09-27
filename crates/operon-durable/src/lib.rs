@@ -16,11 +16,13 @@ mod embed;
 mod error;
 pub mod inproc;
 mod listen;
+#[cfg(feature = "mysql")]
+mod mysql;
 mod registry;
 
 pub use config::{
-    DEFAULT_LISTEN, DEFAULT_RETRY_TIMEOUT, DEFAULT_SHUTDOWN_TIMEOUT, DurableConfig, DurableStore,
-    MysqlTls, PROTECTED,
+    DEFAULT_DATABASE, DEFAULT_LISTEN, DEFAULT_RETRY_TIMEOUT, DEFAULT_SHUTDOWN_TIMEOUT,
+    DurableConfig, DurableStore, MysqlTls, PROTECTED, redact_url,
 };
 pub use embed::{DurableServer, LOCK_FILE, PROTOCOL_VERSION};
 pub use error::DurableError;

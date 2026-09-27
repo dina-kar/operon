@@ -13,12 +13,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use resonate_base::{Options, Running};
+use resonate_base::{Options, Registry, Running};
 use resonate_plugin::types::RequestEnvelope;
-use resonate_plugin::{ResonateServer, WorkerPlugin};
+use resonate_plugin::{Configuration, ResonateServer, WorkerPlugin};
 use serde_json::{Map, Value};
 
-use crate::config::{self, DurableConfig, DurableStore};
+use crate::config::{self, DurableConfig, DurableStore, Mode};
 use crate::error::DurableError;
 use crate::listen;
 use crate::registry;
@@ -68,31 +68,21 @@ impl DurableServer {
         extra: &[&'static WorkerPlugin],
     ) -> Result<Self, DurableError> {
         listen::check_loopback(config.listen)?;
-        let registry = registry::with_workers(extra);
-        registry.check().map_err(|errors| {
-            DurableError::Config(
-                errors
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            )
-        })?;
-        #[cfg(not(feature = "mysql"))]
-        if let DurableStore::Mysql { .. } = config.store {
-            return Err(DurableError::Config(
-                "this build has no MySQL durable store (the durable-mysql feature is off)".into(),
-            ));
-        }
-        let configuration = config::configuration(&config, &registry::carried(&registry))?;
+        let (registry, configuration) = prepare(&config, extra, Mode::Serve)?;
         let lock = match &config.store {
             DurableStore::Sqlite { path } => Some(lock_store(path)?),
             DurableStore::Mysql { .. } => None,
         };
+        // Serving never migrates a MySQL store: an empty database would
+        // otherwise get Resonate's schema on the first start (D1 Task 4).
+        #[cfg(feature = "mysql")]
+        if let DurableStore::Mysql { url, tls } = &config.store {
+            crate::mysql::check_schema(url, *tls).await?;
+        }
         listen::probe(config.listen)?;
         let options = Options::default().default_server("server_sqlite");
         let running = resonate_base::build(&registry, &configuration, &options)
-            .map_err(DurableError::Config)?;
+            .map_err(|e| DurableError::Config(scrub_for(&config.store, &e)))?;
         if let Err(e) = running.start(config.debug).await {
             // The port was free a moment ago: something took it in between.
             if e.contains("cannot bind") {
@@ -102,7 +92,7 @@ impl DurableServer {
                     source: e,
                 });
             }
-            return Err(DurableError::Start(e));
+            return Err(DurableError::Start(explain_start(&config.store, &e)));
         }
         tracing::info!(
             addr = %config.listen,
@@ -123,6 +113,31 @@ impl DurableServer {
             next_corr: AtomicU64::new(0),
             lock,
         })
+    }
+
+    /// `operon durable migrate`: open `store` once with Resonate's migrations
+    /// on (`migrate = true`), with no listener, and stop. An empty database
+    /// gets the schema; an up-to-date one is left as it is. The database
+    /// itself must exist.
+    pub async fn migrate(store: DurableStore) -> Result<(), DurableError> {
+        let config = DurableConfig::new(store);
+        let (registry, configuration) = prepare(&config, &[], Mode::Migrate)?;
+        let lock = match &config.store {
+            DurableStore::Sqlite { path } => Some(lock_store(path)?),
+            DurableStore::Mysql { .. } => None,
+        };
+        let options = Options::default().default_server("server_sqlite");
+        let running = resonate_base::build(&registry, &configuration, &options)
+            .map_err(|e| DurableError::Config(scrub_for(&config.store, &e)))?;
+        running
+            .start(false)
+            .await
+            .map_err(|e| DurableError::Start(scrub_for(&config.store, &e)))?;
+        running.stop(config.shutdown_timeout).await;
+        drop(running);
+        drop(lock);
+        tracing::info!(store = %config.store, "the durable store is migrated");
+        Ok(())
     }
 
     /// The server, for an in-process caller such as Loam's SDK network.
@@ -211,6 +226,65 @@ impl DurableServer {
             tracing::warn!(addr = %listen, "the durable port is still bound after stop");
         }
         drop(lock);
+    }
+}
+
+/// The registry (with `extra` workers) and the configuration for `config`.
+fn prepare(
+    config: &DurableConfig,
+    extra: &[&'static WorkerPlugin],
+    mode: Mode,
+) -> Result<(Registry, Configuration), DurableError> {
+    let registry = registry::with_workers(extra);
+    registry.check().map_err(|errors| {
+        DurableError::Config(
+            errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    })?;
+    #[cfg(not(feature = "mysql"))]
+    if let DurableStore::Mysql { .. } = config.store {
+        return Err(DurableError::Config(
+            "this build has no MySQL durable store (the durable-mysql feature is off)".into(),
+        ));
+    }
+    let configuration = config::configuration(config, &registry::carried(&registry), mode)
+        .map_err(|e| match e {
+            DurableError::Config(message) => {
+                DurableError::Config(scrub_for(&config.store, &message))
+            }
+            other => other,
+        })?;
+    Ok((registry, configuration))
+}
+
+/// `message` without the store's password.
+fn scrub_for(store: &DurableStore, message: &str) -> String {
+    match store {
+        DurableStore::Sqlite { .. } => message.to_string(),
+        DurableStore::Mysql { url, .. } => config::scrub(message, url),
+    }
+}
+
+/// A start failure's message, without the store's password, and naming
+/// `operon durable migrate` when the schema is the problem.
+fn explain_start(store: &DurableStore, message: &str) -> String {
+    let message = scrub_for(store, message);
+    if !matches!(store, DurableStore::Mysql { .. }) {
+        return message;
+    }
+    if message.contains("different checksum") {
+        format!(
+            "{message}\n\nThen run 'operon durable migrate' against the new database before \
+             serving it."
+        )
+    } else if message.contains("schema:") {
+        format!("{message}; run 'operon durable migrate' first")
+    } else {
+        message
     }
 }
 

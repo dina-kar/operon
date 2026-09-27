@@ -287,7 +287,7 @@ struct Native {
     /// Where durable state lives: sqlite:<path> or mysql://… [default for
     /// dev and standalone: sqlite:<data-dir>/durable/default.db; cluster
     /// has no default and needs mysql://…].
-    #[arg(long, value_parser = parse_durable_store, conflicts_with = "no_durable")]
+    #[arg(long, value_parser = DurableStoreParser, conflicts_with = "no_durable")]
     durable_store: Option<DurableStoreArg>,
     /// Deliver durable tasks to http:// and https:// targets (a server-side
     /// request forgery risk: any caller may name a target).
@@ -307,11 +307,34 @@ struct Native {
     durable_debug: bool,
 }
 
-/// `--durable-store`: `sqlite:<path>` or `mysql://…`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `--durable-store`: `sqlite:<path>` or `mysql://…`. With the feature a
+/// MySQL store is parsed (its TLS mode read) at once; without it the URL is
+/// only kept. `Debug` never shows a password (D1 Task 4).
+#[derive(Clone, PartialEq, Eq)]
 enum DurableStoreArg {
     Sqlite(PathBuf),
+    #[cfg(feature = "durable")]
+    Mysql(operon_durable::DurableStore),
+    #[cfg(not(feature = "durable"))]
     Mysql(String),
+}
+
+impl std::fmt::Debug for DurableStoreArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sqlite(path) => f.debug_tuple("Sqlite").field(path).finish(),
+            #[cfg(feature = "durable")]
+            Self::Mysql(store) => f.debug_tuple("Mysql").field(store).finish(),
+            // Without the feature the URL is never used: show only its host.
+            #[cfg(not(feature = "durable"))]
+            Self::Mysql(url) => {
+                let host = url.rsplit_once('@').map_or(url.as_str(), |(_, host)| host);
+                f.debug_tuple("Mysql")
+                    .field(&format!("mysql://…@{host}"))
+                    .finish()
+            }
+        }
+    }
 }
 
 fn parse_durable_store(text: &str) -> Result<DurableStoreArg, String> {
@@ -324,9 +347,54 @@ fn parse_durable_store(text: &str) -> Result<DurableStoreArg, String> {
         return Ok(DurableStoreArg::Sqlite(PathBuf::from(path)));
     }
     if text.starts_with("mysql://") {
+        // The error names the URL without its password.
+        #[cfg(feature = "durable")]
+        return operon_durable::DurableStore::mysql(text)
+            .map(DurableStoreArg::Mysql)
+            .map_err(|err| err.to_string());
+        #[cfg(not(feature = "durable"))]
         return Ok(DurableStoreArg::Mysql(text.to_string()));
     }
     Err("expected sqlite:<path> or mysql://…".into())
+}
+
+/// `--durable-store`'s value parser. A plain `fn` parser's error would quote
+/// the value, and with it a MySQL password; this one says only what is wrong.
+#[derive(Clone, Copy, Debug)]
+struct DurableStoreParser;
+
+impl clap::builder::TypedValueParser for DurableStoreParser {
+    type Value = DurableStoreArg;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        _arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<DurableStoreArg, clap::Error> {
+        let refuse = |message: String| {
+            clap::Error::raw(
+                clap::error::ErrorKind::ValueValidation,
+                format!("invalid value for '--durable-store': {message}\n"),
+            )
+            .with_cmd(cmd)
+        };
+        let text = value
+            .to_str()
+            .ok_or_else(|| refuse("the value is not UTF-8".into()))?;
+        parse_durable_store(text).map_err(refuse)
+    }
+}
+
+#[cfg(feature = "durable")]
+impl DurableStoreArg {
+    /// The store the flag names.
+    fn to_store(&self) -> operon_durable::DurableStore {
+        match self {
+            Self::Sqlite(path) => operon_durable::DurableStore::Sqlite { path: path.clone() },
+            Self::Mysql(store) => store.clone(),
+        }
+    }
 }
 
 /// `--durable-listen`: an IP socket address or `localhost:<port>`, refused
@@ -426,17 +494,13 @@ impl Native {
     /// there).
     #[cfg(feature = "durable")]
     fn apply_durable(&self, config: &mut ServerConfig) {
-        use operon_durable::{DurableConfig, DurableStore, MysqlTls};
+        use operon_durable::{DurableConfig, DurableStore};
         if self.no_durable {
             config.durable = None;
             return;
         }
         let store = match (&self.durable_store, &config.cluster) {
-            (Some(DurableStoreArg::Sqlite(path)), _) => DurableStore::Sqlite { path: path.clone() },
-            (Some(DurableStoreArg::Mysql(url)), _) => DurableStore::Mysql {
-                url: url.clone(),
-                tls: MysqlTls::default(),
-            },
+            (Some(store), _) => store.to_store(),
             (None, None) => DurableStore::Sqlite {
                 path: config.data_dir.join("durable").join("default.db"),
             },
@@ -589,6 +653,25 @@ enum Command {
         #[arg(long, default_value = "http://127.0.0.1:8080")]
         server: String,
     },
+    /// Durable execution's store (D1).
+    Durable {
+        #[command(subcommand)]
+        command: DurableCommand,
+    },
+}
+
+/// `operon durable …`: commands that start no server.
+#[derive(Debug, Subcommand)]
+enum DurableCommand {
+    /// Create or update the durable store's schema (Resonate's migrations),
+    /// then exit. `operon standalone` and `cluster` never migrate a MySQL
+    /// store: run this once per database, and again after an upgrade.
+    Migrate {
+        /// The store: mysql://user:pass@host:port/db[?ssl-mode=required|disabled]
+        /// (or sqlite:<path>, which `operon dev` also migrates itself).
+        #[arg(long, value_parser = DurableStoreParser)]
+        durable_store: DurableStoreArg,
+    },
 }
 
 /// Flight SQL's default address for `operon dev`.
@@ -655,6 +738,7 @@ fn config(command: Command) -> ServerConfig {
             config
         }
         Command::Warm { .. } => unreachable!("operon warm starts no server"),
+        Command::Durable { .. } => unreachable!("operon durable starts no server"),
         Command::Dev {
             data_dir,
             listen,
@@ -794,6 +878,34 @@ async fn warm(target: &str, server: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
+/// `operon durable migrate`: runs Resonate's migrations on the store once and
+/// exits 0, or prints the error and exits 1 (D1 Task 4).
+#[cfg(feature = "durable")]
+async fn durable(command: &DurableCommand) -> ExitCode {
+    match command {
+        DurableCommand::Migrate { durable_store } => {
+            let store = durable_store.to_store();
+            let shown = store.to_string();
+            match operon_durable::DurableServer::migrate(store).await {
+                Ok(()) => {
+                    println!("operon durable: {shown} is migrated");
+                    ExitCode::SUCCESS
+                }
+                Err(err) => {
+                    eprintln!("operon: {err}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "durable"))]
+async fn durable(_command: &DurableCommand) -> ExitCode {
+    eprintln!("operon: this build has no durable execution (the durable feature is off)");
+    ExitCode::FAILURE
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     tracing_subscriber::fmt()
@@ -805,6 +917,9 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
     if let Command::Warm { target, server } = &cli.command {
         return warm(target, server).await;
+    }
+    if let Command::Durable { command } = &cli.command {
+        return durable(command).await;
     }
     if let Err(err) = arm_failpoints() {
         eprintln!("operon: {err}");
@@ -1348,12 +1463,10 @@ mod tests {
             parse_durable_store("sqlite:///tmp/d.db"),
             Ok(DurableStoreArg::Sqlite("/tmp/d.db".into()))
         );
-        assert_eq!(
+        assert!(matches!(
             parse_durable_store("mysql://root@127.0.0.1:4000/loam_durable_default"),
-            Ok(DurableStoreArg::Mysql(
-                "mysql://root@127.0.0.1:4000/loam_durable_default".into()
-            ))
-        );
+            Ok(DurableStoreArg::Mysql(_))
+        ));
         assert!(parse_durable_store("sqlite:").is_err());
         assert!(parse_durable_store("postgres://x").is_err());
         assert_eq!(parse_key_value("a.b=c=d"), Ok(("a.b".into(), "c=d".into())));
@@ -1468,6 +1581,7 @@ mod tests {
             &["--durable-store", "sqlite:/tmp/d.db"],
             &["--durable-push"],
             &["--durable-set", "a.b=c"],
+            &["--durable-debug"],
         ] {
             let mut args = vec!["--no-durable"];
             args.extend_from_slice(flag);
@@ -1475,6 +1589,105 @@ mod tests {
         }
         parse_error(&["--durable-set", "no-equals"]);
         parse_error(&["--durable-store", "redis://x"]);
+    }
+
+    /// `operon durable migrate --durable-store …` (D1 Task 4): a store is
+    /// required, and nothing else.
+    #[test]
+    fn durable_migrate_parses() {
+        let cli = Cli::try_parse_from([
+            "operon",
+            "durable",
+            "migrate",
+            "--durable-store",
+            "mysql://root@127.0.0.1:4000/loam_durable_default",
+        ])
+        .expect("parse");
+        let Command::Durable {
+            command: DurableCommand::Migrate { durable_store },
+        } = cli.command
+        else {
+            panic!("not durable migrate: {:?}", cli.command);
+        };
+        assert!(matches!(durable_store, DurableStoreArg::Mysql(_)));
+        assert!(Cli::try_parse_from(["operon", "durable", "migrate"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "operon",
+                "durable",
+                "migrate",
+                "--durable-store",
+                "sqlite:/tmp/d.db",
+                "--listen",
+                "127.0.0.1:1",
+            ])
+            .is_err()
+        );
+    }
+
+    /// The security fix of Task 4: no rendering of the parsed flags, and no
+    /// parse error, carries a MySQL password.
+    #[test]
+    fn durable_store_password_never_printed() {
+        let url = "mysql://loam:hunter22@tidb.internal:4000/loam_durable_default";
+        let cli = Cli::try_parse_from(["operon", "dev", "--durable-store", url]).expect("parse");
+        let debug = format!("{cli:?}");
+        assert!(!debug.contains("hunter22"), "{debug}");
+        assert!(debug.contains("tidb.internal:4000"), "{debug}");
+        let migrate = Cli::try_parse_from(["operon", "durable", "migrate", "--durable-store", url])
+            .expect("parse");
+        assert!(!format!("{migrate:?}").contains("hunter22"));
+        for bad in [
+            "mysql://loam:hunter22@tidb.internal:4000/d?ssl-mode=preferred",
+            "mysql://loam:hunter22@/d",
+        ] {
+            let err = Cli::try_parse_from(["operon", "dev", "--durable-store", bad]);
+            #[cfg(feature = "durable")]
+            {
+                let err = err.expect_err(bad).to_string();
+                assert!(!err.contains("hunter22"), "{err}");
+                assert!(err.contains("--durable-store"), "{err}");
+            }
+            #[cfg(not(feature = "durable"))]
+            let _ = err;
+        }
+        #[cfg(feature = "durable")]
+        {
+            let config = dev_config(&["--durable-store", url]);
+            let debug = format!("{config:?}");
+            assert!(!debug.contains("hunter22"), "{debug}");
+        }
+    }
+
+    /// `ssl-mode` on the URL, else TLS except on this machine (D1 Task 4).
+    #[cfg(feature = "durable")]
+    #[test]
+    fn durable_mysql_store_maps_tls() {
+        use operon_durable::{DurableStore, MysqlTls};
+        let tls = |url: &str| match dev_config(&["--durable-store", url])
+            .durable
+            .map(|d| d.store)
+        {
+            Some(DurableStore::Mysql { url: kept, tls }) => {
+                assert_eq!(kept, url);
+                tls
+            }
+            other => panic!("{url}: {other:?}"),
+        };
+        assert_eq!(
+            tls("mysql://loam:pw@tidb.internal:4000/d"),
+            MysqlTls::Required
+        );
+        assert_eq!(tls("mysql://root@127.0.0.1:4000/d"), MysqlTls::Disabled);
+        assert_eq!(tls("mysql://root@localhost:4000/d"), MysqlTls::Disabled);
+        assert_eq!(
+            tls("mysql://loam@tidb.internal:4000/d?ssl-mode=disabled"),
+            MysqlTls::Disabled
+        );
+        assert_eq!(
+            tls("mysql://root@127.0.0.1:4000/d?ssl-mode=required"),
+            MysqlTls::Required
+        );
     }
 
     /// A cluster node has no default durable store and refuses a SQLite one.

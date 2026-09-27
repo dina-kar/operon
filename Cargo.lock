@@ -5864,10 +5864,12 @@ dependencies = [
  "resonate-transport-http-poll",
  "resonate-transport-http-push",
  "serde_json",
+ "sqlx",
  "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
