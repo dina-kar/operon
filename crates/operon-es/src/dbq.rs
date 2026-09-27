@@ -1,0 +1,373 @@
+//! What `_delete_by_query` (Task 10) and `_update_by_query` (Task 9a)
+//! share: their URL parameters, their body keys and the per-index loop over
+//! the native filter writes (D87, Task 9a rule 7).
+//!
+//! Each index runs one filter write with `allow_partial: true` and follows
+//! its cursor at the same pin until no rows remain or `max_docs` rows were
+//! written; `total` is the first call's `matched` (capped by what `max_docs`
+//! leaves), and the affected rows and batches are summed.
+
+use std::time::Duration;
+
+use operon_query::{FilterWriteOptions, FilterWriteResult, PatchSpec, Query, ServiceError};
+use serde_json::Value;
+
+use crate::EsGateway;
+use crate::dsl::QueryContext;
+use crate::dsl::query::{parse_leaf, token_name};
+use crate::error::{ErrorContext, EsError};
+use crate::http::{Params, RequestCtx};
+use crate::mapping::IndexView;
+use crate::search::SearchParams;
+use crate::search::compile::url_query;
+use crate::search::exec::now_ms;
+
+/// The URL parameters of `_delete_by_query` and `_update_by_query` (Task 10
+/// routes).
+pub const BY_QUERY_PARAMS: &[&str] = &[
+    "refresh",
+    "conflicts",
+    "wait_for_completion",
+    "scroll_size",
+    "max_docs",
+    "slices",
+    "requests_per_second",
+    "timeout",
+    "scroll",
+    "q",
+    "df",
+    "default_operator",
+    "analyzer",
+    "lenient",
+    "ignore_unavailable",
+    "allow_no_indices",
+    "expand_wildcards",
+    "routing",
+    "preference",
+    "search_timeout",
+    "wait_for_active_shards",
+];
+
+/// The parameters a by-query request acts on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DbqParams {
+    /// `max_docs` (the body's wins); `None` for every match.
+    pub max_docs: Option<u64>,
+    /// 1 000, at most 10 000. Accepted and checked; the batches are the
+    /// collection service's (`ServiceConfig::filter_write_batch`).
+    pub scroll_size: usize,
+    /// `refresh=true` or empty; reads are strong, so it changes nothing.
+    pub refresh: bool,
+    /// `timeout`: each filter write's deadline, the service's default
+    /// without it.
+    pub timeout: Option<Duration>,
+    /// `q`, `df`, `default_operator` and the index options, read as for
+    /// `_search`.
+    pub search: SearchParams,
+}
+
+impl DbqParams {
+    /// Checks and reads `p` (validated against [`BY_QUERY_PARAMS`]).
+    pub fn parse(p: &Params) -> Result<Self, EsError> {
+        if p.bool("wait_for_completion")? == Some(false) {
+            return Err(EsError::unsupported("wait_for_completion=false"));
+        }
+        if let Some(slices) = p.str("slices")
+            && !matches!(slices, "1" | "auto")
+        {
+            return Err(EsError::unsupported(&format!("slices={slices}")));
+        }
+        if let Some(rate) = p.str("requests_per_second")
+            && !matches!(rate, "-1" | "-1.0")
+        {
+            return Err(EsError::unsupported(&format!("requests_per_second={rate}")));
+        }
+        if let Some(conflicts) = p.str("conflicts") {
+            check_conflicts(conflicts)?;
+        }
+        let scroll_size = p.usize("scroll_size")?.unwrap_or(1_000);
+        if !(1..=10_000).contains(&scroll_size) {
+            return Err(EsError::illegal_argument(format!(
+                "[scroll_size] must be between 1 and 10000, got [{scroll_size}]"
+            )));
+        }
+        let max_docs = match p.str("max_docs") {
+            None => None,
+            Some(text) => max_docs(&parse_i64("max_docs", text)?)?,
+        };
+        let timeout = p
+            .str("timeout")
+            .map(|text| time_value("timeout", text))
+            .transpose()?
+            .flatten();
+        Ok(Self {
+            max_docs,
+            scroll_size,
+            refresh: crate::write::refresh_param(p)?,
+            timeout,
+            search: crate::search::parse_params(p)?,
+        })
+    }
+}
+
+fn parse_i64(name: &str, text: &str) -> Result<Value, EsError> {
+    text.parse::<i64>().map(Value::from).map_err(|_| {
+        EsError::illegal_argument(format!(
+            "Failed to parse int parameter [{name}] with value [{text}]"
+        ))
+    })
+}
+
+/// `conflicts`: `abort` or `proceed`; there are no version conflicts to
+/// count, so both behave alike.
+fn check_conflicts(value: &str) -> Result<(), EsError> {
+    match value {
+        "abort" | "proceed" => Ok(()),
+        other => Err(EsError::illegal_argument(format!(
+            "conflicts may only be \"proceed\" or \"abort\" but was [{other}]"
+        ))),
+    }
+}
+
+/// `max_docs`: a positive integer, or `-1` for every match.
+fn max_docs(value: &Value) -> Result<Option<u64>, EsError> {
+    match value.as_i64() {
+        Some(-1) => Ok(None),
+        Some(n) if n > 0 => Ok(Some(n as u64)),
+        _ => Err(EsError::new(
+            400,
+            "action_request_validation_exception",
+            format!(
+                "Validation Failed: 1: maxDocs should be greater than 0 if the request is limited to some number of documents or -1 if it isn't but it was [{value}];"
+            ),
+        )),
+    }
+}
+
+/// An ES time value (`500ms`, `1s`, `2m`, …); `-1` is none.
+pub(crate) fn time_value(name: &str, text: &str) -> Result<Option<Duration>, EsError> {
+    if text == "-1" {
+        return Ok(None);
+    }
+    let bad = || {
+        EsError::illegal_argument(format!(
+            "failed to parse setting [{name}] with value [{text}] as a time value: unit is missing or unrecognized"
+        ))
+    };
+    const UNITS: [(&str, u64); 7] = [
+        ("nanos", 1),
+        ("micros", 1_000),
+        ("ms", 1_000_000),
+        ("s", 1_000_000_000),
+        ("m", 60_000_000_000),
+        ("h", 3_600_000_000_000),
+        ("d", 86_400_000_000_000),
+    ];
+    for (unit, nanos) in UNITS {
+        if let Some(number) = text.strip_suffix(unit) {
+            let n: u64 = number.trim().parse().map_err(|_| bad())?;
+            return Ok(Some(Duration::from_nanos(n.saturating_mul(nanos))));
+        }
+    }
+    Err(bad())
+}
+
+/// The keys of a by-query body.
+pub(crate) struct ByQueryBody<'a> {
+    pub query: Option<&'a Value>,
+    pub max_docs: Option<Option<u64>>,
+    pub script: Option<&'a Value>,
+}
+
+/// Reads the body's keys: `query`, `max_docs`, `conflicts` and, when
+/// `with_script`, `script`; `slice` and `sort` are Phase A refusals.
+pub(crate) fn parse_body(body: &Value, with_script: bool) -> Result<ByQueryBody<'_>, EsError> {
+    let mut out = ByQueryBody {
+        query: None,
+        max_docs: None,
+        script: None,
+    };
+    let map = match body {
+        Value::Null => return Ok(out),
+        Value::Object(map) => map,
+        other => {
+            return Err(EsError::parsing(format!(
+                "Expected [START_OBJECT] but found [{}]",
+                token_name(other)
+            )));
+        }
+    };
+    for (key, value) in map {
+        match key.as_str() {
+            "query" => out.query = Some(value).filter(|v| !v.is_null()),
+            "max_docs" => out.max_docs = Some(max_docs(value)?),
+            "conflicts" => check_conflicts(value.as_str().unwrap_or_default())?,
+            "script" if with_script => out.script = Some(value).filter(|v| !v.is_null()),
+            "slice" | "sort" => return Err(EsError::unsupported(key)),
+            other => {
+                return Err(EsError::parsing(format!(
+                    "request does not support [{other}]"
+                )));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The query of each index: `q` when given, else the body's `query`, which
+/// one of them must give (knn and `script_score` are refused).
+pub(crate) fn compile_queries(
+    indices: &[IndexView],
+    body_query: Option<&Value>,
+    search: &SearchParams,
+) -> Result<Vec<Query>, EsError> {
+    let now = now_ms();
+    indices
+        .iter()
+        .map(|view| {
+            let qctx = QueryContext::new(view, now);
+            match (&search.q, body_query) {
+                (Some(q), _) => url_query(q, search, &qctx),
+                (None, Some(query)) => parse_leaf(query, &qctx),
+                (None, None) => Err(EsError::new(
+                    400,
+                    "action_request_validation_exception",
+                    "Validation Failed: 1: query is missing;",
+                )),
+            }
+        })
+        .collect()
+}
+
+/// What a by-query request writes to each match.
+#[derive(Clone, Debug)]
+pub(crate) enum ByFilter {
+    /// `_delete_by_query`, which Task 10 routes.
+    #[allow(dead_code)]
+    Delete,
+    Patch(PatchSpec),
+}
+
+/// The sums of a by-query request over its indices.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ByQueryTotals {
+    pub total: u64,
+    pub affected: u64,
+    pub batches: u64,
+}
+
+/// Runs `op` over each index in turn (Task 9a rule 7): a filter write per
+/// index at one pin, following its cursor until no rows remain or
+/// `max_docs` rows were written across all indices. A write refused for
+/// backpressure past its deadline is 429 (what was written stays).
+pub(crate) async fn run(
+    gw: &EsGateway,
+    ctx: &RequestCtx,
+    targets: &[(IndexView, Query)],
+    op: &ByFilter,
+    max_docs: Option<u64>,
+    timeout: Option<Duration>,
+    what: &str,
+) -> Result<ByQueryTotals, EsError> {
+    let mut totals = ByQueryTotals::default();
+    let mut left = max_docs.unwrap_or(u64::MAX);
+    for (view, query) in targets {
+        if left == 0 {
+            break;
+        }
+        let mut cursor = None;
+        let mut first = true;
+        loop {
+            let opts = FilterWriteOptions {
+                consistency: ctx.consistency.clone(),
+                max_rows: max_docs.map(|_| left),
+                allow_partial: true,
+                cursor: cursor.take(),
+                deadline: timeout,
+                ..FilterWriteOptions::default()
+            };
+            let result = call(gw, ctx, &view.name, query.clone(), op, opts).await?;
+            if first {
+                totals.total += result.matched.min(left);
+                first = false;
+            }
+            totals.affected += result.affected;
+            totals.batches += result.batches;
+            left = left.saturating_sub(result.written);
+            if let Some(retry_after_ms) = result.retry_after_ms {
+                return Err(EsError::from_service(
+                    ServiceError::ResourceExhausted {
+                        message: format!(
+                            "[{what}] was refused for backpressure after {} of its documents were written; retry after {} s",
+                            totals.affected,
+                            retry_after_ms.div_ceil(1000).max(1)
+                        ),
+                        retry_after_ms,
+                    },
+                    ErrorContext::Write,
+                ));
+            }
+            match result.cursor {
+                Some(next) if result.rows_remaining && left > 0 => cursor = Some(next),
+                _ => break,
+            }
+        }
+    }
+    Ok(totals)
+}
+
+async fn call(
+    gw: &EsGateway,
+    ctx: &RequestCtx,
+    index: &str,
+    query: Query,
+    op: &ByFilter,
+    opts: FilterWriteOptions,
+) -> Result<FilterWriteResult, EsError> {
+    let service = gw.service();
+    let result = match op {
+        // Boxed: the service's filter-write future is deep.
+        ByFilter::Delete => {
+            Box::pin(service.delete_by_filter(&ctx.namespace, index, query, opts)).await
+        }
+        ByFilter::Patch(patch) => {
+            Box::pin(service.patch_by_filter(&ctx.namespace, index, query, patch.clone(), opts))
+                .await
+        }
+    };
+    result.map_err(|err| EsError::from_service(err, ErrorContext::Write))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn time_values_parse_with_their_units() {
+        assert_eq!(
+            time_value("timeout", "500ms").expect("ms"),
+            Some(Duration::from_millis(500))
+        );
+        assert_eq!(
+            time_value("timeout", "2m").expect("m"),
+            Some(Duration::from_secs(120))
+        );
+        assert_eq!(
+            time_value("timeout", "1s").expect("s"),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(time_value("timeout", "-1").expect("none"), None);
+        for bad in ["1", "s", "1x", "-2s"] {
+            assert!(time_value("timeout", bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn max_docs_is_positive_or_minus_one() {
+        assert_eq!(max_docs(&Value::from(3)).expect("3"), Some(3));
+        assert_eq!(max_docs(&Value::from(-1)).expect("-1"), None);
+        for bad in [Value::from(0), Value::from(-2), Value::from("x")] {
+            assert!(max_docs(&bad).is_err(), "{bad}");
+        }
+    }
+}

@@ -238,7 +238,7 @@ The journal costs two extra keys per mutation (the entry and the shard head). In
 | **Action** | No; each `runQuery`/`runMutation` inside it is its own transaction | `fetch` (allowlisted hosts), AI-gateway calls | Never automatically | R2 |
 | **Scheduled function** | A mutation schedules it transactionally (a row in the scheduler range) | As its kind | Mutations exactly once; actions at most once | R2 |
 
-Durable actions (steps that survive a crash and resume) can later run through the Resonate protocol (§14, Apache-2.0, with a Rust SDK at `resonate/impl/sdk/rs`), as an R4+ option.
+Durable actions (steps that survive a crash and resume) run through the Resonate server embedded in the binary (§21 §6.6, Apache-2.0, with a Rust SDK at `resonate/impl/sdk/rs`), in track D's D3 (D145), not as an R4+ option.
 
 ### 6.2 Determinism
 

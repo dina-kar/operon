@@ -29,6 +29,25 @@ copied from qdrant/qdrant v1.19.1 (https://github.com/qdrant/qdrant, commit
 Copyright Qdrant Solutions GmbH, Apache License 2.0. qdrant.proto is
 modified (internal-service imports removed); the other files are unchanged.
 
+TiKV kvproto protocol definitions (crates/operon-tikv/proto/kvproto/),
+copied unchanged from pingcap/kvproto branch release-8.5 at commit
+07aa8c6a46fab0a4cd577119c249c9c8e718c553 (https://github.com/pingcap/kvproto),
+Copyright TiKV Project Authors, Apache License 2.0 (the LICENSE file beside
+them): pdpb.proto and the files it imports (metapb, raft_serverpb,
+replication_modepb, encryptionpb, kvrpcpb, disk_usage, errorpb, deadlock,
+tracepb, resource_manager, and eraftpb from kvproto's include/). kvproto's
+include/ also supplies two option files, kept as distributed there:
+gogoproto/gogo.proto, Copyright (c) 2013 The GoGo Authors, BSD 3-Clause
+License (its notice is in the file), and rustproto.proto from rust-protobuf
+(MIT License).
+
+Resonate (https://github.com/resonatehq/resonate), Apache License 2.0.
+operon-durable links the Resonate server plugins and the Resonate Rust SDK
+from the fork https://github.com/dina-kar/resonate, branch loam/0.10.1
+(upstream revision 28dfd016aa970332dc283e2431c406845e2ccc8f plus the
+patches listed in docs/plans/d1-dependency-spike.md), pinned by revision in
+Cargo.toml. Copyright 2026 Resonate HQ, Inc.
+
 TiKV Rust client (https://github.com/tikv/client-rust), Apache License 2.0.
 operon-tikv, operon-meta-tikv and operon-live link tikv-client from the fork
 https://github.com/dina-kar/client-rust, branch loam (upstream revision

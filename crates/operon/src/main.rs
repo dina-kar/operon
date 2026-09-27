@@ -238,6 +238,16 @@ struct Native {
     /// Serve no Qdrant API.
     #[arg(long)]
     no_qdrant: bool,
+    /// Address of the Elasticsearch REST API [default: 127.0.0.1:9200].
+    #[arg(long, conflicts_with = "no_es")]
+    es_listen: Option<SocketAddr>,
+    /// The namespace of Elasticsearch requests without an
+    /// `Operon-Namespace` header [default: default].
+    #[arg(long, conflicts_with = "no_es")]
+    es_namespace: Option<String>,
+    /// Serve no Elasticsearch API.
+    #[arg(long)]
+    no_es: bool,
     /// Whether this node runs a hot tier, and whether reads use it when a
     /// request does not say (`Operon-Hot`).
     #[arg(long, value_enum, default_value = "on")]
@@ -267,6 +277,147 @@ struct Native {
     /// half the tail's bound [default: 128 MiB].
     #[arg(long)]
     max_unapplied_bytes: Option<u64>,
+    /// Address of the durable execution API, loopback only (D138)
+    /// [default: 127.0.0.1:8001].
+    #[arg(long, value_parser = parse_durable_listen, conflicts_with = "no_durable")]
+    durable_listen: Option<SocketAddr>,
+    /// Serve no durable execution API.
+    #[arg(long)]
+    no_durable: bool,
+    /// Where durable state lives: sqlite:<path> or mysql://… [default for
+    /// dev and standalone: sqlite:<data-dir>/durable/default.db; cluster
+    /// has no default and needs mysql://…].
+    #[arg(long, value_parser = DurableStoreParser, conflicts_with = "no_durable")]
+    durable_store: Option<DurableStoreArg>,
+    /// Deliver durable tasks to http:// and https:// targets (a server-side
+    /// request forgery risk: any caller may name a target).
+    #[arg(long, conflicts_with = "no_durable")]
+    durable_push: bool,
+    /// A setting of the embedded durable server, in Resonate's key space
+    /// (repeatable; applied in order).
+    #[arg(
+        long,
+        value_name = "KEY=VALUE",
+        value_parser = parse_key_value,
+        conflicts_with = "no_durable"
+    )]
+    durable_set: Vec<(String, String)>,
+    /// The durable server's clock belongs to the caller (tests).
+    #[arg(long, hide = true, conflicts_with = "no_durable")]
+    durable_debug: bool,
+}
+
+/// `--durable-store`: `sqlite:<path>` or `mysql://…`. With the feature a
+/// MySQL store is parsed (its TLS mode read) at once; without it the URL is
+/// only kept. `Debug` never shows a password (D1 Task 4).
+#[derive(Clone, PartialEq, Eq)]
+enum DurableStoreArg {
+    Sqlite(PathBuf),
+    #[cfg(feature = "durable")]
+    Mysql(operon_durable::DurableStore),
+    #[cfg(not(feature = "durable"))]
+    Mysql(String),
+}
+
+impl std::fmt::Debug for DurableStoreArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sqlite(path) => f.debug_tuple("Sqlite").field(path).finish(),
+            #[cfg(feature = "durable")]
+            Self::Mysql(store) => f.debug_tuple("Mysql").field(store).finish(),
+            // Without the feature the URL is never used: show only its host.
+            #[cfg(not(feature = "durable"))]
+            Self::Mysql(url) => {
+                let host = url.rsplit_once('@').map_or(url.as_str(), |(_, host)| host);
+                f.debug_tuple("Mysql")
+                    .field(&format!("mysql://…@{host}"))
+                    .finish()
+            }
+        }
+    }
+}
+
+fn parse_durable_store(text: &str) -> Result<DurableStoreArg, String> {
+    if let Some(path) = text.strip_prefix("sqlite:") {
+        // sqlite:///abs/path reads as the URL it looks like.
+        let path = path.strip_prefix("//").unwrap_or(path);
+        if path.is_empty() {
+            return Err("sqlite: needs a path, as in sqlite:.operon/durable/default.db".into());
+        }
+        return Ok(DurableStoreArg::Sqlite(PathBuf::from(path)));
+    }
+    if text.starts_with("mysql://") {
+        // The error names the URL without its password.
+        #[cfg(feature = "durable")]
+        return operon_durable::DurableStore::mysql(text)
+            .map(DurableStoreArg::Mysql)
+            .map_err(|err| err.to_string());
+        #[cfg(not(feature = "durable"))]
+        return Ok(DurableStoreArg::Mysql(text.to_string()));
+    }
+    Err("expected sqlite:<path> or mysql://…".into())
+}
+
+/// `--durable-store`'s value parser. A plain `fn` parser's error would quote
+/// the value, and with it a MySQL password; this one says only what is wrong.
+#[derive(Clone, Copy, Debug)]
+struct DurableStoreParser;
+
+impl clap::builder::TypedValueParser for DurableStoreParser {
+    type Value = DurableStoreArg;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        _arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<DurableStoreArg, clap::Error> {
+        let refuse = |message: String| {
+            clap::Error::raw(
+                clap::error::ErrorKind::ValueValidation,
+                format!("invalid value for '--durable-store': {message}\n"),
+            )
+            .with_cmd(cmd)
+        };
+        let text = value
+            .to_str()
+            .ok_or_else(|| refuse("the value is not UTF-8".into()))?;
+        parse_durable_store(text).map_err(refuse)
+    }
+}
+
+#[cfg(feature = "durable")]
+impl DurableStoreArg {
+    /// The store the flag names.
+    fn to_store(&self) -> operon_durable::DurableStore {
+        match self {
+            Self::Sqlite(path) => operon_durable::DurableStore::Sqlite { path: path.clone() },
+            Self::Mysql(store) => store.clone(),
+        }
+    }
+}
+
+/// `--durable-listen`: an IP socket address or `localhost:<port>`, refused
+/// unless it is loopback (D138).
+#[cfg(feature = "durable")]
+fn parse_durable_listen(text: &str) -> Result<SocketAddr, String> {
+    operon_durable::parse_listen(text).map_err(|err| err.to_string())
+}
+
+/// Without the feature the address is only parsed: the flag is ignored.
+#[cfg(not(feature = "durable"))]
+fn parse_durable_listen(text: &str) -> Result<SocketAddr, String> {
+    text.parse().map_err(|err| format!("{err}"))
+}
+
+/// `--durable-set key=value`.
+fn parse_key_value(text: &str) -> Result<(String, String), String> {
+    match text.split_once('=') {
+        Some((key, value)) if !key.trim().is_empty() => {
+            Ok((key.trim().to_string(), value.to_string()))
+        }
+        _ => Err(format!("expected key=value, got {text:?}")),
+    }
 }
 
 impl Native {
@@ -277,6 +428,8 @@ impl Native {
             Some(self.flight_sql_listen.unwrap_or(default_flight))
         };
         self.apply_qdrant(config);
+        self.apply_durable(config);
+        self.apply_es(config);
         let hot = self.hot == HotSwitch::On;
         config.query.hot_default = hot;
         config.hot.enabled = hot;
@@ -322,6 +475,83 @@ impl Native {
     fn apply_qdrant(&self, _config: &mut ServerConfig) {
         if self.qdrant_listen.is_some() || self.qdrant_grpc_listen.is_some() {
             tracing::warn!("this build has no Qdrant API (the qdrant feature is off)");
+        }
+    }
+
+    /// Whether any `--durable-*` flag is given (`--no-durable` is not one).
+    fn any_durable_flag(&self) -> bool {
+        self.durable_listen.is_some()
+            || self.durable_store.is_some()
+            || self.durable_push
+            || !self.durable_set.is_empty()
+            || self.durable_debug
+    }
+
+    /// The embedded durable server, unless `--no-durable` (D1 Task 3). `dev`
+    /// and `standalone` default to a SQLite store in the data directory; a
+    /// cluster node has no default store and serves durable execution only
+    /// with `--durable-store` (`ServerConfig::validate` refuses `sqlite:`
+    /// there).
+    #[cfg(feature = "durable")]
+    fn apply_durable(&self, config: &mut ServerConfig) {
+        use operon_durable::{DurableConfig, DurableStore};
+        if self.no_durable {
+            config.durable = None;
+            return;
+        }
+        let store = match (&self.durable_store, &config.cluster) {
+            (Some(store), _) => store.to_store(),
+            (None, None) => DurableStore::Sqlite {
+                path: config.data_dir.join("durable").join("default.db"),
+            },
+            (None, Some(_)) => {
+                if self.any_durable_flag() {
+                    tracing::warn!(
+                        "the --durable-* flags are ignored: operon cluster serves durable \
+                         execution only with --durable-store mysql://…"
+                    );
+                }
+                config.durable = None;
+                return;
+            }
+        };
+        let mut durable = DurableConfig::new(store);
+        if let Some(addr) = self.durable_listen {
+            durable.listen = addr;
+        }
+        durable.push = self.durable_push;
+        durable.debug = self.durable_debug;
+        durable.overrides = self.durable_set.clone();
+        config.durable = Some(durable);
+    }
+
+    #[cfg(not(feature = "durable"))]
+    fn apply_durable(&self, _config: &mut ServerConfig) {
+        if self.any_durable_flag() {
+            tracing::warn!("this build has no durable execution (the durable feature is off)");
+        }
+    }
+
+    /// The Elasticsearch gateway, unless `--no-es` (plan M1.5 Task 1, row
+    /// E13).
+    #[cfg(feature = "es")]
+    fn apply_es(&self, config: &mut ServerConfig) {
+        config.es = (!self.no_es).then(|| {
+            let mut es = operon_es::EsConfig::default();
+            if let Some(addr) = self.es_listen {
+                es.listen = addr;
+            }
+            if let Some(ns) = &self.es_namespace {
+                es.namespace = ns.clone();
+            }
+            es
+        });
+    }
+
+    #[cfg(not(feature = "es"))]
+    fn apply_es(&self, _config: &mut ServerConfig) {
+        if self.es_listen.is_some() {
+            tracing::warn!("this build has no Elasticsearch API (the es feature is off)");
         }
     }
 }
@@ -423,6 +653,25 @@ enum Command {
         #[arg(long, default_value = "http://127.0.0.1:8080")]
         server: String,
     },
+    /// Durable execution's store (D1).
+    Durable {
+        #[command(subcommand)]
+        command: DurableCommand,
+    },
+}
+
+/// `operon durable …`: commands that start no server.
+#[derive(Debug, Subcommand)]
+enum DurableCommand {
+    /// Create or update the durable store's schema (Resonate's migrations),
+    /// then exit. `operon standalone` and `cluster` never migrate a MySQL
+    /// store: run this once per database, and again after an upgrade.
+    Migrate {
+        /// The store: mysql://user:pass@host:port/db[?ssl-mode=required|disabled]
+        /// (or sqlite:<path>, which `operon dev` also migrates itself).
+        #[arg(long, value_parser = DurableStoreParser)]
+        durable_store: DurableStoreArg,
+    },
 }
 
 /// Flight SQL's default address for `operon dev`.
@@ -466,8 +715,6 @@ fn config(command: Command) -> ServerConfig {
             if let Some(v) = flush_interval_ms {
                 config.log.flush_interval = ms(v);
             }
-            native.apply(&mut config, STANDALONE_FLIGHT_SQL);
-            tuning.apply(&mut config);
             let advertise = advertise.unwrap_or_else(|| listen.to_string());
             let mut cluster = ClusterConfig::new(node_id, roles, advertise, peers);
             cluster.zone = zone;
@@ -485,9 +732,13 @@ fn config(command: Command) -> ServerConfig {
                 cluster.membership_interval = ms(v);
             }
             config.cluster = Some(cluster);
+            // After `cluster`: a cluster node has no default durable store.
+            native.apply(&mut config, STANDALONE_FLIGHT_SQL);
+            tuning.apply(&mut config);
             config
         }
         Command::Warm { .. } => unreachable!("operon warm starts no server"),
+        Command::Durable { .. } => unreachable!("operon durable starts no server"),
         Command::Dev {
             data_dir,
             listen,
@@ -627,6 +878,34 @@ async fn warm(target: &str, server: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
+/// `operon durable migrate`: runs Resonate's migrations on the store once and
+/// exits 0, or prints the error and exits 1 (D1 Task 4).
+#[cfg(feature = "durable")]
+async fn durable(command: &DurableCommand) -> ExitCode {
+    match command {
+        DurableCommand::Migrate { durable_store } => {
+            let store = durable_store.to_store();
+            let shown = store.to_string();
+            match operon_durable::DurableServer::migrate(store).await {
+                Ok(()) => {
+                    println!("operon durable: {shown} is migrated");
+                    ExitCode::SUCCESS
+                }
+                Err(err) => {
+                    eprintln!("operon: {err}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "durable"))]
+async fn durable(_command: &DurableCommand) -> ExitCode {
+    eprintln!("operon: this build has no durable execution (the durable feature is off)");
+    ExitCode::FAILURE
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     tracing_subscriber::fmt()
@@ -639,6 +918,9 @@ async fn main() -> ExitCode {
     if let Command::Warm { target, server } = &cli.command {
         return warm(target, server).await;
     }
+    if let Command::Durable { command } = &cli.command {
+        return durable(command).await;
+    }
     if let Err(err) = arm_failpoints() {
         eprintln!("operon: {err}");
         return ExitCode::FAILURE;
@@ -650,12 +932,20 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // Plan M1.4 Task 2 rule 2: before the HTTP line, which harnesses wait
-    // for.
+    // Plan M1.4 Task 2 rule 2 and D1 T0-7: before the HTTP line, which
+    // harnesses wait for.
+    if let Some(addr) = server.durable_addr() {
+        println!("operon durable listening on http://{addr}");
+    }
     #[cfg(feature = "qdrant")]
     if let (Some(rest), Some(grpc)) = (server.qdrant_rest_addr(), server.qdrant_grpc_addr()) {
         println!("operon qdrant REST listening on http://{rest}");
         println!("operon qdrant gRPC listening on grpc://{grpc}");
+    }
+    // Plan M1.5 Task 1 (row E13): also before the HTTP line.
+    #[cfg(feature = "es")]
+    if let Some(addr) = server.es_addr() {
+        println!("operon es listening on http://{addr}");
     }
     println!("operon listening on http://{}", server.local_addr());
     // M1.6 W14, M1.7 A4: printed once the listener is bound.
@@ -787,6 +1077,63 @@ mod tests {
         assert!(cluster.qdrant.is_none());
         // ServerConfig::new serves no Qdrant API (E12).
         assert!(ServerConfig::new("/tmp/x").qdrant.is_none());
+    }
+
+    #[cfg(feature = "es")]
+    #[test]
+    fn es_flags_set_the_config() {
+        let es = dev_config(&[]).es.expect("on by default");
+        assert_eq!(es.listen, "127.0.0.1:9200".parse().unwrap());
+        assert_eq!(es.namespace, "default");
+        let es = dev_config(&["--es-listen", "127.0.0.1:0", "--es-namespace", "acme"])
+            .es
+            .expect("on");
+        assert_eq!(es.listen, "127.0.0.1:0".parse().unwrap());
+        assert_eq!(es.namespace, "acme");
+        assert!(dev_config(&["--no-es"]).es.is_none());
+        assert!(
+            Cli::try_parse_from(["operon", "dev", "--no-es", "--es-listen", "127.0.0.1:1"])
+                .is_err()
+        );
+        // D111: loopback in every mode.
+        let cli = Cli::try_parse_from(["operon", "standalone", "--bucket", "file:///tmp/b"])
+            .expect("parse");
+        let es = config_of(cli).es.expect("standalone serves it");
+        assert_eq!(es.listen, "127.0.0.1:9200".parse().unwrap());
+        let cluster = cluster_config(&[
+            "--node-id",
+            "1",
+            "--roles",
+            "meta,gateway",
+            "--listen",
+            "127.0.0.1:7001",
+            "--peers",
+            "1=127.0.0.1:7001",
+            "--bucket",
+            "file:///tmp/b",
+        ])
+        .expect("parse");
+        assert_eq!(
+            cluster.es.expect("cluster serves it").listen,
+            "127.0.0.1:9200".parse().unwrap()
+        );
+        let cluster = cluster_config(&[
+            "--node-id",
+            "1",
+            "--roles",
+            "meta,gateway",
+            "--listen",
+            "127.0.0.1:7001",
+            "--peers",
+            "1=127.0.0.1:7001",
+            "--bucket",
+            "file:///tmp/b",
+            "--no-es",
+        ])
+        .expect("parse");
+        assert!(cluster.es.is_none());
+        // ServerConfig::new serves no Elasticsearch API (row E13).
+        assert!(ServerConfig::new("/tmp/x").es.is_none());
     }
 
     #[test]
@@ -1083,5 +1430,298 @@ mod tests {
         assert!(err.contains("not host:port"), "{err}");
         let err = invalid(&|a| a.extend(["--replication", "0"]));
         assert!(err.contains("replication"), "{err}");
+    }
+
+    #[cfg(feature = "durable")]
+    const CLUSTER: [&str; 10] = [
+        "--node-id",
+        "1",
+        "--roles",
+        "meta,gateway",
+        "--listen",
+        "127.0.0.1:7001",
+        "--peers",
+        "1=127.0.0.1:7001",
+        "--bucket",
+        "file:///tmp/b",
+    ];
+
+    #[cfg(feature = "durable")]
+    fn parse_error(args: &[&str]) -> String {
+        Cli::try_parse_from(["operon", "dev"].iter().chain(args))
+            .expect_err("refused")
+            .to_string()
+    }
+
+    #[test]
+    fn durable_store_and_set_values_parse() {
+        assert_eq!(
+            parse_durable_store("sqlite:/tmp/d.db"),
+            Ok(DurableStoreArg::Sqlite("/tmp/d.db".into()))
+        );
+        assert_eq!(
+            parse_durable_store("sqlite:///tmp/d.db"),
+            Ok(DurableStoreArg::Sqlite("/tmp/d.db".into()))
+        );
+        assert!(matches!(
+            parse_durable_store("mysql://root@127.0.0.1:4000/loam_durable_default"),
+            Ok(DurableStoreArg::Mysql(_))
+        ));
+        assert!(parse_durable_store("sqlite:").is_err());
+        assert!(parse_durable_store("postgres://x").is_err());
+        assert_eq!(parse_key_value("a.b=c=d"), Ok(("a.b".into(), "c=d".into())));
+        assert!(parse_key_value("a.b").is_err());
+        assert!(parse_key_value("=x").is_err());
+    }
+
+    /// Without the feature every durable flag still parses (and logs that
+    /// it is ignored), so scripts work against either build.
+    #[cfg(not(feature = "durable"))]
+    #[test]
+    fn durable_flags_parse_without_the_feature() {
+        dev_config(&[
+            "--durable-listen",
+            "127.0.0.1:9001",
+            "--durable-store",
+            "sqlite:/tmp/d.db",
+            "--durable-push",
+            "--durable-set",
+            "a.b=c",
+        ]);
+        dev_config(&["--no-durable"]);
+    }
+
+    /// D1 Task 3 semantics 2: the defaults on dev and standalone.
+    #[cfg(feature = "durable")]
+    #[test]
+    fn durable_defaults_on_dev_and_standalone() {
+        use operon_durable::{DEFAULT_LISTEN, DurableStore};
+        let durable = dev_config(&[]).durable.expect("on by default");
+        assert_eq!(durable.listen, DEFAULT_LISTEN);
+        assert_eq!(durable.listen, "127.0.0.1:8001".parse().unwrap());
+        assert_eq!(
+            durable.store,
+            DurableStore::Sqlite {
+                path: PathBuf::from(".operon/durable/default.db")
+            }
+        );
+        assert!(!durable.push && !durable.debug && durable.overrides.is_empty());
+        let cli = Cli::try_parse_from([
+            "operon",
+            "standalone",
+            "--bucket",
+            "file:///tmp/b",
+            "--data-dir",
+            "/var/lib/loam",
+        ])
+        .expect("parse");
+        let durable = config_of(cli).durable.expect("on by default");
+        assert_eq!(
+            durable.store,
+            DurableStore::Sqlite {
+                path: PathBuf::from("/var/lib/loam/durable/default.db")
+            }
+        );
+        // ServerConfig::new serves no durable API; the CLI sets it.
+        assert!(ServerConfig::new("/tmp/x").durable.is_none());
+    }
+
+    #[cfg(feature = "durable")]
+    #[test]
+    fn durable_flags_set_the_config() {
+        use operon_durable::DurableStore;
+        assert!(dev_config(&["--no-durable"]).durable.is_none());
+        let durable = dev_config(&[
+            "--durable-listen",
+            "localhost:9001",
+            "--durable-store",
+            "sqlite:/tmp/d.db",
+            "--durable-push",
+            "--durable-debug",
+            "--durable-set",
+            "servers.server_sqlite.preload_limit=5",
+            "--durable-set",
+            "gateways.gateway_http.cors_allow_origins=[\"*\"]",
+        ])
+        .durable
+        .expect("on");
+        assert_eq!(durable.listen, "127.0.0.1:9001".parse().unwrap());
+        assert_eq!(
+            durable.store,
+            DurableStore::Sqlite {
+                path: PathBuf::from("/tmp/d.db")
+            }
+        );
+        assert!(durable.push && durable.debug);
+        assert_eq!(
+            durable.overrides,
+            vec![
+                (
+                    "servers.server_sqlite.preload_limit".to_string(),
+                    "5".to_string()
+                ),
+                (
+                    "gateways.gateway_http.cors_allow_origins".to_string(),
+                    "[\"*\"]".to_string()
+                ),
+            ]
+        );
+        // D138: only loopback.
+        for addr in ["0.0.0.0:8001", "192.168.1.5:8001", "example.com:8001"] {
+            let err = parse_error(&["--durable-listen", addr]);
+            assert!(err.contains("--durable-listen"), "{addr}: {err}");
+        }
+        let err = parse_error(&["--durable-listen", "0.0.0.0:8001"]);
+        assert!(
+            err.contains("durable listener must be loopback until authentication is configured"),
+            "{err}"
+        );
+        for flag in [
+            &["--durable-listen", "127.0.0.1:1"][..],
+            &["--durable-store", "sqlite:/tmp/d.db"],
+            &["--durable-push"],
+            &["--durable-set", "a.b=c"],
+            &["--durable-debug"],
+        ] {
+            let mut args = vec!["--no-durable"];
+            args.extend_from_slice(flag);
+            parse_error(&args);
+        }
+        parse_error(&["--durable-set", "no-equals"]);
+        parse_error(&["--durable-store", "redis://x"]);
+    }
+
+    /// `operon durable migrate --durable-store …` (D1 Task 4): a store is
+    /// required, and nothing else.
+    #[test]
+    fn durable_migrate_parses() {
+        let cli = Cli::try_parse_from([
+            "operon",
+            "durable",
+            "migrate",
+            "--durable-store",
+            "mysql://root@127.0.0.1:4000/loam_durable_default",
+        ])
+        .expect("parse");
+        let Command::Durable {
+            command: DurableCommand::Migrate { durable_store },
+        } = cli.command
+        else {
+            panic!("not durable migrate: {:?}", cli.command);
+        };
+        assert!(matches!(durable_store, DurableStoreArg::Mysql(_)));
+        assert!(Cli::try_parse_from(["operon", "durable", "migrate"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "operon",
+                "durable",
+                "migrate",
+                "--durable-store",
+                "sqlite:/tmp/d.db",
+                "--listen",
+                "127.0.0.1:1",
+            ])
+            .is_err()
+        );
+    }
+
+    /// The security fix of Task 4: no rendering of the parsed flags, and no
+    /// parse error, carries a MySQL password.
+    #[test]
+    fn durable_store_password_never_printed() {
+        let url = "mysql://loam:hunter22@tidb.internal:4000/loam_durable_default";
+        let cli = Cli::try_parse_from(["operon", "dev", "--durable-store", url]).expect("parse");
+        let debug = format!("{cli:?}");
+        assert!(!debug.contains("hunter22"), "{debug}");
+        assert!(debug.contains("tidb.internal:4000"), "{debug}");
+        let migrate = Cli::try_parse_from(["operon", "durable", "migrate", "--durable-store", url])
+            .expect("parse");
+        assert!(!format!("{migrate:?}").contains("hunter22"));
+        for bad in [
+            "mysql://loam:hunter22@tidb.internal:4000/d?ssl-mode=preferred",
+            "mysql://loam:hunter22@/d",
+        ] {
+            let err = Cli::try_parse_from(["operon", "dev", "--durable-store", bad]);
+            #[cfg(feature = "durable")]
+            {
+                let err = err.expect_err(bad).to_string();
+                assert!(!err.contains("hunter22"), "{err}");
+                assert!(err.contains("--durable-store"), "{err}");
+            }
+            #[cfg(not(feature = "durable"))]
+            let _ = err;
+        }
+        #[cfg(feature = "durable")]
+        {
+            let config = dev_config(&["--durable-store", url]);
+            let debug = format!("{config:?}");
+            assert!(!debug.contains("hunter22"), "{debug}");
+        }
+    }
+
+    /// `ssl-mode` on the URL, else TLS except on this machine (D1 Task 4).
+    #[cfg(feature = "durable")]
+    #[test]
+    fn durable_mysql_store_maps_tls() {
+        use operon_durable::{DurableStore, MysqlTls};
+        let tls = |url: &str| match dev_config(&["--durable-store", url])
+            .durable
+            .map(|d| d.store)
+        {
+            Some(DurableStore::Mysql { url: kept, tls }) => {
+                assert_eq!(kept, url);
+                tls
+            }
+            other => panic!("{url}: {other:?}"),
+        };
+        assert_eq!(
+            tls("mysql://loam:pw@tidb.internal:4000/d"),
+            MysqlTls::Required
+        );
+        assert_eq!(tls("mysql://root@127.0.0.1:4000/d"), MysqlTls::Disabled);
+        assert_eq!(tls("mysql://root@localhost:4000/d"), MysqlTls::Disabled);
+        assert_eq!(
+            tls("mysql://loam@tidb.internal:4000/d?ssl-mode=disabled"),
+            MysqlTls::Disabled
+        );
+        assert_eq!(
+            tls("mysql://root@127.0.0.1:4000/d?ssl-mode=required"),
+            MysqlTls::Required
+        );
+    }
+
+    /// A cluster node has no default durable store and refuses a SQLite one.
+    #[cfg(feature = "durable")]
+    #[test]
+    fn cluster_durable_needs_a_mysql_store() {
+        use operon_durable::DurableStore;
+        let config = cluster_config(&CLUSTER).expect("parse");
+        assert!(config.durable.is_none(), "no default store on a cluster");
+        config.validate().expect("valid");
+
+        let mut args = CLUSTER.to_vec();
+        args.extend(["--durable-store", "sqlite:/tmp/d.db"]);
+        let config = cluster_config(&args).expect("parse");
+        let err = config
+            .validate()
+            .expect_err("sqlite on a cluster")
+            .to_string();
+        assert!(
+            err.contains("the sqlite durable store is single-node; use --durable-store mysql://…"),
+            "{err}"
+        );
+
+        let mut args = CLUSTER.to_vec();
+        args.extend([
+            "--durable-store",
+            "mysql://root@127.0.0.1:4000/loam_durable_default",
+            "--durable-listen",
+            "127.0.0.1:9001",
+        ]);
+        let config = cluster_config(&args).expect("parse");
+        let durable = config.durable.clone().expect("a mysql store");
+        assert!(matches!(durable.store, DurableStore::Mysql { .. }));
+        assert_eq!(durable.listen, "127.0.0.1:9001".parse().unwrap());
+        config.validate().expect("valid");
     }
 }
