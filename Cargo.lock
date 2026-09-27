@@ -5644,9 +5644,11 @@ dependencies = [
  "operon-link",
  "operon-log",
  "operon-meta",
+ "operon-meta-tikv",
  "operon-qdrant",
  "operon-query",
  "operon-store",
+ "operon-tikv",
  "operon-worker",
  "proptest",
  "prost 0.14.4",
@@ -5940,6 +5942,7 @@ name = "operon-meta-tikv"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "fail 0.4.0",
  "futures",
  "operon-common",
  "operon-meta-conformance",

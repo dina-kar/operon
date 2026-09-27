@@ -20,6 +20,7 @@
 mod catalog;
 mod changes;
 mod gc;
+mod invariants;
 mod keys;
 mod leases;
 mod log;
@@ -36,7 +37,9 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use operon_common::meta::{ApplyError, MetaError, MetaResult};
-use operon_tikv::{Mode, Pair, Snap, Tikv, TikvConfig, TikvError, Txn, TxnError, TxnOptions};
+use operon_tikv::{
+    CommitMode, Mode, Pair, Snap, Tikv, TikvConfig, TikvError, Txn, TxnError, TxnOptions,
+};
 
 use crate::keys::IdKind;
 
@@ -59,6 +62,17 @@ const PESSIMISTIC_ATTEMPTS: u32 = 64;
 /// How often a read is retried after a conflict (a lock it met) or an error
 /// after which it certainly read nothing.
 const READ_ATTEMPTS: u32 = 4;
+
+/// How every metastore write commits: classic two-phase commit, not the
+/// handle's default async commit with 1PC (R1 Ruling 3's switch back, row
+/// T6-5). The pinned `tikv-client` resolves a reader's async-commit locks
+/// only through `CheckTxnStatus`, which never rolls back or commits an
+/// async-commit primary; so the locks of a write that failed after its
+/// prewrite (a crash, a lost connection) block every reader and writer of
+/// those keys until the cluster GC loop resolves them below the safe point,
+/// about ten minutes later. A two-phase commit's locks expire after their
+/// TTL (3 s for the metastore's sizes) and the next reader rolls them back.
+pub const COMMIT_MODE: CommitMode = CommitMode::TwoPc;
 
 /// How a [`TikvMeta`] reaches its cluster.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,21 +213,28 @@ impl TikvMeta {
             let first = self
                 .inner
                 .tikv
-                .run(TxnOptions::new("meta.id_block").with_token(), move |txn| {
-                    let key = key.clone();
-                    Box::pin(async move {
-                        let first = match txn.get(&key).await? {
-                            Some(v) => keys::decode_u64("id block", &v)
-                                .map_err(|e| TxnError::Fatal(e.to_string()))?,
-                            None => 1,
-                        };
-                        let end = first.checked_add(size).ok_or_else(|| {
-                            TxnError::Fatal("the id space is exhausted".to_string())
-                        })?;
-                        txn.put(&key, keys::encode_u64(end)).await?;
-                        Ok(first)
-                    })
-                })
+                .run(
+                    TxnOptions {
+                        commit_mode: Some(COMMIT_MODE),
+                        ..TxnOptions::new("meta.id_block")
+                    }
+                    .with_token(),
+                    move |txn| {
+                        let key = key.clone();
+                        Box::pin(async move {
+                            let first = match txn.get(&key).await? {
+                                Some(v) => keys::decode_u64("id block", &v)
+                                    .map_err(|e| TxnError::Fatal(e.to_string()))?,
+                                None => 1,
+                            };
+                            let end = first.checked_add(size).ok_or_else(|| {
+                                TxnError::Fatal("the id space is exhausted".to_string())
+                            })?;
+                            txn.put(&key, keys::encode_u64(end)).await?;
+                            Ok(first)
+                        })
+                    },
+                )
                 .await
                 .map_err(txn_error)?
                 .value;
@@ -268,6 +289,10 @@ impl TikvMeta {
                 max_attempts: PESSIMISTIC_ATTEMPTS,
                 ..TxnOptions::pessimistic(op)
             },
+        };
+        let options = TxnOptions {
+            commit_mode: Some(COMMIT_MODE),
+            ..options
         }
         .with_token();
         let mut unknown = false;
