@@ -11,11 +11,11 @@
 use std::collections::BTreeMap;
 
 use operon_common::meta::{
-    AliasAction, ApplyError, COLLECTION_KIND, Collection, CollectionHead, HotConfig, IndexEntry,
-    Link, LinkHead, LinkId, MAX_COLLECTION_NAME_LEN, MAX_KEY_LEN, MAX_NAME_LEN, MAX_PARTITIONS,
-    MetaError, MetaResult, Namespace, Pointer, Retention, Stream, TargetRef, WalClass,
-    collection_pk_prefix, collection_pointer_key, collection_prefix, implicit_name,
-    link_pointer_key,
+    AliasAction, AliasTargetAction, AliasTargets, ApplyError, COLLECTION_KIND, Collection,
+    CollectionHead, HotConfig, IndexEntry, Link, LinkHead, LinkId, MAX_ALIAS_TARGETS,
+    MAX_COLLECTION_NAME_LEN, MAX_KEY_LEN, MAX_NAME_LEN, MAX_PARTITIONS, MetaError, MetaResult,
+    NameTarget, Namespace, Pointer, Retention, Stream, TargetRef, WalClass, collection_pk_prefix,
+    collection_pointer_key, collection_prefix, implicit_name, link_pointer_key,
 };
 use operon_common::schema::{CollectionSchema, SchemaError};
 use operon_common::{CollectionId, NamespaceId, StreamId};
@@ -540,7 +540,7 @@ impl TikvMeta {
                         ));
                     }
                     let aliases_key = keys::aliases(ns);
-                    if load_aliases(txn, ns).await?.aliases.contains_key(&name) {
+                    if load_aliases(txn, ns).await?.contains(&name) {
                         return Ok(Err(ApplyError::NameTaken(name)));
                     }
                     txn.lock_keys([aliases_key]).await?;
@@ -621,10 +621,23 @@ impl TikvMeta {
                 let Some(collection) = load_collection(txn, id).await? else {
                     return Ok(Ok(None));
                 };
+                // Rule 3 of M1.5 Task 0a: the collection leaves every alias,
+                // and each changed alias goes to its canonical map.
                 let mut aliases = load_aliases(txn, ns).await?;
-                let before = aliases.aliases.len();
+                let before = aliases.clone();
                 aliases.aliases.retain(|_, target| *target != id);
-                if aliases.aliases.len() != before {
+                let changed: Vec<String> = aliases
+                    .targets
+                    .iter()
+                    .filter(|(_, t)| t.members.contains_key(&id))
+                    .map(|(alias, _)| alias.clone())
+                    .collect();
+                for alias in changed {
+                    let mut members = aliases.members(&alias);
+                    members.remove(&id);
+                    aliases.put(alias, members);
+                }
+                if aliases != before {
                     aliases.version += 1;
                     txn.put(&keys::aliases(ns), keys::encode(&aliases)).await?;
                 }
@@ -762,21 +775,174 @@ impl TikvMeta {
                     }
                 }
                 let mut map = load_aliases(txn, ns).await?;
-                let before = map.aliases.clone();
+                let before = map.clone();
                 for (alias, target) in changes {
-                    match target {
-                        Some(id) => map.aliases.insert(alias, id),
-                        None => map.aliases.remove(&alias),
-                    };
+                    // Either map may hold the alias (M1.5 Task 0a rule 3):
+                    // `Create` re-points it to exactly one collection,
+                    // `Delete` removes it.
+                    map.put(alias, target.map(|id| (id, None)).into_iter().collect());
                 }
                 // A collection created or dropped under a name this update
                 // read must conflict with it.
                 txn.lock_keys(read).await?;
-                if map.aliases != before {
+                if map != before {
                     map.version += 1;
                     txn.put(&keys::aliases(ns), keys::encode(&map)).await?;
                 }
                 Ok(Ok(()))
+            })
+        })
+        .await
+    }
+
+    /// M1.5 Task 0a rule 2: alias-target actions over a working copy of
+    /// each touched alias, checked, then applied at once (as
+    /// `operon-meta/src/state/collections.rs`).
+    pub(crate) async fn update_alias_targets_impl(
+        &self,
+        ns: NamespaceId,
+        actions: Vec<AliasTargetAction>,
+    ) -> MetaResult<()> {
+        self.write_plain("meta.update_alias_targets", move |txn| {
+            let actions = actions.clone();
+            Box::pin(async move {
+                if !namespace_exists(txn, ns).await? {
+                    return Ok(Err(ApplyError::NamespaceNotFound(ns)));
+                }
+                if !(1..=MAX_ALIAS_ACTIONS).contains(&actions.len()) {
+                    return Ok(Err(ApplyError::InvalidArgument(format!(
+                        "an alias update takes 1..={MAX_ALIAS_ACTIONS} actions, got {}",
+                        actions.len()
+                    ))));
+                }
+                let mut map = load_aliases(txn, ns).await?;
+                let mut working: BTreeMap<String, BTreeMap<CollectionId, Option<bool>>> =
+                    BTreeMap::new();
+                let mut read = Vec::new();
+                for action in actions {
+                    match action {
+                        AliasTargetAction::Add {
+                            alias,
+                            collection,
+                            is_write_index,
+                        } => {
+                            if let Err(e) = validate_name("alias", &alias)
+                                .and_then(|()| refuse_reserved(&alias))
+                            {
+                                return Ok(Err(e));
+                            }
+                            let alias_key = keys::collection_name(ns, &alias);
+                            if txn.get(&alias_key).await?.is_some() {
+                                return Ok(Err(ApplyError::NameTaken(alias)));
+                            }
+                            let target_key = keys::collection_name(ns, &collection);
+                            let Some(id) = load_id(txn, "collection name", &target_key).await?
+                            else {
+                                return Ok(Err(ApplyError::UnknownCollection(collection)));
+                            };
+                            read.push(alias_key);
+                            read.push(target_key);
+                            working
+                                .entry(alias)
+                                .or_insert_with_key(|a| map.members(a))
+                                .insert(CollectionId(id), is_write_index);
+                        }
+                        AliasTargetAction::Remove { alias, collection } => {
+                            let target_key = keys::collection_name(ns, &collection);
+                            let id = load_id(txn, "collection name", &target_key).await?;
+                            read.push(target_key);
+                            let members = working
+                                .entry(alias)
+                                .or_insert_with_key(|a| map.members(a));
+                            if let Some(id) = id {
+                                members.remove(&CollectionId(id));
+                            }
+                        }
+                        AliasTargetAction::RemoveAlias { alias } => {
+                            working
+                                .entry(alias)
+                                .or_insert_with_key(|a| map.members(a))
+                                .clear();
+                        }
+                    }
+                }
+                for (alias, members) in &working {
+                    if members.len() > MAX_ALIAS_TARGETS {
+                        return Ok(Err(ApplyError::InvalidArgument(format!(
+                            "alias [{alias}] would name {} collections; the limit is {MAX_ALIAS_TARGETS}",
+                            members.len()
+                        ))));
+                    }
+                    let mut writers = Vec::new();
+                    for (&id, _) in members.iter().filter(|(_, w)| **w == Some(true)) {
+                        if let Some(c) = load_collection(txn, id).await? {
+                            writers.push(c.name);
+                        }
+                    }
+                    if writers.len() > 1 {
+                        writers.sort_unstable();
+                        return Ok(Err(ApplyError::InvalidArgument(format!(
+                            "alias [{alias}] has more than one write index [{}]",
+                            writers.join(",")
+                        ))));
+                    }
+                }
+                let before = map.clone();
+                for (alias, members) in working {
+                    map.put(alias, members);
+                }
+                // A collection created or dropped under a name this update
+                // read must conflict with it.
+                txn.lock_keys(read).await?;
+                if map != before {
+                    map.version += 1;
+                    txn.put(&keys::aliases(ns), keys::encode(&map)).await?;
+                }
+                Ok(Ok(()))
+            })
+        })
+        .await
+    }
+
+    pub(crate) async fn alias_targets_impl(
+        &self,
+        ns: NamespaceId,
+    ) -> MetaResult<Vec<(String, AliasTargets)>> {
+        self.read(move |snap| {
+            Box::pin(async move { Ok(Ok(load_aliases(snap, ns).await?.all_targets())) })
+        })
+        .await
+    }
+
+    /// What `name` names in `ns`: a collection, or an alias with its member
+    /// records, from one snapshot; `None` if neither.
+    pub(crate) async fn resolve_name_impl(
+        &self,
+        ns: NamespaceId,
+        name: &str,
+    ) -> MetaResult<Option<NameTarget>> {
+        let name = name.to_string();
+        self.read(move |snap| {
+            let name = name.clone();
+            Box::pin(async move {
+                if let Some(found) = collection_by_name(snap, ns, &name).await? {
+                    return Ok(Ok(Some(NameTarget::Collection(found))));
+                }
+                let members = load_aliases(snap, ns).await?.members(&name);
+                if members.is_empty() {
+                    return Ok(Ok(None));
+                }
+                let targets = AliasTargets { members };
+                let mut records = Vec::with_capacity(targets.members.len());
+                for (&id, &w) in &targets.members {
+                    if let Some(c) = load_collection(snap, id).await? {
+                        records.push((c, w));
+                    }
+                }
+                Ok(Ok(Some(NameTarget::Alias {
+                    write_target: targets.write_target(),
+                    members: records,
+                })))
             })
         })
         .await
@@ -799,9 +965,13 @@ impl TikvMeta {
                 if let Some(found) = collection_by_name(snap, ns, &name).await? {
                     return Ok(Ok(Some(found)));
                 }
-                Ok(Ok(match load_aliases(snap, ns).await?.aliases.get(&name) {
-                    Some(&id) => load_collection(snap, id).await?,
-                    None => None,
+                // Through an alias with exactly one member; `None` for an
+                // alias with several (M1.5 Task 0a).
+                let members = load_aliases(snap, ns).await?.members(&name);
+                let mut ids = members.keys();
+                Ok(Ok(match (ids.next(), ids.next()) {
+                    (Some(&id), None) => load_collection(snap, id).await?,
+                    _ => None,
                 }))
             })
         })
@@ -846,11 +1016,15 @@ impl TikvMeta {
     ) -> MetaResult<Vec<(String, CollectionId)>> {
         self.read(move |snap| {
             Box::pin(async move {
-                Ok(Ok(load_aliases(snap, ns)
+                // One pair per member, by alias name and then collection id.
+                let mut pairs: Vec<(String, CollectionId)> = load_aliases(snap, ns)
                     .await?
-                    .aliases
+                    .all_targets()
                     .into_iter()
-                    .collect()))
+                    .flat_map(|(alias, t)| t.members.into_keys().map(move |id| (alias.clone(), id)))
+                    .collect();
+                pairs.sort_unstable();
+                Ok(Ok(pairs))
             })
         })
         .await

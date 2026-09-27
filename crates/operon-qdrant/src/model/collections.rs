@@ -12,6 +12,7 @@ pub struct CollectionsResponse {
     pub collections: Vec<CollectionDescription>,
 }
 
+/// One collection of `GET /collections`, by name.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CollectionDescription {
     pub name: String,
@@ -115,6 +116,7 @@ pub enum ModifierName {
     Idf,
 }
 
+/// `hnsw_config`: each given key overlays Qdrant's defaults.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 pub struct HnswConfigDiff {
     #[serde(default)]
@@ -142,6 +144,7 @@ pub enum QuantizationConfig {
     Other(Value),
 }
 
+/// Scalar quantization (`int8` only).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct ScalarConfig {
     /// `"int8"`.
@@ -152,6 +155,7 @@ pub struct ScalarConfig {
     pub always_ram: Option<bool>,
 }
 
+/// Product quantization.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct ProductConfig {
     /// `"x4"`, `"x8"`, `"x16"`, `"x32"` or `"x64"`.
@@ -160,6 +164,7 @@ pub struct ProductConfig {
     pub always_ram: Option<bool>,
 }
 
+/// Binary quantization.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct BinaryConfig {
     #[serde(default)]
@@ -176,6 +181,7 @@ pub struct ChangeAliases {
     pub actions: Vec<AliasOperation>,
 }
 
+/// One action of `POST /collections/aliases`.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub enum AliasOperation {
@@ -184,17 +190,20 @@ pub enum AliasOperation {
     Rename { rename_alias: RenameAlias },
 }
 
+/// `create_alias`: `alias_name` names `collection_name`.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct CreateAlias {
     pub collection_name: String,
     pub alias_name: String,
 }
 
+/// `delete_alias`.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct DeleteAlias {
     pub alias_name: String,
 }
 
+/// `rename_alias`.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct RenameAlias {
     pub old_alias_name: String,
@@ -207,6 +216,7 @@ pub struct AliasesResponse {
     pub aliases: Vec<AliasDescription>,
 }
 
+/// One `(alias, collection)` pair.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct AliasDescription {
     pub alias_name: String,
@@ -217,4 +227,22 @@ pub struct AliasDescription {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct CollectionExistence {
     pub exists: bool,
+}
+
+/// `PUT /collections/{c}/index`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct CreateFieldIndex {
+    pub field_name: String,
+    /// Required; `None` is `field_schema is required`.
+    #[serde(default)]
+    pub field_schema: Option<PayloadFieldSchema>,
+}
+
+/// A payload index type: its name (`"keyword"`, …), or its params
+/// (`{"type": "text", …}`).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum PayloadFieldSchema {
+    Name(String),
+    Params(Map<String, Value>),
 }

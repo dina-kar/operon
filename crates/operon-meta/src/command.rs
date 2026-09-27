@@ -1,8 +1,8 @@
 use std::ops::Range;
 
 use operon_common::meta::{
-    AliasAction, Fence, Freshness, HotConfig, LeaseGrant, LinkId, Retention, TargetRef, WalChunk,
-    WalClass,
+    AliasAction, AliasTargetAction, Fence, Freshness, HotConfig, LeaseGrant, LinkId, Retention,
+    TargetRef, WalChunk, WalClass,
 };
 use operon_common::schema::CollectionSchema;
 use operon_common::{CollectionId, NamespaceId, StreamId};
@@ -261,6 +261,16 @@ pub enum Command {
         collection: CollectionId,
         hot: HotConfig,
     },
+    /// Applies 1..=100 alias-target actions in order, atomically: if any
+    /// fails, nothing changes (M1.5 Task 0a, Ruling 22: appended last). An
+    /// alias may name several collections, each with an `is_write_index`
+    /// setting, at most one of them `Some(true)`. Every action is
+    /// idempotent, so a retry after a lost acknowledgement succeeds with the
+    /// same state. Replies [`Reply::AliasesUpdated`].
+    UpdateAliasTargets {
+        namespace: NamespaceId,
+        actions: Vec<AliasTargetAction>,
+    },
 }
 
 /// The result of successfully applying a [`Command`].
@@ -380,6 +390,11 @@ impl std::fmt::Display for Command {
                 f,
                 "SetCollectionHot({collection}, vectors {}, text {}, fragments {})",
                 hot.vectors, hot.text, hot.fragments
+            ),
+            Command::UpdateAliasTargets { namespace, actions } => write!(
+                f,
+                "UpdateAliasTargets({namespace}, {} actions)",
+                actions.len()
             ),
         }
     }
