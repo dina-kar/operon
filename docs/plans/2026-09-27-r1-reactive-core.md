@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists the interfaces it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (names, paths, formats, constants), use them verbatim. The code is not pre-written in this plan (M0.3 Ruling 1).
 
-> **Status: Planned** (2026-09-27). **Amended 2026-09-27 with the TiKV feasibility spike** (playground v8.5.8, `tikv-client` 0.4.0; design §20 notes marked *(spike)*): Task 1 has the exact playground command and configs; async commit with 1PC is the default (Ruling 3); the runner restarts on `PessimisticRetry` and supervises the TSO stream (Task 2); Q33 is verified for the binaries. Track R, beside M1 (D127). Branches `r1-t<N>`, stacked; PRs target `main`. R1 tasks interleave with M1 tasks on the one-build machine: never start an R1 build while an M1 build runs, and never run the TiKV playground during a build.
+> **Status: Planned** (2026-09-27). **Amended 2026-09-27 with the TiKV feasibility spike** (playground v8.5.8, `tikv-client` 0.4.0; design §20 notes marked *(spike)*): Task 1 has the exact playground command and configs; async commit with 1PC is the default (Ruling 3); the runner restarts on `PessimisticRetry` and supervises the TSO stream (Task 2); Q33 is verified for the binaries. **Task 0 done 2026-09-27** ([`r1-dependency-spike.md`](r1-dependency-spike.md)): rows R1–R19 at the end amend the task text, and where a row says "amended", the task text already carries the change (Q32: no keyspace-level GC on v8.5.8, so Task 3 runs cluster-wide GC; `tikv-client` is a git pin). Track R, beside M1 (D127). Branches `r1-t<N>`, stacked; PRs target `main`. R1 tasks interleave with M1 tasks on the one-build machine: never start an R1 build while an M1 build runs, and never run the TiKV playground during a build.
 
 **Goal:** Ship the first slice of design §20 (D116–D131):
-- `operon-tikv`, the TiKV client layer: config and keyspace bootstrap, the TSO clock, a transaction runner with error classification, retries, commit tokens and a fault hook, the order-preserving tuple codec, the keyspace MVCC GC loop, the test harness;
-- `operon-meta-tikv`, `impl MetaStore` over TiKV, passing the 49-case conformance suite with its linearizability histories and a TiKV fault matrix, selectable in `operon dev` and `operon standalone` (D124);
+- `operon-tikv`, the TiKV client layer: config and keyspace bootstrap, the TSO clock, a transaction runner with error classification, retries, commit tokens and a fault hook, the order-preserving tuple codec, the cluster MVCC GC loop (keyspace-level GC does not exist on v8.5.8, row R6), the test harness;
+- `operon-meta-tikv`, `impl MetaStore` over TiKV, passing the 53-case conformance suite with its linearizability histories and a TiKV fault matrix, selectable in `operon dev` and `operon standalone` (D124);
 - `operon-live`, one Loam Live app in one keyspace: documents, tables, indexes, the commit journal, `LiveTxn` with read sets, built-in and QuickJS queries and mutations, reactive subscriptions, and the `loam.live.v1` sync API over connect-rust (`Watch`, `ModifyQuerySet`, `Query`, `Mutate`, `Deploy`), bound to 127.0.0.1:7710 (D117–D121);
 - `@operon/live`, the generated TypeScript client with a reactive layer;
 - a dev playground with TiKV on API v2, a Live keyspace, a metastore keyspace and a keyspace-mode TiDB for MySQL clients (D123);
@@ -22,9 +22,9 @@
 **Tech Stack:**
 - Rust 1.97.1, edition 2024, workspace lints.
 - New dependencies (Task 0 verifies versions, licenses and that they build together in a throwaway crate, as the M1 dependency spike did):
-  - `tikv-client` 0.4 (Apache-2.0): crates.io 0.4.0 or a git pin of `tikv/client-rust` (the clone is at `ab4be1c`, 2026-09-03), whichever has `Config::with_keyspace`. The spike used crates.io 0.4.0, which has it and brings `tonic` 0.10 and `prost` 0.12 (master: 0.12 and 0.13) beside the workspace's 0.14. The generated `cdcpb`/`pdpb` code in `src/generated/` is private: Loam copies it from the pinned version (Apache-2.0, noted in `NOTICE`) until the upstream PR that exposes it merges.
-  - `connectrpc` 0.9.1 and `connectrpc-build` 0.9 (Apache-2.0), features `axum`; `buffa` 0.9.2 (Apache-2.0).
-  - `rquickjs` 0.14.0 (MIT), features chosen in Task 0 (`futures`, `loader`, `macro` expected).
+  - `tikv-client` (Apache-2.0) **at the git pin `https://github.com/tikv/client-rust` rev `ab4be1c2cdd58d4e593202991fb520221c83bdfd`** (2026-09-03, `version = "0.4.0"`), `default-features = false` (amended, row R4): crates.io 0.4.0 fails `cargo deny`'s advisories through its `tonic` 0.10 and misses unknown outcomes of async-commit and 1PC prewrites. The pin brings `tonic` 0.12 and `prost` 0.13 beside the workspace's 0.14; `deny.toml` gains `allow-git = ["https://github.com/tikv/client-rust"]` in Task 1. The generated `pdpb` code is private: Task 3 generates its own stubs from vendored kvproto protos (Apache-2.0, noted in `NOTICE`) until the upstream PR that exposes it merges.
+  - `connectrpc` 0.9.1 (features `axum`, plus `client` as a dev-dependency for Task 12's tests) and `connectrpc-build` 0.9 (Apache-2.0); `buffa` 0.9.2 (Apache-2.0).
+  - `rquickjs` 0.14.0 (MIT), features `futures`, `loader`, `macro`, `array-buffer` (amended, row R13).
   - Workspace crates reused: `tonic` 0.14 and `tonic-prost-build` 0.14 (the PD GC-state stubs), `reqwest` 0.12 (PD HTTP API), `proptest` 1, `rand` 0.9, `rand_chacha` 0.9, `axum` 0.8, `tokio`, `async-trait`, `tracing`, `thiserror`.
 - TypeScript (versions checked in Task 0): `@bufbuild/protobuf` 2, `@connectrpc/connect` 2, `@connectrpc/connect-web` 2 (runtime); `@bufbuild/protoc-gen-es` 2, `@bufbuild/buf` 1, `@connectrpc/connect-node` 2 (dev); plus M1.6's toolchain (`typescript` ~7.0.2, `@biomejs/biome` ~2.5.14, `pnpm` 11.13.0, Node ≥ 22), all Apache-2.0 or MIT.
 - Cluster: `tiup` 1.17.1 (Apache-2.0) with `tiup playground v8.5.8` (PD, TiKV, TiDB, all Apache-2.0; verified in the spike). Local installs use the tiup installer script; CI installs it the same way. `mysql` client (MariaDB client package) for the SQL smoke test.
@@ -66,7 +66,7 @@ Same as the M1 overview §8, plus:
 
 ## Carried in
 
-None from M0 or M1. From design §20: Q32 is answered in Task 0 before any other task starts. Q33 is verified for the v8.5.8 binaries by the spike; Task 0 re-confirms it on the pinned release.
+None from M0 or M1. From design §20: Q32 is answered by Task 0 (no: PD and TiKV v8.5.8 have no keyspace-level GC, so Loam runs cluster-wide GC; rows R6–R7). Q33 is re-confirmed on the pinned release (row R8).
 
 ## Review Focus
 
@@ -90,7 +90,7 @@ proto/loam/live/v1/{value.proto,live.proto,journal.proto}
 buf.yaml  buf.gen.yaml
 crates/operon-tikv/                          # new
   Cargo.toml  build.rs
-  proto/kvproto/{pdpb.proto,…}               # the subset the GC-state RPCs need, from kvproto b41e863
+  proto/kvproto/{pdpb.proto,…}               # the subset the cluster GC RPCs need, from kvproto release-8.5 07aa8c6 (R5)
   src/{lib.rs,config.rs,keyspace.rs,tso.rs,runner.rs,faults.rs,token.rs,codec.rs,gc.rs,testing.rs}
   tests/{runner.rs,codec.rs,gc.rs,keyspace.rs}
 crates/operon-meta-tikv/                     # new
@@ -246,45 +246,52 @@ pub mod tuple { pub enum Elem<'a> { Null, I64(i64), F64(f64), Bool(bool), Str(&'
 ```
 
 **Semantics:**
-1. **Classification:** `WriteConflict` (optimistic, and pessimistic `PessimisticRetry`, which the client does not retry itself) and `KeyIsLocked` after the client's own backoff → `Conflict`, and the runner restarts the whole transaction at a new start timestamp; region errors, TSO unavailable, `ServerIsBusy` and any error before prewrite → `NotApplied`; an error or timeout after the primary's prewrite succeeded and before commit returned → `Undetermined`; everything else → `Fatal`. Task 0 check 6 fixes the exact mapping.
+1. **Classification:** `WriteConflict` (optimistic, and pessimistic `PessimisticRetry`, which the client does not retry itself) and `KeyIsLocked` after the client's own backoff → `Conflict`, and the runner restarts the whole transaction at a new start timestamp; region errors, TSO unavailable, `ServerIsBusy` and any error before prewrite → `NotApplied`; an error or timeout after the primary's prewrite succeeded and before commit returned → `Undetermined`; everything else → `Fatal`. The exact mapping for the pinned client is row R9 (amended): `Error::UndeterminedError` is the only `Undetermined` source besides a commit future the runner drops at its deadline.
 2. **Undetermined resolution:** with a token, read `t/<token>` at a fresh timestamp (TiKV resolves the lock or rolls it back); present → success with `earlier_unknown = true`; absent → `NotApplied`. Without a token, return `Undetermined`.
 3. Token keys carry `expires_ms = now + 30 min`; a sweep in Task 3's GC loop deletes expired tokens.
 4. **Commit mode.** `TxnOptions` gains `commit_mode: CommitMode { Async1pc, TwoPc }`, from config and defaulting to `Async1pc` (Ruling 3). It maps to `use_async_commit()` + `try_one_pc()`.
 5. **TSO supervisor.** `Tikv` holds the `TransactionClient` behind a `std::sync::RwLock<Arc<_>>` (no new dependency). On `TimestampRequest channel is closed`, or on three consecutive TSO failures, it rebuilds the client (with backoff, one rebuild at a time) and retries the operation as `NotApplied`. The rebuild count is a metric.
+5a. **Scan paging** (amended, row R10). A TiKV response over 4 MiB fails with `OutOfRange` (gRPC's decoding limit). `Txn::scan`, `Snap::scan` and `batch_get` page internally: 256 keys per request, halved on `OutOfRange` down to 1, and doubled back after a success; a caller's `limit` is the total.
+5b. **Reads below the GC safe point are refused** (amended, row R7). TiKV serves them without an error, returning versions GC may already have dropped. `Tikv::snapshot(at)` and `Txn` reads fail with `TxnError::Fatal("read below the GC safe point")` (`TikvError::GcSafePoint { at, safe_point }` from `Tikv`) when `at` is older than `now − (gc life_time − 1 min)` and no GC barrier covers it.
 6. **Error scrubbing.** Keys in errors are shown with the keyspace prefix and root removed, and truncated to 64 bytes.
 7. The tuple codec implements §20 §4.3's table exactly: tags, escaping, terminators, float transform, NaN last, `-0.0 == 0.0`.
 
 **Tests:**
-- `tests/runner.rs`: `conflicting_writers_both_finish_one_retries`; `pessimistic_lock_queues_second_writer`; `undetermined_commit_resolves_by_token` (fault `LoseAck` at `AfterCommit`); `refused_before_prewrite_is_not_applied`; `deadline_stops_retries`; `faults_fire_per_op_and_attempt`; `pessimistic_retry_restarts_the_transaction` (two `get_for_update` holders: the loser restarts and both finish); `tso_stream_loss_rebuilds_the_client` (a test hook closes the TSO stream; the next `run` succeeds after a rebuild); `commit_mode_two_pc_and_async_1pc_both_commit`.
+- `tests/runner.rs`: `conflicting_writers_both_finish_one_retries`; `pessimistic_lock_queues_second_writer`; `undetermined_commit_resolves_by_token` (fault `LoseAck` at `AfterCommit`); `refused_before_prewrite_is_not_applied`; `deadline_stops_retries`; `faults_fire_per_op_and_attempt`; `pessimistic_retry_restarts_the_transaction` (two `get_for_update` holders: the loser restarts and both finish); `tso_stream_loss_rebuilds_the_client` (a test hook closes the TSO stream; the next `run` succeeds after a rebuild); `commit_mode_two_pc_and_async_1pc_both_commit`; `scan_pages_stay_under_the_grpc_limit` (2 000 values of 64 KiB scanned in one call); `snapshot_below_the_safe_window_is_refused` (amended).
 - `tests/codec.rs`: `tuple_order_matches_reference` (proptest: `encode(a) < encode(b)` iff `cmp_ref(a, b) == Less`, over nested arrays, strings with `0x00`, NaN, ±0, i64 extremes); `decode_inverts_encode`; `successor_bounds_every_extension`.
 
 **Commit:** `tikv: add the transaction runner with retries, commit tokens and fault hooks`; `tikv: add the order-preserving tuple codec`.
 
-### Task 3: The keyspace MVCC GC loop
+### Task 3: The cluster MVCC GC loop
+
+Amended by rows R5–R7: PD v8.5.8 has no keyspace GC-state RPCs and TiKV v8.5.8 reads only the cluster safe point (Q32), so Loam is the cluster's GC worker, doing what TiDB's GC worker does, for every keyspace. No TiDB without `keyspace-name` may run on a Loam cluster (it would be a second GC worker).
 
 **Files:** `crates/operon-tikv/{build.rs,proto/kvproto/*.proto,src/gc.rs}`, `NOTICE`, `crates/operon-tikv/tests/gc.rs`.
 
 **Produces:**
 
 ```rust
-pub struct GcConfig { pub life_time: Duration /* 10 min */, pub interval: Duration /* 1 min */, pub lease_key: Vec<u8> }
+pub struct GcConfig { pub life_time: Duration /* 10 min */, pub interval: Duration /* 1 min */, pub lease_key: Vec<u8> /* e/cluster/gc in loam_meta */ }
 pub struct GcLoop;
 impl GcLoop {
-    pub fn spawn(tikv: Tikv, config: GcConfig, shutdown: CancellationToken) -> GcHandle;
-    pub async fn run_once(&self) -> Result<GcReport, TikvError>;   // resolve locks < target, advance txn and GC safe points
+    pub fn spawn(tikv: Tikv, config: GcConfig, shutdown: CancellationToken) -> GcHandle;   // tikv: a handle on loam_meta
+    pub async fn run_once(&self) -> Result<GcReport, TikvError>;   // service safe point, resolve locks in every keyspace, UpdateGCSafePoint
 }
-pub struct GcReport { pub target: Timestamp, pub locks_resolved: u64, pub tokens_swept: u64, pub barrier_held_at: Option<Timestamp> }
-pub struct GcBarrier;   // set_barrier(id, ts, ttl), delete_barrier(id): holds GC below ts for open snapshots
+pub struct GcReport { pub target: Timestamp, pub safe_point: Timestamp, pub keyspaces: u32, pub locks_resolved: u64,
+                      pub tokens_swept: u64, pub held_by: Option<String> /* the service safe point that held it back */ }
+pub struct GcBarrier;   // set(service_id, ts, ttl), delete(service_id): a PD service safe point; holds GC below ts
+impl Tikv { pub async fn gc_safe_point(&self) -> Result<Timestamp, TikvError>; }   // GetGCSafePoint, cached ≤ 10 s
 ```
 
 **Semantics:**
-1. The vendored protos are the `pdpb.proto` subset and its imports from kvproto `b41e863` (the revision `client-rust` vendors), unchanged; `NOTICE` lists them as Apache-2.0 files from pingcap/kvproto. Stubs are generated with the workspace's `tonic-prost-build` 0.14.
-2. Each run takes a lease (`e/cluster/gc` under the keyspace root, epoch-fenced), computes `target = now − life_time`, lowered to the oldest barrier, resolves locks below it with `TransactionClient::cleanup_locks` on the keyspace's range, then calls `AdvanceTxnSafePoint` and `AdvanceGCSafePoint` with the keyspace scope. It also sweeps expired commit tokens.
-3. If Task 0 check 3 selected the `unified` fallback, `run_once` only resolves locks and sets a GC barrier for open snapshots; the playground and deployment run one TiDB without `keyspace-name` as the GC worker.
+1. The vendored protos are the `pdpb.proto` subset (`GetMembers`, `GetGCSafePoint`, `UpdateGCSafePoint`, `UpdateServiceGCSafePoint`) and its imports from kvproto `release-8.5` at `07aa8c6a46fab0a4cd577119c249c9c8e718c553` (the revision TiKV v8.5.8 builds with), unchanged; `NOTICE` lists them as Apache-2.0 files from pingcap/kvproto. Stubs are generated with the workspace's `tonic-prost-build` 0.14. The GC-state RPCs of PD master (`AdvanceTxnSafePoint`, `AdvanceGCSafePoint`, `SetGCBarrier`, `GetGCState`) answer `Unimplemented` on v8.5.8 and are not used.
+2. One loop per cluster: each run takes the lease `e/cluster/gc` in the `loam_meta` keyspace (epoch-fenced), computes `target = now − life_time`, calls `UpdateServiceGCSafePoint("gc_worker", ttl = i64::MAX, target)` and sets `safe_point = min(target, min_safe_point)` (the minimum covers every service safe point: Loam's barriers, BR, TiCDC). It lists the keyspaces through `GET /pd/api/v2/keyspaces`, runs `cleanup_locks(.., safe_point)` with a keyspace-scoped client for each enabled keyspace (TiDB's keyspaces too: a keyspace-mode TiDB resolves no locks, TiDB `gc_worker.go:386-389` at v8.5.8), then calls `UpdateGCSafePoint(safe_point)`. It also sweeps expired commit tokens in the keyspaces Loam owns.
+3. `GcBarrier::set` is `UpdateServiceGCSafePoint(service_id, ttl, ts)` with `service_id = "loam/<purpose>/<id>"`; `delete` sends `ttl = 0`. PD drops a barrier whose TTL expires.
+4. TiKV drops versions below the safe point only when RocksDB compacts (`gc.enable-compaction-filter = true`, the default), and serves reads below it without an error (row R7), so correctness rests on Task 2's read refusal, not on physical removal.
 
-**Tests** (`tests/gc.rs`): `old_versions_unreadable_after_gc` (a read at an old timestamp fails with the GC error); `barrier_holds_safe_point`; `only_one_loop_runs_per_keyspace` (two loops, one lease); `expired_tokens_are_swept`.
+**Tests** (`tests/gc.rs`): `safe_point_advances_cluster_wide` (after `run_once`, `GetGCSafePoint` equals the report's `safe_point`, and TiKV's `tikv_gcworker_autogc_safe_point` on the status port reaches it within 30 s); `old_versions_dropped_after_gc` (nightly only: turns `gc.enable-compaction-filter` off through TiKV's `POST /config`, then a read at an old timestamp no longer sees the overwritten value; turns it back on); `barrier_holds_safe_point`; `only_one_loop_runs_per_cluster` (two loops, one lease); `locks_below_the_safe_point_are_resolved_in_every_keyspace`; `expired_tokens_are_swept`.
 
-**Commit:** `tikv: advance keyspace GC safe points through PD's GC-state API`.
+**Commit:** `tikv: run cluster MVCC GC through PD's service safe points`.
 
 ### Task 4: `operon-meta-tikv` (1/2): catalog, leases, pointers, clock
 
@@ -301,12 +308,12 @@ impl TikvMeta { pub async fn open(config: TikvMetaConfig) -> Result<Self, MetaEr
 
 **Semantics:**
 1. Keys exactly as §20 §11.2, under the root prefix.
-2. `clock_ms` and `now_ms` return the TSO physical time; lease deadlines compare against the transaction's start timestamp's physical time.
+2. `clock_ms` returns the physical time of a fresh TSO timestamp. `now_ms` is synchronous in the trait, so it cannot fetch one (amended, row R2): it returns `max(previous now_ms, physical(latest timestamp this handle obtained) + elapsed since)`, which is monotonic and never behind the TSO. Stamps written inside a transaction use its start timestamp's physical time; lease deadlines compare against it too.
 3. Creates follow the trait's retry-safe rules: a create that finds its name record returns the existing id; ids come from per-node blocks of `id_block`.
 4. `cas_pointer` checks the fence's lease epoch, the collection's `live` state and the new manifest path's `gc_claim` in the same transaction (§20 §11.3).
 5. Methods of Task 5 return `MetaError::Unavailable("not implemented in R1 Task 4")` until then.
 
-**Tests** (`tests/conformance.rs`): `metastore_conformance!` over `TikvBackend` (one `TikvMeta` per case on a random root, `clients` = 3 handles on the same root, `faults` = the `FaultPlan` adapter), restricted to the catalog, lease, pointer and collection cases (`only = [...]` if the macro has it; otherwise Task 4 adds that form to `operon-meta-conformance`, a test-only change). Plus `clock_is_tso_physical`, `id_blocks_leave_gaps_but_never_repeat`.
+**Tests** (`tests/conformance.rs`): `metastore_conformance!` over `TikvBackend` (one `TikvMeta` per case on a random root, `clients` = 3 handles on the same root, `faults` = the `FaultPlan` adapter), restricted to the cases whose methods are all in Task 4's set (row R3: the macro has no `only` form, so Task 4 adds `metastore_conformance!(backend; cases = [..])` to `operon-meta-conformance`, a test-only change, amended). Task 4's methods are the clock and readiness, the catalog (including `links_with_pointers`), leases (including `leases_with_prefix`), pointers and collections (including `set_collection_hot` and `collection_hot`); `watch_changes` returns a watch that wakes every `poll` (spurious wake-ups are allowed) until Task 5. Plus `clock_is_tso_physical`, `id_blocks_leave_gaps_but_never_repeat`.
 
 **Commit:** `meta: add the TiKV metastore catalog, leases, pointers and clock`.
 
@@ -322,7 +329,7 @@ impl TikvMeta { pub async fn open(config: TikvMetaConfig) -> Result<Self, MetaEr
 3. `watch_changes`: per-scope counters `v/…` bumped by catalog writes (not by `commit_wal`, D63) plus in-process wake on the handle's own writes and a 100 ms poll; `commit_wal` wakes this handle's offset watchers directly.
 4. GC reads scan `r/` shards and read `o/` rows; `forget_objects` checks and clears claims in one transaction per batch.
 
-**Tests:** the full `metastore_conformance!` suite (all 49 cases, linearizability histories included), plus `commit_wal_is_atomic_across_partitions` (one group: a crash fault leaves all or nothing), `oversized_commit_wal_commits_per_group_and_retry_completes` (a call over one group, fault `LoseAck` after the first group: the retry commits only the rest, no offset assigned twice), `one_stream_never_spans_groups`, `hot_head_commits_queue_without_abort_loops` (16 concurrent writers to one partition, every commit succeeds, offsets dense).
+**Tests:** the full `metastore_conformance!` suite (all 53 cases, linearizability histories included; amended, row R3), plus `commit_wal_is_atomic_across_partitions` (one group: a crash fault leaves all or nothing), `oversized_commit_wal_commits_per_group_and_retry_completes` (a call over one group, fault `LoseAck` after the first group: the retry commits only the rest, no offset assigned twice), `one_stream_never_spans_groups`, `hot_head_commits_queue_without_abort_loops` (16 concurrent writers to one partition, every commit succeeds, offsets dense).
 
 **Commit:** `meta: add the TiKV metastore log, GC and change-feed methods`.
 
@@ -334,8 +341,10 @@ impl TikvMeta { pub async fn open(config: TikvMetaConfig) -> Result<Self, MetaEr
 
 ```rust
 // operon: ServerConfig gains
-pub enum MetaBackend { Raft(/* as built */), #[cfg(feature = "meta-tikv")] Tikv(operon_meta_tikv::TikvMetaConfig) }
-// CLI (dev, standalone): --meta tikv://<pd-host:port>[,<pd…>]/<keyspace>   (default: the embedded openraft store)
+pub enum MetaBackend { Raft /* default: the as-built MetaNode + MetaClient */, #[cfg(feature = "meta-tikv")] Tikv(operon_meta_tikv::TikvMetaConfig) }
+pub meta: MetaBackend,                       // ServerConfig field (amended, row R16)
+// Server: node: Option<MetaNode>, meta: Option<MetaClient>; Server::meta() -> Option<&MetaClient> (tests/it/http.rs updated)
+// CLI (dev, standalone only; `operon cluster` refuses it): --meta tikv://<pd-host:port>[,<pd…>]/<keyspace>   (default: the embedded openraft store)
 ```
 
 **Semantics:**
@@ -468,7 +477,7 @@ impl Runner {
 **Produces:**
 
 ```rust
-pub struct ReadSetIndex;   // per (table, index): interval index of KeyRange → SubId; hash map of point keys → SubId
+pub struct ReadSetIndex;   // per (table, index): a hand-written augmented interval tree over byte-string KeyRanges → SubId, with incremental insert and remove (row R14); hash map of point keys → SubId
 impl ReadSetIndex { pub fn insert(&mut self, id: SubId, rs: &ReadSet); pub fn remove(&mut self, id: SubId);
                     pub fn stab(&self, w: &WriteRecord, out: &mut HashSet<SubId>); }
 pub struct SubKey { pub function: String, pub args_digest: [u8; 32] }   // identity joins it in R3
@@ -611,7 +620,7 @@ One PR per group, stacked in order; each PR builds and passes CI on its own. The
 | A | 0 | R1 (1/17): dependency spike and cluster facts |
 | B | 1 | R1 (2/17): dev playground and the TiKV client skeleton |
 | C | 2 | R1 (3/17): transaction runner, commit tokens, faults, tuple codec |
-| D | 3 | R1 (4/17): keyspace GC loop |
+| D | 3 | R1 (4/17): cluster GC loop |
 | E | 4 | R1 (5/17): TiKV metastore catalog, leases, pointers, clock |
 | F | 5 | R1 (6/17): TiKV metastore log, GC and changes |
 | G | 6 | R1 (7/17): TiKV metastore fault matrix and `--meta tikv://` |
@@ -628,8 +637,44 @@ One PR per group, stacked in order; each PR builds and passes CI on its own. The
 
 ## Rulings made during execution
 
+### Task 0: reconciliation with the as-built code and the cluster (2026-09-27)
+
+Checked against `main` at `ca50a9f` (M1.2a merged, M1.3 merged, M1.4 through Task 3): `crates/operon-common/src/meta/`, `crates/operon-meta-conformance/`, `crates/operon-meta/tests/it/conformance*.rs` and `crates/operon/src/{server.rs,main.rs}`. Also checked: a throwaway workspace crate built with `tikv-client`, `connectrpc`, `buffa` and `rquickjs`, and `tiup playground v8.5.8` runs with `--tag loam-t0 --port-offset 17000`. Commands, versions and raw results are in [`r1-dependency-spike.md`](r1-dependency-spike.md). These rows amend the task text; where a row says "amended", the task text above already carries the change.
+
+| # | Checked | As built / found | Ruling |
+|---|---|---|---|
+| R1 | Consumes: `MetaStore`, `Consistency`, `Tracked` | `pub trait MetaStore: Send + Sync + fmt::Debug + 'static` (`operon-common/src/meta/store.rs:150`). It has 3 synchronous methods (`now_ms`, `watch_changes -> MetaChanges`, `is_ready`) and 48 async ones. Only `commit_wal`, `swap_segment` and `cas_pointer` return `Tracked<T>` (`result`, `earlier_unknown`); the rest return `MetaResult<T>`. `Consistency { Linearizable, Local }` matches. The change feed is `MetaChanges` over a backend's `ChangeWait` (spurious wake-ups allowed; `MetaStopped` once stopped). Errors are `MetaError { Rejected(ApplyError), NotLeader, Timeout, Unavailable, ClockSkew, Storage, Config, UnexpectedReply }` with 20 `ApplyError` variants. Beyond the plan's list, the trait has `links_with_pointers`, `leases_with_prefix`, `collection_heads`, `set_collection_hot` and `collection_hot` (M1.3) | Tasks 4–5 implement the trait exactly as built. Task 4 takes the clock and readiness, the catalog, leases, pointers and collections (hot configuration included); Task 5 takes the rest (amended). An unknown outcome maps to `Tracked.earlier_unknown` on the three `Tracked` methods; on the others, the retry-safe rules of each method's docs apply (a create that finds its name record returns `NamespaceExists` and friends with the existing id) |
+| R2 | Task 4 semantics 2 (`now_ms` = TSO physical) | `now_ms` is synchronous (`store.rs:155`), so it cannot fetch a TSO timestamp | `now_ms` = `max(previous, physical(latest TSO timestamp the handle obtained) + elapsed since)`, which is monotonic and never behind the TSO; in-transaction stamps use the start timestamp; `clock_ms` fetches a fresh timestamp (amended). `commit_wal`'s `ClockSkew` check compares `created_at_ms` against the start timestamp's physical time |
+| R3 | Consumes: the conformance crate | `Instance { clients, faults, guard }` and `Backend::start` match. `Faults` has `lose_next_ack(client)`, `disturb(seed)` **and `heal()`**. `lose_next_ack`'s contract is "the next successful write through `clients[client]` reports an unknown outcome, and the implementation retries it". There are **53 cases**, not 49 (M1.3 added the hot cases and `leases_with_prefix_lists_only_that_prefix`). `metastore_conformance!($backend)` has no `only` form, and cases are generated from one list (`for_each_case!`) | Task 5 runs all 53 (amended). Task 4 adds a test-only macro arm `metastore_conformance!($backend; cases = [a, b, …])` expanding `__case_tests` over the given names (a wrong name fails to compile, because it calls `suite::$case`), and lists the cases whose methods are all in Task 4's set (amended). The TiKV `Faults` adapter turns `lose_next_ack(i)` into a one-shot `FaultPlan` `LoseAck` at `AfterCommit` for handle `i`, resolved through the commit token; `disturb` and `heal` are no-ops until Task 6's nemesis |
+| R4 | Tech stack: `tikv-client` source (check 4) | crates.io 0.4.0 fails `cargo deny check` advisories: RUSTSEC-2026-0258 (`h2` 0.3.27) and RUSTSEC-2026-0098/0099/0104 (`rustls-webpki` 0.101.7), all through `tonic` 0.10. It also returns `UndeterminedError` only for `Error::Grpc` on a 2PC primary commit, so under Ruling 3 a lost async-commit or 1PC prewrite acknowledgement looks like "not applied". Master `ab4be1c` passes `cargo deny` (`advisories ok, bans ok, licenses ok, sources ok`) and marks both cases undetermined | Pin `tikv-client = { git = "https://github.com/tikv/client-rust", rev = "ab4be1c2cdd58d4e593202991fb520221c83bdfd", default-features = false }` (defaults would add `openssl`, `procfs` and `protobuf` 2.28 through `prometheus/push`). Task 1 adds `allow-git = ["https://github.com/tikv/client-rust"]` under `[sources]` in `deny.toml` (amended). Cost: crates depending on it cannot be published to crates.io until a release carries these fixes; the pin moves only by a PR that reruns Tasks 2 and 5's suites |
+| R5 | Task 3 semantics 1 (vendored GC protos) | PD v8.5.8 answers `Unimplemented` for `AdvanceTxnSafePoint` and `GetGCState`; its GC RPCs are `GetGCSafePoint`, `UpdateGCSafePoint`, `UpdateServiceGCSafePoint` and the keyspace `…V2` family. TiKV v8.5.8 builds with kvproto `release-8.5` at `07aa8c6` | Vendor the `pdpb.proto` subset and imports from kvproto `07aa8c6`; call only `GetMembers`, `GetGCSafePoint`, `UpdateGCSafePoint` and `UpdateServiceGCSafePoint` (amended) |
+| R6 | **Q32** (check 3) | Keyspace-level safe points are ignored: `UpdateGCSafePointV2(keyspace 4, ts)` was accepted and listed by `GetAllGCSafePointV2`, yet reads at an older timestamp kept their versions for 90 s with the compaction filter off. The cluster path (`UpdateServiceGCSafePoint("gc_worker")`, then `TransactionClient::gc`) dropped them within 10 s. TiDB v8.5.8's GC worker states that the cluster has one global safe point and that a keyspace-mode TiDB neither computes it nor resolves locks (`gc_worker.go:386-389`) | **Task 3 is rewritten** (amended): one Loam GC loop per cluster, leased in `loam_meta`. It takes `min(now − life_time, UpdateServiceGCSafePoint("gc_worker", …))`, resolves locks in every keyspace and calls `UpdateGCSafePoint`. GC barriers are PD service safe points. No unified-GC TiDB runs, and none without `keyspace-name` may run beside Loam. D122's "keyspace GC state" clause and design §9.3 are superseded for the pinned release; Q32 is closed in the decision log. Per-keyspace GC returns when PD's GC-state API ships in a release Loam pins |
+| R7 | Task 3 tests (a read below the safe point "fails with the GC error") | TiKV served a read below the safe point without an error: `None` after GC with the compaction filter off, and the old value with it on (the default) until RocksDB compacts. `tikv-client` does not check either | Task 2 gains semantics 5b: reads older than `now − (life_time − 1 min)` without a covering barrier are refused by `operon-tikv`. Task 3's tests assert the PD and TiKV safe points and lock resolution; physical removal is a nightly test that turns the compaction filter off through TiKV's status API (amended) |
+| R8 | **Q33** re-confirm (check 2) | TiDB v8.5.8 with `keyspace-name = "sql_dev"` served DDL, DML and a select through `mysql`; its 1 707 keys (`m`, `t`) are all in `sql_dev`, and `loam_test_sql`, `loam_meta` and `DEFAULT` hold none | No change; Task 15 as planned |
+| R9 | Task 2 classification (check 6) | In the pinned source, `Error::UndeterminedError` covers a failed or unanswered async-commit or 1PC prewrite and a failed primary commit, and over-reports rather than under-reports. Every other `commit()` error means the transaction did not commit | Mapping (amended): `UndeterminedError` → `Undetermined`; `WriteConflict` (both reasons) and `KeyIsLocked` after backoff → `Conflict`; `already_exist` → the caller's typed error; `TimestampRequest channel is closed` → `NotApplied` plus a rebuild; region, TSO, `ServerIsBusy` and other pre-commit errors → `NotApplied`; invalid arguments and unknown kinds → `Fatal`. A commit future dropped at the runner's deadline → `Undetermined` |
+| R10 | Tasks 2, 8, 10 (scans) | A scan page over 4 MiB fails with `OutOfRange: decoded message length too large` (gRPC's default limit); `tikv-client` neither raises it nor pages by bytes | Task 2 semantics 5a: reads page internally from 256 keys, halving on `OutOfRange`, and the test `scan_pages_stay_under_the_grpc_limit` (amended). Live documents are at most 1 MiB, so one key always fits. Raising the limit becomes the third upstream PR candidate |
+| R11 | Check 1 and Task 1 `ensure_keyspace` | `POST /pd/api/v2/keyspaces` created a keyspace at runtime in 0.24 s and the client used it. A duplicate `POST` answers **500** with body `"keyspace already exists"`; `GET` of a missing keyspace answers **500** with `"keyspace does not exist"`. Pre-allocated keyspaces have an empty `config`. A client for a missing keyspace fails at connect with `InternalError{"… keyspace does not exist"}` | `ensure_keyspace` does a `GET`; on 500 with "does not exist" it `POST`s; on 500 with "already exists" it `GET`s again; any other status is an error. `Tikv::connect` maps the connect error to `KeyspaceMissing { name }` |
+| R12 | Tech stack: connect-rust and buffa (check 4) | `connectrpc-build` 0.9 with the system `protoc` generated a server-streaming and a unary RPC. The service served through `into_axum_router()` on the workspace's `axum` 0.8 and answered a Connect JSON call; `uint64` goes as a JSON string | As planned. `connectrpc` features `axum` (runtime) and `client` (dev, Task 12's tests over HTTP/1.1 and HTTP/2) (amended). The TypeScript client reads 64-bit fields as `bigint` (Task 14 as planned) |
+| R13 | Tech stack: `rquickjs` features (check 4) | 0.14.0 ships prebuilt `x86_64-unknown-linux-gnu` bindings (no bindgen). The memory limit and interrupt handler work: a busy loop stopped at the 200 ms deadline, and an allocation bomb stopped at the limit | Features `futures`, `loader`, `macro`, `array-buffer` (amended). `unsafe_code = "forbid"` is compatible |
+| R14 | Check 7 (the interval index) | `rust-lapper` 1.3 needs unsigned integer coordinates, inserts in `O(n)` and cannot remove | Task 11 hand-writes an augmented interval tree over byte-string ranges with incremental insert and remove (amended) |
+| R15 | Check 5 (`memory-usage-limit` and RAM) | TiKV's peak RSS reached 2.56–2.74 GB **during startup** under every setting (none, 3 GB/1 GB, 1.5 GB/256 MB). Steady-state RSS after a 200 000-key load was 0.5–2.2 GB, lower with limits but dominated by host memory pressure | Task 1 keeps `memory-usage-limit = "3GB"` and the 1 GB block cache (they stop TiKV from sizing itself to 12 GB). The 3.2 GB playground peak in the Global Constraints stands |
+| R16 | Task 6 (`MetaBackend`, `Server`) | `ServerConfig` has no metastore selector. `Server` holds a concrete `node: MetaNode` and `meta: MetaClient` (`server.rs:374-377`). `Server::meta() -> &MetaClient` has 5 callers in `crates/operon/tests/it/http.rs`. `operon cluster` builds its metastore from `--peers` (`cluster.rs:39`) | `ServerConfig.meta: MetaBackend` (default `Raft`); `Server` keeps `node` and `meta` as `Option`, and `Server::meta()` returns `Option<&MetaClient>`, updating the 5 test calls. `--meta` exists on `dev` and `standalone` only (amended) |
+| R17 | Design §11.2 keys against the trait | `create_namespace(name)` takes no org, so `n/<org_id>/<name>` has no org to use. The trait's per-collection hot configuration has no key in §11.2 | `n/<name>` in R1 (the org segment arrives with the router in R2); the hot configuration is `H/<collection id>`, deleted by `drop_collection`, so hot updates never conflict with schema writes to `K/` |
+| R18 | Crate names and the TypeScript toolchain | `operon-tikv`, `operon-meta-tikv`, `operon-live`, `operon-live-proto` and `operon-live-js` are free; `operon-sim` and `operon-store` exist as Tasks 10, 13 and 16 assume. npm latest: `@bufbuild/protobuf` 2.15.0, `@connectrpc/connect(-web,-node)` 2.2.0, `@bufbuild/protoc-gen-es` 2.15.0, `@bufbuild/buf` 1.73.0, all Apache-2.0 (protobuf-es also BSD-3-Clause) | No change |
+| R19 | Check 4 (build cost) | With the pin, the lockfile gains 32 packages. The duplicates are `tonic` 0.12, `prost` 0.13, `axum` 0.7, `tower` 0.4, `fail` 0.4, `itertools` 0.12 and `syn` 1. The throwaway crate built 86 units in 32 s wall at 4 jobs; its debug binary is 50 MB | No change. `multiple-versions = "allow"` |
+
 | # | Ruling | Why | Tasks |
 |---|---|---|---|
+| X1 | `tikv-client` is the git pin `ab4be1c`, `default-features = false`, with `allow-git` for `tikv/client-rust` in `deny.toml` | crates.io 0.4.0 fails cargo-deny advisories and under-reports unknown outcomes (R4) | 1, 2 |
+| X2 | Loam runs cluster-wide MVCC GC (service safe point `gc_worker`, locks resolved in every keyspace, `UpdateGCSafePoint`); barriers are PD service safe points; no TiDB without `keyspace-name` runs beside Loam | Q32: v8.5.8 has no keyspace-level GC (R5, R6) | 3, 6, 15 |
+| X3 | `operon-tikv` refuses reads older than `now − (life_time − 1 min)` without a covering barrier | TiKV serves reads below the safe point without an error (R7) | 2, 3 |
+| X4 | Reads page internally from 256 keys, halving on gRPC `OutOfRange` | 4 MiB gRPC response limit (R10) | 2, 8, 10 |
+| X5 | `now_ms` is a TSO-anchored monotonic estimate; stamps use the transaction's start timestamp | `now_ms` is synchronous in the trait (R2) | 4 |
+| X6 | The suite has 53 cases; Task 4 adds a `cases = [..]` arm to `metastore_conformance!` | As built (R3) | 4, 5 |
+| X7 | `ServerConfig.meta: MetaBackend`, `Server::meta() -> Option<&MetaClient>`, `--meta` on `dev` and `standalone` only | As built (R16) | 6 |
+| X8 | Task 11's interval index is hand-written | `rust-lapper` cannot index byte ranges or remove (R14) | 11 |
+| X9 | `rquickjs` features `futures`, `loader`, `macro`, `array-buffer`; `connectrpc` `axum` plus dev `client` | R12, R13 | 7, 12, 13 |
+| X10 | `ensure_keyspace` treats PD's HTTP 500 bodies "already exists" and "does not exist" as the idempotency signals | PD v8.5.8's keyspace API (R11) | 1 |
 
 ## Self-review
 
@@ -647,7 +692,7 @@ One PR per group, stacked in order; each PR builds and passes CI on its own. The
 | Keyspaces on API v2, keyspace GC (§20 §9.1, §9.3, D122) | Tasks 0, 1, 3 |
 | D111: loopback only, non-loopback refused | Global Constraints, Task 12 |
 | Testing: conformance, fault matrices, reactive and transaction checkers, nemesis, playground in CI (§20 §14) | Tasks 1, 5, 6, 16 |
-| Q32 answered, Q33 re-confirmed before dependent work | Task 0 (checks 2, 3), Task 17 |
+| Q32 answered, Q33 re-confirmed before dependent work | Task 0 (rows R6–R8; Task 3 rewritten), Task 17 |
 | Spike findings: playground command and configs, async commit/1PC default, `PessimisticRetry` restarts, TSO supervisor, RAM and port sizing | Tasks 1, 2; Ruling 3; Global Constraints |
 | Review Focus → tests | 1: T9/T11/T16 · 2: T2/T6/T10 · 3: T5/T6 · 4: T2/T8 · 5: T12/T14/T16 · 6: T13 |
 | Carried in | None |
