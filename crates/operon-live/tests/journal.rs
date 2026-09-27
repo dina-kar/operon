@@ -521,6 +521,47 @@ async fn tailer_sees_each_entry_once_across_ticks() {
     assert_eq!(tailer.positions(), heads(&tikv, &journal).await.as_slice());
 }
 
+/// Review of #73: a tick reads at most its byte budget; a backlog takes
+/// several ticks at one timestamp, each entry once, in shard and sequence
+/// order, and only the last is `complete`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tailer_reads_a_backlog_in_bounded_ticks() {
+    let Some((tikv, journal)) = live().await else {
+        return;
+    };
+    let mut tailer = Tailer::start(
+        tikv.clone(),
+        journal.clone(),
+        tikv.now().await.expect("now"),
+    )
+    .await
+    .expect("a tailer")
+    .with_max_batch_bytes(1);
+    let mut appended = Vec::new();
+    for (i, shard) in [2u16, 0, 2, 5, 0, 2].into_iter().enumerate() {
+        let (shard, seq, _, _) =
+            append(&tikv, &journal, entry(&format!("b{i}"), 1), Some(shard)).await;
+        appended.push((shard, seq));
+    }
+    appended.sort();
+    let at = tikv.now().await.expect("now");
+    let mut seen = Vec::new();
+    loop {
+        let batch = tailer.tick(at.clone()).await.expect("a tick");
+        assert_eq!(batch.entries.len(), 1, "one entry per 1-byte budget");
+        seen.extend(batch.entries.iter().map(|e| (e.0, e.1)));
+        tailer.ack(&batch).expect("ack");
+        if batch.complete {
+            break;
+        }
+        assert!(seen.len() < appended.len(), "complete at the last entry");
+    }
+    assert_eq!(seen, appended, "every entry once, in order");
+    assert_eq!(tailer.positions(), heads(&tikv, &journal).await.as_slice());
+    let idle = tailer.tick(at).await.expect("a tick");
+    assert!(idle.is_empty() && idle.complete);
+}
+
 /// A tailer resumes from its checkpoint and sees only what came after it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tailer_resumes_from_its_checkpoint() {

@@ -1213,3 +1213,52 @@ async fn patch_by_id_finds_the_table_of_the_id() {
         .await;
     assert!(matches!(e, Err(LiveError::NotFound(_))), "{e:?}");
 }
+
+/// Review of #73 (Task 13's deploy gate): `try_quiesce` is refused while a
+/// mutation is in flight, and while it is held a new mutation waits at
+/// admission until it drops.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quiesce_refuses_in_flight_mutations_and_holds_new_ones() {
+    let Some(r) = open().await else { return };
+    let id = insert(&r, "counters", &[("n", LiveValue::I64(0))]).await;
+    let f = Arc::new(Increment {
+        read: Notify::new(),
+        go: Notify::new(),
+        first: AtomicBool::new(false),
+        seen: Mutex::new(Vec::new()),
+    });
+    let in_flight = {
+        let (r, f) = (r.clone(), f.clone());
+        tokio::spawn(async move {
+            r.mutate(f, obj(&[("id", s(&id.to_string()))]), None)
+                .await
+                .expect("commits")
+        })
+    };
+    f.read.notified().await;
+    assert!(r.try_quiesce().is_none(), "a mutation is in flight");
+    f.go.notify_one();
+    in_flight.await.expect("the task");
+
+    let gate = r.try_quiesce().expect("nothing in flight");
+    let waiting = {
+        let r = r.clone();
+        tokio::spawn(async move {
+            mutate(
+                &r,
+                sys(PATCH),
+                obj(&[
+                    ("id", s(&id.to_string())),
+                    ("fields", obj(&[("n", LiveValue::I64(5))])),
+                ]),
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!waiting.is_finished(), "held at admission");
+    assert_eq!(field(&get(&r, id).await, "n"), LiveValue::I64(1));
+    drop(gate);
+    waiting.await.expect("the task");
+    assert_eq!(field(&get(&r, id).await, "n"), LiveValue::I64(5));
+}
