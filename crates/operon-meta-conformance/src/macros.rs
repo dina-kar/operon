@@ -96,7 +96,12 @@ macro_rules! __case_tests {
         $(
             #[::tokio::test(flavor = "multi_thread", worker_threads = 4)]
             async fn $case() {
-                $crate::bounded(stringify!($case), $crate::suite::$case(&$backend)).await
+                let backend = &$backend;
+                if let Some(reason) = $crate::Backend::unavailable(backend) {
+                    println!("skipped: {} needs {reason}", stringify!($case));
+                    return;
+                }
+                $crate::bounded(stringify!($case), $crate::suite::$case(backend)).await
             }
         )*
     };
@@ -107,8 +112,15 @@ macro_rules! __case_tests {
 /// `#[tokio::test(flavor = "multi_thread", worker_threads = 4)]` per entry of
 /// [`CASES`](crate::CASES), named after the case. Expand it inside a module
 /// of its own per backend.
+///
+/// `metastore_conformance!($backend; cases = [a, b, ..])` expands only the
+/// named cases, for a backend that implements part of the trait so far (R1
+/// plan row R3). A name that is not a case fails to compile.
 #[macro_export]
 macro_rules! metastore_conformance {
+    ($backend:expr; cases = [$($case:ident),* $(,)?]) => {
+        $crate::__case_tests! { ($backend) $($case),* }
+    };
     ($backend:expr) => {
         $crate::for_each_case!([$crate::__case_tests] $backend);
     };
