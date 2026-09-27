@@ -434,7 +434,13 @@ impl Manager {
                     {
                         sub.refs += 1;
                         let _ = reply.send(Ok((id, sub.result.clone())));
-                    } else if let Some(n) = fresh.iter_mut().find(|n| n.key == key) {
+                    } else if let Some(n) = fresh
+                        .iter_mut()
+                        .chain(self.waiting.iter_mut())
+                        .find(|n| n.key == key)
+                    {
+                        // A key already asked for (in this batch, or waiting
+                        // for a valid tick) gets no second entry.
                         n.replies.push(reply);
                     } else {
                         fresh.push(NewSub {
@@ -467,7 +473,9 @@ impl Manager {
         };
         sub.refs = sub.refs.saturating_sub(1);
         if sub.refs == 0 {
-            if let Some(sub) = self.subs.remove(&id) {
+            if let Some(sub) = self.subs.remove(&id)
+                && self.by_key.get(&sub.key) == Some(&id)
+            {
                 self.by_key.remove(&sub.key);
             }
             self.index.remove(id);

@@ -1287,7 +1287,12 @@ async fn mutations_under_contention_complete_within_the_default_budget() {
     let reruns: u32 = attempts.iter().map(|a| a - 1).sum();
     let max = attempts.iter().max().copied().unwrap_or(0);
     latencies.sort();
-    let pct = |p: usize| latencies[(latencies.len() - 1) * p / 100];
+    let pct = |p: usize| {
+        latencies
+            .get(latencies.len().saturating_sub(1) * p / 100)
+            .copied()
+            .unwrap_or_default()
+    };
     eprintln!(
         "{MUTATIONS} mutations by {WRITERS} writers on {DEFAULT_JOURNAL_SHARDS} shards in {elapsed:?}: \
          {reruns} reruns ({:.3} per mutation), at most {max} attempts; tailer: {} ticks, \

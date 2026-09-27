@@ -785,3 +785,34 @@ async fn a_mutation_cannot_be_subscribed() {
         .await;
     assert!(matches!(e, Err(LiveError::InvalidArgument(_))), "{e:?}");
 }
+
+/// Review of #81: a key subscribed again while its first request still
+/// waits for the manager's first tick joins the waiting entry, so both
+/// callers share one subscription and one evaluation. The second request
+/// lands in a later command batch only sometimes (the manager's select is
+/// unbiased), so the scenario repeats.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_key_subscribed_again_while_waiting_shares_one_entry() {
+    let Some(r) = open().await else { return };
+    insert(&r, "wait", &[("m", s("hi"))]).await;
+    for round in 0..30 {
+        let subs = Arc::new(spawn(&r, subs_config()));
+        let (f, calls) = Counting::wrap(sys(QUERY));
+        let args = table_query("wait");
+        let first = {
+            let (subs, f, args) = (subs.clone(), f.clone(), args.clone());
+            tokio::spawn(async move { subscribe(&subs, f, args).await })
+        };
+        tokio::time::sleep(Duration::from_micros(200 * (round % 5))).await;
+        let (b, rb) = subscribe(&subs, f.clone(), args.clone()).await;
+        let (a, ra) = first.await.expect("the first subscriber");
+        assert_eq!(a, b, "round {round}: one subscription");
+        assert!(Arc::ptr_eq(&ra, &rb), "round {round}: one result");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "round {round}");
+        assert_eq!(subs.stats().subscriptions, 1, "round {round}");
+        subs.unsubscribe(a);
+        let (c, _) = subscribe(&subs, f, args).await;
+        assert_eq!(c, a, "round {round}: still held by the second reference");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "round {round}");
+    }
+}
