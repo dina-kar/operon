@@ -65,12 +65,13 @@ lakekeeper_url = "http://lakekeeper:8181/catalog"
 warehouse = "prod"
 
 [gateways]
-native = { rest = "0.0.0.0:8080", grpc = "0.0.0.0:8081", flight_sql = "0.0.0.0:8082" }   # MCP at /mcp on rest
+native = { rest = "0.0.0.0:8080", grpc = "0.0.0.0:8081", flight_sql = "0.0.0.0:8082" }   # never serves /mcp
+mcp = { listen = "127.0.0.1:8083" }   # MCP at /mcp on its own listener, loopback by default (§15, D111)
 qdrant = { rest = "0.0.0.0:6333", grpc = "0.0.0.0:6334" }
 elasticsearch = { listen = "0.0.0.0:9200" }
 otlp = { http = "0.0.0.0:4318", grpc = "0.0.0.0:4317" }   # logs only (M2, D73)
 kafka = { listen = "0.0.0.0:9092" }   # Kafka wire protocol (M5, D74)
-resonate = { listen = "0.0.0.0:8001" }   # durable execution (§14); Resonate SDK default port
+resonate = { listen = "127.0.0.1:8001" } # durable execution (§21, D138); Resonate SDK default port; loopback only until auth
 admin = { listen = "0.0.0.0:8090" }      # /metrics, /health, diagnostic dump (§5); not a data surface
 
 [tls]                                     # M2: applies to every listener
@@ -158,7 +159,8 @@ The M2 baseline, on every node:
 - **Data** is already in object storage: enable bucket versioning + lifecycle; cross-region replication (S3 CRR / GCS dual-region / Azure GRS) for DR. **With versioning on, an erasure deletes the noncurrent versions of the objects it retires by version id, in the replica bucket too, and verifies they are gone before it completes** (§4.1). A lifecycle rule that expires noncurrent versions within the erasure deadline is the backstop; S3 applies it asynchronously.
 - **Metadata (openraft):** meta snapshots to the bucket every N minutes + Raft log shipping; restore = new meta cluster from latest snapshot + log.
 - **Metadata (Postgres, DynamoDB, TiDB):** the backend's own backups and point-in-time recovery. Metadata holds no documents; erasure requests hold keyed key hashes only.
-- A metadata restore to a point older than GC's grace period (§03 §7) references objects GC may have deleted since; bucket versioning recovers them, except objects a completed erasure retired: their versions are deleted on purpose (§4.1, §18 §9). Whether such a restore replays the completed erasures from the erasure log or rebuilds the affected manifests without the erased objects is open (Q27).
+- **Erasure log (M2, D115):** every metadata and `ControlStore` backup includes the erasure log, and each record is also written once, by conditional put, under `_erasure/<org_id>/` in the cluster bucket (§01 §6, §18 §9). That copy is outside every snapshot and backup, so a restore of the metastore or the `ControlStore` never rolls it back; with cross-region replication it reaches the DR bucket like any other object.
+- A metadata restore to a point older than GC's grace period (§03 §7) references objects GC may have deleted since; bucket versioning recovers them, except objects a completed erasure retired: their versions are deleted on purpose (§4.1, §18 §9). The log is never rolled back, and each record is kept while any snapshot, backup or time-travel version older than the erasure exists, plus 30 days (D115). **Every metadata restore runs in this order:** (1) load the union of the erasure records in the restored `ControlStore` and the `_erasure/` objects; (2) replay every erasure newer than the restore point's data, completed or still pending, through the erasure path (§4.1); (3) only then serve traffic (`/health/ready` stays false until the replay is done); (4) if either source cannot be read, refuse to serve rather than risk returning erased data.
 - **Restore from bucket** is an M2 drill: a new cluster is brought up from the bucket alone (openraft snapshots live in it), or from the bucket and the backend's backup.
 - **Point-in-time restore:** collections/graphs via retained manifests; tables via Iceberg snapshots; streams via retention.
 - **Branches and copies (D90):** a branch (M2) is a constant-time, isolated copy of a retained manifest, useful before a risky change; a copy (M2.x) writes a collection into another namespace, bucket, region or org under the target's key, as an asynchronous operation, and serves as a logical backup.

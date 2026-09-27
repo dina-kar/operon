@@ -124,6 +124,9 @@ pub struct PlacementImpl {
     replication: usize,
     suspects: Mutex<BTreeMap<u64, Instant>>,
     suspect_for: Duration,
+    /// How far tests moved the suspect clock ahead of `Instant::now()`
+    /// ([`PlacementImpl::advance_clock`]); zero in production.
+    clock_offset: Mutex<Duration>,
 }
 
 impl PlacementImpl {
@@ -142,6 +145,7 @@ impl PlacementImpl {
             replication: replication.max(1),
             suspects: Mutex::new(BTreeMap::new()),
             suspect_for,
+            clock_offset: Mutex::new(Duration::ZERO),
         }
     }
 
@@ -183,7 +187,27 @@ impl PlacementImpl {
         self.suspects
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(node_id, Instant::now());
+            .insert(node_id, self.now());
+    }
+
+    /// Moves the suspect clock `by` ahead, as if `by` had passed since
+    /// every mark. Tests end a suspicion with it instead of sleeping (CI
+    /// fix C3).
+    #[doc(hidden)]
+    pub fn advance_clock(&self, by: Duration) {
+        *self
+            .clock_offset
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) += by;
+    }
+
+    /// `Instant::now()` plus whatever tests advanced the clock by.
+    fn now(&self) -> Instant {
+        Instant::now()
+            + *self
+                .clock_offset
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Whether `node_id` is suspect now.
@@ -194,9 +218,10 @@ impl PlacementImpl {
     /// The suspects whose mark is younger than `suspect_for`; older marks
     /// are forgotten.
     fn fresh_suspects(&self) -> BTreeSet<u64> {
+        let now = self.now();
         let mut suspects = self.suspects.lock().unwrap_or_else(PoisonError::into_inner);
         let suspect_for = self.suspect_for;
-        suspects.retain(|_, since| since.elapsed() < suspect_for);
+        suspects.retain(|_, since| now.saturating_duration_since(*since) < suspect_for);
         suspects.keys().copied().collect()
     }
 
