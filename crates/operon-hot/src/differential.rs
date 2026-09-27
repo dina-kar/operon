@@ -919,6 +919,7 @@ pub struct DiffHarness {
 /// A phase's recall counts, for the pool of phases too small to judge.
 #[derive(Clone, Copy, Debug, Default)]
 struct Pooled {
+    queries: u64,
     hot_found: usize,
     cold_found: usize,
     expected: usize,
@@ -928,6 +929,30 @@ struct Pooled {
 /// A phase's recall is judged on its own from this many approximate
 /// queries.
 const MIN_JUDGED: u64 = 20;
+
+/// The pool judges the cold tier's recall only from this many approximate
+/// queries (Ruling C4); it judges the hot tier's from any number.
+///
+/// The seeds fix every document, query and third-pass pick, but Lance
+/// 12.0.0 trains the cold tier's IVF centroids and PQ codebooks with
+/// k-means seeded from the OS (`KMeansParams::seed` is `None`, and neither
+/// `IvfBuildParams` nor `PQBuildParams` exposes it), so the cold index and
+/// its recall differ from run to run; making it deterministic would mean
+/// patching Lance or supplying trained centroids and codebooks. In
+/// `random_per_request_disabling_matches_cold` the pool held nine queries
+/// (90 hits), where five misses read 0.944 and failed CI (seed
+/// 3512381933) while the same run's 139-query phase read 0.988; five local
+/// runs read 0.977-0.985 there, and one of them pooled 0.944 again. At 50
+/// queries (500 hits) 0.95 needs 25 misses, against 6-12 at the measured
+/// rates.
+///
+/// The hot tier keeps the old rule: it is what the harness guards, and
+/// its test engines are deterministic (`FlatEngine` is exact, so hot
+/// recall is 1.0). The broken tiers are caught by it on small pools: the
+/// deleted-row tier reads 0.0 over about 20 queries. The cold tier's ANN
+/// recall has its own tests (`operon-query` `ann`), and its larger phases
+/// are still judged on their own from [`MIN_JUDGED`] queries.
+const MIN_POOLED: u64 = 50;
 
 /// One answer, as compared.
 struct Answer {
@@ -1003,6 +1028,7 @@ impl DiffHarness {
             let prepared = started.elapsed();
             let (phase_report, mismatches, pooled) = self.compare(config, phase).await;
             if !pooled.judged {
+                unjudged.queries += pooled.queries;
                 unjudged.hot_found += pooled.hot_found;
                 unjudged.cold_found += pooled.cold_found;
                 unjudged.expected += pooled.expected;
@@ -1017,7 +1043,11 @@ impl DiffHarness {
             report.mismatches.extend(mismatches);
         }
         if unjudged.expected > 0 {
-            for (tier, found) in [("hot", unjudged.hot_found), ("cold", unjudged.cold_found)] {
+            let mut tiers = vec![("hot", unjudged.hot_found)];
+            if unjudged.queries >= MIN_POOLED {
+                tiers.push(("cold", unjudged.cold_found));
+            }
+            for (tier, found) in tiers {
                 let value = found as f64 / unjudged.expected as f64;
                 if value < config.min_recall {
                     report.mismatches.push(Mismatch {
@@ -1511,7 +1541,8 @@ impl DiffHarness {
         report.hot_recall = recall(hot_found);
         report.cold_recall = recall(cold_found);
         // A phase with few approximate queries is judged only in the pool
-        // of every phase (row 12.5): one miss in three queries is 0.933.
+        // of such phases (row 12.5; the cold tier only from `MIN_POOLED`
+        // queries, Ruling C4): one miss in three queries is 0.933.
         let judged = approximate >= MIN_JUDGED;
         for (tier, value) in [("hot", report.hot_recall), ("cold", report.cold_recall)] {
             if judged && value < config.min_recall {
@@ -1547,6 +1578,7 @@ impl DiffHarness {
             }
         }
         let pooled = Pooled {
+            queries: approximate,
             hot_found,
             cold_found,
             expected,
