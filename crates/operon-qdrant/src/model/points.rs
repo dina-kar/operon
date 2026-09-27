@@ -1,15 +1,14 @@
 //! Point request and response types.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+
+use crate::model::filter::Filter;
 
 /// `POST /collections/{c}/points/count`.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct CountRequest {
-    /// Compiled by Task 4; until then only an absent or `null` filter is
-    /// served.
     #[serde(default)]
-    pub filter: Option<Value>,
+    pub filter: Option<Filter>,
     /// Counts are always exact.
     #[serde(default)]
     pub exact: Option<bool>,

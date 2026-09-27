@@ -796,6 +796,30 @@ async fn a_pure_must_not_matches_the_rest_with_score_zero() {
     assert!(scores.iter().all(|(_, score)| *score == 0.0), "{scores:?}");
 }
 
+/// Tantivy 0.26's `PhraseScorer::seek_danger` asserts `target >= doc`,
+/// which `Exclude` breaks when the phrase's first match is not the first
+/// document; each `must_not` clause is wrapped so its scorer is only asked
+/// to seek forward (M1.4 row T4-7).
+#[tokio::test]
+async fn a_must_not_phrase_excludes_its_matches() {
+    let fx = Fixture::new().await;
+    let phrase = json!({"match_phrase": {"field": "title", "text": "fox jumps"}});
+    assert_eq!(fx.hits(&q(phrase.clone())).unwrap(), set(&[3]));
+    let rest: Vec<u64> = ALL.iter().copied().filter(|pk| *pk != 3).collect();
+    assert_eq!(
+        fx.hits(&q(json!({"bool": {"must_not": [phrase.clone()]}})))
+            .unwrap(),
+        set(&rest)
+    );
+    let nested = json!({"bool": {"must_not": [{"bool": {"must": [
+        {"term": {"field": "tag", "value": "alpha"}}, phrase]}}]}});
+    assert_eq!(fx.hits(&q(nested)).unwrap(), set(&rest));
+    let json_path = json!({"bool": {"must_not": [
+        {"match_phrase": {"field": "payload.body", "text": "lazy cat"}}]}});
+    let rest: Vec<u64> = ALL.iter().copied().filter(|pk| *pk != 9).collect();
+    assert_eq!(fx.hits(&q(json_path)).unwrap(), set(&rest));
+}
+
 #[tokio::test]
 async fn a_filter_only_bool_scores_zero() {
     let fx = Fixture::new().await;
