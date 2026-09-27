@@ -159,12 +159,32 @@ async fn recommend_sum_scores_matches_brute_force() {
     assert_hits(&got, &kept, 1e-4);
     assert_eq!(got.len(), 80);
     assert!(got.iter().all(|(_, s)| *s < t));
-    // Negatives only, which Qdrant accepts (owner ruling on row T8-7): the
-    // negatives' neighbourhoods are the candidates, here the whole
-    // collection (candidate_k = 4 × 80 ≥ 300).
+    // Negatives only, which Qdrant accepts (owner ruling on row T8-7): on
+    // Euclid the legs are exact scans away from the negatives, here
+    // covering the whole collection (candidate_k = 4 × 80 ≥ 300).
     let want = brute_scored(d, &points, &[30, 40], 80, |c| sum_scores(d, c, &[], &neg));
     let body = json!({"query": {"recommend": {"negative": [30, 40], "strategy": "sum_scores"}}, "limit": 80});
     assert_hits(&hits(&query(&qd, "s", body).await), &want, 1e-4);
+}
+
+/// Negatives only (review of #57): the best scores belong to the points
+/// farthest from the negatives, so a collection larger than `candidate_k`
+/// (100 here) must still return them: the legs search away from the
+/// negatives. Exact on Cosine and Dot.
+#[tokio::test]
+async fn negatives_only_recommend_finds_the_farthest_points() {
+    let qd = Qd::start().await;
+    for (name, d) in [("nc", Distance::Cosine), ("nd", Distance::Dot)] {
+        let points = random_collection(&qd, name, d, 4, 600, 106).await;
+        let neg = vec![vector_of(d, &points, 30), vector_of(d, &points, 40)];
+        let want = brute_scored(d, &points, &[30, 40], 5, |c| sum_scores(d, c, &[], &neg));
+        let body = json!({"query": {"recommend": {"negative": [30, 40], "strategy": "sum_scores"}}, "limit": 5});
+        assert_hits(&hits(&query(&qd, name, body).await), &want, 1e-4);
+        let one = std::slice::from_ref(&neg[0]);
+        let want = brute_scored(d, &points, &[30], 5, |c| best_score(d, c, &[], one));
+        let body = json!({"query": {"recommend": {"negative": [30], "strategy": "best_score"}}, "limit": 5});
+        assert_hits(&hits(&query(&qd, name, body).await), &want, 1e-4);
+    }
 }
 
 // ----- discover, context -----
