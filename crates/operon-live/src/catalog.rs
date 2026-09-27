@@ -358,6 +358,19 @@ fn check_indexes(indexes: &[IndexSpec], limits: &Limits) -> Result<(), LiveError
                     spec.name
                 )));
             }
+            // Documents cannot hold a longer name (Limits::check_fields), so
+            // such an index would hold only nulls.
+            if field.len() > limits.max_field_name_bytes {
+                return Err(LiveError::limit(
+                    "max_field_name_bytes",
+                    format!(
+                        "index '{}': a field name has {} bytes, more than {}",
+                        spec.name,
+                        field.len(),
+                        limits.max_field_name_bytes
+                    ),
+                ));
+            }
         }
     }
     Ok(())

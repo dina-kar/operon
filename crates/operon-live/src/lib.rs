@@ -8,13 +8,15 @@
 //! ([`AppKeys`]), and the document operations with index maintenance in
 //! [`docs`], which run inside an `operon-tikv` transaction and return the
 //! [`WriteRecord`]s the commit journal needs. [`Limits`] holds R1's document
-//! and mutation limits.
+//! and mutation limits. The sharded, sequenced commit journal (Task 9), its
+//! [`Tailer`] and its [`Janitor`] are in [`journal`].
 
 pub mod catalog;
 mod config;
 pub mod docs;
 mod error;
 pub mod ids;
+pub mod journal;
 pub mod keys;
 mod limits;
 mod value;
@@ -27,6 +29,7 @@ pub use config::{DEFAULT_JOURNAL_SHARDS, KEYSPACE_PREFIX, LiveConfig, keyspace_o
 pub use docs::{Doc, IndexRange, Order, Reads, WriteRecord};
 pub use error::LiveError;
 pub use ids::{DocId, IndexId, TableId};
+pub use journal::{Batch, Checkpoint, Janitor, JanitorReport, Journal, Tailer};
 pub use keys::{AppKeys, KeyRange};
 pub use limits::Limits;
 pub use value::{LiveValue, fields_from_proto, fields_to_proto};
