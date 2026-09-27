@@ -6,7 +6,7 @@
 //! whose union is rescored) and MMR (one candidate search, then Qdrant's
 //! greedy selection); `average_vector` stays one IR search.
 //!
-//! Example vectors given by id are read first ([`resolve_examples`]); the
+//! Example vectors given by id are read first (`resolve_examples`); the
 //! compiler ([`compile_query`]) is pure, so the crate tests pin its IR.
 
 use std::collections::{BTreeMap, BTreeSet};

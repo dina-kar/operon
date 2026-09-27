@@ -27,7 +27,7 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | gRPC / HTTP | tonic, axum, hyper | MIT | — | Gateways | — |
 | Arrow Flight SQL | arrow-flight (`flight-sql-experimental`) | Apache-2.0 | 58.4 (lockstep with arrow) | Flight SQL server; `DoPut` bulk ingest into collections and streams (M1.2, D49) | The Flight SQL API is marked experimental in arrow-rs → pin with arrow |
 | SQL parsing | sqlparser-rs | Apache-2.0 | — | SQL (through DataFusion) | — |
-| Qdrant API types | Qdrant OpenAPI + protobuf | Apache-2.0 | 1.19 | Qdrant gateway | — |
+| Qdrant API types | Qdrant protobuf (vendored public protos, 9 files, v1.19.1) + tonic-prost-build; hand-written REST model | Apache-2.0 | 1.19.1 | Qdrant gateway (`operon-qdrant`, M1.4) | `NOTICE` lists the nine protos; `qdrant.proto` drops six internal imports (M1.4 Rulings 2 and 3, D133) |
 | Bitmaps | roaring-rs (`roaring`) | Apache-2.0/MIT | 0.11 | Delete bitmaps, filter bitmaps | — |
 | HNSW hot tier | **qdrant-edge** | Apache-2.0 | =0.8.0 (M1.3) | HNSW artifacts behind Operon's `HnswIndex` (R20) | Enables `serde_json/preserve_order`; the workspace turns it on for every build, and the vendored Quickwit code passes with it (M1.1 ruling P5, M1.3 row E58) |
 | MCP server | **rmcp** | Apache-2.0 | 3.4.1 (M1.6) | The W0 MCP server (§15) | — |

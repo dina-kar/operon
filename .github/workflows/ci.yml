@@ -28,6 +28,12 @@ jobs:
         run: cargo fmt --all --check
       - name: clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The gateway's module doc holds its divergences from Qdrant (M1.4
+      # Task 11); its links must resolve.
+      - name: qdrant gateway docs
+        run: cargo doc -p operon-qdrant --no-deps --locked
+        env:
+          RUSTDOCFLAGS: "-D warnings"
       - name: metastore boundary
         run: |
           for c in operon-worker operon-log operon-link operon-collection operon-query operon-hnsw operon-hot; do
