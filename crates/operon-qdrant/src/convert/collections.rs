@@ -91,6 +91,7 @@ fn bool_of(v: &Value, key: &str) -> Option<bool> {
 
 // ----- gRPC to JSON -----
 
+/// gRPC `HnswConfigDiff` as REST JSON, set fields only.
 fn hnsw_to_json(h: &pb::HnswConfigDiff) -> Value {
     let mut out = Map::new();
     put(&mut out, "m", h.m);
@@ -102,6 +103,7 @@ fn hnsw_to_json(h: &pb::HnswConfigDiff) -> Value {
     Value::Object(out)
 }
 
+/// gRPC quantization as the REST `scalar`/`product`/`binary` object.
 fn quantization_to_json(q: &pb::QuantizationConfig) -> Value {
     use pb::quantization_config::Quantization;
     match &q.quantization {
@@ -159,6 +161,7 @@ fn quantization_to_json(q: &pb::QuantizationConfig) -> Value {
     }
 }
 
+/// gRPC `VectorParams` as REST JSON.
 fn vector_params_to_json(p: &pb::VectorParams) -> Value {
     let mut out = Map::new();
     out.insert("size".into(), json!(p.size));
@@ -184,6 +187,7 @@ fn vector_params_to_json(p: &pb::VectorParams) -> Value {
     Value::Object(out)
 }
 
+/// The single or named vectors config as REST JSON.
 fn vectors_config_to_json(v: &pb::VectorsConfig) -> Value {
     use pb::vectors_config::Config;
     match &v.config {
@@ -198,6 +202,7 @@ fn vectors_config_to_json(v: &pb::VectorsConfig) -> Value {
     }
 }
 
+/// The sparse vectors config as REST JSON.
 fn sparse_config_to_json(s: &pb::SparseVectorConfig) -> Value {
     Value::Object(
         s.map
@@ -222,6 +227,7 @@ fn sparse_config_to_json(s: &pb::SparseVectorConfig) -> Value {
     )
 }
 
+/// The optimizer config diff as REST JSON, set fields only.
 fn optimizers_to_json(o: &pb::OptimizersConfigDiff) -> Value {
     let mut out = Map::new();
     put(&mut out, "deleted_threshold", o.deleted_threshold);
@@ -249,6 +255,7 @@ fn optimizers_to_json(o: &pb::OptimizersConfigDiff) -> Value {
     Value::Object(out)
 }
 
+/// The WAL config diff as REST JSON, set fields only.
 fn wal_to_json(w: &pb::WalConfigDiff) -> Value {
     let mut out = Map::new();
     put(&mut out, "wal_capacity_mb", w.wal_capacity_mb);
@@ -466,6 +473,7 @@ pub fn alias_ops_from_grpc(
 
 // ----- JSON to gRPC -----
 
+/// The echoed HNSW JSON as gRPC.
 fn hnsw_to_grpc(v: &Value) -> pb::HnswConfigDiff {
     pb::HnswConfigDiff {
         m: u64_of(v, "m"),
@@ -478,6 +486,7 @@ fn hnsw_to_grpc(v: &Value) -> pb::HnswConfigDiff {
     }
 }
 
+/// The echoed quantization JSON as gRPC; `None` when unrecognized.
 fn quantization_to_grpc(v: &Value) -> Option<pb::QuantizationConfig> {
     use pb::quantization_config::Quantization;
     let q = if let Some(s) = v.get("scalar") {
@@ -534,6 +543,7 @@ fn quantization_to_grpc(v: &Value) -> Option<pb::QuantizationConfig> {
     })
 }
 
+/// One echoed vector's JSON as gRPC `VectorParams`.
 fn vector_params_to_grpc(v: &Value) -> pb::VectorParams {
     pb::VectorParams {
         size: u64_of(v, "size").unwrap_or(0),
@@ -546,6 +556,7 @@ fn vector_params_to_grpc(v: &Value) -> pb::VectorParams {
     }
 }
 
+/// The echoed vectors (single or map) as gRPC.
 fn vectors_to_grpc(v: &Value) -> pb::VectorsConfig {
     use pb::vectors_config::Config;
     let config = if v.get("size").is_some() {
@@ -565,6 +576,7 @@ fn vectors_to_grpc(v: &Value) -> pb::VectorsConfig {
     }
 }
 
+/// The echoed sparse vectors as gRPC.
 fn sparse_to_grpc(v: &Value) -> pb::SparseVectorConfig {
     pb::SparseVectorConfig {
         map: v
@@ -592,6 +604,7 @@ fn sparse_to_grpc(v: &Value) -> pb::SparseVectorConfig {
     }
 }
 
+/// The echoed optimizer config as gRPC.
 fn optimizers_to_grpc(v: &Value) -> pb::OptimizersConfigDiff {
     use pb::max_optimization_threads::{Setting, Variant};
     let threads = match v.get("max_optimization_threads") {
@@ -612,6 +625,7 @@ fn optimizers_to_grpc(v: &Value) -> pb::OptimizersConfigDiff {
     }
 }
 
+/// The echoed WAL config as gRPC.
 fn wal_to_grpc(v: &Value) -> pb::WalConfigDiff {
     pb::WalConfigDiff {
         wal_capacity_mb: u64_of(v, "wal_capacity_mb"),
@@ -620,6 +634,7 @@ fn wal_to_grpc(v: &Value) -> pb::WalConfigDiff {
     }
 }
 
+/// The echoed strict-mode config as gRPC (scalar settings only, T3-5).
 fn strict_to_grpc(v: &Value) -> pb::StrictModeConfig {
     pb::StrictModeConfig {
         enabled: bool_of(v, "enabled"),
@@ -647,6 +662,7 @@ fn strict_to_grpc(v: &Value) -> pb::StrictModeConfig {
     }
 }
 
+/// One `payload_schema` entry as gRPC.
 fn payload_schema_to_grpc(v: &Value) -> pb::PayloadSchemaInfo {
     let data_type = match v.get("data_type").and_then(Value::as_str) {
         Some("keyword") => pb::PayloadSchemaType::Keyword,
@@ -735,6 +751,7 @@ pub fn info_to_grpc(v: &Value) -> pb::CollectionInfo {
     }
 }
 
+/// Alias pairs as gRPC `AliasDescription`s.
 pub fn aliases_to_grpc(a: AliasesResponse) -> Vec<pb::AliasDescription> {
     a.aliases
         .into_iter()
