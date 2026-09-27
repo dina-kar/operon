@@ -656,3 +656,42 @@ fn index_change_on_non_empty_table_is_refused() {
         assert_eq!(again, changed);
     });
 }
+
+/// Review of #71: an index on a field name no document can hold (over
+/// `max_field_name_bytes`) is refused when the table is defined.
+#[test]
+fn index_field_name_over_the_limit_is_refused() {
+    let rt = tokio::runtime::Runtime::new().expect("a runtime");
+    rt.block_on(async {
+        let Some(tikv) = live().await else { return };
+        let limits = Limits::default();
+        let specs = vec![IndexSpec {
+            name: "by_long".to_string(),
+            fields: vec!["f".repeat(limits.max_field_name_bytes + 1)],
+        }];
+        let refused = in_txn!(tikv, [specs], |txn| {
+            catalog::define_table(txn, &AppKeys::dedicated(), "t", &specs, &Limits::default()).await
+        });
+        match refused {
+            Err(LiveError::LimitExceeded { limit, .. }) => {
+                assert_eq!(limit, "max_field_name_bytes");
+            }
+            other => panic!("expected a limit error, got {other:?}"),
+        }
+        let at_limit = vec![IndexSpec {
+            name: "by_long".to_string(),
+            fields: vec!["f".repeat(limits.max_field_name_bytes)],
+        }];
+        in_txn!(tikv, [at_limit], |txn| {
+            catalog::define_table(
+                txn,
+                &AppKeys::dedicated(),
+                "t",
+                &at_limit,
+                &Limits::default(),
+            )
+            .await
+        })
+        .expect("a name at the limit is fine");
+    });
+}
