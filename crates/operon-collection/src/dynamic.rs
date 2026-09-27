@@ -43,10 +43,13 @@ pub(crate) fn is_mappable(schema: &CollectionSchema, path: &str) -> bool {
         && valid_alone(&proposed_field(path, path.to_string(), FieldKind::Keyword))
 }
 
-/// The kind ES 8 maps a first value to: a date string (not digits only) is a
-/// date, another string text; an integer that fits i64 is i64; another
-/// number f64 (an integer above 2^63−1 too: ES maps it to `float`, M1.5
-/// owner ruling O-M15-3); a bool bool.
+/// The kind ES 8 maps a first value to:
+/// - a string that parses as a date (and is not digits only) maps to
+///   `Date`, any other string to `Text`;
+/// - an integer within the `i64` range maps to `I64`;
+/// - an integer outside it (above 2^63−1: ES maps it to `float`, M1.5 owner
+///   ruling O-M15-3) and every other number map to `F64`;
+/// - a boolean maps to `Bool`.
 fn dynamic_kind(value: &Value) -> Option<FieldKind> {
     Some(match value {
         Value::String(s) if !is_epoch_millis(s) && parse_date_str(s).is_some() => FieldKind::Date,
@@ -68,8 +71,9 @@ fn dynamic_kind(value: &Value) -> Option<FieldKind> {
 /// The sources are walked in order, and each one's unmapped leaf paths in
 /// sorted order; the first non-null value seen for a path decides its kind,
 /// with ES 8's defaults: a string that parses as a date in a non-digit
-/// format is a date, an integer within i64 i64, another number f64, a bool
-/// bool. Any other string gives a `standard` text field named `<path>` plus
+/// format maps to a date; an integer within the `i64` range maps to `I64`;
+/// an integer outside it and every other number map to `F64`; a boolean
+/// maps to `Bool`. Any other string gives a `standard` text field named `<path>` plus
 /// a keyword field `<path>.keyword` with the same source path, unless that
 /// name is taken. Every field is indexed, and fast unless it is text. A
 /// path whose field would be invalid (a name starting with `_`, containing
