@@ -15,9 +15,12 @@ use tokio_util::sync::CancellationToken;
 
 pub mod config;
 pub mod error;
+pub mod filter;
 pub mod ids;
 pub mod output;
+pub mod schema;
 pub mod server;
+pub mod sql;
 pub mod tools;
 
 pub use config::{McpConfig, McpConfigError};
