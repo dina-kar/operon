@@ -3,7 +3,9 @@
 //! (Ruling 8), and sparse values (Ruling 21). Task 7 adds the read side:
 //! search parameters, score conversion and thresholds (Ruling 7), and the
 //! RRF, DBSF and sparse references the tests compare the IR with (Rulings
-//! 9, 21).
+//! 9, 21). Task 8 adds the scores the gateway computes itself (Ruling 10):
+//! `recommend`'s strategies, `discover`, `context` and MMR, and the
+//! candidate bound of the searches they score.
 
 use std::collections::BTreeMap;
 
@@ -171,7 +173,9 @@ pub fn to_qdrant_score(distance: Distance, kind: &ScoreKind, ir_score: f32) -> f
 
 /// Qdrant's `score_threshold` (Ruling 7): `score > t` for vector and custom
 /// scores of Cosine and Dot, `score < t` for Euclid and Manhattan, and
-/// `score >= t` for fusion. A query without a query keeps every point.
+/// `score >= t` for fusion. A query without a query keeps every point
+/// (unreachable from a request: Qdrant refuses a threshold there, row
+/// T8-2).
 pub fn passes_threshold(distance: Distance, kind: &ScoreKind, score: f32, t: f32) -> bool {
     match kind {
         ScoreKind::Fusion => score >= t,
@@ -300,5 +304,195 @@ pub fn raw_similarity(distance: Distance, a: &[f32], b: &[f32]) -> f32 {
         }
         Distance::Euclid => -a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum::<f32>(),
         Distance::Manhattan => -a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f32>(),
+    }
+}
+
+// ----- gateway-scored queries (Task 8, Ruling 10) -----
+
+/// Qdrant's `scaled_fast_sigmoid`: `0.5 × (x / (1 + |x|) + 1)`
+/// (`qdrant:lib/common/common/src/math.rs`).
+fn sigmoid(x: f32) -> f32 {
+    0.5 * (x / (1.0 + x.abs()) + 1.0)
+}
+
+/// The element-wise mean of `vs` (none are empty).
+fn mean(vs: &[Vec<f32>]) -> Vec<f32> {
+    let mut out = vec![0.0_f32; vs.first().map_or(0, Vec::len)];
+    for v in vs {
+        out.iter_mut().zip(v).for_each(|(o, x)| *o += x);
+    }
+    out.iter_mut().for_each(|o| *o /= vs.len() as f32);
+    out
+}
+
+/// `recommend`'s `average_vector` query vector: `avg(pos)` without
+/// negatives, else `avg(pos) + avg(pos) - avg(neg)`
+/// (`qdrant:lib/segment/src/vector_storage/query/reco_query.rs`
+/// `avg_vector_for_recommendation`). At least one positive is required.
+pub fn average_vector(pos: &[Vec<f32>], neg: &[Vec<f32>]) -> Result<Vec<f32>, GatewayError> {
+    if pos.is_empty() {
+        return Err(GatewayError::BadRequest(
+            "No positive examples given".to_string(),
+        ));
+    }
+    let avg = mean(pos);
+    if neg.is_empty() {
+        return Ok(avg);
+    }
+    let avg_neg = mean(neg);
+    Ok(avg.iter().zip(&avg_neg).map(|(p, n)| p + p - n).collect())
+}
+
+/// The largest similarity of `c` to `vs`, `-inf` for none.
+fn max_similarity(distance: Distance, c: &[f32], vs: &[Vec<f32>]) -> f32 {
+    vs.iter()
+        .map(|v| raw_similarity(distance, c, v))
+        .fold(f32::NEG_INFINITY, |a, b| {
+            if b.total_cmp(&a).is_gt() { b } else { a }
+        })
+}
+
+/// `best_score`: `sig(p)` when the best positive similarity `p` beats the
+/// best negative one `n`, else `-sig(n)` (`reco_query.rs`
+/// `RecoBestScoreQuery::score_by`).
+pub fn best_score(distance: Distance, c: &[f32], pos: &[Vec<f32>], neg: &[Vec<f32>]) -> f32 {
+    let p = max_similarity(distance, c, pos);
+    let n = max_similarity(distance, c, neg);
+    if p > n { sigmoid(p) } else { -sigmoid(n) }
+}
+
+/// `sum_scores`: `Σ sim(c, pos) - Σ sim(c, neg)` (`reco_query.rs`
+/// `RecoSumScoresQuery::score_by`).
+pub fn sum_scores(distance: Distance, c: &[f32], pos: &[Vec<f32>], neg: &[Vec<f32>]) -> f32 {
+    let sum = |vs: &[Vec<f32>]| -> f32 { vs.iter().map(|v| raw_similarity(distance, c, v)).sum() };
+    sum(pos) - sum(neg)
+}
+
+/// `discover`: the rank over the pairs (+1 closer to the positive, -1
+/// closer to the negative, 0 on a tie) plus `sig(sim(c, target))`
+/// (`qdrant:lib/segment/src/vector_storage/query/discover_query.rs`).
+pub fn discover_score(
+    distance: Distance,
+    c: &[f32],
+    target: &[f32],
+    pairs: &[(Vec<f32>, Vec<f32>)],
+) -> f32 {
+    let rank: i32 = pairs
+        .iter()
+        .map(|(p, n)| {
+            raw_similarity(distance, c, p).total_cmp(&raw_similarity(distance, c, n)) as i32
+        })
+        .sum();
+    rank as f32 + sigmoid(raw_similarity(distance, c, target))
+}
+
+/// `context`: `Σ x / (1 + |x|)` over the pairs, with `x = min(sim(c, pos)
+/// - sim(c, neg) - f32::EPSILON, 0)` (`context_query.rs`
+/// `ContextPair::loss_by`); never positive.
+pub fn context_score(distance: Distance, c: &[f32], pairs: &[(Vec<f32>, Vec<f32>)]) -> f32 {
+    pairs
+        .iter()
+        .map(|(p, n)| {
+            let x =
+                (raw_similarity(distance, c, p) - raw_similarity(distance, c, n) - f32::EPSILON)
+                    .min(0.0);
+            x / (1.0 + x.abs())
+        })
+        .sum()
+}
+
+/// Maximal marginal relevance over `candidates`, as Qdrant picks
+/// (`qdrant:lib/shard/src/query/mmr/mod.rs` `maximal_marginal_relevance`):
+/// first the most relevant (`sim(query, c)`), then repeatedly the
+/// candidate with the largest `λ·rel - (1-λ)·max sim(c, picked)`; up to
+/// `limit` indexes into `candidates`, in pick order. Ties go to the last
+/// candidate in Qdrant's iteration order (an index set with swap-removal).
+pub fn mmr_select(
+    distance: Distance,
+    query: &[f32],
+    candidates: &[(PrimaryKey, Vec<f32>)],
+    lambda: f32,
+    limit: usize,
+) -> Vec<usize> {
+    let n = candidates.len();
+    if n == 0 || limit == 0 {
+        return Vec::new();
+    }
+    let relevance: Vec<f32> = candidates
+        .iter()
+        .map(|(_, v)| raw_similarity(distance, query, v))
+        .collect();
+    // `max_by_key` keeps the last of equal maxima.
+    let argmax = |remaining: &[usize], key: &dyn Fn(usize) -> f32| -> usize {
+        let mut best = 0;
+        for (at, &i) in remaining.iter().enumerate() {
+            if key(i).total_cmp(&key(remaining[best])).is_ge() {
+                best = at;
+            }
+        }
+        best
+    };
+    let mut remaining: Vec<usize> = (0..n).collect();
+    let mut picked = Vec::with_capacity(limit.min(n));
+    let first = argmax(&remaining, &|i| relevance[i]);
+    picked.push(remaining.swap_remove(first));
+    // The largest similarity of each candidate to the picks so far.
+    let mut nearest_pick = vec![f32::NEG_INFINITY; n];
+    while picked.len() < limit && !remaining.is_empty() {
+        let last = candidates[picked[picked.len() - 1]].1.as_slice();
+        for &i in &remaining {
+            let sim = raw_similarity(distance, &candidates[i].1, last);
+            if sim.total_cmp(&nearest_pick[i]).is_gt() {
+                nearest_pick[i] = sim;
+            }
+        }
+        let at = argmax(&remaining, &|i| {
+            lambda * relevance[i] - (1.0 - lambda) * nearest_pick[i]
+        });
+        picked.push(remaining.swap_remove(at));
+    }
+    picked
+}
+
+/// The `k` of each search a gateway-scored query reads (Ruling 10):
+/// `min(max(4 × (offset + limit), 100), max_candidates)`.
+pub fn candidate_k(offset: usize, limit: usize, max_candidates: usize) -> usize {
+    offset
+        .saturating_add(limit)
+        .saturating_mul(4)
+        .max(100)
+        .min(max_candidates)
+}
+
+/// How a gateway-scored plan scores a candidate's `using` vector (example
+/// vectors are checked and, for Cosine, normalized).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Scorer {
+    BestScore {
+        pos: Vec<Vec<f32>>,
+        neg: Vec<Vec<f32>>,
+    },
+    SumScores {
+        pos: Vec<Vec<f32>>,
+        neg: Vec<Vec<f32>>,
+    },
+    Discover {
+        target: Vec<f32>,
+        pairs: Vec<(Vec<f32>, Vec<f32>)>,
+    },
+    Context {
+        pairs: Vec<(Vec<f32>, Vec<f32>)>,
+    },
+}
+
+impl Scorer {
+    /// The score of candidate vector `c`.
+    pub fn score(&self, distance: Distance, c: &[f32]) -> f32 {
+        match self {
+            Scorer::BestScore { pos, neg } => best_score(distance, c, pos, neg),
+            Scorer::SumScores { pos, neg } => sum_scores(distance, c, pos, neg),
+            Scorer::Discover { target, pairs } => discover_score(distance, c, target, pairs),
+            Scorer::Context { pairs } => context_score(distance, c, pairs),
+        }
     }
 }

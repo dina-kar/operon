@@ -569,18 +569,23 @@ pub(crate) async fn execute(
     let mut ops = Vec::new();
     let mut must_exist = Vec::new();
     let mut from_filter = false;
+    // The ops the request lists itself, not resolved from a filter.
+    let mut listed = 0;
     for p in planned {
         let base = ops.len();
         must_exist.extend(p.must_exist.into_iter().map(|(i, pk)| (base + i, pk)));
         from_filter |= p.from_filter;
+        if !p.from_filter {
+            listed += p.ops.len();
+        }
         ops.extend(p.ops);
     }
     // Owner ruling O1: a request is one atomic write, so the service's
-    // limit holds for the whole request; name the way out.
-    if !from_filter && ops.len() > MAX_WRITE_OPS {
+    // limit holds for the ops it lists, even next to a filter operation
+    // (PR #51 review); name the way out.
+    if listed > MAX_WRITE_OPS {
         return Err(GatewayError::BadRequest(format!(
-            "a write request holds at most {MAX_WRITE_OPS} operations, got {}; split the batch into smaller requests",
-            ops.len()
+            "a write request holds at most {MAX_WRITE_OPS} operations, got {listed}; split the batch into smaller requests"
         )));
     }
     let opts = WriteOptions {

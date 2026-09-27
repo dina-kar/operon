@@ -45,7 +45,7 @@ pub fn id_to_grpc(id: &Value) -> pb::PointId {
 /// One gRPC vector value: the `vector` oneof first, else the deprecated
 /// `data` (+ `indices` for sparse, `vectors_count` for multi).
 #[allow(deprecated)]
-fn vector_input(v: &pb::Vector) -> VectorInput {
+pub(crate) fn vector_input(v: &pb::Vector) -> VectorInput {
     use pb::vector::Vector;
     match &v.vector {
         Some(Vector::Dense(d)) => VectorInput::Dense(d.data.clone()),

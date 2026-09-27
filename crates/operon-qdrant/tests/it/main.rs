@@ -2,6 +2,7 @@
 
 mod errors;
 mod filter;
+mod groups;
 mod ids;
 mod jsonpath;
 mod points;

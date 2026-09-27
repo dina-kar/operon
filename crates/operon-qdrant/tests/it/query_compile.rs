@@ -9,7 +9,7 @@ use operon_qdrant::model::filter::Filter;
 use operon_qdrant::model::query::{QueryRequest, SearchParams};
 use operon_qdrant::query::{Example, QueryPlan, ResolvedExamples, ScoreKind, compile_query};
 use operon_qdrant::schema::schema_from_create;
-use operon_qdrant::scoring::ann_params;
+use operon_qdrant::scoring::{Scorer, ann_params};
 use operon_qdrant::{GatewayError, QdrantConfig};
 use operon_query::{AnnParams, Fusion, Query, Retriever, SearchRequest, SparseParams};
 use serde_json::{Value, json};
@@ -50,6 +50,7 @@ fn compile(body: Value) -> Result<QueryPlan, GatewayError> {
 fn ir(body: Value) -> (SearchRequest, operon_qdrant::query::PostProcess) {
     match compile(body.clone()).unwrap_or_else(|e| panic!("{body}: {e}")) {
         QueryPlan::Ir { request, post } => (request, post),
+        other => panic!("{body}: not one IR search: {other:?}"),
     }
 }
 
@@ -472,24 +473,67 @@ fn fusion_without_prefetch_is_400() {
 
 #[test]
 fn root_without_query_and_two_prefetches_is_400() {
+    // Qdrant refuses prefetches without a query at every level
+    // (`qdrant:lib/collection/src/operations/universal_query/collection_query.rs`
+    // `validation`, row T8-1), with one prefetch as with several.
+    let merge = "A query is needed to merge the prefetches. Can't have prefetches without defining a query.";
+    assert_eq!(bad(json!({"prefetch": two_prefetches()})), merge);
     assert_eq!(
-        bad(json!({"prefetch": two_prefetches()})),
-        "A query is required when there are several prefetches"
+        bad(json!({"prefetch": {"query": [1.0, 0.0], "using": "e"}})),
+        merge
+    );
+    assert_eq!(
+        bad(json!({
+            "prefetch": {"prefetch": {"query": [1.0, 0.0], "using": "d"}, "limit": 3},
+            "query": {"fusion": "rrf"}
+        })),
+        merge
+    );
+    // A leaf prefetch without a query is Qdrant's scroll, which the IR
+    // cannot feed into a parent query.
+    assert_eq!(
+        unsupported(json!({"prefetch": {"filter": {"must": []}}, "query": {"fusion": "rrf"}})),
+        "a prefetch without a query"
     );
     // No query and no prefetch: filter order, score 0.0.
     let (req, post) = ir(json!({"filter": {"must": [{"key": "a", "match": {"value": 1}}]}}));
     assert!(req.retrievers.is_empty());
     assert_eq!(post.kind, ScoreKind::Filter);
-    // One prefetch: the prefetch is the retriever, and its kind is kept.
-    let (req, post) = ir(json!({"prefetch": {"query": [1.0, 0.0], "using": "e"}}));
-    assert!(matches!(&req.retrievers[0], Retriever::Vector { field, .. } if field == "e"));
-    assert_eq!(
-        (post.kind, post.distance),
-        (ScoreKind::Distance, Distance::Euclid)
-    );
     assert_eq!(
         bad(json!({"query": [1.0, 0.0], "limit": 0})),
         "limit must be at least 1"
+    );
+}
+
+#[test]
+fn qdrant_validation_rules_hold_at_every_level() {
+    // `score_threshold` needs a query (row T8-2).
+    let threshold = "A query is needed to use the score_threshold. Can't have score_threshold without defining a query.";
+    assert_eq!(bad(json!({"score_threshold": 0.5})), threshold);
+    assert_eq!(
+        bad(json!({"prefetch": {"score_threshold": 0.5}, "query": {"fusion": "rrf"}})),
+        threshold
+    );
+    // A fusion takes no `using` (row T8-3); `""` is the default.
+    let using = "Fusion queries cannot be combined with the 'using' field.";
+    assert_eq!(
+        bad(json!({"prefetch": two_prefetches(), "query": {"fusion": "rrf"}, "using": "d"})),
+        using
+    );
+    assert_eq!(
+        bad(json!({
+            "prefetch": {"prefetch": two_prefetches(), "query": {"rrf": {}}, "using": "d"},
+            "query": {"fusion": "dbsf"}
+        })),
+        using
+    );
+    let (req, _) =
+        ir(json!({"prefetch": two_prefetches(), "query": {"fusion": "rrf"}, "using": ""}));
+    assert_eq!(fused(&req).1, &Fusion::Rrf { k: 1 });
+    // Qdrant's order: prefetches first, then the threshold.
+    assert_eq!(
+        bad(json!({"prefetch": two_prefetches(), "score_threshold": 0.5})),
+        "A query is needed to merge the prefetches. Can't have prefetches without defining a query."
     );
 }
 
@@ -506,7 +550,9 @@ fn ids_use_the_resolved_examples_and_are_excluded() {
     );
     examples.exclude.insert(PrimaryKey::U64(7));
     let plan = compile_with(json!({"query": 7}), &examples).expect("compiles");
-    let QueryPlan::Ir { request, post } = plan;
+    let QueryPlan::Ir { request, post } = plan else {
+        panic!("{plan:?}")
+    };
     assert!(matches!(
         &request.retrievers[0],
         Retriever::Vector { query, .. } if *query == vec![0.6, 0.8]
@@ -520,9 +566,136 @@ fn ids_use_the_resolved_examples_and_are_excluded() {
         operon_qdrant::filter::exclude_ids(None, &[PrimaryKey::U64(7)])
     );
     let QueryPlan::Ir { request, .. } =
-        compile_with(json!({"query": {"nearest": 8}, "using": "s"}), &examples).expect("ok");
+        compile_with(json!({"query": {"nearest": 8}, "using": "s"}), &examples).expect("ok")
+    else {
+        panic!("not one IR search")
+    };
     assert!(matches!(
         &request.retrievers[0],
         Retriever::Sparse { query, .. } if *query == sparse(&[3], &[1.0])
     ));
+}
+
+// ----- Task 8: gateway-scored plans -----
+
+#[test]
+fn gateway_scored_kinds_compile_to_their_plans() {
+    // `average_vector` (the default) is one nearest search of the average,
+    // normalized for Cosine: 2·avg([1, 0]) − avg([0, 1]) = [2, −1].
+    let (req, post) =
+        ir(json!({"query": {"recommend": {"positive": [[1.0, 0.0]], "negative": [[0.0, 1.0]]}}}));
+    let norm = 5.0_f32.sqrt();
+    assert!(matches!(
+        &req.retrievers[..],
+        [Retriever::Vector { query, k: 10, .. }] if (query[0] - 2.0 / norm).abs() < 1e-6 && (query[1] + 1.0 / norm).abs() < 1e-6
+    ));
+    assert_eq!(post.kind, ScoreKind::Distance);
+    // `best_score`: one leg per positive, `candidate_k` each, fetching the
+    // `using` vector; custom scores in the vector's distance order.
+    let plan = compile(json!({
+        "query": {"recommend": {"positive": [[1.0, 0.0], [0.0, 1.0]], "negative": [[1.0, 1.0]], "strategy": "best_score"}},
+        "using": "e", "limit": 30, "offset": 5, "filter": {"must": [{"key": "a", "match": {"value": 1}}]}
+    }))
+    .expect("compiles");
+    let QueryPlan::Scored {
+        legs,
+        scorer,
+        using,
+        post,
+    } = plan
+    else {
+        panic!("{plan:?}")
+    };
+    assert_eq!((using.as_str(), legs.len()), ("e", 2));
+    for leg in &legs {
+        assert!(
+            matches!(&leg.retrievers[..], [Retriever::Vector { field, k: 140, .. }] if field == "e")
+        );
+        assert_eq!(leg.limit, 140);
+        assert_eq!(leg.select.vectors, vec!["e".to_string()]);
+        assert_eq!(
+            leg.filter,
+            Some(filter(
+                json!({"must": [{"key": "a", "match": {"value": 1}}]})
+            ))
+        );
+    }
+    assert!(
+        matches!(scorer, Scorer::BestScore { ref pos, ref neg } if pos.len() == 2 && neg.len() == 1)
+    );
+    assert_eq!(
+        (post.kind, post.distance, post.offset, post.limit),
+        (ScoreKind::Custom, Distance::Euclid, 5, 30)
+    );
+    // `best_score` with negatives only reads the negatives' neighbourhoods.
+    let plan = compile(json!({"query": {"recommend": {"negative": [[1.0, 1.0]], "strategy": "best_score"}}, "using": "d"}))
+        .expect("compiles");
+    assert!(matches!(plan, QueryPlan::Scored { ref legs, .. } if legs.len() == 1));
+    // Discover: the target and each pair's positive; context: the positives.
+    let pair = json!({"positive": [1.0, 0.0], "negative": [0.0, 1.0]});
+    let plan = compile(json!({"query": {"discover": {"target": [0.5, 0.5], "context": [pair, pair]}}, "using": "d"}))
+        .expect("compiles");
+    assert!(
+        matches!(plan, QueryPlan::Scored { ref legs, scorer: Scorer::Discover { .. }, .. } if legs.len() == 3)
+    );
+    let plan = compile(json!({"query": {"context": pair}, "using": "d"})).expect("compiles");
+    assert!(
+        matches!(plan, QueryPlan::Scored { ref legs, scorer: Scorer::Context { .. }, .. } if legs.len() == 1)
+    );
+    // MMR: one candidate search of `candidates_limit` (default `limit`).
+    let plan =
+        compile(json!({"query": {"nearest": [3.0, 4.0], "mmr": {"diversity": 0.2}}, "limit": 7}))
+            .expect("compiles");
+    let QueryPlan::Mmr {
+        candidates,
+        query,
+        lambda,
+        using,
+        post,
+    } = plan
+    else {
+        panic!("{plan:?}")
+    };
+    assert_eq!(
+        (candidates.limit, using.as_str(), post.kind),
+        (7, "", ScoreKind::Distance)
+    );
+    assert!((lambda - 0.8).abs() < 1e-6);
+    assert_eq!(query, vec![0.6, 0.8]);
+    let plan =
+        compile(json!({"query": {"nearest": [3.0, 4.0], "mmr": {"candidates_limit": 50_000}}}))
+            .expect("compiles");
+    assert!(matches!(plan, QueryPlan::Mmr { ref candidates, .. } if candidates.limit == 10_000));
+}
+
+#[test]
+fn gateway_scored_kinds_refuse_bad_inputs() {
+    assert_eq!(
+        bad(json!({"query": {"recommend": {"negative": [[1.0, 0.0]]}}})),
+        "No positive examples given"
+    );
+    assert_eq!(
+        bad(json!({"query": {"recommend": {"negative": [[1.0, 0.0]], "strategy": "sum_scores"}}})),
+        "No positive examples given"
+    );
+    assert_eq!(
+        bad(json!({"query": {"recommend": {"strategy": "best_score"}}})),
+        "No positive examples given"
+    );
+    assert_eq!(
+        bad(json!({"query": {"context": []}, "using": "d"})),
+        "Context query requires at least one pair"
+    );
+    assert_eq!(
+        bad(json!({"query": {"nearest": [1.0, 0.0], "mmr": {"diversity": 1.5}}})),
+        "mmr.diversity must be in the range [0, 1], got 1.5"
+    );
+    assert_eq!(
+        bad(json!({"query": {"recommend": {"positive": [[1.0, 0.0, 0.0]]}}})),
+        "Vector dimension error: expected dim: 2, got 3"
+    );
+    assert_eq!(
+        bad(json!({"query": {"discover": {"target": [1.0, 0.0]}}, "using": "nope"})),
+        "Not existing vector name error: nope"
+    );
 }

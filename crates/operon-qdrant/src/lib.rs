@@ -20,7 +20,14 @@
 //!   count with Qdrant's payload and vector selectors.
 //! - [`query`]: the universal query (Task 7) compiled to one IR search
 //!   (nearest, sparse nearest, prefetch, RRF and DBSF fusion, rescore), with
-//!   Qdrant's scores, thresholds and pages applied by the gateway.
+//!   Qdrant's scores, thresholds and pages applied by the gateway. Task 8
+//!   scores `recommend` (`best_score`, `sum_scores`), `discover`, `context`
+//!   and MMR in the gateway over IR candidates (Ruling 10), and serves the
+//!   legacy `search`, `recommend` and `discover` routes and methods (and
+//!   their batches) by converting them into universal queries (Ruling 1).
+//! - [`groups`]: `query/groups` and the legacy `search/groups` and
+//!   `recommend/groups` (Task 9), with Qdrant's collect-then-fill driver
+//!   over the compiled query and `with_lookup` (Ruling 11).
 //!
 //! # Divergences from Qdrant 1.19
 //!
@@ -73,22 +80,40 @@
 //!   O2).
 //! - A scroll `limit` over the search window (100,000) is refused, where
 //!   Qdrant reads that many points (row T7-11).
-//! - A write request holds at most 10,000 operations after planning (the
-//!   collection service's limit, one atomic write); a larger one is 400,
-//!   asking the client to split the batch. Qdrant has no such limit (row
-//!   T5-12, owner ruling O1).
+//! - A write request holds at most 10,000 operations after planning, not
+//!   counting those a filter resolved (the collection service's limit, one
+//!   atomic write); a larger one is 400, asking the client to split the
+//!   batch, even next to a filter operation. Qdrant has no such limit (row
+//!   T5-12, owner ruling O1, row T8-11).
 //! - Geo conditions and indexes, `nested`, `has_vector` and `slice`
 //!   conditions, keys with `[n]` or quoted keys holding `.`, payload-index
 //!   deletion and type changes are unsupported (Ruling 15).
 //! - DBSF over Euclid or Manhattan prefetches normalizes Operon's
 //!   larger-is-better scores (negated distances), where Qdrant normalizes
 //!   the raw distances and so favours far points (Ruling 9).
-//! - A prefetch without a query stands for its one child prefetch; its own
-//!   `limit` is not applied (row T7-4).
-//! - Weighted RRF, a prefetch `score_threshold`, `order_by`, `formula`,
-//!   `sample` and `relevance_feedback` queries, sparse rescoring (a sparse
-//!   root query over prefetches) and shard keys are unsupported (Rulings
-//!   15, 21).
+//! - `recommend` with `best_score` or `sum_scores`, `discover` and
+//!   `context` score the union of one candidate search per example (the
+//!   positives, or the target and each pair's positive; `best_score` without
+//!   positives reads the negatives'), each of `min(max(4 × (offset + limit),
+//!   100), max_candidates)` points, where Qdrant scores during its HNSW walk;
+//!   a point outside every neighbourhood is missed (Ruling 10). `sum_scores`
+//!   needs a positive, and a `context` query needs a pair, where Qdrant
+//!   accepts negatives alone and an empty context (row T8-7).
+//! - MMR's `candidates_limit` is capped at `max_candidates` (10,000), where
+//!   Qdrant refuses one over 16,384 (row T8-8).
+//! - Groups (Ruling 11, rows T9-2 and T9-3): a collect request leaves out
+//!   every point holding a key of a full group, where Qdrant's `except`
+//!   keeps a point with one key outside them; a fill request takes the
+//!   unsatisfied groups' integer or string keys, where Qdrant requires a
+//!   match in both lists at once; groups whose best hits tie are ordered by
+//!   key (integers first); an integer key above `i64::MAX` voids its point;
+//!   MMR's default `candidates_limit` under groups is `limit × group_size`,
+//!   where Qdrant takes `limit`.
+//! - Weighted RRF, a prefetch `score_threshold`, a leaf prefetch without a
+//!   query (Qdrant's scroll of `limit` points; row T8-1), `order_by`,
+//!   `formula`, `sample` and `relevance_feedback` queries, sparse rescoring
+//!   (a sparse root query over prefetches) and shard keys are unsupported
+//!   (Rulings 15, 21).
 
 // The write futures hold the collection service's futures, whose `Send`
 // check walks deep SQL types.
@@ -108,6 +133,7 @@ pub mod convert;
 pub mod ctx;
 pub mod error;
 pub mod filter;
+pub mod groups;
 mod grpc;
 pub mod ids;
 pub mod jsonpath;

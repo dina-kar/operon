@@ -8,11 +8,15 @@ mod contract;
 #[cfg(feature = "qdrant")]
 mod filters;
 #[cfg(feature = "qdrant")]
+mod groups;
+#[cfg(feature = "qdrant")]
 mod harness;
 #[cfg(feature = "qdrant")]
 mod query;
 #[cfg(feature = "qdrant")]
 mod reads;
+#[cfg(feature = "qdrant")]
+mod scored;
 #[cfg(feature = "qdrant")]
 mod service;
 #[cfg(feature = "qdrant")]
