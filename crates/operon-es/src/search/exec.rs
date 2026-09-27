@@ -523,7 +523,12 @@ async fn run_multi(
         render.get_or_insert_with(|| spec.clone());
         calls.push(async move { run_single(gw, ctx, view, request, &spec).await });
     }
-    let parts = futures::future::join_all(calls)
+    // At most `msearch_concurrency` index searches at once, so an `_all`
+    // search over many collections does not run them all together (PR #75
+    // review); `buffered` keeps the part order.
+    let parts = futures::stream::iter(calls)
+        .buffered(gw.config().msearch_concurrency.max(1))
+        .collect::<Vec<_>>()
         .await
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;

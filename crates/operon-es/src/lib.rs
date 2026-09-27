@@ -122,7 +122,8 @@ pub struct EsConfig {
     pub namespace: String,
     /// `http.max_content_length`: 100 MiB.
     pub max_body_bytes: usize,
-    /// `_msearch` searches in flight per request (8).
+    /// `_msearch` searches in flight per request, and index searches in
+    /// flight per multi-index search (8).
     pub msearch_concurrency: usize,
     /// `GET /`'s `name` ("operon").
     pub node_name: String,
