@@ -42,7 +42,15 @@ PIN_MANIFEST_HEADER = "operon-pin-manifest"
 ID_TYPE_HEADER = "operon-id-type"
 
 _CALL_HEADER = adbc_driver_flightsql.DatabaseOptions.RPC_CALL_HEADER_PREFIX.value
-_TIMEOUT_QUERY = adbc_driver_flightsql.DatabaseOptions.TIMEOUT_QUERY.value
+# The client timeout bounds every call: planning (query), reading results (fetch), ingest (update).
+_TIMEOUTS = tuple(
+    option.value
+    for option in (
+        adbc_driver_flightsql.DatabaseOptions.TIMEOUT_QUERY,
+        adbc_driver_flightsql.DatabaseOptions.TIMEOUT_FETCH,
+        adbc_driver_flightsql.DatabaseOptions.TIMEOUT_UPDATE,
+    )
+)
 _ID_TYPES = ("str", "u64", "uuid")
 
 _Status = adbc_driver_manager.AdbcStatusCode
@@ -100,7 +108,8 @@ class FlightSqlClient:
         self, uri: str = "grpc://127.0.0.1:8082", *, namespace: str, timeout: float = 30.0
     ) -> None:
         self.namespace = namespace
-        db_kwargs = {_CALL_HEADER + NAMESPACE_HEADER: namespace, _TIMEOUT_QUERY: str(timeout)}
+        db_kwargs = {_CALL_HEADER + NAMESPACE_HEADER: namespace}
+        db_kwargs.update(dict.fromkeys(_TIMEOUTS, str(timeout)))
         with _mapped():
             # No transactions on the server: autocommit, or ADBC would ask for one.
             self._conn = flightsql_dbapi.connect(uri, db_kwargs=db_kwargs, autocommit=True)

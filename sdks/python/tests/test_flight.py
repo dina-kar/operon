@@ -21,6 +21,7 @@ def test_importing_operon_does_not_import_pyarrow() -> None:
 
 pytest.importorskip("adbc_driver_flightsql")
 
+import adbc_driver_flightsql.dbapi as flightsql_dbapi  # noqa: E402
 import pyarrow as pa  # noqa: E402
 from conftest import kb_schema  # noqa: E402
 
@@ -41,6 +42,23 @@ def _count(flight: FlightSqlClient, table: str, **kwargs: object) -> int:
     value = result.column("n")[0].as_py()
     assert isinstance(value, int)
     return value
+
+
+def test_the_timeout_bounds_query_fetch_and_update_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    def connect(uri: str, **kwargs: object) -> object:
+        seen.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(flightsql_dbapi, "connect", connect)
+    FlightSqlClient("grpc://127.0.0.1:1", namespace="n", timeout=7.5)
+    db_kwargs = seen["db_kwargs"]
+    assert isinstance(db_kwargs, dict)
+    for kind in ("query", "fetch", "update"):
+        assert db_kwargs[f"adbc.flight.sql.rpc.timeout_seconds.{kind}"] == "7.5"
 
 
 @pytest.mark.flight
