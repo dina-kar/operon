@@ -5695,6 +5695,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "operon-meta-tikv"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures",
+ "operon-common",
+ "operon-meta-conformance",
+ "operon-tikv",
+ "postcard",
+ "serde",
+ "tokio",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "operon-pk"
 version = "0.0.1"
 dependencies = [
