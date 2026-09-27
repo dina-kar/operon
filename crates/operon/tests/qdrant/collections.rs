@@ -843,17 +843,24 @@ async fn snapshots_list_manifest_versions() {
     let qd = Qd::start().await;
     qd.create("c", json!({"vectors": {"size": 2, "distance": "Cosine"}}))
         .await;
+    // An empty collection has committed no manifest: its snapshot is
+    // version 0, the empty collection, and the list shows it (the Python
+    // client run of Task 10 found a 503 where Qdrant answers).
     let (status, body) = qd.post("/collections/c/snapshots", None).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
-    assert_eq!(
-        error(&body),
-        "Service unavailable: no committed manifest yet"
-    );
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let empty = body["result"].clone();
+    assert_eq!(empty["name"], "c-00000000000000000000.snapshot", "{body}");
+    assert_eq!(empty["size"], 0, "{body}");
+    let (status, body) = qd.get("/collections/c/snapshots", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["result"], json!([empty]), "{body}");
+    // Right after the first write the snapshot waits for the first
+    // manifest, which holds the write.
     qd.write_docs("c", 4).await;
-    qd.settled("c").await;
     let (status, body) = qd.post("/collections/c/snapshots?wait=true", None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let created = body["result"].clone();
+    assert_ne!(created["name"], empty["name"], "{body}");
     let name = created["name"].as_str().expect("name");
     let digits = name
         .strip_prefix("c-")
