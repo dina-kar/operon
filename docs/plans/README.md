@@ -64,12 +64,12 @@ M2 builds on D1's engine: GDPR erasure orchestration as a saga with its deadline
 
 ## Track SC: the Loam Commons showcase suite (a separate project, after the release)
 
-Design reference: [22 Loam Commons: an open-source showcase suite on Loam](../design/22-showcase-suite.md) (D-SC-1 … D-SC-10, numbers assigned at merge). Plane, Forgejo, Zulip, PostHog and GlitchTip, unmodified, behind Keycloak OIDC and one OpenFGA model, deployed on Loam and used to build Loam. The code lives in `dina-kar/loam-commons`; SC1 changes no engine code.
+Design reference: [22 Loam Commons: an open-source showcase suite on Loam](../design/22-showcase-suite.md) (D-SC-1 … D-SC-10, numbers assigned at merge). Plane, Forgejo, Zulip, GlitchTip, OpenPanel and Matomo (amended 2026-09-28: PostHog, Sentry and TiDB dropped), unmodified, behind Keycloak OIDC and one OpenFGA model, deployed on Loam and used to build Loam. The code lives in `dina-kar/loam-commons`; SC1 changes no engine code.
 
 | Plan | Scope | Depends on | Status |
 |---|---|---|---|
 | [SC1: Loam Commons](2026-09-28-sc1-showcase-suite.md) | Suite repo and license check; Keycloak realm and SSO for every app (Plane through Forgejo, PostHog behind forward-auth); the cross-app OpenFGA model; provisioning sagas and reconcile on Loam Durable; RustFS storage; Forgejo's issue search on Loam's ES API; OTLP logs; unified search, the Live activity feed and the MCP assistant; Compose and Helm; the dogfooding cutover | v1.0 (M1 + M2), the unified auth plan (Q30) implemented, §19 OIDC login, M2 OTLP logs (D73), D2 durable tenancy, R1/R2 sync API | Not started |
-| SC2+ | The owner's 2026-09-28 directions (D-SC-12, D-SC-13): apps moved onto Loam's Postgres write surface, one at a time; the PostHog fork on Loam's Iceberg analytics, staged | the engine's Postgres-write design, M4 (Iceberg) | Not yet planned |
+| SC2+ | The owner's 2026-09-28 directions (D-SC-12, D-SC-13): apps moved onto Loam's Postgres write surface, one at a time; the OpenPanel fork on Loam's Iceberg analytics in place of ClickHouse (D-SC-15) | the engine's Postgres-write design over TiKV, M4 (Iceberg) | Not yet planned |
 
 ## Later milestones
 

@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists what it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (names, paths, versions, settings), use them verbatim. The code is not pre-written in this plan (M0.3 Ruling 1).
 
+> **Amended 2026-09-28 (design §22 §13b):** PostHog is replaced by **OpenPanel** (FOSS, AGPL-3.0; upstream ClickHouse in SC1, behind forward-auth until OIDC lands) and **Matomo** (GPL-3.0; MariaDB; the LoginOIDC plugin). **Task 7 (TiDB) is dropped**, and every PostHog step below applies to OpenPanel and Matomo instead. The OpenPanel-on-Iceberg fork (D-SC-15) is a later SC plan.
+
 > **Status: Not started** (written 2026-09-28, ahead of time). SC1 runs **after the Loam release (v1.0 = M1 + M2)**. It depends on the unified auth plan (Q30) being implemented, and it starts with a Task 0 that reconciles this plan with what then exists. The work lives in a new repository, **`dina-kar/loam-commons`** (D-SC-1); this plan stays in the engine repository beside the design it implements. Branches `sc1-t<N>`, stacked; PRs target `main` of `loam-commons`. SC1 changes no engine code: every engine gap it finds is filed as an engine issue and worked in the engine's own milestones (D-SC-10).
 
 **Goal:** Ship design §22 (D-SC-1 … D-SC-10):
