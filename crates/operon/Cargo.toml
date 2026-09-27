@@ -28,9 +28,11 @@ operon-hot.workspace = true
 operon-link.workspace = true
 operon-log.workspace = true
 operon-meta.workspace = true
+operon-meta-tikv = { workspace = true, optional = true }
 operon-qdrant = { workspace = true, optional = true }
 operon-query.workspace = true
 operon-store.workspace = true
+operon-tikv = { workspace = true, optional = true }
 operon-worker.workspace = true
 reqwest.workspace = true
 serde.workspace = true
@@ -45,9 +47,12 @@ ulid.workspace = true
 url.workspace = true
 
 [features]
-default = ["es", "flight", "hnsw", "qdrant"]
+default = ["es", "flight", "hnsw", "meta-tikv", "qdrant"]
 # Serve the Elasticsearch REST API (plan M1.5; `--es-listen`).
 es = ["dep:operon-es"]
+# The TiKV metastore (R1 plan Task 6; `--meta tikv://…` on `dev` and
+# `standalone`), with the cluster MVCC GC loop it runs.
+meta-tikv = ["dep:operon-meta-tikv", "dep:operon-tikv"]
 # Serve Arrow Flight SQL (Task 12; `--flight-sql-listen`).
 flight = []
 # Serve the Qdrant REST and gRPC APIs (plan M1.4; `--qdrant-listen`).
@@ -79,6 +84,8 @@ futures.workspace = true
 object_store.workspace = true
 # The reference evaluator of the Qdrant filter tests (plan M1.4 Task 4).
 operon-qdrant = { workspace = true, features = ["test-util"] }
+# tests/meta_tikv.rs: the cluster harness (operon_tikv::testing).
+operon-tikv.workspace = true
 proptest.workspace = true
 prost.workspace = true
 prost-types.workspace = true

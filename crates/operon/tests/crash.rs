@@ -25,6 +25,11 @@
 //! `cargo test -p operon --features failpoints --test crash`.
 //! `CRASH_KILLS=<n>` sets the SIGKILL loops' iterations (default 20, and 10
 //! for the collection loop).
+//!
+//! `OPERON_GATE_META=tikv://<pd>/<keyspace>` runs the gate on the TiKV
+//! metastore (R1 plan Task 6; CI's nightly TiKV job): every `operon dev`
+//! gets `--meta` with a random root per test, and the checks open that root
+//! in this process. The two snapshot rows are openraft-only and skip there.
 #![cfg(feature = "failpoints")]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -42,6 +47,7 @@ use operon_collection::{
     DynamicMapping, FieldKind, FieldSpec, LanceConfig, LanceEnv, ManifestCache, PrimaryKey,
     VectorSpec, fold_stream, live_manifest, partition_of, verify_collection,
 };
+use operon_common::meta::MetaStore;
 use operon_common::{CollectionId, NamespaceId, StreamId};
 use operon_log::{FetchRequest, LogReader};
 use operon_meta::{
@@ -66,6 +72,71 @@ const GC_GRACE_MS: &str = "1500";
 /// become 5 s, so a build on a starved CI runner still commits and reaches
 /// the failpoint instead of ending `Blocked` on every retry (CI fix C2).
 const BUILD_GC_GRACE: &[&str] = &["--gc-grace-ms", "10000"];
+
+/// Runs the gate on this metastore instead of the embedded one (module
+/// docs).
+const GATE_META_ENV: &str = "OPERON_GATE_META";
+
+/// The `--meta` URL of the test using `dir`: `OPERON_GATE_META` with a
+/// random root, drawn on first use and kept in `<dir>/meta-url` so restarts
+/// and checks use the same one; `None` on the embedded metastore.
+fn gate_meta(dir: &Path) -> Option<String> {
+    let path = dir.join("meta-url");
+    if let Ok(url) = std::fs::read_to_string(&path) {
+        return Some(url);
+    }
+    let base = std::env::var(GATE_META_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())?;
+    if !cfg!(feature = "meta-tikv") {
+        panic!("{GATE_META_ENV} needs the meta-tikv feature");
+    }
+    let url = format!(
+        "{}?root={:032x}",
+        base.trim().trim_end_matches('/'),
+        ulid::Ulid::generate().0
+    );
+    std::fs::write(&path, &url).expect("write the metastore URL");
+    Some(url)
+}
+
+/// Whether the gate runs on the TiKV metastore; prints a `skipped:` line for
+/// `row` when it does, for rows that only exist on the embedded one.
+fn skipped_on_tikv(row: &str) -> bool {
+    let on = std::env::var(GATE_META_ENV).is_ok_and(|v| !v.trim().is_empty());
+    if on {
+        eprintln!("skipped: {row} is an openraft row ({GATE_META_ENV} is set)");
+    }
+    on
+}
+
+/// A metastore opened in this process while no server runs.
+enum OpenMeta {
+    Raft(MetaNode),
+    #[cfg(feature = "meta-tikv")]
+    Tikv,
+}
+
+impl OpenMeta {
+    async fn shutdown(self) {
+        match self {
+            OpenMeta::Raft(node) => node.shutdown().await.expect("shutdown"),
+            #[cfg(feature = "meta-tikv")]
+            OpenMeta::Tikv => {}
+        }
+    }
+}
+
+/// The TiKV metastore named by `url`.
+#[cfg(feature = "meta-tikv")]
+async fn open_tikv(url: &str) -> operon_meta_tikv::TikvMeta {
+    match operon::MetaBackend::parse(url).expect("the gate's metastore URL") {
+        operon::MetaBackend::Tikv(config) => operon_meta_tikv::TikvMeta::open(config)
+            .await
+            .expect("open the TiKV metastore"),
+        operon::MetaBackend::Raft => unreachable!("a tikv:// URL"),
+    }
+}
 
 /// A running `operon dev` child process.
 struct Dev {
@@ -133,6 +204,9 @@ impl Dev {
                 "200",
             ])
             .args(extra);
+        if let Some(url) = gate_meta(dir) {
+            command.arg("--meta").arg(url);
+        }
         if !extra.contains(&"--gc-grace-ms") {
             command.args(["--gc-grace-ms", GC_GRACE_MS]);
         }
@@ -574,6 +648,16 @@ async fn check(api: &Api, model: &Model, what: &str) {
 /// Opens the stopped server's metastore in this process and checks its
 /// invariants.
 async fn check_meta(dir: &Path, what: &str) {
+    #[cfg(feature = "meta-tikv")]
+    if let Some(url) = gate_meta(dir) {
+        let violations = open_tikv(&url)
+            .await
+            .check_invariants()
+            .await
+            .expect("read");
+        assert!(violations.is_empty(), "{what}: {violations:?}");
+        return;
+    }
     let bucket = url::Url::from_directory_path(dir.join("bucket").canonicalize().expect("bucket"))
         .expect("url");
     let store = Store::from_url(bucket.as_str(), Vec::<(String, String)>::new()).expect("store");
@@ -591,6 +675,9 @@ async fn check_meta(dir: &Path, what: &str) {
 /// Arms `point` to abort on its `hit`-th hit, drives load until the process
 /// dies, restarts it, and checks everything.
 async fn crash_at(point: &str, hit: u32) {
+    if point.starts_with("meta.snapshot.") && skipped_on_tikv(point) {
+        return;
+    }
     let dir = TempDir::new().expect("temp dir");
     let mut dev = Dev::start(dir.path(), Some((point, hit)));
     let api = Api::new(&dev);
@@ -764,8 +851,19 @@ fn bucket_store(dir: &Path) -> Store {
     Store::from_url(url.as_str(), Vec::<(String, String)>::new()).expect("store")
 }
 
-/// The stopped server's metastore, opened in this process, with a client.
-async fn open_meta(dir: &Path, store: &Store) -> (MetaNode, MetaClient) {
+/// The stopped server's metastore, opened in this process: the embedded
+/// one, or the gate's TiKV root.
+async fn open_meta(dir: &Path, store: &Store) -> (OpenMeta, Arc<dyn MetaStore>) {
+    #[cfg(feature = "meta-tikv")]
+    if let Some(url) = gate_meta(dir) {
+        return (OpenMeta::Tikv, Arc::new(open_tikv(&url).await));
+    }
+    let (node, meta) = open_raft(dir, store).await;
+    (OpenMeta::Raft(node), meta.into())
+}
+
+/// The stopped server's embedded metastore, with a client.
+async fn open_raft(dir: &Path, store: &Store) -> (MetaNode, MetaClient) {
     let node = MetaNode::start(
         MetaConfig::new(1, dir.join("meta"), store.clone()),
         &Router::new(),
@@ -820,7 +918,7 @@ async fn create_docs(dir: &Path, keys: u64) -> Docs {
         .create_collection(ns, "docs", schema.clone(), COLLECTION_PARTITIONS)
         .await
         .expect("collection");
-    node.shutdown().await.expect("shutdown");
+    node.shutdown().await;
     Docs {
         ns,
         cid,
@@ -1018,7 +1116,7 @@ async fn check_docs(dir: &Path, docs: &Docs, model: &DocModel, what: &str) -> Co
     let expected = fold_stream(&docs.schema, COLLECTION_PARTITIONS, &records);
     let config = CollectionConfig::default();
     let ctx = CollectionContext {
-        meta: meta.clone().into(),
+        meta: meta.clone(),
         store: store.clone(),
         cache: cache.clone(),
         lance: LanceEnv::new(store.clone(), LanceConfig::default()),
@@ -1051,7 +1149,7 @@ async fn check_docs(dir: &Path, docs: &Docs, model: &DocModel, what: &str) -> Co
         query_vector_index(&ctx, docs, what).await;
     }
     cache.close().await.expect("close the cache");
-    node.shutdown().await.expect("shutdown");
+    node.shutdown().await;
     manifest
 }
 

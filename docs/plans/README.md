@@ -38,9 +38,33 @@ Only M1.1 and M1.2a were written against code that existed. Each later plan star
 
 M1.4, M1.5 and M1.6 can run in parallel once M1.2 is merged.
 
+## Track R: Loam Live, TiDB SQL and the TiKV metastore (parallel to M1)
+
+Design reference: [20 Loam Live: reactive database on TiKV](../design/20-reactive-database-on-tikv.md) (D116–D131). Track R runs beside M1 and M2, interleaved with them because the build machine builds one crate graph at a time (D127).
+
+| Plan | Scope | Depends on | Status |
+|---|---|---|---|
+| [R1: TiKV metastore and the reactive core](2026-09-27-r1-reactive-core.md) | `operon-tikv` (client layer, keyspace bootstrap, fault hooks, GC loop); `operon-meta-tikv` with conformance and fault matrix (D124); `operon-live`: documents, indexes, the commit journal, `LiveTxn`, reactive subscriptions, the connect-rust sync API; QuickJS functions (D120); the generated TypeScript client; TiDB SQL in the dev playground (D123); the reactive correctness and transaction checkers | M1.2a (the `MetaStore` trait), M1.3 as merged | Planned |
+| R2 | The multi-tenant router and keyspaces; mandatory BR log backup (PITR) of Live and metastore keyspaces to object storage (D131); the `ControlStore` on Live (D125); actions and scheduled functions; online index backfill; serializable ranges (Q31); multi-node sessions; Python and Go clients; per-tenant TiDB pools; a `gc_blocked_seconds` gauge per keyspace and an alert on repeated cluster-GC keyspace failures (R1 row T3-12); batched `drop_collection` for collections with large indexes (R1 row T5-15) | R1 | Not yet planned |
+| R3 | The collections bridge and `ctx.search` (D129); auth through the unified auth plan (D111); Swift and Kotlin clients; React hooks | R2, M2 stream API producers (D72) | Not yet planned |
+| R4 | tidb-operator and the Helm chart; TiDB pools that scale to zero; TiFlash as an optional SQL add-on (D131); BYOC for Live; ~~durable actions (Resonate)~~ moved to D3 (D145) | R3 | Not yet planned |
+
+## Track D: durable execution on embedded Resonate (parallel to M1 and R)
+
+Design reference: [21 Loam Durable: embedded Resonate and durable patterns](../design/21-durable-execution.md) (D138–D147). Track D runs beside M1, M2 and R, interleaved on the one-build machine like track R (D127, D145). It adds crates and routes and rewrites no M1 code before M1 exits (D143). It amends §14 (D19): the Resonate server is linked into the `operon` binary instead of running in a `gateway` role, and Resonate Phase A leaves M3.
+
+| Plan | Scope | Depends on | Status |
+|---|---|---|---|
+| [D1: Embedded durable execution, operations API, bulk import](2026-09-27-d1-durable-execution.md) | `operon-durable`: the Resonate server behind the `durable` feature on 127.0.0.1:8001 (loopback only); SQLite and TiDB backends from the pinned fork `dina-kar/resonate`; Loam's durable runtime (Rust SDK over an in-process network); the operations API (`/v1/operations/{id}`, idempotency keys); bulk import from object storage with per-file fan-out; scheduled incremental import; porcupine against `operon` and the SDK example suite | M1.2 (write path, Flight mapping), R1 Task 1 (TiDB playground) | Planned |
+| D2 | Per-namespace instances and the dispatcher (after the unified auth plan, D111); the TiKV `Store` backend (upstream PR 2); approval gates for destructive operations; tenant provisioning and deprovisioning sagas (with R2); push with an outbound allowlist; retention (Q40); operations in the console | D1, the unified auth plan, R2 | Not yet planned |
+| D3 | Durable Live actions (with R3); the agent runtime on durable functions (multi-agent handoffs, deep research sub-agents); MCP operation tools; agent traces into Loam over OTLP (Q43); re-embedding operations once `embed()` links exist | D2, R3 | Not yet planned |
+| D4 | The connect-rust `loam://` transport (after upstream's axum 0.8 bump); Loam-hosted workers; §14 Phase B (change stream, search tables, execution graph) | D3 | Not yet planned |
+
+M2 builds on D1's engine: GDPR erasure orchestration as a saga with its deadline sweep, and restore and online index backfill as operations (D143).
+
 ## Later milestones
 
-The roadmap was revised on 2026-09-25 after the [architecture review](../architecture-review-and-recommendations.md) (D42–D50), and on 2026-09-26 for the metastore backends, the namespace router, tenancy and erasure ([§18](../design/18-metastore-backends-and-router.md), D58–D70), then for streams, Kafka, routing and consistency tokens (D71–D76), and for the gaps a comparison with turbopuffer found (D86–D103: backpressure, filter writes and a limits page before launch; the P1 items in M2 and M2.x). **v1.0 is M1 plus M2, production hardening**, including the native stream API core and OTLP logs ingest (D72, D73). **v1.1 is M2.x, cloud and BYOC.** After them come M3 (native graph for GraphRAG and the Resonate durable-execution surface), M4 (analytics on Iceberg), M5 (the Kafka wire-protocol gateway with the RisingWave companion, changelog streams, `express` and Flight replay; D74) and M6 (scale). The Neo4j and ClickHouse protocol surfaces are no longer planned, and FoundationDB is dropped (D71). Plans for M2 onward will be written once M1 is done. Their scope and exit gates are in [12-roadmap-testing-risks.md](../design/12-roadmap-testing-risks.md).
+The roadmap was revised on 2026-09-25 after the [architecture review](../architecture-review-and-recommendations.md) (D42–D50), and on 2026-09-26 for the metastore backends, the namespace router, tenancy and erasure ([§18](../design/18-metastore-backends-and-router.md), D58–D70), then for streams, Kafka, routing and consistency tokens (D71–D76), and for the gaps a comparison with turbopuffer found (D86–D103: backpressure, filter writes and a limits page before launch; the P1 items in M2 and M2.x). **v1.0 is M1 plus M2, production hardening**, including the native stream API core and OTLP logs ingest (D72, D73). **v1.1 is M2.x, cloud and BYOC.** After them come M3 (native graph for GraphRAG; the Resonate durable-execution surface moved to track D, D145), M4 (analytics on Iceberg), M5 (the Kafka wire-protocol gateway with the RisingWave companion, changelog streams, `express` and Flight replay; D74) and M6 (scale). The Neo4j and ClickHouse protocol surfaces are no longer planned, and FoundationDB is dropped (D71). Plans for M2 onward will be written once M1 is done. Their scope and exit gates are in [12-roadmap-testing-risks.md](../design/12-roadmap-testing-risks.md).
 
 Future plans, in their expected order (the split into plans is fixed when each milestone is planned):
 
@@ -67,4 +91,4 @@ Future plans, in their expected order (the split into plans is fixed when each m
 | M2.x | Collection copy across namespaces, buckets, regions and orgs with a re-key, and the asynchronous operations API (D90) | §10 §6 |
 | M2.x | Console SSO, OIDC/JWT, per-org IP allowlists, PrivateLink and Private Service Connect (D102); audit exports and the console view (D100); billing on logical bytes (D103) | §10 §4–§5 |
 | M5 | The Kafka wire-protocol gateway, staged: produce and fetch, idempotent producers, consumer groups (D74); the RisingWave companion (D22); changelog streams, `express`, Flight replay | §02 §7.2, §02 §8.1 |
-| M6 | `ShardedMetaStore`, namespace moves, size-class placement (D63); `operon-meta-tidb` (D58) | §18 §2.4, §18 §5 |
+| M6 | `ShardedMetaStore`, namespace moves, size-class placement (D63); ~~`operon-meta-tidb` (D58)~~, superseded by `operon-meta-tikv` in R1 (D124) | §18 §5, §20 §11 |
