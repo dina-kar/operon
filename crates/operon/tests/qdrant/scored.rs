@@ -1,8 +1,13 @@
 //! Gateway-scored queries end to end (plan M1.4 Task 8, Ruling 10):
 //! `recommend`'s strategies, `discover`, `context` and MMR, against
-//! brute-force references over every point.
+//! brute-force references over every point; then the legacy `search`,
+//! `recommend` and `discover` routes, their batches and gRPC methods.
+
+// The legacy gRPC methods are deprecated in Qdrant's protos.
+#![allow(deprecated)]
 
 use operon_collection::{Distance, PrimaryKey};
+use operon_qdrant::proto::qdrant as pb;
 use operon_qdrant::scoring::{
     best_score, context_score, cosine_normalize, discover_score, mmr_select, sum_scores,
 };
@@ -11,7 +16,8 @@ use serde_json::{Value, json};
 
 use crate::harness::Qd;
 use crate::query::{
-    assert_hits, brute, create, error, hits, ids, query, query_raw, random_collection, upsert,
+    ab_random, assert_hits, brute, create, dense_input, error, grpc_hits, hits, ids, query,
+    query_raw, random_collection, sparse_collection, upsert,
 };
 
 // ----- helpers -----
@@ -243,7 +249,9 @@ async fn example_ids_are_excluded_only_from_their_own_collection() {
     // other collection's vector.
     let got = hits(&query(&qd, "own", reco(json!({"collection": "other"}))).await);
     assert!(ids(&got).contains(&1));
-    let want = brute_scored(d, &points, &[], 40, |c| sum_scores(d, c, &[v.clone()], &[]));
+    let want = brute_scored(d, &points, &[], 40, |c| {
+        sum_scores(d, c, std::slice::from_ref(&v), &[])
+    });
     assert_hits(&got, &want, 1e-5);
 }
 
@@ -312,4 +320,475 @@ async fn mmr_matches_the_reference() {
     let mut want_ids: Vec<u64> = pool[..3].iter().map(|(id, _)| *id).collect();
     want_ids.sort_unstable();
     assert_eq!(got_ids, want_ids);
+}
+
+// ----- legacy routes (semantics 5–6) -----
+
+/// A legacy route's result, which must succeed: a bare list, or a list of
+/// lists for a batch.
+async fn legacy(qd: &Qd, coll: &str, route: &str, body: Value) -> Value {
+    let (status, reply) = qd
+        .post(
+            &format!("/collections/{coll}/points/{route}"),
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{route} {body} → {reply}");
+    assert_eq!(reply["status"], "ok");
+    reply["result"].clone()
+}
+
+#[tokio::test]
+async fn legacy_search_and_query_agree() {
+    let qd = Qd::start().await;
+    let mut client = qd.points().await;
+    for (coll, distance, seed) in [
+        ("lc", Distance::Cosine, 201),
+        ("le", Distance::Euclid, 202),
+        ("ld", Distance::Dot, 203),
+    ] {
+        let points = random_collection(&qd, coll, distance, 4, 80, seed).await;
+        let q = vec![0.2, -0.1, 0.6, 0.3];
+        let filter = json!({"must": [{"key": "g", "match": {"value": 1}}]});
+        let want = hits(
+            &query(
+                &qd,
+                coll,
+                json!({"query": q, "using": "", "limit": 7, "offset": 2, "filter": filter}),
+            )
+            .await,
+        );
+        for vector in [json!(q), json!({"name": "", "vector": q})] {
+            let body = json!({"vector": vector, "limit": 7, "offset": 2, "filter": filter});
+            assert_hits(&hits(&legacy(&qd, coll, "search", body).await), &want, 1e-6);
+        }
+        // `top` is `limit`'s alias; the brute force agrees.
+        let got = hits(&legacy(&qd, coll, "search", json!({"vector": q, "top": 5})).await);
+        assert_hits(&got, &brute(distance, &q, &points, 5), 1e-5);
+        let reply = client
+            .search(pb::SearchPoints {
+                collection_name: coll.into(),
+                vector: q.clone(),
+                limit: 5,
+                ..Default::default()
+            })
+            .await
+            .expect("Search")
+            .into_inner();
+        assert_hits(&grpc_hits(&reply.result), &got, 1e-6);
+    }
+    // A named vector: `{name, vector}` is `using`.
+    ab_random(&qd, "ab").await;
+    let q = [0.4_f32, 0.1, -0.2, 0.9];
+    let want = hits(&query(&qd, "ab", json!({"query": q, "using": "b", "limit": 6})).await);
+    let got = hits(
+        &legacy(
+            &qd,
+            "ab",
+            "search",
+            json!({"vector": {"name": "b", "vector": q}, "limit": 6}),
+        )
+        .await,
+    );
+    assert_hits(&got, &want, 1e-6);
+    // A sparse vector: `{name, vector: {indices, values}}`, and gRPC
+    // `sparse_indices`.
+    sparse_collection(&qd, "sp").await;
+    let sparse = json!({"indices": [3, 7, 11], "values": [1.0, 0.5, 2.0]});
+    let want = hits(
+        &query(
+            &qd,
+            "sp",
+            json!({"query": sparse, "using": "t", "limit": 10}),
+        )
+        .await,
+    );
+    assert!(!want.is_empty());
+    let got = hits(
+        &legacy(
+            &qd,
+            "sp",
+            "search",
+            json!({"vector": {"name": "t", "vector": sparse}, "limit": 10}),
+        )
+        .await,
+    );
+    assert_hits(&got, &want, 1e-6);
+    let reply = client
+        .search(pb::SearchPoints {
+            collection_name: "sp".into(),
+            vector: vec![1.0, 0.5, 2.0],
+            sparse_indices: Some(pb::SparseIndices {
+                data: vec![3, 7, 11],
+            }),
+            vector_name: Some("t".into()),
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .expect("sparse Search")
+        .into_inner();
+    assert_hits(&grpc_hits(&reply.result), &want, 1e-6);
+    // `limit` is required.
+    let (status, reply) = qd
+        .post(
+            "/collections/ab/points/search",
+            Some(json!({"vector": {"name": "b", "vector": q}})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
+    assert!(
+        error(&reply).starts_with("Format error in JSON body: missing field `limit`"),
+        "{reply}"
+    );
+}
+
+#[tokio::test]
+async fn sparse_recommend_and_discover_are_501() {
+    let qd = Qd::start().await;
+    sparse_collection(&qd, "sp").await;
+    let v = json!({"indices": [1, 4], "values": [0.5, 1.0]});
+    let pair = json!({"positive": v, "negative": {"indices": [2], "values": [1.0]}});
+    for (route, body, feature) in [
+        (
+            "recommend",
+            json!({"positive": [v], "using": "s", "limit": 3}),
+            "sparse recommend",
+        ),
+        (
+            "recommend/batch",
+            json!({"searches": [{"positive": [v], "using": "s", "limit": 3}]}),
+            "sparse recommend",
+        ),
+        (
+            "discover",
+            json!({"target": v, "context": [pair], "using": "t", "limit": 3}),
+            "sparse discover",
+        ),
+        (
+            "discover",
+            json!({"context": [pair], "using": "t", "limit": 3}),
+            "sparse context",
+        ),
+    ] {
+        let (status, reply) = qd
+            .post(&format!("/collections/sp/points/{route}"), Some(body))
+            .await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{route} {reply}");
+        assert_eq!(error(&reply), format!("Unsupported in Operon: {feature}"));
+    }
+}
+
+#[tokio::test]
+async fn euclid_vectors_are_returned_raw() {
+    // LangChain 1.15.1's client-side MMR reads `search` with vectors.
+    let qd = Qd::start().await;
+    let points = random_collection(&qd, "raw", Distance::Euclid, 3, 30, 204).await;
+    let result = legacy(
+        &qd,
+        "raw",
+        "search",
+        json!({"vector": [0.5, 0.5, 0.5], "limit": 30, "with_vector": true, "with_payload": true}),
+    )
+    .await;
+    let list = result.as_array().expect("a bare list");
+    assert_eq!(list.len(), 30);
+    for p in list {
+        let id = p["id"].as_u64().expect("id");
+        let v: Vec<f32> = serde_json::from_value(p["vector"].clone()).expect("vector");
+        assert_eq!(v, points[id as usize].1);
+        assert_eq!(p["payload"], json!({"g": id % 3}));
+        assert_eq!(p["version"], 0);
+    }
+    // `with_payload` and `with_vector` default to false.
+    let result = legacy(
+        &qd,
+        "raw",
+        "search",
+        json!({"vector": [0.5, 0.5, 0.5], "limit": 1}),
+    )
+    .await;
+    assert_eq!(
+        result[0]
+            .as_object()
+            .expect("point")
+            .keys()
+            .collect::<Vec<_>>(),
+        ["id", "version", "score"]
+    );
+}
+
+#[tokio::test]
+async fn legacy_batches_return_lists_of_lists() {
+    let qd = Qd::start().await;
+    let points = random_collection(&qd, "bt", Distance::Dot, 3, 50, 205).await;
+    let (qa, qb) = (vec![1.0, 0.0, 0.0], vec![0.0, 0.3, -1.0]);
+    let result = legacy(
+        &qd,
+        "bt",
+        "search/batch",
+        json!({"searches": [{"vector": qa, "limit": 3}, {"vector": qb, "limit": 4}]}),
+    )
+    .await;
+    let lists = result.as_array().expect("lists");
+    assert_eq!(lists.len(), 2);
+    assert_hits(
+        &hits(&lists[0]),
+        &brute(Distance::Dot, &qa, &points, 3),
+        1e-5,
+    );
+    assert_hits(
+        &hits(&lists[1]),
+        &brute(Distance::Dot, &qb, &points, 4),
+        1e-5,
+    );
+    let reco = json!({"positive": [1], "negative": [2], "strategy": "best_score", "limit": 5});
+    let single = legacy(&qd, "bt", "recommend", reco.clone()).await;
+    let result = legacy(
+        &qd,
+        "bt",
+        "recommend/batch",
+        json!({"searches": [reco, {"positive": [3], "limit": 2}]}),
+    )
+    .await;
+    assert_eq!(result[0], single);
+    assert_eq!(result[1].as_array().expect("list").len(), 2);
+    let disc = json!({"target": 4, "context": [{"positive": 5, "negative": 6}], "limit": 5});
+    let single = legacy(&qd, "bt", "discover", disc.clone()).await;
+    let result = legacy(
+        &qd,
+        "bt",
+        "discover/batch",
+        json!({"searches": [disc, {"context": [{"positive": 7, "negative": 8}], "limit": 3}]}),
+    )
+    .await;
+    assert_eq!(result[0], single);
+    assert_eq!(result[1].as_array().expect("list").len(), 3);
+    // One failing request fails the batch.
+    let (status, reply) = qd
+        .post(
+            "/collections/bt/points/search/batch",
+            Some(json!({"searches": [{"vector": qa, "limit": 3}, {"vector": [1.0], "limit": 3}]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
+}
+
+#[tokio::test]
+async fn legacy_recommend_defaults_to_average_vector() {
+    let qd = Qd::start().await;
+    random_collection(&qd, "ld", Distance::Cosine, 4, 60, 206).await;
+    let want = query(
+        &qd,
+        "ld",
+        json!({"query": {"recommend": {"positive": [1, 2], "negative": [3], "strategy": "average_vector"}}, "limit": 6}),
+    )
+    .await;
+    let got = legacy(
+        &qd,
+        "ld",
+        "recommend",
+        json!({"positive": [1, 2], "negative": [3], "limit": 6}),
+    )
+    .await;
+    assert_eq!(got, want);
+    // The other legacy forms equal their query forms too.
+    for (route, legacy_body, query_body) in [
+        (
+            "recommend",
+            json!({"positive": [1], "negative": [2, 3], "strategy": "sum_scores", "limit": 5, "offset": 1, "score_threshold": -1.0}),
+            json!({"query": {"recommend": {"positive": [1], "negative": [2, 3], "strategy": "sum_scores"}}, "limit": 5, "offset": 1, "score_threshold": -1.0}),
+        ),
+        (
+            "discover",
+            json!({"target": 1, "context": [{"positive": 2, "negative": 3}], "limit": 5}),
+            json!({"query": {"discover": {"target": 1, "context": [{"positive": 2, "negative": 3}]}}, "limit": 5}),
+        ),
+        (
+            "discover",
+            json!({"context": [{"positive": 2, "negative": 3}], "limit": 5, "with_payload": true}),
+            json!({"query": {"context": [{"positive": 2, "negative": 3}]}, "limit": 5, "with_payload": true}),
+        ),
+    ] {
+        let got = legacy(&qd, "ld", route, legacy_body).await;
+        assert_eq!(got, query(&qd, "ld", query_body).await, "{route}");
+    }
+    let (status, reply) = qd
+        .post(
+            "/collections/ld/points/recommend",
+            Some(json!({"negative": [3], "limit": 3})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error(&reply), "Wrong input: No positive examples given");
+}
+
+fn id(n: u64) -> pb::PointId {
+    pb::PointId {
+        point_id_options: Some(pb::point_id::PointIdOptions::Num(n)),
+    }
+}
+
+fn example(n: u64) -> pb::VectorExample {
+    pb::VectorExample {
+        example: Some(pb::vector_example::Example::Id(id(n))),
+    }
+}
+
+#[tokio::test]
+async fn grpc_legacy_methods_match_rest() {
+    let qd = Qd::start().await;
+    ab_random(&qd, "g").await;
+    let mut client = qd.points().await;
+    let q = vec![0.3_f32, -0.6, 0.2, 0.5];
+    let search = pb::SearchPoints {
+        collection_name: "g".into(),
+        vector: q.clone(),
+        vector_name: Some("a".into()),
+        limit: 6,
+        offset: Some(1),
+        score_threshold: Some(-0.5),
+        ..Default::default()
+    };
+    let rest = hits(&legacy(&qd, "g", "search", json!({"vector": {"name": "a", "vector": q}, "limit": 6, "offset": 1, "score_threshold": -0.5})).await);
+    let got = client
+        .search(search.clone())
+        .await
+        .expect("Search")
+        .into_inner();
+    assert_hits(&grpc_hits(&got.result), &rest, 1e-6);
+    let got = client
+        .search_batch(pb::SearchBatchPoints {
+            collection_name: "g".into(),
+            search_points: vec![search.clone(), search],
+            ..Default::default()
+        })
+        .await
+        .expect("SearchBatch")
+        .into_inner();
+    assert_eq!(got.result.len(), 2);
+    assert_hits(&grpc_hits(&got.result[1].result), &rest, 1e-6);
+    // Recommend: ids and vectors, a strategy, `using`.
+    let recommend = pb::RecommendPoints {
+        collection_name: "g".into(),
+        positive: vec![id(1), id(2)],
+        negative_vectors: vec![pb::Vector {
+            vector: Some(pb::vector::Vector::Dense(pb::DenseVector {
+                data: q.clone(),
+            })),
+            ..Default::default()
+        }],
+        strategy: Some(pb::RecommendStrategy::BestScore as i32),
+        using: Some("b".into()),
+        limit: 5,
+        ..Default::default()
+    };
+    let rest = hits(&legacy(&qd, "g", "recommend", json!({"positive": [1, 2], "negative": [q], "strategy": "best_score", "using": "b", "limit": 5})).await);
+    let got = client
+        .recommend(recommend.clone())
+        .await
+        .expect("Recommend")
+        .into_inner();
+    assert_hits(&grpc_hits(&got.result), &rest, 1e-6);
+    let got = client
+        .recommend_batch(pb::RecommendBatchPoints {
+            collection_name: "g".into(),
+            recommend_points: vec![recommend],
+            ..Default::default()
+        })
+        .await
+        .expect("RecommendBatch")
+        .into_inner();
+    assert_hits(&grpc_hits(&got.result[0].result), &rest, 1e-6);
+    // Discover: a target and pairs, then pairs only (context).
+    let discover = pb::DiscoverPoints {
+        collection_name: "g".into(),
+        target: Some(pb::TargetVector {
+            target: Some(pb::target_vector::Target::Single(example(4))),
+        }),
+        context: vec![pb::ContextExamplePair {
+            positive: Some(example(5)),
+            negative: Some(example(6)),
+        }],
+        using: Some("a".into()),
+        limit: 4,
+        ..Default::default()
+    };
+    let rest = hits(&legacy(&qd, "g", "discover", json!({"target": 4, "context": [{"positive": 5, "negative": 6}], "using": "a", "limit": 4})).await);
+    let got = client
+        .discover(discover.clone())
+        .await
+        .expect("Discover")
+        .into_inner();
+    assert_hits(&grpc_hits(&got.result), &rest, 1e-6);
+    let context = pb::DiscoverPoints {
+        target: None,
+        ..discover.clone()
+    };
+    let rest_context = hits(
+        &legacy(
+            &qd,
+            "g",
+            "discover",
+            json!({"context": [{"positive": 5, "negative": 6}], "using": "a", "limit": 4}),
+        )
+        .await,
+    );
+    let got = client
+        .discover_batch(pb::DiscoverBatchPoints {
+            collection_name: "g".into(),
+            discover_points: vec![discover, context],
+            ..Default::default()
+        })
+        .await
+        .expect("DiscoverBatch")
+        .into_inner();
+    assert_hits(&grpc_hits(&got.result[0].result), &rest, 1e-6);
+    assert_hits(&grpc_hits(&got.result[1].result), &rest_context, 1e-6);
+    // The universal query's gateway-scored kinds over gRPC.
+    let got = client
+        .query(pb::QueryPoints {
+            collection_name: "g".into(),
+            query: Some(pb::Query {
+                variant: Some(pb::query::Variant::NearestWithMmr(
+                    pb::NearestInputWithMmr {
+                        nearest: Some(dense_input(&q)),
+                        mmr: Some(pb::Mmr {
+                            diversity: Some(0.3),
+                            candidates_limit: Some(20),
+                        }),
+                    },
+                )),
+            }),
+            using: Some("a".into()),
+            limit: Some(5),
+            ..Default::default()
+        })
+        .await
+        .expect("Query mmr")
+        .into_inner();
+    let rest = hits(&query(&qd, "g", json!({"query": {"nearest": q, "mmr": {"diversity": 0.3, "candidates_limit": 20}}, "using": "a", "limit": 5})).await);
+    assert_hits(&grpc_hits(&got.result), &rest, 1e-6);
+    // Errors keep their codes.
+    let err = client
+        .recommend(pb::RecommendPoints {
+            collection_name: "g".into(),
+            negative: vec![id(1)],
+            using: Some("a".into()),
+            limit: 3,
+            ..Default::default()
+        })
+        .await
+        .expect_err("no positive");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    let err = client
+        .discover(pb::DiscoverPoints {
+            collection_name: "g".into(),
+            target: Some(pb::TargetVector { target: None }),
+            limit: 3,
+            ..Default::default()
+        })
+        .await
+        .expect_err("empty target");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
 }

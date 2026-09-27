@@ -24,7 +24,10 @@ use crate::model::points::{
     CountRequest, DeletePayload, DeleteVectors, PointInsert, PointRequest, PointsSelector,
     ScrollRequest, SetPayload, UpdateOperation, UpdateOperations, UpdateVectors,
 };
-use crate::model::query::{QueryRequest, QueryRequestBatch, QueryResponse};
+use crate::model::query::{
+    Batch, DiscoverRequest, QueryRequest, QueryRequestBatch, QueryResponse, RecommendRequest,
+    SearchRequest,
+};
 use crate::schema::NewVector;
 use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, query, reads, schema, snapshots, writes};
 
@@ -107,26 +110,14 @@ const UNSUPPORTED: &[(&str, &str)] = &[
         "/collections/{collection_name}/points/search/matrix/offsets",
     ),
     // Legacy routes, gone from the 1.19 OpenAPI but served by the 1.19.1
-    // server (Ruling 1; Tasks 8 and 9).
-    ("POST", "/collections/{collection_name}/points/search"),
-    ("POST", "/collections/{collection_name}/points/search/batch"),
+    // server (Ruling 1; Task 9).
     (
         "POST",
         "/collections/{collection_name}/points/search/groups",
     ),
-    ("POST", "/collections/{collection_name}/points/recommend"),
-    (
-        "POST",
-        "/collections/{collection_name}/points/recommend/batch",
-    ),
     (
         "POST",
         "/collections/{collection_name}/points/recommend/groups",
-    ),
-    ("POST", "/collections/{collection_name}/points/discover"),
-    (
-        "POST",
-        "/collections/{collection_name}/points/discover/batch",
     ),
 ];
 
@@ -182,6 +173,30 @@ pub(crate) fn router(gw: QdrantGateway) -> Router {
         .route(
             "/collections/{collection_name}/points/query/batch",
             post(query_batch),
+        )
+        .route(
+            "/collections/{collection_name}/points/search",
+            post(search_points),
+        )
+        .route(
+            "/collections/{collection_name}/points/search/batch",
+            post(search_batch),
+        )
+        .route(
+            "/collections/{collection_name}/points/recommend",
+            post(recommend_points),
+        )
+        .route(
+            "/collections/{collection_name}/points/recommend/batch",
+            post(recommend_batch),
+        )
+        .route(
+            "/collections/{collection_name}/points/discover",
+            post(discover_points),
+        )
+        .route(
+            "/collections/{collection_name}/points/discover/batch",
+            post(discover_batch),
         )
         .route("/cluster", get(cluster_status))
         .route(
@@ -966,4 +981,105 @@ async fn query_batch(
         query::run_batch(gw.clone(), ctx, collection, request.searches)
     })
     .await
+}
+
+// ----- legacy search, recommend and discover (Task 8) -----
+
+/// A legacy route: the request as a `QueryRequest`; the result is the bare
+/// list of points.
+async fn legacy<T: Into<QueryRequest>>(
+    gw: QdrantGateway,
+    collection: String,
+    headers: HeaderMap,
+    params: ReadParams,
+    request: T,
+) -> Response {
+    let g = gw.clone();
+    serve(&gw, &headers, params.timeout, |ctx| {
+        query::run_query(g, ctx, collection, request.into())
+    })
+    .await
+}
+
+/// A legacy batch: one list of points per request, in order.
+async fn legacy_batch<T: Into<QueryRequest>>(
+    gw: QdrantGateway,
+    collection: String,
+    headers: HeaderMap,
+    params: ReadParams,
+    batch: Batch<T>,
+) -> Response {
+    let g = gw.clone();
+    let requests: Vec<QueryRequest> = batch.searches.into_iter().map(Into::into).collect();
+    serve(&gw, &headers, params.timeout, |ctx| async move {
+        let results = query::run_batch(g, ctx, collection, requests).await?;
+        Ok(results.into_iter().map(|r| r.points).collect::<Vec<_>>())
+    })
+    .await
+}
+
+/// `POST /collections/{c}/points/search`.
+async fn search_points(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<ReadParams>,
+    QdrantJson(request): QdrantJson<SearchRequest>,
+) -> Response {
+    legacy(gw, collection, headers, params, request).await
+}
+
+/// `POST /collections/{c}/points/search/batch`.
+async fn search_batch(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<ReadParams>,
+    QdrantJson(batch): QdrantJson<Batch<SearchRequest>>,
+) -> Response {
+    legacy_batch(gw, collection, headers, params, batch).await
+}
+
+/// `POST /collections/{c}/points/recommend`.
+async fn recommend_points(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<ReadParams>,
+    QdrantJson(request): QdrantJson<RecommendRequest>,
+) -> Response {
+    legacy(gw, collection, headers, params, request).await
+}
+
+/// `POST /collections/{c}/points/recommend/batch`.
+async fn recommend_batch(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<ReadParams>,
+    QdrantJson(batch): QdrantJson<Batch<RecommendRequest>>,
+) -> Response {
+    legacy_batch(gw, collection, headers, params, batch).await
+}
+
+/// `POST /collections/{c}/points/discover`.
+async fn discover_points(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<ReadParams>,
+    QdrantJson(request): QdrantJson<DiscoverRequest>,
+) -> Response {
+    legacy(gw, collection, headers, params, request).await
+}
+
+/// `POST /collections/{c}/points/discover/batch`.
+async fn discover_batch(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<ReadParams>,
+    QdrantJson(batch): QdrantJson<Batch<DiscoverRequest>>,
+) -> Response {
+    legacy_batch(gw, collection, headers, params, batch).await
 }

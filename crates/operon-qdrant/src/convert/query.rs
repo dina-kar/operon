@@ -1,5 +1,6 @@
 //! gRPC query messages to the REST model (Task 7 step 5) and scored points
-//! back.
+//! back; Task 8 adds the legacy search, recommend and discover messages
+//! (semantics 6).
 
 use serde_json::{Map, Value};
 
@@ -7,7 +8,7 @@ use crate::convert::common::{
     vector_output_to_grpc, with_payload_from_grpc, with_vector_from_grpc,
 };
 use crate::convert::filter::filter_from_grpc;
-use crate::convert::points::{id_from_grpc, id_to_grpc};
+use crate::convert::points::{id_from_grpc, id_to_grpc, vector_input};
 use crate::convert::value::map_to_payload;
 use crate::error::GatewayError;
 use crate::model::common::{ScoredPoint, VectorInput};
@@ -92,19 +93,7 @@ fn query_from_grpc(q: Option<&pb::Query>) -> Result<Option<QueryInterface>, Gate
             recommend: RecommendInput {
                 positive: inputs(&r.positive)?,
                 negative: inputs(&r.negative)?,
-                strategy: r
-                    .strategy
-                    .map(|s| match pb::RecommendStrategy::try_from(s) {
-                        Ok(pb::RecommendStrategy::AverageVector) => {
-                            Ok(RecommendStrategy::AverageVector)
-                        }
-                        Ok(pb::RecommendStrategy::BestScore) => Ok(RecommendStrategy::BestScore),
-                        Ok(pb::RecommendStrategy::SumScores) => Ok(RecommendStrategy::SumScores),
-                        Err(_) => Err(GatewayError::BadRequest(format!(
-                            "unknown recommend strategy {s}"
-                        ))),
-                    })
-                    .transpose()?,
+                strategy: r.strategy.map(strategy_from_grpc).transpose()?,
             },
         },
         Variant::Discover(d) => QueryKind::Discover {
@@ -145,6 +134,18 @@ fn query_from_grpc(q: Option<&pb::Query>) -> Result<Option<QueryInterface>, Gate
         },
     };
     Ok(Some(QueryInterface::Query(kind)))
+}
+
+/// A `RecommendStrategy` number.
+fn strategy_from_grpc(s: i32) -> Result<RecommendStrategy, GatewayError> {
+    match pb::RecommendStrategy::try_from(s) {
+        Ok(pb::RecommendStrategy::AverageVector) => Ok(RecommendStrategy::AverageVector),
+        Ok(pb::RecommendStrategy::BestScore) => Ok(RecommendStrategy::BestScore),
+        Ok(pb::RecommendStrategy::SumScores) => Ok(RecommendStrategy::SumScores),
+        Err(_) => Err(GatewayError::BadRequest(format!(
+            "unknown recommend strategy {s}"
+        ))),
+    }
 }
 
 /// `SearchParams`; `idf` set without a corpus is `"global"`.
@@ -238,4 +239,161 @@ pub fn scored_point_to_grpc(p: &ScoredPoint) -> pb::ScoredPoint {
         shard_key: None,
         order_value: None,
     }
+}
+
+// ----- legacy methods (Task 8 semantics 6) -----
+
+/// The fields every legacy method shares, with REST's defaults: no
+/// payload and no vectors unless asked for; a shard key selector is kept
+/// as present (501).
+struct Common<'a> {
+    filter: Option<&'a pb::Filter>,
+    params: Option<&'a pb::SearchParams>,
+    limit: u64,
+    offset: Option<u64>,
+    with_payload: Option<&'a pb::WithPayloadSelector>,
+    with_vectors: Option<&'a pb::WithVectorsSelector>,
+    shard_key: bool,
+}
+
+impl Common<'_> {
+    /// A `QueryRequest` with these fields and `query`, `using` and
+    /// `lookup_from` unset.
+    fn request(&self) -> Result<QueryRequest, GatewayError> {
+        Ok(QueryRequest {
+            filter: self.filter.map(filter_from_grpc).transpose()?,
+            params: self.params.map(params_from_grpc).transpose()?,
+            limit: Some(usize::try_from(self.limit).unwrap_or(usize::MAX)),
+            offset: self
+                .offset
+                .map(|o| usize::try_from(o).unwrap_or(usize::MAX)),
+            with_payload: Some(with_payload_from_grpc(self.with_payload, false)),
+            with_vector: Some(with_vector_from_grpc(self.with_vectors, false)),
+            shard_key: self.shard_key.then_some(Value::Bool(true)),
+            ..QueryRequest::default()
+        })
+    }
+}
+
+/// A legacy search vector: dense `vector`, or sparse with `sparse_indices`
+/// (the values in `vector`).
+fn search_input(vector: &[f32], sparse_indices: Option<&pb::SparseIndices>) -> VectorInput {
+    match sparse_indices {
+        Some(indices) => VectorInput::Sparse {
+            indices: indices.data.clone(),
+            values: vector.to_vec(),
+        },
+        None => VectorInput::Dense(vector.to_vec()),
+    }
+}
+
+/// `SearchPoints`: a nearest query on `vector_name`.
+pub fn search_from_grpc(r: &pb::SearchPoints) -> Result<QueryRequest, GatewayError> {
+    let common = Common {
+        filter: r.filter.as_ref(),
+        params: r.params.as_ref(),
+        limit: r.limit,
+        offset: r.offset,
+        with_payload: r.with_payload.as_ref(),
+        with_vectors: r.with_vectors.as_ref(),
+        shard_key: r.shard_key_selector.is_some(),
+    };
+    Ok(QueryRequest {
+        query: Some(QueryInterface::Vector(search_input(
+            &r.vector,
+            r.sparse_indices.as_ref(),
+        ))),
+        using: r.vector_name.clone(),
+        score_threshold: r.score_threshold,
+        ..common.request()?
+    })
+}
+
+/// Ids, then vectors, as recommend examples.
+fn examples(ids: &[pb::PointId], vectors: &[pb::Vector]) -> Result<Vec<VectorInput>, GatewayError> {
+    let mut out = ids
+        .iter()
+        .map(|id| id_from_grpc(Some(id)).map(VectorInput::Id))
+        .collect::<Result<Vec<_>, _>>()?;
+    out.extend(vectors.iter().map(vector_input));
+    Ok(out)
+}
+
+/// `RecommendPoints`: a `recommend` query (ids and vectors).
+pub fn recommend_from_grpc(r: &pb::RecommendPoints) -> Result<QueryRequest, GatewayError> {
+    let common = Common {
+        filter: r.filter.as_ref(),
+        params: r.params.as_ref(),
+        limit: r.limit,
+        offset: r.offset,
+        with_payload: r.with_payload.as_ref(),
+        with_vectors: r.with_vectors.as_ref(),
+        shard_key: r.shard_key_selector.is_some(),
+    };
+    Ok(QueryRequest {
+        query: Some(QueryInterface::Query(QueryKind::Recommend {
+            recommend: RecommendInput {
+                positive: examples(&r.positive, &r.positive_vectors)?,
+                negative: examples(&r.negative, &r.negative_vectors)?,
+                strategy: r.strategy.map(strategy_from_grpc).transpose()?,
+            },
+        })),
+        using: r.using.clone(),
+        score_threshold: r.score_threshold,
+        lookup_from: r.lookup_from.as_ref().map(lookup_from_grpc),
+        ..common.request()?
+    })
+}
+
+/// A `VectorExample`: an id or a vector.
+fn example(e: Option<&pb::VectorExample>, what: &str) -> Result<VectorInput, GatewayError> {
+    use pb::vector_example::Example;
+    match required(e.and_then(|e| e.example.as_ref()), what)? {
+        Example::Id(id) => Ok(VectorInput::Id(id_from_grpc(Some(id))?)),
+        Example::Vector(v) => Ok(vector_input(v)),
+    }
+}
+
+/// `DiscoverPoints`: `discover` with a target, else `context`.
+pub fn discover_from_grpc(r: &pb::DiscoverPoints) -> Result<QueryRequest, GatewayError> {
+    use pb::target_vector::Target;
+    let common = Common {
+        filter: r.filter.as_ref(),
+        params: r.params.as_ref(),
+        limit: r.limit,
+        offset: r.offset,
+        with_payload: r.with_payload.as_ref(),
+        with_vectors: r.with_vectors.as_ref(),
+        shard_key: r.shard_key_selector.is_some(),
+    };
+    let context = r
+        .context
+        .iter()
+        .map(|p| {
+            Ok(ContextPair {
+                positive: example(p.positive.as_ref(), "positive")?,
+                negative: example(p.negative.as_ref(), "negative")?,
+            })
+        })
+        .collect::<Result<Vec<_>, GatewayError>>()?;
+    let kind = match &r.target {
+        None => QueryKind::Context {
+            context: OneOrMany::Many(context),
+        },
+        Some(t) => {
+            let single = t.target.as_ref().map(|Target::Single(single)| single);
+            QueryKind::Discover {
+                discover: DiscoverInput {
+                    target: example(single, "target")?,
+                    context: Some(OneOrMany::Many(context)),
+                },
+            }
+        }
+    };
+    Ok(QueryRequest {
+        query: Some(QueryInterface::Query(kind)),
+        using: r.using.clone(),
+        lookup_from: r.lookup_from.as_ref().map(lookup_from_grpc),
+        ..common.request()?
+    })
 }

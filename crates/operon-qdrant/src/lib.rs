@@ -22,7 +22,9 @@
 //!   (nearest, sparse nearest, prefetch, RRF and DBSF fusion, rescore), with
 //!   Qdrant's scores, thresholds and pages applied by the gateway. Task 8
 //!   scores `recommend` (`best_score`, `sum_scores`), `discover`, `context`
-//!   and MMR in the gateway over IR candidates (Ruling 10).
+//!   and MMR in the gateway over IR candidates (Ruling 10), and serves the
+//!   legacy `search`, `recommend` and `discover` routes and methods (and
+//!   their batches) by converting them into universal queries (Ruling 1).
 //!
 //! # Divergences from Qdrant 1.19
 //!

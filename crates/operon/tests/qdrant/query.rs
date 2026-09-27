@@ -527,7 +527,7 @@ async fn query_validation_errors_are_qdrant_400s() {
 
 /// Vectors `a` (Cosine) and `b` (Dot), dim 4, 60 random points; the points
 /// of each.
-async fn ab_random(qd: &Qd, coll: &str) -> (Vec<(u64, Vec<f32>)>, Vec<(u64, Vec<f32>)>) {
+pub(crate) async fn ab_random(qd: &Qd, coll: &str) -> (Vec<(u64, Vec<f32>)>, Vec<(u64, Vec<f32>)>) {
     create(
         qd,
         coll,
@@ -746,7 +746,7 @@ fn random_sparse(rng: &mut Rng) -> (Vec<u32>, Vec<f32>) {
 /// 300 points with sparse `s` (IDF) and `t` (none): some lack a vector,
 /// some have an empty one, some carry zero weights; payload `g = id % 3`.
 /// The stored vectors of each name.
-async fn sparse_collection(
+pub(crate) async fn sparse_collection(
     qd: &Qd,
     coll: &str,
 ) -> BTreeMap<&'static str, Vec<(PrimaryKey, SparseVector)>> {
@@ -984,7 +984,7 @@ async fn with_payload_default_is_false_for_query() {
 
 // ----- gRPC -----
 
-fn dense_input(v: &[f32]) -> pb::VectorInput {
+pub(crate) fn dense_input(v: &[f32]) -> pb::VectorInput {
     pb::VectorInput {
         variant: Some(pb::vector_input::Variant::Dense(pb::DenseVector {
             data: v.to_vec(),
@@ -1004,7 +1004,7 @@ fn fusion(f: pb::Fusion) -> pb::Query {
     }
 }
 
-fn grpc_hits(points: &[pb::ScoredPoint]) -> Vec<(u64, f32)> {
+pub(crate) fn grpc_hits(points: &[pb::ScoredPoint]) -> Vec<(u64, f32)> {
     points
         .iter()
         .map(|p| {

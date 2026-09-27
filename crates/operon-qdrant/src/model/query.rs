@@ -381,3 +381,190 @@ pub struct QueryRequestBatch {
 pub struct QueryResponse {
     pub points: Vec<ScoredPoint>,
 }
+
+// ----- legacy routes (Task 8 semantics 5; Ruling 1) -----
+
+/// `POST /collections/{c}/points/search` (legacy).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct SearchRequest {
+    pub vector: NamedVectorStruct,
+    #[serde(default)]
+    pub filter: Option<Filter>,
+    #[serde(default)]
+    pub params: Option<SearchParams>,
+    #[serde(alias = "top")]
+    pub limit: usize,
+    #[serde(default)]
+    pub offset: Option<usize>,
+    #[serde(default)]
+    pub with_payload: Option<WithPayload>,
+    #[serde(default, alias = "with_vectors")]
+    pub with_vector: Option<WithVector>,
+    #[serde(default)]
+    pub score_threshold: Option<f32>,
+}
+
+/// The legacy search vector: a bare dense vector (the default vector
+/// `""`), or a named dense or sparse one.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum NamedVectorStruct {
+    Plain(Vec<f32>),
+    Named { name: String, vector: Vec<f32> },
+    Sparse { name: String, vector: SparseInput },
+}
+
+/// A sparse query vector (`NamedSparseVector`'s `vector`,
+/// `qdrant:lib/api/src/rest/schema.rs:524`).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct SparseInput {
+    pub indices: Vec<u32>,
+    pub values: Vec<f32>,
+}
+
+/// `POST /collections/{c}/points/recommend` (legacy).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct RecommendRequest {
+    #[serde(default)]
+    pub positive: Vec<VectorInput>,
+    #[serde(default)]
+    pub negative: Vec<VectorInput>,
+    #[serde(default)]
+    pub strategy: Option<RecommendStrategy>,
+    #[serde(default)]
+    pub filter: Option<Filter>,
+    #[serde(default)]
+    pub params: Option<SearchParams>,
+    #[serde(alias = "top")]
+    pub limit: usize,
+    #[serde(default)]
+    pub offset: Option<usize>,
+    #[serde(default)]
+    pub with_payload: Option<WithPayload>,
+    #[serde(default, alias = "with_vectors")]
+    pub with_vector: Option<WithVector>,
+    #[serde(default)]
+    pub score_threshold: Option<f32>,
+    #[serde(default)]
+    pub using: Option<String>,
+    #[serde(default)]
+    pub lookup_from: Option<LookupLocation>,
+}
+
+/// `POST /collections/{c}/points/discover` (legacy); without a `target`
+/// it is a context query.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct DiscoverRequest {
+    #[serde(default)]
+    pub target: Option<VectorInput>,
+    #[serde(default)]
+    pub context: Option<Vec<ContextPair>>,
+    #[serde(default)]
+    pub filter: Option<Filter>,
+    #[serde(default)]
+    pub params: Option<SearchParams>,
+    #[serde(alias = "top")]
+    pub limit: usize,
+    #[serde(default)]
+    pub offset: Option<usize>,
+    #[serde(default)]
+    pub with_payload: Option<WithPayload>,
+    #[serde(default, alias = "with_vectors")]
+    pub with_vector: Option<WithVector>,
+    #[serde(default)]
+    pub using: Option<String>,
+    #[serde(default)]
+    pub lookup_from: Option<LookupLocation>,
+}
+
+/// `{"searches": [...]}`, the legacy batches.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Batch<T> {
+    pub searches: Vec<T>,
+}
+
+impl From<SearchRequest> for QueryRequest {
+    /// A plain vector searches `""`; a named one is `using`, a sparse one a
+    /// sparse nearest.
+    fn from(r: SearchRequest) -> Self {
+        let (using, input) = match r.vector {
+            NamedVectorStruct::Plain(v) => (None, VectorInput::Dense(v)),
+            NamedVectorStruct::Named { name, vector } => (Some(name), VectorInput::Dense(vector)),
+            NamedVectorStruct::Sparse { name, vector } => (
+                Some(name),
+                VectorInput::Sparse {
+                    indices: vector.indices,
+                    values: vector.values,
+                },
+            ),
+        };
+        QueryRequest {
+            query: Some(QueryInterface::Vector(input)),
+            using,
+            filter: r.filter,
+            params: r.params,
+            score_threshold: r.score_threshold,
+            limit: Some(r.limit),
+            offset: r.offset,
+            with_payload: r.with_payload,
+            with_vector: r.with_vector,
+            ..QueryRequest::default()
+        }
+    }
+}
+
+impl From<RecommendRequest> for QueryRequest {
+    /// `query: {recommend: {positive, negative, strategy}}`.
+    fn from(r: RecommendRequest) -> Self {
+        QueryRequest {
+            query: Some(QueryInterface::Query(QueryKind::Recommend {
+                recommend: RecommendInput {
+                    positive: r.positive,
+                    negative: r.negative,
+                    strategy: r.strategy,
+                },
+            })),
+            using: r.using,
+            filter: r.filter,
+            params: r.params,
+            score_threshold: r.score_threshold,
+            limit: Some(r.limit),
+            offset: r.offset,
+            with_payload: r.with_payload,
+            with_vector: r.with_vector,
+            lookup_from: r.lookup_from,
+            ..QueryRequest::default()
+        }
+    }
+}
+
+impl From<DiscoverRequest> for QueryRequest {
+    /// `query: {discover: {target, context}}`, or `query: {context}`
+    /// without a target.
+    fn from(r: DiscoverRequest) -> Self {
+        let context = r.context.unwrap_or_default();
+        let kind = match r.target {
+            Some(target) => QueryKind::Discover {
+                discover: DiscoverInput {
+                    target,
+                    context: Some(OneOrMany::Many(context)),
+                },
+            },
+            None => QueryKind::Context {
+                context: OneOrMany::Many(context),
+            },
+        };
+        QueryRequest {
+            query: Some(QueryInterface::Query(kind)),
+            using: r.using,
+            filter: r.filter,
+            params: r.params,
+            limit: Some(r.limit),
+            offset: r.offset,
+            with_payload: r.with_payload,
+            with_vector: r.with_vector,
+            lookup_from: r.lookup_from,
+            ..QueryRequest::default()
+        }
+    }
+}
