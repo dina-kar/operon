@@ -88,6 +88,38 @@ impl EsError {
         .with("index", index)
     }
 
+    /// 400 `resource_already_exists_exception` for an existing index, with
+    /// its uuid (`_na_` when unknown, row T1-4).
+    pub fn already_exists(index: &str, uuid: &str) -> Self {
+        Self::new(
+            400,
+            "resource_already_exists_exception",
+            format!("index [{index}/{uuid}] already exists"),
+        )
+        .with("index_uuid", uuid)
+        .with("index", index)
+    }
+
+    /// 404 `aliases_not_found_exception` naming the missing aliases.
+    pub fn aliases_not_found(names: &str) -> Self {
+        Self::new(
+            404,
+            "aliases_not_found_exception",
+            format!("aliases [{names}] missing"),
+        )
+        .with("resource.type", "aliases")
+        .with("resource.id", names)
+    }
+
+    /// 400 `invalid_alias_name_exception`.
+    pub fn invalid_alias_name(alias: &str, why: &str) -> Self {
+        Self::new(
+            400,
+            "invalid_alias_name_exception",
+            format!("Invalid alias name [{alias}]: {why}"),
+        )
+    }
+
     /// 400 `search_phase_execution_exception` wrapping `inner`, as ES
     /// reports a query that failed on its (one) shard.
     pub fn search_phase(inner: EsError, index: &str, node: &str) -> Self {
@@ -123,15 +155,9 @@ impl EsError {
                 "resource_not_found_exception",
                 format!("{kind} [{name}] not found"),
             ),
-            // The service error carries no uuid; Task 3 answers its own
-            // existence check with the index's uuid (row T1-4).
-            ServiceError::AlreadyExists(name) => Self::new(
-                400,
-                "resource_already_exists_exception",
-                format!("index [{name}/_na_] already exists"),
-            )
-            .with("index_uuid", "_na_")
-            .with("index", name),
+            // The service error carries no uuid; `PUT /{index}` answers
+            // its own existence check with the index's uuid (row T1-4).
+            ServiceError::AlreadyExists(name) => Self::already_exists(&name, "_na_"),
             ServiceError::InvalidArgument(message) => Self::illegal_argument(message),
             ServiceError::SchemaViolation { field, message } => {
                 let kind = match context {

@@ -355,6 +355,27 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+// ----- bodies -----
+
+/// A JSON request body; `None` when it is empty or only whitespace, 400
+/// `x_content_parse_exception` when it is not JSON.
+pub fn json_body(bytes: &[u8]) -> Result<Option<Value>, EsError> {
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(None);
+    }
+    serde_json::from_slice(bytes).map(Some).map_err(|err| {
+        EsError::new(
+            400,
+            "x_content_parse_exception",
+            format!(
+                "[{}:{}] Failed to parse the request body: {err}",
+                err.line(),
+                err.column()
+            ),
+        )
+    })
+}
+
 // ----- responses -----
 
 /// `body` with `status`, written per the context's format and `pretty`.
