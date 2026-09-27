@@ -5870,9 +5870,11 @@ name = "operon-tikv"
 version = "0.0.1"
 dependencies = [
  "axum 0.8.9",
+ "fail 0.4.0",
  "futures",
  "operon-tikv",
  "proptest",
+ "prost 0.14.4",
  "rand 0.9.5",
  "reqwest 0.12.28",
  "serde",
@@ -5880,6 +5882,10 @@ dependencies = [
  "thiserror 2.0.20",
  "tikv-client",
  "tokio",
+ "tokio-util",
+ "tonic 0.14.6",
+ "tonic-prost",
+ "tonic-prost-build",
  "tracing",
 ]
 

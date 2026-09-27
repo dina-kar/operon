@@ -1,6 +1,6 @@
 [package]
 name = "operon-tikv"
-description = "Loam's TiKV client layer: keyspace-scoped transactions, the transaction runner, the tuple codec, the TSO clock, keyspace bootstrap and the cluster test harness."
+description = "Loam's TiKV client layer: keyspace-scoped transactions, the transaction runner, the tuple codec, the TSO clock, keyspace bootstrap, the cluster MVCC GC loop and the cluster test harness."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,6 +16,7 @@ faults = []
 
 [dependencies]
 futures.workspace = true
+prost.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 serde.workspace = true
@@ -23,10 +24,19 @@ serde_json.workspace = true
 thiserror.workspace = true
 tikv-client.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
 tracing.workspace = true
+
+[build-dependencies]
+tonic-prost-build.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
+# tikv-client's failpoints ("after-prewrite"): tests/gc.rs leaves prewrite
+# locks behind with them. Only test builds turn the feature on.
+fail = { version = "0.4", features = ["failpoints"] }
 # The integration tests use the fault hooks.
 operon-tikv = { path = ".", features = ["faults"] }
 proptest.workspace = true
