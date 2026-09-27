@@ -231,6 +231,11 @@ pub struct ServerConfig {
     /// serves no Qdrant API; the CLI sets it unless `--no-qdrant`.
     #[cfg(feature = "qdrant")]
     pub qdrant: Option<operon_qdrant::QdrantConfig>,
+    /// The embedded durable server (D1, feature `durable`): its loopback
+    /// listener and its store. `None` (the default here) serves none; the
+    /// CLI sets it unless `--no-durable`. A cluster node needs a MySQL store.
+    #[cfg(feature = "durable")]
+    pub durable: Option<operon_durable::DurableConfig>,
 }
 
 impl ServerConfig {
@@ -262,6 +267,8 @@ impl ServerConfig {
             cluster: None,
             #[cfg(feature = "qdrant")]
             qdrant: None,
+            #[cfg(feature = "durable")]
+            durable: None,
         }
     }
 
@@ -281,6 +288,7 @@ impl ServerConfig {
         if let Some(cluster) = &self.cluster {
             cluster.validate()?;
         }
+        self.validate_durable()?;
         self.flight.validate().map_err(ServerError::Config)?;
         self.validate_backpressure()?;
         self.gc
@@ -302,6 +310,27 @@ impl ServerConfig {
 }
 
 impl ServerConfig {
+    /// D1 Task 3: SQLite is a single-node store, so a cluster node needs
+    /// MySQL (TiDB).
+    #[cfg(feature = "durable")]
+    fn validate_durable(&self) -> Result<(), ServerError> {
+        if self.cluster.is_some()
+            && let Some(durable) = &self.durable
+            && let operon_durable::DurableStore::Sqlite { .. } = durable.store
+        {
+            return Err(ServerError::Config(
+                "the sqlite durable store is single-node; use --durable-store mysql://…"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "durable"))]
+    fn validate_durable(&self) -> Result<(), ServerError> {
+        Ok(())
+    }
+
     /// Task 15 rule 8: the byte budget at most half the live tail (so a
     /// backlog at the budget fits the tail and strong reads need no range
     /// tail), non-zero budgets, `override_factor >= 1` and
@@ -365,6 +394,75 @@ pub enum ServerError {
         addr: SocketAddr,
         source: std::io::Error,
     },
+    /// The embedded durable server did not start (D1); its message as is.
+    #[cfg(feature = "durable")]
+    #[error("{0}")]
+    Durable(#[from] operon_durable::DurableError),
+}
+
+/// The embedded durable server (D1 Task 3), when the build has the `durable`
+/// feature and the config asks for it.
+#[cfg(feature = "durable")]
+#[derive(Debug)]
+struct Durable(Option<operon_durable::DurableServer>);
+
+/// The embedded durable server: none in a build without `durable`.
+#[cfg(not(feature = "durable"))]
+#[derive(Debug)]
+struct Durable;
+
+impl Durable {
+    /// No durable server (a placeholder until the caller hands one over).
+    #[cfg(feature = "durable")]
+    fn none() -> Self {
+        Self(None)
+    }
+
+    #[cfg(not(feature = "durable"))]
+    fn none() -> Self {
+        Self
+    }
+
+    /// Starts `config.durable`, if any, for node `node_id`. Runs after the
+    /// metastore has a leader and before [`Server::assemble`] (row T0-6).
+    #[cfg(feature = "durable")]
+    async fn start(config: &ServerConfig, node_id: u64) -> Result<Self, ServerError> {
+        match &config.durable {
+            Some(durable) => Ok(Self(Some(
+                operon_durable::DurableServer::start(durable.clone(), &node_id.to_string()).await?,
+            ))),
+            None => Ok(Self(None)),
+        }
+    }
+
+    #[cfg(not(feature = "durable"))]
+    async fn start(_config: &ServerConfig, _node_id: u64) -> Result<Self, ServerError> {
+        Ok(Self)
+    }
+
+    /// Drains and stops the server; its port and store are free afterwards.
+    async fn stop(self) {
+        #[cfg(feature = "durable")]
+        if let Some(server) = self.0 {
+            server.stop().await;
+        }
+    }
+
+    #[cfg(feature = "durable")]
+    fn addr(&self) -> Option<SocketAddr> {
+        self.0.as_ref().map(|server| server.listen())
+    }
+
+    #[cfg(not(feature = "durable"))]
+    fn addr(&self) -> Option<SocketAddr> {
+        None
+    }
+}
+
+/// Marks one step of [`Server::shutdown`], in order (target
+/// `operon::shutdown`, field `phase`), so tests can check the stop order.
+fn shutdown_phase(phase: &'static str) {
+    tracing::debug!(target: "operon::shutdown", phase, "stopping");
 }
 
 /// A running Operon process.
@@ -389,6 +487,8 @@ pub struct Server {
     flight: Option<Flight>,
     #[cfg(feature = "qdrant")]
     qdrant: Option<Qdrant>,
+    /// The embedded durable server (D1).
+    durable: Durable,
     /// Cluster mode only.
     cluster: Option<ClusterRuntime>,
 }
@@ -431,6 +531,9 @@ struct Assembled {
     flight: Option<Flight>,
     #[cfg(feature = "qdrant")]
     qdrant: Option<Qdrant>,
+    /// Started by the caller before `assemble` and handed over here (a
+    /// cluster node's start returns it with the parts).
+    durable: Durable,
 }
 
 /// The running Qdrant gateway (plan M1.4 Task 2).
@@ -614,6 +717,8 @@ impl Server {
         );
         let meta_store: Arc<dyn MetaStore> = meta.clone().into();
         let (listener, local_addr) = bind(config.listen).await?;
+        // After the leader, before the collection service (row T0-6).
+        let durable = Durable::start(&config, NODE_ID).await?;
         let setup = NodeSetup {
             node_id: NODE_ID,
             roles: Roles::all(),
@@ -624,7 +729,14 @@ impl Server {
             extra_sources: Vec::new(),
             node_info: None,
         };
-        let parts = Self::assemble(&mut config, store, setup).await?;
+        let parts = match Self::assemble(&mut config, store, setup).await {
+            Ok(parts) => parts,
+            Err(err) => {
+                durable.stop().await;
+                return Err(err);
+            }
+        };
+        // Task 6 starts the DurableRuntime here, before the listener serves.
         let (stop_http, stopped) = oneshot::channel::<()>();
         let app = parts.app;
         let http = tokio::spawn(async move {
@@ -653,6 +765,7 @@ impl Server {
             flight: parts.flight,
             #[cfg(feature = "qdrant")]
             qdrant: parts.qdrant,
+            durable,
             cluster: None,
         })
     }
@@ -722,6 +835,7 @@ impl Server {
                     flight: parts.flight,
                     #[cfg(feature = "qdrant")]
                     qdrant: parts.qdrant,
+                    durable: parts.durable,
                     cluster: Some(ClusterRuntime {
                         node_id,
                         roles,
@@ -880,13 +994,24 @@ impl Server {
                 join_changed,
             })),
         };
-        let parts = match Self::assemble(config, store, setup).await {
-            Ok(parts) => parts,
+        // After the leader, before the collection service (row T0-6).
+        let durable = match Durable::start(config, node_id).await {
+            Ok(durable) => durable,
             Err(err) => {
                 registry.deregister().await;
                 return Err(err);
             }
         };
+        let mut parts = match Self::assemble(config, store, setup).await {
+            Ok(parts) => parts,
+            Err(err) => {
+                durable.stop().await;
+                registry.deregister().await;
+                return Err(err);
+            }
+        };
+        parts.durable = durable;
+        // Task 6 starts the DurableRuntime here, before the routes serve.
         late.set(parts.app.clone());
         Ok((meta, meta_store, registry, parts))
     }
@@ -1141,6 +1266,7 @@ impl Server {
             flight,
             #[cfg(feature = "qdrant")]
             qdrant,
+            durable: Durable::none(),
         })
     }
 
@@ -1182,6 +1308,12 @@ impl Server {
         self.flight.as_ref().map(|flight| flight.addr)
     }
 
+    /// The address the durable execution API listens on, when it does (D1,
+    /// feature `durable`).
+    pub fn durable_addr(&self) -> Option<SocketAddr> {
+        self.durable.addr()
+    }
+
     /// The address the Qdrant REST API listens on, when it does.
     #[cfg(feature = "qdrant")]
     pub fn qdrant_rest_addr(&self) -> Option<SocketAddr> {
@@ -1200,7 +1332,8 @@ impl Server {
     }
 
     /// Stops the Qdrant gateway (waiting up to 10 s for its requests), stops
-    /// accepting requests, stops Flight SQL, stops the collection
+    /// accepting requests, stops Flight SQL, stops the durable server (D1:
+    /// before anything it may call into), stops the collection
     /// service's tails, flushes the writer (buffered appends are
     /// acknowledged), stops the worker (releasing its task leases), stops
     /// the hot tier, closes the collection targets' PK index handles, waits
@@ -1214,6 +1347,7 @@ impl Server {
     pub async fn shutdown(self) -> Result<(), ServerError> {
         // The Qdrant gateway stops first, within the HTTP grace period
         // (plan M1.4 Task 2 rule 3).
+        shutdown_phase("qdrant");
         #[cfg(feature = "qdrant")]
         if let Some(qdrant) = self.qdrant {
             qdrant.stop.cancel();
@@ -1222,6 +1356,7 @@ impl Server {
             }
         }
         let mut stop_http = Some(self.stop_http);
+        shutdown_phase("http");
         match &self.cluster {
             Some(cluster) => {
                 cluster.late.close();
@@ -1247,18 +1382,28 @@ impl Server {
                 }
             }
         }
+        shutdown_phase("flight");
         if let Some(flight) = self.flight {
             flight.stop().await;
         }
+        // D1 (T0-6, X8): after Flight (and, in cluster mode, after
+        // `late.close()`), before the collection service. Task 6 stops the
+        // DurableRuntime first, then the server.
+        shutdown_phase("durable");
+        self.durable.stop().await;
+        shutdown_phase("collections");
         self.collections.shutdown().await;
+        shutdown_phase("writer");
         if let Err(err) = self.writer.shutdown().await {
             tracing::warn!(%err, "the final flush failed");
         }
+        shutdown_phase("worker");
         if let Some(worker) = self.worker {
             worker.stop().await;
         }
         // The tier stops after the worker and before the metastore (Task 8
         // rule 5).
+        shutdown_phase("hot");
         if let Some(tier) = &self.hot {
             tier.shutdown().await;
         }
@@ -1271,6 +1416,7 @@ impl Server {
         if let Err(err) = self.cache.close().await {
             tracing::warn!(%err, "closing the cache failed");
         }
+        shutdown_phase("metastore");
         let stopped = self.node.shutdown().await;
         // A cluster node serves its metastore routes until the replica stops.
         if let Some(stop) = stop_http.take() {

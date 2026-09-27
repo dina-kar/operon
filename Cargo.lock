@@ -5638,6 +5638,7 @@ dependencies = [
  "operon-cache",
  "operon-collection",
  "operon-common",
+ "operon-durable",
  "operon-hnsw",
  "operon-hot",
  "operon-link",
