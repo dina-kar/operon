@@ -6,11 +6,13 @@
 //! ([`DurableConfig::overrides`]), in Resonate's own key space, except the
 //! keys Loam owns (see [`PROTECTED`]).
 
+use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use resonate_plugin::{Configuration, Loader};
+use url::{Host, Url};
 
 use crate::error::DurableError;
 
@@ -66,13 +68,205 @@ impl DurableConfig {
 }
 
 /// Where durable state lives.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` and `Display` hide a MySQL URL's password ([`redact_url`]), so a
+/// store (or a [`DurableConfig`], or `operon`'s `ServerConfig`) can be logged.
+#[derive(Clone, PartialEq, Eq)]
 pub enum DurableStore {
     /// A SQLite file (`operon dev` and `standalone`): single node.
     Sqlite { path: PathBuf },
     /// A MySQL-protocol database (TiDB) through Resonate's MySQL plugin. Needs
-    /// the `mysql` feature (operon's `durable-mysql`).
+    /// the `mysql` feature (operon's `durable-mysql`). `tls` decides the
+    /// connection's `ssl-mode`, whatever `url` says ([`DurableStore::mysql`]
+    /// reads it from the URL).
     Mysql { url: String, tls: MysqlTls },
+}
+
+impl DurableStore {
+    /// A MySQL store from `mysql://user:pass@host:port/db?ssl-mode=…`
+    /// (D1 Task 4). `ssl-mode` (or `sslmode`) is `required` or `disabled`;
+    /// without it TLS is required unless the host is `localhost` or a
+    /// loopback address. The URL is kept as given.
+    pub fn mysql(url: &str) -> Result<Self, DurableError> {
+        let parsed = parse_mysql(url)?;
+        let mut tls = None;
+        for (key, value) in parsed.query_pairs() {
+            if key == "ssl-mode" || key == "sslmode" {
+                tls = Some(match value.to_ascii_lowercase().as_str() {
+                    "required" => MysqlTls::Required,
+                    "disabled" => MysqlTls::Disabled,
+                    _ => {
+                        return Err(DurableError::Config(format!(
+                            "--durable-store {}: {key}={value} is not supported; use \
+                             ssl-mode=required or ssl-mode=disabled",
+                            redact_url(url)
+                        )));
+                    }
+                });
+            }
+        }
+        let tls = tls.unwrap_or_else(|| {
+            let local = match parsed.host() {
+                // A mysql:// URL's host is opaque to the url crate, so an IP
+                // address arrives as a domain.
+                Some(Host::Domain(name)) => {
+                    name.eq_ignore_ascii_case("localhost")
+                        || name.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+                }
+                Some(Host::Ipv4(ip)) => ip.is_loopback(),
+                Some(Host::Ipv6(ip)) => ip.is_loopback(),
+                None => false,
+            };
+            if local {
+                MysqlTls::Disabled
+            } else {
+                MysqlTls::Required
+            }
+        });
+        Ok(Self::Mysql {
+            url: url.to_string(),
+            tls,
+        })
+    }
+}
+
+impl fmt::Debug for DurableStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sqlite { path } => f.debug_struct("Sqlite").field("path", path).finish(),
+            Self::Mysql { url, tls } => f
+                .debug_struct("Mysql")
+                .field("url", &redact_url(url))
+                .field("tls", tls)
+                .finish(),
+        }
+    }
+}
+
+impl fmt::Display for DurableStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sqlite { path } => write!(f, "sqlite:{}", path.display()),
+            Self::Mysql { url, .. } => f.write_str(&redact_url(url)),
+        }
+    }
+}
+
+/// `url` with its password replaced by `***`, for a log line or an error.
+/// A URL that does not parse loses everything between `://` and its last
+/// `@` instead.
+pub fn redact_url(url: &str) -> String {
+    match Url::parse(url) {
+        Ok(mut parsed) => {
+            if parsed.password().is_some() && parsed.set_password(Some("***")).is_ok() {
+                parsed.to_string()
+            } else {
+                url.to_string()
+            }
+        }
+        Err(_) => match (url.find("://"), url.rfind('@')) {
+            (Some(scheme), Some(at)) if at > scheme => {
+                format!("{}***{}", &url[..scheme + 3], &url[at..])
+            }
+            _ => url.to_string(),
+        },
+    }
+}
+
+/// `message` with every spelling of `url`'s password replaced by `***`: for
+/// an error from a driver or from Resonate that might quote the URL.
+pub(crate) fn scrub(message: &str, url: &str) -> String {
+    let mut out = message.to_string();
+    let Ok(parsed) = Url::parse(url) else {
+        return out.replace(url, &redact_url(url));
+    };
+    let Some(password) = parsed.password() else {
+        return out;
+    };
+    // The URL as given, as the url crate writes it, and as Resonate got it.
+    let mut urls = vec![url.to_string(), parsed.to_string()];
+    for tls in [MysqlTls::Required, MysqlTls::Disabled] {
+        urls.extend(mysql_url(url, tls));
+    }
+    for form in urls {
+        out = out.replace(&form, &redact_url(&form));
+    }
+    // A short password is not scrubbed on its own: replacing every "ab" in a
+    // message would garble it, and the URL forms are covered above.
+    for secret in [password.to_string(), percent_decode(password)] {
+        if secret.len() >= 4 {
+            out = out.replace(&secret, "***");
+        }
+    }
+    out
+}
+
+/// `%XX` escapes decoded, as sqlx decodes a URL's password; anything else is
+/// kept as it is.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (byte, _) => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The URL Resonate is handed for `url`: `tls` as `ssl-mode` (replacing any
+/// `ssl-mode` or `sslmode` the URL has), and the database
+/// `loam_durable_default` (Ruling 2) when the URL names none.
+pub(crate) fn mysql_url(url: &str, tls: MysqlTls) -> Result<String, DurableError> {
+    let mut parsed = parse_mysql(url)?;
+    let kept: Vec<(String, String)> = parsed
+        .query_pairs()
+        .filter(|(key, _)| key != "ssl-mode" && key != "sslmode")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    let mode = match tls {
+        MysqlTls::Required => "REQUIRED",
+        MysqlTls::Disabled => "DISABLED",
+    };
+    parsed
+        .query_pairs_mut()
+        .clear()
+        .extend_pairs(kept)
+        .append_pair("ssl-mode", mode);
+    if parsed.path().trim_matches('/').is_empty() {
+        parsed.set_path(&format!("/{DEFAULT_DATABASE}"));
+    }
+    Ok(parsed.to_string())
+}
+
+/// The database of the default namespace on a MySQL store (Ruling 2).
+pub const DEFAULT_DATABASE: &str = "loam_durable_default";
+
+/// `url` as a `mysql://` URL with a host. The error never carries the
+/// password.
+fn parse_mysql(url: &str) -> Result<Url, DurableError> {
+    let bad =
+        |why: &str| DurableError::Config(format!("--durable-store {}: {why}", redact_url(url)));
+    let parsed = Url::parse(url).map_err(|e| bad(&format!("not a URL ({e})")))?;
+    if parsed.scheme() != "mysql" {
+        return Err(bad("expected a mysql:// URL"));
+    }
+    if parsed.host_str().is_none_or(str::is_empty) {
+        return Err(bad("the URL names no host"));
+    }
+    Ok(parsed)
 }
 
 /// TLS towards the MySQL store (D1 Task 4 maps it onto the URL).
@@ -106,6 +300,10 @@ pub const PROTECTED: &[(&str, &str)] = &[
     ("servers.active", "the backend is --durable-store"),
     ("servers.server_sqlite.path", "the store is --durable-store"),
     ("servers.server_mysql.url", "the store is --durable-store"),
+    (
+        "servers.server_mysql.migrate",
+        "only operon durable migrate changes the schema",
+    ),
     (
         "workers.transport_http_push.enabled",
         "push delivery is --durable-push",
@@ -179,9 +377,21 @@ pub(crate) fn server_id(store: &DurableStore) -> &'static str {
 
 /// The Resonate configuration for `config`. `carried` is every
 /// `<section>.<plugin id>` the registry holds.
+/// What the embedded server is built for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mode {
+    /// `operon dev`, `standalone` and `cluster`: serve the durable API. A
+    /// MySQL store is never migrated (D1 Task 4).
+    Serve,
+    /// `operon durable migrate`: open the store with `migrate = true`, with
+    /// no listener, then stop.
+    Migrate,
+}
+
 pub(crate) fn configuration(
     config: &DurableConfig,
     carried: &[String],
+    mode: Mode,
 ) -> Result<Configuration, DurableError> {
     let bad = |e: resonate_plugin::ConfigError| DurableError::Config(e.to_string());
     let listen = config.listen.to_string();
@@ -215,11 +425,27 @@ pub(crate) fn configuration(
                 .set("servers.server_sqlite.migrate", "true")
                 .map_err(bad)?;
         }
-        DurableStore::Mysql { url, tls: _ } => {
+        DurableStore::Mysql { url, tls } => {
             loader = loader
-                .set("servers.server_mysql.url", &quote(url))
+                .set("servers.server_mysql.url", &quote(&mysql_url(url, *tls)?))
+                .map_err(bad)?
+                .set(
+                    "servers.server_mysql.migrate",
+                    if mode == Mode::Migrate {
+                        "true"
+                    } else {
+                        "false"
+                    },
+                )
                 .map_err(bad)?;
         }
+    }
+    if mode == Mode::Migrate {
+        loader = loader
+            .set("gateways.gateway_http.enabled", "false")
+            .map_err(bad)?
+            .set("workers.transport_http_poll.enabled", "false")
+            .map_err(bad)?;
     }
     loader = loader
         .set(&format!("servers.{server}.server_url"), &quote(&server_url))
@@ -270,6 +496,148 @@ mod tests {
         ] {
             assert!(check_override(key, &carried()).is_err(), "{key}");
         }
+    }
+
+    fn mysql(url: &str) -> DurableStore {
+        DurableStore::Mysql {
+            url: url.into(),
+            tls: MysqlTls::Required,
+        }
+    }
+
+    /// The security fix of Task 4: a MySQL URL's password never reaches a
+    /// Debug or Display rendering (and so no log line that formats one).
+    #[test]
+    fn debug_and_display_redact_the_password() {
+        let url = "mysql://loam:s3cr%40t-pw@db.internal:4000/loam_durable_default";
+        let store = mysql(url);
+        let config = DurableConfig::new(store.clone());
+        for text in [
+            format!("{store:?}"),
+            format!("{store}"),
+            format!("{config:?}"),
+            format!("{config:#?}"),
+            redact_url(url),
+        ] {
+            assert!(!text.contains("s3cr"), "{text}");
+            assert!(text.contains("db.internal:4000"), "{text}");
+            assert!(text.contains("loam"), "the user name stays: {text}");
+        }
+        assert_eq!(
+            redact_url(url),
+            "mysql://loam:***@db.internal:4000/loam_durable_default"
+        );
+        // No password: nothing to hide, the URL is unchanged.
+        assert_eq!(
+            redact_url("mysql://root@127.0.0.1:4000/x"),
+            "mysql://root@127.0.0.1:4000/x"
+        );
+        // A URL that does not parse still loses everything before the host.
+        assert_eq!(
+            redact_url("mysql://u:p w@@bad host/x"),
+            "mysql://***@bad host/x"
+        );
+        let sqlite = DurableStore::Sqlite {
+            path: "/data/durable/default.db".into(),
+        };
+        assert_eq!(sqlite.to_string(), "sqlite:/data/durable/default.db");
+    }
+
+    /// Task 4 semantics 1: `ssl-mode` on the URL, else TLS unless the host is
+    /// this machine.
+    #[test]
+    fn mysql_urls_map_tls_onto_ssl_mode() {
+        let tls = |url: &str| match DurableStore::mysql(url) {
+            Ok(DurableStore::Mysql { tls, url: kept }) => {
+                assert_eq!(kept, url, "the URL is kept as given");
+                tls
+            }
+            other => panic!("{url}: {other:?}"),
+        };
+        assert_eq!(
+            tls("mysql://loam:pw@tidb.internal:4000/loam_durable_default"),
+            MysqlTls::Required
+        );
+        assert_eq!(tls("mysql://loam@10.0.0.7:4000/d"), MysqlTls::Required);
+        for local in [
+            "mysql://root@127.0.0.1:4000/d",
+            "mysql://root@localhost:4000/d",
+            "mysql://root@LOCALHOST/d",
+            "mysql://root@[::1]:4000/d",
+        ] {
+            assert_eq!(tls(local), MysqlTls::Disabled, "{local}");
+        }
+        assert_eq!(
+            tls("mysql://u@tidb.internal:4000/d?ssl-mode=disabled"),
+            MysqlTls::Disabled
+        );
+        assert_eq!(
+            tls("mysql://u@127.0.0.1:4000/d?ssl-mode=REQUIRED"),
+            MysqlTls::Required
+        );
+        assert_eq!(
+            tls("mysql://u@127.0.0.1:4000/d?sslmode=required"),
+            MysqlTls::Required
+        );
+        for bad in [
+            "mysql://u:hunter22@tidb:4000/d?ssl-mode=preferred",
+            "mysql://u:hunter22@tidb:4000/d?ssl-mode=verify_identity",
+            "mysql://u:hunter22@tidb:4000/d?ssl-mode=nonsense",
+            "mysql://u:hunter22@/d",
+            "postgres://u:hunter22@tidb/d",
+            "mysql://u:hunter22@tidb:notaport/d",
+        ] {
+            let err = DurableStore::mysql(bad).expect_err(bad).to_string();
+            assert!(!err.contains("hunter22"), "{bad}: {err}");
+        }
+    }
+
+    /// What Resonate is handed: `tls` as `ssl-mode`, whatever the URL said,
+    /// and the default database (Ruling 2) when the URL names none.
+    #[test]
+    fn the_resonate_url_carries_the_tls_mode() {
+        assert_eq!(
+            mysql_url(
+                "mysql://u:p@tidb:4000/db?ssl-mode=disabled&charset=utf8mb4",
+                MysqlTls::Required
+            )
+            .expect("url"),
+            "mysql://u:p@tidb:4000/db?charset=utf8mb4&ssl-mode=REQUIRED"
+        );
+        assert_eq!(
+            mysql_url("mysql://u@127.0.0.1:4000", MysqlTls::Disabled).expect("url"),
+            "mysql://u@127.0.0.1:4000/loam_durable_default?ssl-mode=DISABLED"
+        );
+        assert_eq!(
+            mysql_url("mysql://u@127.0.0.1:4000/", MysqlTls::Disabled).expect("url"),
+            "mysql://u@127.0.0.1:4000/loam_durable_default?ssl-mode=DISABLED"
+        );
+    }
+
+    #[test]
+    fn scrub_removes_the_password_from_driver_messages() {
+        let url = "mysql://loam:s3cr%40t-pw@db.internal:4000/d";
+        let resonate = mysql_url(url, MysqlTls::Required).expect("url");
+        let message = format!(
+            "cannot connect to {url} ({resonate}): access denied for loam using s3cr@t-pw \
+             or s3cr%40t-pw"
+        );
+        let clean = scrub(&message, url);
+        assert!(!clean.contains("s3cr"), "{clean}");
+        assert!(
+            clean.contains("mysql://loam:***@db.internal:4000/d"),
+            "{clean}"
+        );
+        // Nothing to hide without a password.
+        assert_eq!(scrub("x mysql://u@h/d", "mysql://u@h/d"), "x mysql://u@h/d");
+    }
+
+    #[test]
+    fn migrate_is_owned_by_the_migrate_command() {
+        let err = check_override("servers.server_mysql.migrate", &carried())
+            .expect_err("owned")
+            .to_string();
+        assert!(err.contains("operon durable migrate"), "{err}");
     }
 
     #[test]

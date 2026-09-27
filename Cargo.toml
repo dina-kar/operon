@@ -100,6 +100,9 @@ serde_json_borrow = "0.9"
 serde_with = "3"
 sha2 = "0.11"
 slatedb = { version = "0.16", default-features = false }
+# The MySQL driver resonate-server-mysql uses (0.8.6, rustls); operon-durable
+# checks a TiDB store's schema with it before serving (D1 Task 4).
+sqlx = { version = "0.8.6", default-features = false }
 tantivy = { version = "=0.26.2", default-features = false, features = ["quickwit", "mmap", "stopwords", "stemmer", "lz4-compression", "zstd-compression", "columnar-zstd-compression"] }
 tantivy-fst = "0.5"
 tempfile = "3"

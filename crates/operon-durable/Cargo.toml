@@ -12,7 +12,7 @@ publish = false
 [features]
 default = []
 # The TiDB backend through Resonate's MySQL plugin (operon's durable-mysql).
-mysql = ["dep:resonate-server-mysql"]
+mysql = ["dep:resonate-server-mysql", "dep:sqlx"]
 
 [dependencies]
 resonate-base.workspace = true
@@ -23,10 +23,13 @@ resonate-server-sqlite.workspace = true
 resonate-transport-http-poll.workspace = true
 resonate-transport-http-push.workspace = true
 serde_json.workspace = true
+sqlx = { workspace = true, optional = true, features = ["mysql", "runtime-tokio", "tls-rustls"] }
 tokio.workspace = true
 tracing.workspace = true
+url.workspace = true
 
 [dev-dependencies]
+sqlx = { workspace = true, features = ["mysql", "runtime-tokio", "tls-rustls"] }
 tempfile.workspace = true
 tracing-subscriber.workspace = true
 
