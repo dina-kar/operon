@@ -5741,6 +5741,7 @@ dependencies = [
  "operon-tikv",
  "proptest",
  "rand 0.9.5",
+ "rand_chacha 0.9.0",
  "sha2",
  "thiserror 2.0.20",
  "tokio",

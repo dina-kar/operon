@@ -46,6 +46,8 @@ operon-live-proto = { workspace = true, features = ["client"] }
 # The lost-acknowledgement tests put a FaultPlan on the handle.
 operon-tikv = { workspace = true, features = ["faults"] }
 proptest.workspace = true
+# Seeded workloads of the R1 checkers (Task 16).
+rand_chacha.workspace = true
 
 [lints]
 workspace = true
