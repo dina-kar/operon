@@ -7,9 +7,10 @@
 //! absent. [`testing`] is the cluster harness: tests that need TiKV call
 //! [`testing::cluster`], which skips them unless `OPERON_TEST_PD` is set.
 //!
-//! Later R1 tasks add the transaction runner, commit tokens, fault hooks, the
-//! tuple codec and the cluster GC loop.
+//! [`codec::tuple`] is the order-preserving tuple codec. Later R1 tasks add
+//! the transaction runner, commit tokens, fault hooks and the cluster GC loop.
 
+pub mod codec;
 mod config;
 mod keyspace;
 pub mod testing;
@@ -19,6 +20,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub use codec::{CodecError, tuple};
 pub use config::TikvConfig;
 pub use keyspace::{KeyspaceMeta, ensure_keyspace};
 pub use tikv_client::{Timestamp, TimestampExt, TransactionClient};

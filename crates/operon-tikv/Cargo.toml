@@ -21,6 +21,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
+proptest.workspace = true
 serde_json.workspace = true
 tikv-client.workspace = true
 
