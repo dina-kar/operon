@@ -77,6 +77,7 @@ impl DurableServer {
         // otherwise get Resonate's schema on the first start (D1 Task 4).
         #[cfg(feature = "mysql")]
         if let DurableStore::Mysql { url, tls } = &config.store {
+            crate::mysql::ensure_crypto_provider(*tls);
             crate::mysql::check_schema(url, *tls).await?;
         }
         listen::probe(config.listen)?;
@@ -122,6 +123,10 @@ impl DurableServer {
     pub async fn migrate(store: DurableStore) -> Result<(), DurableError> {
         let config = DurableConfig::new(store);
         let (registry, configuration) = prepare(&config, &[], Mode::Migrate)?;
+        #[cfg(feature = "mysql")]
+        if let DurableStore::Mysql { tls, .. } = &config.store {
+            crate::mysql::ensure_crypto_provider(*tls);
+        }
         let lock = match &config.store {
             DurableStore::Sqlite { path } => Some(lock_store(path)?),
             DurableStore::Mysql { .. } => None,

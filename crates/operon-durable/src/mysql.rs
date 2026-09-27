@@ -37,6 +37,20 @@ pub(crate) async fn check_schema(url: &str, tls: MysqlTls) -> Result<(), Durable
     }
 }
 
+/// Make sure rustls has a process default crypto provider before a TLS
+/// connection to the store (T5-4). rustls picks one by itself only when
+/// exactly one of its `ring` and `aws-lc-rs` features is on; `operon`'s graph
+/// has both, and sqlx's `verify_ca` verifier then panics. This installs
+/// `ring` (sqlx's own) only when no default is set, so a host that installed
+/// one first keeps it; a plain-text store changes nothing.
+pub(crate) fn ensure_crypto_provider(tls: MysqlTls) {
+    if tls == MysqlTls::Disabled || rustls::crypto::CryptoProvider::get_default().is_some() {
+        return;
+    }
+    // Losing a race to another installer is fine: a default is set either way.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 /// How many migrations `_sqlx_migrations` records as applied; 0 when the
 /// table is not there.
 async fn applied_migrations(conn: &mut MySqlConnection) -> Result<i64, sqlx::Error> {
@@ -52,4 +66,22 @@ async fn applied_migrations(conn: &mut MySqlConnection) -> Result<i64, sqlx::Err
     sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations WHERE success")
         .fetch_one(&mut *conn)
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// T5-4: in `operon`'s graph rustls has both the `ring` and `aws-lc-rs`
+    /// providers, so it cannot pick a process default on its own, and sqlx
+    /// panics building the `verify_ca` verifier. A TLS store makes sure a
+    /// default exists first; a host that installed its own keeps it.
+    #[test]
+    fn a_tls_store_has_a_crypto_provider() {
+        ensure_crypto_provider(MysqlTls::Disabled);
+        ensure_crypto_provider(MysqlTls::VerifyCa);
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+        // Idempotent.
+        ensure_crypto_provider(MysqlTls::VerifyIdentity);
+    }
 }

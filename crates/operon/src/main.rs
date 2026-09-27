@@ -625,8 +625,9 @@ enum DurableCommand {
     /// then exit. `operon standalone` and `cluster` never migrate a MySQL
     /// store: run this once per database, and again after an upgrade.
     Migrate {
-        /// The store: mysql://user:pass@host:port/db[?ssl-mode=required|disabled]
-        /// (or sqlite:<path>, which `operon dev` also migrates itself).
+        /// The store: mysql://user:pass@host:port/db[?ssl-mode=required|disabled|
+        /// verify_ca|verify_identity][&ssl-ca=<path>] (or sqlite:<path>, which
+        /// `operon dev` also migrates itself).
         #[arg(long, value_parser = DurableStoreParser)]
         durable_store: DurableStoreArg,
     },
@@ -1489,6 +1490,15 @@ mod tests {
         assert_eq!(
             tls("mysql://root@127.0.0.1:4000/d?ssl-mode=required"),
             MysqlTls::Required
+        );
+        // Owner ruling Q8: the verifying modes, for managed TiDB.
+        assert_eq!(
+            tls("mysql://loam:pw@gateway.tidbcloud.com:4000/d?ssl-mode=verify_identity"),
+            MysqlTls::VerifyIdentity
+        );
+        assert_eq!(
+            tls("mysql://loam:pw@tidb.internal:4000/d?ssl-mode=verify_ca"),
+            MysqlTls::VerifyCa
         );
     }
 
