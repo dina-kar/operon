@@ -6,4 +6,6 @@ mod ids;
 mod jsonpath;
 mod points;
 mod protos;
+mod query_compile;
 mod schema;
+mod scoring;

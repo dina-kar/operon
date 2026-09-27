@@ -15,6 +15,7 @@ use crate::convert::collections as conv;
 use crate::convert::common::{with_payload_from_grpc, with_vector_from_grpc};
 use crate::convert::filter::{field_index_from_grpc, filter_from_grpc};
 use crate::convert::points as pconv;
+use crate::convert::query as qconv;
 use crate::ctx::RequestCtx;
 use crate::error::GatewayError;
 use crate::model::common::UpdateResult;
@@ -22,7 +23,7 @@ use crate::model::points::{CountRequest, PointRequest, ScrollRequest, UpdateOper
 use crate::proto::health as hpb;
 use crate::proto::qdrant as pb;
 use crate::schema::NewVector;
-use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, reads, schema, snapshots, writes};
+use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, query, reads, schema, snapshots, writes};
 
 /// Every gRPC service, gzip on both ways and messages of up to
 /// `max_request_bytes`, inside `HotLayer` and the gateway's own
@@ -101,6 +102,7 @@ impl GrpcService {
         Ok((result, ctx))
     }
 
+    /// The request's context from its metadata and `timeout`.
     fn ctx(
         &self,
         meta: &tonic::metadata::MetadataMap,
@@ -137,6 +139,7 @@ impl GrpcService {
     }
 }
 
+/// `UNIMPLEMENTED` for a method no task serves.
 fn unsupported(method: &str) -> Status {
     GatewayError::Unsupported(format!("gRPC {method}")).grpc_status()
 }
@@ -199,6 +202,7 @@ impl Health for GrpcService {
 
 service! {
     impl Collections for GrpcService as "Collections" {
+        /// `Collections/List`.
         async fn list(
             &self,
             request: Request<pb::ListCollectionsRequest>,
@@ -218,6 +222,7 @@ service! {
             }))
         }
 
+        /// `Collections/Get`.
         async fn get(
             &self,
             request: Request<pb::GetCollectionInfoRequest>,
@@ -234,6 +239,7 @@ service! {
             }))
         }
 
+        /// `Collections/Create`, through the REST executor (row T3-5).
         async fn create(
             &self,
             request: Request<pb::CreateCollection>,
@@ -248,6 +254,7 @@ service! {
             Ok(operation(result, &ctx))
         }
 
+        /// `Collections/Update`, through the REST executor (row T3-5).
         async fn update(
             &self,
             request: Request<pb::UpdateCollection>,
@@ -262,6 +269,7 @@ service! {
             Ok(operation(result, &ctx))
         }
 
+        /// `Collections/Delete`.
         async fn delete(
             &self,
             request: Request<pb::DeleteCollection>,
@@ -275,6 +283,7 @@ service! {
             Ok(operation(result, &ctx))
         }
 
+        /// `Collections/UpdateAliases`.
         async fn update_aliases(
             &self,
             request: Request<pb::ChangeAliases>,
@@ -289,6 +298,7 @@ service! {
             Ok(operation(result, &ctx))
         }
 
+        /// `Collections/ListCollectionAliases`.
         async fn list_collection_aliases(
             &self,
             request: Request<pb::ListCollectionAliasesRequest>,
@@ -305,6 +315,7 @@ service! {
             }))
         }
 
+        /// `Collections/ListAliases`.
         async fn list_aliases(
             &self,
             request: Request<pb::ListAliasesRequest>,
@@ -318,6 +329,7 @@ service! {
             }))
         }
 
+        /// `Collections/CollectionClusterInfo` (synthetic).
         async fn collection_cluster_info(
             &self,
             request: Request<pb::CollectionClusterInfoRequest>,
@@ -331,6 +343,7 @@ service! {
             Ok(Response::new(conv::cluster_to_grpc(points, ctx.elapsed_secs())))
         }
 
+        /// `Collections/CollectionExists`.
         async fn collection_exists(
             &self,
             request: Request<pb::CollectionExistsRequest>,
@@ -359,6 +372,7 @@ service! {
 
 service! {
     impl Points for GrpcService as "Points" {
+        /// `Points/Upsert`.
         async fn upsert(
             &self,
             request: Request<pb::UpsertPoints>,
@@ -369,6 +383,7 @@ service! {
                 .await
         }
 
+        /// `Points/Delete`.
         async fn delete(
             &self,
             request: Request<pb::DeletePoints>,
@@ -379,6 +394,7 @@ service! {
                 .await
         }
 
+        /// `Points/SetPayload`.
         async fn set_payload(
             &self,
             request: Request<pb::SetPayloadPoints>,
@@ -389,6 +405,7 @@ service! {
                 .await
         }
 
+        /// `Points/OverwritePayload`.
         async fn overwrite_payload(
             &self,
             request: Request<pb::SetPayloadPoints>,
@@ -399,6 +416,7 @@ service! {
                 .await
         }
 
+        /// `Points/DeletePayload`.
         async fn delete_payload(
             &self,
             request: Request<pb::DeletePayloadPoints>,
@@ -409,6 +427,7 @@ service! {
                 .await
         }
 
+        /// `Points/ClearPayload`.
         async fn clear_payload(
             &self,
             request: Request<pb::ClearPayloadPoints>,
@@ -419,6 +438,7 @@ service! {
                 .await
         }
 
+        /// `Points/UpdateVectors`.
         async fn update_vectors(
             &self,
             request: Request<pb::UpdatePointVectors>,
@@ -429,6 +449,7 @@ service! {
                 .await
         }
 
+        /// `Points/DeleteVectors`.
         async fn delete_vectors(
             &self,
             request: Request<pb::DeletePointVectors>,
@@ -439,6 +460,7 @@ service! {
                 .await
         }
 
+        /// `Points/UpdateBatch`: one atomic write, one result per operation.
         async fn update_batch(
             &self,
             request: Request<pb::UpdateBatchPoints>,
@@ -466,6 +488,7 @@ service! {
             ))
         }
 
+        /// `Points/Get` (retrieve).
         async fn get(
             &self,
             request: Request<pb::GetPoints>,
@@ -495,6 +518,7 @@ service! {
             }))
         }
 
+        /// `Points/Scroll`.
         async fn scroll(
             &self,
             request: Request<pb::ScrollPoints>,
@@ -529,6 +553,7 @@ service! {
             }))
         }
 
+        /// `Points/Count`.
         async fn count(
             &self,
             request: Request<pb::CountPoints>,
@@ -562,6 +587,7 @@ service! {
             }))
         }
 
+        /// `Points/CreateFieldIndex`.
         async fn create_field_index(
             &self,
             request: Request<pb::CreateFieldIndexCollection>,
@@ -588,6 +614,7 @@ service! {
             }))
         }
 
+        /// `Points/CreateVectorName`.
         async fn create_vector_name(
             &self,
             request: Request<pb::CreateVectorNameRequest>,
@@ -615,6 +642,56 @@ service! {
                 usage: None,
             }))
         }
+
+        /// `Points/Query`.
+        async fn query(
+            &self,
+            request: Request<pb::QueryPoints>,
+        ) -> Result<Response<pb::QueryResponse>, Status> {
+            let r = request.get_ref();
+            let parsed = qconv::query_request_from_grpc(r).map_err(|e| e.grpc_status())?;
+            let collection = r.collection_name.clone();
+            let (points, ctx) = self
+                .run(request.metadata(), r.timeout, |gw, ctx| {
+                    query::run_query(gw, ctx, collection, parsed)
+                })
+                .await?;
+            Ok(Response::new(pb::QueryResponse {
+                result: points.iter().map(qconv::scored_point_to_grpc).collect(),
+                time: ctx.elapsed_secs(),
+                usage: None,
+            }))
+        }
+
+        /// The batch's collection holds for every request (as Qdrant).
+        async fn query_batch(
+            &self,
+            request: Request<pb::QueryBatchPoints>,
+        ) -> Result<Response<pb::QueryBatchResponse>, Status> {
+            let r = request.get_ref();
+            let parsed = r
+                .query_points
+                .iter()
+                .map(qconv::query_request_from_grpc)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.grpc_status())?;
+            let collection = r.collection_name.clone();
+            let (results, ctx) = self
+                .run(request.metadata(), r.timeout, |gw, ctx| {
+                    query::run_batch(gw, ctx, collection, parsed)
+                })
+                .await?;
+            Ok(Response::new(pb::QueryBatchResponse {
+                result: results
+                    .iter()
+                    .map(|r| pb::BatchResult {
+                        result: r.points.iter().map(qconv::scored_point_to_grpc).collect(),
+                    })
+                    .collect(),
+                time: ctx.elapsed_secs(),
+                usage: None,
+            }))
+        }
     }
     unsupported {
         delete_field_index(DeleteFieldIndexCollection) -> PointsOperationResponse;
@@ -627,8 +704,6 @@ service! {
         recommend_groups(RecommendPointGroups) -> RecommendGroupsResponse;
         discover(DiscoverPoints) -> DiscoverResponse;
         discover_batch(DiscoverBatchPoints) -> DiscoverBatchResponse;
-        query(QueryPoints) -> QueryResponse;
-        query_batch(QueryBatchPoints) -> QueryBatchResponse;
         query_groups(QueryPointGroups) -> QueryGroupsResponse;
         facet(FacetCounts) -> FacetResponse;
         search_matrix_pairs(SearchMatrixPoints) -> SearchMatrixPairsResponse;
@@ -638,6 +713,7 @@ service! {
 
 service! {
     impl Snapshots for GrpcService as "Snapshots" {
+        /// `Snapshots/Create`.
         async fn create(
             &self,
             request: Request<pb::CreateSnapshotRequest>,
@@ -654,6 +730,7 @@ service! {
             }))
         }
 
+        /// `Snapshots/List`.
         async fn list(
             &self,
             request: Request<pb::ListSnapshotsRequest>,
@@ -681,6 +758,7 @@ service! {
     }
 }
 
+/// A collection operation's answer.
 fn operation(result: bool, ctx: &RequestCtx) -> Response<pb::CollectionOperationResponse> {
     Response::new(pb::CollectionOperationResponse {
         result,

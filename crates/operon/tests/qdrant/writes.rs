@@ -869,6 +869,44 @@ async fn set_payload_on_a_missing_id_is_404() {
 
 // ----- batches, wait, tokens -----
 
+/// Owner ruling O1 (row T5-12): a request is one atomic write, so over
+/// 10,000 planned ops it is refused whole, asking the client to split it.
+#[tokio::test]
+async fn a_request_over_10000_ops_is_400_asking_to_split() {
+    let qd = Qd::start().await;
+    create_single(&qd, "big", "Dot").await;
+    let points: Vec<Value> = (0..10_001u64)
+        .map(|id| json!({"id": id, "vector": [1.0, 0.0]}))
+        .collect();
+    let (status, reply) = write(&qd, "PUT", "big", "", json!({ "points": points })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
+    assert_eq!(
+        error(&reply),
+        "Wrong input: a write request holds at most 10000 operations, got 10001; split the batch into smaller requests"
+    );
+    assert_eq!(count(&qd, "big").await, 0, "nothing was written");
+    // A batch counts its operations together.
+    let half: Vec<Value> = (0..5_001u64)
+        .map(|id| json!({"id": id, "vector": [1.0, 0.0]}))
+        .collect();
+    let (status, reply) = write(
+        &qd,
+        "POST",
+        "big",
+        "/batch",
+        json!({"operations": [{"upsert": {"points": half}}, {"upsert": {"points": half}}]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
+    assert!(error(&reply).ends_with("got 10002; split the batch into smaller requests"));
+    // 10,000 is accepted.
+    let points: Vec<Value> = (0..10_000u64)
+        .map(|id| json!({"id": id, "vector": [1.0, 0.0]}))
+        .collect();
+    upsert(&qd, "big", json!(points)).await;
+    assert_eq!(count(&qd, "big").await, 10_000);
+}
+
 #[tokio::test]
 async fn batch_update_is_one_atomic_write() {
     let qd = Qd::start().await;

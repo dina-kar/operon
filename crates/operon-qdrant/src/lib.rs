@@ -18,6 +18,9 @@
 //!   write a request with one atomic `write` call; [`scoring`] checks and
 //!   normalizes vectors. Point reads (Task 6) serve retrieve, scroll and
 //!   count with Qdrant's payload and vector selectors.
+//! - [`query`]: the universal query (Task 7) compiled to one IR search
+//!   (nearest, sparse nearest, prefetch, RRF and DBSF fusion, rescore), with
+//!   Qdrant's scores, thresholds and pages applied by the gateway.
 //!
 //! # Divergences from Qdrant 1.19
 //!
@@ -66,12 +69,26 @@
 //!   payload, so a concurrent write to the same point in between is lost
 //!   (Ruling 12). Inside a batch, these reads and the id lookups of writes
 //!   by filter see the points as they were before the batch, where Qdrant
-//!   applies the operations one after another (row T5-4).
+//!   applies the operations one after another (row T5-4, owner ruling
+//!   O2).
+//! - A scroll `limit` over the search window (100,000) is refused, where
+//!   Qdrant reads that many points (row T7-11).
 //! - A write request holds at most 10,000 operations after planning (the
-//!   collection service's limit); Qdrant has no such limit (row T5-12).
+//!   collection service's limit, one atomic write); a larger one is 400,
+//!   asking the client to split the batch. Qdrant has no such limit (row
+//!   T5-12, owner ruling O1).
 //! - Geo conditions and indexes, `nested`, `has_vector` and `slice`
 //!   conditions, keys with `[n]` or quoted keys holding `.`, payload-index
 //!   deletion and type changes are unsupported (Ruling 15).
+//! - DBSF over Euclid or Manhattan prefetches normalizes Operon's
+//!   larger-is-better scores (negated distances), where Qdrant normalizes
+//!   the raw distances and so favours far points (Ruling 9).
+//! - A prefetch without a query stands for its one child prefetch; its own
+//!   `limit` is not applied (row T7-4).
+//! - Weighted RRF, a prefetch `score_threshold`, `order_by`, `formula`,
+//!   `sample` and `relevance_feedback` queries, sparse rescoring (a sparse
+//!   root query over prefetches) and shard keys are unsupported (Rulings
+//!   15, 21).
 
 // The write futures hold the collection service's futures, whose `Send`
 // check walks deep SQL types.
@@ -95,6 +112,7 @@ mod grpc;
 pub mod ids;
 pub mod jsonpath;
 pub mod model;
+pub mod query;
 mod reads;
 mod rest;
 pub mod schema;
