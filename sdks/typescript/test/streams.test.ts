@@ -8,7 +8,7 @@ import {
   OffsetOutOfRangeError,
   OperonClient,
 } from "../dist/index.js";
-import { decodeId, encodeId } from "../dist/wire.js";
+import { decodeId, encodeId, int } from "../dist/wire.js";
 import { freshName, json, type Operon, Script, startOperon } from "./operon.ts";
 
 const utf8 = new TextEncoder();
@@ -273,5 +273,23 @@ describe("ids", () => {
     });
     assert.throws(() => decodeId(true), TypeError);
     assert.throws(() => decodeId(1.5), TypeError);
+  });
+
+  test("int refuses integers outside the safe range, also as numbers", async () => {
+    assert.equal(int(7, "x"), 7);
+    assert.equal(int(5n, "x"), 5);
+    assert.throws(() => int(2n ** 53n, "x"), RangeError);
+    assert.throws(() => int(1e20, "x"), RangeError);
+    assert.throws(() => int(2 ** 53, "x"), RangeError);
+    assert.throws(() => int(1.5, "x"), TypeError);
+    // `1e20` is not an integer literal, so decode keeps it a (rounded) number.
+    const text = '{"records":[],"next_offset":1e20,"high_watermark":0,"log_start_offset":0}';
+    const script = new Script(
+      new Response(text, { headers: { "content-type": "application/json" } }),
+    );
+    await assert.rejects(
+      new OperonClient({ fetch: script.fetch }).namespace("n").fetch("s", 0, 0),
+      RangeError,
+    );
   });
 });

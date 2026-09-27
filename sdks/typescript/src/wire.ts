@@ -71,7 +71,11 @@ function array(value: unknown, what: string): unknown[] {
 
 /** A JSON integer as a `number`; a value above 2^53 − 1 cannot be one and throws. */
 export function int(value: unknown, what: string): number {
-  if (typeof value === "number" && Number.isInteger(value)) return value;
+  if (typeof value === "number" && Number.isInteger(value)) {
+    // A literal such as `1e20` decodes as a number, already rounded.
+    if (Number.isSafeInteger(value)) return value;
+    throw new RangeError(`${what} ${value} is outside the safe integer range`);
+  }
   if (typeof value === "bigint") {
     if (value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER))
       return Number(value);
