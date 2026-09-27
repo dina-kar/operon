@@ -40,14 +40,14 @@ M1.4, M1.5 and M1.6 can run in parallel once M1.2 is merged.
 
 ## Track R: Loam Live, TiDB SQL and the TiKV metastore (parallel to M1)
 
-Design reference: [20 Loam Live: reactive database on TiKV](../design/20-reactive-database-on-tikv.md) (D116–D130). Track R runs beside M1 and M2, interleaved with them because the build machine builds one crate graph at a time (D127).
+Design reference: [20 Loam Live: reactive database on TiKV](../design/20-reactive-database-on-tikv.md) (D116–D131). Track R runs beside M1 and M2, interleaved with them because the build machine builds one crate graph at a time (D127).
 
 | Plan | Scope | Depends on | Status |
 |---|---|---|---|
 | [R1: TiKV metastore and the reactive core](2026-09-27-r1-reactive-core.md) | `operon-tikv` (client layer, keyspace bootstrap, fault hooks, GC loop); `operon-meta-tikv` with conformance and fault matrix (D124); `operon-live`: documents, indexes, the commit journal, `LiveTxn`, reactive subscriptions, the connect-rust sync API; QuickJS functions (D120); the generated TypeScript client; TiDB SQL in the dev playground (D123); the reactive correctness and transaction checkers | M1.2a (the `MetaStore` trait), M1.3 as merged | Planned |
-| R2 | The multi-tenant router and keyspaces; the `ControlStore` on Live (D125); actions and scheduled functions; online index backfill; serializable ranges (Q31); multi-node sessions; Python and Go clients; per-tenant TiDB pools | R1 | Not yet planned |
+| R2 | The multi-tenant router and keyspaces; mandatory BR log backup (PITR) of Live and metastore keyspaces to object storage (D131); the `ControlStore` on Live (D125); actions and scheduled functions; online index backfill; serializable ranges (Q31); multi-node sessions; Python and Go clients; per-tenant TiDB pools | R1 | Not yet planned |
 | R3 | The collections bridge and `ctx.search` (D129); auth through the unified auth plan (D111); Swift and Kotlin clients; React hooks | R2, M2 stream API producers (D72) | Not yet planned |
-| R4 | tidb-operator and the Helm chart; TiDB pools that scale to zero; backups and restore; BYOC for Live; durable actions (Resonate) | R3 | Not yet planned |
+| R4 | tidb-operator and the Helm chart; TiDB pools that scale to zero; TiFlash as an optional SQL add-on (D131); BYOC for Live; durable actions (Resonate) | R3 | Not yet planned |
 
 ## Later milestones
 

@@ -1,6 +1,6 @@
 # 20 — Loam Live: a Reactive Database on TiKV, TiDB SQL Access and the TiKV Metastore
 
-Status: **Proposed** · 2026-09-27. The direction (D116–D118, D122–D124, D126–D128) was approved by the owner on 2026-09-27: "build convex like layer on TiKV, and use it for our metadata and control if possible, other than convex like api, can we provide mysql protocol for normal uses, build this as soon as possible, loam will a ai native cloud". The design choices this document makes on top of that direction (D119–D121, D125, D129) are **proposals** until the owner confirms them. Open questions are Q31–Q36 in §16.
+Status: **Proposed** · 2026-09-27. The direction (D116–D118, D122–D124, D126–D128) was approved by the owner on 2026-09-27: "build convex like layer on TiKV, and use it for our metadata and control if possible, other than convex like api, can we provide mysql protocol for normal uses, build this as soon as possible, loam will a ai native cloud". The design choices this document makes on top of that direction (D119–D121, D125, D129, D131) are **proposals** until the owner confirms them. Open questions are Q31–Q37 in §16.
 
 This document starts a second product line beside the retrieval engine (§00–§18). It amends D1 and D2 for that product line only (D130), supersedes D58's TiDB-over-sqlx clause (D124), and adds a parallel roadmap track, **R** (D127).
 
@@ -26,6 +26,7 @@ Markers: **(estimate)** is computed from code or specs, not measured. **(verify)
 | D127 | **Track R** runs beside M1, interleaved on the one-build machine; R1 = TiKV metastore + minimal reactive core + TiDB SQL in dev | Approved (owner) | — |
 | D128 | One **proto toolchain** (buffa + connect-rust, `buf` for clients) for Loam Live and the native stream API; M1.6's SDKs should reuse generated clients where possible (a proposed M1.6 amendment) | Approved (owner) for the shared toolchain; the M1.6 amendment is proposed | R1, M2 |
 | D129 | The **collections bridge** tails the commit journal into a collection's implicit stream with exactly-once producer sequences, so Live tables become searchable | Proposed | R3 |
+| D131 | **TiDB's object-storage, vector and full-text features:** the next-gen S3 kernel is not usable self-hosted; TiFlash is an optional add-on for SQL tenants; TiDB full-text is not used; **BR log backup (PITR) to object storage is mandatory for every Live cluster** | Proposed (owner question, 2026-09-27) | R2 (backup), R4 (TiFlash) |
 | D130 | D1 (object storage is the only source of truth) and D2 (OLTP out of scope) **keep holding for the retrieval engine** and do not apply to Loam Live, whose source of truth is TiKV | Proposed | — |
 
 ## 2. Goals and non-goals
@@ -401,6 +402,23 @@ TiKV keeps old versions until a GC safe point passes them. TiDB advances it for 
 - A tenant's TiDB sees its SQL keyspace only. Live tables are not visible from SQL, and SQL tables are not visible from Live functions, in R1–R3.
 - Later, two one-way bridges are possible without forks: **Live → SQL** (the journal tailer writes rows into TiDB tables over MySQL) and **SQL → collections** (TiCDC in keyspace mode, `ticdc/pkg/config/changefeed.go:280`, into a Kafka or storage sink that Loam's native stream API or Kafka gateway reads). Neither is scheduled; the second depends on Q34.
 
+### 10.4 TiDB's object-storage, vector and full-text features (D131)
+
+The owner asked whether Loam can use these instead of, or beside, its own engine. Findings, checked in the clones where possible:
+
+| Feature | Open source and self-hostable? | Evidence | Use in Loam |
+|---|---|---|---|
+| **Next-gen kernel: object storage as the single source of truth** | **No.** TiDB's side is open (a `nextgen` build tag, a separate binary; components of different kernel types cannot be mixed), but the matching shared-storage TiKV engine is not public: `tikv/tikv`'s `cloud-engine` branch was last touched on 2022-09-26, and master has no such engine (`tikv/components/cloud/` holds only the AWS, Azure and GCP clients for external storage) | `tidb/pkg/config/kerneltype/doc.go:15-39`; the coordinator's check of the tikv branches | **Not used.** Self-hosted TiKV keeps its row store on local disks with Raft. Loam Live's durability to object storage comes from BR log backup (below) |
+| **TiFlash**: columnar replicas, disaggregated compute and storage on S3, the `VECTOR` type with HNSW vector indexes | **Yes.** pingcap/tiflash is Apache-2.0 and active **(not cloned; verify the S3 mode and vector index on the pinned release)**. TiDB builds vector indexes as *columnar indexes* backfilled on TiFlash (`tidb/pkg/ddl/index.go:997,1028-1115`) | As listed | **Optional add-on for SQL tenants** (R4) who want analytical or vector queries inside SQL. It is C++, heavy in memory, and replicates TiDB tables only, so it cannot see Live tables |
+| **Full-text search** (`MATCH … AGAINST`, `FTS_MATCH_WORD`) | **Not in the open-source build, in practice.** TiDB parses it (`tidb/pkg/expression/builtin_fts.go`, `tidb/pkg/planner/core/fts_resolve_index.go`), but execution needs "the TiFlash FTS path", and the coordinator's search of public TiFlash found no full-text implementation. In a plain boolean `WHERE` position TiDB rewrites the match to `ILIKE '%term%'` predicates: no relevance score, no stop words, no word boundaries ("cat" matches "concatenate"), no index; phrases, `*`, `> < ~` and grouping are refused at plan time. A scoring position (`SELECT` list, `ORDER BY`, comparisons) keeps the native builtin and then needs TiFlash to execute (`tidb/pkg/planner/core/fulltext_to_like.go:19-70`, `tidb/pkg/expression/fts_to_like.go`) | As listed | **Not used.** Full-text over SQL data should go through a collection instead (SQL → collections, §10.3, Q34) |
+| **BR and log backup (PITR) to object storage** | **Yes.** TiKV's `backup-stream` component streams change logs to external storage (S3, GCS, Azure; `tikv/components/backup-stream`, `external_storage`, `cloud/{aws,azure,gcp}`); BR takes full snapshot backups and restores to a point in time | As listed | **Mandatory for every Live cluster** (below) |
+
+**Position:**
+
+1. **Loam's own engine is the vector and full-text engine for Live data**, through the collections bridge (§12). It is S3-native, gives hybrid retrieval with relevance scores, the hot tier and the Qdrant and Elasticsearch surfaces, and is the differentiator. TiDB's full-text is not a substitute, and TiFlash's vector index sees only SQL tables.
+2. **TiFlash is an optional add-on for SQL tenants** (R4), run unmodified, for columnar or vector queries inside SQL. Loam does not depend on it.
+3. **BR log backup (PITR) to object storage is mandatory for every Live cluster**, into the tenant's bucket (the bucket its namespace already uses) or the operator's bucket in multi-tenant keyspaces. A continuous log backup task plus periodic full snapshots gives a bounded recovery point (log backup's flush interval, minutes by default **(verify)**) and restore to any time in the retention window. A Live cluster does not serve external traffic until its backup task is running and a restore has been tested. This softens D130: TiKV stays Live's primary store, but a restorable copy of every Live keyspace is always in object storage. Whether BR's log backup and PITR restore cover a **txn-API keyspace** (not just TiDB tables), and per keyspace, is Q37; if they do not, the fallback is a journal-based export of each keyspace to the bucket, since the commit journal (§5.3) already records every write.
+
 ## 11. The TiKV metastore (D124)
 
 ### 11.1 Why now, and what changes
@@ -447,7 +465,7 @@ WAL object names are ULIDs, which are time-ordered, so their keys get an 8-byte 
 | **Unknown outcomes** | Each write transaction also writes `t/<token>`. After an error during commit, the backend reads the token at a fresh timestamp. TiKV's lock resolution either finds the transaction committed or rolls it back, so the answer is always known. Conflict, `KeyIsLocked` after backoff, region errors and TSO unavailability before prewrite are definitely-not-applied |
 | **`watch_changes`** | No native primitive. Writers bump a change counter per scope (`v/catalog`, `v/ns/<id>`), and watchers poll counters every 100 ms and wake on the handle's own writes. `commit_wal` does not bump the catalog counter (D63's scoped feed) |
 | **Pagination** (D99) | Range scans with `(prefix, after, limit)` |
-| **Snapshots and restore** (D17, §10 §6) | Not applicable: TiKV replicates by Raft. Backups use BR's transactional backup **(verify BR support for a txn-API keyspace)** |
+| **Snapshots and restore** (D17, §10 §6) | Not applicable: TiKV replicates by Raft. Backups use BR full backups plus log backup (PITR) to object storage, mandatory as for Live (§10.4, D131; Q37) |
 
 ### 11.4 Gaps and risks
 
@@ -486,6 +504,7 @@ The owner's item (e), and the reason Loam Live is more than a Convex clone.
 | A slow client | Its Transitions are merged; after 30 s blocked it is disconnected (§8.2) |
 | An invalidation is missed (a bug) | The 5-minute unconditional rerun finds the difference, repairs the result and alerts (§8.2) |
 | GC safe point stalls (a stuck barrier, a long snapshot) | Old versions accumulate; an alert fires when the safe point is more than 1 h behind; barriers have TTLs |
+| A TiKV cluster is lost (region or disk loss beyond Raft's quorum) | Restore from BR full backup plus log backup in object storage to the latest flushed point (D131); mutations committed after it are lost (the recovery point is the log flush interval) |
 | A TiDB pool dies | That tenant's SQL is down until the pod restarts; Live and other tenants are unaffected |
 | Keyspace misconfiguration (a v1 store in a v2 cluster) | TiKV rejects requests with `ApiVersionNotMatched` (`tikv/src/storage/mod.rs:480-538`); the deployment check refuses to start |
 
@@ -513,6 +532,8 @@ The owner's item (e), and the reason Loam Live is more than a Convex clone.
 | tidb-operator | Apache-2.0 | Kubernetes deployment (R4) |
 | tiup | Apache-2.0 | Dev and CI clusters |
 | TiProxy | Apache-2.0 | Candidate MySQL proxy (R4) |
+| TiFlash | Apache-2.0 | Optional columnar and vector add-on for SQL tenants (R4, D131) |
+| BR (in the TiDB repo) and TiKV `backup-stream` | Apache-2.0 | Mandatory backup and PITR of Live and metastore keyspaces to object storage (D131) |
 | kvproto (`pdpb`, `cdcpb`, `keyspacepb`) | Apache-2.0 | Vendored protos for the GC-state client |
 | `tikv-client` (client-rust) 0.4.0 | Apache-2.0 | Dependency |
 | `connectrpc` 0.9 (connect-rust) | Apache-2.0 | Dependency |
@@ -539,12 +560,13 @@ Every dependency is compatible with D11. Running PD, TiKV and TiDB unmodified as
 | Q34 | Can TiCDC capture a keyspace-mode TiDB's tables on a classic cluster into a Kafka or storage sink, for SQL → collections (§10.3) | R3 plan |
 | Q35 | The long-term function engine: QuickJS only, or V8 (`deno_core`) for CPU-bound functions and npm compatibility, or wasmtime for Rust and Go functions (§6.3) | R2 plan |
 | Q36 | Keyspaces per cluster before region overhead dominates, and whether TiKV request units can be attributed to a txn-API keyspace; these set the size-class thresholds and per-app quotas (§9.2) | R2 plan |
+| Q37 | Do BR's log backup and PITR restore cover a txn-API keyspace (not only TiDB tables), per keyspace, on a classic cluster; what recovery point does the default flush interval give (§10.4, D131) | R2 plan |
 
 ## 17. Contradictions with earlier decisions, and how they are resolved
 
 | Earlier | Conflict | Resolution |
 |---|---|---|
-| D1: object storage is the only source of truth; compute is stateless | TiKV keeps Live data on local disks with Raft replication | D130: D1 holds for the retrieval engine; Loam Live's source of truth is TiKV. The Live role itself stays stateless |
+| D1: object storage is the only source of truth; compute is stateless | TiKV keeps Live data on local disks with Raft replication | D130: D1 holds for the retrieval engine; Loam Live's source of truth is TiKV. The Live role itself stays stateless. Mandatory BR log backup puts a restorable copy of every Live keyspace in object storage (D131); TiDB's next-gen S3 kernel would remove the tension, but its TiKV engine is not open (§10.4) |
 | D2: OLTP is out of scope | Loam Live is an OLTP database | D130: D2 holds for the retrieval engine; OLTP enters Loam as a separate product line on TiKV, not on the bucket |
 | D58, §18 §2.4 and the avoid list of [11-buy-vs-build](11-buy-vs-build.md) (`tikv-client` rejected; TiDB over sqlx in M6) | D124 uses `tikv-client` in R1 | D124 supersedes D58's TiDB clause and the `tikv-client` entry on the avoid list |
 | D42: a narrow protocol footprint | MySQL is a new protocol | Loam does not implement it; TiDB does, unmodified (D123) |
@@ -556,9 +578,9 @@ Every dependency is compatible with D11. Running PD, TiKV and TiDB unmodified as
 | Milestone | Scope | Exit gate |
 |---|---|---|
 | **R1** | `operon-tikv`; `operon-meta-tikv` passing conformance and its fault matrix; keyspace GC loop; one Live app in one keyspace: documents, tables, indexes, built-in and QuickJS queries and mutations, the commit journal, reactive subscriptions, the sync API (`Watch`, `ModifyQuerySet`, `Query`, `Mutate`, `Deploy`) over connect-rust; the generated TypeScript client with a reactive layer; TiDB SQL in a separate keyspace in the dev playground | The reactive correctness checker and the transaction checker pass, including under the fault matrix; the metastore conformance suite passes on TiKV; a TypeScript client sees a live query update after a mutation; a MySQL client and a Live client work against one playground without seeing each other's data |
-| **R2** | The namespace router: directory, shared keyspaces, app lifecycle, moves, quotas; the `ControlStore` on `_control` (D125); actions and scheduled functions; online index backfill; the Q31 decision; multi-node sessions; generated Python and Go clients; per-tenant TiDB pools | 10 000 apps on one cluster; the nemesis suite green for 24 h; a console page served from live queries |
+| **R2** | The namespace router: directory, shared keyspaces, app lifecycle, moves, quotas; the `ControlStore` on `_control` (D125); actions and scheduled functions; online index backfill; the Q31 decision; multi-node sessions; generated Python and Go clients; per-tenant TiDB pools; **BR log backup (PITR) to object storage for every Live and metastore keyspace, with a tested restore** (D131) | 10 000 apps on one cluster; the nemesis suite green for 24 h; a console page served from live queries |; a point-in-time restore of a Live keyspace from object storage passes the reactive checker's state comparison
 | **R3** | The collections bridge and `ctx.search` (D129); auth on the Live API and TiDB users through the unified auth plan (D111, Q30); Swift and Kotlin clients; React hooks | A searchable table stays in step under a crash loop, exactly once; search after a mutation with `after_ts` sees it |
-| **R4** | Kubernetes: tidb-operator for PD, TiKV and TiDB, Loam's Helm chart for the Live role; TiDB pools that scale to zero behind a proxy; backups (BR) and restore; BYOC for Live; durable actions (Resonate) as an option | A cluster deployed from the chart passes the nightly suite; restore from backup passes |
+| **R4** | Kubernetes: tidb-operator for PD, TiKV and TiDB, Loam's Helm chart for the Live role; TiDB pools that scale to zero behind a proxy; TiFlash as an optional SQL add-on (D131); backup operations in the operator; BYOC for Live; durable actions (Resonate) as an option | A cluster deployed from the chart passes the nightly suite; restore from backup passes |
 
 R runs beside M1 and M2. The build machine builds one crate graph at a time (shared target directory, 6 jobs), so R and M tasks interleave rather than run in parallel; the playground runs only between builds. The first plan is [`docs/plans/2026-09-27-r1-reactive-core.md`](../plans/2026-09-27-r1-reactive-core.md).
 

@@ -4,7 +4,7 @@
 
 > **Status: Planned** (2026-09-27). Track R, beside M1 (D127). Branches `r1-t<N>`, stacked; PRs target `main`. R1 tasks interleave with M1 tasks on the one-build machine: never start an R1 build while an M1 build runs, and never run the TiKV playground during a build.
 
-**Goal:** Ship the first slice of design §20 (D116–D130):
+**Goal:** Ship the first slice of design §20 (D116–D131):
 - `operon-tikv`, the TiKV client layer: config and keyspace bootstrap, the TSO clock, a transaction runner with error classification, retries, commit tokens and a fault hook, the order-preserving tuple codec, the keyspace MVCC GC loop, the test harness;
 - `operon-meta-tikv`, `impl MetaStore` over TiKV, passing the 49-case conformance suite with its linearizability histories and a TiKV fault matrix, selectable in `operon dev` and `operon standalone` (D124);
 - `operon-live`, one Loam Live app in one keyspace: documents, tables, indexes, the commit journal, `LiveTxn` with read sets, built-in and QuickJS queries and mutations, reactive subscriptions, and the `loam.live.v1` sync API over connect-rust (`Watch`, `ModifyQuerySet`, `Query`, `Mutate`, `Deploy`), bound to 127.0.0.1:7710 (D117–D121);
@@ -32,7 +32,7 @@
 
 **Spec:**
 - [`docs/design/20-reactive-database-on-tikv.md`](../design/20-reactive-database-on-tikv.md): all of it; §4 (data model), §5 (transactions, journal), §6 (functions), §7 (sync), §8 (reactivity), §9 (keyspaces, GC), §10 (TiDB), §11 (metastore), §13 (failures), §14 (testing).
-- [`docs/design/13-decision-log.md`](../design/13-decision-log.md): D111, D113, D116–D130; Q31–Q36.
+- [`docs/design/13-decision-log.md`](../design/13-decision-log.md): D111, D113, D116–D131; Q31–Q36.
 - [`docs/design/18-metastore-backends-and-router.md`](../design/18-metastore-backends-and-router.md): §3 (the contract and its relaxations), §4.2 (the fault matrix design).
 - As built: [M1.2a](2026-09-25-m1.2a-metastore-trait.md) (the trait, the conformance suite), [M1.3](2026-09-24-m1.3-hot-tier-routing.md) (the network metastore, request forwarding), [M1.6](2026-09-24-m1.6-sdks-mcp.md) (the TypeScript toolchain).
 
