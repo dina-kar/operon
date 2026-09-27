@@ -1037,6 +1037,7 @@ fn rows_to_json_formats_every_type() {
         schema,
         batches: vec![batch],
         truncated: false,
+        performance: Default::default(),
     });
     assert_eq!(
         out["columns"][0],

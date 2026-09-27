@@ -62,11 +62,11 @@ pub fn memory_vector(dim: u32) -> VectorSpec {
     }
 }
 
-/// Whether `schema` has a text field named `text` (annotations are
-/// ignored, row E18).
+/// Whether `schema` has a text field named `text` read from `source.text`,
+/// where `memory_write` stores it (annotations are ignored, row E18; the
+/// path since the PR #99 review).
 pub fn is_memory_collection(schema: &CollectionSchema) -> bool {
-    schema
-        .fields
-        .iter()
-        .any(|f| f.name == "text" && matches!(f.kind, FieldKind::Text { .. }))
+    schema.fields.iter().any(|f| {
+        f.name == "text" && f.source_path == "text" && matches!(f.kind, FieldKind::Text { .. })
+    })
 }

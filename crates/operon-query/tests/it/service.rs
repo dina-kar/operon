@@ -1073,6 +1073,7 @@ impl RemoteReads for Recording {
             groups: None,
             read_token: ConsistencyToken::default(),
             hot_used: Default::default(),
+            performance: Default::default(),
         })
     }
 

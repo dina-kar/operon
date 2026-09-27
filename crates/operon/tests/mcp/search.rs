@@ -82,6 +82,17 @@ async fn search_hybrid_fuses_with_rrf() {
     .await;
     assert_eq!(result["isError"], false, "{result}");
     assert_eq!(hit_ids(&result), [json!(1), json!(3), json!(2)]);
+    // The native response's `performance` block (M1.6 Task 10, owner
+    // ruling on Task 8's question).
+    let p = &result["structuredContent"]["performance"];
+    assert!(p["server_total_ms"].as_f64().is_some(), "{result}");
+    let kinds: Vec<&str> = p["rows_scanned"]
+        .as_array()
+        .unwrap_or_else(|| panic!("rows_scanned: {result}"))
+        .iter()
+        .map(|rows| rows["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["text", "vector"], "{p}");
     mcp.server.shutdown().await.unwrap();
 }
 
@@ -144,7 +155,8 @@ async fn search_vector_of_the_wrong_dimension_is_a_tool_error() {
 #[tokio::test]
 async fn search_output_is_capped() {
     let mcp = Mcp::start(McpConfig {
-        max_output_bytes: 2048,
+        // Room for the performance block (Task 10) and a few hits.
+        max_output_bytes: 4096,
         ..McpConfig::default()
     })
     .await;
@@ -175,7 +187,7 @@ async fn search_output_is_capped() {
     assert!(hits > 0 && hits < 20, "{hits}");
     // The whole result (text and structured copy) fits (Ruling 13).
     assert!(
-        result.to_string().len() <= 2048,
+        result.to_string().len() <= 4096,
         "{}",
         result.to_string().len()
     );

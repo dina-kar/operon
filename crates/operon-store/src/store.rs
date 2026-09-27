@@ -11,6 +11,7 @@ use object_store::{
 };
 
 use crate::error::{StoreError, map_err};
+use crate::perf::{self, Read};
 
 /// Parses `path` as an [`object_store::path::Path`] without percent-encoding it.
 ///
@@ -160,6 +161,7 @@ impl Store {
 
     /// Reads a whole object.
     pub async fn get(&self, path: &str) -> Result<(Bytes, ObjectInfo), StoreError> {
+        perf::record(Read::Get);
         let result = self
             .inner
             .get(&parse_path(path)?)
@@ -177,6 +179,7 @@ impl Store {
         if range.start >= range.end {
             return Ok(Bytes::new());
         }
+        perf::record(Read::Get);
         self.inner
             .get_range(&parse_path(path)?, range)
             .await
@@ -198,6 +201,7 @@ impl Store {
             range: Some(GetRange::Bounded(range)),
             ..GetOptions::default()
         };
+        perf::record(Read::Get);
         let result = self
             .inner
             .get_opts(&parse_path(path)?, options)
@@ -210,6 +214,7 @@ impl Store {
 
     /// Reads object metadata.
     pub async fn head(&self, path: &str) -> Result<ObjectInfo, StoreError> {
+        perf::record(Read::Head);
         let meta = self
             .inner
             .head(&parse_path(path)?)
@@ -235,6 +240,7 @@ impl Store {
         } else {
             Some(parse_path(prefix)?)
         };
+        perf::record(Read::List);
         let mut infos: Vec<ObjectInfo> = self
             .inner
             .list(prefix_path.as_ref())

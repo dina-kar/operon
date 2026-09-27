@@ -216,6 +216,24 @@ fn with_token(mut response: Response, token: &ConsistencyToken) -> Response {
     response
 }
 
+/// Adds `Server-Timing: total;dur=…, plan;dur=…, exec;dur=…` (M1.6 Task
+/// 10, D92), in milliseconds with three decimals.
+fn with_server_timing(
+    mut response: Response,
+    total_ms: f64,
+    planning_ms: f64,
+    execution_ms: f64,
+) -> Response {
+    let value =
+        format!("total;dur={total_ms:.3}, plan;dur={planning_ms:.3}, exec;dur={execution_ms:.3}");
+    if let Ok(value) = HeaderValue::from_str(&value) {
+        response
+            .headers_mut()
+            .insert(HeaderName::from_static("server-timing"), value);
+    }
+    response
+}
+
 /// The consistency of a read (rule 1): the `Operon-Consistency-Token`
 /// request header turns a `strong`, `eventual` or absent body consistency
 /// into `AtLeast(header)`, merges into an `at_least` one, and loses to a

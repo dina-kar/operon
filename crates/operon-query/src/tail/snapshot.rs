@@ -130,6 +130,21 @@ impl TailSnapshot {
         self.live.len()
     }
 
+    /// Overlay keys whose latest entry the manifest does not cover is a
+    /// delete (M1.6 Task 10's `tail_records` counts them with the live
+    /// docs).
+    pub fn deleted_count(&self) -> u64 {
+        let Some(generation) = &self.generation else {
+            return 0;
+        };
+        let entries = read(&generation.entries);
+        let latest = read(&generation.latest);
+        latest
+            .keys()
+            .filter(|pk| matches!(self.lookup(&entries, &latest, pk), TailLookup::Deleted(_)))
+            .count() as u64
+    }
+
     /// The overlay state of `pk`.
     pub fn get(&self, pk: &PrimaryKey) -> TailLookup {
         let Some(generation) = &self.generation else {

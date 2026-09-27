@@ -931,7 +931,8 @@ const MIN_JUDGED: u64 = 20;
 
 /// One answer, as compared.
 struct Answer {
-    /// The canonical body: the response without `hot_used`, or the error.
+    /// The canonical body: the response without `hot_used` and
+    /// `performance`, or the error.
     body: Value,
     /// A search's typed response, for the approximate checks.
     search: Option<SearchResponse>,
@@ -1658,8 +1659,10 @@ async fn run_op(
             let mut value = body(&result);
             if let Value::Object(map) = &mut value {
                 // Which structures served a read is the only allowed
-                // difference (R12).
+                // difference (R12); what the read cost is not an answer
+                // (M1.6 Task 10).
                 map.remove("hot_used");
+                map.remove("performance");
             }
             Answer {
                 body: value,

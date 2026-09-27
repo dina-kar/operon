@@ -12,6 +12,7 @@ mod flight_ingest;
 mod hot_hooks;
 mod ir_json;
 mod merge;
+mod perf;
 mod pinned;
 mod reads;
 mod scan;

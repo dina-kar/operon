@@ -22,7 +22,8 @@
 //! ingest into collections and streams ([`flight_ingest`]). Task 14: scan
 //! pinning, a collection resolved into a pinned scan plan ([`scan`], D53).
 //! M1.5 Task 9a: delete-by-filter and patch-by-filter ([`filter_write`],
-//! D87).
+//! D87). M1.6 Task 10: the per-response `performance` block ([`perf`],
+//! D92).
 
 pub mod backlog;
 pub mod catalog_cache;
@@ -34,6 +35,7 @@ pub mod flight_ingest;
 pub mod hot;
 pub mod ir;
 pub mod json;
+pub mod perf;
 pub mod placement;
 pub mod read;
 pub mod scan;

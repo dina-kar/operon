@@ -1,6 +1,7 @@
 //! `POST /v1/namespaces/{ns}/sql` (plan M1.2 Task 11 rule 1): one read-only
 //! statement, answered as `{"columns", "rows", "truncated"}` (Task 10
-//! rule 7).
+//! rule 7) plus the four timings in `performance` and `Server-Timing`
+//! (M1.6 Task 10).
 
 use axum::extract::rejection::{BytesRejection, PathRejection};
 use axum::extract::{Path, State};
@@ -11,7 +12,7 @@ use operon_query::ReadConsistency;
 use operon_query::sql::{rows_to_json, run_read_only};
 use serde::Deserialize;
 
-use super::{ApiResult, AppState, parse_json, read_consistency};
+use super::{ApiResult, AppState, parse_json, read_consistency, with_server_timing};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -32,5 +33,14 @@ pub(super) async fn sql(
     // Made inside the request, so its scans see this request's hot scope.
     let ctx = state.collections.sql_context_with(&ns, consistency);
     let result = run_read_only(&ctx, &request.query, &state.collections.config().sql).await?;
-    Ok(axum::Json(rows_to_json(&result)).into_response())
+    let mut body = rows_to_json(&result);
+    let p = &result.performance;
+    body["performance"] = serde_json::to_value(p).unwrap_or_default();
+    let reply = axum::Json(body).into_response();
+    Ok(with_server_timing(
+        reply,
+        p.server_total_ms,
+        p.planning_ms,
+        p.execution_ms,
+    ))
 }

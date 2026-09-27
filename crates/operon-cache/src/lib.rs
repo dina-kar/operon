@@ -3,8 +3,9 @@
 //! Objects are split into fixed-size blocks. Blocks live in a foyer hybrid cache
 //! (RAM, optionally spilling to an NVMe directory), each with a crc32c checksum
 //! verified on every hit. Because cached objects are immutable, entries never
-//! need invalidation.
+//! need invalidation. [`perf`] counts the bytes one request read.
 
+pub mod perf;
 mod range_cache;
 
 pub use range_cache::{CacheError, CacheStats, DiskConfig, RangeCache, RangeCacheConfig};

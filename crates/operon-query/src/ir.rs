@@ -688,6 +688,10 @@ pub struct SearchResponse {
     /// The hot structures the read used; omitted from JSON when empty.
     #[serde(default, skip_serializing_if = "is_empty_set")]
     pub hot_used: BTreeSet<HotKind>,
+    /// What the search cost (M1.6 Task 10, D92); a body without it (an
+    /// older owner's) reads as zeros.
+    #[serde(default)]
+    pub performance: crate::perf::Performance,
 }
 
 /// One hit.

@@ -121,6 +121,10 @@ pub struct SearchOutput {
     pub hits: Vec<HitOut>,
     pub read_token: String,
     pub truncated: bool,
+    /// What the search cost the server: the native response's block
+    /// (M1.6 Task 10, D92).
+    #[schemars(with = "Map<String, Value>")]
+    pub performance: operon_query::perf::Performance,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -588,15 +592,20 @@ impl OperonMcp {
             })
             .collect();
         let read_token = response.read_token.to_string();
+        let performance = response.performance;
         let truncated = cap_items(&mut hits, self.config.max_output_bytes, |hits| {
-            tool_result_json(
-                serde_json::json!({ "hits": hits, "read_token": read_token, "truncated": true }),
-            )
+            tool_result_json(serde_json::json!({
+                "hits": hits,
+                "read_token": read_token,
+                "truncated": true,
+                "performance": performance,
+            }))
         });
         Ok(SearchOutput {
             hits,
             read_token,
             truncated,
+            performance,
         })
     }
 

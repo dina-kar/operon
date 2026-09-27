@@ -45,6 +45,7 @@ use crate::exec::schema::{Ranked, ranked_schema, ranked_to_batch};
 use crate::exec::{df_error, plan_properties};
 use crate::hot::{HotAnn, HotKind};
 use crate::ir::AnnParams;
+use crate::perf::RowCounter;
 use crate::read::{ReadView, collection_error};
 use crate::tail::TAIL_ROWID_BASE;
 use crate::vector::{AnnConfig, AnnStrategy, score};
@@ -249,6 +250,7 @@ struct Inner {
     allow: Option<Arc<FilterBitmapExec>>,
     config: AnnConfig,
     strategy: Mutex<Option<AnnStrategy>>,
+    rows: Arc<RowCounter>,
 }
 
 /// Dense vector top-k of `field` over the view, restricted to `allow` (a
@@ -292,10 +294,21 @@ impl AnnExec {
                 allow,
                 config,
                 strategy: Mutex::new(None),
+                rows: Arc::default(),
             }),
             properties: plan_properties(ranked_schema()),
             metrics: ExecutionPlanMetricsSet::new(),
         }
+    }
+
+    /// Counts the rows each search scores with the exact kernel into
+    /// `rows` (M1.6 Task 10); brute-force scans and the tail are brute
+    /// force.
+    pub fn with_rows(mut self, rows: Arc<RowCounter>) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.rows = rows;
+        }
+        self
     }
 
     /// The strategy of the last execution; `None` before one (tests and
@@ -327,6 +340,7 @@ struct Durable<'a> {
     config: &'a AnnConfig,
     spec: &'a VectorSpec,
     retries: Count,
+    rows: &'a RowCounter,
 }
 
 impl Durable<'_> {
@@ -341,7 +355,9 @@ impl Durable<'_> {
         self.view.tail.shadow()
     }
 
+    /// Scores one candidate with the exact kernel (counted).
     fn scored(&self, row_id: u64, pk: PrimaryKey, vector: &[f32]) -> Scored {
+        self.rows.add(1, 0);
         Scored {
             row_id,
             pk,
@@ -378,6 +394,7 @@ impl Durable<'_> {
         }
         let mut stream = scanner.try_into_stream().await.map_err(lance_error)?;
         let mut top = TopK::new(k);
+        let mut scanned = 0;
         while let Some(batch) = stream.next().await {
             let batch = batch.map_err(lance_error)?;
             batch_rows(&batch, &self.column, self.dim, |row_id, pk, vector| {
@@ -385,11 +402,13 @@ impl Durable<'_> {
                     && mask.admits(row_id)
                     && !self.shadow().contains(row_id)
                 {
+                    scanned += 1;
                     top.push(self.scored(row_id, pk, vector));
                 }
                 Ok(())
             })?;
         }
+        self.rows.add(0, scanned);
         Ok(top.into_sorted())
     }
 
@@ -707,6 +726,7 @@ impl Inner {
     /// by brute force (rule 5).
     fn tail_hits(&self, metric: Distance, allow_t: Option<&RoaringTreemap>) -> Vec<Scored> {
         let mut top = TopK::new(self.k);
+        let mut scanned = 0;
         for doc in self.view.tail.live_docs() {
             if allow_t.is_some_and(|allow| !allow.contains(doc.row_id)) {
                 continue;
@@ -717,12 +737,14 @@ impl Inner {
             if vector.len() != self.query.len() {
                 continue;
             }
+            scanned += 1;
             top.push(Scored {
                 row_id: doc.row_id,
                 pk: doc.pk.clone(),
                 score: score(metric, &self.query, vector),
             });
         }
+        self.rows.add(scanned, scanned);
         top.into_sorted()
     }
 
@@ -761,6 +783,7 @@ impl Inner {
             config: &self.config,
             spec,
             retries: MetricBuilder::new(metrics).counter("retries", 0),
+            rows: &self.rows,
         };
         let manifest = view.snapshot.manifest();
         let index_name = manifest

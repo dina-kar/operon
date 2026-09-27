@@ -27,6 +27,7 @@ use crate::error::ServiceError;
 use crate::exec::planner::{SearchConfig, SearchPlanner};
 use crate::hot::{self, HotTier, HotUsed, NoHotTier, RequestHot};
 use crate::ir::{Query, ReadConsistency, SearchRequest, SearchResponse};
+use crate::perf;
 use crate::placement::{LocalOnly, NoRemoteReads, Owner, Placement, RemoteReads};
 use crate::read::{ReadConfig, Reads};
 use crate::scan::{ScanAt, ScanPlan};
@@ -159,6 +160,20 @@ async fn forwarded<T>(
         }
         result => Some(result),
     }
+}
+
+/// Runs a search in its own [`perf`] scope and finishes its `performance`
+/// block from it (M1.6 Task 10).
+async fn measured(
+    search: impl Future<Output = Result<SearchResponse, ServiceError>>,
+) -> Result<SearchResponse, ServiceError> {
+    // Boxed: the scopes nest three task-locals around the whole search,
+    // which callers' futures would otherwise carry in their layout.
+    let (result, scope) = perf::with_perf(Box::pin(search)).await;
+    result.map(|mut response| {
+        response.performance.finish(&scope);
+        response
+    })
 }
 
 /// A scroll page (the documents and the key to continue after) with the
@@ -896,8 +911,17 @@ impl CollectionService {
     // ----- Reads -----
 
     /// Rule 1: resolve, forward to a remote owner (falling back to the local
-    /// path when it is unavailable), or plan locally.
+    /// path when it is unavailable), or plan locally; with the response's
+    /// `performance` block (M1.6 Task 10).
     pub async fn search(
+        &self,
+        ns: &str,
+        request: SearchRequest,
+    ) -> Result<SearchResponse, ServiceError> {
+        measured(self.search_unmeasured(ns, request)).await
+    }
+
+    async fn search_unmeasured(
         &self,
         ns: &str,
         request: SearchRequest,
@@ -923,10 +947,13 @@ impl CollectionService {
         ns: &str,
         request: SearchRequest,
     ) -> Result<SearchResponse, ServiceError> {
-        let hot = self.request_hot();
-        validate_request(&request, &self.config.search.limits)?;
-        let (ns_id, collection) = self.resolve(ns, &request.collection).await?;
-        self.search_in(ns_id, &collection, request, &hot).await
+        measured(async {
+            let hot = self.request_hot();
+            validate_request(&request, &self.config.search.limits)?;
+            let (ns_id, collection) = self.resolve(ns, &request.collection).await?;
+            self.search_in(ns_id, &collection, request, &hot).await
+        })
+        .await
     }
 
     async fn search_in(
@@ -946,7 +973,23 @@ impl CollectionService {
                 self.hot_tier(hot),
             )
             .await?;
-        self.planner.search(Arc::new(view), request).await
+        // The snapshot's part of the block (M1.6 Task 10 rule 2).
+        let manifest_version = view.snapshot.manifest().version;
+        let tail_records = view.tail.live_count() + view.tail.deleted_count();
+        let stale_records = match request.consistency {
+            ReadConsistency::Eventual => Some(
+                self.reads
+                    .stale_records(&view.collection, &view.tail)
+                    .await?,
+            ),
+            _ => None,
+        };
+        let mut response = self.planner.search(Arc::new(view), request).await?;
+        let performance = &mut response.performance;
+        performance.manifest_version = manifest_version;
+        performance.tail_records = tail_records;
+        performance.stale_records = stale_records;
+        Ok(response)
     }
 
     /// The documents of `pks` in request order, `None` for a missing key.

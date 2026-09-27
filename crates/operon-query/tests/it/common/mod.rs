@@ -1806,8 +1806,8 @@ pub fn battery(collection: &str) -> Vec<(&'static str, Probe)> {
     probes
 }
 
-/// A search response as JSON without its read token and hot report, every
-/// hit's score as its `f32::to_bits`.
+/// A search response as JSON without its read token, hot report and
+/// performance block, every hit's score as its `f32::to_bits`.
 pub fn response_json(response: &operon_query::SearchResponse) -> Value {
     fn score_bits(hits: &mut Value, scores: impl Iterator<Item = f32>) {
         let hits = hits.as_array_mut().expect("hits");
@@ -1819,6 +1819,7 @@ pub fn response_json(response: &operon_query::SearchResponse) -> Value {
     let object = value.as_object_mut().expect("an object");
     object.remove("read_token");
     object.remove("hot_used");
+    object.remove("performance");
     score_bits(
         &mut value["hits"],
         response.hits.iter().map(|hit| hit.score),

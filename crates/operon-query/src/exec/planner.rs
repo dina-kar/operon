@@ -35,7 +35,9 @@ use crate::ir::{
     Fusion, Hit, HitGroup, Query, Retriever, SearchRequest, SearchResponse, SortKey, TotalHits,
     TotalRelation, TrackTotalHits,
 };
+use crate::perf;
 use crate::read::ReadView;
+use crate::tail::TAIL_ROWID_BASE;
 use crate::text::fields::{ResolvedField, resolve_field};
 use crate::text::highlight::{check_highlight, highlight, highlight_stats};
 use crate::text::pkdict::PkDictCache;
@@ -308,6 +310,7 @@ impl Plan<'_> {
             self.planner.stats.clone(),
             self.planner.config.parallelism,
         )
+        .with_rows(perf::retriever("text"))
     }
 
     /// `R(r)` (rule 1.2).
@@ -321,15 +324,18 @@ impl Plan<'_> {
                 k,
                 params,
                 filter,
-            } => Arc::new(AnnExec::new(
-                view.clone(),
-                field.clone(),
-                query.clone(),
-                *k,
-                params.clone(),
-                self.filter_exec(and(self.request.filter.as_ref(), filter.as_ref())),
-                self.planner.ann.clone(),
-            )),
+            } => Arc::new(
+                AnnExec::new(
+                    view.clone(),
+                    field.clone(),
+                    query.clone(),
+                    *k,
+                    params.clone(),
+                    self.filter_exec(and(self.request.filter.as_ref(), filter.as_ref())),
+                    self.planner.ann.clone(),
+                )
+                .with_rows(perf::retriever("vector")),
+            ),
             Retriever::Text { query, k } => match uniform_score(&view.collection.schema, query) {
                 Some(constant) if score_only(self.sort) => self.constant_text(query, *k, constant),
                 _ => Arc::new(self.text_exec(query, *k)),
@@ -353,16 +359,19 @@ impl Plan<'_> {
                 k,
                 filter,
                 params,
-            } => Arc::new(SparseExec::new(
-                view.clone(),
-                field.clone(),
-                query.clone(),
-                *k,
-                self.filter_exec(and(self.request.filter.as_ref(), filter.as_ref())),
-                self.filter_exec(params.idf_corpus.clone()),
-                self.planner.stats.clone(),
-                config.parallelism,
-            )),
+            } => Arc::new(
+                SparseExec::new(
+                    view.clone(),
+                    field.clone(),
+                    query.clone(),
+                    *k,
+                    self.filter_exec(and(self.request.filter.as_ref(), filter.as_ref())),
+                    self.filter_exec(params.idf_corpus.clone()),
+                    self.planner.stats.clone(),
+                    config.parallelism,
+                )
+                .with_rows(perf::retriever("sparse")),
+            ),
         })
     }
 
@@ -380,12 +389,23 @@ impl Plan<'_> {
             constant
         };
         let matches = matching(query, filter.as_ref());
+        let counter = perf::retriever("text");
         let run: Arc<RankedFn> = Arc::new(move |_context| {
             let (view, keys, matches) = (view.clone(), keys.clone(), matches.clone());
+            let counter = counter.clone();
             Box::pin(async move {
                 let rows = FilterBitmapExec::new(view.clone(), matches, parallelism)
                     .rows()
                     .await?;
+                // Every match ties, so each counts; the tail's without an
+                // index.
+                match &rows {
+                    RowSet::All => counter.add(view.live_rows(), view.tail.live_count()),
+                    RowSet::Rows(rows) => {
+                        let durable = rows.rank(TAIL_ROWID_BASE - 1);
+                        counter.add(rows.len(), rows.len() - durable);
+                    }
+                }
                 let page = keys.page(&view, rows, None, k).await?;
                 Ok(page
                     .into_iter()
@@ -532,6 +552,8 @@ impl SearchPlanner {
             && matches!(request.retrievers[0], Retriever::Text { .. });
         // Groups computed while sizing a field-mode window, if any.
         let mut prepared: Option<Vec<Group>> = None;
+        // The plan's shape is known; what follows runs it (M1.6 Task 10).
+        perf::mark_planned();
         // 2–5. The ranked candidates, in the effective order.
         let (candidates, domain) = match sort.mode {
             RankMode::Field => {
@@ -553,6 +575,10 @@ impl SearchPlanner {
                             .min(max_window),
                     );
                 }
+                let counter = perf::retriever(match request.retrievers.first() {
+                    Some(Retriever::Text { .. }) => "text",
+                    _ => "filter",
+                });
                 let hits = loop {
                     let exec = TantivySearchExec::new(
                         view.clone(),
@@ -563,7 +589,8 @@ impl SearchPlanner {
                         request.search_after.clone(),
                         self.stats.clone(),
                         self.config.parallelism,
-                    );
+                    )
+                    .with_rows(counter.clone());
                     let hits = collect_ranked(Arc::new(exec), context.clone()).await?;
                     let Some(group_by) = &request.group_by else {
                         break hits;
@@ -695,6 +722,7 @@ impl SearchPlanner {
             }
             None => None,
         };
+        perf::mark_executed();
         Ok(SearchResponse {
             hits,
             total,
@@ -702,6 +730,7 @@ impl SearchPlanner {
             groups,
             read_token: view.read_token.clone(),
             hot_used: view.hot_used.kinds(),
+            performance: Default::default(),
         })
     }
 

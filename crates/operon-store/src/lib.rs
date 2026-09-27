@@ -3,10 +3,12 @@
 //! [`Store`] wraps an [`object_store::ObjectStore`] and exposes the small set of
 //! operations Operon relies on: create-only writes, compare-and-swap writes,
 //! whole-object and range reads, idempotent deletes, and listing.
-//! [`FaultyStore`] injects failures for crash and fault testing.
+//! [`FaultyStore`] injects failures for crash and fault testing. [`perf`]
+//! counts the reads of one request.
 
 mod error;
 mod fault;
+pub mod perf;
 mod store;
 
 pub use error::StoreError;

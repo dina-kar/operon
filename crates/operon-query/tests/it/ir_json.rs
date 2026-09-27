@@ -1330,6 +1330,7 @@ fn search_response() -> impl Strategy<Value = SearchResponse> {
                 }),
                 read_token,
                 hot_used,
+                performance: Default::default(),
             },
         )
 }
@@ -1539,6 +1540,7 @@ fn search_request_defaults_fill_missing_keys() {
         groups: None,
         read_token: ConsistencyToken::default(),
         hot_used: BTreeSet::new(),
+        performance: Default::default(),
     };
     assert!(!obj(to(&response)).contains_key("hot_used"));
     assert_eq!(to(&response)["read_token"], json!("v1:"));

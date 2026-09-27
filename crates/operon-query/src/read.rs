@@ -344,6 +344,34 @@ impl Reads {
         Ok((version, token_of(&head.collection, |p| offset_in(&hwm, p))))
     }
 
+    /// Records of `collection` written but not in `tail` yet: one `Local`
+    /// read of the high watermarks minus the tail's head (or the
+    /// manifest's applied offset, when larger), summed over partitions
+    /// (M1.6 Task 10, D86).
+    pub async fn stale_records(
+        &self,
+        collection: &Collection,
+        tail: &TailSnapshot,
+    ) -> Result<u64, ServiceError> {
+        let Some(head) = self
+            .ctx
+            .meta
+            .collection_head(Consistency::Local, collection.id)
+            .await
+            .map_err(meta_error)?
+        else {
+            return Ok(0);
+        };
+        let applied = &tail.manifest().applied;
+        Ok(high_watermarks(&head)
+            .into_iter()
+            .map(|(p, hwm)| {
+                let seen = offset_in(applied, p).max(offset_in(tail.head(), p));
+                hwm.saturating_sub(seen)
+            })
+            .sum())
+    }
+
     /// The running tail of `cid`, if any.
     pub fn tail(&self, cid: CollectionId) -> Option<Arc<Tail>> {
         self.tails.get(cid)

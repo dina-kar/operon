@@ -16,13 +16,18 @@ async fn sql_over_http_returns_columns_and_rows() {
     )
     .await
     .expect(StatusCode::OK);
-    let body = api
+    let mut body = api
         .post(
             "/v1/namespaces/w/sql",
             json!({"query": "SELECT count(*) AS n FROM kb"}),
         )
         .await
         .expect(StatusCode::OK);
+    // Timings vary per run (M1.6 Task 10); `perf_http` checks them.
+    let performance = body
+        .as_object_mut()
+        .and_then(|body| body.remove("performance"));
+    assert!(performance.is_some(), "{body}");
     assert_eq!(
         body,
         json!({"columns": [{"name": "n", "type": "Int64"}], "rows": [[5]], "truncated": false})

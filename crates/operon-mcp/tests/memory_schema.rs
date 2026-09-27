@@ -87,4 +87,18 @@ fn is_memory_collection_needs_a_text_field_named_text() {
         false,
     );
     assert!(!is_memory_collection(&schema));
+    // A field named `text` read from another path would not index what
+    // `memory_write` stores at `source.text` (PR #99 review).
+    schema.fields[0] = FieldSpec {
+        source_path: "body".into(),
+        ..field(
+            "text",
+            FieldKind::Text {
+                analyzer: "standard".into(),
+                positions: true,
+            },
+            false,
+        )
+    };
+    assert!(!is_memory_collection(&schema));
 }

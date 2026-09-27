@@ -478,3 +478,51 @@ async fn forget_drops_the_size_and_the_blocks_of_an_object() {
     assert_eq!(cache.read("obj", 0..30).await.unwrap(), vec![7u8; 30]);
     cache.forget("never-read").await;
 }
+
+/// M1.6 Task 10 (D92): a read in a byte-count scope adds the bytes of the
+/// whole blocks it served from the cache and fetched from the store.
+#[tokio::test]
+async fn reads_in_a_scope_count_hit_and_miss_bytes() {
+    use operon_cache::perf::{self, ByteCounts};
+    let store = Store::in_memory();
+    store.put("obj", data(200)).await.unwrap();
+    let cache = cache_over(store, 64).await;
+
+    let cold = ByteCounts::new();
+    perf::scope(cold.clone(), cache.read_with_size("obj", 200, 10..130))
+        .await
+        .unwrap();
+    // Blocks 0..3 (192 bytes) fetched, none cached.
+    assert_eq!((cold.hit_bytes(), cold.miss_bytes()), (0, 192));
+
+    let warm = ByteCounts::new();
+    perf::scope(warm.clone(), cache.read_with_size("obj", 200, 0..200))
+        .await
+        .unwrap();
+    // Blocks 0..3 cached, the last 8-byte block fetched.
+    assert_eq!((warm.hit_bytes(), warm.miss_bytes()), (192, 8));
+
+    // Outside a scope nothing is counted, and the scopes kept their counts.
+    cache.read("obj", 0..200).await.unwrap();
+    assert!(perf::current().is_none());
+    assert_eq!((cold.hit_bytes(), cold.miss_bytes()), (0, 192));
+}
+
+#[tokio::test]
+async fn a_nested_byte_scope_also_counts_into_its_parent() {
+    use operon_cache::perf::{self, ByteCounts};
+    let store = Store::in_memory();
+    store.put("obj", data(64)).await.unwrap();
+    let cache = cache_over(store, 64).await;
+    let outer = ByteCounts::new();
+    let inner = perf::scope(outer.clone(), async {
+        let inner = ByteCounts::new();
+        perf::scope(inner.clone(), cache.read_with_size("obj", 64, 0..64))
+            .await
+            .unwrap();
+        inner
+    })
+    .await;
+    assert_eq!(inner.miss_bytes(), 64);
+    assert_eq!(outer.miss_bytes(), 64);
+}

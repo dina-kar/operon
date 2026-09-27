@@ -119,14 +119,56 @@ async fn a_slow_query_times_out() {
 
 #[tokio::test]
 async fn output_is_capped_by_bytes() {
+    // Room for the columns and about one row, not five.
+    let empty = operon_mcp::output::tool_result_json(json!({
+        "columns": [{"name": "a", "data_type": "Int64"}],
+        "rows": [],
+        "row_count": 0,
+        "truncated": true,
+    }));
     let limits = SqlLimits {
-        max_output_bytes: 64,
+        max_output_bytes: empty.to_string().len() + 24,
         ..limits()
     };
     let out = run_read_only(&context(), "SELECT a FROM kb ORDER BY a", &limits)
         .await
         .expect("runs");
-    assert!(out.rows.len() < 5, "{:?}", out.rows);
+    assert!(!out.rows.is_empty() && out.rows.len() < 5, "{:?}", out.rows);
     assert_eq!(out.row_count, out.rows.len());
     assert!(out.truncated);
+}
+
+/// Two columns of one name would collapse into one key of each row object
+/// (PR #99 review): refused, naming the column.
+#[tokio::test]
+async fn duplicate_column_names_are_refused() {
+    let err = run_read_only(
+        &context(),
+        "SELECT k1.a, k2.a FROM kb k1 JOIN kb k2 ON k1.a = k2.a",
+        &limits(),
+    )
+    .await
+    .expect_err("duplicate columns");
+    assert_eq!(err.code, "invalid_argument");
+    assert!(err.message.contains("`a`"), "{}", err.message);
+}
+
+/// A result whose columns alone exceed the cap cannot be cut down to fit
+/// (PR #99 review): a bounded error, not an oversized result.
+#[tokio::test]
+async fn columns_over_the_cap_are_resource_exhausted() {
+    let limits = SqlLimits {
+        max_output_bytes: 16,
+        ..limits()
+    };
+    let err = run_read_only(&context(), "SELECT a FROM kb", &limits)
+        .await
+        .expect_err("over the cap");
+    assert_eq!(err.code, "resource_exhausted");
+    assert_eq!(err.retry_after_ms, None, "retrying does not help");
+    // An empty result over the cap too.
+    let err = run_read_only(&context(), "SELECT a FROM kb WHERE a > 9", &limits)
+        .await
+        .expect_err("over the cap");
+    assert_eq!(err.code, "resource_exhausted");
 }

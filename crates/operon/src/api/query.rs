@@ -1,5 +1,6 @@
 //! `POST /v1/namespaces/{ns}/query` (plan M1.2 Task 11 rule 1): a
-//! `SearchRequest`, or the §05 §4 hybrid body (Task 1 rule 8).
+//! `SearchRequest`, or the §05 §4 hybrid body (Task 1 rule 8). The
+//! response carries `performance` and `Server-Timing` (M1.6 Task 10).
 
 use axum::extract::rejection::{BytesRejection, PathRejection};
 use axum::extract::{Path, State};
@@ -9,7 +10,7 @@ use bytes::Bytes;
 use operon_query::json::hybrid::parse_query_body;
 use serde_json::Value;
 
-use super::{ApiResult, AppState, parse_json, read_consistency, with_token};
+use super::{ApiResult, AppState, parse_json, read_consistency, with_server_timing, with_token};
 
 pub(super) async fn search(
     State(state): State<AppState>,
@@ -24,5 +25,8 @@ pub(super) async fn search(
     request.consistency = read_consistency(&headers, Some(request.consistency))?;
     let response = state.collections.search(&ns, request).await?;
     let token = response.read_token.clone();
-    Ok(with_token(axum::Json(response).into_response(), &token))
+    let p = &response.performance;
+    let (total, plan, exec) = (p.server_total_ms, p.planning_ms, p.execution_ms);
+    let reply = with_token(axum::Json(response).into_response(), &token);
+    Ok(with_server_timing(reply, total, plan, exec))
 }

@@ -40,6 +40,7 @@ use crate::exec::{
     tantivy_error,
 };
 use crate::ir::{Query, SortValue};
+use crate::perf::RowCounter;
 use crate::read::ReadView;
 use crate::text::compile::QueryCompiler;
 use crate::text::query_tokenizers;
@@ -81,6 +82,7 @@ struct Inner {
     search_after: Option<Vec<SortValue>>,
     stats: StatsCache,
     parallelism: usize,
+    rows: Arc<RowCounter>,
 }
 
 /// BM25 top-k (score mode) or every match ordered by field values (field
@@ -126,10 +128,21 @@ impl TantivySearchExec {
                 search_after,
                 stats,
                 parallelism: parallelism.max(1),
+                rows: Arc::default(),
             }),
             properties: plan_properties(ranked_schema()),
             metrics: ExecutionPlanMetricsSet::new(),
         }
+    }
+
+    /// Counts the docs each search scores into `rows` (M1.6 Task 10):
+    /// rescored candidates in score mode, matches in field mode; the
+    /// tail's are brute force.
+    pub fn with_rows(mut self, rows: Arc<RowCounter>) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.rows = rows;
+        }
+        self
     }
 
     /// Matches of `query ∧ filter` over the view (rule 6).
@@ -231,6 +244,7 @@ impl Inner {
             search_after: self.search_after.clone(),
             fields,
             stats,
+            rows: self.rows.clone(),
         });
         let results = futures::stream::iter(units)
             .map(|unit| {
@@ -276,6 +290,7 @@ struct Job {
     search_after: Option<Vec<SortValue>>,
     fields: Vec<SortField>,
     stats: Option<Arc<GlobalStats>>,
+    rows: Arc<RowCounter>,
 }
 
 impl Job {
@@ -300,17 +315,21 @@ impl Job {
         };
         let scoring = rescore.as_deref().unwrap_or(weight.as_ref());
         let mut hits = Vec::new();
+        let mut scanned = 0;
         for (segment, reader) in unit.searcher.segment_readers().iter().enumerate() {
             let masked = &unit.masks[segment];
             let columns = Columns::open(reader, &self.fields)?;
-            let found = match self.sort.mode {
+            let (found, scored) = match self.sort.mode {
                 RankMode::Score => {
                     self.score_segment(weight.as_ref(), scoring, reader, masked, &columns)?
                 }
                 RankMode::Field => self.field_segment(scoring, reader, masked, &columns)?,
             };
+            scanned += scored;
             hits.extend(found);
         }
+        self.rows
+            .add(scanned, if unit.is_tail { scanned } else { 0 });
         hits.sort_by(|a, b| self.sort.compare(a, b));
         hits.truncate(self.k);
         Ok(hits)
@@ -337,7 +356,7 @@ impl Job {
 
     /// Rule 4: block-max WAND top-k of one segment with `weight`, keeping
     /// every candidate at or above the threshold, then exact rescoring with
-    /// `rescore`.
+    /// `rescore`; with the number of candidates rescored.
     fn score_segment(
         &self,
         weight: &dyn Weight,
@@ -345,7 +364,7 @@ impl Job {
         reader: &SegmentReader,
         masked: &RoaringBitmap,
         columns: &Columns,
-    ) -> Result<Vec<Ranked>, ServiceError> {
+    ) -> Result<(Vec<Ranked>, u64), ServiceError> {
         let k = self.k;
         let mut top: BinaryHeap<Reverse<Total>> = BinaryHeap::with_capacity(k + 1);
         let mut candidates: Vec<(DocId, Score)> = Vec::new();
@@ -387,6 +406,7 @@ impl Job {
         }
         candidates.retain(|(_, score)| *score >= floor);
         candidates.sort_unstable_by_key(|(doc, _)| *doc);
+        let rescored = candidates.len() as u64;
         // Exact scores in the query's clause order.
         let mut scorer = rescore.scorer(reader, 1.0).map_err(tantivy_error)?;
         let mut hits = Vec::with_capacity(candidates.len());
@@ -407,26 +427,28 @@ impl Job {
         }
         hits.sort_by(|a, b| self.sort.compare(a, b));
         hits.truncate(k);
-        Ok(hits)
+        Ok((hits, rescored))
     }
 
     /// Rule 5: every match, ordered by the sort keys' fast-field values, in
-    /// a bounded buffer of the best `k`.
+    /// a bounded buffer of the best `k`; with the number of matches.
     fn field_segment(
         &self,
         weight: &dyn Weight,
         reader: &SegmentReader,
         masked: &RoaringBitmap,
         columns: &Columns,
-    ) -> Result<Vec<Ranked>, ServiceError> {
+    ) -> Result<(Vec<Ranked>, u64), ServiceError> {
         let k = self.k;
         let mut best: Vec<Ranked> = Vec::new();
         let mut worst: Option<Ranked> = None;
         let mut failed: Option<ServiceError> = None;
+        let mut matches = 0u64;
         let mut visit = |doc: DocId, score: Score| -> Result<(), ServiceError> {
             if masked.contains(doc) {
                 return Ok(());
             }
+            matches += 1;
             let sort = columns.sort_values(doc);
             if let Some(worst) = &worst {
                 let probe = Ranked {
@@ -487,7 +509,7 @@ impl Job {
         }
         best.sort_by(|a, b| self.sort.compare(a, b));
         best.truncate(k);
-        Ok(best)
+        Ok((best, matches))
     }
 }
 

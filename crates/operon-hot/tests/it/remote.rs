@@ -210,12 +210,18 @@ fn u(k: u64) -> PrimaryKey {
     PrimaryKey::U64(k)
 }
 
+/// `value` as JSON without a search's `performance` block, which is what
+/// the read cost, not its answer (M1.6 Task 10).
+fn answer<T: serde::Serialize>(value: &T) -> serde_json::Value {
+    let mut json = serde_json::to_value(value).expect("json");
+    if let Some(object) = json.as_object_mut() {
+        object.remove("performance");
+    }
+    json
+}
+
 async fn eq_json<T: serde::Serialize>(what: &str, a: &T, b: &T) {
-    assert_eq!(
-        serde_json::to_value(a).expect("json"),
-        serde_json::to_value(b).expect("json"),
-        "{what}"
-    );
+    assert_eq!(answer(a), answer(b), "{what}");
 }
 
 /// The 9 get, count and scroll requests; runs each through both services

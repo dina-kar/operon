@@ -324,6 +324,7 @@ impl RangeCache {
         match verify(entry.value()) {
             Some(data) if data.len() as u64 == expected => {
                 self.counters.hits.fetch_add(1, Ordering::Relaxed);
+                crate::perf::record(expected, 0);
                 Some(data)
             }
             _ => {
@@ -351,6 +352,7 @@ impl RangeCache {
             .misses
             .fetch_add(run.end - run.start, Ordering::Relaxed);
         let (data, info) = self.store.get_range_with_info(path, start..end).await?;
+        crate::perf::record(0, data.len() as u64);
         if data.len() as u64 != end - start {
             return Err(CacheError::SizeMismatch {
                 path: path.to_string(),

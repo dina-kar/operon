@@ -36,6 +36,7 @@ use crate::exec::filter_bitmap::FilterBitmapExec;
 use crate::exec::mask::RowSet;
 use crate::exec::schema::{Ranked, ranked_schema, ranked_to_batch};
 use crate::exec::{blocking, df_error, plan_properties, tantivy_error};
+use crate::perf::RowCounter;
 use crate::read::ReadView;
 use crate::sparse::{SparseStats, sparse_score};
 use crate::text::splits::{open_splits_with, tail_segment_masks};
@@ -50,6 +51,7 @@ struct Inner {
     corpus: Option<Arc<FilterBitmapExec>>,
     stats: StatsCache,
     parallelism: usize,
+    rows: Arc<RowCounter>,
 }
 
 /// Exact sparse-vector top-k of `field` over the view, restricted to
@@ -97,10 +99,20 @@ impl SparseExec {
                 corpus,
                 stats,
                 parallelism: parallelism.max(1),
+                rows: Arc::default(),
             }),
             properties: plan_properties(ranked_schema()),
             metrics: ExecutionPlanMetricsSet::new(),
         }
+    }
+
+    /// Counts the candidates each search scores into `rows` (M1.6 Task
+    /// 10); the tail's are brute force.
+    pub fn with_rows(mut self, rows: Arc<RowCounter>) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.rows = rows;
+        }
+        self
     }
 
     /// The hits: at most `k`, by (score desc, pk asc).
@@ -114,6 +126,7 @@ impl SparseExec {
 struct SparseUnit {
     searcher: Searcher,
     masks: Vec<RoaringBitmap>,
+    is_tail: bool,
 }
 
 /// What every unit of one search shares.
@@ -123,6 +136,7 @@ struct Search {
     query: SparseVector,
     allow: Option<RoaringTreemap>,
     k: usize,
+    rows: Arc<RowCounter>,
 }
 
 /// The unmasked docs of one segment that have any of the query's indices,
@@ -193,6 +207,10 @@ fn unit_top(unit: SparseUnit, search: &Search) -> Result<Vec<Scored>, ServiceErr
                 admitted.push((doc, row_id, ord));
             }
         }
+        let scored = admitted.len() as u64;
+        search
+            .rows
+            .add(scored, if unit.is_tail { scored } else { 0 });
         let mut ords: Vec<u64> = admitted.iter().map(|(_, _, ord)| *ord).collect();
         ords.sort_unstable();
         ords.dedup();
@@ -341,6 +359,7 @@ impl Inner {
             .map(|split| SparseUnit {
                 searcher: split.searcher.clone(),
                 masks: split.segment_masks(),
+                is_tail: false,
             })
             .collect();
         drop(splits);
@@ -348,6 +367,7 @@ impl Inner {
             units.push(SparseUnit {
                 searcher: searcher.clone(),
                 masks: tail_segment_masks(searcher, view.tail.live())?,
+                is_tail: true,
             });
         }
         let search = Arc::new(Search {
@@ -356,6 +376,7 @@ impl Inner {
             query,
             allow,
             k: self.k,
+            rows: self.rows.clone(),
         });
         let parts = futures::stream::iter(units)
             .map(|unit| {

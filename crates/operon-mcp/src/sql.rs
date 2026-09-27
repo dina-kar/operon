@@ -68,6 +68,17 @@ pub async fn run_read_only(
             ),
             other => ToolError::from(other),
         })?;
+    // Rows become objects keyed by column name, so two columns of one
+    // name (`a.id, b.id` of a join) would collapse (PR #99 review).
+    let mut names = std::collections::BTreeSet::new();
+    for field in result.schema.fields() {
+        if !names.insert(field.name().as_str()) {
+            return Err(ToolError::invalid(format!(
+                "the result has two columns named `{}`; give them distinct aliases",
+                field.name()
+            )));
+        }
+    }
     let json = operon_query::sql::rows_to_json(&result);
     let columns: Vec<ColumnOut> = result
         .schema
@@ -93,14 +104,27 @@ pub async fn run_read_only(
         },
         _ => Vec::new(),
     };
-    let capped = cap_items(&mut rows, limits.max_output_bytes, |rows| {
+    let render = |rows: &[Map<String, Value>]| {
         tool_result_json(serde_json::json!({
             "columns": columns,
             "rows": rows,
             "row_count": rows.len(),
             "truncated": true,
         }))
-    });
+    };
+    // No row can be dropped to fit a result whose columns alone are over
+    // the cap (PR #99 review).
+    if render(&[]).to_string().len() > limits.max_output_bytes {
+        return Err(ToolError::new(
+            "resource_exhausted",
+            format!(
+                "the result's {} columns alone exceed the {}-byte output cap; select fewer columns",
+                columns.len(),
+                limits.max_output_bytes
+            ),
+        ));
+    }
+    let capped = cap_items(&mut rows, limits.max_output_bytes, render);
     Ok(SqlOutput {
         row_count: rows.len(),
         truncated: result.truncated || capped,

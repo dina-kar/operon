@@ -12,6 +12,7 @@ mod udtf;
 
 use std::fmt;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -36,6 +37,7 @@ pub use udtf::{
 use crate::error::ServiceError;
 use crate::hot::RequestHot;
 use crate::ir::ReadConsistency;
+use crate::perf::SqlPerformance;
 use crate::read::ReadView;
 use crate::service::{CollectionService, SqlConfig};
 
@@ -69,6 +71,9 @@ pub struct SqlResult {
     pub batches: Vec<RecordBatch>,
     /// More rows existed than were returned.
     pub truncated: bool,
+    /// The statement's timings (M1.6 Task 10): planning covers the logical
+    /// and physical plans, execution collecting the rows.
+    pub performance: SqlPerformance,
 }
 
 /// What every table and table function of one context reads with: the
@@ -178,9 +183,13 @@ pub async fn run_read_only(
     sql: &str,
     config: &SqlConfig,
 ) -> Result<SqlResult, ServiceError> {
-    tokio::time::timeout(config.timeout, run(ctx, sql, config.max_rows))
-        .await
-        .map_err(|_| ServiceError::Timeout)?
+    let started = Instant::now();
+    let (mut result, planned, executed) =
+        tokio::time::timeout(config.timeout, run(ctx, sql, config.max_rows, started))
+            .await
+            .map_err(|_| ServiceError::Timeout)??;
+    result.performance = SqlPerformance::of(planned, executed, started.elapsed());
+    Ok(result)
 }
 
 /// Plans `sql` read-only in `ctx` (rules 1 and 6) without running it.
@@ -216,9 +225,16 @@ pub async fn execute_read_only(
     frame.execute_stream().await.map_err(planning)
 }
 
-async fn run(ctx: &SessionContext, sql: &str, max_rows: usize) -> Result<SqlResult, ServiceError> {
+/// The rows, with the ends of planning and of execution since `started`.
+async fn run(
+    ctx: &SessionContext,
+    sql: &str,
+    max_rows: usize,
+    started: Instant,
+) -> Result<(SqlResult, Duration, Duration), ServiceError> {
     let frame = plan_read_only(ctx, sql).await?;
     let mut stream = execute_read_only(frame).await?;
+    let planned = started.elapsed();
     let schema = stream.schema();
     let mut batches = Vec::new();
     let mut rows = 0;
@@ -242,9 +258,15 @@ async fn run(ctx: &SessionContext, sql: &str, max_rows: usize) -> Result<SqlResu
             break;
         }
     }
-    Ok(SqlResult {
-        schema,
-        batches,
-        truncated,
-    })
+    let executed = started.elapsed();
+    Ok((
+        SqlResult {
+            schema,
+            batches,
+            truncated,
+            performance: SqlPerformance::default(),
+        },
+        planned,
+        executed,
+    ))
 }
