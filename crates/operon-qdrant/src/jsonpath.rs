@@ -76,6 +76,7 @@ struct Parser<'a> {
 }
 
 impl Parser<'_> {
+    /// Consumes `c` when it is next.
     fn eat(&mut self, c: char) -> bool {
         if self.s[self.at..].starts_with(c) {
             self.at += c.len_utf8();
@@ -85,6 +86,7 @@ impl Parser<'_> {
         }
     }
 
+    /// Consumes the longest prefix whose characters satisfy `f`.
     fn take_while(&mut self, f: impl Fn(char) -> bool) -> &str {
         let start = self.at;
         let len: usize = self.s[start..]
@@ -109,6 +111,7 @@ impl Parser<'_> {
 }
 
 impl std::fmt::Display for JsonPath {
+    /// The path in Qdrant's syntax, quoting keys that need it.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let key = |f: &mut std::fmt::Formatter<'_>, k: &str| {
             if needs_quoting(k) {
@@ -185,6 +188,7 @@ impl JsonPath {
     }
 }
 
+/// Collects the values at `path` under `value` into `out`.
 fn value_get<'a>(path: &[PathItem], value: &'a Value, out: &mut Vec<&'a Value>) {
     let Some((head, tail)) = path.split_first() else {
         out.push(value);
@@ -229,6 +233,8 @@ fn value_filter(
     out
 }
 
+/// [`value_filter`] below `path`: an array's elements (path `…[]`) and an
+/// object's keys are kept when `keep` accepts their path.
 fn run_filter(
     path: &mut Vec<PathItem>,
     value: &Value,
@@ -300,28 +306,43 @@ fn merge_map(dest: &mut Map<String, Value>, src: &Map<String, Value>) {
 pub fn value_set(path: Option<&JsonPath>, dest: &mut Map<String, Value>, src: &Map<String, Value>) {
     match path {
         None => merge_map(dest, src),
-        Some(path) => set_in_map(&path.first, &path.rest, dest, src),
+        Some(path) => set_in_map(&path.first, &path.rest, dest, src, false),
     }
 }
 
+/// `overwrite_payload` with `key`: as [`value_set`], but the object at
+/// `path` is replaced by `src` instead of merged with it (Task 5 step 4).
+pub fn value_overwrite(path: &JsonPath, dest: &mut Map<String, Value>, src: &Map<String, Value>) {
+    set_in_map(&path.first, &path.rest, dest, src, true);
+}
+
+/// [`value_set`] (or [`value_overwrite`] with `replace`) under `dest[key]`,
+/// creating it when missing.
 fn set_in_map(
     key: &str,
     rest: &[PathItem],
     dest: &mut Map<String, Value>,
     src: &Map<String, Value>,
+    replace: bool,
 ) {
     match dest.get_mut(key) {
-        Some(value) => set_in_value(rest, value, src),
+        Some(value) => set_in_value(rest, value, src, replace),
         None => {
             let mut value = Value::Null;
-            set_in_value(rest, &mut value, src);
+            set_in_value(rest, &mut value, src, replace);
             dest.insert(key.to_string(), value);
         }
     }
 }
 
-fn set_in_value(path: &[PathItem], dest: &mut Value, src: &Map<String, Value>) {
+/// [`value_set`] (or [`value_overwrite`] with `replace`) at `path` under
+/// `dest`: non-objects on the way are replaced.
+fn set_in_value(path: &[PathItem], dest: &mut Value, src: &Map<String, Value>, replace: bool) {
     let Some((head, rest)) = path.split_first() else {
+        if replace {
+            *dest = Value::Object(src.clone());
+            return;
+        }
         if !dest.is_object() {
             *dest = Value::Object(Map::new());
         }
@@ -336,7 +357,7 @@ fn set_in_value(path: &[PathItem], dest: &mut Value, src: &Map<String, Value>) {
                 *dest = Value::Object(Map::new());
             }
             if let Value::Object(map) = dest {
-                set_in_map(k, rest, map, src);
+                set_in_map(k, rest, map, src, replace);
             }
         }
         PathItem::Index(i) => {
@@ -344,11 +365,13 @@ fn set_in_value(path: &[PathItem], dest: &mut Value, src: &Map<String, Value>) {
                 *dest = Value::Array(Vec::new());
             }
             if let Some(v) = dest.as_array_mut().and_then(|a| a.get_mut(*i)) {
-                set_in_value(rest, v, src);
+                set_in_value(rest, v, src, replace);
             }
         }
         PathItem::Wildcard => match dest {
-            Value::Array(items) => items.iter_mut().for_each(|v| set_in_value(rest, v, src)),
+            Value::Array(items) => items
+                .iter_mut()
+                .for_each(|v| set_in_value(rest, v, src, replace)),
             other => *other = Value::Array(Vec::new()),
         },
     }
@@ -369,6 +392,7 @@ pub fn value_remove(path: &JsonPath, dest: &mut Map<String, Value>) {
     }
 }
 
+/// [`value_remove`] of `head` then `rest` under `value`.
 fn remove_in(head: &PathItem, rest: &[PathItem], value: &mut Value) {
     if let Some((next, tail)) = rest.split_first() {
         match (head, value) {

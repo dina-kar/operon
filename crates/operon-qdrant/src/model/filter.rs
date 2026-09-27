@@ -121,6 +121,7 @@ pub enum AnyVariants {
 }
 
 impl AnyVariants {
+    /// Whether the list holds no value.
     pub fn is_empty(&self) -> bool {
         match self {
             AnyVariants::Ints(v) => v.is_empty(),
@@ -150,6 +151,7 @@ pub struct Range<T> {
     pub lte: Option<T>,
 }
 
+/// `None`, for `#[serde(default = …)]`.
 fn none<T>() -> Option<T> {
     None
 }

@@ -14,6 +14,10 @@
 //!   `payload` field (Rulings 5, 6); [`jsonpath`]: Qdrant's key paths and
 //!   payload selectors (Ruling 12); [`schema`]: collections and payload
 //!   indexes.
+//! - Point writes (Task 5) plan each Qdrant operation into `DocOp`s and
+//!   write a request with one atomic `write` call; [`scoring`] checks and
+//!   normalizes vectors. Point reads (Task 6) serve retrieve, scroll and
+//!   count with Qdrant's payload and vector selectors.
 //!
 //! # Divergences from Qdrant 1.19
 //!
@@ -50,9 +54,28 @@
 //!   matches (Qdrant 1.19 evaluates only `values_count`, `is_empty` or
 //!   `is_null` when one is set; row T4-8). A numeric `range` without
 //!   bounds matches any value (the IR's `Exists`).
+//! - Writes by filter (`delete`, the payload operations and
+//!   `delete_vectors` with `filter`) are not atomic: their ids are read with
+//!   `scroll` and written in chunks of `filter_write_chunk` ops. A chunk
+//!   after the first that is refused for backpressure is retried until the
+//!   request's `timeout` (60 s without one); then the answer is 429 and the
+//!   chunks already written stay. Points inserted meanwhile may be missed
+//!   (Ruling 13, E4; until D87's `delete_by_filter`/`patch_by_filter`).
+//! - `set_payload` and `overwrite_payload` with `key`, and `delete_payload`
+//!   of paths with `[]` or `[n]`, read the point and write its whole new
+//!   payload, so a concurrent write to the same point in between is lost
+//!   (Ruling 12). Inside a batch, these reads and the id lookups of writes
+//!   by filter see the points as they were before the batch, where Qdrant
+//!   applies the operations one after another (row T5-4).
+//! - A write request holds at most 10,000 operations after planning (the
+//!   collection service's limit); Qdrant has no such limit (row T5-12).
 //! - Geo conditions and indexes, `nested`, `has_vector` and `slice`
 //!   conditions, keys with `[n]` or quoted keys holding `.`, payload-index
 //!   deletion and type changes are unsupported (Ruling 15).
+
+// The write futures hold the collection service's futures, whose `Send`
+// check walks deep SQL types.
+#![recursion_limit = "256"]
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -75,7 +98,9 @@ pub mod model;
 mod reads;
 mod rest;
 pub mod schema;
+pub mod scoring;
 pub mod snapshots;
+mod writes;
 
 pub use ctx::RequestCtx;
 pub use error::GatewayError;

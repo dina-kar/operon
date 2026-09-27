@@ -10,4 +10,8 @@ mod filters;
 #[cfg(feature = "qdrant")]
 mod harness;
 #[cfg(feature = "qdrant")]
+mod reads;
+#[cfg(feature = "qdrant")]
 mod service;
+#[cfg(feature = "qdrant")]
+mod writes;
