@@ -1132,6 +1132,77 @@ async fn janitor_sweeps_expired_idempotency_records() {
     assert_eq!(all(&r, "t").await.len(), 2);
 }
 
+/// Review of #76: a record the sweep cannot decode (corrupt, or a newer
+/// format) is kept, since deleting it would free its key for a second run,
+/// and the sweep goes on to the records after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn janitor_keeps_an_undecodable_idempotency_record_and_sweeps_on() {
+    let Some(r) = open().await else { return };
+    let app = r.app().clone();
+    // The first possible record key, so the sweep meets it first.
+    let garbage = app.idempotency(&[0; operon_live::keys::IDEMPOTENCY_HASH_BYTES]);
+    let expired = app.idempotency(&idempotency_hash("expired").expect("a key"));
+    let record = pb::IdempotencyRecord {
+        format: 1,
+        result: LiveValue::Null.to_proto().into(),
+        expires_ms: 1,
+        function: INSERT.to_string(),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let (g, e) = (garbage.clone(), expired.clone());
+    r.tikv()
+        .run(TxnOptions::new("test.put"), move |txn| {
+            let (g, e, record) = (g.clone(), e.clone(), record.clone());
+            Box::pin(async move {
+                txn.put(&g, vec![0xff, 0xff, 0xff]).await?;
+                txn.put(&e, record).await
+            })
+        })
+        .await
+        .expect("written");
+    let journal = r.journal().await.expect("journal");
+    let report = Janitor::new(r.tikv().clone(), journal)
+        .run_once()
+        .await
+        .expect("the pass does not stop at the undecodable record");
+    assert_eq!(report.expired_idempotency, 1);
+    let at = r.tikv().now().await.expect("now");
+    let mut snap = r.tikv().snapshot(at).await.expect("snap");
+    assert_eq!(snap.get(&expired).await.expect("read"), None);
+    assert!(snap.get(&garbage).await.expect("read").is_some(), "kept");
+}
+
+/// Review of #76: a live idempotency key reused with other arguments is
+/// refused, not replayed; the same call still replays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idempotency_key_reused_with_other_arguments_is_refused() {
+    let Some(r) = open().await else { return };
+    let call = |cents: i64| {
+        obj(&[
+            ("table", s("payments")),
+            ("fields", obj(&[("cents", LiveValue::I64(cents))])),
+        ])
+    };
+    let key = Some("pay-1".to_string());
+    let first = r
+        .mutate(sys(INSERT), call(500), key.clone())
+        .await
+        .expect("commits");
+    let other = r.mutate(sys(INSERT), call(900), key.clone()).await;
+    assert!(
+        matches!(&other, Err(LiveError::InvalidArgument(m)) if m.contains("other arguments")),
+        "{other:?}"
+    );
+    let again = r
+        .mutate(sys(INSERT), call(500), key)
+        .await
+        .expect("replays");
+    assert!(again.replayed);
+    assert_eq!(again.result, first.result);
+    assert_eq!(all(&r, "payments").await.len(), 1);
+}
+
 /// Owner rulings on T9-7 and T10-3 (rows T10-2, T10-3, T11-1): 32 writers
 /// and 2 000 mutations on the default 64 shards all commit within the
 /// default budget of 16 attempts, with no `Conflict` failure, while a

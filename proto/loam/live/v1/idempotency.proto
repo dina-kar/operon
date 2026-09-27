@@ -26,4 +26,9 @@ message IdempotencyRecord {
   // retry returns the timestamp of the read that found the record, which is
   // at or after the commit.
   uint64 start_ts = 5;
+  // SHA-256 of the canonical encoding of the call's arguments
+  // (`LiveValue::digest`), so a key reused with other arguments is refused
+  // rather than replayed. Empty in records written before it existed, which
+  // replay on the function check alone.
+  bytes args_hash = 6;
 }

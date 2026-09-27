@@ -719,9 +719,18 @@ async fn sweep_idempotency(
         .flatten();
     let mut deleted = 0;
     for (key, value) in records {
-        if crate::txn::decode_idempotency(&value)?.expires_ms <= now_ms {
-            txn.delete(&key).await?;
-            deleted += 1;
+        match crate::txn::decode_idempotency(&value) {
+            Ok(record) if record.expires_ms <= now_ms => {
+                txn.delete(&key).await?;
+                deleted += 1;
+            }
+            Ok(_) => {}
+            // Kept, and the sweep goes on (review of #76): deleting a record
+            // it cannot read (corrupt, or a newer format) would let its key
+            // run the mutation a second time.
+            Err(e) => {
+                tracing::warn!(error = %e, "the idempotency sweep kept a record it cannot decode")
+            }
         }
     }
     Ok((deleted, next))

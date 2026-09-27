@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use operon_tikv::tuple::Elem;
+use sha2::{Digest, Sha256};
 
 use crate::LiveError;
 use crate::pb;
@@ -147,4 +148,70 @@ where
         .iter()
         .map(|(k, v)| (k.clone(), v.to_proto()))
         .collect()
+}
+
+impl LiveValue {
+    /// SHA-256 over a canonical encoding of the value: a type tag, then the
+    /// contents (lengths as u64 BE, object fields in key order, doubles by
+    /// their bits, every NaN as one value, as `PartialEq` has it). Equal
+    /// values have equal digests. It keys shared subscriptions
+    /// ([`SubKey`](crate::SubKey)) and binds an idempotency record to its
+    /// call's arguments. The protobuf encoding cannot: its maps have no
+    /// fixed order.
+    pub fn digest(&self) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        digest_value(&mut hash, self);
+        hash.finalize().into()
+    }
+}
+
+fn digest_len(hash: &mut Sha256, len: usize) {
+    hash.update((len as u64).to_be_bytes());
+}
+
+fn digest_value(hash: &mut Sha256, v: &LiveValue) {
+    match v {
+        LiveValue::Null => hash.update([0]),
+        LiveValue::I64(i) => {
+            hash.update([1]);
+            hash.update(i.to_be_bytes());
+        }
+        LiveValue::F64(f) => {
+            hash.update([2]);
+            // Every NaN is one value (LiveValue's equality).
+            let bits = if f.is_nan() {
+                f64::NAN.to_bits()
+            } else {
+                f.to_bits()
+            };
+            hash.update(bits.to_be_bytes());
+        }
+        LiveValue::Bool(b) => hash.update([3, u8::from(*b)]),
+        LiveValue::Str(s) => {
+            hash.update([4]);
+            digest_len(hash, s.len());
+            hash.update(s.as_bytes());
+        }
+        LiveValue::Bytes(b) => {
+            hash.update([5]);
+            digest_len(hash, b.len());
+            hash.update(b);
+        }
+        LiveValue::Array(items) => {
+            hash.update([6]);
+            digest_len(hash, items.len());
+            for item in items {
+                digest_value(hash, item);
+            }
+        }
+        LiveValue::Object(fields) => {
+            hash.update([7]);
+            digest_len(hash, fields.len());
+            for (name, value) in fields {
+                digest_len(hash, name.len());
+                hash.update(name.as_bytes());
+                digest_value(hash, value);
+            }
+        }
+    }
 }

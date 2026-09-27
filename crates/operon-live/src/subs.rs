@@ -39,7 +39,6 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use futures::future::{BoxFuture, FutureExt};
 use operon_tikv::{Timestamp, TimestampExt, TxnError};
-use sha2::{Digest, Sha256};
 use tokio::sync::{Notify, broadcast, mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -105,66 +104,11 @@ pub struct SubKey {
 }
 
 impl SubKey {
-    /// The key of `function` called with `args`: SHA-256 over a canonical
-    /// encoding of the value (object fields in key order, doubles by their
-    /// bits).
+    /// The key of `function` called with `args` ([`LiveValue::digest`]).
     pub fn new(function: &str, args: &LiveValue) -> Self {
-        let mut hash = Sha256::new();
-        digest_value(&mut hash, args);
         SubKey {
             function: function.to_string(),
-            args_digest: hash.finalize().into(),
-        }
-    }
-}
-
-fn digest_len(hash: &mut Sha256, len: usize) {
-    hash.update((len as u64).to_be_bytes());
-}
-
-fn digest_value(hash: &mut Sha256, v: &LiveValue) {
-    match v {
-        LiveValue::Null => hash.update([0]),
-        LiveValue::I64(i) => {
-            hash.update([1]);
-            hash.update(i.to_be_bytes());
-        }
-        LiveValue::F64(f) => {
-            hash.update([2]);
-            // Every NaN is one value (LiveValue's equality).
-            let bits = if f.is_nan() {
-                f64::NAN.to_bits()
-            } else {
-                f.to_bits()
-            };
-            hash.update(bits.to_be_bytes());
-        }
-        LiveValue::Bool(b) => hash.update([3, u8::from(*b)]),
-        LiveValue::Str(s) => {
-            hash.update([4]);
-            digest_len(hash, s.len());
-            hash.update(s.as_bytes());
-        }
-        LiveValue::Bytes(b) => {
-            hash.update([5]);
-            digest_len(hash, b.len());
-            hash.update(b);
-        }
-        LiveValue::Array(items) => {
-            hash.update([6]);
-            digest_len(hash, items.len());
-            for item in items {
-                digest_value(hash, item);
-            }
-        }
-        LiveValue::Object(fields) => {
-            hash.update([7]);
-            digest_len(hash, fields.len());
-            for (name, value) in fields {
-                digest_len(hash, name.len());
-                hash.update(name.as_bytes());
-                digest_value(hash, value);
-            }
+            args_digest: args.digest(),
         }
     }
 }
