@@ -60,6 +60,7 @@ Future plans, in their expected order (the split into plans is fixed when each m
 | M2 | Ranking, text and vectors: the ranking-expression IR for the native API, ES `function_score` and Qdrant `formula` (D91); language analyzers, folding, pre-tokenized text and per-field BM25 parameters (D93); f16, i8 and u8 vectors (D94); sampled continuous recall (D92) | §05 §4, §06 §3, §06 §5, §06 §9 |
 | M2 | Customer-managed keys by envelope encryption, which also gives crypto-shredding (D96) | §02 §3, §10 §3, §18 §9 |
 | M2 | A Go SDK over the native API, and the native gRPC protos (D101) | — |
+| M2 | Elasticsearch API: partial results for a multi-index search, with per-shard failures, `_shards.failed` and `allow_partial_search_results` (M1.5 owner ruling O-M15-10, row T9-6); field sort tiebreaks after `_score`, which needs field sort values in operon-query's score mode (O-M15-11, rows T9-9 and T9-10) | §06 §7 |
 | M2 | Collection schema format change: stored-only fields (neither indexed nor fast) and unmapped subtrees, so an ES unindexed `text` or `binary` keeps no fast column and an ES `enabled: false` object is neither mapped nor checked (M1.5 owner rulings O-M15-8 and O-M15-9, rows T2-2 and T4-6) | §06 §1 |
 | M2.x | `operon-meta-remote`, the hosted `operon-control` and `ControlStore`, owned-namespace caches, both BYOC modes (D63, D64) | §18 §5.7, §18 §8 |
 | M2.x | OpenFGA authorization (D67, default); per-chunk envelope encryption moved to M2 (D96) | §18 §7 |
