@@ -7,10 +7,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use operon_common::meta::{
-    AliasAction, Collection, CollectionHead, CollectionRoots, Consistency, Fence, HotConfig, Lease,
-    LeaseGrant, Link, LinkHead, LinkId, MetaChanges, MetaResult, MetaStore, Namespace,
-    PartitionIndex, Pointer, PointerCas, Retention, SegmentSwap, Stream, StreamState, TargetRef,
-    Tracked, WalClass, WalCommit,
+    AliasAction, AliasTargetAction, AliasTargets, Collection, CollectionHead, CollectionRoots,
+    Consistency, Fence, HotConfig, Lease, LeaseGrant, Link, LinkHead, LinkId, MetaChanges,
+    MetaResult, MetaStore, NameTarget, Namespace, PartitionIndex, Pointer, PointerCas, Retention,
+    SegmentSwap, Stream, StreamState, TargetRef, Tracked, WalClass, WalCommit,
 };
 use operon_common::schema::CollectionSchema;
 use operon_common::{CollectionId, NamespaceId, StreamId};
@@ -272,6 +272,31 @@ impl MetaStore for TikvMeta {
         actions: Vec<AliasAction>,
     ) -> MetaResult<()> {
         self.update_aliases_impl(namespace, actions).await
+    }
+
+    async fn update_alias_targets(
+        &self,
+        namespace: NamespaceId,
+        actions: Vec<AliasTargetAction>,
+    ) -> MetaResult<()> {
+        self.update_alias_targets_impl(namespace, actions).await
+    }
+
+    async fn alias_targets(
+        &self,
+        _consistency: Consistency,
+        namespace: NamespaceId,
+    ) -> MetaResult<Vec<(String, AliasTargets)>> {
+        self.alias_targets_impl(namespace).await
+    }
+
+    async fn resolve_name(
+        &self,
+        _consistency: Consistency,
+        namespace: NamespaceId,
+        name: &str,
+    ) -> MetaResult<Option<NameTarget>> {
+        self.resolve_name_impl(namespace, name).await
     }
 
     async fn collection(

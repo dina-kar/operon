@@ -14,10 +14,12 @@ use serde_json::{Map, Value, json};
 
 use crate::ctx::RequestCtx;
 use crate::error::GatewayError;
+use crate::jsonpath::JsonPath;
 use crate::model::collections::{
     AliasDescription, AliasOperation, AliasesResponse, CollectionDescription, CollectionExistence,
-    CollectionsResponse, CreateCollection, DistanceName, HnswConfigDiff, ModifierName,
-    QuantizationConfig, SparseVectorParams, VectorParams, VectorsConfig,
+    CollectionsResponse, CreateCollection, CreateFieldIndex, DistanceName, HnswConfigDiff,
+    ModifierName, PayloadFieldSchema, QuantizationConfig, SparseVectorParams, VectorParams,
+    VectorsConfig,
 };
 use crate::model::common::{UpdateResult, UpdateStatus};
 use crate::{EXT_CREATE, PAYLOAD_FIELD, PAYLOAD_INDEX_PREFIX, QdrantGateway};
@@ -27,6 +29,8 @@ use crate::{EXT_CREATE, PAYLOAD_FIELD, PAYLOAD_INDEX_PREFIX, QdrantGateway};
 pub const EXT_VECTOR_PREFIX: &str = "qdrant.vector.";
 /// The longest annotation value (`CollectionSchema` rule).
 const MAX_ANNOTATION_BYTES: usize = 65_536;
+/// The analyzer of the `payload` field's text companion (Ruling 6).
+const STANDARD_ANALYZER: &str = "standard";
 
 // ----- create -----
 
@@ -274,6 +278,83 @@ pub fn payload_index_fields(schema: &CollectionSchema) -> Vec<(String, &FieldSpe
                 .map(|key| (key.to_string(), f))
         })
         .collect()
+}
+
+/// The typed field of a payload index on `key` (Task 4 step 3.2):
+/// `payload_index.<k>` over source path `<k>`, where `<k>` is the key
+/// normalized. Every kind is lenient (Ruling 5); a `text` index is
+/// accepted only in the configuration whose matching the `payload`
+/// field reproduces (Ruling 6).
+pub fn payload_index_field(
+    key: &str,
+    schema: &PayloadFieldSchema,
+) -> Result<FieldSpec, GatewayError> {
+    let path: JsonPath = key.parse()?;
+    let normalized = path.normalized()?;
+    let (type_name, params) = match schema {
+        PayloadFieldSchema::Name(name) => (name.as_str(), None),
+        PayloadFieldSchema::Params(params) => match params.get("type").and_then(Value::as_str) {
+            Some(name) => (name, Some(params)),
+            None => return Err(GatewayError::json("field_schema.type is required")),
+        },
+    };
+    let kind = match type_name {
+        "keyword" => FieldKind::Keyword,
+        "integer" => FieldKind::I64,
+        "float" => FieldKind::F64,
+        "bool" => FieldKind::Bool,
+        "datetime" => FieldKind::Date,
+        "uuid" => FieldKind::Uuid,
+        "text" => text_index_kind(params)?,
+        "geo" => return Err(GatewayError::Unsupported("geo index".to_string())),
+        other => {
+            return Err(GatewayError::json(format!(
+                "unknown payload index type `{other}`"
+            )));
+        }
+    };
+    let fast = !matches!(kind, FieldKind::Text { .. });
+    Ok(FieldSpec {
+        name: format!("{PAYLOAD_INDEX_PREFIX}{normalized}"),
+        source_path: normalized,
+        kind,
+        indexed: true,
+        fast,
+        ignore_malformed: true,
+    })
+}
+
+/// A `text` index: tokenizer `word` with `lowercase` unset or true, and
+/// none of the options that change matching (Task 4 step 3.2).
+fn text_index_kind(params: Option<&Map<String, Value>>) -> Result<FieldKind, GatewayError> {
+    let empty = Map::new();
+    let params = params.unwrap_or(&empty);
+    let given = |key: &str| params.get(key).filter(|v| !v.is_null());
+    let refuse = |option: String| {
+        Err(GatewayError::Unsupported(format!(
+            "text index option {option}"
+        )))
+    };
+    match given("tokenizer") {
+        None => {}
+        Some(Value::String(t)) if t == "word" => {}
+        Some(other) => return refuse(format!("tokenizer {}", other.as_str().unwrap_or("?"))),
+    }
+    if given("lowercase").is_some_and(|v| v != &Value::Bool(true)) {
+        return refuse("lowercase: false".to_string());
+    }
+    for option in ["min_token_len", "max_token_len", "stopwords", "stemmer"] {
+        if given(option).is_some() {
+            return refuse(option.to_string());
+        }
+    }
+    if given("ascii_folding") == Some(&Value::Bool(true)) {
+        return refuse("ascii_folding".to_string());
+    }
+    Ok(FieldKind::Text {
+        analyzer: STANDARD_ANALYZER.to_string(),
+        positions: given("phrase_matching") == Some(&Value::Bool(true)),
+    })
 }
 
 /// The stored create request of a collection made through the gateway.
@@ -755,6 +836,8 @@ pub(crate) async fn collection_info(
     Ok(collection_info_json(&info, points, &payload_points))
 }
 
+/// Delete (step 3): `false` when no collection has the name; an alias
+/// name deletes nothing, as in Qdrant.
 pub(crate) async fn delete_collection(
     gw: QdrantGateway,
     ctx: RequestCtx,
@@ -763,6 +846,7 @@ pub(crate) async fn delete_collection(
     Ok(gw.service().drop_collection(&ctx.ns, &name).await?)
 }
 
+/// Exists: a collection or an alias of that name.
 pub(crate) async fn collection_exists(
     gw: QdrantGateway,
     ctx: RequestCtx,
@@ -794,6 +878,7 @@ pub(crate) async fn update_aliases(
     Ok(true)
 }
 
+/// Every alias pair of the namespace, sorted.
 pub(crate) async fn list_aliases(
     gw: QdrantGateway,
     ctx: RequestCtx,
@@ -921,6 +1006,55 @@ pub(crate) async fn create_vector_name(
     Ok(UpdateResult {
         operation_id: None,
         status: UpdateStatus::Completed,
+    })
+}
+
+/// `PUT /collections/{c}/index` (Task 4 step 3): an equal existing field
+/// answers `completed` at once; another kind of field is unsupported.
+pub(crate) async fn create_field_index(
+    gw: QdrantGateway,
+    ctx: RequestCtx,
+    collection: String,
+    request: CreateFieldIndex,
+    wait: bool,
+) -> Result<UpdateResult, GatewayError> {
+    let Some(field_schema) = &request.field_schema else {
+        return Err(GatewayError::BadRequest(
+            "field_schema is required".to_string(),
+        ));
+    };
+    let field = payload_index_field(&request.field_name, field_schema)?;
+    let service = gw.service();
+    let info = service.get_collection(&ctx.ns, &collection).await?;
+    let completed = UpdateResult {
+        operation_id: None,
+        status: UpdateStatus::Completed,
+    };
+    if let Some(existing) = info.schema.fields.iter().find(|f| f.name == field.name) {
+        return if existing.kind == field.kind {
+            Ok(completed)
+        } else {
+            Err(GatewayError::Unsupported(
+                "changing payload index type".to_string(),
+            ))
+        };
+    }
+    service
+        .add_fields(
+            &ctx.ns,
+            &collection,
+            vec![field],
+            Vec::new(),
+            BTreeMap::new(),
+        )
+        .await?;
+    Ok(UpdateResult {
+        operation_id: None,
+        status: if wait {
+            UpdateStatus::Completed
+        } else {
+            UpdateStatus::Acknowledged
+        },
     })
 }
 

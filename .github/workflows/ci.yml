@@ -38,6 +38,12 @@ jobs:
           if cargo tree -p operon -e normal --prefix none --locked | grep -q '^tikv-client v'; then
             echo "operon's default features depend on tikv-client (owner ruling T7-3)"; exit 1
           fi
+      # The gateway's module doc holds its divergences from Qdrant (M1.4
+      # Task 11); its links must resolve.
+      - name: qdrant gateway docs
+        run: cargo doc -p operon-qdrant --no-deps --locked
+        env:
+          RUSTDOCFLAGS: "-D warnings"
       - name: metastore boundary
         run: |
           for c in operon-worker operon-log operon-link operon-collection operon-query operon-hnsw operon-hot; do
@@ -101,6 +107,41 @@ jobs:
       # Each test starts five or six `operon` processes: one at a time.
       - name: cluster tests
         run: cargo test -p operon --features cluster-tests --test cluster --locked -- --test-threads=1
+
+  qdrant-client:
+    name: Python qdrant-client smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+      - name: build
+        run: cargo build -p operon --locked
+      - name: start operon dev
+        run: |
+          nohup target/debug/operon dev --data-dir "$RUNNER_TEMP/operon" \
+            --qdrant-listen 127.0.0.1:6333 --qdrant-grpc-listen 127.0.0.1:6334 --no-es \
+            > "$RUNNER_TEMP/operon.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:6333/ && exit 0
+            sleep 1
+          done
+          echo "operon dev did not answer on 6333 within 60 s"; exit 1
+      - uses: astral-sh/setup-uv@v6
+      # Each run prints `qdrant-client <version> <mode>: <n> checks passed`
+      # last; the step fails unless it does.
+      - name: qdrant-client 1.15.1 (legacy)
+        run: |
+          crates/operon-qdrant/tests/python/run.sh 1.15.1 legacy | tee "$RUNNER_TEMP/legacy.log"
+          grep -q '^qdrant-client 1.15.1 legacy: [0-9]* checks passed$' "$RUNNER_TEMP/legacy.log"
+      - name: qdrant-client 1.19.1 (modern)
+        run: |
+          crates/operon-qdrant/tests/python/run.sh 1.19.1 modern | tee "$RUNNER_TEMP/modern.log"
+          grep -q '^qdrant-client 1.19.1 modern: [0-9]* checks passed$' "$RUNNER_TEMP/modern.log"
+      - name: operon log
+        if: failure()
+        run: tail -n 200 "$RUNNER_TEMP/operon.log" || true
 
   sim:
     name: simulation seed sweep

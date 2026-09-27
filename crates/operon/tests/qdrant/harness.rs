@@ -33,6 +33,11 @@ pub struct Qd {
 
 impl Qd {
     pub async fn start() -> Self {
+        Self::start_with(|_| {}).await
+    }
+
+    /// [`Qd::start`], with `configure` applied to the config last.
+    pub async fn start_with(configure: impl FnOnce(&mut ServerConfig)) -> Self {
         let dir = TempDir::new().expect("temp dir");
         let any = SocketAddr::from(([127, 0, 0, 1], 0));
         let mut config = ServerConfig::new(dir.path());
@@ -45,6 +50,7 @@ impl Qd {
             grpc_listen: any,
             ..QdrantConfig::default()
         });
+        configure(&mut config);
         let server = Server::start(config).await.expect("start");
         let rest = format!("http://{}", server.qdrant_rest_addr().expect("REST"));
         let grpc = format!("http://{}", server.qdrant_grpc_addr().expect("gRPC"));
@@ -149,7 +155,14 @@ impl Qd {
     pub fn dev(qdrant: bool) -> Dev {
         let dir = TempDir::new().expect("temp dir");
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_operon"));
-        command.args(["dev", "--listen", "127.0.0.1:0", "--no-flight-sql"]);
+        // Parallel servers must not share the durable listener's port.
+        command.args([
+            "dev",
+            "--listen",
+            "127.0.0.1:0",
+            "--no-flight-sql",
+            "--no-durable",
+        ]);
         if qdrant {
             command.args([
                 "--qdrant-listen",
@@ -160,6 +173,7 @@ impl Qd {
         } else {
             command.arg("--no-qdrant");
         }
+        command.arg("--no-es");
         let mut child = command
             .arg("--data-dir")
             .arg(dir.path())

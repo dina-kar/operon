@@ -293,6 +293,23 @@ async fn create_is_retry_safe_and_a_different_schema_is_already_exists() {
         .await
         .expect("the same partition count succeeds");
     assert_eq!(same_partitions.id, first.id);
+    // Only the first create owns the collection (M1.5 PR #64 review).
+    let (existing, created) = service
+        .create_collection_owned(NS, DOCS, tail_schema(), None)
+        .await
+        .expect("an identical create succeeds");
+    assert_eq!((existing.id, created), (first.id, false));
+    let (fresh, created) = service
+        .create_collection_owned(NS, "owned", tail_schema(), None)
+        .await
+        .expect("a new create succeeds");
+    assert!(created);
+    assert!(
+        service
+            .drop_collection(NS, &fresh.name)
+            .await
+            .expect("drop")
+    );
 
     assert_eq!(
         service
