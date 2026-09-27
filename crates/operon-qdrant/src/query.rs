@@ -1112,38 +1112,46 @@ pub(crate) async fn run_batch(
     Ok(out)
 }
 
-/// The legs of a negatives-only `best_score` or `sum_scores` query: one per
-/// negative, plus one for their sum when there are several. On Cosine and
-/// Dot the nearest points to `-v` are exactly the ones least similar to
-/// `v`, and the nearest to `-Σ v` minimize `Σ sim(c, v)` (the negated
+/// The legs of a negatives-only `best_score` or `sum_scores` query. On
+/// Cosine and Dot: one per negative, plus one for their sum when there are
+/// several; the nearest points to `-v` are exactly the ones least similar
+/// to `v`, and the nearest to `-Σ v` minimize `Σ sim(c, v)` (the negated
 /// `sum_scores`), so the ANN index finds them. No index answers "farthest"
-/// on Euclid or Manhattan: there each leg is an exact scan by dot product
-/// with `-v`, which leans away from `v` but may miss a far point of small
-/// norm (candidate-bounded, as Ruling 10 says).
+/// on Euclid or Manhattan: there the query runs one exact scan by dot
+/// product with `-Σ v` (or `-v` of the first negative when the sum is
+/// zero), which leans away from the negatives but may miss a far point of
+/// small norm (candidate-bounded, as Ruling 10 says). One scan per query,
+/// whatever the number of negatives, bounds the work as an `exact` search
+/// does (review of #60).
 fn away_from(
     distance: Distance,
     neg: &[Vec<f32>],
     params: AnnParams,
 ) -> Vec<(Vec<f32>, AnnParams)> {
-    let params = match distance {
-        Distance::Cosine | Distance::Dot => params,
-        Distance::Euclid | Distance::Manhattan => AnnParams {
-            exact: true,
-            distance: Some(Distance::Dot),
-            ..params
-        },
-    };
     let negate = |v: &[f32]| v.iter().map(|x| -x).collect::<Vec<f32>>();
-    let mut legs: Vec<Vec<f32>> = neg.iter().map(|v| negate(v)).collect();
-    if neg.len() > 1 {
-        let dim = neg[0].len();
-        let sum = (0..dim)
-            .map(|i| neg.iter().map(|v| v[i]).sum::<f32>())
-            .collect::<Vec<f32>>();
-        // Cosine example vectors are normalized, so this is Σ v̂.
-        if sum.iter().any(|x| *x != 0.0) {
-            legs.push(negate(&sum));
+    let dim = neg.first().map_or(0, Vec::len);
+    let sum = (0..dim)
+        .map(|i| neg.iter().map(|v| v[i]).sum::<f32>())
+        .collect::<Vec<f32>>();
+    // Cosine example vectors are normalized, so this is Σ v̂.
+    let sum = (neg.len() > 1 && sum.iter().any(|x| *x != 0.0)).then(|| negate(&sum));
+    match distance {
+        Distance::Cosine | Distance::Dot => neg
+            .iter()
+            .map(|v| negate(v))
+            .chain(sum)
+            .map(|q| (q, params.clone()))
+            .collect(),
+        Distance::Euclid | Distance::Manhattan => {
+            let exact = AnnParams {
+                exact: true,
+                distance: Some(Distance::Dot),
+                ..params
+            };
+            sum.or_else(|| neg.first().map(|v| negate(v)))
+                .into_iter()
+                .map(|q| (q, exact.clone()))
+                .collect()
         }
     }
-    legs.into_iter().map(|q| (q, params.clone())).collect()
 }

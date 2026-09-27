@@ -112,8 +112,10 @@
 //!   far from the negatives, so the searches go away from them: on Cosine
 //!   and Dot the nearest points to each negated negative and to their
 //!   negated sum, which are exactly the least similar ones; on Euclid and
-//!   Manhattan an exact scan by dot product with each negated negative,
-//!   which can miss a far point of small norm.
+//!   Manhattan one exact scan by dot product with their negated sum (the
+//!   negated negative when there is one, or when the sum is zero), which
+//!   can miss a far point of small norm (owner ruling O-M15-1; one scan per
+//!   query, review of #60).
 //!   An empty `context` scores `candidate_k` points of the filter 0 each, in
 //!   id order, where Qdrant returns the first points of its walk.
 //! - Refusal texts for example sets differ from Qdrant's: `No positive
