@@ -73,6 +73,12 @@ impl Supervisor {
         (client, self.generation.load(Ordering::Acquire))
     }
 
+    /// The PD endpoints, the client configuration and the connect limit
+    /// clients are built with (the GC loop builds one per keyspace).
+    pub(crate) fn blueprint(&self) -> (&[String], &tikv_client::Config, Duration) {
+        (&self.pd, &self.config, self.connect_limit)
+    }
+
     /// How many times the client was rebuilt.
     pub(crate) fn rebuilds(&self) -> u64 {
         self.rebuilds.load(Ordering::Relaxed)
@@ -80,6 +86,7 @@ impl Supervisor {
 
     /// Makes the next TSO-dependent call fail as if the TSO stream had closed
     /// (the test hook of `tso_stream_loss_rebuilds_the_client`).
+    #[cfg(feature = "faults")]
     pub(crate) fn inject_tso_loss(&self) {
         self.inject_tso_loss.store(true, Ordering::Release);
     }
