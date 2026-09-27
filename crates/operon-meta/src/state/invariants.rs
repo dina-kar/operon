@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use operon_common::CollectionId;
 use operon_common::meta::{
-    COLLECTION_KIND, COLLECTION_POINTER_PREFIX, EntryKind, Retention, WalClass, implicit_name,
+    COLLECTION_KIND, COLLECTION_POINTER_PREFIX, EntryKind, MAX_ALIAS_TARGETS, Retention, WalClass,
+    implicit_name,
 };
 
 use super::MetaState;
@@ -123,7 +124,12 @@ impl MetaState {
     /// - every `collection/<id>` pointer names a collection of its namespace;
     /// - `last_collection_id` is at least every collection id;
     /// - every `collection_hot` entry is an existing collection's, and none
-    ///   is all false.
+    ///   is all false;
+    /// - every `alias_targets` member is a collection of the alias's
+    ///   namespace; no alias is in both alias maps or named like a
+    ///   collection; every entry is non-empty, not exactly one unset member
+    ///   (that alias belongs in `aliases`), with at most one write index
+    ///   and at most [`MAX_ALIAS_TARGETS`] members (M1.5 Task 0a).
     fn check_collections(&self, violations: &mut Vec<String>) {
         for (id, hot) in &self.collection_hot {
             if !self.collections.contains_key(id) {
@@ -195,6 +201,44 @@ impl MetaState {
             }
             if self.collection_names.contains_key(&(*ns, alias.clone())) {
                 violations.push(format!("alias {ns}/{alias} has a collection's name"));
+            }
+        }
+        for ((ns, alias), targets) in &self.alias_targets {
+            let at = format!("alias {ns}/{alias}");
+            for id in targets.members.keys() {
+                if !self.collections.get(id).is_some_and(|c| c.namespace == *ns) {
+                    violations.push(format!(
+                        "{at} names {id}, not a collection of its namespace"
+                    ));
+                }
+            }
+            if self.aliases.contains_key(&(*ns, alias.clone())) {
+                violations.push(format!("{at} is in both alias maps"));
+            }
+            if self.collection_names.contains_key(&(*ns, alias.clone())) {
+                violations.push(format!("{at} has a collection's name"));
+            }
+            let mut members = targets.members.values();
+            match (members.next(), members.next()) {
+                (None, _) => violations.push(format!("{at} has no member")),
+                (Some(None), None) => {
+                    violations.push(format!("{at} is one unset member outside the M1.1 map"));
+                }
+                _ => {}
+            }
+            let writers = targets
+                .members
+                .values()
+                .filter(|w| **w == Some(true))
+                .count();
+            if writers > 1 {
+                violations.push(format!("{at} has {writers} write indices"));
+            }
+            if targets.members.len() > MAX_ALIAS_TARGETS {
+                violations.push(format!(
+                    "{at} has {} members, above {MAX_ALIAS_TARGETS}",
+                    targets.members.len()
+                ));
             }
         }
         for s in self.streams.values() {

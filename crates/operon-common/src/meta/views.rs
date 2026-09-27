@@ -7,7 +7,7 @@ use std::ops::Range;
 use crate::meta::types::{
     Collection, Fence, Freshness, IndexEntry, Link, Pointer, Stream, WalChunk,
 };
-use crate::{NamespaceId, StreamId};
+use crate::{CollectionId, NamespaceId, StreamId};
 
 /// A partition's bounds and a run of its offset-index entries.
 ///
@@ -178,4 +178,17 @@ pub struct PointerCas {
     /// When given, the objects the new value makes reachable must still be
     /// fresh at the metastore clock.
     pub fresh: Option<Freshness>,
+}
+
+/// What a name of a namespace names ([`resolve_name`](super::MetaStore::resolve_name)):
+/// a collection, or an alias with its members, from one state (M1.5 Task 0a).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NameTarget {
+    Collection(Collection),
+    Alias {
+        /// Every member with its `is_write_index` setting, by collection id.
+        members: Vec<(Collection, Option<bool>)>,
+        /// [`AliasTargets::write_target`](super::AliasTargets::write_target).
+        write_target: Option<CollectionId>,
+    },
 }

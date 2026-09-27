@@ -579,8 +579,8 @@ fn info_with_aliases(name: &str, aliases: &[&str]) -> CollectionInfo {
     }
 }
 
-/// D57's multi-target aliases cannot be made until M1.5 merges (E14), so
-/// the several-member rules are checked on `CollectionInfo`s directly.
+/// The several-member rules on `CollectionInfo`s directly; the end-to-end
+/// test is `a_multi_member_alias_is_listed_per_member_and_refused_where_one_is_needed`.
 #[test]
 fn alias_pairs_cover_every_member() {
     let infos = [
@@ -658,6 +658,68 @@ fn alias_pairs_cover_every_member() {
             ..
         }))
     ));
+}
+
+/// E14: now that M1.5 Task 0a makes aliases with several members, the
+/// Task 3 paths run end to end: `GET /aliases` lists such an alias once per
+/// member, `rename_alias` refuses it, a single-collection operation through
+/// it is 400, and `create_alias` makes it single-target again.
+#[tokio::test]
+async fn a_multi_member_alias_is_listed_per_member_and_refused_where_one_is_needed() {
+    let qd = Qd::start().await;
+    qd.create("c1", json!({"vectors": dense(4)})).await;
+    qd.create("c2", json!({"vectors": dense(4)})).await;
+    let add = |collection: &str| operon_query::AliasTargetAction::Add {
+        alias: "m".to_string(),
+        collection: collection.to_string(),
+        is_write_index: None,
+    };
+    qd.server
+        .collections()
+        .update_alias_targets(NS, vec![add("c1"), add("c2")])
+        .await
+        .expect("multi-member alias");
+    let (_, body) = qd.get("/aliases", None).await;
+    assert_eq!(
+        body["result"],
+        json!({"aliases": [
+            {"alias_name": "m", "collection_name": "c1"},
+            {"alias_name": "m", "collection_name": "c2"},
+        ]})
+    );
+    let (_, body) = qd.get("/collections/c2/aliases", None).await;
+    assert_eq!(
+        body["result"],
+        json!({"aliases": [{"alias_name": "m", "collection_name": "c2"}]})
+    );
+    let (status, body) = qd
+        .aliases(
+            json!({"actions": [{"rename_alias": {"old_alias_name": "m", "new_alias_name": "n"}}]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        error(&body).contains(
+            "alias [m] names 2 collections [c1, c2]; this operation needs one collection"
+        ),
+        "{body}"
+    );
+    let (status, body) = qd
+        .post("/collections/m/points/count", Some(json!({"exact": true})))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(error(&body).contains("names 2 collections"), "{body}");
+    let (status, body) = qd
+        .aliases(
+            json!({"actions": [{"create_alias": {"collection_name": "c2", "alias_name": "m"}}]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, body) = qd.get("/aliases", None).await;
+    assert_eq!(
+        body["result"],
+        json!({"aliases": [{"alias_name": "m", "collection_name": "c2"}]})
+    );
 }
 
 #[tokio::test]
