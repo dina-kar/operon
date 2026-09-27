@@ -763,6 +763,67 @@ async fn a_decimal_bound_on_a_long_field_rounds_like_es() {
     );
 }
 
+/// A JSON path holds one numeric column per segment: `i64` when every value
+/// is an integer (or an integral float), `f64` once a fractional float is
+/// among them, and Tantivy's `RangeQuery` coerces the bounds into that
+/// column (truncating a fractional bound toward zero). Every numeric range
+/// must still compare the values as `f64`, as Qdrant does (found by the
+/// M1.4 Task 10 Python client run: `range: {gte: 30.5}` matched `30`).
+#[tokio::test]
+async fn json_number_ranges_compare_by_value_on_integer_and_float_columns() {
+    let schema = schema();
+    // `payload.i`: the integers −5..=5 (an i64 column); `payload.m`: −2.5
+    // to 2.5 by halves (an f64 column).
+    let sources: Vec<Value> = (0..11_i64)
+        .map(|k| json!({"i": k - 5, "m": (k - 5) as f64 * 0.5}))
+        .collect();
+    let searcher = split(&schema, sources).await;
+    let tokenizers = query_tokenizers();
+    let bounds = [-2.5, -2.0, -0.5, 0.0, 0.5, 2.0, 2.5];
+    let value = |path: &str, k: i64| match path {
+        "i" => (k - 5) as f64,
+        _ => (k - 5) as f64 * 0.5,
+    };
+    let matching = |path: &str, keep: &dyn Fn(f64) -> bool| -> BTreeSet<u64> {
+        (0..11_i64)
+            .filter(|&k| keep(value(path, k)))
+            .map(|k| k as u64)
+            .collect()
+    };
+    for path in ["i", "m"] {
+        let field = format!("payload.{path}");
+        for op in ["gt", "gte", "lt", "lte"] {
+            for b in bounds {
+                let query = q(json!({"range": {"field": field, op: b}}));
+                let want = matching(path, &|v| match op {
+                    "gt" => v > b,
+                    "gte" => v >= b,
+                    "lt" => v < b,
+                    _ => v <= b,
+                });
+                let got = hits_in(&schema, &searcher, &tokenizers, &query).unwrap();
+                assert_eq!(got, want, "{field} {op} {b}");
+            }
+        }
+        for (lo, hi) in [(-2.5, 2.5), (0.5, 1.5), (-1.5, -0.5)] {
+            let query = q(json!({"range": {"field": field, "gte": lo, "lte": hi}}));
+            let got = hits_in(&schema, &searcher, &tokenizers, &query).unwrap();
+            assert_eq!(
+                got,
+                matching(path, &|v| (lo..=hi).contains(&v)),
+                "{field} [{lo}, {hi}]"
+            );
+        }
+        let query = q(json!({"range": {"field": field, "gt": -2, "lt": 2}}));
+        let got = hits_in(&schema, &searcher, &tokenizers, &query).unwrap();
+        assert_eq!(
+            got,
+            matching(path, &|v| v > -2.0 && v < 2.0),
+            "{field} (-2, 2)"
+        );
+    }
+}
+
 #[test]
 fn minimum_should_match_forms() {
     assert_eq!(parse_minimum_should_match("2", 4).unwrap(), 2);
@@ -794,6 +855,30 @@ async fn a_pure_must_not_matches_the_rest_with_score_zero() {
     let pks: BTreeSet<u64> = scores.iter().map(|(pk, _)| *pk).collect();
     assert_eq!(pks, set(&[1, 2, 5, 6, 7, 8, 9, 10, 11]));
     assert!(scores.iter().all(|(_, score)| *score == 0.0), "{scores:?}");
+}
+
+/// Tantivy 0.26's `PhraseScorer::seek_danger` asserts `target >= doc`,
+/// which `Exclude` breaks when the phrase's first match is not the first
+/// document; each `must_not` clause is wrapped so its scorer is only asked
+/// to seek forward (M1.4 row T4-7).
+#[tokio::test]
+async fn a_must_not_phrase_excludes_its_matches() {
+    let fx = Fixture::new().await;
+    let phrase = json!({"match_phrase": {"field": "title", "text": "fox jumps"}});
+    assert_eq!(fx.hits(&q(phrase.clone())).unwrap(), set(&[3]));
+    let rest: Vec<u64> = ALL.iter().copied().filter(|pk| *pk != 3).collect();
+    assert_eq!(
+        fx.hits(&q(json!({"bool": {"must_not": [phrase.clone()]}})))
+            .unwrap(),
+        set(&rest)
+    );
+    let nested = json!({"bool": {"must_not": [{"bool": {"must": [
+        {"term": {"field": "tag", "value": "alpha"}}, phrase]}}]}});
+    assert_eq!(fx.hits(&q(nested)).unwrap(), set(&rest));
+    let json_path = json!({"bool": {"must_not": [
+        {"match_phrase": {"field": "payload.body", "text": "lazy cat"}}]}});
+    let rest: Vec<u64> = ALL.iter().copied().filter(|pk| *pk != 9).collect();
+    assert_eq!(fx.hits(&q(json_path)).unwrap(), set(&rest));
 }
 
 #[tokio::test]

@@ -199,6 +199,85 @@ async fn a_hot_tier_that_returns_a_deleted_row_is_caught() {
     );
 }
 
+/// Answers every hot search with every other hit: valid rows at exact
+/// scores, so only the recall gate can see it.
+#[derive(Debug)]
+struct HalfHitsTier(HotTierImpl);
+
+#[derive(Debug)]
+struct HalfHitsAnn(Arc<dyn HotAnn>);
+
+#[async_trait::async_trait]
+impl HotAnn for HalfHitsAnn {
+    fn source_version(&self) -> u64 {
+        self.0.source_version()
+    }
+
+    fn covered(&self) -> &RoaringTreemap {
+        self.0.covered()
+    }
+
+    async fn search(
+        &self,
+        query: &[f32],
+        k: usize,
+        filter: Option<&RoaringTreemap>,
+        ef: Option<u32>,
+    ) -> Result<Vec<(u64, f32)>, HotError> {
+        let hits = self.0.search(query, k, filter, ef).await?;
+        Ok(hits.into_iter().step_by(2).collect())
+    }
+}
+
+impl HotTier for HalfHitsTier {
+    fn ann(
+        &self,
+        ns: NamespaceId,
+        cid: CollectionId,
+        column: &str,
+        manifest_version: u64,
+    ) -> Option<Arc<dyn HotAnn>> {
+        let inner = self.0.ann(ns, cid, column, manifest_version)?;
+        Some(Arc::new(HalfHitsAnn(inner)))
+    }
+
+    fn split_file(&self, ns: NamespaceId, cid: CollectionId, split: Ulid) -> Option<PathBuf> {
+        self.0.split_file(ns, cid, split)
+    }
+
+    fn record_access(&self, ns: NamespaceId, cid: CollectionId) {
+        self.0.record_access(ns, cid);
+    }
+
+    fn status(&self, ns: NamespaceId, cid: CollectionId) -> HotStatus {
+        self.0.status(ns, cid)
+    }
+}
+
+/// Ruling C4: the hot tier is still judged on a small pool. No phase has
+/// 20 approximate queries, and a tier that drops every other hit (valid
+/// rows at exact scores) is caught only by the pool.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_pool_catches_a_hot_tier_that_drops_hits() {
+    let report = run(&small(10), Arc::new(FlatEngine), |tier| {
+        Arc::new(HalfHitsTier(tier))
+    })
+    .await;
+    assert!(
+        report.phases.iter().all(|p| p.approximate < 20),
+        "{}",
+        report.describe()
+    );
+    assert!(
+        report
+            .mismatches
+            .iter()
+            .any(|m| m.phase == "pooled" && m.reason.contains("of the hot tier")),
+        "{}",
+        report.describe()
+    );
+}
+
 /// Serves each split from the pinned file of the next split it has been
 /// asked for (in ULID order), once it knows two.
 #[derive(Debug)]
