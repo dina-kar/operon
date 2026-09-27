@@ -155,7 +155,14 @@ impl Qd {
     pub fn dev(qdrant: bool) -> Dev {
         let dir = TempDir::new().expect("temp dir");
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_operon"));
-        command.args(["dev", "--listen", "127.0.0.1:0", "--no-flight-sql"]);
+        // Parallel servers must not share the durable listener's port.
+        command.args([
+            "dev",
+            "--listen",
+            "127.0.0.1:0",
+            "--no-flight-sql",
+            "--no-durable",
+        ]);
         if qdrant {
             command.args([
                 "--qdrant-listen",
