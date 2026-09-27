@@ -154,6 +154,13 @@ operon-text = { path = "crates/operon-text", version = "0.0.1" }
 operon-tikv = { path = "crates/operon-tikv", version = "0.0.1" }
 operon-worker = { path = "crates/operon-worker", version = "0.0.1" }
 
+# sqlx-core v0.8.6 plus the backport of launchbadge/sqlx#3861: ssl-mode
+# verify_ca skips the host name check with rustls 0.23.24 and later (D1 plan
+# row T7-13). sqlx-mysql 0.8.6 pins sqlx-core =0.8.6, so only sqlx-core is
+# patched. Drop this once a sqlx release with the fix is pinned.
+[patch.crates-io]
+sqlx-core = { git = "https://github.com/dina-kar/sqlx", rev = "88300b33a1df088443fb42c6a359aa6b9e27f352" }
+
 [profile.dev]
 debug = "line-tables-only"
 

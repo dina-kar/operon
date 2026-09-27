@@ -11,7 +11,7 @@ use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use operon_durable::{DurableConfig, DurableError, DurableServer, DurableStore};
+use operon_durable::{DurableConfig, DurableError, DurableServer, DurableStore, redact_url};
 use serde_json::{Value, json};
 use sqlx::{Connection, MySqlConnection};
 
@@ -175,6 +175,50 @@ async fn verify_identity_refuses_an_untrusted_certificate() {
     DurableServer::migrate(with_mode("required"))
         .await
         .expect("TLS without verification connects");
+    assert!(db.tables().await > 0);
+    db.drop().await;
+}
+
+/// T7-13: with the patched sqlx-core (launchbadge/sqlx#3861), `verify_ca`
+/// checks the chain and not the host name. TiDB's auto-generated certificate
+/// is self-signed for the machine's host name, so dialled at 127.0.0.1 with
+/// itself as `ssl-ca`, `verify_ca` connects and `verify_identity` refuses.
+/// Needs `OPERON_TEST_TIDB_CA`, the certificate's path (`tidb.sh up` prints
+/// it).
+#[tokio::test(flavor = "multi_thread")]
+async fn verify_ca_skips_the_host_name() {
+    let Some(admin_url) = admin_url("verify_ca_skips_the_host_name") else {
+        return;
+    };
+    let ca = match std::env::var("OPERON_TEST_TIDB_CA") {
+        Ok(ca) if !ca.is_empty() => ca,
+        _ => {
+            println!("skipped: verify_ca_skips_the_host_name needs OPERON_TEST_TIDB_CA");
+            return;
+        }
+    };
+    let db = Db::fresh(&admin_url, "vca").await;
+    assert!(
+        db.url.contains("@127.0.0.1:"),
+        "dial TiDB at 127.0.0.1, a name its certificate does not carry: {}",
+        redact_url(&db.url)
+    );
+    let with_mode = |mode: &str| {
+        DurableStore::mysql(&format!("{}?ssl-mode={mode}&ssl-ca={ca}", db.url))
+            .expect("a mysql store")
+    };
+    let err = DurableServer::migrate(with_mode("verify_identity"))
+        .await
+        .expect_err("the certificate does not name 127.0.0.1");
+    let message = err.to_string().to_ascii_lowercase();
+    assert!(
+        message.contains("name") || message.contains("certificate"),
+        "{message}"
+    );
+    assert_eq!(db.tables().await, 0, "nothing was migrated");
+    DurableServer::migrate(with_mode("verify_ca"))
+        .await
+        .expect("verify_ca trusts the chain and skips the host name");
     assert!(db.tables().await > 0);
     db.drop().await;
 }

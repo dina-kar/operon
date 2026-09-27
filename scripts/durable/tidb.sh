@@ -113,6 +113,11 @@ up() {
   sql -e "CREATE DATABASE IF NOT EXISTS $DATABASE"
   echo "tidb: '$tag' ready ($(sql -N -e 'select version()'))"
   echo "export OPERON_TEST_TIDB=mysql://root@127.0.0.1:$port"
+  # TiDB's auto-generated TLS certificate (self-signed for this machine's
+  # host name), for the verify_ca test (D1 T7-13).
+  local cert
+  cert=$(grep -o 'cert="[^"]*cert.pem"' "$data_dir/tidb-0/tidb.log" 2>/dev/null | head -n 1 | cut -d'"' -f2 || true)
+  [ -z "$cert" ] || echo "export OPERON_TEST_TIDB_CA=$cert"
   echo "operon: --durable-store mysql://root@127.0.0.1:$port/$DATABASE"
 }
 

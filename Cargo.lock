@@ -8632,8 +8632,7 @@ dependencies = [
 [[package]]
 name = "sqlx-core"
 version = "0.8.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee6798b1838b6a0f69c007c133b8df5866302197e404e8b6ee8ed3e3a5e68dc6"
+source = "git+https://github.com/dina-kar/sqlx?rev=88300b33a1df088443fb42c6a359aa6b9e27f352#88300b33a1df088443fb42c6a359aa6b9e27f352"
 dependencies = [
  "base64 0.22.1",
  "bytes",

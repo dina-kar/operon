@@ -307,14 +307,12 @@ pub enum MysqlTls {
     Required,
     /// Plain text: loopback hosts by default, or `ssl-mode=disabled`.
     Disabled,
-    /// Encrypted, the certificate checked against the CA (`ssl-ca`, else the
-    /// driver's built-in roots) (owner ruling Q8). The mode is meant to leave
-    /// the host name unchecked, but with sqlx 0.8.6 and rustls 0.23.45 the
-    /// host name is checked too: sqlx forgives rustls's `NotValidForName`,
-    /// and rustls reports `NotValidForNameContext` (D1 T5-10). So a
-    /// certificate issued for another name is refused, as with
-    /// [`VerifyIdentity`](Self::VerifyIdentity); use `verify_identity` with a
-    /// URL host the certificate names (the Task 11 docs carry this, T5-10).
+    /// Encrypted, the certificate chain checked against the CA (`ssl-ca`,
+    /// else the driver's built-in roots), the host name not (owner ruling
+    /// Q8). sqlx 0.8.6 on rustls 0.23.24 and later checked the host name too
+    /// (T5-10); the workspace patches sqlx-core with the fix of
+    /// launchbadge/sqlx#3861 (T7-13), so this mode skips it, as sqlx means.
+    /// The Task 11 docs carry this.
     VerifyCa,
     /// As `VerifyCa`, and the certificate must name the host: managed TiDB
     /// such as TiDB Cloud (owner ruling Q8).
