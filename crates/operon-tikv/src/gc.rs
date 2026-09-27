@@ -372,6 +372,9 @@ pub(crate) async fn round(
     for ks in keyspaces.iter().filter(|k| k.state != TOMBSTONE) {
         locks_resolved += cluster.cleanup_locks(ks, safe_point).await?;
         count += 1;
+        // Renews the lease, so a run longer than its TTL keeps it; a lost
+        // lease stops the run here instead of after every keyspace.
+        cluster.confirm_lease().await?;
     }
     cluster.confirm_lease().await?;
     let safe_point = cluster.update_gc_safe_point(safe_point).await?;
@@ -969,6 +972,14 @@ mod tests {
             Err(TikvError::GcLease { .. })
         ));
         assert!(!fake.calls().iter().any(|c| c.starts_with("update")));
+        // The lease is confirmed (and renewed) after each keyspace, so the
+        // loss stops the run after the first one.
+        let resolved = fake
+            .calls()
+            .iter()
+            .filter(|c| c.starts_with("locks"))
+            .count();
+        assert_eq!(resolved, 1, "{:?}", fake.calls());
     }
 
     #[tokio::test]

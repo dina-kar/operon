@@ -100,7 +100,8 @@ pub enum TikvError {
     /// A GC barrier below the current minimum service safe point: PD saved
     /// nothing, because GC may already be past `ts`.
     #[error(
-        "GC barrier '{service_id}' at ts {ts} refused: the minimum service safe point is          already at ts {min_safe_point}"
+        "GC barrier '{service_id}' at ts {ts} refused: the minimum service safe point is \
+         already at ts {min_safe_point}"
     )]
     BarrierBelowSafePoint {
         service_id: String,
@@ -406,6 +407,20 @@ impl fmt::Debug for EscapedBytes<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_barrier_refusal_reads_as_one_sentence() {
+        let e = TikvError::BarrierBelowSafePoint {
+            service_id: "loam/test/1".to_string(),
+            ts: 5,
+            min_safe_point: 7,
+        };
+        assert_eq!(
+            e.to_string(),
+            "GC barrier 'loam/test/1' at ts 5 refused: the minimum service safe point is \
+             already at ts 7"
+        );
+    }
 
     #[test]
     fn a_hint_cut_inside_a_key_still_hides_the_key() {
