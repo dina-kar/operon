@@ -37,5 +37,6 @@ unmaintained = "workspace"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# tikv-client is pinned to an upstream revision (R1 plan row R4).
-allow-git = ["https://github.com/tikv/client-rust"]
+# tikv-client is pinned by rev to Loam's fork, branch `loam` (R1 plan rows R4
+# and F1).
+allow-git = ["https://github.com/dina-kar/client-rust"]

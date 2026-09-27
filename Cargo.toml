@@ -91,12 +91,16 @@ tantivy = { version = "=0.26.2", default-features = false, features = ["quickwit
 tantivy-fst = "0.5"
 tempfile = "3"
 thiserror = "2"
-# A git pin, not crates.io 0.4.0: 0.4.0 fails cargo-deny's advisories through
-# tonic 0.10 and reports lost async-commit and 1PC acknowledgements as plain
-# errors (R1 plan row R4). Default features pull in openssl, procfs and
+# Loam's fork of tikv/client-rust, pinned by rev: branch `loam` of
+# dina-kar/client-rust, upstream ab4be1c plus the TSO stream reconnect, the
+# public generated protos, async-commit lock resolution on the read path and
+# async commit's max_commit_ts (docs/plans/r1-dependency-spike.md, "The
+# client-rust fork"). Not crates.io 0.4.0: it fails cargo-deny's advisories
+# through tonic 0.10 and reports lost async-commit and 1PC acknowledgements as
+# plain errors (R1 plan row R4). Default features pull in openssl, procfs and
 # protobuf 2 through prometheus. The pin moves only by a PR that reruns the
-# operon-tikv and operon-meta-tikv suites.
-tikv-client = { git = "https://github.com/tikv/client-rust", rev = "ab4be1c2cdd58d4e593202991fb520221c83bdfd", default-features = false }
+# operon-tikv, operon-meta-tikv and operon-live suites.
+tikv-client = { git = "https://github.com/dina-kar/client-rust", rev = "1f8962b00b33ebc6f34b72d6c52d08b8a8e1906e", default-features = false }
 time = { version = "0.3", features = ["std", "formatting", "parsing", "macros"] }
 time-fmt = "0.3.8"
 tokio = { version = "1", features = ["full"] }
