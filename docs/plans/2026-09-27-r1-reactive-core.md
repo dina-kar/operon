@@ -43,7 +43,7 @@ Same as the M1 overview §8, plus:
 - **Cluster tests skip without a cluster.** Every test that needs TiKV calls `operon_tikv::testing::cluster()`, which returns `None` and prints `skipped: <test> needs OPERON_TEST_PD` when the variable is unset. CI's `tikv` job sets it, so nothing is skipped there.
 - **Test isolation by prefix.** Tests use the keyspaces `loam_test_meta`, `loam_test_live` and `loam_test_sql`, created once by the playground script, and a random 8-byte root prefix per test. A test never creates or deletes a keyspace.
 - **API v2 only.** Every TiKV config in the repo sets `storage.api-version = 2` and `storage.enable-ttl = true`. `operon-tikv` refuses to start against a cluster whose keyspace lookup fails, with a message naming the setting.
-- **Loopback by default (D111).** The Live listener binds 127.0.0.1:7710 unless `--live-listen` says otherwise; a non-loopback bind logs the D111 warning. No auth in R1.
+- **Loopback only (D111, stricter).** The Live listener binds 127.0.0.1:7710. `--live-listen` accepts only loopback addresses (127.0.0.0/8, `::1`, `localhost`); any other address fails startup with the error in §20 §7.1, because `Mutate`, `_system:*` writes and `Deploy` are unauthenticated in R1. A loopback bind logs one line saying the Live API is unauthenticated. The refusal is lifted only by the unified auth plan (R3).
 - **Determinism in functions.** Queries and mutations never see wall-clock time, randomness, timers or I/O except through the host API (§20 §6.2).
 - **The build machine.** One cargo build at a time, the shared target directory, `-j 6`, lld; the playground (about 3.2 GB peak RSS, TiKV 2.6 GB of it, measured in the spike) is stopped before a build and started after it.
 - **Ports.** Other playgrounds run on this machine and grab the default ports. Every playground Loam starts uses `--tag loam-<purpose>` and `--port-offset 17000` (PD `127.0.0.1:19379`, TiDB `127.0.0.1:21000`); CI uses the same offset for uniformity.
@@ -200,13 +200,14 @@ impl TestCluster { pub fn config(&self, keyspace: &str) -> TikvConfig; }   // ke
    ```sh
    # once; user-local under ~/.tiup (the installer edits ~/.zshrc only: add ~/.tiup/bin to PATH in fish yourself)
    curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
+   export PATH="$HOME/.tiup/bin:$PATH"      # fish: fish_add_path ~/.tiup/bin
    # the first run downloads ~500 MB (the TiKV tarball is 402 MB)
    tiup playground v8.5.8 --tag loam-dev --port-offset 17000 --pd 1 --kv 1 --db 1 --tiflash 0 --without-monitor \
      --kv.config deploy/tikv/tikv.toml --pd.config deploy/tikv/pd.toml --db.config deploy/tikv/tidb.toml
    ```
    Without `--with-tidb` the script passes `--db 0`. It runs in the background with its pid in `target/tikv-playground/<tag>.pid`. `wait-ready.sh` then polls `curl -s http://127.0.0.1:19379/pd/api/v2/keyspaces` until every pre-allocated keyspace is listed, and with TiDB also runs `mysql -h127.0.0.1 -P21000 -uroot -e 'select 1'` (60 s limit). The script refuses to start if `cargo` or `rustc` is running (the build-machine rule), unless `--force`.
 3. **Stop** (`playground.sh stop [--tag T]`): `kill -INT <pid>`, wait for exit, then `rm -rf ~/.tiup/data/<tag>`. `tiup clean <tag>` fails after an INT shutdown ("missing meta file"), so the script never uses it.
-4. CI job `tikv` ("TiKV suites"): runs on PRs whose paths match `crates/operon-tikv/**`, `crates/operon-meta-tikv/**`, `crates/operon-live*/**`, `deploy/tikv/**`, `scripts/tikv/**`, `proto/loam/**`; installs tiup (caching `~/.tiup/components`), starts the playground, sets `OPERON_TEST_PD=127.0.0.1:19379`, runs `cargo test -p operon-tikv -p operon-meta-tikv -p operon-live -p operon-live-js`. Job `tikv-nightly` runs the same plus later tasks' nightly suites on a schedule.
+4. CI job `tikv` ("TiKV suites"): runs on PRs whose paths match `crates/operon-tikv/**`, `crates/operon-meta-tikv/**`, `crates/operon-live*/**`, `deploy/tikv/**`, `scripts/tikv/**`, `proto/loam/**`; installs tiup (caching `~/.tiup/components`) and appends `$HOME/.tiup/bin` to `$GITHUB_PATH`, starts the playground, sets `OPERON_TEST_PD=127.0.0.1:19379`, runs `cargo test -p operon-tikv -p operon-meta-tikv -p operon-live -p operon-live-js`. Job `tikv-nightly` runs the same plus later tasks' nightly suites on a schedule.
 
 **Tests** (`tests/keyspace.rs`): `connect_to_missing_keyspace_names_it`; `ensure_keyspace_is_idempotent`; `two_roots_never_see_each_other` (writes under two random roots, scans each); `now_is_monotonic` (1 000 calls); `physical_ms_is_close_to_wall_clock` (within 1 s); `client_without_keyspace_is_refused_with_a_hint` (the `InvalidKeyMode` error on API v2 becomes `TikvError::ApiVersion` naming the keyspace setting).
 
@@ -316,12 +317,12 @@ impl TikvMeta { pub async fn open(config: TikvMetaConfig) -> Result<Self, MetaEr
 **Produces:** the remaining trait methods: `commit_wal`, `swap_segment`, `trim_partition`, `partition_index`, `stream_state`, `retired_expired`, `forget_objects`, `prune_wal_commits`, `orphan_wal_objects`, `orphan_segments`, `segment_referenced`, `collection_roots`, `watch_changes`, and any others the as-built trait has.
 
 **Semantics:**
-1. `commit_wal`: pessimistic; `get_for_update` on every touched head in key order; dedupe on `w/…`; assign dense offsets; write index entries, heads, `w/`, `W/` and `o/` rows; check no `gc_claim` on the WAL object; one transaction for up to 1 024 chunks, then groups (D59).
+1. `commit_wal`: pessimistic; `get_for_update` on every touched head in key order; dedupe on `w/…`; assign dense offsets; write index entries, heads, `w/`, `W/` and `o/` rows; check no `gc_claim` on the WAL object; one transaction per partition group of at most 1 024 chunks and 4 MiB of writes; a larger call is split without splitting one stream's chunks (a single stream over one group is refused with `InvalidArgument`), each group has its own `w/<object>/<group>` record, success only after every group commits, and a retry recommits only missing groups (D59, §20 §11.3).
 2. `partition_index`: one snapshot; the head, then `[log_start, next)` entries by range scan.
 3. `watch_changes`: per-scope counters `v/…` bumped by catalog writes (not by `commit_wal`, D63) plus in-process wake on the handle's own writes and a 100 ms poll; `commit_wal` wakes this handle's offset watchers directly.
 4. GC reads scan `r/` shards and read `o/` rows; `forget_objects` checks and clears claims in one transaction per batch.
 
-**Tests:** the full `metastore_conformance!` suite (all 49 cases, linearizability histories included), plus `commit_wal_is_atomic_across_partitions` (a crash fault between groups is impossible under 1 024 chunks: all or nothing), `hot_head_commits_queue_without_abort_loops` (16 concurrent writers to one partition, every commit succeeds, offsets dense).
+**Tests:** the full `metastore_conformance!` suite (all 49 cases, linearizability histories included), plus `commit_wal_is_atomic_across_partitions` (one group: a crash fault leaves all or nothing), `oversized_commit_wal_commits_per_group_and_retry_completes` (a call over one group, fault `LoseAck` after the first group: the retry commits only the rest, no offset assigned twice), `one_stream_never_spans_groups`, `hot_head_commits_queue_without_abort_loops` (16 concurrent writers to one partition, every commit succeeds, offsets dense).
 
 **Commit:** `meta: add the TiKV metastore log, GC and change-feed methods`.
 
@@ -512,9 +513,9 @@ pub struct LiveHandle { pub addr: SocketAddr }
 4. Heartbeats: an empty Transition every `heartbeat`; a ts-only Transition at most once per second while a mutation from the session is pending (the session learns it from `Mutate` calls that carry its `session_id` header).
 5. `Resume` reruns the set at the current tick (≥ `last_version.ts`) and sends full results.
 6. `Mutate` and `Query` run through `Runner`; `Deploy` is Task 13's (it returns `Unimplemented` until then).
-7. Startup prints `operon live listening on http://<addr>` before the existing `operon listening on …` line; a non-loopback bind logs the D111 warning.
+7. Startup prints `operon live listening on http://<addr>` before the existing `operon listening on …` line. A non-loopback `--live-listen` fails startup with `ServerError::LiveListenNotLoopback { addr }` (message as §20 §7.1).
 
-**Tests:** `tests/session.rs`: `transition_applies_only_from_current_version`; `merged_transitions_stay_consistent`; `blocked_session_is_closed`; `resume_sends_full_results_at_or_after_last_ts`. `tests/service.rs` (through a connect-rust client over HTTP/1.1 and HTTP/2): `watch_receives_update_after_mutate`; `two_sessions_share_one_tick`; `modify_query_set_adds_and_removes`; `heartbeats_arrive`; `non_loopback_bind_warns`.
+**Tests:** `tests/session.rs`: `transition_applies_only_from_current_version`; `merged_transitions_stay_consistent`; `blocked_session_is_closed`; `resume_sends_full_results_at_or_after_last_ts`. `tests/service.rs` (through a connect-rust client over HTTP/1.1 and HTTP/2): `watch_receives_update_after_mutate`; `two_sessions_share_one_tick`; `modify_query_set_adds_and_removes`; `heartbeats_arrive`; `non_loopback_bind_is_refused` (`0.0.0.0:0` and a LAN address fail startup; `127.0.0.1:0` and `[::1]:0` start).
 
 **Commit:** `live: add sessions, transitions and the connect-rust sync service`; `operon: serve Loam Live on 127.0.0.1:7710`.
 
@@ -536,11 +537,12 @@ JavaScript surface (`loam:server`): `query`, `mutation`, and in handlers `ctx.db
 
 **Semantics:**
 1. Each host call is an async host function that calls `LiveTxn`, so reads land in the read set.
-2. Determinism: `Date.now()` = start timestamp's ms; `Math.random` and `crypto.getRandomValues` seeded from (start timestamp, request id); `setTimeout`, `setInterval`, `fetch` and `WebAssembly` are absent in queries and mutations.
+2. Determinism: `Date.now()` = start timestamp's ms; `Math.random` is a deterministic PRNG seeded from (start timestamp, request id); `crypto.getRandomValues` and `crypto.randomUUID` throw `DeterminismError` (never seeded; actions in R2 get the OS CSPRNG); `setTimeout`, `setInterval`, `fetch` and `WebAssembly` are absent in queries and mutations.
+2a. **One context per invocation.** A context runs exactly one call and is then dropped, on success or failure; the pool keeps `contexts` fresh contexts with the bundle already evaluated and refills in the background; built-in globals are frozen before evaluation.
 3. Limits: the interrupt handler stops a handler past `cpu_limit` (`LiveError::FunctionTimeout`); the runtime's memory limit gives `FunctionOutOfMemory`; a context is recreated after either.
 4. `Deploy` validates the bundle, stores it with `operon-store` at `live/<app>/deployments/<id>.js`, applies the schema (tables, indexes; Ruling 5), then swaps the catalog pointer in one transaction; running sessions keep their deployment until their next rerun, then move to the new one.
 
-**Tests:** `functions.rs`: `query_and_mutation_run_and_record_read_sets`; `mutation_rerun_on_conflict_is_invisible_to_the_caller`; `unknown_function_is_not_found`; `deploy_swaps_functions_for_new_calls`. `limits.rs`: `busy_loop_times_out`; `allocation_bomb_hits_memory_limit`; `context_recovers_after_timeout`. `determinism.rs`: `date_now_is_start_ts`; `random_is_repeatable_for_same_ts_and_request`; `no_fetch_no_timers`.
+**Tests:** `functions.rs`: `query_and_mutation_run_and_record_read_sets`; `mutation_rerun_on_conflict_is_invisible_to_the_caller`; `unknown_function_is_not_found`; `deploy_swaps_functions_for_new_calls`. `limits.rs`: `busy_loop_times_out`; `allocation_bomb_hits_memory_limit`; `context_recovers_after_timeout`. `determinism.rs`: `module_state_does_not_leak_between_calls` (a handler that increments a module-level counter returns 1 on every call); `crypto_random_throws_in_queries_and_mutations`; `date_now_is_start_ts`; `random_is_repeatable_for_same_ts_and_request`; `no_fetch_no_timers`.
 
 **Commit:** `live: run query and mutation functions in QuickJS`; `live: deploy function bundles and schemas`.
 
@@ -643,7 +645,7 @@ One PR per group, stacked in order; each PR builds and passes CI on its own. The
 | Generated TypeScript client with a reactive layer (D121, D128) | Tasks 7, 14 |
 | TiDB SQL in its own keyspace in the dev setup (§20 §10, D123) | Tasks 1, 15 |
 | Keyspaces on API v2, keyspace GC (§20 §9.1, §9.3, D122) | Tasks 0, 1, 3 |
-| D111 loopback default and warning | Task 12 |
+| D111: loopback only, non-loopback refused | Global Constraints, Task 12 |
 | Testing: conformance, fault matrices, reactive and transaction checkers, nemesis, playground in CI (§20 §14) | Tasks 1, 5, 6, 16 |
 | Q32 answered, Q33 re-confirmed before dependent work | Task 0 (checks 2, 3), Task 17 |
 | Spike findings: playground command and configs, async commit/1PC default, `PessimisticRetry` restarts, TSO supervisor, RAM and port sizing | Tasks 1, 2; Ruling 3; Global Constraints |

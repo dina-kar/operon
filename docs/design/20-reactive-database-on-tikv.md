@@ -47,7 +47,7 @@ Markers: **(estimate)** is computed from code or specs, not measured. **(verify)
 - **No SQL over Live tables in R1–R3.** TiDB tables and Live tables live in different keyspaces with different encodings; neither sees the other's data (§10.3).
 - **No Convex compatibility.** Loam Live borrows concepts, not the wire protocol, the function API names or any code. Convex's backend is FSL-1.1 and is read for concepts only (§15).
 - **Not a replacement for the retrieval engine's log and bucket model.** Collections, streams, tables and graphs keep object storage as the source of truth (D1, D130). Loam Live is the OLTP store beside them.
-- **No auth in R1.** It follows D111: the Live listener binds 127.0.0.1 and warns when bound elsewhere; auth arrives with the unified auth plan (R3).
+- **No auth in R1.** It follows D111, more strictly: the Live listener binds 127.0.0.1 and **refuses** any non-loopback address (§7.1); auth arrives with the unified auth plan (R3).
 - **No offline-first sync.** Clients hold query results and optimistic updates, not a local replica with merge.
 
 ## 3. Architecture
@@ -138,7 +138,7 @@ document        = prefix ‖ 0x02 ‖ table_id:u32 BE ‖ doc_id[16]    → Docu
 index entry     = prefix ‖ 0x03 ‖ table_id:u32 BE ‖ index_id:u32 BE ‖ tuple(values…) ‖ creation_ms:u64 BE ‖ doc_id[16] → ""
 journal head    = prefix ‖ 0x04 ‖ 0x00 ‖ shard:u16 BE             → last sequence:u64
 journal entry   = prefix ‖ 0x04 ‖ 0x01 ‖ shard:u16 BE ‖ seq:u64 BE → JournalEntry (protobuf)
-idempotency     = prefix ‖ 0x05 ‖ key_hash[16]                   → {commit_ts, result, expires_ms}
+idempotency     = prefix ‖ 0x05 ‖ key_hash[16]                   → {commit_ts, result, expires_ms}   (key_hash = first 16 bytes of SHA-256(key))
 scheduler (R2)  = prefix ‖ 0x06 ‖ …
 ```
 
@@ -244,7 +244,7 @@ Durable actions (steps that survive a crash and resume) can later run through th
 
 Queries and mutations must return the same result from the same snapshot:
 
-- `Date.now()` returns the transaction's start timestamp in ms; `Math.random()` is seeded from the start timestamp and the request id; `crypto.getRandomValues` is seeded the same way.
+- `Date.now()` returns the transaction's start timestamp in ms; `Math.random()` is a deterministic PRNG seeded from the start timestamp and the request id, and is documented as not suitable for secrets. **`crypto.getRandomValues()` and `crypto.randomUUID()` are never seeded**: in queries and mutations they throw (`DeterminismError: crypto randomness is not available in queries and mutations; use an action`), and in actions (R2) they draw from the OS CSPRNG. A deterministic value can then never be mistaken for a cryptographic one. Document ids are drawn by the host from the OS CSPRNG (§4.1), outside the function's view.
 - No timers, no `fetch`, no network, no filesystem.
 - Host calls (`db.get`, `db.query`, `db.insert`, `db.patch`, `db.replace`, `db.delete`) are the only I/O. Each read call adds to the read set.
 
@@ -259,7 +259,7 @@ Queries and mutations must return the same result from the same snapshot:
 
 **Recommendation for R1: QuickJS through `rquickjs` 0.14.** Server functions in Convex are mostly small, I/O-bound TypeScript that reads and writes a few documents, so an interpreter's speed is enough. QuickJS keeps the build small (it matters on a machine that builds one crate graph at a time) and gives CPU and memory limits out of the box. Users write TypeScript; the CLI bundles it to one ES module with esbuild (MIT) before `Deploy`. wasmtime comes back when users want functions in Rust or Go; V8 comes back if profiles show CPU-bound functions. The function API is engine-neutral, so switching engines does not change user code.
 
-**Runtime model.** One QuickJS runtime per (node, app, deployment), each with a pool of contexts; memory limit 64 MiB per runtime; the interrupt handler enforces the CPU limit; a context is reset after an uncaught exception. Deployed bundles are stored in object storage (`live/<app>/deployments/<id>.js`) and the current deployment is a pointer in the app's catalog.
+**Runtime model.** One QuickJS runtime per (node, app, deployment), with a pool of pre-initialised contexts; memory limit 64 MiB per runtime; the interrupt handler enforces the CPU limit. **A context serves exactly one invocation and is then discarded**, whether the call succeeded or threw: module-level variables, caches and patched globals can never carry state from one call to the next, which §6.2's determinism needs. The pool keeps `contexts` (4) fresh contexts warm, each with the bundle's module already evaluated, and refills in the background, so the evaluation cost stays off the request path. Built-in globals are frozen before the bundle is evaluated. Deployed bundles are stored in object storage (`live/<app>/deployments/<id>.js`) and the current deployment is a pointer in the app's catalog.
 
 ## 7. Sync protocol (D121)
 
@@ -297,7 +297,7 @@ message Transition {
 - **Resume.** A client that reconnects sends `WatchRequest { resume: { last_version, query_set } }`. The server reruns the set at a tick at or after `last_version.ts` and sends full results. R1 sends no diffs.
 - **Session routing.** A session lives on the node that holds its `Watch` stream. `session_id` carries that node's id; another node that receives a `ModifyQuerySet` forwards it with M1.3's request forwarding.
 - **Encoding.** Connect's JSON and binary codecs both work; `int64` values are strings in JSON and `bigint` in protobuf-es, so ids and counters stay lossless in TypeScript.
-- **Listener.** `127.0.0.1:7710` by default (`--live-listen`), per D111: no auth in R1, and a startup warning on any non-loopback bind.
+- **Listener: loopback only in R1.** `127.0.0.1:7710` by default (`--live-listen`). `LiveService` exposes `Query`, `Mutate` and the admin `Deploy` with no authentication in R1 (D111), so **a non-loopback `--live-listen` is refused at startup** (`operon: --live-listen <addr> is not a loopback address; the Live API has no authentication until the unified auth plan (D111)`) rather than only warned about, which is stricter than D111's default for the other listeners. A loopback bind still logs one startup line saying the Live API is unauthenticated. Remote access in R1 goes through an SSH tunnel or a reverse proxy the operator secures. The refusal is lifted when the unified auth plan covers the Live API (R3). The dev playground's TiDB (root without a password) binds 127.0.0.1, as `tiup playground` does by default.
 
 ### 7.2 Generated clients
 
@@ -472,7 +472,7 @@ WAL object names are ULIDs, which are time-ordered, so their keys get an 8-byte 
 | Contract item | On TiKV |
 |---|---|
 | **One transaction per call** (D47) | Every trait method is one TiKV transaction: optimistic for single-record writes (leases, `cas_pointer`, creates), **pessimistic** (`begin_pessimistic`, `get_for_update` on partition heads in key order) for `commit_wal`, `swap_segment` and `trim_partition`, so hot heads queue instead of aborting in a loop |
-| **`commit_wal` atomicity** (§18 §3.1) | Percolator commits across regions, so one `commit_wal` is **atomic across all its partitions and namespaces**, stronger than D59's per-group contract. The backend still splits a commit larger than 1 024 chunks into groups (D59 allows it) to bound transaction size |
+| **`commit_wal` atomicity** (§18 §3.1) | **One transaction per partition group.** A group is at most 1 024 chunks and at most 4 MiB of metastore writes (index entries, heads, commit and reference rows), well under TiKV's per-request Raft entry limit (`raftstore.raft-entry-max-size`, 8 MiB by default) and the lock-holding time a pessimistic transaction should have **(verify the limits on the pinned release)**. A call that fits in one group, which is every flush the log writer produces today **(estimate)**, is **atomic across all its partitions and namespaces**, stronger than D59. A larger call is split into groups; **one stream's chunks are never split across groups** (D59's rule, §18 §3.1), and a single stream's chunks that alone exceed one group are refused with `InvalidArgument` so the writer splits the WAL object. Each group commits in its own transaction with its own commit record `w/<object>/<group>`, so it is idempotent. The call returns success only after every group has committed. After a crash or error some groups may be committed and others not; that WAL object is unacknowledged, and the writer's retry recommits only the missing groups (their records show which), or the stale-commit rule (D27) settles them. Visibility is atomic per group, as D59 requires |
 | **Compare-and-swap** | Read the pointer at the start timestamp, compare, write. A concurrent writer is a write-write conflict at prewrite, so no update is lost; the loser re-reads and returns `VersionMismatch` when the version moved |
 | **Fences and GC claims** (§18 §3.2) | Checked in the same transaction: the lease record's epoch, the collection's `live` state, and `gc_claim` on every `o/` row the command makes reachable. A claim and a new reference write the same `o/` row, so they conflict and serialize, with no clock |
 | **Clock and stamps** (§18 §3.2, D113) | `clock_ms` is the TSO's physical part. The TSO is one cluster-wide monotonic clock with no hot row, so the TiKV backend keeps the strong "one monotonic clock" behaviour, and bounded skew holds trivially. Lease deadlines are judged against the transaction's start timestamp |
@@ -605,7 +605,7 @@ Every dependency is compatible with D11. Running PD, TiKV and TiDB unmodified as
 | Milestone | Scope | Exit gate |
 |---|---|---|
 | **R1** | `operon-tikv`; `operon-meta-tikv` passing conformance and its fault matrix; keyspace GC loop; one Live app in one keyspace: documents, tables, indexes, built-in and QuickJS queries and mutations, the commit journal, reactive subscriptions, the sync API (`Watch`, `ModifyQuerySet`, `Query`, `Mutate`, `Deploy`) over connect-rust; the generated TypeScript client with a reactive layer; TiDB SQL in a separate keyspace in the dev playground | The reactive correctness checker and the transaction checker pass, including under the fault matrix; the metastore conformance suite passes on TiKV; a TypeScript client sees a live query update after a mutation; a MySQL client and a Live client work against one playground without seeing each other's data |
-| **R2** | The namespace router: directory, shared keyspaces, app lifecycle, moves, quotas; the `ControlStore` on `_control` (D125); actions and scheduled functions; online index backfill; the Q31 decision; multi-node sessions; generated Python and Go clients; per-tenant TiDB pools; **BR log backup (PITR) to object storage for every Live and metastore keyspace, with a tested restore** (D131) | 10 000 apps on one cluster; the nemesis suite green for 24 h; a console page served from live queries |; a point-in-time restore of a Live keyspace from object storage passes the reactive checker's state comparison
+| **R2** | The namespace router: directory, shared keyspaces, app lifecycle, moves, quotas; the `ControlStore` on `_control` (D125); actions and scheduled functions; online index backfill; the Q31 decision; multi-node sessions; generated Python and Go clients; per-tenant TiDB pools; **BR log backup (PITR) to object storage for every Live and metastore keyspace, with a tested restore** (D131) | 10 000 apps on one cluster; the nemesis suite green for 24 h; a console page served from live queries; a point-in-time restore of a Live keyspace from object storage passes the reactive checker's state comparison |
 | **R3** | The collections bridge and `ctx.search` (D129); auth on the Live API and TiDB users through the unified auth plan (D111, Q30); Swift and Kotlin clients; React hooks | A searchable table stays in step under a crash loop, exactly once; search after a mutation with `after_ts` sees it |
 | **R4** | Kubernetes: tidb-operator for PD, TiKV and TiDB, Loam's Helm chart for the Live role; TiDB pools that scale to zero behind a proxy; TiFlash as an optional SQL add-on (D131); backup operations in the operator; BYOC for Live; durable actions (Resonate) as an option | A cluster deployed from the chart passes the nightly suite; restore from backup passes |
 
