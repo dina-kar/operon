@@ -284,6 +284,39 @@ jobs:
         if: always() && steps.paths.outputs.run == 'true'
         run: scripts/tikv/playground.sh stop --tag loam-ci
 
+  # R1 plan Task 7: the loam.live.v1 protos pass `buf lint` (STANDARD), and
+  # the checked-in TypeScript in sdks/live-typescript/src/gen is what
+  # `buf generate` writes from them. buf and protoc-gen-es are pinned in
+  # sdks/live-typescript/package.json. The Rust code is generated at build
+  # time (operon-live-proto's build.rs), so the check job covers it.
+  live-protos:
+    name: loam.live.v1 protos and generated TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: sdks/live-typescript/pnpm-lock.yaml
+      - name: install
+        working-directory: sdks/live-typescript
+        run: pnpm install --frozen-lockfile
+      - name: buf lint
+        run: sdks/live-typescript/node_modules/.bin/buf lint
+      - name: regenerate the TypeScript
+        working-directory: sdks/live-typescript
+        run: pnpm run generate
+      - name: the generated code is up to date
+        run: |
+          git add -N sdks/live-typescript/src/gen
+          git diff --exit-code -- sdks/live-typescript/src/gen || {
+            echo "sdks/live-typescript/src/gen is stale: run 'pnpm run generate' in sdks/live-typescript and commit the result"; exit 1;
+          }
+
   deny:
     name: licenses, advisories, sources
     runs-on: ubuntu-latest

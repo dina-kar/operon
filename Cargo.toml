@@ -19,9 +19,14 @@ async-trait = "0.1"
 axum = "0.8"
 base64 = "0.22"
 bitpacking = "0.9.3"
+buffa = "0.9.2"
 bytes = "1"
 bytesize = "2.4"
 clap = { version = "4", features = ["derive"] }
+# The Loam Live sync API (R1 plan Task 7, row R12). Crates add `axum` (the
+# server, Task 12); operon-live-proto's `client` feature adds `client`.
+connectrpc = "0.9.1"
+connectrpc-build = "0.9"
 crc32c = "0.6"
 # Lance's feature set (no parquet or compression): adding operon-query does
 # not rebuild DataFusion for the workspace.
@@ -110,6 +115,7 @@ operon-common = { path = "crates/operon-common", version = "0.0.1" }
 operon-hnsw = { path = "crates/operon-hnsw", version = "0.0.1" }
 operon-hot = { path = "crates/operon-hot", version = "0.0.1" }
 operon-link = { path = "crates/operon-link", version = "0.0.1" }
+operon-live-proto = { path = "crates/operon-live-proto", version = "0.0.1" }
 operon-log = { path = "crates/operon-log", version = "0.0.1" }
 operon-meta = { path = "crates/operon-meta", version = "0.0.1" }
 operon-meta-conformance = { path = "crates/operon-meta-conformance", version = "0.0.1" }
