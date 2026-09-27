@@ -285,6 +285,11 @@ async fn a_comma_list_delete_deletes_every_index() {
     assert_eq!(es.head("/test_1").await.status, StatusCode::OK);
     Es::ok(es.delete("/test_1,nope?ignore_unavailable=true").await);
     assert_eq!(es.head("/test_1").await.status, StatusCode::NOT_FOUND);
+    // A name listed twice is deleted once (PR #82 review; ES answers 200).
+    Es::ok(es.put("/test_1", None).await);
+    let a = Es::ok(es.delete("/test_1,test_1").await);
+    assert_eq!(a.body, json!({"acknowledged": true}));
+    assert_eq!(es.head("/test_1").await.status, StatusCode::NOT_FOUND);
     es.server.shutdown().await.expect("shutdown");
 }
 

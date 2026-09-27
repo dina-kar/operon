@@ -357,7 +357,12 @@ async fn delete(
     let mut targets = Vec::new();
     for item in items {
         match service.resolve_name(ns, item).await {
-            Ok(NameInfo::Collection(name)) => targets.push((item, name)),
+            // A name listed twice is deleted once (PR #82 review).
+            Ok(NameInfo::Collection(name)) => {
+                if !targets.iter().any(|(_, known)| *known == name) {
+                    targets.push((item, name));
+                }
+            }
             Ok(NameInfo::Alias(_)) => return Err(matches_alias(item)),
             Err(err) if is_missing(&err) => {
                 if !ignore_unavailable {
