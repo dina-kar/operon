@@ -667,6 +667,14 @@ fn gateway_scored_kinds_compile_to_their_plans() {
         &legs[0].retrievers[..],
         [Retriever::Vector { params, .. }] if params.exact && params.distance == Some(Distance::Dot)
     ));
+    // However many negatives, one exact scan, away from their sum (review
+    // of #60); with a zero sum, away from the first negative.
+    let plan = compile(json!({"query": {"recommend": {"negative": [[1.0, 1.0], [0.0, 1.0], [2.0, 0.0]], "strategy": "sum_scores"}}, "using": "e"}))
+        .expect("compiles");
+    assert_eq!(leg_queries(&plan), vec![(vec![-3.0, -2.0], true)]);
+    let plan = compile(json!({"query": {"recommend": {"negative": [[1.0, 1.0], [-1.0, -1.0]], "strategy": "best_score"}}, "using": "e"}))
+        .expect("compiles");
+    assert_eq!(leg_queries(&plan), vec![(vec![-1.0, -1.0], true)]);
     // An empty context is accepted, as in Qdrant: one filter-only leg,
     // every candidate scoring 0.
     let plan = compile(json!({"query": {"context": []}, "using": "d", "limit": 4, "filter": {"must": [{"key": "a", "match": {"value": 1}}]}}))
