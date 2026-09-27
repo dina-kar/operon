@@ -6,6 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
+# Not published yet: build.rs reads the protos from the workspace's proto/
+# directory, which a crate archive would not contain. Publishing is decided
+# at the Loam rename with the TiKV crates (R1 plan row T8-1): ship the protos
+# in the crate then, or the generated code.
+publish = false
 
 [features]
 # The generated `LiveServiceClient` (connect-rust's client transport). Off by
