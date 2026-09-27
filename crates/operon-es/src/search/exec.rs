@@ -88,7 +88,7 @@ pub struct SearchOutcome {
     pub read_token: Option<ConsistencyToken>,
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
@@ -827,7 +827,7 @@ pub async fn count(
 }
 
 /// The index-expression options of a request's parameters.
-fn resolve_options(params: &Params, search: &SearchParams) -> ResolveOptions {
+pub(crate) fn resolve_options(params: &Params, search: &SearchParams) -> ResolveOptions {
     ResolveOptions {
         ignore_unavailable: search.ignore_unavailable,
         allow_no_indices: search.allow_no_indices,
@@ -838,7 +838,7 @@ fn resolve_options(params: &Params, search: &SearchParams) -> ResolveOptions {
 }
 
 /// The mappings of the indices `expr` covers.
-async fn views(
+pub(crate) async fn views(
     gw: &EsGateway,
     ctx: &RequestCtx,
     expr: &IndexExpr,
@@ -860,7 +860,7 @@ async fn views(
     Ok(out)
 }
 
-fn expr_of(index: Option<&str>) -> IndexExpr {
+pub(crate) fn expr_of(index: Option<&str>) -> IndexExpr {
     match index {
         Some(index) => IndexExpr::parse(&crate::http::percent_decode_path(index)),
         None => IndexExpr::All,

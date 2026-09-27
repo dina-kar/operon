@@ -23,6 +23,8 @@
 //! - [`dsl`]: the Query DSL → the search IR.
 //! - [`search`]: search bodies and URL parameters → a [`search::SearchPlan`],
 //!   and `_search`, `_count` and `_msearch` with ES scores.
+//! - [`ubq`] serves `_update_by_query` over the native `patch_by_filter`,
+//!   and [`dbq`] holds what it shares with `_delete_by_query` (D87).
 //!
 //! # Divergences from Elasticsearch 8.19
 //!
@@ -55,6 +57,13 @@
 //!   (row T9-5).
 //! - A sort key other than `_doc` after `_score` is refused: score ties are
 //!   broken by `_id` only; a `_doc` sort value is the `_id` (row T9-9).
+//! - `_update_by_query` recognises only `params` assignments and
+//!   `remove()` in its script; an assignment creates a missing or
+//!   non-object parent as an object where Painless fails, and a request
+//!   without a script is refused (row T9a-6). Its `scroll_size` is checked
+//!   and not applied: the batches are the collection service's, and a
+//!   batch refused for backpressure past the deadline is 429 with what was
+//!   written kept (rows T9a-6, T9a-7).
 //! - The routes of Phase A that no task serves yet answer 501
 //!   `unsupported_operation_exception` (row T1-2); a `GET` or `HEAD` of a
 //!   missing index among them is 404 first.
@@ -81,6 +90,7 @@ use tokio_util::sync::CancellationToken;
 
 mod admin;
 pub mod bulk;
+pub mod dbq;
 pub mod doc;
 pub mod dsl;
 pub mod error;
@@ -90,6 +100,7 @@ pub mod mapping;
 pub mod names;
 mod read;
 pub mod search;
+pub mod ubq;
 pub mod write;
 
 pub use error::{ErrorContext, EsError};
@@ -282,6 +293,11 @@ impl EsGateway {
                 "/{index}/_msearch",
                 get(search::exec::msearch_index).post(search::exec::msearch_index),
             )
+            // Task 9a: _update_by_query.
+            .route(
+                "/{index}/_update_by_query",
+                post(ubq::update_by_query_index),
+            )
             // Task 5: _bulk.
             .route("/_bulk", post(bulk::bulk).put(bulk::bulk))
             .route(
@@ -341,10 +357,7 @@ impl EsGateway {
 /// The Phase A routes no task serves yet, with the task that serves each
 /// (row T1-2). A task that serves a route removes it here; axum panics on
 /// a method routed twice, so a forgotten row fails at router build time.
-const PENDING: &[(&str, &str, &str)] = &[
-    ("POST", "/{index}/_update_by_query", "9a"),
-    ("POST", "/{index}/_delete_by_query", "10"),
-];
+const PENDING: &[(&str, &str, &str)] = &[("POST", "/{index}/_delete_by_query", "10")];
 
 /// A route of [`PENDING`]: a `GET` or `HEAD` of a missing index is 404, as
 /// the finished route will answer; everything else is 501.

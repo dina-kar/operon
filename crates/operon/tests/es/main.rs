@@ -10,6 +10,8 @@ mod docs;
 #[cfg(feature = "es")]
 mod dsl;
 #[cfg(feature = "es")]
+mod filter_writes;
+#[cfg(feature = "es")]
 mod harness;
 #[cfg(feature = "es")]
 mod http;
