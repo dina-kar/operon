@@ -158,7 +158,16 @@ impl LiveHandle {
             tracing::warn!("Live requests did not finish; aborting them");
             serve.abort();
         }
-        let _ = self.janitor.await;
+        // Review of #88: a janitor pass already running may retry against a
+        // slow cluster; it gets the same grace as the requests.
+        let mut janitor = self.janitor;
+        if tokio::time::timeout(STOP_GRACE, &mut janitor)
+            .await
+            .is_err()
+        {
+            tracing::warn!("the Live journal janitor did not stop; aborting it");
+            janitor.abort();
+        }
     }
 }
 

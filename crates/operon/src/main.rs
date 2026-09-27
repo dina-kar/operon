@@ -349,7 +349,10 @@ struct LiveArgs {
     #[arg(long, default_value_t = 50)]
     live_tick_read_lag_ms: u64,
     /// Serve no Loam Live API.
-    #[arg(long, conflicts_with_all = ["live_listen", "live_keyspace", "live_app"])]
+    #[arg(
+        long,
+        conflicts_with_all = ["live_listen", "live_pd", "live_keyspace", "live_app", "live_tick_read_lag_ms"]
+    )]
     no_live: bool,
 }
 
@@ -1107,6 +1110,15 @@ mod tests {
         assert!(standalone.live.is_none());
         assert!(Cli::try_parse_from(["operon", "dev", "--live-app", "no spaces"]).is_err());
         assert!(Cli::try_parse_from(["operon", "dev", "--no-live", "--live-app", "x"]).is_err());
+        // Review of #88: every Live flag conflicts with `--no-live`.
+        for flag in [
+            ["--live-pd", "10.0.0.1:2379"],
+            ["--live-tick-read-lag-ms", "0"],
+        ] {
+            let mut args = vec!["operon", "dev", "--no-live"];
+            args.extend(flag);
+            assert!(Cli::try_parse_from(args).is_err(), "{flag:?}");
+        }
     }
 
     /// R1 plan Task 12 semantics 7 and the loopback rule (D111): a

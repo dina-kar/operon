@@ -728,7 +728,9 @@ impl SessionTask {
             Start::Resume { last, set } => (last, set, Some(last.ts)),
         };
         self.add(set.queries).await;
-        self.sync();
+        if self.sync() {
+            self.resubscribe().await;
+        }
         if let Some(ts) = resume_at {
             self.wait_for(ts).await?;
         }
@@ -859,19 +861,19 @@ impl SessionTask {
 
     /// Applies every tick already in the receiver and the manager's current
     /// tick: every held result is then valid at `latest` (row T12-3).
-    fn sync(&mut self) {
+    /// Returns `true` when the receiver lagged (ticks were dropped): tokio
+    /// reports a lag once, so the caller must resubscribe to recover the
+    /// dropped ticks' changes (review of #88).
+    #[must_use]
+    fn sync(&mut self) -> bool {
         if let Some(current) = self.subs().current() {
             self.latest = self.latest.max(current.version());
         }
         loop {
             match self.updates.try_recv() {
                 Ok(tick) => self.apply_tick(&tick),
-                Err(broadcast::error::TryRecvError::Lagged(_)) => {
-                    // Rare (1 024 ticks behind while subscribing); the next
-                    // `recv` reports it again and resubscribes.
-                    break;
-                }
-                Err(_) => break,
+                Err(broadcast::error::TryRecvError::Lagged(_)) => return true,
+                Err(_) => return false,
             }
         }
     }
@@ -942,40 +944,44 @@ impl SessionTask {
     /// Subscribes every query again (a lagged receiver may have missed
     /// changes), then drops the old references.
     async fn resubscribe(&mut self) {
-        let mut jobs = Vec::new();
-        for (q, query) in &self.queries {
-            if let Some((id, key, f, args)) = &query.sub {
-                jobs.push((*q, *id, key.clone(), f.clone(), args.clone()));
+        loop {
+            let mut jobs = Vec::new();
+            for (q, query) in &self.queries {
+                if let Some((id, key, f, args)) = &query.sub {
+                    jobs.push((*q, *id, key.clone(), f.clone(), args.clone()));
+                }
             }
-        }
-        for (q, old, key, f, args) in jobs {
-            match self.sessions.inner.subs.subscribe(key, f, args).await {
-                Ok((id, result)) => {
-                    if id != old {
-                        if let Some(qs) = self.by_sub.get_mut(&old) {
-                            qs.remove(&q);
-                            if qs.is_empty() {
-                                self.by_sub.remove(&old);
+            for (q, old, key, f, args) in jobs {
+                match self.sessions.inner.subs.subscribe(key, f, args).await {
+                    Ok((id, result)) => {
+                        if id != old {
+                            if let Some(qs) = self.by_sub.get_mut(&old) {
+                                qs.remove(&q);
+                                if qs.is_empty() {
+                                    self.by_sub.remove(&old);
+                                }
+                            }
+                            self.by_sub.entry(id).or_default().insert(q);
+                            if let Some(Query {
+                                sub: Some((sub_id, ..)),
+                                ..
+                            }) = self.queries.get_mut(&q)
+                            {
+                                *sub_id = id;
                             }
                         }
-                        self.by_sub.entry(id).or_default().insert(q);
-                        if let Some(Query {
-                            sub: Some((sub_id, ..)),
-                            ..
-                        }) = self.queries.get_mut(&q)
-                        {
-                            *sub_id = id;
-                        }
+                        self.sessions.inner.subs.unsubscribe(old);
+                        self.take(q, &result);
                     }
-                    self.sessions.inner.subs.unsubscribe(old);
-                    self.take(q, &result);
-                }
-                Err(e) => {
-                    tracing::warn!(session = %self.id, error = %e, "resubscribing a lagged session failed");
+                    Err(e) => {
+                        tracing::warn!(session = %self.id, error = %e, "resubscribing a lagged session failed");
+                    }
                 }
             }
+            if !self.sync() {
+                break;
+            }
         }
-        self.sync();
     }
 
     async fn modify(&mut self, req: pb::ModifyQuerySetRequest) -> Result<(), LiveError> {
@@ -1024,7 +1030,9 @@ impl SessionTask {
             }
         }
         self.add(adds).await;
-        self.sync();
+        if self.sync() {
+            self.resubscribe().await;
+        }
         let end = Version {
             query_set: req.new_version,
             identity: self.version.identity,
