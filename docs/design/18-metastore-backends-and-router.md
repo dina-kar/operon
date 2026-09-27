@@ -40,7 +40,8 @@ v1.0 stays M1 + M2 (D46), but M2 grows: a second new backend (DynamoDB), tenancy
 | openraft + redb | `operon-meta` | Default (M0) | `operon dev`, standalone, clusters of 3 or 5 `meta` nodes |
 | **Postgres** | `operon-meta-postgres` | **M2 (v1.0)** | Deployments that run managed Postgres (RDS, Aurora, Cloud SQL, Azure Database) |
 | **DynamoDB** | `operon-meta-dynamodb` | **M2 (v1.0)** | AWS-native and serverless deployments; the natural store for the hosted control plane (M2.x), as WarpStream uses it |
-| **TiDB** | `operon-meta-tidb` | **M6** | Metadata that outgrows one Postgres primary; TiDB Cloud is managed |
+| **TiDB** | `operon-meta-tidb` | ~~M6~~ | Superseded by `operon-meta-tikv` (D124) |
+| **TiKV** | `operon-meta-tikv` | **R1** (D124, §20 §11) | Loam cloud and control-plane metadata; metadata that outgrows one Postgres primary; shares the TiKV cluster with Loam Live |
 
 Every backend implements the same `MetaStore` trait (D47) under the relaxed contract (§3), and passes one conformance suite, the linearizability checks and its own fault matrix (§4).
 
@@ -114,6 +115,8 @@ What is copied from Lakekeeper, with its NOTICE, is listed in §11 §2. Lakekeep
 **Throughput.** `commit_wal` runs at about nodes × flushes per second, far below the per-item limits (D25). A hot partition written by N gateways sees optimistic conflicts that grow with N; retries use jitter.
 
 ### 2.4 TiDB (M6)
+
+> **Superseded by D124 (2026-09-27):** the scale-out backend is `operon-meta-tikv` over `tikv-client`, in track R1, mapped in [§20 §11](20-reactive-database-on-tikv.md). This section is kept for its TiDB facts, which §20 §10 reuses for SQL access.
 
 - **Protocol.** MySQL, through `sqlx` (feature `mysql`). Not `tikv-client` 0.4: it needs a real PD and TiKV cluster and would rebuild in KV what TiDB's SQL layer already provides.
 - **Transactions.** Pessimistic mode (the default since v3.0.8). REPEATABLE READ is snapshot isolation. `SELECT … FOR UPDATE` has no gap locks, so uniqueness comes from unique indexes.
