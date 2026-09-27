@@ -186,6 +186,27 @@ def test_sparse_vectors_are_validated_before_sending(
     assert recorder.requests == []
 
 
+def test_sparse_vectors_accept_numpy_arrays() -> None:
+    np = pytest.importorskip("numpy")
+    indices = np.array([5, 1], dtype=np.int64)
+    values = np.array([2.0, 0.5], dtype=np.float32)
+    vector = SparseVector(indices, values)
+    assert vector == SparseVector([5, 1], [2.0, 0.5])
+    assert all(type(i) is int for i in vector.indices)
+    assert all(type(v) is float for v in vector.values)
+    assert _wire.encode_retriever(q.sparse("s", indices, values, k=3))["sparse"]["query"] == {
+        "indices": [5, 1],
+        "values": [2.0, 0.5],
+    }
+    # The checks still apply after the conversion.
+    with pytest.raises(ValueError, match="unique"):
+        SparseVector(np.array([1, 1]), np.array([1.0, 2.0]))
+    with pytest.raises(ValueError, match="finite"):
+        SparseVector(np.array([1]), np.array([np.nan]))
+    with pytest.raises(ValueError, match="an int"):
+        SparseVector(np.array([True]), np.array([1.0]))
+
+
 def test_sparse_retriever_encodes_the_wire_form() -> None:
     assert _wire.encode_retriever(q.sparse("s", [5], [1.0], k=10)) == {
         "sparse": {

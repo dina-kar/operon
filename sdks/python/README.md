@@ -160,8 +160,12 @@ With pylance (the release matching the server's Lance, 12.0.x):
 ```python
 import lance
 
-dataset = lance.dataset(plan.lance.uri, version=plan.lance.version)
-print(dataset.count_rows())  # == plan.live_rows
+if plan.lance is not None and not plan.tail:
+    dataset = lance.dataset(plan.lance.uri, version=plan.lance.version)
+    print(dataset.count_rows())  # == plan.live_rows
+else:
+    # No Lance version yet, or writes it lacks: read the state through plan.pin.
+    rows = ns.sql("SELECT count(*) FROM kb", consistency=plan.pin)
 ```
 
 The SDK does not open Lance itself. Ray, Polars and torch readers built on scan

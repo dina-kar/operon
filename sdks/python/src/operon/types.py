@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, runtime_checkable
 
@@ -125,6 +125,15 @@ VectorLike: TypeAlias = Sequence[float] | _HasToList
 _U32_LIMIT = 2**32
 
 
+def _plain(items: object) -> tuple[object, ...]:
+    """A sequence as a tuple of Python scalars: `.tolist()` first when it has one (numpy)."""
+    if isinstance(items, _HasToList) and not isinstance(items, list | tuple):
+        items = items.tolist()
+    if not isinstance(items, Iterable):
+        raise ValueError(f"a sparse vector takes sequences, got {items!r}")
+    return tuple(items)
+
+
 @dataclass(frozen=True, slots=True)
 class SparseVector:
     """A sparse vector (overview A27), checked on construction.
@@ -137,8 +146,8 @@ class SparseVector:
     values: Sequence[float]
 
     def __post_init__(self) -> None:
-        indices = tuple(self.indices)
-        values = tuple(self.values)
+        indices = _plain(self.indices)
+        values = _plain(self.values)
         if len(indices) != len(values):
             raise ValueError(f"a sparse vector has {len(indices)} indices but {len(values)} values")
         for index in indices:
@@ -148,13 +157,15 @@ class SparseVector:
                 raise ValueError(f"a sparse vector index must be in 0..2**32, got {index}")
         if len(set(indices)) != len(indices):
             raise ValueError(f"a sparse vector's indices must be unique: {list(indices)}")
+        floats: list[float] = []
         for value in values:
             if isinstance(value, bool) or not isinstance(value, int | float):
                 raise ValueError(f"a sparse vector value is a number, got {value!r}")
             if not math.isfinite(value):
                 raise ValueError(f"a sparse vector value must be finite, got {value!r}")
+            floats.append(float(value))
         object.__setattr__(self, "indices", indices)
-        object.__setattr__(self, "values", tuple(float(v) for v in values))
+        object.__setattr__(self, "values", tuple(floats))
 
 
 @dataclass(frozen=True, slots=True)
