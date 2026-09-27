@@ -1,15 +1,23 @@
 //! Point writes (Task 5): every write route becomes one or more
 //! [`UpdateOperation`]s, each planned into `DocOp`s, and a request is one
-//! atomic `write` call (M1.2 Ruling 16) unless it holds more filter-resolved
-//! ops than one chunk (Ruling 13, E4).
+//! atomic `write` call (M1.2 Ruling 16), unless it holds writes by filter.
+//!
+//! A write by filter runs as the collection service's native
+//! `delete_by_filter` or `patch_by_filter` (D87, M1.5 Task 9a): one pin,
+//! atomic batches, followed by its cursor. Two kinds keep the
+//! read-modify-write of Ruling 12 over scroll-resolved keys, written in
+//! chunks (M1.4 row E4's exceptions): `set_payload` with a `key` that is not
+//! a plain dotted path or with an object or `null` value, and
+//! `overwrite_payload` with a `key` or `delete_payload` of paths with `[]`
+//! or `[n]`.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use operon_collection::{ConsistencyToken, DocOp, Document, MAX_WRITE_OPS, PatchMode, PrimaryKey};
 use operon_query::{
-    CollectionInfo, OpResult, Projection, ReadConsistency, ServiceError, SourceFilter, StoredDoc,
-    WriteOptions, WriteResult,
+    CollectionInfo, FilterWriteOptions, OpResult, PatchSpec, Projection, Query, ReadConsistency,
+    ServiceError, SourceFilter, StoredDoc, WriteOptions, WriteResult,
 };
 use serde_json::{Map, Value};
 
@@ -27,21 +35,58 @@ use crate::model::points::{
 };
 use crate::scoring::{CheckedVectors, check_named, not_a_vector};
 
-/// Ids per `scroll` page of a write by filter (Ruling 13).
+/// Ids per `scroll` page of a read-modify-write by filter (Ruling 13).
 const FILTER_PAGE: usize = 1_000;
-/// How long a write by filter retries a refused chunk without a request
-/// timeout (E4).
+/// How long a write by filter waits out backpressure without a request
+/// timeout (E4; the native filter writes' default deadline too).
 const FILTER_RETRY_LIMIT: Duration = Duration::from_secs(60);
 /// The shortest pause before retrying a refused chunk.
 const MIN_RETRY_PAUSE: Duration = Duration::from_millis(50);
 
 /// One operation's ops, the ops that must address an existing point (by op
-/// index), and whether its ops were resolved from a filter.
+/// index), and whether its ops were resolved from a filter; or its native
+/// write by filter.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Planned {
     pub ops: Vec<DocOp>,
     pub must_exist: Vec<(usize, PrimaryKey)>,
     pub from_filter: bool,
+    pub native: Option<NativeFilter>,
+}
+
+/// A write by filter the collection service runs natively (D87).
+#[derive(Clone, Debug)]
+pub(crate) struct NativeFilter {
+    pub query: Query,
+    pub op: NativeOp,
+}
+
+/// What an operation writes to each point it addresses.
+#[derive(Clone, Debug)]
+pub(crate) enum NativeOp {
+    Delete,
+    Patch(PatchSpec),
+}
+
+impl NativeOp {
+    /// A patch of `source` in `mode`, removing `delete_keys`.
+    fn patch(mode: PatchMode, source: Map<String, Value>, delete_keys: Vec<String>) -> Self {
+        NativeOp::Patch(PatchSpec {
+            mode,
+            source,
+            delete_keys,
+            vectors: BTreeMap::new(),
+            sparse_vectors: BTreeMap::new(),
+        })
+    }
+
+    /// The op of point `pk`.
+    fn doc_op(&self, pk: PrimaryKey) -> DocOp {
+        match self {
+            NativeOp::Delete => DocOp::Delete(pk),
+            NativeOp::Patch(spec) => spec.op(pk),
+        }
+    }
 }
 
 /// The points an operation addresses.
@@ -115,7 +160,7 @@ pub(crate) async fn plan_operation(
         }),
         UpdateOperation::Delete { delete } => {
             let target = selector_target(delete)?;
-            for_each_key(gw, ctx, info, target, false, DocOp::Delete).await
+            for_each_key(info, target, false, NativeOp::Delete)
         }
         UpdateOperation::SetPayload { set_payload } => plan_set(gw, ctx, info, set_payload).await,
         UpdateOperation::OverwritePayload { overwrite_payload } => {
@@ -127,12 +172,12 @@ pub(crate) async fn plan_operation(
             } = overwrite_payload;
             let target = target(points, filter)?;
             match key {
-                None => {
-                    for_each_key(gw, ctx, info, target, true, |pk| {
-                        patch(pk, PatchMode::Replace, payload.clone())
-                    })
-                    .await
-                }
+                None => for_each_key(
+                    info,
+                    target,
+                    true,
+                    NativeOp::patch(PatchMode::Replace, payload, Vec::new()),
+                ),
                 Some(key) => {
                     let path: JsonPath = key.parse()?;
                     rewrite(gw, ctx, info, target, |source| {
@@ -147,10 +192,12 @@ pub(crate) async fn plan_operation(
         }
         UpdateOperation::ClearPayload { clear_payload } => {
             let target = selector_target(clear_payload)?;
-            for_each_key(gw, ctx, info, target, true, |pk| {
-                patch(pk, PatchMode::Replace, Map::new())
-            })
-            .await
+            for_each_key(
+                info,
+                target,
+                true,
+                NativeOp::patch(PatchMode::Replace, Map::new(), Vec::new()),
+            )
         }
         UpdateOperation::UpdateVectors { update_vectors } => {
             let UpdateVectors {
@@ -205,16 +252,14 @@ pub(crate) async fn plan_operation(
                 }
             }
             let target = target(points, filter)?;
-            for_each_key(gw, ctx, info, target, true, |pk| DocOp::Patch {
-                pk,
+            let op = NativeOp::Patch(PatchSpec {
                 mode: PatchMode::MergeTop,
                 source: Map::new(),
                 delete_keys: Vec::new(),
-                vectors: vectors.clone(),
-                sparse_vectors: sparse_vectors.clone(),
-                upsert: None,
-            })
-            .await
+                vectors,
+                sparse_vectors,
+            });
+            for_each_key(info, target, true, op)
         }
     }
 }
@@ -350,6 +395,28 @@ async fn plan_set(
     } = set;
     let target = target(points, filter)?;
     let path = key.map(|k| k.parse::<JsonPath>()).transpose()?;
+    // M1.4 row E4 (a): by filter, a plain dotted `key` with no object or
+    // `null` value is a `MergeDeep` patch of the payload nested under the
+    // path, which `value_set` agrees with (a `null` removes its key there,
+    // an object replaces rather than merges).
+    if let (Some(path), Target::Filter(_)) = (&path, &target)
+        && plain_path(path)
+        && payload.values().all(|v| !v.is_object() && !v.is_null())
+    {
+        let mut source = payload;
+        for item in path.rest.iter().rev() {
+            if let PathItem::Key(k) = item {
+                source = Map::from_iter([(k.clone(), Value::Object(source))]);
+            }
+        }
+        let source = Map::from_iter([(path.first.clone(), Value::Object(source))]);
+        return for_each_key(
+            info,
+            target,
+            true,
+            NativeOp::patch(PatchMode::MergeDeep, source, Vec::new()),
+        );
+    }
     // A `null` under a key `delete_keys` cannot address (empty, or holding
     // a '.') needs the read-modify-write.
     let unaddressable = payload
@@ -364,16 +431,22 @@ async fn plan_set(
     let (nulls, source): (Map<String, Value>, Map<String, Value>) =
         payload.into_iter().partition(|(_, v)| v.is_null());
     let delete_keys: Vec<String> = nulls.into_iter().map(|(k, _)| k).collect();
-    for_each_key(gw, ctx, info, target, true, |pk| DocOp::Patch {
-        pk,
-        mode: PatchMode::MergeTop,
-        source: source.clone(),
-        delete_keys: delete_keys.clone(),
-        vectors: BTreeMap::new(),
-        sparse_vectors: BTreeMap::new(),
-        upsert: None,
-    })
-    .await
+    for_each_key(
+        info,
+        target,
+        true,
+        NativeOp::patch(PatchMode::MergeTop, source, delete_keys),
+    )
+}
+
+/// A path of keys only, none empty or holding a '.'.
+fn plain_path(p: &JsonPath) -> bool {
+    let key_ok = |k: &str| !k.is_empty() && !k.contains('.');
+    key_ok(&p.first)
+        && p.rest.iter().all(|item| match item {
+            PathItem::Key(k) => key_ok(k),
+            PathItem::Index(_) | PathItem::Wildcard => false,
+        })
 }
 
 /// `delete_payload`: `delete_keys` when every key is a plain dotted path,
@@ -394,29 +467,17 @@ async fn plan_delete_payload(
         .iter()
         .map(|k| k.parse::<JsonPath>())
         .collect::<Result<Vec<_>, _>>()?;
-    let plain = |p: &JsonPath| {
-        let key_ok = |k: &str| !k.is_empty() && !k.contains('.');
-        key_ok(&p.first)
-            && p.rest.iter().all(|item| match item {
-                PathItem::Key(k) => key_ok(k),
-                PathItem::Index(_) | PathItem::Wildcard => false,
-            })
-    };
-    if paths.iter().all(plain) {
+    if paths.iter().all(plain_path) {
         let delete_keys = paths
             .iter()
             .map(JsonPath::normalized)
             .collect::<Result<Vec<_>, _>>()?;
-        return for_each_key(gw, ctx, info, target, true, |pk| DocOp::Patch {
-            pk,
-            mode: PatchMode::MergeTop,
-            source: Map::new(),
-            delete_keys: delete_keys.clone(),
-            vectors: BTreeMap::new(),
-            sparse_vectors: BTreeMap::new(),
-            upsert: None,
-        })
-        .await;
+        return for_each_key(
+            info,
+            target,
+            true,
+            NativeOp::patch(PatchMode::MergeTop, Map::new(), delete_keys),
+        );
     }
     rewrite(gw, ctx, info, target, |source| {
         for path in &paths {
@@ -426,15 +487,14 @@ async fn plan_delete_payload(
     .await
 }
 
-/// One op per addressed key. By ids, `must_exist` records each op when
-/// `must_exist` is set; by filter, the keys come from [`scroll_filter`].
-async fn for_each_key(
-    gw: &QdrantGateway,
-    ctx: &RequestCtx,
+/// One op per addressed key: by ids, `must_exist` records each op when
+/// `must_exist` is set; by filter, the collection service's native write
+/// by filter (D87).
+fn for_each_key(
     info: &CollectionInfo,
     target: Target,
     must_exist: bool,
-    op: impl Fn(PrimaryKey) -> DocOp,
+    op: NativeOp,
 ) -> Result<Planned, GatewayError> {
     match target {
         Target::Ids(pks) => Ok(Planned {
@@ -443,17 +503,16 @@ async fn for_each_key(
             } else {
                 Vec::new()
             },
-            ops: pks.into_iter().map(op).collect(),
-            from_filter: false,
+            ops: pks.into_iter().map(|pk| op.doc_op(pk)).collect(),
+            ..Planned::default()
         }),
-        Target::Filter(filter) => {
-            let docs = scroll_filter(gw, ctx, info, &filter, false).await?;
-            Ok(Planned {
-                ops: docs.into_iter().map(|d| op(d.pk)).collect(),
-                must_exist: Vec::new(),
-                from_filter: true,
-            })
-        }
+        Target::Filter(filter) => Ok(Planned {
+            native: Some(NativeFilter {
+                query: compile_filter(&filter, &info.schema)?,
+                op,
+            }),
+            ..Planned::default()
+        }),
     }
 }
 
@@ -497,16 +556,16 @@ async fn rewrite(
             let docs = scroll_filter(gw, ctx, info, &filter, true).await?;
             Ok(Planned {
                 ops: docs.into_iter().map(|d| replace(d.pk, d.source)).collect(),
-                must_exist: Vec::new(),
                 from_filter: true,
+                ..Planned::default()
             })
         }
     }
 }
 
-/// Every point matching `filter` (Ruling 13, E4): pages of 1,000, the first
-/// at the request's consistency, the later ones at least at the first
-/// page's read token.
+/// Every point matching `filter`, for a read-modify-write by filter (Ruling
+/// 13, E4): pages of 1,000, the first at the request's consistency, the
+/// later ones at least at the first page's read token.
 async fn scroll_filter(
     gw: &QdrantGateway,
     ctx: &RequestCtx,
@@ -556,9 +615,10 @@ async fn scroll_filter(
 
 // ----- execution -----
 
-/// Step 7: one `write` call for all the ops, or chunks of
-/// `filter_write_chunk` when filter-resolved ops make it longer than one
-/// chunk. Then step 6's existence and rejection checks.
+/// Step 7: the operations in order. The ops of consecutive operations
+/// without a native write by filter are written as below
+/// ([`write_planned`]); each native write by filter runs on its own
+/// ([`run_native`]). The answer's token covers them all.
 pub(crate) async fn execute(
     gw: &QdrantGateway,
     ctx: &RequestCtx,
@@ -566,27 +626,121 @@ pub(crate) async fn execute(
     planned: Vec<Planned>,
     wait: bool,
 ) -> Result<(UpdateResult, ConsistencyToken), GatewayError> {
-    let mut ops = Vec::new();
-    let mut must_exist = Vec::new();
-    let mut from_filter = false;
-    // The ops the request lists itself, not resolved from a filter.
-    let mut listed = 0;
-    for p in planned {
-        let base = ops.len();
-        must_exist.extend(p.must_exist.into_iter().map(|(i, pk)| (base + i, pk)));
-        from_filter |= p.from_filter;
-        if !p.from_filter {
-            listed += p.ops.len();
-        }
-        ops.extend(p.ops);
-    }
-    // Owner ruling O1: a request is one atomic write, so the service's
-    // limit holds for the ops it lists, even next to a filter operation
-    // (PR #51 review); name the way out.
+    // Owner ruling O1: the service's limit holds for the ops a request
+    // lists itself (PR #51 review); name the way out.
+    let listed: usize = planned
+        .iter()
+        .filter(|p| !p.from_filter)
+        .map(|p| p.ops.len())
+        .sum();
     if listed > MAX_WRITE_OPS {
         return Err(GatewayError::BadRequest(format!(
             "a write request holds at most {MAX_WRITE_OPS} operations, got {listed}; split the batch into smaller requests"
         )));
+    }
+    let mut token = ConsistencyToken::default();
+    let mut group = Vec::new();
+    for p in planned {
+        match p.native {
+            None => group.push(p),
+            Some(native) => {
+                if !group.is_empty() {
+                    let written =
+                        Box::pin(write_planned(gw, ctx, info, std::mem::take(&mut group))).await?;
+                    token.merge(&written);
+                }
+                let written = Box::pin(run_native(gw, ctx, info, native)).await?;
+                token.merge(&written);
+            }
+        }
+    }
+    if !group.is_empty() {
+        let written = Box::pin(write_planned(gw, ctx, info, group)).await?;
+        token.merge(&written);
+    }
+    let result = UpdateResult {
+        operation_id: token.0.iter().map(|&(_, _, offset)| offset).max(),
+        status: if wait {
+            UpdateStatus::Completed
+        } else {
+            UpdateStatus::Acknowledged
+        },
+    };
+    Ok((result, token))
+}
+
+/// A native write by filter (D87): `allow_partial`, following the cursor at
+/// the same pin until no rows remain. Each call gets what is left of the
+/// request's `timeout` (60 s without one); a batch refused for backpressure
+/// past it is 429, with the batches already written kept (the listed
+/// divergence "filter writes are not atomic").
+async fn run_native(
+    gw: &QdrantGateway,
+    ctx: &RequestCtx,
+    info: &CollectionInfo,
+    native: NativeFilter,
+) -> Result<ConsistencyToken, GatewayError> {
+    let deadline = ctx.started + ctx.timeout.unwrap_or(FILTER_RETRY_LIMIT);
+    let mut token = ConsistencyToken::default();
+    let mut cursor = None;
+    loop {
+        let opts = FilterWriteOptions {
+            consistency: ctx.consistency.clone(),
+            allow_partial: true,
+            cursor: cursor.take(),
+            deadline: Some(deadline.saturating_duration_since(Instant::now())),
+            ..FilterWriteOptions::default()
+        };
+        let service = gw.service();
+        let query = native.query.clone();
+        let result = match &native.op {
+            NativeOp::Delete => {
+                Box::pin(service.delete_by_filter(&ctx.ns, &info.name, query, opts)).await?
+            }
+            NativeOp::Patch(spec) => {
+                Box::pin(service.patch_by_filter(&ctx.ns, &info.name, query, spec.clone(), opts))
+                    .await?
+            }
+        };
+        token.merge(&result.token);
+        if let Some(retry_after_ms) = result.retry_after_ms {
+            return Err(GatewayError::Service(ServiceError::ResourceExhausted {
+                message: format!(
+                    "a write by filter was refused after some of its batches were written; retry after {} s",
+                    retry_after_ms.div_ceil(1000).max(1)
+                ),
+                retry_after_ms,
+            }));
+        }
+        match result.cursor {
+            Some(next) if result.rows_remaining => {
+                if Instant::now() >= deadline {
+                    return Err(GatewayError::Service(ServiceError::Timeout));
+                }
+                cursor = Some(next);
+            }
+            _ => return Ok(token),
+        }
+    }
+}
+
+/// One `write` call for the ops of `planned`, or chunks of
+/// `filter_write_chunk` when read-modify-writes by filter make it longer
+/// than one chunk. Then step 6's existence and rejection checks.
+async fn write_planned(
+    gw: &QdrantGateway,
+    ctx: &RequestCtx,
+    info: &CollectionInfo,
+    planned: Vec<Planned>,
+) -> Result<ConsistencyToken, GatewayError> {
+    let mut ops = Vec::new();
+    let mut must_exist = Vec::new();
+    let mut from_filter = false;
+    for p in planned {
+        let base = ops.len();
+        must_exist.extend(p.must_exist.into_iter().map(|(i, pk)| (base + i, pk)));
+        from_filter |= p.from_filter;
+        ops.extend(p.ops);
     }
     let opts = WriteOptions {
         report_existence: !must_exist.is_empty(),
@@ -627,18 +781,10 @@ pub(crate) async fn execute(
     {
         return Err(GatewayError::PointsNotFound(shown(pk)));
     }
-    let result = UpdateResult {
-        operation_id: token.0.iter().map(|&(_, _, offset)| offset).max(),
-        status: if wait {
-            UpdateStatus::Completed
-        } else {
-            UpdateStatus::Acknowledged
-        },
-    };
-    Ok((result, token))
+    Ok(token)
 }
 
-/// One chunk of a write by filter (E4). A chunk after the first that is
+/// One chunk of a read-modify-write by filter (E4). A chunk after the first that is
 /// refused for backpressure is retried after `retry_after_ms` (a refused
 /// write appends nothing) while the retry still ends before `deadline`;
 /// then the refusal is the answer, and the chunks already written stay.
