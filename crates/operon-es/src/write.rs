@@ -10,7 +10,7 @@
 //! in ES, and turns `OpResult`s and positions into ES results, `_version`
 //! and `_seq_no` (Ruling 4).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -552,14 +552,17 @@ impl Engine<'_, '_> {
 
     /// Step 7: one strong batch `get` of the keys updates and creates need.
     async fn pre_read(&self) -> Result<HashMap<PrimaryKey, Option<Current>>, ServiceError> {
+        // First-appearance order; `seen` keeps the scan linear (a `_bulk`
+        // group can hold hundreds of thousands of items).
         let mut pks: Vec<PrimaryKey> = Vec::new();
+        let mut seen: HashSet<PrimaryKey> = HashSet::new();
         for (i, slot) in self.slots.iter().enumerate() {
             let needs = matches!(
                 slot,
                 Slot::Ready(Prepared::Update { .. } | Prepared::Index { create: true, .. })
             );
             let pk = PrimaryKey::Str(self.ids[i].0.clone());
-            if needs && !pks.contains(&pk) {
+            if needs && seen.insert(pk.clone()) {
                 pks.push(pk);
             }
         }
