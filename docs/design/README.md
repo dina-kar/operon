@@ -28,6 +28,7 @@
 | 16 | [Agent fleet demo](16-agent-fleet-demo.md) | 100 Claude Code / Codex / opencode sessions on one host and one bucket: density, durability, tool-retrieval savings, analytics with tokscale parity | **Approved** |
 | 17 | [AI data ecosystem](17-ai-data-ecosystem.md) | Operon as a source and sink for AI labs' data pipelines: integration map (Ray Data, Polars, PySpark on Spark 4 and Sail, PyTorch/JAX, Spice, Iceberg engines), scan pinning, retained dataset tags, Python SDK extras, what is not built | **Approved** |
 | 18 | [Metastore backends, tenancy and the namespace router](18-metastore-backends-and-router.md) | Postgres, DynamoDB and TiDB backends; the relaxed `MetaStore` contract; conformance, fault matrices and CI targets (floci, Alternator, RustFS); consistency tokens on every backend; the router for millions of namespaces and every resource kind; orgs, API keys and quotas; the `Authorizer` trait and OpenFGA; BYOC; GDPR erasure; ids under sharding | **Approved** (three defaults pending) |
+| 20 | [Loam Live: reactive database on TiKV](20-reactive-database-on-tikv.md) | The AI-native cloud positioning; Loam Live, a Convex-style reactive database on TiKV (data model, transactions, commit journal, reactivity, QuickJS functions, the connect-rust sync API); keyspaces and the router; TiDB for MySQL access; the TiKV metastore; the collections bridge; track R (D116–D130) | **Proposed** (direction approved by the owner) |
 
 ## Glossary
 
