@@ -836,6 +836,8 @@ pub(crate) async fn collection_info(
     Ok(collection_info_json(&info, points, &payload_points))
 }
 
+/// Delete (step 3): `false` when no collection has the name; an alias
+/// name deletes nothing, as in Qdrant.
 pub(crate) async fn delete_collection(
     gw: QdrantGateway,
     ctx: RequestCtx,
@@ -844,6 +846,7 @@ pub(crate) async fn delete_collection(
     Ok(gw.service().drop_collection(&ctx.ns, &name).await?)
 }
 
+/// Exists: a collection or an alias of that name.
 pub(crate) async fn collection_exists(
     gw: QdrantGateway,
     ctx: RequestCtx,
@@ -875,6 +878,7 @@ pub(crate) async fn update_aliases(
     Ok(true)
 }
 
+/// Every alias pair of the namespace, sorted.
 pub(crate) async fn list_aliases(
     gw: QdrantGateway,
     ctx: RequestCtx,

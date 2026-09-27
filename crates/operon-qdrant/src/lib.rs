@@ -145,12 +145,14 @@ struct Inner {
 }
 
 impl QdrantGateway {
+    /// A gateway over `service`.
     pub fn new(service: Arc<CollectionService>, config: QdrantConfig) -> Self {
         Self {
             inner: Arc::new(Inner { service, config }),
         }
     }
 
+    /// How the gateway listens and bounds its requests.
     pub fn config(&self) -> &QdrantConfig {
         &self.inner.config
     }
