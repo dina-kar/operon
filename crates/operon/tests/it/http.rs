@@ -336,6 +336,7 @@ async fn out_of_range_offsets_get_416_with_both_bounds() {
 
     let stream = server
         .meta()
+        .expect("the openraft metastore")
         .read(Consistency::Local, |s| {
             let ns = s.namespace_by_name("acme").unwrap().id;
             s.stream_by_name(ns, "events").unwrap().id
@@ -344,6 +345,7 @@ async fn out_of_range_offsets_get_416_with_both_bounds() {
         .unwrap();
     server
         .meta()
+        .expect("the openraft metastore")
         .trim_partition(stream, 0, 2, None)
         .await
         .unwrap();
@@ -359,6 +361,7 @@ async fn out_of_range_offsets_get_416_with_both_bounds() {
 async fn segment_count(server: &Server) -> usize {
     server
         .meta()
+        .expect("the openraft metastore")
         .read(Consistency::Local, |s| {
             s.all_streams()
                 .flat_map(|st| (0..st.partitions).map(move |p| (st.id, p)))
@@ -412,6 +415,7 @@ async fn acknowledged_records_survive_a_restart() {
     loop {
         let wal_left = server
             .meta()
+            .expect("the openraft metastore")
             .read(Consistency::Local, |s| {
                 s.all_streams()
                     .flat_map(|st| (0..st.partitions).map(move |p| (st.id, p)))
@@ -676,7 +680,7 @@ async fn the_server_applies_collection_links() {
     cfg.link.batch_interval = Duration::ZERO;
     let server = Server::start(cfg).await.unwrap();
     let api = Api::new(&server);
-    let meta = server.meta();
+    let meta = server.meta().expect("the openraft metastore");
     let ns = meta.create_namespace("acme").await.unwrap();
     let schema = CollectionSchema::new(vec![], vec![], DynamicMapping::Ignore);
     let (cid, stream, _) = meta.create_collection(ns, "docs", schema, 2).await.unwrap();

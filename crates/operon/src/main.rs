@@ -8,7 +8,7 @@ use std::time::Duration;
 use std::collections::BTreeMap;
 
 use clap::{Parser, Subcommand};
-use operon::{ClusterConfig, Server, ServerConfig};
+use operon::{ClusterConfig, MetaBackend, Server, ServerConfig};
 use operon_hot::Roles;
 
 #[derive(Debug, Parser)]
@@ -339,6 +339,10 @@ enum Command {
         /// How long appends are buffered before a WAL flush.
         #[arg(long)]
         flush_interval_ms: Option<u64>,
+        /// The metastore: tikv://<pd-host:port>[,<pd…>]/<keyspace> runs it on
+        /// TiKV [default: the embedded store in --data-dir].
+        #[arg(long, value_parser = MetaBackend::parse)]
+        meta: Option<MetaBackend>,
         #[command(flatten)]
         native: Native,
         #[command(flatten)]
@@ -355,6 +359,10 @@ enum Command {
         /// Address of the HTTP API.
         #[arg(long, default_value = "127.0.0.1:8080")]
         listen: SocketAddr,
+        /// The metastore: tikv://<pd-host:port>[,<pd…>]/<keyspace> runs it on
+        /// TiKV [default: the embedded store in --data-dir].
+        #[arg(long, value_parser = MetaBackend::parse)]
+        meta: Option<MetaBackend>,
         #[command(flatten)]
         native: Native,
     },
@@ -484,11 +492,13 @@ fn config(command: Command) -> ServerConfig {
             data_dir,
             listen,
             flush_interval_ms,
+            meta,
             native,
             tuning,
         } => {
             let mut config = ServerConfig::new(data_dir);
             config.listen = listen;
+            config.meta = meta.unwrap_or_default();
             if let Some(ms) = flush_interval_ms {
                 config.log.flush_interval = Duration::from_millis(ms);
             }
@@ -500,10 +510,12 @@ fn config(command: Command) -> ServerConfig {
             bucket,
             data_dir,
             listen,
+            meta,
             native,
         } => {
             let mut config = ServerConfig::new(data_dir);
             config.listen = listen;
+            config.meta = meta.unwrap_or_default();
             config.bucket = Some(bucket);
             native.apply(&mut config, STANDALONE_FLIGHT_SQL);
             config
@@ -900,6 +912,66 @@ mod tests {
             Duration::from_millis(200)
         );
         assert!(dev_config(&["--collection-trim", "true"]).collection.trim);
+    }
+
+    /// R1 plan Task 6: `--meta` on `dev` and `standalone` selects the TiKV
+    /// metastore; `cluster` has no such flag, and a cluster config with a
+    /// TiKV metastore is refused.
+    #[cfg(feature = "meta-tikv")]
+    #[test]
+    fn meta_flag_selects_the_tikv_metastore_on_dev_and_standalone_only() {
+        assert_eq!(dev_config(&[]).meta, MetaBackend::Raft);
+        let url = "tikv://127.0.0.1:2379/loam_meta";
+        let MetaBackend::Tikv(tikv) = dev_config(&["--meta", url]).meta else {
+            panic!("expected the TiKV metastore");
+        };
+        assert_eq!(tikv.tikv.keyspace, "loam_meta");
+        assert_eq!(tikv.tikv.pd, ["127.0.0.1:2379"]);
+        let standalone = Cli::try_parse_from([
+            "operon",
+            "standalone",
+            "--bucket",
+            "file:///tmp/b",
+            "--meta",
+            url,
+        ])
+        .map(config_of)
+        .expect("parse");
+        assert!(matches!(standalone.meta, MetaBackend::Tikv(_)));
+        assert!(Cli::try_parse_from(["operon", "dev", "--meta", "raft://x"]).is_err());
+        let cluster = Cli::try_parse_from([
+            "operon",
+            "cluster",
+            "--node-id",
+            "1",
+            "--roles",
+            "meta",
+            "--listen",
+            "127.0.0.1:7001",
+            "--peers",
+            "1=127.0.0.1:7001",
+            "--bucket",
+            "file:///tmp/b",
+            "--meta",
+            url,
+        ]);
+        assert!(cluster.is_err(), "operon cluster has no --meta");
+        let mut config = cluster_config(&[
+            "--node-id",
+            "1",
+            "--roles",
+            "meta",
+            "--listen",
+            "127.0.0.1:7001",
+            "--peers",
+            "1=127.0.0.1:7001",
+            "--bucket",
+            "file:///tmp/b",
+        ])
+        .expect("parse");
+        config.meta = MetaBackend::parse(url).expect("url");
+        let err = config.validate().expect_err("refused").to_string();
+        assert!(err.contains("dev and standalone only"), "{err}");
     }
 
     fn cluster_config(args: &[&str]) -> Result<ServerConfig, clap::Error> {
