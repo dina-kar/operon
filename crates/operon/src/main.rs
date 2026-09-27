@@ -353,10 +353,15 @@ struct LiveArgs {
     /// isolate by it (R1 Ruling 1), as `--meta tikv://…?root=<hex>` does.
     #[arg(long, value_parser = parse_live_root)]
     live_root: Option<LiveRoot>,
+    /// QuickJS contexts per deployment, each with its own runtime and
+    /// worker thread, so up to this many × 64 MiB per deployment (R1 plan
+    /// rows T13-5, T14-1).
+    #[arg(long, default_value_t = operon_live_js::DEFAULT_CONTEXTS, value_parser = parse_live_js_contexts)]
+    live_js_contexts: usize,
     /// Serve no Loam Live API.
     #[arg(
         long,
-        conflicts_with_all = ["live_listen", "live_pd", "live_keyspace", "live_app", "live_tick_read_lag_ms", "live_root"]
+        conflicts_with_all = ["live_listen", "live_pd", "live_keyspace", "live_app", "live_tick_read_lag_ms", "live_root", "live_js_contexts"]
     )]
     no_live: bool,
 }
@@ -392,8 +397,24 @@ impl LiveArgs {
         let mut live = operon_live::LiveConfig::with_tikv(&self.live_app, tikv);
         live.listen = self.live_listen;
         live.subs.tick_read_lag = Duration::from_millis(self.live_tick_read_lag_ms);
-        live.engine = Some(std::sync::Arc::new(operon_live_js::JsEngine::default()));
+        live.engine = Some(std::sync::Arc::new(operon_live_js::JsEngine::new(
+            operon_live_js::JsConfig {
+                contexts: self.live_js_contexts,
+                ..operon_live_js::JsConfig::default()
+            },
+        )));
         config.live = Some(live);
+    }
+}
+
+/// `--live-js-contexts`: 1 to 256.
+#[cfg(feature = "live")]
+fn parse_live_js_contexts(value: &str) -> Result<usize, String> {
+    match value.parse::<usize>() {
+        Ok(n @ 1..=256) => Ok(n),
+        _ => Err(format!(
+            "--live-js-contexts {value:?}: a number from 1 to 256"
+        )),
     }
 }
 
@@ -1152,6 +1173,17 @@ mod tests {
             );
         }
         assert!(Cli::try_parse_from(["operon", "dev", "--no-live", "--live-root", "00"]).is_err());
+        // Owner ruling T14-1: the QuickJS pool size per deployment.
+        assert!(dev_config(&["--live-js-contexts", "2"]).live.is_some());
+        for bad in ["0", "257", "x"] {
+            assert!(
+                Cli::try_parse_from(["operon", "dev", "--live-js-contexts", bad]).is_err(),
+                "{bad:?}"
+            );
+        }
+        assert!(
+            Cli::try_parse_from(["operon", "dev", "--no-live", "--live-js-contexts", "2"]).is_err()
+        );
         assert!(dev_config(&["--no-live"]).live.is_none());
         let standalone = Cli::try_parse_from([
             "operon",
