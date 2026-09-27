@@ -4,7 +4,7 @@
 //!
 //! - [`body`]: body keys, paging, sort, `search_after` and
 //!   `track_total_hits`.
-//! - [`compile`]: the compilation cases (query, knn, hybrid sum, RRF,
+//! - [`compile`](mod@compile): the compilation cases (query, knn, hybrid sum, RRF,
 //!   `script_score`).
 
 pub mod body;

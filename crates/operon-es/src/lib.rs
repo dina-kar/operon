@@ -15,7 +15,7 @@
 //! - `admin`: index, mapping and alias administration and `_refresh`.
 //! - [`doc`]: ES documents ⇄ collection documents (ids, vectors moved out
 //!   of `_source` and back, `binary` values, the partial-document merge).
-//! - [`write`]: the write engine and `_doc`, `_create`, `_update`,
+//! - [`write`](mod@write): the write engine and `_doc`, `_create`, `_update`,
 //!   `DELETE`.
 //! - [`bulk`] serves `_bulk`.
 //! - `read`: `GET`/`HEAD` `_doc` and `_source`, and `_mget`, with

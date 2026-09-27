@@ -48,7 +48,7 @@ pub fn es_type<'a>(view: &'a IndexView, name: &str) -> &'a str {
     view.es.es_types.get(name).map_or("", String::as_str)
 }
 
-/// 400 `query_shard_exception` "failed to create query: <why>", as ES wraps
+/// 400 `query_shard_exception` `"failed to create query: <why>"`, as ES wraps
 /// an error of query construction.
 pub fn shard_error(why: impl Into<String>) -> EsError {
     EsError::new(
