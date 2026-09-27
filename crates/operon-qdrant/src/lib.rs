@@ -10,6 +10,10 @@
 //!   messages; [`ctx`]: the per-request namespace, consistency and timeout.
 //! - [`QdrantGateway::serve`]: the REST listener (axum, Qdrant's envelope)
 //!   and the gRPC listener (tonic, gzip), both inside `HotLayer` (Task 2).
+//! - [`filter`]: Qdrant filters compiled to the IR over the catch-all
+//!   `payload` field (Rulings 5, 6); [`jsonpath`]: Qdrant's key paths and
+//!   payload selectors (Ruling 12); [`schema`]: collections and payload
+//!   indexes.
 //!
 //! # Divergences from Qdrant 1.19
 //!
@@ -25,6 +29,30 @@
 //!   stored and echoed, but change nothing; `PATCH /collections/{c}` answers
 //!   `true` for them and changes nothing (Ruling 16). Cluster info is
 //!   synthetic: one active local shard (Task 3).
+//! - Filters see a key's values after Operon's array flattening: a plain
+//!   `a.b` also reaches `{"a": [{"b": …}]}`, and nested arrays are
+//!   flattened ("Filter semantics"). A key whose values hold no non-null
+//!   leaf (`{}`, `{"d": null}`) counts as missing for `is_empty` and
+//!   `except`, and `except` on an array is true only when no element is in
+//!   the list, where Qdrant needs one element outside it (row T4-8).
+//! - An integer condition (`match.value`, `match.any`, `match.except`)
+//!   matches an integral float: `1` matches `1.0` (E8).
+//! - `match.text`, `text_any` and `phrase` use the `standard` analyzer
+//!   (UAX #29 words, lowercased) over every string at the key, indexed or
+//!   not; `text_any` matches whole tokens, not substrings, and `text` may
+//!   find its tokens in different values of an array (Ruling 6, row T4-8).
+//!   A `text` index with any other tokenizer option is unsupported.
+//! - A datetime `range` compares the strings M1.1 reads as dates (RFC 3339,
+//!   `YYYY-MM-DD'T'HH:MM:SS[.SSS]`, `YYYY-MM-DD`, `YYYY/MM/DD[ HH:MM:SS]`), at
+//!   millisecond precision; other Qdrant formats (`2023-02-08 10:49:00`)
+//!   never match, though they are accepted as bounds (Ruling 6).
+//! - A `FieldCondition` with several sub-conditions matches when any
+//!   matches (Qdrant 1.19 evaluates only `values_count`, `is_empty` or
+//!   `is_null` when one is set; row T4-8). A numeric `range` without
+//!   bounds matches any value (the IR's `Exists`).
+//! - Geo conditions and indexes, `nested`, `has_vector` and `slice`
+//!   conditions, keys with `[n]` or quoted keys holding `.`, payload-index
+//!   deletion and type changes are unsupported (Ruling 15).
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -39,8 +67,10 @@ use tokio_util::sync::CancellationToken;
 pub mod convert;
 pub mod ctx;
 pub mod error;
+pub mod filter;
 mod grpc;
 pub mod ids;
+pub mod jsonpath;
 pub mod model;
 mod reads;
 mod rest;
@@ -115,12 +145,14 @@ struct Inner {
 }
 
 impl QdrantGateway {
+    /// A gateway over `service`.
     pub fn new(service: Arc<CollectionService>, config: QdrantConfig) -> Self {
         Self {
             inner: Arc::new(Inner { service, config }),
         }
     }
 
+    /// How the gateway listens and bounds its requests.
     pub fn config(&self) -> &QdrantConfig {
         &self.inner.config
     }
