@@ -295,23 +295,27 @@ async fn create(
             }
         }
     }
-    match service
-        .create_collection(ns, index, plan.schema(), plan.partitions)
+    let created = match service
+        .create_collection_owned(ns, index, plan.schema(), plan.partitions)
         .await
     {
-        Ok(_) => {}
+        Ok((_, created)) => created,
         Err(ServiceError::AlreadyExists(_)) => {
             // Created concurrently: answer as for an existing index.
             check_free(service, ns, index).await?;
             return Err(EsError::already_exists(index, "_na_"));
         }
         Err(err) => return Err(admin_error(err)),
-    }
+    };
     if !adds.is_empty()
         && let Err(err) = service.update_alias_targets(ns, adds).await
     {
-        // ES creates the index and its aliases in one step.
-        let _ = service.drop_collection(ns, index).await;
+        // ES creates the index and its aliases in one step, so the index
+        // is dropped again, but only if this request created it (an
+        // identical concurrent create may own it, row T3-4).
+        if created && let Err(drop) = service.drop_collection(ns, index).await {
+            tracing::warn!(index, error = %drop, "could not drop an index whose aliases were refused");
+        }
         return Err(alias_service_error(err));
     }
     Ok((

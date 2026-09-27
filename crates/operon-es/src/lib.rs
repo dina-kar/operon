@@ -13,6 +13,11 @@
 //!   routes.
 //! - [`mapping`]: ES mappings and settings ⇄ collection schemas.
 //! - `admin`: index, mapping and alias administration and `_refresh`.
+//! - [`doc`]: ES documents ⇄ collection documents (ids, vectors moved out
+//!   of `_source` and back, `binary` values, the partial-document merge).
+//! - [`write`]: the write engine and `_doc`, `_create`, `_update`,
+//!   `DELETE`.
+//! - [`bulk`] serves `_bulk`.
 //!
 //! # Divergences from Elasticsearch 8.19
 //!
@@ -24,6 +29,13 @@
 //!   at the first missing one, leaving the earlier ones deleted (row T3-2).
 //! - A write to a comma list or a wildcard is refused as an invalid index
 //!   name (row T1-5).
+//! - `_seq_no` is the partition offset of a write's record and `_version`
+//!   is `_seq_no + 1`, so versions increase but are not dense (Ruling 4).
+//! - A `null` `dense_vector` value stays in `_source` as `null` (row T4-3).
+//! - The contents of an `enabled: false` object are mapped dynamically by
+//!   the collection service, and refused under `dynamic: strict` (row T4-6).
+//! - The error texts of document parsing carry `[1:1]` rather than the
+//!   value's line and column (row T4-5).
 //! - The routes of Phase A that no task serves yet answer 501
 //!   `unsupported_operation_exception` (row T1-2); a `GET` or `HEAD` of a
 //!   missing index among them is 404 first.
@@ -49,11 +61,14 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 mod admin;
+pub mod bulk;
+pub mod doc;
 pub mod error;
 pub mod http;
 mod info;
 pub mod mapping;
 pub mod names;
+pub mod write;
 
 pub use error::{ErrorContext, EsError};
 pub use http::{Params, RequestCtx, ResponseFormat};
@@ -105,7 +120,6 @@ pub struct EsGateway {
 struct Inner {
     service: Arc<CollectionService>,
     config: EsConfig,
-    #[allow(dead_code)] // Auto ids are Task 4's.
     ids: Mutex<ulid::Generator>,
 }
 
@@ -127,6 +141,19 @@ impl EsGateway {
     /// The collection service every operation calls.
     pub fn service(&self) -> &Arc<CollectionService> {
         &self.inner.service
+    }
+
+    /// A new auto `_id`: a ULID from the gateway's one generator, so ids
+    /// increase within the process (Ruling 5).
+    pub fn next_id(&self) -> String {
+        let mut ids = self
+            .inner
+            .ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ids.generate()
+            .unwrap_or_else(|overflow| overflow.commit_overflow_increment())
+            .to_string()
     }
 
     /// Every route, inside the gateway's layers: `X-Elastic-Product` on
@@ -186,6 +213,25 @@ impl EsGateway {
             .route(
                 "/{index}/_refresh",
                 get(admin::refresh_index).post(admin::refresh_index),
+            )
+            // Task 4: document writes.
+            .route("/{index}/_doc", post(write::index_auto_id))
+            .route(
+                "/{index}/_doc/{id}",
+                put(write::index_doc)
+                    .post(write::index_doc)
+                    .delete(write::delete_doc),
+            )
+            .route(
+                "/{index}/_create/{id}",
+                put(write::create_doc).post(write::create_doc),
+            )
+            .route("/{index}/_update/{id}", post(write::update_doc))
+            // Task 5: _bulk.
+            .route("/_bulk", post(bulk::bulk).put(bulk::bulk))
+            .route(
+                "/{index}/_bulk",
+                post(bulk::bulk_index).put(bulk::bulk_index),
             );
         for &(method, path, task) in PENDING {
             let filter = match method {
@@ -241,17 +287,6 @@ impl EsGateway {
 /// (row T1-2). A task that serves a route removes it here; axum panics on
 /// a method routed twice, so a forgotten row fails at router build time.
 const PENDING: &[(&str, &str, &str)] = &[
-    ("POST", "/{index}/_doc", "4"),
-    ("PUT", "/{index}/_doc/{id}", "4"),
-    ("POST", "/{index}/_doc/{id}", "4"),
-    ("DELETE", "/{index}/_doc/{id}", "4"),
-    ("PUT", "/{index}/_create/{id}", "4"),
-    ("POST", "/{index}/_create/{id}", "4"),
-    ("POST", "/{index}/_update/{id}", "4"),
-    ("POST", "/_bulk", "5"),
-    ("PUT", "/_bulk", "5"),
-    ("POST", "/{index}/_bulk", "5"),
-    ("PUT", "/{index}/_bulk", "5"),
     ("GET", "/{index}/_doc/{id}", "6"),
     ("HEAD", "/{index}/_doc/{id}", "6"),
     ("GET", "/{index}/_source/{id}", "6"),

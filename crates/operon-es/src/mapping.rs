@@ -1051,6 +1051,36 @@ fn conflict(path: &str) -> EsError {
     ))
 }
 
+/// The `VectorSpec` of the pending `dense_vector` at `path` (declared
+/// without `dims`, `declared` its stored JSON) once its first document gives
+/// it `dim` dimensions (Task 4 step 4), with the `es.field.<path>`
+/// annotation that now records `dims`, as ES's mapping then shows it.
+pub fn pending_vector_spec(
+    path: &str,
+    declared: &Value,
+    dim: usize,
+) -> Result<(VectorSpec, String), EsError> {
+    let mut def = declared.as_object().cloned().unwrap_or_default();
+    def.insert("dims".to_string(), json!(dim));
+    let settings = BTreeMap::new();
+    let mut walk = Walk {
+        settings: &settings,
+        root_dynamic: DynamicMapping::Map,
+        out: Vec::new(),
+    };
+    walk.vector(path, &def)?;
+    match walk.out.pop() {
+        Some(Declared {
+            decl: Decl::Vector { spec: Some(spec) },
+            annotation,
+            ..
+        }) => Ok((spec, annotation)),
+        _ => Err(mapper(format!(
+            "Failed to parse mapping: [dims] of field [{path}] must be set"
+        ))),
+    }
+}
+
 /// The additions of `PUT /{index}/_mapping` to `current` (item 4).
 pub fn plan_put_mapping(
     current: &CollectionSchema,
