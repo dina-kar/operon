@@ -37,18 +37,21 @@ fn ttl_ms(ttl: Duration) -> u64 {
 
 /// Checks, inside `txn`, that the fence's lease is still at its epoch and not
 /// released, and locks the lease record so a takeover or release committed
-/// concurrently conflicts with the fenced write.
+/// concurrently conflicts with the fenced write. `get_for_update` reads the
+/// latest lease in a pessimistic transaction (whose start-timestamp reads
+/// may predate its locks) and the start-timestamp one in an optimistic
+/// transaction, which then conflicts at commit if the lease moved.
 pub(crate) async fn check_fence(
     txn: &mut Txn,
     fence: &Fence,
 ) -> Result<Result<(), ApplyError>, TxnError> {
     let key = keys::lease(&fence.lease);
-    let lease: Option<Lease> = load(txn, "lease", &key).await?;
+    let lease: Option<Lease> = match txn.get_for_update(&key).await? {
+        Some(v) => Some(keys::decode("lease", &v).map_err(crate::fatal)?),
+        None => None,
+    };
     match lease {
-        Some(lease) if lease.epoch == fence.epoch && lease.owner.is_some() => {
-            txn.lock_keys([key]).await?;
-            Ok(Ok(()))
-        }
+        Some(lease) if lease.epoch == fence.epoch && lease.owner.is_some() => Ok(Ok(())),
         _ => Ok(Err(ApplyError::Fenced {
             lease: fence.lease.clone(),
         })),

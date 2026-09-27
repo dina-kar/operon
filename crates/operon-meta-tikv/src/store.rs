@@ -1,49 +1,22 @@
-//! `impl MetaStore for TikvMeta`: the trait surface, the clock and the change
-//! watch. The log, garbage-collection and change-counter methods are Task 5's
-//! and answer [`MetaError::Unavailable`] until then (R1 plan Task 4
-//! semantics 5).
+//! `impl MetaStore for TikvMeta`: the trait surface and the clock. Each
+//! method delegates to its domain module (`catalog`, `leases`, `pointers`,
+//! `log`, `gc`, `changes`).
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use operon_common::meta::{
-    AliasAction, ChangeWait, Collection, CollectionHead, CollectionRoots, Consistency, Fence,
-    HotConfig, Lease, LeaseGrant, Link, LinkHead, LinkId, MetaChanges, MetaError, MetaResult,
-    MetaStopped, MetaStore, Namespace, PartitionIndex, Pointer, PointerCas, Retention, SegmentSwap,
-    Stream, StreamState, TargetRef, Tracked, WalClass, WalCommit,
+    AliasAction, AliasTargetAction, AliasTargets, Collection, CollectionHead, CollectionRoots,
+    Consistency, Fence, HotConfig, Lease, LeaseGrant, Link, LinkHead, LinkId, MetaChanges,
+    MetaResult, MetaStore, NameTarget, Namespace, PartitionIndex, Pointer, PointerCas, Retention,
+    SegmentSwap, Stream, StreamState, TargetRef, Tracked, WalClass, WalCommit,
 };
 use operon_common::schema::CollectionSchema;
 use operon_common::{CollectionId, NamespaceId, StreamId};
 use operon_tikv::Tikv;
 
 use crate::{TikvMeta, tikv_error};
-
-/// What Task 5's methods answer until it lands.
-pub(crate) const NOT_YET: &str = "not implemented in R1 Task 4";
-
-fn not_yet<T>() -> MetaResult<T> {
-    Err(MetaError::Unavailable(NOT_YET.to_string()))
-}
-
-/// A change watch: wakes on this handle's own writes at once, and every
-/// `poll` in any case (spurious wake-ups are allowed; Task 5 adds the
-/// per-scope change counters that make the poll exact).
-#[derive(Debug)]
-struct PollWait {
-    changes: tokio::sync::watch::Receiver<u64>,
-    poll: Duration,
-}
-
-#[async_trait]
-impl ChangeWait for PollWait {
-    async fn changed(&mut self) -> Result<(), MetaStopped> {
-        tokio::select! {
-            changed = self.changes.changed() => changed.map_err(|_| MetaStopped),
-            () = tokio::time::sleep(self.poll) => Ok(()),
-        }
-    }
-}
 
 #[async_trait]
 impl MetaStore for TikvMeta {
@@ -54,12 +27,7 @@ impl MetaStore for TikvMeta {
     }
 
     fn watch_changes(&self) -> MetaChanges {
-        let mut changes = self.inner.changes.subscribe();
-        changes.mark_unchanged();
-        MetaChanges::new(PollWait {
-            changes,
-            poll: self.inner.poll,
-        })
+        self.watch()
     }
 
     fn is_ready(&self) -> bool {
@@ -135,9 +103,9 @@ impl MetaStore for TikvMeta {
     async fn stream_state(
         &self,
         _consistency: Consistency,
-        _id: StreamId,
+        id: StreamId,
     ) -> MetaResult<Option<StreamState>> {
-        not_yet()
+        self.stream_state_impl(id).await
     }
 
     async fn create_link(
@@ -177,41 +145,37 @@ impl MetaStore for TikvMeta {
         self.links_with_pointers_impl(namespace).await
     }
 
-    // ----- Sequencer and offset index (Task 5) -----
+    // ----- Sequencer and offset index -----
 
-    async fn commit_wal(&self, _commit: WalCommit) -> Tracked<Vec<u64>> {
-        Tracked {
-            result: not_yet(),
-            earlier_unknown: false,
-        }
+    async fn commit_wal(&self, commit: WalCommit) -> Tracked<Vec<u64>> {
+        self.commit_wal_impl(commit).await
     }
 
-    async fn swap_segment(&self, _swap: SegmentSwap) -> Tracked<()> {
-        Tracked {
-            result: not_yet(),
-            earlier_unknown: false,
-        }
+    async fn swap_segment(&self, swap: SegmentSwap) -> Tracked<()> {
+        self.swap_segment_impl(swap).await
     }
 
     async fn trim_partition(
         &self,
-        _stream: StreamId,
-        _partition: u32,
-        _before_offset: u64,
-        _fence: Option<Fence>,
+        stream: StreamId,
+        partition: u32,
+        before_offset: u64,
+        fence: Option<Fence>,
     ) -> MetaResult<u64> {
-        not_yet()
+        self.trim_partition_impl(stream, partition, before_offset, fence)
+            .await
     }
 
     async fn partition_index(
         &self,
         _consistency: Consistency,
-        _stream: StreamId,
-        _partition: u32,
-        _from_offset: u64,
-        _max_bytes: Option<u64>,
+        stream: StreamId,
+        partition: u32,
+        from_offset: u64,
+        max_bytes: Option<u64>,
     ) -> MetaResult<Option<PartitionIndex>> {
-        not_yet()
+        self.partition_index_impl(stream, partition, from_offset, max_bytes)
+            .await
     }
 
     // ----- Leases and fencing -----
@@ -310,6 +274,31 @@ impl MetaStore for TikvMeta {
         self.update_aliases_impl(namespace, actions).await
     }
 
+    async fn update_alias_targets(
+        &self,
+        namespace: NamespaceId,
+        actions: Vec<AliasTargetAction>,
+    ) -> MetaResult<()> {
+        self.update_alias_targets_impl(namespace, actions).await
+    }
+
+    async fn alias_targets(
+        &self,
+        _consistency: Consistency,
+        namespace: NamespaceId,
+    ) -> MetaResult<Vec<(String, AliasTargets)>> {
+        self.alias_targets_impl(namespace).await
+    }
+
+    async fn resolve_name(
+        &self,
+        _consistency: Consistency,
+        namespace: NamespaceId,
+        name: &str,
+    ) -> MetaResult<Option<NameTarget>> {
+        self.resolve_name_impl(namespace, name).await
+    }
+
     async fn collection(
         &self,
         _consistency: Consistency,
@@ -386,57 +375,56 @@ impl MetaStore for TikvMeta {
         self.collection_hot_impl(namespace, collection).await
     }
 
-    // ----- Garbage collection (Task 5) -----
+    // ----- Garbage collection (always Linearizable) -----
 
-    async fn retired_expired(&self, _grace_ms: u64) -> MetaResult<Vec<String>> {
-        not_yet()
+    async fn retired_expired(&self, grace_ms: u64) -> MetaResult<Vec<String>> {
+        self.retired_expired_impl(grace_ms).await
     }
 
-    async fn forget_objects(
-        &self,
-        _objects: Vec<String>,
-        _fence: Option<Fence>,
-    ) -> MetaResult<u32> {
-        not_yet()
+    async fn forget_objects(&self, objects: Vec<String>, fence: Option<Fence>) -> MetaResult<u32> {
+        self.forget_objects_impl(objects, fence).await
     }
 
-    async fn prune_wal_commits(&self, _fence: Option<Fence>) -> MetaResult<u32> {
-        not_yet()
+    async fn prune_wal_commits(&self, fence: Option<Fence>) -> MetaResult<u32> {
+        self.prune_wal_commits_impl(fence).await
     }
 
     async fn orphan_wal_objects(
         &self,
-        _candidates: Vec<(String, u64)>,
-        _min_age_ms: u64,
-        _limit: usize,
+        candidates: Vec<(String, u64)>,
+        min_age_ms: u64,
+        limit: usize,
     ) -> MetaResult<Vec<String>> {
-        not_yet()
+        self.orphan_wal_objects_impl(candidates, min_age_ms, limit)
+            .await
     }
 
     async fn orphan_segments(
         &self,
-        _namespace: NamespaceId,
-        _candidates: Vec<(String, u64)>,
-        _min_age_ms: u64,
-        _limit: usize,
+        namespace: NamespaceId,
+        candidates: Vec<(String, u64)>,
+        min_age_ms: u64,
+        limit: usize,
     ) -> MetaResult<Vec<String>> {
-        not_yet()
+        self.orphan_segments_impl(namespace, candidates, min_age_ms, limit)
+            .await
     }
 
     async fn segment_referenced(
         &self,
-        _stream: StreamId,
-        _partition: u32,
-        _object: &str,
+        stream: StreamId,
+        partition: u32,
+        object: &str,
     ) -> MetaResult<bool> {
-        not_yet()
+        self.segment_referenced_impl(stream, partition, object)
+            .await
     }
 
     async fn collection_roots(
         &self,
-        _namespace: NamespaceId,
-        _under: &str,
+        namespace: NamespaceId,
+        under: &str,
     ) -> MetaResult<CollectionRoots> {
-        not_yet()
+        self.collection_roots_impl(namespace, under).await
     }
 }
