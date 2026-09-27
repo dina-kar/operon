@@ -3,9 +3,23 @@
 use std::time::Duration;
 
 use crate::TikvError;
+use crate::runner::CommitMode;
 
 /// The default request timeout.
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The default GC life time: versions younger than this are kept (design §20
+/// §9.3). Reads older than `now − (life time − 1 min)` are refused (row R7).
+pub const DEFAULT_GC_LIFE_TIME: Duration = Duration::from_secs(10 * 60);
+
+/// The margin of the GC safe window: reads are refused one minute before GC
+/// may reach them.
+pub const GC_SAFE_MARGIN: Duration = Duration::from_secs(60);
+
+/// The default gRPC decoding limit of the client (16 MiB, up from 4 MiB).
+/// Paged scans and batch gets, halving on `OutOfRange`, are the guarantee;
+/// the raised limit is headroom (row R10).
+pub const DEFAULT_GRPC_MAX_DECODING_BYTES: usize = 16 * 1024 * 1024;
 
 /// How a [`Tikv`](crate::Tikv) handle reaches its cluster and which part of it
 /// the handle owns.
@@ -23,6 +37,13 @@ pub struct TikvConfig {
     pub request_timeout: Duration,
     /// PD's HTTP API base URL; `None` means `http://<pd[0]>`.
     pub pd_http: Option<String>,
+    /// How transactions commit unless their options say otherwise (default
+    /// async commit with 1PC, R1 Ruling 3).
+    pub commit_mode: CommitMode,
+    /// The cluster's GC life time (default 10 min); must exceed 1 min.
+    pub gc_life_time: Duration,
+    /// The client's gRPC decoding limit (default 16 MiB, at least 4 MiB).
+    pub grpc_max_decoding_bytes: usize,
 }
 
 impl TikvConfig {
@@ -34,6 +55,9 @@ impl TikvConfig {
             root: Vec::new(),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             pd_http: None,
+            commit_mode: CommitMode::default(),
+            gc_life_time: DEFAULT_GC_LIFE_TIME,
+            grpc_max_decoding_bytes: DEFAULT_GRPC_MAX_DECODING_BYTES,
         }
     }
 
@@ -62,6 +86,16 @@ impl TikvConfig {
         if self.request_timeout.is_zero() {
             return Err(TikvError::Config(
                 "TikvConfig.request_timeout must be positive".to_string(),
+            ));
+        }
+        if self.gc_life_time <= GC_SAFE_MARGIN {
+            return Err(TikvError::Config(
+                "TikvConfig.gc_life_time must exceed one minute".to_string(),
+            ));
+        }
+        if self.grpc_max_decoding_bytes < 4 * 1024 * 1024 {
+            return Err(TikvError::Config(
+                "TikvConfig.grpc_max_decoding_bytes must be at least 4 MiB".to_string(),
             ));
         }
         Ok(())
@@ -95,5 +129,15 @@ mod tests {
         };
         assert!(c.validate().is_err());
         assert!(TikvConfig::new(vec!["pd:1".into()], "k").validate().is_ok());
+        let c = TikvConfig {
+            gc_life_time: GC_SAFE_MARGIN,
+            ..TikvConfig::new(vec!["pd:1".into()], "k")
+        };
+        assert!(c.validate().is_err());
+        let c = TikvConfig {
+            grpc_max_decoding_bytes: 1024,
+            ..TikvConfig::new(vec!["pd:1".into()], "k")
+        };
+        assert!(c.validate().is_err());
     }
 }

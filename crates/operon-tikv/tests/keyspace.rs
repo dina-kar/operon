@@ -13,7 +13,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use operon_tikv::testing::{self, TEST_META};
-use operon_tikv::{Tikv, TikvError, TimestampExt, ensure_keyspace};
+use operon_tikv::{Tikv, TikvError, TimestampExt, TxnOptions, ensure_keyspace};
 
 // ---- against the test cluster ----
 
@@ -56,26 +56,24 @@ async fn two_roots_never_see_each_other() {
     let b = cluster.connect(TEST_META).await;
     assert_ne!(a.root(), b.root());
     for (tikv, tag) in [(&a, b"a"), (&b, b"b")] {
-        let client = tikv.raw_client();
-        let mut txn = client.begin_optimistic().await.unwrap();
-        for i in 0..3u8 {
-            txn.put(tikv.key(&[b'k', i]), tag.to_vec()).await.unwrap();
-        }
-        txn.commit().await.unwrap();
+        tikv.run(TxnOptions::new("seed"), move |txn| {
+            Box::pin(async move {
+                for i in 0..3u8 {
+                    txn.put(&[b'k', i], tag.to_vec()).await?;
+                }
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
     }
     for (tikv, tag) in [(&a, b"a"), (&b, b"b")] {
-        let client = tikv.raw_client();
-        let mut snap = client.snapshot(
-            tikv.now().await.unwrap(),
-            tikv_client::TransactionOptions::new_optimistic().read_only(),
-        );
-        let range = tikv.key(b"")..prefix_end(tikv.root());
-        let pairs: Vec<_> = snap.scan(range, 100).await.unwrap().collect();
+        let mut snap = tikv.snapshot(tikv.now().await.unwrap()).await.unwrap();
+        let pairs = snap.scan(b"", None, 100).await.unwrap();
         assert_eq!(pairs.len(), 3, "each root sees exactly its own three keys");
-        for pair in pairs {
-            let key: Vec<u8> = pair.key().clone().into();
-            assert!(key.starts_with(tikv.root()), "{key:?} is outside the root");
-            assert_eq!(pair.value(), &tag.to_vec());
+        for (i, (key, value)) in pairs.into_iter().enumerate() {
+            assert_eq!(key, vec![b'k', u8::try_from(i).unwrap()]);
+            assert_eq!(value, tag.to_vec());
         }
     }
 }
@@ -249,16 +247,4 @@ async fn ensure_keyspace_surfaces_other_errors_against_a_fake_pd() {
 fn rand_u64() -> u64 {
     let root = testing::random_root();
     u64::from_le_bytes(root[..8].try_into().expect("8 bytes"))
-}
-
-/// The exclusive end of the range of keys starting with `prefix`.
-fn prefix_end(prefix: &[u8]) -> Vec<u8> {
-    let mut end = prefix.to_vec();
-    while let Some(last) = end.pop() {
-        if last < 0xff {
-            end.push(last + 1);
-            return end;
-        }
-    }
-    panic!("an all-0xff prefix has no end");
 }
