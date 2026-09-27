@@ -15,11 +15,13 @@
 //! - `admin`: index, mapping and alias administration and `_refresh`.
 //! - [`doc`]: ES documents ⇄ collection documents (ids, vectors moved out
 //!   of `_source` and back, `binary` values, the partial-document merge).
-//! - [`write`]: the write engine and `_doc`, `_create`, `_update`,
+//! - [`write`](mod@write): the write engine and `_doc`, `_create`, `_update`,
 //!   `DELETE`.
 //! - [`bulk`] serves `_bulk`.
 //! - `read`: `GET`/`HEAD` `_doc` and `_source`, and `_mget`, with
 //!   `_source` filtering ([`doc::SourceFilter`]).
+//! - [`dsl`]: the Query DSL → the search IR.
+//! - [`search`]: search bodies and URL parameters → a [`search::SearchPlan`].
 //!
 //! # Divergences from Elasticsearch 8.19
 //!
@@ -38,6 +40,12 @@
 //!   the collection service, and refused under `dynamic: strict` (row T4-6).
 //! - The error texts of document parsing carry `[1:1]` rather than the
 //!   value's line and column (row T4-5).
+//! - A `range` with numeric bounds on a `flattened` path compares numbers
+//!   numerically; ES compares flattened values as keywords (row E11,
+//!   O-M15-2).
+//! - `query_string`'s `lenient` is accepted and not applied, and a
+//!   `multi_match` or `query_string` without fields searches the text (and,
+//!   for `multi_match`, keyword) fields only, not every field (row T7-5).
 //! - The routes of Phase A that no task serves yet answer 501
 //!   `unsupported_operation_exception` (row T1-2); a `GET` or `HEAD` of a
 //!   missing index among them is 404 first.
@@ -65,12 +73,14 @@ use tokio_util::sync::CancellationToken;
 mod admin;
 pub mod bulk;
 pub mod doc;
+pub mod dsl;
 pub mod error;
 pub mod http;
 mod info;
 pub mod mapping;
 pub mod names;
 mod read;
+pub mod search;
 pub mod write;
 
 pub use error::{ErrorContext, EsError};

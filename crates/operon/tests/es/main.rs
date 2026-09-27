@@ -8,6 +8,8 @@ mod bulk;
 #[cfg(feature = "es")]
 mod docs;
 #[cfg(feature = "es")]
+mod dsl;
+#[cfg(feature = "es")]
 mod harness;
 #[cfg(feature = "es")]
 mod http;
