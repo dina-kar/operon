@@ -47,6 +47,14 @@
 //! - `query_string`'s `lenient` is accepted and not applied, and a
 //!   `multi_match` or `query_string` without fields searches the text (and,
 //!   for `multi_match`, keyword) fields only, not every field (row T7-5).
+//! - A search over several indices fails as a whole when one index fails
+//!   (for example a sort on a field one member does not map); ES answers
+//!   the other shards' hits with `_shards.failed` (row T9-6).
+//! - A `script_score` search with `min_score` counts the matches that pass
+//!   it among the top `from + size` only, `gte` when they fill that window
+//!   (row T9-5).
+//! - A sort key other than `_doc` after `_score` is refused: score ties are
+//!   broken by `_id` only; a `_doc` sort value is the `_id` (row T9-9).
 //! - The routes of Phase A that no task serves yet answer 501
 //!   `unsupported_operation_exception` (row T1-2); a `GET` or `HEAD` of a
 //!   missing index among them is 404 first.
