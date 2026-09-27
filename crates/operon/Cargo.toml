@@ -46,10 +46,12 @@ ulid.workspace = true
 url.workspace = true
 
 [features]
-default = ["flight", "hnsw", "meta-tikv", "qdrant"]
+default = ["flight", "hnsw", "qdrant"]
 # The TiKV metastore (R1 plan Task 6; `--meta tikv://…` on `dev` and
-# `standalone`), with the cluster MVCC GC loop it runs.
-meta-tikv = ["dep:operon-meta-tikv", "dep:operon-tikv"]
+# `standalone`), with the cluster MVCC GC loop it runs. Off by default (owner
+# ruling T7-3): it pulls in the git-pinned tikv-client (row R4), which the
+# default build must not. CI's TiKV jobs build with `--features tikv`.
+tikv = ["dep:operon-meta-tikv", "dep:operon-tikv"]
 # Serve Arrow Flight SQL (Task 12; `--flight-sql-listen`).
 flight = []
 # Serve the Qdrant REST and gRPC APIs (plan M1.4; `--qdrant-listen`).
@@ -79,8 +81,6 @@ arrow-flight.workspace = true
 arrow-schema.workspace = true
 futures.workspace = true
 object_store.workspace = true
-# tests/meta_tikv.rs: the cluster harness (operon_tikv::testing).
-operon-tikv.workspace = true
 prost.workspace = true
 tempfile.workspace = true
 tonic = { workspace = true, features = ["gzip"] }
