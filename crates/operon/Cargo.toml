@@ -77,12 +77,15 @@ arrow-flight.workspace = true
 arrow-schema.workspace = true
 futures.workspace = true
 object_store.workspace = true
+# The reference evaluator of the ES DSL tests (plan M1.5 Task 7).
+operon-es = { workspace = true, features = ["test-util"] }
 # The reference evaluator of the Qdrant filter tests (plan M1.4 Task 4).
 operon-qdrant = { workspace = true, features = ["test-util"] }
 proptest.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 tempfile.workspace = true
+time.workspace = true
 tonic = { workspace = true, features = ["gzip"] }
 
 [lints]

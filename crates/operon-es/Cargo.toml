@@ -23,6 +23,11 @@ tower.workspace = true
 tracing.workspace = true
 ulid.workspace = true
 
+[features]
+# `dsl::reference_eval`, the reference evaluator of the differential DSL
+# tests (Task 7).
+test-util = []
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 
