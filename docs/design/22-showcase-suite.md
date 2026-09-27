@@ -408,6 +408,8 @@ Flight SQL over the commons streams and collections gives cross-app metrics (lea
 | Q-SC-6 | PostHog's hobby deploy with Apache Kafka instead of Redpanda (BSL-1.1), or Redpanda documented as a separately licensed service | SC1 Task 0 |
 | Q-SC-7 | Plane's public API for project membership: enough for the projection, or upstream work | SC1 Task 4 |
 | Q-SC-8 | Drift policy: revert changes made in an app's own UI, or adopt them as tuples | SC1 Task 5 |
+| Q-SC-9 | Postgres write compatibility (D-SC-12): which store backs it (a Postgres front end over TiKV transactions, or a layer in front of TiDB), and which Postgres features are in scope first | The engine's Postgres-write design doc |
+| Q-SC-10 | The PostHog fork (D-SC-13): the staged scope, keeping HogQL's semantics on DataFusion, and how far the fork may drift from upstream before rebases stop being practical | The PostHog-on-Loam design doc |
 
 ## 13. Contradictions with earlier decisions
 
@@ -416,6 +418,22 @@ Flight SQL over the commons streams and collections gives cross-app metrics (lea
 | D11: no AGPL/BSL/SSPL/ELv2 dependencies | Plane (AGPL), Forgejo (GPL), possibly Redpanda (BSL) run in the suite | D11 is about Loam's linked dependencies; the suite runs these as separate, unmodified services, as D60 does for Alternator. The suite repository is not the engine |
 | D2: OLTP out of scope | The suite needs Postgres | The suite runs Postgres beside Loam; Loam does not claim to replace it (§6.4) |
 | §19 P7: Loam is an OIDC client; SAML/SCIM brokered by an IdP | Keycloak is the suite's IdP | Consistent: §19 already names Keycloak as the broker |
+
+## 13a. Owner direction of 2026-09-28 (amends §2.2, §6.4, D-SC-7)
+
+The owner reviewed the first draft and gave three directions: "it is a separate project, add postgres write compatibility, fork posthog and replace clickhouse with our iceberg backed". They change the plan as follows. Each change is a **proposal** (D-SC-11 … D-SC-13) until the owner confirms the wording.
+
+1. **A separate project (D-SC-11).** Loam Commons is its own product, with its own repository (`dina-kar/loam-commons`, already D-SC-1), its own roadmap and its own releases. It is not an engine milestone. SC1 stays the first plan of that project, and the engine roadmap lists it only as a consumer with dependencies.
+2. **Postgres write compatibility in Loam (D-SC-12).** Loam gains a Postgres wire surface that accepts writes, and not only the analytical, autocommit reads now planned. This is an **engine** decision that the suite motivates, and it goes through its own design doc and plan. It amends D2 ("OLTP out of scope") and this document's §2.2 and §6.4. This document records the direction and the questions the engine design must answer before any app's database moves:
+   - **Which store backs transactional Postgres writes.** The retrieval engine's log and collections are not an OLTP store (D1, D2). The natural candidate is **TiKV** (§20): Loam Live already runs ACID transactions on it, and TiDB proves that SQL over TiKV works. The candidates are a Postgres dialect front end over TiKV transactions written by Loam, or a Postgres-compatible layer placed in front of TiDB. Q-SC-9.
+   - **How much Postgres the suite's apps need.** Plane, Zulip, GlitchTip, Keycloak and OpenFGA use multi-statement transactions, `SELECT … FOR UPDATE`, sequences, JSONB, arrays, `pg_trgm` and, for Zulip, PGroonga. An app moves off Postgres only when its own test suite passes against Loam's Postgres wire, one app at a time. Order of attempt: OpenFGA and GlitchTip (small schemas), then Keycloak and Plane. Zulip goes last, because it depends on PGroonga and Postgres full-text search.
+   - **Until then, Postgres stays** in the suite. §6.4 stays true for SC1, and each app's move becomes a later SC plan.
+3. **Fork PostHog onto Loam's Iceberg analytics (D-SC-13).**
+   - **The fork.** A public fork, `dina-kar/posthog-loam`, built from `posthog-foss` (MIT; `ee/` is never taken). Its event store and query layer move from ClickHouse and Kafka to Loam: ingestion goes through Loam's native stream API (D72) into Iceberg tables (M4, §08), and HogQL is compiled to DataFusion SQL instead of ClickHouse SQL.
+   - **License.** A fork of the MIT tree is allowed. It stays MIT, keeps PostHog's notices and must not use PostHog's trademarks as its product name.
+   - **Size.** HogQL's printer targets ClickHouse (functions, `arrayJoin`, `argMax`, sampling, materialized columns), and the ingestion pipeline, persons and cohorts, funnels, retention and session replay all assume ClickHouse tables. This is the largest item in the suite. It needs its own design doc and plan, with a staged scope. Stage 1 covers events and trends, stage 2 persons, funnels and retention, and replay comes later or never. It also needs **M4 (Iceberg analytics)** in the engine.
+   - **What it proves.** It is the strongest showcase in the suite: a well-known analytics product running on Loam's Iceberg tables and query engine, with no ClickHouse.
+   - **Until it exists,** SC1 runs upstream PostHog FOSS as an optional profile (§5, §6), or leaves PostHog out.
 
 ## 14. Roadmap
 
