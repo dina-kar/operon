@@ -117,6 +117,8 @@ async fn a_restarted_node_waits_for_its_old_lease() {
     assert_eq!(lease.owner, Some(second.encode()));
 
     // A lease held by someone else past 2 × ttl: registration gives up.
+    // The squatter holds an hour; the loop below advances at most
+    // WAIT / 250 ms × ttl = 20 minutes.
     registry.deregister().await;
     store
         .acquire_lease("node/1", "squatter", Duration::from_secs(3600))
@@ -126,14 +128,19 @@ async fn a_restarted_node_waits_for_its_old_lease() {
         incarnation: Ulid::from_parts(100, 100),
         ..node(1)
     };
-    let pending = tokio::spawn(NodeRegistry::register(store.clone(), third, CONFIG));
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    clock.advance(CONFIG.lease_ttl * 2 + Duration::from_secs(1));
-    let err = tokio::time::timeout(WAIT, pending)
-        .await
-        .expect("gave up")
-        .expect("join")
-        .expect_err("still held");
+    let mut pending = tokio::spawn(NodeRegistry::register(store.clone(), third, CONFIG));
+    // The task reads its give-up time when it starts, which a starved
+    // runner may delay: advance the clock a ttl at a time until it gives
+    // up, rather than once after a fixed sleep (CI fix C3).
+    let deadline = Instant::now() + WAIT;
+    let result = loop {
+        clock.advance(CONFIG.lease_ttl);
+        if let Ok(joined) = tokio::time::timeout(Duration::from_millis(250), &mut pending).await {
+            break joined;
+        }
+        assert!(Instant::now() < deadline, "registration never gave up");
+    };
+    let err = result.expect("join").expect_err("still held");
     assert!(err.to_string().contains("still registered"), "{err}");
     meta.node.shutdown().await.expect("shutdown");
 }

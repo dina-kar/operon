@@ -35,6 +35,10 @@ const FRAGMENTS: HotConfig = HotConfig {
     fragments: true,
 };
 
+/// A linger that never passes during a test: tests expire it with
+/// `advance_clock` (CI fix C3).
+const LINGER: Duration = Duration::from_secs(24 * 60 * 60);
+
 fn config_with(f: &Fixture, linger: Duration) -> HotTierConfig {
     HotTierConfig {
         split_linger: linger,
@@ -147,8 +151,7 @@ async fn a_split_leaving_the_manifest_is_removed_after_the_linger() {
     f.commit(docs(0..20)).await;
     f.commit(docs(20..40)).await;
     f.pin(f.cid, TEXT).await;
-    let linger = Duration::from_millis(100);
-    let tier = tier_with(&f, config_with(&f, linger)).await;
+    let tier = tier_with(&f, config_with(&f, LINGER)).await;
     tier.reconcile_once().await.expect("reconcile");
     let before = f.manifest().await.splits;
     let old: Vec<_> = before
@@ -190,7 +193,8 @@ async fn a_split_leaving_the_manifest_is_removed_after_the_linger() {
     for split in &after {
         assert!(tier.split_file(f.ns, f.cid, split.ulid).is_some());
     }
-    tokio::time::sleep(linger + Duration::from_millis(20)).await;
+    // Once the linger has passed they are removed.
+    tier.advance_clock(LINGER + Duration::from_secs(1));
     tier.reconcile_once().await.expect("reconcile");
     for (split, path) in before.iter().zip(&old) {
         assert!(tier.split_file(f.ns, f.cid, split.ulid).is_none());
@@ -314,7 +318,7 @@ async fn split_file_is_none_when_text_is_not_hot() {
     let f = Fixture::start().await;
     f.commit(docs(0..30)).await;
     let ulid = f.manifest().await.splits[0].ulid;
-    let tier = f.tier().await;
+    let tier = tier_with(&f, config_with(&f, LINGER)).await;
     f.pin(
         f.cid,
         HotConfig {
@@ -336,6 +340,13 @@ async fn split_file_is_none_when_text_is_not_hot() {
     tier.reconcile_once().await.expect("reconcile");
     assert!(tier.split_file(f.ns, f.cid, ulid).is_none(), "unpinned");
     assert!(path.exists(), "deleted before the linger");
+    tier.advance_clock(LINGER + Duration::from_secs(1));
+    tier.reconcile_once().await.expect("reconcile");
+    let lingered = path.clone();
+    eventually("the file is deleted after the linger", move || {
+        !lingered.exists()
+    })
+    .await;
 
     // Not owned, or disabled: never served.
     let elsewhere = f
