@@ -55,6 +55,13 @@ pub const MAX_CONSUMERS: usize = 4096;
 /// Entries the janitor deletes per transaction.
 pub const TRIM_BATCH: usize = 256;
 
+/// Entries per scan request of [`Journal::read_bounded`].
+pub const READ_PAGE_ENTRIES: usize = 256;
+
+/// The encoded bytes of entries one [`Tailer::tick`] reads by default
+/// (64 MiB); the rest of a backlog is read by the next ticks.
+pub const DEFAULT_MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
+
 /// The commit mode of the journal's own transactions (row T7-1).
 pub const COMMIT_MODE: CommitMode = CommitMode::TwoPc;
 
@@ -100,6 +107,21 @@ impl Journal {
     /// A shard drawn from `rng`, uniformly.
     pub fn pick(&self, rng: &mut (impl Rng + ?Sized)) -> u16 {
         rng.random_range(0..self.shards)
+    }
+
+    /// A shard drawn from `rng` uniformly among those other than `exclude`
+    /// (every shard when `exclude` is `None` or the journal has one shard).
+    /// A mutation's rerun excludes the shard its previous attempt drew, so a
+    /// shard-head conflict is not met again on the same head (R1 plan row
+    /// T10-2).
+    pub fn pick_other(&self, rng: &mut (impl Rng + ?Sized), exclude: Option<u16>) -> u16 {
+        match exclude {
+            Some(skip) if self.shards > 1 && skip < self.shards => {
+                let shard = rng.random_range(0..self.shards - 1);
+                if shard >= skip { shard + 1 } else { shard }
+            }
+            _ => self.pick(rng),
+        }
     }
 
     /// Appends `entry` to a shard drawn from `rng`; returns the shard and the
@@ -148,16 +170,17 @@ impl Journal {
 
     /// Every shard's head (0 for a shard never written), in one batch get.
     pub async fn heads(&self, reads: &mut impl Reads) -> Result<Vec<u64>, LiveError> {
-        let keys = (0..self.shards)
+        // Head keys sort by shard, so a key's index in this list is its shard.
+        let keys: Vec<Vec<u8>> = (0..self.shards)
             .map(|shard| self.app.journal_head(shard))
             .collect();
-        let found = reads.batch_get(keys).await?;
+        let found = reads.batch_get(keys.clone()).await?;
         let mut heads = vec![0; usize::from(self.shards)];
         for (key, value) in found {
-            let shard = (0..self.shards)
-                .find(|&s| self.app.journal_head(s) == key)
-                .ok_or_else(|| LiveError::Corrupt("a journal head outside the shards".into()))?;
-            heads[usize::from(shard)] = decode_head(Some(&value))?;
+            let shard = keys
+                .binary_search(&key)
+                .map_err(|_| LiveError::Corrupt("a journal head outside the shards".into()))?;
+            heads[shard] = decode_head(Some(&value))?;
         }
         Ok(heads)
     }
@@ -171,9 +194,27 @@ impl Journal {
         from: &[u64],
         to: &[u64],
     ) -> Result<Vec<Read>, LiveError> {
+        let (entries, _) = self.read_bounded(reads, from, to, usize::MAX).await?;
+        Ok(entries)
+    }
+
+    /// Like [`read`](Self::read), stopping once the entries read hold
+    /// `max_bytes` encoded bytes (at an entry boundary, after at least one
+    /// entry): returns the entries and the last sequence read in every shard
+    /// (`to[s]` for the shards read to the end, `from[s]` for those not
+    /// reached).
+    pub async fn read_bounded(
+        &self,
+        reads: &mut impl Reads,
+        from: &[u64],
+        to: &[u64],
+        max_bytes: usize,
+    ) -> Result<(Vec<Read>, Vec<u64>), LiveError> {
         self.check_positions(from)?;
         self.check_positions(to)?;
         let mut out = Vec::new();
+        let mut reached = from.to_vec();
+        let mut bytes = 0usize;
         for shard in 0..self.shards {
             let (lo, hi) = (from[usize::from(shard)], to[usize::from(shard)]);
             if hi < lo {
@@ -181,52 +222,61 @@ impl Journal {
                     "journal shard {shard}: head {hi} is below position {lo}"
                 )));
             }
-            if hi == lo {
-                continue;
-            }
-            let count = usize::try_from(hi - lo)
-                .map_err(|_| LiveError::invalid("a journal range too large to read"))?;
-            let range = KeyRange {
-                lo: self.app.journal_entry(shard, lo + 1),
-                hi: key_after(&self.app.journal_entry(shard, hi)),
-            };
-            let pairs = reads.scan(&range, count, false).await?;
             let mut expected = lo + 1;
-            for (key, value) in pairs {
-                let seq = self
-                    .app
-                    .seq_of_journal_entry(shard, &key)
-                    .ok_or_else(|| LiveError::Corrupt("a journal entry key".into()))?;
-                if seq != expected {
+            while expected <= hi {
+                if bytes >= max_bytes {
+                    return Ok((out, reached));
+                }
+                let left = usize::try_from(hi - expected + 1).unwrap_or(usize::MAX);
+                let range = KeyRange {
+                    lo: self.app.journal_entry(shard, expected),
+                    hi: key_after(&self.app.journal_entry(shard, hi)),
+                };
+                let pairs = reads
+                    .scan(&range, left.min(READ_PAGE_ENTRIES), false)
+                    .await?;
+                if pairs.is_empty() {
                     return Err(if expected == lo + 1 {
                         LiveError::JournalTrimmed {
                             shard,
                             position: lo,
-                            first: Some(seq),
+                            first: None,
                         }
                     } else {
                         LiveError::Corrupt(format!(
-                            "journal shard {shard}: entry {expected} is missing before {seq}"
+                            "journal shard {shard}: entries {expected}..={hi} are missing"
                         ))
                     });
                 }
-                out.push((shard, seq, decode_entry(&value)?));
-                expected += 1;
-            }
-            if expected == lo + 1 {
-                return Err(LiveError::JournalTrimmed {
-                    shard,
-                    position: lo,
-                    first: None,
-                });
-            }
-            if expected != hi + 1 {
-                return Err(LiveError::Corrupt(format!(
-                    "journal shard {shard}: entries {expected}..={hi} are missing"
-                )));
+                for (key, value) in pairs {
+                    let seq = self
+                        .app
+                        .seq_of_journal_entry(shard, &key)
+                        .ok_or_else(|| LiveError::Corrupt("a journal entry key".into()))?;
+                    if seq != expected {
+                        return Err(if expected == lo + 1 {
+                            LiveError::JournalTrimmed {
+                                shard,
+                                position: lo,
+                                first: Some(seq),
+                            }
+                        } else {
+                            LiveError::Corrupt(format!(
+                                "journal shard {shard}: entry {expected} is missing before {seq}"
+                            ))
+                        });
+                    }
+                    bytes = bytes.saturating_add(value.len());
+                    out.push((shard, seq, decode_entry(&value)?));
+                    reached[usize::from(shard)] = seq;
+                    expected += 1;
+                    if bytes >= max_bytes {
+                        break;
+                    }
+                }
             }
         }
-        Ok(out)
+        Ok((out, reached))
     }
 
     /// Writes `consumer`'s checkpoint at `positions`, expiring `ttl` after
@@ -329,8 +379,17 @@ impl Journal {
         for (key, value) in checkpoints {
             let (seq, expires_ms) = decode_checkpoint(&value)?;
             if expires_ms != 0 && expires_ms <= now_ms {
-                txn.delete(&key).await?;
-                pass.expired += 1;
+                // An expired consumer goes from every shard at once, so
+                // `load_checkpoint` never sees it in some shards only.
+                let consumer = key
+                    .strip_prefix(range.lo.as_slice())
+                    .and_then(|c| std::str::from_utf8(c).ok())
+                    .ok_or_else(|| LiveError::Corrupt("a journal checkpoint key".into()))?;
+                for s in 0..self.shards {
+                    txn.delete(&self.app.journal_checkpoint(s, consumer))
+                        .await?;
+                }
+                pass.expired += u64::from(self.shards);
             } else {
                 floor = Some(floor.map_or(seq, |f| f.min(seq)));
             }
@@ -384,13 +443,18 @@ impl Journal {
 }
 
 /// What the tailer read in one tick: the entries in `(from, heads]` of every
-/// shard at `at`.
+/// shard at `at`. `heads` is the last sequence read in each shard; when the
+/// tick's byte budget stopped it before the heads visible at `at`,
+/// `complete` is false and the next tick continues from `heads`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Batch {
     pub at: Timestamp,
     pub from: Vec<u64>,
     pub heads: Vec<u64>,
     pub entries: Vec<Read>,
+    /// Every entry committed at or before `at` has been read (by this and
+    /// earlier ticks): `heads` are the heads visible at `at`.
+    pub complete: bool,
 }
 
 impl Batch {
@@ -406,6 +470,7 @@ pub struct Tailer {
     tikv: Tikv,
     journal: Journal,
     positions: Vec<u64>,
+    max_batch_bytes: usize,
 }
 
 impl Tailer {
@@ -416,7 +481,16 @@ impl Tailer {
             tikv,
             journal,
             positions,
+            max_batch_bytes: DEFAULT_MAX_BATCH_BYTES,
         })
+    }
+
+    /// With another per-tick byte budget (at least one entry is always
+    /// read).
+    #[must_use]
+    pub fn with_max_batch_bytes(mut self, max_batch_bytes: usize) -> Self {
+        self.max_batch_bytes = max_batch_bytes.max(1);
+        self
     }
 
     /// A tailer at the heads visible at `at`: it sees exactly the entries
@@ -455,19 +529,21 @@ impl Tailer {
     }
 
     /// Reads the heads at `at`, then the entries after the positions of
-    /// every moved shard, at `at`. The positions do not move until
-    /// [`ack`](Self::ack): a tick that is not acknowledged is read again by
-    /// the next one.
+    /// every moved shard, at `at`, up to the tick's byte budget (a backlog
+    /// larger than it takes several ticks, each `complete == false` but the
+    /// last). The positions do not move until [`ack`](Self::ack): a tick
+    /// that is not acknowledged is read again by the next one.
     pub async fn tick(&self, at: Timestamp) -> Result<Batch, LiveError> {
         let mut snap = snapshot(&self.tikv, at.clone()).await?;
-        let heads = self.journal.heads(&mut snap).await?;
-        let entries = self
+        let visible = self.journal.heads(&mut snap).await?;
+        let (entries, heads) = self
             .journal
-            .read(&mut snap, &self.positions, &heads)
+            .read_bounded(&mut snap, &self.positions, &visible, self.max_batch_bytes)
             .await?;
         Ok(Batch {
             at,
             from: self.positions.clone(),
+            complete: heads == visible,
             heads,
             entries,
         })
@@ -515,6 +591,8 @@ pub struct JanitorReport {
     /// Per shard, the sequence every live consumer has passed (the head
     /// when there is none) at the last pass.
     pub floors: Vec<u64>,
+    /// Expired idempotency records deleted (R1 plan Task 10 semantics 3).
+    pub expired_idempotency: u64,
 }
 
 #[derive(Debug, Default)]
@@ -527,7 +605,8 @@ struct TrimPass {
 
 /// Deletes journal entries every live consumer has passed once they are
 /// older than the retention (§20 §5.3). Checkpoints past their expiry are
-/// deleted and no longer hold entries.
+/// deleted and no longer hold entries. Each pass also deletes the app's
+/// expired idempotency records (§20 §5.1).
 #[derive(Debug, Clone)]
 pub struct Janitor {
     tikv: Tikv,
@@ -579,8 +658,52 @@ impl Janitor {
                 }
             }
         }
+        let mut from = self.journal.app.idempotency_records().lo;
+        loop {
+            let app = self.journal.app.clone();
+            let start = from.clone();
+            let pass = self
+                .tikv
+                .run(journal_txn("live.idempotency.sweep"), move |txn| {
+                    let app = app.clone();
+                    let start = start.clone();
+                    Box::pin(async move { lift(sweep_idempotency(txn, &app, start).await) })
+                })
+                .await?
+                .value?;
+            report.expired_idempotency += pass.0;
+            match pass.1 {
+                Some(next) => from = next,
+                None => break,
+            }
+        }
         Ok(report)
     }
+}
+
+/// Deletes the expired idempotency records among the next [`TRIM_BATCH`]
+/// from `from`; returns how many, and where the next pass starts (`None`
+/// at the end).
+async fn sweep_idempotency(
+    txn: &mut Txn,
+    app: &AppKeys,
+    from: Vec<u8>,
+) -> Result<(u64, Option<Vec<u8>>), LiveError> {
+    let now_ms = Tikv::physical_ms(&txn.start_ts());
+    let all = app.idempotency_records();
+    let (_, hi) = all.bounds();
+    let records = txn.scan(&from, hi, TRIM_BATCH).await?;
+    let next = (records.len() == TRIM_BATCH)
+        .then(|| records.last().map(|(k, _)| key_after(k)))
+        .flatten();
+    let mut deleted = 0;
+    for (key, value) in records {
+        if crate::txn::decode_idempotency(&value)?.expires_ms <= now_ms {
+            txn.delete(&key).await?;
+            deleted += 1;
+        }
+    }
+    Ok((deleted, next))
 }
 
 /// The options of the journal's own transactions.

@@ -30,3 +30,14 @@ message IndexDef {
   // The indexed top-level fields, at most 16.
   repeated string fields = 3;
 }
+
+// The app's own settings: the value of its catalog record `0x01 ‖ 0x05`
+// (R1 plan row T10-1), written when the app's runner first opens.
+message AppDef {
+  // The encoding version; 1 in R1.
+  uint32 format = 1;
+  // The journal shard count, 1 to 1 024 (16 by default). It changes only
+  // while the journal is empty (no head, entry or checkpoint); R2 migrates
+  // a non-empty journal.
+  uint32 journal_shards = 2;
+}

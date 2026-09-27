@@ -195,6 +195,20 @@ pub async fn insert(
     fields: BTreeMap<String, LiveValue>,
     limits: &Limits,
 ) -> Result<(DocId, WriteRecord), LiveError> {
+    let (id, record, _) = insert_sized(txn, app, table, fields, limits).await?;
+    Ok((id, record))
+}
+
+/// Like [`insert`], also returning the bytes written (the document key and
+/// record, and the index keys), which `LiveTxn` counts against
+/// `max_written_bytes`.
+pub(crate) async fn insert_sized(
+    txn: &mut Txn,
+    app: &AppKeys,
+    table: &TableDef,
+    fields: BTreeMap<String, LiveValue>,
+    limits: &Limits,
+) -> Result<(DocId, WriteRecord, usize), LiveError> {
     limits.check_fields(&fields)?;
     let doc = Doc {
         id: DocId::random(table.id)?,
@@ -203,13 +217,16 @@ pub async fn insert(
     };
     let record = encode(&doc, limits)?;
     let added = index_keys(app, table, &doc, limits)?;
-    txn.insert(&app.document(&doc.id), record).await?;
+    let doc_key = app.document(&doc.id);
+    let bytes = doc_key.len() + record.len() + added.iter().map(Vec::len).sum::<usize>();
+    txn.insert(&doc_key, record).await?;
     for key in &added {
         txn.put(key, Vec::new()).await?;
     }
     Ok((
         doc.id,
         write_record(&doc.id, pb::WriteKind::WRITE_KIND_INSERT, Vec::new(), added),
+        bytes,
     ))
 }
 
@@ -224,7 +241,7 @@ pub async fn replace(
     limits: &Limits,
 ) -> Result<WriteRecord, LiveError> {
     let old = existing(txn, app, table, id).await?;
-    rewrite(txn, app, table, old, fields, limits).await
+    Ok(rewrite(txn, app, table, old, fields, limits).await?.0)
 }
 
 /// Sets the given fields of document `id` of `table`, keeping the others (a
@@ -238,6 +255,31 @@ pub async fn patch(
     fields: BTreeMap<String, LiveValue>,
     limits: &Limits,
 ) -> Result<WriteRecord, LiveError> {
+    Ok(patch_sized(txn, app, table, id, fields, limits).await?.0)
+}
+
+/// Like [`replace`], also returning the bytes written.
+pub(crate) async fn replace_sized(
+    txn: &mut Txn,
+    app: &AppKeys,
+    table: &TableDef,
+    id: DocId,
+    fields: BTreeMap<String, LiveValue>,
+    limits: &Limits,
+) -> Result<(WriteRecord, usize), LiveError> {
+    let old = existing(txn, app, table, id).await?;
+    rewrite(txn, app, table, old, fields, limits).await
+}
+
+/// Like [`patch`], also returning the bytes written.
+pub(crate) async fn patch_sized(
+    txn: &mut Txn,
+    app: &AppKeys,
+    table: &TableDef,
+    id: DocId,
+    fields: BTreeMap<String, LiveValue>,
+    limits: &Limits,
+) -> Result<(WriteRecord, usize), LiveError> {
     let old = existing(txn, app, table, id).await?;
     let mut merged = old.fields.clone();
     merged.extend(fields);
@@ -526,25 +568,26 @@ async fn rewrite(
     old: Doc,
     fields: BTreeMap<String, LiveValue>,
     limits: &Limits,
-) -> Result<WriteRecord, LiveError> {
+) -> Result<(WriteRecord, usize), LiveError> {
     limits.check_fields(&fields)?;
     let removed = index_keys(app, table, &old, limits)?;
     let new = Doc { fields, ..old };
     let record = encode(&new, limits)?;
     let added = index_keys(app, table, &new, limits)?;
-    txn.put(&app.document(&new.id), record).await?;
+    let doc_key = app.document(&new.id);
+    let mut bytes = doc_key.len() + record.len();
+    txn.put(&doc_key, record).await?;
     let keep: BTreeSet<&Vec<u8>> = removed.iter().filter(|k| added.contains(k)).collect();
     for key in removed.iter().filter(|k| !keep.contains(k)) {
         txn.delete(key).await?;
     }
     for key in added.iter().filter(|k| !keep.contains(k)) {
+        bytes += key.len();
         txn.put(key, Vec::new()).await?;
     }
-    Ok(write_record(
-        &new.id,
-        pb::WriteKind::WRITE_KIND_REPLACE,
-        removed,
-        added,
+    Ok((
+        write_record(&new.id, pb::WriteKind::WRITE_KIND_REPLACE, removed, added),
+        bytes,
     ))
 }
 

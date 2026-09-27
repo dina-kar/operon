@@ -12,6 +12,7 @@ use operon_tikv::Txn;
 
 use crate::docs::Reads;
 use crate::ids::{IndexId, TableId};
+use crate::journal::MAX_SHARDS;
 use crate::keys::AppKeys;
 use crate::{Limits, LiveError, pb};
 
@@ -374,6 +375,99 @@ fn check_indexes(indexes: &[IndexSpec], limits: &Limits) -> Result<(), LiveError
         }
     }
     Ok(())
+}
+
+/// The app's journal shard count, from its settings record; `None` before
+/// the app's runner first opened (R1 plan row T10-1).
+pub async fn load_journal_shards(
+    r: &mut impl Reads,
+    app: &AppKeys,
+) -> Result<Option<u16>, LiveError> {
+    let Some(bytes) = r.get(&app.app_def()).await? else {
+        return Ok(None);
+    };
+    let def = pb::AppDef::decode_from_slice(&bytes)
+        .map_err(|e| LiveError::Corrupt(format!("app record: {e}")))?;
+    if def.format != 1 {
+        return Err(LiveError::Corrupt(format!(
+            "app record format {} (expected 1)",
+            def.format
+        )));
+    }
+    let shards = u16::try_from(def.journal_shards)
+        .ok()
+        .filter(|&n| (1..=MAX_SHARDS).contains(&n))
+        .ok_or_else(|| {
+            LiveError::Corrupt(format!(
+                "app record: {} journal shards (1 to {MAX_SHARDS})",
+                def.journal_shards
+            ))
+        })?;
+    Ok(Some(shards))
+}
+
+/// The app's journal shard count: the stored one, or `shards` written as
+/// the app's setting when it has none yet.
+pub async fn ensure_journal_shards(
+    txn: &mut Txn,
+    app: &AppKeys,
+    shards: u16,
+) -> Result<u16, LiveError> {
+    if let Some(stored) = load_journal_shards(txn, app).await? {
+        return Ok(stored);
+    }
+    check_shards(shards)?;
+    txn.put(&app.app_def(), app_def(shards)).await?;
+    Ok(shards)
+}
+
+/// Changes the app's journal shard count to `shards`. Refused with
+/// [`LiveError::FailedPrecondition`] unless the journal is empty (no head,
+/// entry or checkpoint was ever written; R2 migrates a non-empty one). The
+/// transaction also locks every head of the current count, so a mutation
+/// that read the old count and commits concurrently conflicts with it.
+pub async fn set_journal_shards(
+    txn: &mut Txn,
+    app: &AppKeys,
+    shards: u16,
+) -> Result<(), LiveError> {
+    check_shards(shards)?;
+    let current = load_journal_shards(txn, app).await?;
+    if current == Some(shards) {
+        return Ok(());
+    }
+    let journal = app.journal();
+    let (lo, hi) = journal.bounds();
+    if !txn.scan(lo, hi, 1).await?.is_empty() {
+        return Err(LiveError::FailedPrecondition(format!(
+            "the journal shard count can change only while the journal is empty in R1:              it has {} shards and entries",
+            current.unwrap_or(0)
+        )));
+    }
+    if let Some(current) = current {
+        txn.lock_keys((0..current).map(|s| app.journal_head(s)))
+            .await?;
+    }
+    txn.put(&app.app_def(), app_def(shards)).await?;
+    Ok(())
+}
+
+fn check_shards(shards: u16) -> Result<(), LiveError> {
+    if shards == 0 || shards > MAX_SHARDS {
+        return Err(LiveError::invalid(format!(
+            "a journal has 1 to {MAX_SHARDS} shards, not {shards}"
+        )));
+    }
+    Ok(())
+}
+
+fn app_def(shards: u16) -> Vec<u8> {
+    pb::AppDef {
+        format: 1,
+        journal_shards: u32::from(shards),
+        ..Default::default()
+    }
+    .encode_to_vec()
 }
 
 fn decode_u32(bytes: &[u8], what: &str) -> Result<u32, LiveError> {
