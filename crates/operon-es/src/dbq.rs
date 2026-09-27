@@ -9,18 +9,22 @@
 
 use std::time::Duration;
 
+use axum::body::Bytes;
+use axum::extract::{Path, State};
+use axum::http::Uri;
+use axum::response::Response;
 use operon_query::{FilterWriteOptions, FilterWriteResult, PatchSpec, Query, ServiceError};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::EsGateway;
 use crate::dsl::QueryContext;
 use crate::dsl::query::{parse_leaf, token_name};
 use crate::error::{ErrorContext, EsError};
-use crate::http::{Params, RequestCtx};
+use crate::http::{Params, RequestCtx, fail, json_body, respond};
 use crate::mapping::IndexView;
 use crate::search::SearchParams;
 use crate::search::compile::url_query;
-use crate::search::exec::now_ms;
+use crate::search::exec::{expr_of, now_ms, resolve_options, views};
 
 /// The URL parameters of `_delete_by_query` and `_update_by_query` (Task 10
 /// routes).
@@ -242,9 +246,9 @@ pub(crate) fn compile_queries(
 /// What a by-query request writes to each match.
 #[derive(Clone, Debug)]
 pub(crate) enum ByFilter {
-    /// `_delete_by_query`, which Task 10 routes.
-    #[allow(dead_code)]
+    /// `_delete_by_query`.
     Delete,
+    /// `_update_by_query`.
     Patch(PatchSpec),
 }
 
@@ -336,6 +340,98 @@ async fn call(
         }
     };
     result.map_err(|err| EsError::from_service(err, ErrorContext::Write))
+}
+
+/// `_delete_by_query` over `indices` (Task 10 rule 1, Ruling 6): the
+/// body's `query` (or `q`) and `max_docs`, executed per index in name order
+/// by `delete_by_filter` at one pin per index (D87).
+pub async fn delete_by_query(
+    gw: &EsGateway,
+    ctx: &RequestCtx,
+    indices: &[IndexView],
+    body: &Value,
+    params: &DbqParams,
+) -> Result<Value, EsError> {
+    let parsed = parse_body(body, false)?;
+    let max_docs = parsed.max_docs.unwrap_or(params.max_docs);
+    let mut indices = indices.to_vec();
+    indices.sort_by(|a, b| a.name.cmp(&b.name));
+    let queries = compile_queries(&indices, parsed.query, &params.search)?;
+    let targets: Vec<(IndexView, Query)> = indices.into_iter().zip(queries).collect();
+    let totals = run(
+        gw,
+        ctx,
+        &targets,
+        &ByFilter::Delete,
+        max_docs,
+        params.timeout,
+        "_delete_by_query",
+    )
+    .await?;
+    let fields = [
+        ("took", json!(ctx.started.elapsed().as_millis() as u64)),
+        ("timed_out", json!(false)),
+        ("total", json!(totals.total)),
+        ("deleted", json!(totals.affected)),
+        ("batches", json!(totals.batches)),
+        ("version_conflicts", json!(0)),
+        ("noops", json!(0)),
+        ("retries", json!({"bulk": 0, "search": 0})),
+        ("throttled_millis", json!(0)),
+        ("requests_per_second", json!(-1.0)),
+        ("throttled_until_millis", json!(0)),
+        ("failures", json!([])),
+    ];
+    Ok(Value::Object(
+        fields
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect(),
+    ))
+}
+
+async fn delete_by_query_request(
+    gw: &EsGateway,
+    ctx: &RequestCtx,
+    uri: &Uri,
+    index: &str,
+    body: &[u8],
+) -> Result<Value, EsError> {
+    let params = Params::parse(uri.query(), uri.path(), BY_QUERY_PARAMS)?;
+    let dbq_params = DbqParams::parse(&params)?;
+    let body = json_body(body)?.unwrap_or(Value::Null);
+    // The body is read before resolution, so a bad key or a missing query
+    // names itself before a missing index does (as `_update_by_query`).
+    let parsed = parse_body(&body, false)?;
+    if parsed.query.is_none() && dbq_params.search.q.is_none() {
+        return Err(EsError::new(
+            400,
+            "action_request_validation_exception",
+            "Validation Failed: 1: query is missing;",
+        ));
+    }
+    let indices = views(
+        gw,
+        ctx,
+        &expr_of(Some(index)),
+        resolve_options(&params, &dbq_params.search),
+    )
+    .await?;
+    delete_by_query(gw, ctx, &indices, &body, &dbq_params).await
+}
+
+/// `POST /{index}/_delete_by_query`.
+pub(crate) async fn delete_by_query_index(
+    State(gw): State<EsGateway>,
+    ctx: RequestCtx,
+    uri: Uri,
+    Path(index): Path<String>,
+    body: Bytes,
+) -> Response {
+    match delete_by_query_request(&gw, &ctx, &uri, &index, &body).await {
+        Ok(body) => respond(&ctx, 200, &body),
+        Err(err) => fail(&ctx, &err),
+    }
 }
 
 #[cfg(test)]

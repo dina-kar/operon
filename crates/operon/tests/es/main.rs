@@ -16,4 +16,6 @@ mod harness;
 #[cfg(feature = "es")]
 mod http;
 #[cfg(feature = "es")]
+mod paging;
+#[cfg(feature = "es")]
 mod search;
