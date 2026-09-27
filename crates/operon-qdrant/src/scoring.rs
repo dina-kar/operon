@@ -171,7 +171,9 @@ pub fn to_qdrant_score(distance: Distance, kind: &ScoreKind, ir_score: f32) -> f
 
 /// Qdrant's `score_threshold` (Ruling 7): `score > t` for vector and custom
 /// scores of Cosine and Dot, `score < t` for Euclid and Manhattan, and
-/// `score >= t` for fusion. A query without a query keeps every point.
+/// `score >= t` for fusion. A query without a query keeps every point
+/// (unreachable from a request: Qdrant refuses a threshold there, row
+/// T8-2).
 pub fn passes_threshold(distance: Distance, kind: &ScoreKind, score: f32, t: f32) -> bool {
     match kind {
         ScoreKind::Fusion => score >= t,

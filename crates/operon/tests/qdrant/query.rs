@@ -449,6 +449,80 @@ async fn lookup_from_takes_the_vector_from_another_collection() {
     );
 }
 
+#[tokio::test]
+async fn lookup_from_the_queried_collection_excludes_the_id() {
+    // Qdrant excludes an example id unless `lookup_from` names another
+    // collection (`collection_query.rs` `get_referenced_point_ids_on_collection`,
+    // row T8-4); an alias of the queried collection counts as another.
+    let qd = Qd::start().await;
+    create(
+        &qd,
+        "self",
+        json!({"vectors": {"a": {"size": 2, "distance": "Dot"}, "b": {"size": 2, "distance": "Dot"}}}),
+    )
+    .await;
+    upsert(
+        &qd,
+        "self",
+        (0..10u64)
+            .map(|id| json!({"id": id, "vector": {"a": [id as f32, 1.0], "b": [1.0, id as f32]}}))
+            .collect(),
+    )
+    .await;
+    let got = hits(
+        &query(
+            &qd,
+            "self",
+            json!({"query": 3, "using": "a", "lookup_from": {"collection": "self", "vector": "b"}, "limit": 10}),
+        )
+        .await,
+    );
+    // Point 3's `b` is [1, 3]; scored against `a`, point 3 would be there.
+    assert!(!ids(&got).contains(&3), "{got:?}");
+    assert_eq!(got.len(), 9);
+    let (status, reply) = qd
+        .post(
+            "/collections/aliases",
+            Some(json!({"actions": [{"create_alias": {"collection_name": "self", "alias_name": "me"}}]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let got = hits(
+        &query(
+            &qd,
+            "self",
+            json!({"query": 3, "using": "a", "lookup_from": {"collection": "me", "vector": "b"}, "limit": 10}),
+        )
+        .await,
+    );
+    assert!(ids(&got).contains(&3), "{got:?}");
+}
+
+#[tokio::test]
+async fn query_validation_errors_are_qdrant_400s() {
+    let qd = Qd::start().await;
+    ab_random(&qd, "v").await;
+    let two = json!([{"query": [1.0, 0.0, 0.0, 0.0], "using": "a"}, {"query": [0.0, 1.0, 0.0, 0.0], "using": "b"}]);
+    for (body, message) in [
+        (
+            json!({"prefetch": two[0].clone()}),
+            "A query is needed to merge the prefetches. Can't have prefetches without defining a query.",
+        ),
+        (
+            json!({"score_threshold": 0.1}),
+            "A query is needed to use the score_threshold. Can't have score_threshold without defining a query.",
+        ),
+        (
+            json!({"prefetch": two.clone(), "query": {"fusion": "rrf"}, "using": "a"}),
+            "Fusion queries cannot be combined with the 'using' field.",
+        ),
+    ] {
+        let (status, reply) = query_raw(&qd, "v", body.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body} → {reply}");
+        assert_eq!(error(&reply), format!("Wrong input: {message}"), "{body}");
+    }
+}
+
 // ----- prefetch, fusion, rescore -----
 
 /// Vectors `a` (Cosine) and `b` (Dot), dim 4, 60 random points; the points

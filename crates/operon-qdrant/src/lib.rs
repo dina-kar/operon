@@ -83,12 +83,11 @@
 //! - DBSF over Euclid or Manhattan prefetches normalizes Operon's
 //!   larger-is-better scores (negated distances), where Qdrant normalizes
 //!   the raw distances and so favours far points (Ruling 9).
-//! - A prefetch without a query stands for its one child prefetch; its own
-//!   `limit` is not applied (row T7-4).
-//! - Weighted RRF, a prefetch `score_threshold`, `order_by`, `formula`,
-//!   `sample` and `relevance_feedback` queries, sparse rescoring (a sparse
-//!   root query over prefetches) and shard keys are unsupported (Rulings
-//!   15, 21).
+//! - Weighted RRF, a prefetch `score_threshold`, a leaf prefetch without a
+//!   query (Qdrant's scroll of `limit` points; row T8-1), `order_by`,
+//!   `formula`, `sample` and `relevance_feedback` queries, sparse rescoring
+//!   (a sparse root query over prefetches) and shard keys are unsupported
+//!   (Rulings 15, 21).
 
 // The write futures hold the collection service's futures, whose `Send`
 // check walks deep SQL types.

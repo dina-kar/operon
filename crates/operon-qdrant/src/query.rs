@@ -40,7 +40,7 @@ pub enum Example {
 
 /// The example vectors a request names by id, by `(collection, vector,
 /// key)`, and the ids to leave out of the results: those looked up in the
-/// queried collection itself (no `lookup_from`).
+/// queried collection itself (no `lookup_from`, or one naming it).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ResolvedExamples {
     pub vectors: BTreeMap<(String, String, PrimaryKey), Example>,
@@ -177,7 +177,9 @@ fn gather(
             if !list.contains(&pk) {
                 list.push(pk.clone());
             }
-            if level.lookup.is_none() {
+            // Qdrant excludes the id unless `lookup_from` names another
+            // collection (row T8-4).
+            if level.lookup.is_none_or(|l| l.collection == collection) {
                 exclude.insert(pk);
             }
         }
@@ -304,9 +306,40 @@ fn fusion_of(q: &QueryInterface) -> Option<Result<Fusion, GatewayError>> {
     })
 }
 
-/// Two or more prefetches under no query.
-fn several_prefetches() -> GatewayError {
-    GatewayError::BadRequest("A query is required when there are several prefetches".to_string())
+/// Qdrant's checks of one level, root or prefetch, in its order
+/// (`qdrant:lib/collection/src/operations/universal_query/collection_query.rs`
+/// `validation`; rows T8-1 to T8-3): prefetches and a `score_threshold`
+/// need a query, and a fusion takes no `using`.
+fn validate(level: &Level<'_>, threshold: Option<f32>) -> Result<(), GatewayError> {
+    let bad = |m: &str| Err(GatewayError::BadRequest(m.to_string()));
+    if !level.prefetch.is_empty() && level.query.is_none() {
+        return bad(
+            "A query is needed to merge the prefetches. Can't have prefetches without defining a query.",
+        );
+    }
+    if threshold.is_some() {
+        match level.query {
+            None => {
+                return bad(
+                    "A query is needed to use the score_threshold. Can't have score_threshold without defining a query.",
+                );
+            }
+            Some(QueryInterface::Query(QueryKind::OrderBy { .. })) => {
+                return bad("Can't use score_threshold with an order_by query.");
+            }
+            Some(_) => {}
+        }
+    }
+    if matches!(
+        level.query,
+        Some(QueryInterface::Query(
+            QueryKind::Fusion { .. } | QueryKind::Rrf { .. }
+        ))
+    ) && !level.using.is_empty()
+    {
+        return bad("Fusion queries cannot be combined with the 'using' field.");
+    }
+    Ok(())
 }
 
 /// A fusion without prefetches.
@@ -535,22 +568,21 @@ impl Compiler<'_> {
     /// Prefetch compile: the filter of every ancestor prefetch is ANDed
     /// into the leaves (the root's is the request's filter).
     fn prefetch(&self, p: &Prefetch, ancestors: Option<&Query>) -> Result<Compiled, GatewayError> {
+        let level = Level::of(p);
+        validate(&level, p.score_threshold)?;
         if p.score_threshold.is_some() {
             return Err(GatewayError::Unsupported(
                 "prefetch score_threshold".to_string(),
             ));
         }
-        let level = Level::of(p);
         let filter = and(ancestors.cloned(), self.filter(p.filter.as_ref())?);
         let k = positive_limit(p.limit)?;
         let Some(q) = level.query else {
-            return match level.prefetch {
-                [] => Err(GatewayError::Unsupported(
-                    "a prefetch without a query".to_string(),
-                )),
-                [one] => self.prefetch(one, filter.as_ref()),
-                _ => Err(several_prefetches()),
-            };
+            // A leaf (validated): Qdrant scrolls `limit` points in id order,
+            // which no IR retriever expresses (row T8-1).
+            return Err(GatewayError::Unsupported(
+                "a prefetch without a query".to_string(),
+            ));
         };
         if let Some(v) = nearest_of(q) {
             if level.prefetch.is_empty() {
@@ -586,11 +618,8 @@ impl Compiler<'_> {
     ) -> Result<(Vec<Retriever>, ScoreKind, Distance), GatewayError> {
         let one = |(r, kind, distance): Compiled| (vec![r], kind, distance);
         let Some(q) = level.query else {
-            return match level.prefetch {
-                [] => Ok((Vec::new(), ScoreKind::Filter, Distance::Dot)),
-                [p] => self.prefetch(p, None).map(one),
-                _ => Err(several_prefetches()),
-            };
+            // No prefetch (validated): filter order, score 0.0.
+            return Ok((Vec::new(), ScoreKind::Filter, Distance::Dot));
         };
         if let Some(v) = nearest_of(q) {
             if level.prefetch.is_empty() {
@@ -654,8 +683,9 @@ pub fn compile_query(
         schema,
         examples,
     };
-    let (retrievers, kind, distance) =
-        compiler.root(&Level::root(req), req.params.as_ref(), k_root)?;
+    let level = Level::root(req);
+    validate(&level, req.score_threshold)?;
+    let (retrievers, kind, distance) = compiler.root(&level, req.params.as_ref(), k_root)?;
     let filter = compiler.filter(req.filter.as_ref())?;
     let exclude: Vec<PrimaryKey> = examples.exclude.iter().cloned().collect();
     let mut request = SearchRequest::new(collection);

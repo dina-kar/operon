@@ -472,24 +472,66 @@ fn fusion_without_prefetch_is_400() {
 
 #[test]
 fn root_without_query_and_two_prefetches_is_400() {
+    // Qdrant refuses prefetches without a query at every level
+    // (`qdrant:lib/collection/src/operations/universal_query/collection_query.rs`
+    // `validation`, row T8-1), with one prefetch as with several.
+    let merge = "A query is needed to merge the prefetches. Can't have prefetches without defining a query.";
+    assert_eq!(bad(json!({"prefetch": two_prefetches()})), merge);
     assert_eq!(
-        bad(json!({"prefetch": two_prefetches()})),
-        "A query is required when there are several prefetches"
+        bad(json!({"prefetch": {"query": [1.0, 0.0], "using": "e"}})),
+        merge
+    );
+    assert_eq!(
+        bad(json!({
+            "prefetch": {"prefetch": {"query": [1.0, 0.0], "using": "d"}, "limit": 3},
+            "query": {"fusion": "rrf"}
+        })),
+        merge
+    );
+    // A leaf prefetch without a query is Qdrant's scroll, which the IR
+    // cannot feed into a parent query.
+    assert_eq!(
+        unsupported(json!({"prefetch": {"filter": {"must": []}}, "query": {"fusion": "rrf"}})),
+        "a prefetch without a query"
     );
     // No query and no prefetch: filter order, score 0.0.
     let (req, post) = ir(json!({"filter": {"must": [{"key": "a", "match": {"value": 1}}]}}));
     assert!(req.retrievers.is_empty());
     assert_eq!(post.kind, ScoreKind::Filter);
-    // One prefetch: the prefetch is the retriever, and its kind is kept.
-    let (req, post) = ir(json!({"prefetch": {"query": [1.0, 0.0], "using": "e"}}));
-    assert!(matches!(&req.retrievers[0], Retriever::Vector { field, .. } if field == "e"));
-    assert_eq!(
-        (post.kind, post.distance),
-        (ScoreKind::Distance, Distance::Euclid)
-    );
     assert_eq!(
         bad(json!({"query": [1.0, 0.0], "limit": 0})),
         "limit must be at least 1"
+    );
+}
+
+#[test]
+fn qdrant_validation_rules_hold_at_every_level() {
+    // `score_threshold` needs a query (row T8-2).
+    let threshold = "A query is needed to use the score_threshold. Can't have score_threshold without defining a query.";
+    assert_eq!(bad(json!({"score_threshold": 0.5})), threshold);
+    assert_eq!(
+        bad(json!({"prefetch": {"score_threshold": 0.5}, "query": {"fusion": "rrf"}})),
+        threshold
+    );
+    // A fusion takes no `using` (row T8-3); `""` is the default.
+    let using = "Fusion queries cannot be combined with the 'using' field.";
+    assert_eq!(
+        bad(json!({"prefetch": two_prefetches(), "query": {"fusion": "rrf"}, "using": "d"})),
+        using
+    );
+    assert_eq!(
+        bad(json!({
+            "prefetch": {"prefetch": two_prefetches(), "query": {"rrf": {}}, "using": "d"},
+            "query": {"fusion": "dbsf"}
+        })),
+        using
+    );
+    let (req, _) = ir(json!({"prefetch": two_prefetches(), "query": {"fusion": "rrf"}, "using": ""}));
+    assert_eq!(fused(&req).1, &Fusion::Rrf { k: 1 });
+    // Qdrant's order: prefetches first, then the threshold.
+    assert_eq!(
+        bad(json!({"prefetch": two_prefetches(), "score_threshold": 0.5})),
+        "A query is needed to merge the prefetches. Can't have prefetches without defining a query."
     );
 }
 
