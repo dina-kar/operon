@@ -21,6 +21,9 @@ tokio.workspace = true
 xxhash-rust.workspace = true
 
 [dev-dependencies]
+# tikv-client's own failpoints (after-prewrite, before-rollback), for the
+# fault matrix's large-drop test; only test builds enable them.
+fail = { version = "0.4", features = ["failpoints"] }
 operon-meta-conformance.workspace = true
 # The conformance backend's lose_next_ack is a FaultPlan on the handle.
 operon-tikv = { workspace = true, features = ["faults"] }

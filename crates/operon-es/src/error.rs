@@ -196,6 +196,12 @@ impl EsError {
         cause
     }
 
+    /// `{"type": …, "reason": …, …extra}` as a JSON value: a `_bulk`
+    /// item's `error`.
+    pub fn cause_value(&self) -> Value {
+        Value::Object(self.cause())
+    }
+
     /// The innermost causes: the wrapped error's, else this one.
     fn root_causes(&self) -> Vec<Value> {
         match &self.root_cause {

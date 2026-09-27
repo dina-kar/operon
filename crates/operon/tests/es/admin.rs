@@ -1,16 +1,13 @@
 //! Task 3: index, mapping and alias administration and `_refresh`.
 //!
-//! The document routes are Task 4's, so a write goes through the collection
-//! service, and where the plan checks a write index with
-//! `PUT /{alias}/_doc/{id}?require_alias=true` these tests ask
-//! `names::resolve_write`, which that route will use (row T3-5).
+//! Where the plan checks a write index, `write_index` asks
+//! `names::resolve_write` and also writes through the alias with
+//! `PUT /{alias}/_doc/{id}?require_alias=true` (rows T3-5, T4-9).
 
-use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use operon_collection::{DocOp, Document, PrimaryKey};
 use operon_es::mapping::index_uuid;
 use operon_es::names::resolve_write;
-use operon_query::{OpResult, WriteOptions};
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 
@@ -40,12 +37,33 @@ fn llm_cache_mapping() -> Value {
 }
 
 /// Where a write through `alias` goes: `Ok(index)`, or the error's reason.
+/// It asks `names::resolve_write`, then writes a new document with
+/// `PUT /{alias}/_doc/<n>?require_alias=true` and checks that the write
+/// lands (or fails) the same way (C49).
 async fn write_index(es: &Es, alias: &str) -> Result<String, String> {
-    match resolve_write(&es.server.collections(), NS, alias).await {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let resolved = match resolve_write(&es.server.collections(), NS, alias).await {
         Ok(Some(target)) => Ok(target.name),
         Ok(None) => Err("no such index or alias".to_string()),
         Err(err) => Err(err.reason),
-    }
+    };
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let a = es
+        .put(
+            &format!("/{alias}/_doc/w{n}?require_alias=true&refresh=true"),
+            Some(json!({"n": n})),
+        )
+        .await;
+    let written = if a.status == StatusCode::CREATED {
+        Ok(a.body["_index"].as_str().unwrap_or_default().to_string())
+    } else {
+        Err(a.body["error"]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string())
+    };
+    assert_eq!(written, resolved, "{}", a.text);
+    resolved
 }
 
 /// The `es_env_fx` fixture of LangChain's `test_cache.py`.
@@ -178,26 +196,10 @@ async fn get_mapping_returns_the_langchain_metadata_mapping_verbatim() {
         "tags": {"type": "text"},
     }}}}});
     Es::ok(es.put("/i", Some(body)).await);
-    // One document with a dynamic metadata.page (Task 4 serves the write
-    // routes; the service maps it the same way, row E10).
+    // One document with a dynamic metadata.page.
     let source = json!({"metadata": {"page": 1, "category": "c"}});
-    let result = es
-        .server
-        .collections()
-        .write(
-            NS,
-            "i",
-            vec![DocOp::Upsert(Document {
-                pk: PrimaryKey::Str("1".to_string()),
-                source: source.as_object().cloned().unwrap_or_default(),
-                vectors: BTreeMap::new(),
-                sparse_vectors: BTreeMap::new(),
-            })],
-            WriteOptions::default(),
-        )
-        .await
-        .expect("write");
-    assert!(!matches!(result.results[0], OpResult::Rejected(_)));
+    let a = es.put("/i/_doc/1", Some(source)).await;
+    assert_eq!(a.status, StatusCode::CREATED, "{}", a.text);
     let a = Es::ok(es.get("/i/_mapping").await);
     let metadata = &a.body["i"]["mappings"]["properties"]["metadata"]["properties"];
     assert_eq!(metadata["category"], json!({"type": "keyword"}));

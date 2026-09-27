@@ -422,6 +422,22 @@ impl CollectionService {
         schema: CollectionSchema,
         partitions: Option<u32>,
     ) -> Result<CollectionInfo, ServiceError> {
+        self.create_collection_owned(ns, name, schema, partitions)
+            .await
+            .map(|(info, _)| info)
+    }
+
+    /// [`CollectionService::create_collection`], and whether this call
+    /// created the collection: `false` when an identical collection existed
+    /// (a concurrent or earlier create), so a caller that undoes a failed
+    /// follow-up step drops only what it created (M1.5 PR #64 review).
+    pub async fn create_collection_owned(
+        &self,
+        ns: &str,
+        name: &str,
+        schema: CollectionSchema,
+        partitions: Option<u32>,
+    ) -> Result<(CollectionInfo, bool), ServiceError> {
         self.ensure_namespace(ns).await?;
         let ns_id = self.namespace_id(ns).await?.ok_or_else(|| {
             ServiceError::Unavailable(format!("namespace {ns} is not visible yet"))
@@ -434,13 +450,16 @@ impl CollectionService {
             self.ctx.meta.now_ms().to_string(),
         );
         let count = partitions.unwrap_or(self.config.default_partitions);
-        let cid = match self
+        let (cid, created) = match self
             .ctx
             .meta
             .create_collection(ns_id, name, schema, count)
             .await
         {
-            Ok((cid, _, _)) | Err(MetaError::Rejected(ApplyError::CollectionExists(cid))) => cid,
+            // `CollectionExists` answers a retry of this same command.
+            Ok((cid, _, _)) | Err(MetaError::Rejected(ApplyError::CollectionExists(cid))) => {
+                (cid, true)
+            }
             Err(MetaError::Rejected(ApplyError::NameTaken(_))) => {
                 let existing = self
                     .ctx
@@ -453,7 +472,7 @@ impl CollectionService {
                         if requested_shape(&existing.schema).same_ignoring_version(&requested)
                             && partitions.is_none_or(|p| p == existing.partitions) =>
                     {
-                        existing.id
+                        (existing.id, false)
                     }
                     _ => return Err(ServiceError::AlreadyExists(name.to_string())),
                 }
@@ -463,7 +482,7 @@ impl CollectionService {
             }
             Err(err) => return Err(err.into()),
         };
-        self.info(ns, ns_id, cid, name).await
+        Ok((self.info(ns, ns_id, cid, name).await?, created))
     }
 
     /// Drops collection `name` (not an alias) and stops its tail; `false`
