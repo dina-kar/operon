@@ -65,8 +65,8 @@ pub enum FnKind {
     Mutation,
 }
 
-/// A server function: a built-in `_system:*` function or (Task 13) a
-/// deployed JavaScript export. A mutation's `call` is rerun on conflict, so
+/// A server function: a built-in `_system:*` function or a deployed
+/// JavaScript export (Task 13, `operon-live-js`). A mutation's `call` is rerun on conflict, so
 /// it must have no effect outside `txn`.
 pub trait Function: Send + Sync {
     /// The function's path (`_system:insert`, `module:export`).
@@ -132,6 +132,7 @@ pub struct LiveTxn<'a> {
     read_set: ReadSet,
     writes: Vec<WriteRecord>,
     usage: Usage,
+    request_id: String,
 }
 
 impl fmt::Debug for LiveTxn<'_> {
@@ -168,7 +169,21 @@ impl<'a> LiveTxn<'a> {
             read_set: ReadSet::default(),
             writes: Vec::new(),
             usage: Usage::default(),
+            request_id: String::new(),
         }
+    }
+
+    /// Sets the request id (a mutation's idempotency key, else empty),
+    /// which seeds a deployed function's `Math.random` with the start
+    /// timestamp (design §20 §6.2).
+    pub fn with_request_id(mut self, request_id: impl Into<String>) -> Self {
+        self.request_id = request_id.into();
+        self
+    }
+
+    /// The request id: the mutation's idempotency key, or empty.
+    pub fn request_id(&self) -> &str {
+        &self.request_id
     }
 
     /// The timestamp every read sees: the transaction's start timestamp, or
@@ -635,6 +650,11 @@ impl Runner {
         &self.inner.app
     }
 
+    /// The app's limits.
+    pub fn limits(&self) -> &Limits {
+        &self.inner.limits
+    }
+
     /// The options.
     pub fn options(&self) -> &RunnerOptions {
         &self.inner.options
@@ -887,7 +907,7 @@ async fn mutation_attempt(
         }
     }
 
-    let mut live = LiveTxn::for_mutation(txn, app, &inner.limits);
+    let mut live = LiveTxn::for_mutation(txn, app, &inner.limits).with_request_id(&request_id);
     let result = f.call(&mut live, args).await?;
     let has_ranges = !live.read_set.ranges.is_empty();
     let usage = live.usage;

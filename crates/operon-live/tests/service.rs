@@ -326,7 +326,7 @@ async fn modify_query_set_adds_and_removes() {
         t.updates.iter().any(|u| u.query_id == 2),
         "the added query's result"
     );
-    // Results are those of the session's tick, which reads 50 ms back: the
+    // Results are those of the session's tick, which reads `tick_read_lag` back: the
     // insert shows once the tick passes its commit.
     if end(&t).ts < second_ts {
         until(&mut w, &mut state, |s, _| docs(s, 2) == 1).await;
@@ -434,7 +434,7 @@ async fn watch_resumes_after_reconnect() {
 }
 
 /// Per-query errors stay inside the stream; call errors use Connect codes;
-/// `Deploy` is Task 13's.
+/// `Deploy` without a function engine is refused (Task 13).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn errors_map_to_connect_codes() {
     let Some(handle) = server(SessionConfig::default()).await else {
@@ -464,8 +464,8 @@ async fn errors_map_to_connect_codes() {
     let e = c
         .deploy(pb::DeployRequest::default())
         .await
-        .expect_err("not yet");
-    assert_eq!(e.code, ErrorCode::Unimplemented);
+        .expect_err("no function engine");
+    assert_eq!(e.code, ErrorCode::FailedPrecondition);
     let dup = c
         .watch(pb::WatchRequest {
             start: Some(Start::Initial(Box::new(set(
