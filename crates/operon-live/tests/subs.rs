@@ -634,8 +634,8 @@ async fn no_update_is_missed_under_concurrent_writes() {
     no_update_is_missed(Duration::ZERO).await;
 }
 
-/// The same check with the default tick read lag (row T12-1): ticks read
-/// 50 ms back, and every result still equals a fresh evaluation at its tick.
+/// The same check with the default tick read lag (rows T12-1, T13-1):
+/// ticks read 200 ms back, and every result still equals a fresh evaluation at its tick.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn no_update_is_missed_with_the_tick_read_lag() {
     no_update_is_missed(operon_live::subs::DEFAULT_TICK_READ_LAG).await;

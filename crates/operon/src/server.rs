@@ -312,6 +312,9 @@ impl ServerConfig {
             if operon_live::check_listen(live.listen).is_err() {
                 return Err(ServerError::LiveListenNotLoopback { addr: live.listen });
             }
+            if live.tikv.pd.is_empty() {
+                return Err(ServerError::LivePdMissing);
+            }
         }
         self.flight.validate().map_err(ServerError::Config)?;
         self.validate_backpressure()?;
@@ -391,6 +394,14 @@ pub enum ServerError {
          until the unified auth plan (D111)"
     )]
     LiveListenNotLoopback { addr: SocketAddr },
+    /// Loam Live without PD endpoints: `operon standalone` has no default
+    /// (owner ruling, R1 plan row T13-2).
+    #[cfg(feature = "live")]
+    #[error(
+        "Loam Live needs its cluster's PD endpoints: pass --live-pd <host:port>[,…], or \
+         --no-live to run without Live"
+    )]
+    LivePdMissing,
     /// Loam Live could not start (R1 plan Task 12).
     #[cfg(feature = "live")]
     #[error("Loam Live: {0}")]
@@ -769,7 +780,11 @@ impl Server {
     async fn start_with_live(config: ServerConfig) -> Result<Self, ServerError> {
         {
             let live = match config.live.clone() {
-                Some(live) => {
+                Some(mut live) => {
+                    // Task 13: `Deploy` stores bundles in the server's
+                    // bucket, under live/<app>/.
+                    live.store =
+                        Store::from_url(&bucket_url(&config)?, Vec::<(String, String)>::new())?;
                     let covered = matches!(
                         &config.meta,
                         MetaBackend::Tikv(meta) if same_cluster(&meta.tikv.pd, &live.tikv.pd)
