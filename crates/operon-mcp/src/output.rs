@@ -1,6 +1,16 @@
 //! The output cap of every tool result (plan M1.6 Ruling 13, Task 7 rule
 //! 12).
 
+use rmcp::model::CallToolResult;
+use serde_json::Value;
+
+/// The JSON of the tool result that `structured` becomes: rmcp writes it
+/// twice, as the text content and as `structuredContent`, so this is the
+/// size Ruling 13 caps (PR #98 review).
+pub fn tool_result_json(structured: Value) -> Value {
+    serde_json::to_value(CallToolResult::structured(structured)).unwrap_or(Value::Null)
+}
+
 /// Keeps the longest prefix of `items` whose `render(prefix)` serializes to
 /// at most `max_bytes`; returns whether it dropped any. A binary search over
 /// the prefix length: O(log len) serializations.

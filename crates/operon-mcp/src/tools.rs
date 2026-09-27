@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 
 use crate::error::ToolError;
 use crate::ids::DocId;
-use crate::output::cap_items;
+use crate::output::{cap_items, tool_result_json};
 use crate::server::OperonMcp;
 
 /// The header that selects the namespace (overview §6.9).
@@ -27,6 +27,8 @@ pub struct ListCollectionsInput {}
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListCollectionsOutput {
     pub collections: Vec<CollectionOut>,
+    /// Trailing collections were dropped to fit the output cap.
+    pub truncated: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -179,8 +181,19 @@ impl OperonMcp {
             Err(err) => return Err(err.into()),
         };
         infos.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut collections: Vec<CollectionOut> = infos.into_iter().map(collection_out).collect();
+        let truncated = cap_items(
+            &mut collections,
+            self.config.max_output_bytes,
+            |collections| {
+                tool_result_json(
+                    serde_json::json!({ "collections": collections, "truncated": true }),
+                )
+            },
+        );
         Ok(ListCollectionsOutput {
-            collections: infos.into_iter().map(collection_out).collect(),
+            collections,
+            truncated,
         })
     }
 
@@ -227,11 +240,9 @@ impl OperonMcp {
                 source: doc.and_then(|doc| doc.source),
             })
             .collect();
-        let truncated = cap_items(
-            &mut documents,
-            self.config.max_output_bytes,
-            |docs| serde_json::json!({ "documents": docs, "truncated": true }),
-        );
+        let truncated = cap_items(&mut documents, self.config.max_output_bytes, |docs| {
+            tool_result_json(serde_json::json!({ "documents": docs, "truncated": true }))
+        });
         Ok(GetDocumentsOutput {
             documents,
             truncated,

@@ -39,3 +39,12 @@ fn cap_items_can_drop_everything() {
     assert!(cap_items(&mut items, 10, render));
     assert!(items.is_empty());
 }
+
+#[test]
+fn tool_result_json_counts_the_text_and_the_structured_copy() {
+    let value = json!({ "items": ["abc"], "truncated": false });
+    let result = operon_mcp::output::tool_result_json(value.clone());
+    assert_eq!(result["structuredContent"], value);
+    assert_eq!(result["content"][0]["text"], value.to_string());
+    assert!(result.to_string().len() > 2 * value.to_string().len());
+}
