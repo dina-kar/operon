@@ -1,6 +1,7 @@
 mod common;
 
 mod aggs;
+mod aliases;
 mod ann;
 mod backlog;
 mod compile;

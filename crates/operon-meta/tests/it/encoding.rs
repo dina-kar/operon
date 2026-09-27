@@ -15,6 +15,13 @@
 //! from the state the base lists leave; the base files are pinned by
 //! SHA-256 (row E41) and never re-blessed. Bless only the new files:
 //! `OPERON_BLESS_GOLDEN=1 cargo test -p operon-meta --test it m1_3`.
+//!
+//! M1.5 (Task 0a, Ruling 22) appends `Command::UpdateAliasTargets` (no new
+//! `Reply`) and snapshot format 7. Its golden files (`commands-m1.5.bin`,
+//! `snapshot-m1.5.bin`) continue from the state the base and M1.3 lists
+//! leave; every earlier file is pinned by SHA-256 and never re-blessed.
+//! Bless only the new files:
+//! `OPERON_BLESS_GOLDEN=1 cargo test -p operon-meta --test it m1_5`.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -26,8 +33,8 @@ use operon_common::schema::{
 };
 use operon_common::{CollectionId, NamespaceId, StreamId};
 use operon_meta::{
-    AliasAction, ApplyError, Command, Fence, Freshness, HotConfig, LeaseGrant, LinkId, MetaState,
-    Pointer, Reply, Retention, TargetRef, WalChunk, WalClass,
+    AliasAction, AliasTargetAction, AliasTargets, ApplyError, Command, Fence, Freshness, HotConfig,
+    LeaseGrant, LinkId, MetaState, Pointer, Reply, Retention, TargetRef, WalChunk, WalClass,
 };
 use sha2::{Digest, Sha256};
 
@@ -661,6 +668,7 @@ fn every_command_variant_is_in_the_golden_list() {
             Command::UpdateCollectionSchema { .. } => "UpdateCollectionSchema",
             Command::UpdateAliases { .. } => "UpdateAliases",
             Command::SetCollectionHot { .. } => "SetCollectionHot",
+            Command::UpdateAliasTargets { .. } => "UpdateAliasTargets",
         };
         seen.insert(name);
     }
@@ -680,6 +688,18 @@ fn every_command_variant_is_in_the_golden_list() {
         seen.len(),
         19,
         "golden_commands_m1_3() must hold every M1.3 Command variant: {seen:?}"
+    );
+    for command in golden_commands_m1_5() {
+        let name = match command {
+            Command::UpdateAliasTargets { .. } => "UpdateAliasTargets",
+            _ => continue,
+        };
+        seen.insert(name);
+    }
+    assert_eq!(
+        seen.len(),
+        20,
+        "golden_commands_m1_5() must hold every M1.5 Command variant: {seen:?}"
     );
 }
 
@@ -1033,12 +1053,271 @@ fn a_version_v_plus_1_snapshot_without_hot_configuration_is_refused() {
     assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
 }
 
+/// Version 7 is M1.5's (row E4 of the M1.5 plan): every version above
+/// it is unsupported.
 #[test]
 fn a_version_above_v_plus_1_is_unsupported() {
     let hot = operon_meta::snapshot_bytes(&golden_state_m1_3()).expect("encode");
-    for version in [7u32, 8, u32::MAX] {
-        let err = operon_meta::state_from_snapshot_bytes(&reversioned(&hot, version, &[]))
-            .expect_err("refused");
-        assert_eq!(err.kind(), io::ErrorKind::Unsupported, "{err}");
+    let aliases = operon_meta::snapshot_bytes(&golden_state_m1_5()).expect("encode");
+    for bytes in [&hot, &aliases] {
+        for version in [8u32, 9, u32::MAX] {
+            let err = operon_meta::state_from_snapshot_bytes(&reversioned(bytes, version, &[]))
+                .expect_err("refused");
+            assert_eq!(err.kind(), io::ErrorKind::Unsupported, "{err}");
+        }
     }
+}
+
+// ----- M1.5 (Task 0a, Ruling 22) -----
+
+/// SHA-256 of the golden files M1.3 added, present at M1.5's branch base
+/// (the M1.1 files are [`BASE_GOLDEN_SHA256`]).
+const M1_3_GOLDEN_SHA256: [(&str, &str); 3] = [
+    (
+        "commands-m1.3.bin",
+        "2bda5efeb8860de6c475a01c7050d54d85363096cbab90b4588553f82aecab4c",
+    ),
+    (
+        "replies-m1.3.bin",
+        "7ca4a6282e10497467062c4a7d9a0a31c751092f504ed8081da96ae15c1cb4c7",
+    ),
+    (
+        "snapshot-m1.3.bin",
+        "992c9d15cdb59871a59986d59c4db114f541aaee96e6389f287d79cb251e80d3",
+    ),
+];
+
+#[test]
+fn the_m1_3_golden_files_are_unchanged() {
+    for (name, want) in M1_3_GOLDEN_SHA256 {
+        let bytes = std::fs::read(golden_path(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(sha256_hex(&bytes), want, "{name} changed");
+    }
+}
+
+fn add(alias: &str, collection: &str, is_write_index: Option<bool>) -> AliasTargetAction {
+    AliasTargetAction::Add {
+        alias: alias.to_string(),
+        collection: collection.to_string(),
+        is_write_index,
+    }
+}
+
+/// Continues from the state [`golden_commands`] and [`golden_commands_m1_3`]
+/// leave (collection 2, `hot-a`, keeps its hot configuration, so the
+/// snapshot carries both appended maps): creates four collections (ids
+/// 4–7), uses every [`AliasTargetAction`] and every `is_write_index`
+/// value, reaches an alias with three members, moves its write target, and
+/// ends with a `DropCollection` that moves alias `y` back to the M1.1 map
+/// while `x` keeps three members.
+pub(crate) fn golden_commands_m1_5() -> Vec<Command> {
+    let ns1 = NamespaceId(1);
+    let create = |name: &str| Command::CreateCollection {
+        namespace: ns1,
+        name: name.to_string(),
+        schema: golden_schema(),
+        partitions: 2,
+    };
+    let targets = |actions: Vec<AliasTargetAction>| Command::UpdateAliasTargets {
+        namespace: ns1,
+        actions,
+    };
+    vec![
+        create("al-a"),
+        create("al-b"),
+        create("al-c"),
+        create("al-d"),
+        // One unset member: the M1.1 map.
+        targets(vec![add("x", "al-a", None)]),
+        // Three members, write target al-b.
+        targets(vec![
+            add("x", "al-b", Some(true)),
+            add("x", "al-c", Some(false)),
+        ]),
+        // The write target moves to al-c; al-b is unset again.
+        targets(vec![add("x", "al-c", Some(true)), add("x", "al-b", None)]),
+        // Remove a member and add it back.
+        targets(vec![
+            AliasTargetAction::Remove {
+                alias: "x".to_string(),
+                collection: "al-b".to_string(),
+            },
+            add("x", "al-b", None),
+        ]),
+        // An alias made and removed whole in one command.
+        targets(vec![
+            add("z", "al-b", Some(false)),
+            AliasTargetAction::RemoveAlias {
+                alias: "z".to_string(),
+            },
+        ]),
+        targets(vec![add("y", "al-a", None), add("y", "al-d", None)]),
+        Command::DropCollection {
+            namespace: ns1,
+            name: "al-d".to_string(),
+            now_ms: 4_000,
+        },
+    ]
+}
+
+/// The state after [`golden_commands`], [`golden_commands_m1_3`] and
+/// [`golden_commands_m1_5`].
+fn golden_state_m1_5() -> MetaState {
+    let mut state = golden_state_m1_3();
+    for command in golden_commands_m1_5() {
+        state
+            .apply(command.clone())
+            .unwrap_or_else(|e| panic!("{command:?} failed to apply: {e}"));
+    }
+    state
+}
+
+#[test]
+fn m1_5_commands_encode_to_the_golden_bytes() {
+    let fresh = postcard::to_stdvec(&golden_commands_m1_5()).expect("encode");
+    let golden = golden_bytes("commands-m1.5.bin", &fresh);
+    assert_eq!(fresh, golden);
+}
+
+#[test]
+fn the_m1_5_golden_commands_decode_to_the_same_commands() {
+    let fresh = postcard::to_stdvec(&golden_commands_m1_5()).expect("encode");
+    let golden = golden_bytes("commands-m1.5.bin", &fresh);
+    let decoded: Vec<Command> = postcard::from_bytes(&golden).expect("decode");
+    assert_eq!(decoded, golden_commands_m1_5());
+}
+
+#[test]
+fn the_m1_5_golden_commands_apply_cleanly_after_the_m1_1_list() {
+    let mut state = golden_state_m1_3();
+    for command in golden_commands_m1_5() {
+        let result = state.apply(command.clone());
+        assert_eq!(result.as_ref().err(), None, "{command:?}");
+        assert!(state.check_invariants().is_empty(), "{command:?}");
+    }
+    let members = |pairs: &[(u64, Option<bool>)]| AliasTargets {
+        members: pairs
+            .iter()
+            .map(|(id, w)| (CollectionId(*id), *w))
+            .collect(),
+    };
+    assert_eq!(
+        state.alias_targets(NamespaceId(1)).collect::<Vec<_>>(),
+        vec![
+            ("x", members(&[(4, None), (5, None), (6, Some(true))])),
+            ("y", members(&[(4, None)])),
+        ]
+    );
+    assert_eq!(
+        state.resolve_collection(NamespaceId(1), "y").map(|c| c.id),
+        Some(CollectionId(4))
+    );
+    assert_eq!(state.resolve_collection(NamespaceId(1), "x"), None);
+    assert_eq!(
+        state.hot_collections().collect::<Vec<_>>(),
+        vec![(CollectionId(2), EVERYTHING)]
+    );
+}
+
+/// [`golden_commands`] ends by dropping its only collection, so the alias
+/// commands go in before that drop: one unset member added and removed
+/// again, or a member set to true and forgotten by the drop. Either way the
+/// state is the base's, and so are its bytes (version 5).
+#[test]
+fn a_state_without_multi_target_aliases_snapshots_as_before() {
+    let base = std::fs::read(golden_path("snapshot-v5.bin")).expect("snapshot-v5.bin");
+    let commands = golden_commands();
+    let (last, before_drop) = commands.split_last().expect("commands");
+    assert!(matches!(last, Command::DropCollection { .. }));
+    let targets = |actions: Vec<AliasTargetAction>| Command::UpdateAliasTargets {
+        namespace: NamespaceId(1),
+        actions,
+    };
+    for alias_commands in [
+        vec![
+            targets(vec![add("m15", "docs", None)]),
+            targets(vec![AliasTargetAction::Remove {
+                alias: "m15".to_string(),
+                collection: "docs".to_string(),
+            }]),
+        ],
+        vec![targets(vec![add("m15", "docs", Some(true))])],
+    ] {
+        let mut state = MetaState::default();
+        for command in before_drop
+            .iter()
+            .cloned()
+            .chain(alias_commands)
+            .chain([last.clone()])
+        {
+            state
+                .apply(command.clone())
+                .unwrap_or_else(|e| panic!("{command:?} failed to apply: {e}"));
+        }
+        assert_eq!(state, golden_state());
+        let bytes = operon_meta::snapshot_bytes(&state).expect("encode");
+        assert_eq!(&bytes[8..12], &5u32.to_le_bytes());
+        assert_eq!(bytes, base);
+    }
+}
+
+#[test]
+fn a_snapshot_with_multi_target_aliases_encodes_to_the_golden_m1_5_bytes() {
+    let fresh = operon_meta::snapshot_bytes(&golden_state_m1_5()).expect("encode");
+    assert_eq!(&fresh[8..12], &7u32.to_le_bytes());
+    let golden = golden_bytes("snapshot-m1.5.bin", &fresh);
+    assert_eq!(fresh, golden);
+}
+
+#[test]
+fn the_golden_m1_5_snapshot_decodes_to_the_same_state() {
+    let state = golden_state_m1_5();
+    let fresh = operon_meta::snapshot_bytes(&state).expect("encode");
+    let golden = golden_bytes("snapshot-m1.5.bin", &fresh);
+    let decoded = operon_meta::state_from_snapshot_bytes(&golden).expect("decode");
+    assert_eq!(decoded, state);
+}
+
+#[test]
+fn a_version_v_plus_1_snapshot_without_alias_targets_is_refused() {
+    // A version-5 body relabelled 7: the hot map is missing, then an empty
+    // hot map with no alias map, then both maps empty.
+    let base = operon_meta::snapshot_bytes(&golden_state()).expect("encode");
+    for append in [&[][..], &[0u8][..], &[0u8, 0][..]] {
+        let err = operon_meta::state_from_snapshot_bytes(&reversioned(&base, 7, append))
+            .expect_err("refused");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+    }
+    // A version-6 snapshot relabelled 7: no alias map, or an empty one.
+    let hot = operon_meta::snapshot_bytes(&golden_state_m1_3()).expect("encode");
+    for append in [&[][..], &[0u8][..]] {
+        let err = operon_meta::state_from_snapshot_bytes(&reversioned(&hot, 7, append))
+            .expect_err("refused");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+    }
+    // Trailing bytes after the alias map are refused too.
+    let aliases = operon_meta::snapshot_bytes(&golden_state_m1_5()).expect("encode");
+    let err = operon_meta::state_from_snapshot_bytes(&reversioned(&aliases, 7, &[0]))
+        .expect_err("refused");
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+}
+
+/// A version-7 snapshot whose hot map is empty (no collection is hot) still
+/// round-trips: only the map version 7 adds must be non-empty.
+#[test]
+fn a_version_7_snapshot_may_carry_an_empty_hot_map() {
+    let mut state = golden_state_m1_5();
+    state
+        .apply(Command::SetCollectionHot {
+            collection: CollectionId(2),
+            hot: HotConfig::default(),
+        })
+        .expect("clear hot");
+    assert_eq!(state.hot_collections().count(), 0);
+    let bytes = operon_meta::snapshot_bytes(&state).expect("encode");
+    assert_eq!(&bytes[8..12], &7u32.to_le_bytes());
+    assert_eq!(
+        operon_meta::state_from_snapshot_bytes(&bytes).expect("decode"),
+        state
+    );
 }

@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 use std::io;
 
-use operon_common::CollectionId;
-use operon_common::meta::HotConfig;
+use operon_common::meta::{AliasTargets, HotConfig};
+use operon_common::{CollectionId, NamespaceId};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -20,9 +20,14 @@ const SNAPSHOT_MAGIC: &[u8; 8] = b"OPNMETA\0";
 /// snapshots are rejected (M0.3 plan, ruling 9: nothing is deployed yet).
 /// Version 6 (M1.3) appends per-collection hot configuration; a state
 /// without any is still written as before.
-const SNAPSHOT_FORMAT_VERSION: u32 = 6;
-/// The version a state without hot configuration is written in: M1.1's
-/// body, byte for byte (M1.3 Ruling 20).
+/// Version 7 (M1.5) appends the multi-target alias map; a state without one
+/// is still written as version 5 or 6 (M1.5 Ruling 22).
+const SNAPSHOT_FORMAT_VERSION: u32 = 7;
+/// The version a state with hot configuration and without multi-target
+/// aliases is written in (M1.3 Ruling 20).
+const HOT_FORMAT_VERSION: u32 = 6;
+/// The version a state without hot configuration or multi-target aliases is
+/// written in: M1.1's body, byte for byte (M1.3 Ruling 20).
 const BASE_FORMAT_VERSION: u32 = 5;
 /// Magic, then the format version.
 const HEADER_LEN: usize = 12;
@@ -55,21 +60,29 @@ struct SnapshotBody {
 
 /// Encodes a snapshot as `magic | format version (u32 LE) | postcard body | crc32c (u32 LE)`,
 /// where the checksum covers everything before it. The version is 5 while
-/// no collection has a hot configuration, so those bytes are M1.1's;
-/// otherwise it is 6 and the version-5 body is followed by the postcard
-/// encoding of the hot configuration map.
+/// no collection has a hot configuration and no alias is in the
+/// multi-target map, so those bytes are M1.1's. With hot configuration
+/// only, it is 6 and the version-5 body is followed by the postcard
+/// encoding of the hot configuration map. With multi-target aliases, it is
+/// 7: the version-6 layout (the hot map written even when empty) followed
+/// by the postcard encoding of the multi-target alias map.
 pub(crate) fn encode_snapshot(meta: &SnapshotMeta, state: &MetaState) -> io::Result<Vec<u8>> {
     let hot = state.collection_hot_map();
-    let version = match hot.is_empty() {
-        true => BASE_FORMAT_VERSION,
-        false => SNAPSHOT_FORMAT_VERSION,
+    let alias_targets = state.alias_targets_map();
+    let version = match (hot.is_empty(), alias_targets.is_empty()) {
+        (true, true) => BASE_FORMAT_VERSION,
+        (false, true) => HOT_FORMAT_VERSION,
+        (_, false) => SNAPSHOT_FORMAT_VERSION,
     };
     let mut out = Vec::new();
     out.extend_from_slice(SNAPSHOT_MAGIC);
     out.extend_from_slice(&version.to_le_bytes());
     postcard::to_io(&SnapshotBodyRef { meta, state }, &mut out).map_err(invalid_data)?;
-    if !hot.is_empty() {
+    if version >= HOT_FORMAT_VERSION {
         postcard::to_io(hot, &mut out).map_err(invalid_data)?;
+    }
+    if version >= SNAPSHOT_FORMAT_VERSION {
+        postcard::to_io(alias_targets, &mut out).map_err(invalid_data)?;
     }
     let crc = crc32c::crc32c(&out);
     out.extend_from_slice(&crc.to_le_bytes());
@@ -93,7 +106,7 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> io::Result<(SnapshotMeta, MetaSta
             let body: SnapshotBody = decode(body)?;
             Ok((body.meta, body.state))
         }
-        SNAPSHOT_FORMAT_VERSION => {
+        HOT_FORMAT_VERSION => {
             let (body, rest): (SnapshotBody, _) =
                 postcard::take_from_bytes(body).map_err(invalid_data)?;
             let hot: BTreeMap<CollectionId, HotConfig> = decode(rest)?;
@@ -104,6 +117,24 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> io::Result<(SnapshotMeta, MetaSta
             }
             let mut state = body.state;
             state.set_collection_hot_map(hot);
+            Ok((body.meta, state))
+        }
+        SNAPSHOT_FORMAT_VERSION => {
+            // The version-6 layout, whose hot map may be empty here: only
+            // the map this version adds must be non-empty.
+            let (body, rest): (SnapshotBody, _) =
+                postcard::take_from_bytes(body).map_err(invalid_data)?;
+            let (hot, rest): (BTreeMap<CollectionId, HotConfig>, _) =
+                postcard::take_from_bytes(rest).map_err(invalid_data)?;
+            let alias_targets: BTreeMap<(NamespaceId, String), AliasTargets> = decode(rest)?;
+            if alias_targets.is_empty() {
+                return Err(invalid_data(
+                    "a version 7 snapshot without multi-target aliases",
+                ));
+            }
+            let mut state = body.state;
+            state.set_collection_hot_map(hot);
+            state.set_alias_targets_map(alias_targets);
             Ok((body.meta, state))
         }
         _ => Err(io::Error::new(

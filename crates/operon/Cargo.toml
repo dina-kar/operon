@@ -1,6 +1,6 @@
 [package]
 name = "operon"
-description = "The Operon server: the native HTTP API, the Qdrant gateway and the dev, standalone and cluster commands."
+description = "The Operon server: the native HTTP API, the Qdrant and Elasticsearch gateways and the dev, standalone and cluster commands."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -22,6 +22,7 @@ http.workspace = true
 operon-cache.workspace = true
 operon-collection.workspace = true
 operon-common.workspace = true
+operon-es = { workspace = true, optional = true }
 operon-hnsw.workspace = true
 operon-hot.workspace = true
 operon-link.workspace = true
@@ -46,7 +47,9 @@ ulid.workspace = true
 url.workspace = true
 
 [features]
-default = ["flight", "hnsw", "qdrant"]
+default = ["es", "flight", "hnsw", "qdrant"]
+# Serve the Elasticsearch REST API (plan M1.5; `--es-listen`).
+es = ["dep:operon-es"]
 # The TiKV metastore (R1 plan Task 6; `--meta tikv://…` on `dev` and
 # `standalone`), with the cluster MVCC GC loop it runs. Off by default (owner
 # ruling T7-3): it pulls in the git-pinned tikv-client (row R4), which the
@@ -81,8 +84,15 @@ arrow-flight.workspace = true
 arrow-schema.workspace = true
 futures.workspace = true
 object_store.workspace = true
+# The reference evaluator of the ES DSL tests (plan M1.5 Task 7).
+operon-es = { workspace = true, features = ["test-util"] }
+# The reference evaluator of the Qdrant filter tests (plan M1.4 Task 4).
+operon-qdrant = { workspace = true, features = ["test-util"] }
+proptest.workspace = true
 prost.workspace = true
+prost-types.workspace = true
 tempfile.workspace = true
+time.workspace = true
 tonic = { workspace = true, features = ["gzip"] }
 
 [lints]

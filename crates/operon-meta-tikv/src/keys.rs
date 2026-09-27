@@ -11,6 +11,7 @@
 //! Records are a format byte ([`FORMAT`]) followed by the record's postcard
 //! encoding; counters and stamps are 8-byte big-endian integers.
 
+use operon_common::meta::AliasTargets;
 use operon_common::meta::LinkId;
 use operon_common::meta::MetaError;
 use operon_common::{CollectionId, NamespaceId, StreamId};
@@ -288,12 +289,76 @@ pub(crate) fn pointer(ns: NamespaceId, key: &str) -> Vec<u8> {
 
 // ---- Records ----
 
-/// A namespace's aliases: alias name → the collection it points at, and a
-/// version bumped by every change.
+/// A namespace's aliases, and a version bumped by every change. As in the
+/// openraft state machine (M1.5 Task 0a rule 1), an alias is in exactly one
+/// map: `aliases` when it is one member with no `is_write_index` setting,
+/// `targets` otherwise.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct AliasMap {
     pub version: u64,
+    /// Alias name → the one collection it points at.
     pub aliases: std::collections::BTreeMap<String, CollectionId>,
+    /// Alias name → its members, for every other alias.
+    pub targets: std::collections::BTreeMap<String, AliasTargets>,
+}
+
+impl AliasMap {
+    /// Whether `name` is an alias of either map.
+    pub fn contains(&self, name: &str) -> bool {
+        self.aliases.contains_key(name) || self.targets.contains_key(name)
+    }
+
+    /// The members of `alias` from either map (a single-target alias is one
+    /// unset member); empty when there is no such alias.
+    pub fn members(&self, alias: &str) -> std::collections::BTreeMap<CollectionId, Option<bool>> {
+        if let Some(&id) = self.aliases.get(alias) {
+            return std::collections::BTreeMap::from([(id, None)]);
+        }
+        self.targets
+            .get(alias)
+            .map(|t| t.members.clone())
+            .unwrap_or_default()
+    }
+
+    /// Puts `alias` in its canonical map: none when `members` is empty,
+    /// `aliases` when it is exactly one unset member, `targets` otherwise.
+    pub fn put(
+        &mut self,
+        alias: String,
+        members: std::collections::BTreeMap<CollectionId, Option<bool>>,
+    ) {
+        self.aliases.remove(&alias);
+        self.targets.remove(&alias);
+        let mut iter = members.iter();
+        match (iter.next(), iter.next()) {
+            (None, _) => {}
+            (Some((&id, None)), None) => {
+                self.aliases.insert(alias, id);
+            }
+            _ => {
+                self.targets.insert(alias, AliasTargets { members });
+            }
+        }
+    }
+
+    /// Every alias with its members, by alias name.
+    pub fn all_targets(&self) -> Vec<(String, AliasTargets)> {
+        let mut out: Vec<(String, AliasTargets)> = self
+            .aliases
+            .iter()
+            .map(|(alias, &id)| {
+                (
+                    alias.clone(),
+                    AliasTargets {
+                        members: std::collections::BTreeMap::from([(id, None)]),
+                    },
+                )
+            })
+            .chain(self.targets.iter().map(|(a, t)| (a.clone(), t.clone())))
+            .collect();
+        out.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
 }
 
 /// A partition head: the next offset, the log start, and the bytes its index
