@@ -10,7 +10,7 @@
 //! in ES, and turns `OpResult`s and positions into ES results, `_version`
 //! and `_seq_no` (Ruling 4).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -20,15 +20,15 @@ use operon_collection::{
     CollectionSchema, ConsistencyToken, DocOp, DocRejection, Document, FieldSpec, MAX_WRITE_OPS,
     PatchMode, PrimaryKey, VectorSpec, Violation, check_document, check_patch, extract,
 };
-use operon_query::exec::filter_source;
 use operon_query::{
-    OpPosition, OpResult, Projection, ReadConsistency, ServiceError, SourceFilter, WriteOptions,
+    OpPosition, OpResult, Projection, ReadConsistency, ServiceError,
+    SourceFilter as IrSourceFilter, WriteOptions,
 };
 use serde_json::{Map, Value, json};
 
 use crate::doc::{
-    check_source, field_error, merge_deep, not_an_object, restore_vectors, split_vectors,
-    to_document, validate_id,
+    SourceFilter, check_source, field_error, merge_deep, not_an_object, restore_vectors,
+    split_vectors, to_document, validate_id,
 };
 use crate::error::{ErrorContext, EsError};
 use crate::http::{Params, RequestCtx, fail, json_body, respond};
@@ -552,14 +552,17 @@ impl Engine<'_, '_> {
 
     /// Step 7: one strong batch `get` of the keys updates and creates need.
     async fn pre_read(&self) -> Result<HashMap<PrimaryKey, Option<Current>>, ServiceError> {
+        // First-appearance order; `seen` keeps the scan linear (a `_bulk`
+        // group can hold hundreds of thousands of items).
         let mut pks: Vec<PrimaryKey> = Vec::new();
+        let mut seen: HashSet<PrimaryKey> = HashSet::new();
         for (i, slot) in self.slots.iter().enumerate() {
             let needs = matches!(
                 slot,
                 Slot::Ready(Prepared::Update { .. } | Prepared::Index { create: true, .. })
             );
             let pk = PrimaryKey::Str(self.ids[i].0.clone());
-            if needs && !pks.contains(&pk) {
+            if needs && seen.insert(pk.clone()) {
                 pks.push(pk);
             }
         }
@@ -569,7 +572,7 @@ impl Engine<'_, '_> {
         }
         let service = self.call.gateway.service();
         let select = Projection {
-            source: SourceFilter::All,
+            source: IrSourceFilter::All,
             vectors: self.target.view.es.vectors.keys().cloned().collect(),
             fields: Vec::new(),
         };
@@ -799,7 +802,7 @@ impl Engine<'_, '_> {
         }
         let service = self.call.gateway.service();
         let select = Projection {
-            source: SourceFilter::All,
+            source: IrSourceFilter::All,
             vectors: self.target.view.es.vectors.keys().cloned().collect(),
             fields: Vec::new(),
         };
@@ -982,8 +985,8 @@ fn add_get(body: &mut Map<String, Value>, seq_no: u64, get: Option<(SourceFilter
     get.insert("_seq_no".to_string(), json!(seq_no));
     get.insert("_primary_term".to_string(), json!(1));
     get.insert("found".to_string(), json!(true));
-    if let Some(filtered) = filter_source(&source, &filter) {
-        get.insert("_source".to_string(), Value::Object(filtered));
+    if filter.enabled {
+        get.insert("_source".to_string(), Value::Object(filter.apply(source)));
     }
     body.insert("get".to_string(), Value::Object(get));
 }
@@ -1055,9 +1058,10 @@ fn prepare_update(
     };
     let get = match body.get("_source") {
         None => param_filter.cloned(),
-        Some(value) => source_filter_of_body(value)?,
+        Some(Value::Null) => None,
+        Some(value) => Some(SourceFilter::from_body(value)?),
     }
-    .filter(|filter| *filter != SourceFilter::None);
+    .filter(|filter| filter.enabled);
     Ok(Prepared::Update {
         source,
         vectors,
@@ -1065,39 +1069,6 @@ fn prepare_update(
         doc_as_upsert,
         detect_noop,
         get,
-    })
-}
-
-/// The `_source` of an `_update` body: a bool, a pattern, a list, or
-/// `{"includes", "excludes"}`.
-fn source_filter_of_body(value: &Value) -> Result<Option<SourceFilter>, EsError> {
-    let list = |value: Option<&Value>| -> Vec<String> {
-        match value {
-            Some(Value::String(s)) => vec![s.clone()],
-            Some(Value::Array(items)) => items
-                .iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect(),
-            _ => Vec::new(),
-        }
-    };
-    Ok(match value {
-        Value::Null => None,
-        Value::Bool(true) => Some(SourceFilter::All),
-        Value::Bool(false) => Some(SourceFilter::None),
-        Value::String(_) | Value::Array(_) => Some(SourceFilter::Paths {
-            include: list(Some(value)),
-            exclude: Vec::new(),
-        }),
-        Value::Object(map) => Some(SourceFilter::Paths {
-            include: list(map.get("includes").or_else(|| map.get("include"))),
-            exclude: list(map.get("excludes").or_else(|| map.get("exclude"))),
-        }),
-        Value::Number(_) => {
-            return Err(EsError::parsing(
-                "[_source] must be a boolean, a string, an array or an object",
-            ));
-        }
     })
 }
 
@@ -1259,36 +1230,6 @@ pub(crate) fn check_occ(params: &Params) -> Result<(), EsError> {
     Ok(())
 }
 
-/// `_source`, `_source_includes` and `_source_excludes` of a request, as
-/// `_update`'s `get` filter.
-pub(crate) fn source_param(params: &Params) -> Result<Option<SourceFilter>, EsError> {
-    let includes = params.list("_source_includes");
-    let excludes = params.list("_source_excludes");
-    let filter = match params.str("_source") {
-        Some("true") => Some(SourceFilter::All),
-        Some("false") => Some(SourceFilter::None),
-        Some(_) => Some(SourceFilter::Paths {
-            include: params.list("_source").unwrap_or_default(),
-            exclude: excludes.clone().unwrap_or_default(),
-        }),
-        None => None,
-    };
-    Ok(match filter {
-        Some(SourceFilter::All) if includes.is_some() || excludes.is_some() => {
-            Some(SourceFilter::Paths {
-                include: includes.unwrap_or_default(),
-                exclude: excludes.unwrap_or_default(),
-            })
-        }
-        Some(filter) => Some(filter),
-        None if includes.is_some() || excludes.is_some() => Some(SourceFilter::Paths {
-            include: includes.unwrap_or_default(),
-            exclude: excludes.unwrap_or_default(),
-        }),
-        None => None,
-    })
-}
-
 /// The answer of a single-document write: the item's status and body (the
 /// envelope for an error), with the consistency token.
 fn single(ctx: &RequestCtx, outcome: ItemOutcome, token: Option<ConsistencyToken>) -> Response {
@@ -1319,7 +1260,7 @@ async fn run_single(
         check_occ(&params)?;
         let refresh = refresh_param(&params)?;
         let require_alias = params.bool("require_alias")?.unwrap_or(false);
-        let source_on_update = source_param(&params)?;
+        let source_on_update = SourceFilter::from_params(&params)?;
         let body = json_body(body)?;
         let item = item(&params, body)?;
         Ok::<_, EsError>((params, refresh, require_alias, source_on_update, item))

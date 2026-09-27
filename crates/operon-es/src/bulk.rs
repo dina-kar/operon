@@ -11,11 +11,11 @@ use axum::response::Response;
 use operon_collection::ConsistencyToken;
 use serde_json::{Map, Value, json};
 
+use crate::doc::SourceFilter;
 use crate::error::EsError;
 use crate::http::{Params, RequestCtx, fail, respond};
 use crate::write::{
     ItemOutcome, WriteCall, WriteItem, check_occ, execute, occ_unsupported, refresh_param,
-    source_param,
 };
 use crate::{EsGateway, TOKEN_HEADER};
 
@@ -290,7 +290,7 @@ async fn run(
         check_occ(&params)?;
         let refresh = refresh_param(&params)?;
         let require_alias = params.bool("require_alias")?.unwrap_or(false);
-        let source_on_update = source_param(&params)?;
+        let source_on_update = SourceFilter::from_params(&params)?;
         let lines = parse_ndjson(body)?;
         if lines.iter().any(|l| l.index.is_none()) && path_index.is_none() {
             return Err(validation("index is missing"));

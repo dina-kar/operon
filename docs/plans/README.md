@@ -84,6 +84,7 @@ Future plans, in their expected order (the split into plans is fixed when each m
 | M2 | Ranking, text and vectors: the ranking-expression IR for the native API, ES `function_score` and Qdrant `formula` (D91); language analyzers, folding, pre-tokenized text and per-field BM25 parameters (D93); f16, i8 and u8 vectors (D94); sampled continuous recall (D92) | §05 §4, §06 §3, §06 §5, §06 §9 |
 | M2 | Customer-managed keys by envelope encryption, which also gives crypto-shredding (D96) | §02 §3, §10 §3, §18 §9 |
 | M2 | A Go SDK over the native API, and the native gRPC protos (D101) | — |
+| M2 | Collection schema format change: stored-only fields (neither indexed nor fast) and unmapped subtrees, so an ES unindexed `text` or `binary` keeps no fast column and an ES `enabled: false` object is neither mapped nor checked (M1.5 owner rulings O-M15-8 and O-M15-9, rows T2-2 and T4-6) | §06 §1 |
 | M2.x | `operon-meta-remote`, the hosted `operon-control` and `ControlStore`, owned-namespace caches, both BYOC modes (D63, D64) | §18 §5.7, §18 §8 |
 | M2.x | OpenFGA authorization (D67, default); per-chunk envelope encryption moved to M2 (D96) | §18 §7 |
 | M2.x | Single-collection sharding, 1–256 shards fixed at creation (D95) | §05 §6, §18 §5.3 |

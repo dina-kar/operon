@@ -1,12 +1,11 @@
 //! Task 4: document writes (`_doc`, `_create`, `_update`, `DELETE`) and the
-//! write engine.
+//! write engine; Task 6: document reads (`GET`/`HEAD` `_doc`, `_source`,
+//! `_mget`) and `_source` filtering.
 //!
-//! The document read routes are Task 6's, so these tests read a stored
-//! document through the collection service and put its vectors back with
-//! `doc::restore_vectors`, as Task 6's `GET` will (row T4-8).
+//! `_search` and `_count` are Task 9's, so these tests count through the
+//! collection service (row T4-1).
 
 use operon_collection::PrimaryKey;
-use operon_es::doc::restore_vectors;
 use operon_query::{
     AnnParams, Projection, ReadConsistency, Retriever, SearchRequest, SourceFilter,
 };
@@ -17,32 +16,33 @@ use crate::harness::Es;
 
 pub const NS: &str = "default";
 
-/// The stored `_source` of `id` in `index`, vectors restored; `None` when
-/// missing.
+/// `id` percent-encoded as a path segment.
+pub fn encode_id(id: &str) -> String {
+    id.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// The stored `_source` of `id` in `index`, through
+/// `GET /{index}/_doc/{id}` (vectors restored); `None` when missing.
 pub async fn stored(es: &Es, index: &str, id: &str) -> Option<Value> {
-    let service = es.server.collections();
-    let info = service.get_collection(NS, index).await.expect("index");
-    let vectors = info.schema.vectors.iter().map(|v| v.name.clone()).collect();
-    let select = Projection {
-        source: SourceFilter::All,
-        vectors,
-        fields: Vec::new(),
-    };
-    let docs = service
-        .get(
-            NS,
-            index,
-            &[PrimaryKey::Str(id.to_string())],
-            &select,
-            ReadConsistency::Strong,
-        )
-        .await
-        .expect("get");
-    docs.into_iter().next().flatten().map(|doc| {
-        let mut source = doc.source.unwrap_or_default();
-        restore_vectors(&mut source, &doc.vectors);
-        Value::Object(source)
-    })
+    let a = es.get(&format!("/{index}/_doc/{}", encode_id(id))).await;
+    match a.status {
+        StatusCode::OK => {
+            assert_eq!(a.body["found"], true, "{}", a.text);
+            Some(a.body["_source"].clone())
+        }
+        StatusCode::NOT_FOUND => {
+            assert_eq!(a.body["found"], false, "{}", a.text);
+            None
+        }
+        other => panic!("GET /{index}/_doc/{id}: {other} {}", a.text),
+    }
 }
 
 /// The live documents of `index`.
@@ -917,5 +917,331 @@ async fn write_backpressure_is_429_with_retry_after() {
         "es_rejected_execution_exception"
     );
     assert!(a.header("retry-after").parse::<u64>().expect("Retry-After") >= 1);
+    es.server.shutdown().await.expect("shutdown");
+}
+
+// ----- Task 6: document reads -----
+
+/// The keys of a JSON object, in order.
+fn keys(value: &Value) -> Vec<&str> {
+    value
+        .as_object()
+        .map(|o| o.keys().map(String::as_str).collect())
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn get_found_and_missing_shapes() {
+    let es = Es::start().await;
+    let w = es.put("/i/_doc/1", Some(json!({"a": 1}))).await;
+    assert_eq!(status(&w), 201, "{}", w.text);
+    let a = Es::ok(es.get("/i/_doc/1").await);
+    assert_eq!(
+        keys(&a.body),
+        [
+            "_index",
+            "_id",
+            "_version",
+            "_seq_no",
+            "_primary_term",
+            "found",
+            "_source"
+        ]
+    );
+    assert_eq!(a.body["_index"], "i");
+    assert_eq!(a.body["_id"], "1");
+    assert_eq!(a.body["found"], true);
+    assert_eq!(a.body["_seq_no"], w.body["_seq_no"]);
+    assert_eq!(a.body["_version"], w.body["_version"]);
+    assert_eq!(a.body["_primary_term"], 1);
+    assert_eq!(a.body["_source"], json!({"a": 1}));
+    let a = es.get("/i/_doc/zz").await;
+    assert_eq!(a.status, StatusCode::NOT_FOUND, "{}", a.text);
+    assert_eq!(a.body, json!({"_index": "i", "_id": "zz", "found": false}));
+    assert!(a.body.get("error").is_none());
+    let a = es.get("/nope/_doc/1").await;
+    a.assert_error(
+        404,
+        "index_not_found_exception",
+        Some("no such index [nope]"),
+    );
+    let a = es.head("/i/_doc/1").await;
+    assert_eq!(a.status, StatusCode::OK);
+    assert!(a.text.is_empty());
+    let a = es.head("/i/_doc/zz").await;
+    assert_eq!(a.status, StatusCode::NOT_FOUND);
+    assert!(a.text.is_empty());
+    assert_eq!(es.head("/nope/_doc/1").await.status, StatusCode::NOT_FOUND);
+    // A read through a one-member alias reports the concrete index.
+    Es::ok(es.put("/i/_alias/al", None).await);
+    let a = Es::ok(es.get("/al/_doc/1").await);
+    assert_eq!(a.body["_index"], "i");
+    es.server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn get_source_filtering_params() {
+    let es = Es::start().await;
+    let source = json!({"llm_output": "o", "llm_params": "p", "vector": "v"});
+    let w = es.put("/c/_doc/k", Some(source.clone())).await;
+    assert_eq!(status(&w), 201, "{}", w.text);
+    let a = Es::ok(es.get("/c/_doc/k?_source=llm_output").await);
+    assert_eq!(a.body["_source"], json!({"llm_output": "o"}));
+    let a = Es::ok(es.get("/c/_doc/k?_source=false").await);
+    assert!(a.body.get("_source").is_none(), "{}", a.text);
+    assert_eq!(a.body["found"], true);
+    let a = Es::ok(es.get("/c/_doc/k?_source_excludes=vector").await);
+    assert_eq!(
+        a.body["_source"],
+        json!({"llm_output": "o", "llm_params": "p"})
+    );
+    let a = Es::ok(es.get("/c/_doc/k?_source=true").await);
+    assert_eq!(a.body["_source"], source);
+    let a = Es::ok(
+        es.get("/c/_doc/k?_source_includes=llm_*&_source_excludes=*params")
+            .await,
+    );
+    assert_eq!(a.body["_source"], json!({"llm_output": "o"}));
+    // `stored_fields=_none_` leaves the source out; other stored fields
+    // and versioned reads are Phase B.
+    let a = Es::ok(es.get("/c/_doc/k?stored_fields=_none_").await);
+    assert!(a.body.get("_source").is_none(), "{}", a.text);
+    let a = es.get("/c/_doc/k?stored_fields=llm_output").await;
+    a.assert_error(400, "illegal_argument_exception", None);
+    let a = es.get("/c/_doc/k?version=3").await;
+    a.assert_error(400, "illegal_argument_exception", None);
+    let a = es
+        .get("/c/_doc/k?realtime=false&refresh=true&routing=r&preference=_local")
+        .await;
+    assert_eq!(a.status, StatusCode::OK, "{}", a.text);
+    let a = es.get("/c/_doc/k?nope=1").await;
+    a.assert_error(
+        400,
+        "illegal_argument_exception",
+        Some("request [/c/_doc/k] contains unrecognized parameter: [nope]"),
+    );
+    es.server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn excluded_vectors_are_not_fetched() {
+    let es = Es::start().await;
+    vector_index(&es).await;
+    let w = es
+        .put(
+            "/v/_doc/1",
+            Some(json!({"text": "x", "vector": [0.1, 0.2, 0.3]})),
+        )
+        .await;
+    assert_eq!(status(&w), 201, "{}", w.text);
+    let a = Es::ok(es.get("/v/_doc/1?_source_includes=text").await);
+    assert_eq!(a.body["_source"], json!({"text": "x"}));
+    let a = Es::ok(es.get("/v/_doc/1?_source_excludes=vec*").await);
+    assert_eq!(a.body["_source"], json!({"text": "x"}));
+    let a = Es::ok(es.get("/v/_doc/1?_source_includes=vector").await);
+    assert_eq!(a.body["_source"].to_string(), r#"{"vector":[0.1,0.2,0.3]}"#);
+    let a = Es::ok(es.get("/v/_source/1").await);
+    assert_eq!(a.body.to_string(), r#"{"text":"x","vector":[0.1,0.2,0.3]}"#);
+    es.server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn get_source_endpoint() {
+    let es = Es::start().await;
+    let w = es
+        .put("/i/_doc/1", Some(json!({"a": {"b": 1, "c": 2}, "d": 3})))
+        .await;
+    assert_eq!(status(&w), 201, "{}", w.text);
+    let a = Es::ok(es.get("/i/_source/1").await);
+    assert_eq!(a.body, json!({"a": {"b": 1, "c": 2}, "d": 3}));
+    let a = Es::ok(es.get("/i/_source/1?_source_includes=a.b").await);
+    assert_eq!(a.body, json!({"a": {"b": 1}}));
+    let a = es.get("/i/_source/zz").await;
+    a.assert_error(
+        404,
+        "resource_not_found_exception",
+        Some("Document not found [i]/_doc/[zz]"),
+    );
+    let a = es.get("/nope/_source/1").await;
+    a.assert_error(404, "index_not_found_exception", None);
+    let a = es.get("/i/_source/1?_source=false").await;
+    a.assert_error(
+        400,
+        "action_request_validation_exception",
+        Some("Validation Failed: 1: fetching source can not be disabled;"),
+    );
+    let a = es.get("/i/_source/1?stored_fields=_none_").await;
+    a.assert_error(400, "illegal_argument_exception", None);
+    assert_eq!(es.head("/i/_source/1").await.status, StatusCode::OK);
+    assert_eq!(es.head("/i/_source/zz").await.status, StatusCode::NOT_FOUND);
+    es.server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn mget_returns_found_and_missing_in_order() {
+    let es = Es::start().await;
+    for id in ["1", "2"] {
+        let w = es
+            .put(
+                &format!("/i/_doc/{id}"),
+                Some(json!({"text": format!("t{id}"), "other": 1})),
+            )
+            .await;
+        assert_eq!(status(&w), 201, "{}", w.text);
+    }
+    let a = Es::ok(
+        es.post(
+            "/i/_mget?_source_includes=text",
+            json!({"ids": ["2", "zz", "1"]}),
+        )
+        .await,
+    );
+    let docs = a.body["docs"].as_array().expect("docs");
+    assert_eq!(docs.len(), 3, "{}", a.text);
+    assert_eq!(docs[0]["_id"], "2");
+    assert_eq!(docs[0]["found"], true);
+    assert_eq!(docs[0]["_index"], "i");
+    assert_eq!(docs[0]["_source"], json!({"text": "t2"}));
+    assert_eq!(docs[1], json!({"_index": "i", "_id": "zz", "found": false}));
+    assert_eq!(docs[2]["_id"], "1");
+    assert_eq!(keys(&docs[2]["_source"]), ["text"]);
+    let one = Es::ok(es.get("/i/_doc/1").await);
+    assert_eq!(docs[2]["_seq_no"], one.body["_seq_no"]);
+    assert_eq!(docs[2]["_version"], one.body["_version"]);
+    // `docs` with a per-document `_source` overriding the URL's, and a
+    // repeated id.
+    let a = Es::ok(
+        es.post(
+            "/i/_mget?_source=false",
+            json!({"docs": [
+                {"_id": "1", "_source": ["other"]},
+                {"_id": "1"},
+                {"_id": 2, "_source": true},
+            ]}),
+        )
+        .await,
+    );
+    let docs = a.body["docs"].as_array().expect("docs");
+    assert_eq!(docs[0]["_source"], json!({"other": 1}));
+    assert!(docs[1].get("_source").is_none(), "{}", a.text);
+    assert_eq!(docs[1]["found"], true);
+    assert_eq!(docs[2]["_id"], "2");
+    assert_eq!(docs[2]["_source"], json!({"text": "t2", "other": 1}));
+    // GET with a body works as POST does.
+    let a = Es::ok(
+        es.send(
+            reqwest::Method::GET,
+            "/i/_mget",
+            Some(json!({"ids": ["1"]})),
+            &[],
+        )
+        .await,
+    );
+    assert_eq!(a.body["docs"][0]["found"], true);
+    es.server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn mget_request_errors() {
+    let es = Es::start().await;
+    Es::ok(es.put("/i", None).await);
+    let a = es.send(reqwest::Method::POST, "/i/_mget", None, &[]).await;
+    a.assert_error(400, "action_request_validation_exception", None);
+    let a = es.post("/i/_mget", json!({"ids": []})).await;
+    a.assert_error(
+        400,
+        "action_request_validation_exception",
+        Some("Validation Failed: 1: no documents to get;"),
+    );
+    let a = es.post("/i/_mget", json!({"nope": []})).await;
+    a.assert_error(400, "parse_exception", None);
+    let a = es
+        .post("/i/_mget", json!({"docs": [{"_id": "1", "x": 1}]}))
+        .await;
+    a.assert_error(400, "parse_exception", None);
+    // Without a path index, an entry without `_index` fails on its own.
+    let a = Es::ok(es.post("/_mget", json!({"ids": ["1"]})).await);
+    let doc = &a.body["docs"][0];
+    assert_eq!(doc["_index"], Value::Null, "{}", a.text);
+    assert_eq!(doc["_id"], "1");
+    assert_eq!(doc["error"]["type"], "action_request_validation_exception");
+    es.server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn a_single_document_read_through_a_multi_index_alias_is_refused() {
+    let es = Es::start().await;
+    cache_fixture(&es).await;
+    let w = es.put("/test_index2/_doc/1", Some(json!({"v": 2}))).await;
+    assert_eq!(status(&w), 201, "{}", w.text);
+    let reason = "alias [test_alias] has more than one index associated with it \
+                  [test_index1, test_index2], can't execute a single index op";
+    let a = es.get("/test_alias/_doc/1").await;
+    a.assert_error(400, "illegal_argument_exception", Some(reason));
+    let a = es.get("/test_alias/_source/1").await;
+    a.assert_error(400, "illegal_argument_exception", Some(reason));
+    // In `_mget` only that entry fails.
+    let a = Es::ok(
+        es.post(
+            "/_mget",
+            json!({"docs": [
+                {"_index": "test_alias", "_id": "1"},
+                {"_index": "test_index2", "_id": "1"},
+            ]}),
+        )
+        .await,
+    );
+    let docs = &a.body["docs"];
+    assert_eq!(docs[0]["_index"], "test_alias");
+    assert_eq!(docs[0]["error"]["type"], "illegal_argument_exception");
+    assert_eq!(docs[0]["error"]["reason"], reason);
+    assert_eq!(docs[1]["found"], true);
+    Es::ok(es.delete("/test_index1/_alias/test_alias").await);
+    let a = Es::ok(es.get("/test_alias/_doc/1").await);
+    assert_eq!(a.body["_index"], "test_index2");
+    assert_eq!(a.body["_source"], json!({"v": 2}));
+    es.server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn mget_across_indices_reports_a_missing_index_per_doc() {
+    let es = Es::start().await;
+    let w = es.put("/i/_doc/1", Some(json!({"a": 1}))).await;
+    assert_eq!(status(&w), 201, "{}", w.text);
+    let w = es.put("/j/_doc/1", Some(json!({"b": 1}))).await;
+    assert_eq!(status(&w), 201, "{}", w.text);
+    let a = es
+        .post(
+            "/_mget",
+            json!({"docs": [
+                {"_index": "i", "_id": "1"},
+                {"_index": "nope", "_id": "1"},
+                {"_index": "j", "_id": "1"},
+            ]}),
+        )
+        .await;
+    assert_eq!(a.status, StatusCode::OK, "{}", a.text);
+    let docs = &a.body["docs"];
+    assert_eq!(docs[0]["_source"], json!({"a": 1}));
+    assert_eq!(docs[1]["_index"], "nope");
+    assert_eq!(docs[1]["_id"], "1");
+    assert_eq!(docs[1]["error"]["type"], "index_not_found_exception");
+    assert_eq!(docs[1]["error"]["reason"], "no such index [nope]");
+    assert_eq!(
+        docs[1]["error"]["root_cause"][0]["type"],
+        "index_not_found_exception"
+    );
+    assert_eq!(docs[2]["_index"], "j");
+    assert_eq!(docs[2]["_source"], json!({"b": 1}));
+    // A path index is the default of entries without `_index`.
+    let a = Es::ok(
+        es.post(
+            "/i/_mget",
+            json!({"docs": [{"_id": "1"}, {"_index": "j", "_id": "1"}]}),
+        )
+        .await,
+    );
+    assert_eq!(a.body["docs"][0]["_index"], "i");
+    assert_eq!(a.body["docs"][1]["_index"], "j");
     es.server.shutdown().await.expect("shutdown");
 }
