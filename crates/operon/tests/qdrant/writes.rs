@@ -899,6 +899,25 @@ async fn a_request_over_10000_ops_is_400_asking_to_split() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
     assert!(error(&reply).ends_with("got 10002; split the batch into smaller requests"));
+    // A filter operation next to them does not lift the bound on the
+    // operations the request lists (PR #51 review).
+    let many: Vec<Value> = (0..10_001u64)
+        .map(|id| json!({"id": id, "vector": [1.0, 0.0]}))
+        .collect();
+    let (status, reply) = write(
+        &qd,
+        "POST",
+        "big",
+        "/batch",
+        json!({"operations": [
+            {"upsert": {"points": many}},
+            {"delete": {"filter": {"must": [{"key": "k", "match": {"value": 1}}]}}}
+        ]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
+    assert!(error(&reply).ends_with("got 10001; split the batch into smaller requests"));
+    assert_eq!(count(&qd, "big").await, 0, "nothing was written");
     // 10,000 is accepted.
     let points: Vec<Value> = (0..10_000u64)
         .map(|id| json!({"id": id, "vector": [1.0, 0.0]}))

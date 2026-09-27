@@ -77,10 +77,11 @@
 //!   O2).
 //! - A scroll `limit` over the search window (100,000) is refused, where
 //!   Qdrant reads that many points (row T7-11).
-//! - A write request holds at most 10,000 operations after planning (the
-//!   collection service's limit, one atomic write); a larger one is 400,
-//!   asking the client to split the batch. Qdrant has no such limit (row
-//!   T5-12, owner ruling O1).
+//! - A write request holds at most 10,000 operations after planning, not
+//!   counting those a filter resolved (the collection service's limit, one
+//!   atomic write); a larger one is 400, asking the client to split the
+//!   batch, even next to a filter operation. Qdrant has no such limit (row
+//!   T5-12, owner ruling O1, row T8-11).
 //! - Geo conditions and indexes, `nested`, `has_vector` and `slice`
 //!   conditions, keys with `[n]` or quoted keys holding `.`, payload-index
 //!   deletion and type changes are unsupported (Ruling 15).
