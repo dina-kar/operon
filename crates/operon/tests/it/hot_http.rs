@@ -407,6 +407,7 @@ async fn operon_warm_posts_the_warm_request() {
             &format!("127.0.0.1:{port}"),
             "--no-flight-sql",
             "--no-qdrant",
+            "--no-es",
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

@@ -1,6 +1,6 @@
 [package]
 name = "operon"
-description = "The Operon server: the native HTTP API, the Qdrant gateway and the dev, standalone and cluster commands."
+description = "The Operon server: the native HTTP API, the Qdrant and Elasticsearch gateways and the dev, standalone and cluster commands."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -22,6 +22,7 @@ http.workspace = true
 operon-cache.workspace = true
 operon-collection.workspace = true
 operon-common.workspace = true
+operon-es = { workspace = true, optional = true }
 operon-hnsw.workspace = true
 operon-hot.workspace = true
 operon-link.workspace = true
@@ -44,7 +45,9 @@ ulid.workspace = true
 url.workspace = true
 
 [features]
-default = ["flight", "hnsw", "qdrant"]
+default = ["es", "flight", "hnsw", "qdrant"]
+# Serve the Elasticsearch REST API (plan M1.5; `--es-listen`).
+es = ["dep:operon-es"]
 # Serve Arrow Flight SQL (Task 12; `--flight-sql-listen`).
 flight = []
 # Serve the Qdrant REST and gRPC APIs (plan M1.4; `--qdrant-listen`).
