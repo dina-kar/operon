@@ -1383,6 +1383,7 @@ mod tests {
             &["--durable-store", "sqlite:/tmp/d.db"],
             &["--durable-push"],
             &["--durable-set", "a.b=c"],
+            &["--durable-debug"],
         ] {
             let mut args = vec!["--no-durable"];
             args.extend_from_slice(flag);
