@@ -1,0 +1,28 @@
+[package]
+name = "operon-tikv"
+description = "Loam's TiKV client layer: keyspace-scoped transactions, the TSO clock, keyspace bootstrap and the cluster test harness."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+# tikv-client is a git dependency (R1 plan row R4), which crates.io refuses.
+publish = false
+
+[dependencies]
+rand.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tikv-client.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+serde_json.workspace = true
+tikv-client.workspace = true
+
+[lints]
+workspace = true

@@ -82,6 +82,12 @@ tantivy = { version = "=0.26.2", default-features = false, features = ["quickwit
 tantivy-fst = "0.5"
 tempfile = "3"
 thiserror = "2"
+# A git pin, not crates.io 0.4.0: 0.4.0 fails cargo-deny's advisories through
+# tonic 0.10 and reports lost async-commit and 1PC acknowledgements as plain
+# errors (R1 plan row R4). Default features pull in openssl, procfs and
+# protobuf 2 through prometheus. The pin moves only by a PR that reruns the
+# operon-tikv and operon-meta-tikv suites.
+tikv-client = { git = "https://github.com/tikv/client-rust", rev = "ab4be1c2cdd58d4e593202991fb520221c83bdfd", default-features = false }
 time = { version = "0.3", features = ["std", "formatting", "parsing", "macros"] }
 time-fmt = "0.3.8"
 tokio = { version = "1", features = ["full"] }
@@ -113,6 +119,7 @@ operon-query = { path = "crates/operon-query", version = "0.0.1" }
 operon-quickwit = { path = "crates/operon-quickwit", version = "0.0.1" }
 operon-store = { path = "crates/operon-store", version = "0.0.1" }
 operon-text = { path = "crates/operon-text", version = "0.0.1" }
+operon-tikv = { path = "crates/operon-tikv", version = "0.0.1" }
 operon-worker = { path = "crates/operon-worker", version = "0.0.1" }
 
 [profile.dev]
