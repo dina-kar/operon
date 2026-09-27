@@ -1119,7 +1119,7 @@ pub(crate) async fn run_batch(
 /// `sum_scores`), so the ANN index finds them. No index answers "farthest"
 /// on Euclid or Manhattan: there the query runs one exact scan by dot
 /// product with `-Σ v` (or `-v` of the first negative when the sum is
-/// zero), which leans away from the negatives but may miss a far point of
+/// zero or overflows f32), which leans away from the negatives but may miss a far point of
 /// small norm (candidate-bounded, as Ruling 10 says). One scan per query,
 /// whatever the number of negatives, bounds the work as an `exact` search
 /// does (review of #60).
@@ -1133,8 +1133,10 @@ fn away_from(
     let sum = (0..dim)
         .map(|i| neg.iter().map(|v| v[i]).sum::<f32>())
         .collect::<Vec<f32>>();
-    // Cosine example vectors are normalized, so this is Σ v̂.
-    let sum = (neg.len() > 1 && sum.iter().any(|x| *x != 0.0)).then(|| negate(&sum));
+    // Cosine example vectors are normalized, so this is Σ v̂. A sum that
+    // overflows f32 is not searched (review of #62).
+    let sum = (neg.len() > 1 && sum.iter().all(|x| x.is_finite()) && sum.iter().any(|x| *x != 0.0))
+        .then(|| negate(&sum));
     match distance {
         Distance::Cosine | Distance::Dot => neg
             .iter()

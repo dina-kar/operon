@@ -142,6 +142,21 @@ impl Es {
         self.send(Method::POST, path, Some(body), &[]).await
     }
 
+    /// `PUT`, with a JSON body when given.
+    pub async fn put(&self, path: &str, body: Option<Value>) -> Answer {
+        self.send(Method::PUT, path, body, &[]).await
+    }
+
+    pub async fn delete(&self, path: &str) -> Answer {
+        self.send(Method::DELETE, path, None, &[]).await
+    }
+
+    /// Asserts a 200 answer and returns it.
+    pub fn ok(answer: Answer) -> Answer {
+        assert_eq!(answer.status, StatusCode::OK, "{}", answer.text);
+        answer
+    }
+
     /// `operon dev` with the gateway on an ephemeral port (or `--no-es`),
     /// read up to its `operon listening on` line.
     pub fn dev(es: bool) -> Dev {

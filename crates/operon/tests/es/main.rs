@@ -2,6 +2,8 @@
 //! binary, with a module per task's suite.
 
 #[cfg(feature = "es")]
+mod admin;
+#[cfg(feature = "es")]
 mod harness;
 #[cfg(feature = "es")]
 mod http;

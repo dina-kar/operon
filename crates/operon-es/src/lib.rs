@@ -11,11 +11,17 @@
 //!   lists, `*`, `_all`, aliases with several members; Ruling 9).
 //! - `info`: `GET /`, `/_license`, `/_cluster/health` and the trained-model
 //!   routes.
+//! - [`mapping`]: ES mappings and settings ⇄ collection schemas.
+//! - `admin`: index, mapping and alias administration and `_refresh`.
 //!
 //! # Divergences from Elasticsearch 8.19
 //!
-//! - `resource_already_exists_exception` from the collection service names
-//!   the index uuid `_na_` (row T1-4).
+//! - An unindexed `text` field and a `binary` field are unindexed keywords
+//!   with a fast column (M1.1 keeps a field only if it is indexed or fast;
+//!   row T2-2); a field ES neither indexes nor keeps doc values for is fast.
+//! - `PUT /{index}/_mapping` cannot change the root `dynamic` (row T3-3).
+//! - A comma-list `DELETE /{index}` deletes the indices in order and stops
+//!   at the first missing one, leaving the earlier ones deleted (row T3-2).
 //! - A write to a comma list or a wildcard is refused as an invalid index
 //!   name (row T1-5).
 //! - The routes of Phase A that no task serves yet answer 501
@@ -36,15 +42,17 @@ use axum::extract::State;
 use axum::http::{Method, Uri};
 use axum::middleware;
 use axum::response::Response;
-use axum::routing::{MethodFilter, get, on, post};
+use axum::routing::{MethodFilter, get, head, on, post, put};
 use operon_query::CollectionService;
 use operon_query::hot::HotLayer;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+mod admin;
 pub mod error;
 pub mod http;
 mod info;
+pub mod mapping;
 pub mod names;
 
 pub use error::{ErrorContext, EsError};
@@ -135,6 +143,49 @@ impl EsGateway {
             .route(
                 "/_ml/trained_models/{id}/deployment/_infer",
                 post(info::infer),
+            )
+            // Task 3: index administration.
+            .route(
+                "/{index}",
+                get(admin::get_index)
+                    .merge(head(admin::head_index))
+                    .put(admin::create_index)
+                    .delete(admin::delete_index),
+            )
+            .route("/_mapping", get(admin::get_mapping_all))
+            .route(
+                "/{index}/_mapping",
+                get(admin::get_mapping)
+                    .put(admin::put_mapping)
+                    .post(admin::put_mapping),
+            )
+            .route(
+                "/_aliases",
+                get(admin::get_aliases_all).post(admin::update_aliases),
+            )
+            .route("/_alias", get(admin::get_aliases_all))
+            .route("/_alias/{name}", get(admin::get_aliases_named))
+            .route("/{index}/_alias", get(admin::get_aliases_of_index))
+            .route(
+                "/{index}/_alias/{name}",
+                get(admin::get_aliases_of_index_named)
+                    .put(admin::put_alias)
+                    .post(admin::put_alias)
+                    .delete(admin::delete_alias),
+            )
+            .route(
+                "/{index}/_aliases/{name}",
+                put(admin::put_alias)
+                    .post(admin::put_alias)
+                    .delete(admin::delete_alias),
+            )
+            .route(
+                "/_refresh",
+                get(admin::refresh_all).post(admin::refresh_all),
+            )
+            .route(
+                "/{index}/_refresh",
+                get(admin::refresh_index).post(admin::refresh_index),
             );
         for &(method, path, task) in PENDING {
             let filter = match method {
@@ -190,30 +241,6 @@ impl EsGateway {
 /// (row T1-2). A task that serves a route removes it here; axum panics on
 /// a method routed twice, so a forgotten row fails at router build time.
 const PENDING: &[(&str, &str, &str)] = &[
-    ("GET", "/{index}", "3"),
-    ("HEAD", "/{index}", "3"),
-    ("PUT", "/{index}", "3"),
-    ("DELETE", "/{index}", "3"),
-    ("GET", "/_mapping", "3"),
-    ("GET", "/{index}/_mapping", "3"),
-    ("PUT", "/{index}/_mapping", "3"),
-    ("POST", "/_aliases", "3"),
-    ("GET", "/_alias", "3"),
-    ("GET", "/_alias/{name}", "3"),
-    ("HEAD", "/_alias/{name}", "3"),
-    ("GET", "/{index}/_alias", "3"),
-    ("GET", "/{index}/_alias/{name}", "3"),
-    ("HEAD", "/{index}/_alias/{name}", "3"),
-    ("PUT", "/{index}/_alias/{name}", "3"),
-    ("POST", "/{index}/_alias/{name}", "3"),
-    ("DELETE", "/{index}/_alias/{name}", "3"),
-    ("PUT", "/{index}/_aliases/{name}", "3"),
-    ("POST", "/{index}/_aliases/{name}", "3"),
-    ("DELETE", "/{index}/_aliases/{name}", "3"),
-    ("GET", "/_refresh", "3"),
-    ("POST", "/_refresh", "3"),
-    ("GET", "/{index}/_refresh", "3"),
-    ("POST", "/{index}/_refresh", "3"),
     ("POST", "/{index}/_doc", "4"),
     ("PUT", "/{index}/_doc/{id}", "4"),
     ("POST", "/{index}/_doc/{id}", "4"),

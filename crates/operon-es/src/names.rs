@@ -139,7 +139,7 @@ fn is_missing(error: &ServiceError) -> bool {
 
 /// Whether `name` matches `pattern`, where `*` matches any run of
 /// characters.
-fn glob(pattern: &str, name: &str) -> bool {
+pub(crate) fn glob(pattern: &str, name: &str) -> bool {
     let parts: Vec<&str> = pattern.split('*').collect();
     let (first, rest) = parts.split_first().unwrap_or((&"", &[]));
     let Some(mut tail) = name.strip_prefix(first) else {

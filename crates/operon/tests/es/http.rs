@@ -268,6 +268,10 @@ async fn the_namespace_header_selects_the_namespace() {
         .await;
     assert_eq!(a.status, StatusCode::OK, "{}", a.text);
     assert_eq!(a.body["active_primary_shards"], 4);
+    // `HEAD /x` (Task 3) sees the index only in its namespace.
+    let a = es.send(Method::HEAD, "/x", None, &tenant).await;
+    assert_eq!(a.status, StatusCode::OK);
+    assert!(a.text.is_empty(), "{}", a.text);
     let a = es
         .send(
             Method::GET,
