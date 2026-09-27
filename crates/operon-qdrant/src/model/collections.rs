@@ -218,3 +218,21 @@ pub struct AliasDescription {
 pub struct CollectionExistence {
     pub exists: bool,
 }
+
+/// `PUT /collections/{c}/index`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct CreateFieldIndex {
+    pub field_name: String,
+    /// Required; `None` is `field_schema is required`.
+    #[serde(default)]
+    pub field_schema: Option<PayloadFieldSchema>,
+}
+
+/// A payload index type: its name (`"keyword"`, …), or its params
+/// (`{"type": "text", …}`).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum PayloadFieldSchema {
+    Name(String),
+    Params(Map<String, Value>),
+}

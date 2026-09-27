@@ -7,12 +7,12 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response as HttpResponse};
 use operon_collection::ConsistencyToken;
 use operon_query::hot::{HOT_HEADER, HotLayer, parse_hot_header};
-use serde_json::{Map, Value};
 use tonic::codec::CompressionEncoding;
 use tonic::service::Routes;
 use tonic::{Request, Response, Status};
 
 use crate::convert::collections as conv;
+use crate::convert::filter::{field_index_from_grpc, filter_from_grpc};
 use crate::ctx::RequestCtx;
 use crate::error::GatewayError;
 use crate::model::points::CountRequest;
@@ -336,10 +336,13 @@ service! {
         ) -> Result<Response<pb::CountResponse>, Status> {
             let ctx = self.ctx(request.metadata(), request.get_ref().timeout)?;
             let request = request.into_inner();
-            // Filters are converted by Task 4; until then a present one is
-            // refused by the executor.
             let count = CountRequest {
-                filter: request.filter.map(|_| Value::Object(Map::new())),
+                filter: request
+                    .filter
+                    .as_ref()
+                    .map(filter_from_grpc)
+                    .transpose()
+                    .map_err(|e| e.grpc_status())?,
                 exact: request.exact,
             };
             let result = ctx
@@ -354,6 +357,32 @@ service! {
             Ok(Response::new(pb::CountResponse {
                 result: Some(pb::CountResult {
                     count: result.count,
+                }),
+                time: ctx.elapsed_secs(),
+                usage: None,
+            }))
+        }
+
+        async fn create_field_index(
+            &self,
+            request: Request<pb::CreateFieldIndexCollection>,
+        ) -> Result<Response<pb::PointsOperationResponse>, Status> {
+            let req = request.get_ref();
+            let body = field_index_from_grpc(req);
+            let (collection, wait) = (req.collection_name.clone(), req.wait.unwrap_or(false));
+            let (result, ctx) = self
+                .run(request.metadata(), req.timeout, |gw, ctx| {
+                    schema::create_field_index(gw, ctx, collection, body, wait)
+                })
+                .await?;
+            let status = match result.status {
+                crate::model::common::UpdateStatus::Completed => pb::UpdateStatus::Completed,
+                crate::model::common::UpdateStatus::Acknowledged => pb::UpdateStatus::Acknowledged,
+            };
+            Ok(Response::new(pb::PointsOperationResponse {
+                result: Some(pb::UpdateResult {
+                    operation_id: result.operation_id,
+                    status: status as i32,
                 }),
                 time: ctx.elapsed_secs(),
                 usage: None,
@@ -398,7 +427,6 @@ service! {
         overwrite_payload(SetPayloadPoints) -> PointsOperationResponse;
         delete_payload(DeletePayloadPoints) -> PointsOperationResponse;
         clear_payload(ClearPayloadPoints) -> PointsOperationResponse;
-        create_field_index(CreateFieldIndexCollection) -> PointsOperationResponse;
         delete_field_index(DeleteFieldIndexCollection) -> PointsOperationResponse;
         delete_vector_name(DeleteVectorNameRequest) -> PointsOperationResponse;
         search(SearchPoints) -> SearchResponse;

@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 use crate::ctx::RequestCtx;
 use crate::error::GatewayError;
-use crate::model::collections::ChangeAliases;
+use crate::model::collections::{ChangeAliases, CreateFieldIndex};
 use crate::model::points::CountRequest;
 use crate::schema::NewVector;
 use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, reads, schema, snapshots};
@@ -35,7 +35,6 @@ const UNSUPPORTED: &[(&str, &str)] = &[
     ("DELETE", "/cluster/peer/{peer_id}"),
     ("GET", "/quotas"),
     ("PUT", "/quotas"),
-    ("PUT", "/collections/{collection_name}/index"),
     (
         "DELETE",
         "/collections/{collection_name}/index/{field_name}",
@@ -177,6 +176,10 @@ pub(crate) fn router(gw: QdrantGateway) -> Router {
             put(create_vector_name),
         )
         .route("/collections/{collection_name}/cluster", get(cluster_info))
+        .route(
+            "/collections/{collection_name}/index",
+            put(create_field_index),
+        )
         .route(
             "/collections/{collection_name}/aliases",
             get(collection_aliases),
@@ -363,7 +366,6 @@ impl<S: Send + Sync, T: DeserializeOwned> FromRequestParts<S> for QdrantQuery<T>
 #[derive(Debug, serde::Deserialize)]
 pub(crate) struct WriteParams {
     #[serde(default)]
-    #[allow(dead_code)] // Read by the point writes (Task 5).
     pub wait: bool,
     #[allow(dead_code)] // Accepted and ignored (Ruling 14).
     pub ordering: Option<String>,
@@ -624,6 +626,21 @@ async fn list_snapshots(
             .iter()
             .map(|m| snapshots::snapshot_description(&name, m))
             .collect::<Vec<_>>())
+    })
+    .await
+}
+
+// ----- payload indexes (Task 4) -----
+
+async fn create_field_index(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<WriteParams>,
+    QdrantJson(request): QdrantJson<CreateFieldIndex>,
+) -> Response {
+    serve(&gw, &headers, params.timeout, |ctx| {
+        schema::create_field_index(gw.clone(), ctx, collection, request, params.wait)
     })
     .await
 }

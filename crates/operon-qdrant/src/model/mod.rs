@@ -4,4 +4,5 @@
 
 pub mod collections;
 pub mod common;
+pub mod filter;
 pub mod points;

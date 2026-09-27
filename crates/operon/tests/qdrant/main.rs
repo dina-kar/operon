@@ -6,6 +6,8 @@
 mod collections;
 mod contract;
 #[cfg(feature = "qdrant")]
+mod filters;
+#[cfg(feature = "qdrant")]
 mod harness;
 #[cfg(feature = "qdrant")]
 mod service;
