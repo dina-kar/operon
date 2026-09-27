@@ -14,7 +14,7 @@
 //! - [`mapping`]: ES mappings and settings ⇄ collection schemas.
 //! - `admin`: index, mapping and alias administration and `_refresh`.
 //! - [`doc`]: ES documents ⇄ collection documents (ids, vectors moved out
-//!   of `_source` and back, `binary` values, the partial-document merge).
+//!   of `_source` and back, the partial-document merge).
 //! - [`write`](mod@write): the write engine and `_doc`, `_create`, `_update`,
 //!   `DELETE`.
 //! - [`bulk`] serves `_bulk`.
@@ -29,48 +29,104 @@
 //!
 //! # Divergences from Elasticsearch 8.19
 //!
+//! The same list, with the rulings, is in design §06 §7. Error texts and
+//! statuses were checked against an Elasticsearch 8.19.22 oracle (plan
+//! M1.5 Task 11); where the gateway differs, it is listed here.
+//!
+//! Mappings and settings:
+//! - `ignore_above` on a keyword is recorded and rendered but not
+//!   enforced, so longer values are still indexed; `index.number_of_replicas`,
+//!   `refresh_interval`, `routing` and `preference` are accepted and change
+//!   nothing; `index.number_of_shards` is the collection's partition count
+//!   (Ruling 16).
+//! - Dates parse in `strict_date_optional_time`, `date_optional_time`,
+//!   `strict_date_optional_time_nanos` (stored at the engine's precision)
+//!   and `epoch_millis`, and `||` combinations of them; dynamic mapping
+//!   takes a `yyyy/MM/dd HH:mm:ss Z` string with a zone as text (Ruling 17).
 //! - An unindexed `text` field and a `binary` field are unindexed keywords
 //!   with a fast column (M1.1 keeps a field only if it is indexed or fast;
-//!   row T2-2); a field ES neither indexes nor keeps doc values for is fast.
+//!   row T2-2, owner ruling O-M15-8); a field ES neither indexes nor keeps
+//!   doc values for is fast.
+//! - The contents of an `enabled: false` object are mapped dynamically by
+//!   the collection service, and refused under `dynamic: strict` (row T4-6,
+//!   owner ruling O-M15-9).
 //! - `PUT /{index}/_mapping` cannot change the root `dynamic` (row T3-3).
+//! - Two concurrent identical index creates can both answer 200, and the
+//!   aliases of a create body are a second catalog call after the create
+//!   (the index is dropped again if they are refused; row T3-4).
+//!
+//! Writes:
 //! - `_seq_no` is the partition offset of a write's record and `_version`
 //!   is `_seq_no + 1`, so versions increase but are not dense (Ruling 4).
-//! - A `null` `dense_vector` value stays in `_source` as `null` (row T4-3).
-//! - The contents of an `enabled: false` object are mapped dynamically by
-//!   the collection service, and refused under `dynamic: strict` (row T4-6).
-//! - The error texts of document parsing carry `[1:1]` rather than the
-//!   value's line and column, and JSON syntax errors carry serde_json's text
-//!   rather than Jackson's (rows T4-5, T11-5).
-//! - Texts ES builds from its own internals differ: a negative `boost`
-//!   names the query without ES's rendering of it, a query nested past 30
-//!   levels is one `illegal_argument_exception` rather than one
-//!   `x_content_parse_exception` per level, a `dense_vector` value that is
-//!   not an array is a field parse error, and the field-limit error counts
-//!   the new fields of the whole document (row T11-5).
-//! - `_delete_by_query` and `_update_by_query` count `batches` per index,
-//!   so a request over an alias with two members reports at least two
-//!   (row T11-5).
+//!   Generated ids are 26-character ULIDs (Ruling 5).
+//! - A `dense_vector` value is stored once, as a vector, and put back into
+//!   `_source` on read: last in its parent object, each element printed
+//!   with the shortest `f32` digits (Ruling 2).
+//! - `_update`'s existence and `detect_noop` verdicts and a create's
+//!   verdict come from one read made before the append, so a concurrent
+//!   writer can make them stale; two racing creates of identical documents
+//!   can both answer 201 (Rulings 7 and 8, row T4-4).
+//! - A request's ops are appended in writes of at most 10,000; a refused
+//!   write fails its ops and every later one, and the writes before it stay
+//!   (row T4-10). `_bulk` items of one index with different `require_alias`
+//!   or `pipeline` values run as separate groups, so their relative order
+//!   can differ from the request's (row T5-2).
+//! - A write refused for backpressure is 429 `es_rejected_execution_exception`
+//!   with `Retry-After`, per `_bulk` item, the answer carrying the largest
+//!   (row T5-4; the oracle cannot be driven into rejection, row T11-4); a
+//!   by-query request whose batch is refused past its deadline is that 429
+//!   with what was written kept, where ES answers its body with the failure
+//!   in `failures` (row T9a-7).
+//!
+//! Reads and searches:
+//! - `stored_fields` takes only `_none_`, and `version`/`version_type` on a
+//!   read are refused (row T6-4).
 //! - A `range` with numeric bounds on a `flattened` path compares numbers
 //!   numerically; ES compares flattened values as keywords (row E11,
-//!   O-M15-2).
+//!   owner ruling O-M15-2).
 //! - `query_string`'s `lenient` is accepted and not applied, and a
 //!   `multi_match` or `query_string` without fields searches the text (and,
 //!   for `multi_match`, keyword) fields only, not every field (row T7-5).
+//! - A `query` + `knn` score sum runs as two service calls; the vector part
+//!   reads at least the text part's token, so a write landing between them
+//!   can appear in the vector part only (Ruling 3).
 //! - A search over several indices fails as a whole when one index fails
 //!   (for example a sort on a field one member does not map); ES answers
-//!   the other shards' hits with `_shards.failed` (row T9-6).
+//!   the other shards' hits with `_shards.failed` (row T9-6, owner ruling
+//!   O-M15-10).
 //! - A `script_score` search with `min_score` counts the matches that pass
 //!   it among the top `from + size` only, `gte` when they fill that window
 //!   (row T9-5).
 //! - A sort key other than `_doc` after `_score` is refused: score ties are
-//!   broken by `_id` only; a `_doc` sort value is the `_id` (row T9-9).
+//!   broken by `_id` only; a `_doc` sort value is the `_id` (rows T9-9,
+//!   T9-10, owner ruling O-M15-11).
+//!
+//! By-query writes:
+//! - `_delete_by_query` reads a pinned view: a document updated after it
+//!   started is still deleted, and `version_conflicts` is always 0
+//!   (Ruling 6).
 //! - `_update_by_query` recognises only `params` assignments and
 //!   `remove()` in its script; an assignment creates a missing or
 //!   non-object parent as an object where Painless fails, and a request
 //!   without a script is refused (row T9a-6). Its `scroll_size` is checked
-//!   and not applied: the batches are the collection service's, and a
-//!   batch refused for backpressure past the deadline is 429 with what was
-//!   written kept (rows T9a-6, T9a-7).
+//!   and not applied: the batches are the collection service's.
+//! - `_delete_by_query` and `_update_by_query` count `batches` per index,
+//!   so a request over an alias with two members reports at least two
+//!   (rows T10-2, T11-5).
+//!
+//! Texts ES builds from its own internals (row T11-5, owner ruling
+//! O-M15-12):
+//! - The error texts of document parsing carry `[1:1]` rather than the
+//!   value's line and column, and JSON syntax errors carry serde_json's text
+//!   rather than Jackson's (rows T4-5, T11-5).
+//! - A negative `boost` names the query without ES's rendering of it, a
+//!   query nested past 30 levels is one `illegal_argument_exception` rather
+//!   than one `x_content_parse_exception` per level, a `dense_vector` value
+//!   that is not an array is a field parse error, and the field-limit error
+//!   counts the new fields of the whole document.
+//! - A non-string `conflicts` body value is 400 `parsing_exception` (ES:
+//!   500 `class_cast_exception`), and an `_update_by_query` without a query
+//!   reports no conflicts on its own writes.
 
 // `EsError` carries ES's extra fields and wrapped cause by value (Task 1
 // Produces); errors are the cold path, so its size is accepted.
