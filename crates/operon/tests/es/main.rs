@@ -4,6 +4,8 @@
 #[cfg(feature = "es")]
 mod admin;
 #[cfg(feature = "es")]
+mod bulk;
+#[cfg(feature = "es")]
 mod docs;
 #[cfg(feature = "es")]
 mod harness;

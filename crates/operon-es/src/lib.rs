@@ -17,6 +17,7 @@
 //!   of `_source` and back, `binary` values, the partial-document merge).
 //! - [`write`]: the write engine and `_doc`, `_create`, `_update`,
 //!   `DELETE`.
+//! - [`bulk`] serves `_bulk`.
 //!
 //! # Divergences from Elasticsearch 8.19
 //!
@@ -60,6 +61,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 mod admin;
+pub mod bulk;
 pub mod doc;
 pub mod error;
 pub mod http;
@@ -224,7 +226,13 @@ impl EsGateway {
                 "/{index}/_create/{id}",
                 put(write::create_doc).post(write::create_doc),
             )
-            .route("/{index}/_update/{id}", post(write::update_doc));
+            .route("/{index}/_update/{id}", post(write::update_doc))
+            // Task 5: _bulk.
+            .route("/_bulk", post(bulk::bulk).put(bulk::bulk))
+            .route(
+                "/{index}/_bulk",
+                post(bulk::bulk_index).put(bulk::bulk_index),
+            );
         for &(method, path, task) in PENDING {
             let filter = match method {
                 "GET" => MethodFilter::GET,
@@ -279,10 +287,6 @@ impl EsGateway {
 /// (row T1-2). A task that serves a route removes it here; axum panics on
 /// a method routed twice, so a forgotten row fails at router build time.
 const PENDING: &[(&str, &str, &str)] = &[
-    ("POST", "/_bulk", "5"),
-    ("PUT", "/_bulk", "5"),
-    ("POST", "/{index}/_bulk", "5"),
-    ("PUT", "/{index}/_bulk", "5"),
     ("GET", "/{index}/_doc/{id}", "6"),
     ("HEAD", "/{index}/_doc/{id}", "6"),
     ("GET", "/{index}/_source/{id}", "6"),

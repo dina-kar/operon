@@ -899,5 +899,23 @@ async fn write_backpressure_is_429_with_retry_after() {
     a.assert_error(429, "es_rejected_execution_exception", None);
     let secs: u64 = a.header("retry-after").parse().expect("Retry-After");
     assert!(secs >= 1);
+    // In `_bulk` the refusal is per item, and the answer carries it too.
+    let body = "{\"index\": {\"_index\": \"bp\", \"_id\": \"8\"}}\n{\"n\": 8}\n";
+    let a = es
+        .send_raw(
+            reqwest::Method::POST,
+            "/_bulk",
+            Some(("application/x-ndjson", body.as_bytes().to_vec())),
+            &[],
+        )
+        .await;
+    assert_eq!(a.status, StatusCode::OK, "{}", a.text);
+    assert_eq!(a.body["errors"], true);
+    assert_eq!(a.body["items"][0]["index"]["status"], 429, "{}", a.text);
+    assert_eq!(
+        a.body["items"][0]["index"]["error"]["type"],
+        "es_rejected_execution_exception"
+    );
+    assert!(a.header("retry-after").parse::<u64>().expect("Retry-After") >= 1);
     es.server.shutdown().await.expect("shutdown");
 }
