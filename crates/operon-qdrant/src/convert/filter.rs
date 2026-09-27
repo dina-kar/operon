@@ -44,6 +44,7 @@ pub fn filter_from_grpc(f: &pb::Filter) -> Result<Filter, GatewayError> {
     })
 }
 
+/// One gRPC condition; an unset one is a `BadRequest`.
 fn condition_from_grpc(c: &pb::Condition) -> Result<Condition, GatewayError> {
     use pb::condition::ConditionOneOf;
     let Some(one) = &c.condition_one_of else {
@@ -77,6 +78,7 @@ fn condition_from_grpc(c: &pb::Condition) -> Result<Condition, GatewayError> {
     })
 }
 
+/// A gRPC field condition, its `match` and ranges converted to the model.
 fn field_from_grpc(fc: &pb::FieldCondition) -> Result<FieldCondition, GatewayError> {
     let present = |on: bool| on.then_some(Value::Null);
     let range = match (&fc.range, &fc.datetime_range) {

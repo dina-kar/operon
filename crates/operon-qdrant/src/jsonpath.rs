@@ -76,6 +76,7 @@ struct Parser<'a> {
 }
 
 impl Parser<'_> {
+    /// Consumes `c` when it is next.
     fn eat(&mut self, c: char) -> bool {
         if self.s[self.at..].starts_with(c) {
             self.at += c.len_utf8();
@@ -85,6 +86,7 @@ impl Parser<'_> {
         }
     }
 
+    /// Consumes the longest prefix whose characters satisfy `f`.
     fn take_while(&mut self, f: impl Fn(char) -> bool) -> &str {
         let start = self.at;
         let len: usize = self.s[start..]
@@ -109,6 +111,7 @@ impl Parser<'_> {
 }
 
 impl std::fmt::Display for JsonPath {
+    /// The path in Qdrant's syntax, quoting keys that need it.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let key = |f: &mut std::fmt::Formatter<'_>, k: &str| {
             if needs_quoting(k) {
@@ -185,6 +188,7 @@ impl JsonPath {
     }
 }
 
+/// Collects the values at `path` under `value` into `out`.
 fn value_get<'a>(path: &[PathItem], value: &'a Value, out: &mut Vec<&'a Value>) {
     let Some((head, tail)) = path.split_first() else {
         out.push(value);
@@ -229,6 +233,8 @@ fn value_filter(
     out
 }
 
+/// [`value_filter`] below `path`: an array's elements (path `…[]`) and an
+/// object's keys are kept when `keep` accepts their path.
 fn run_filter(
     path: &mut Vec<PathItem>,
     value: &Value,
@@ -310,6 +316,8 @@ pub fn value_overwrite(path: &JsonPath, dest: &mut Map<String, Value>, src: &Map
     set_in_map(&path.first, &path.rest, dest, src, true);
 }
 
+/// [`value_set`] (or [`value_overwrite`] with `replace`) under `dest[key]`,
+/// creating it when missing.
 fn set_in_map(
     key: &str,
     rest: &[PathItem],
@@ -327,6 +335,8 @@ fn set_in_map(
     }
 }
 
+/// [`value_set`] (or [`value_overwrite`] with `replace`) at `path` under
+/// `dest`: non-objects on the way are replaced.
 fn set_in_value(path: &[PathItem], dest: &mut Value, src: &Map<String, Value>, replace: bool) {
     let Some((head, rest)) = path.split_first() else {
         if replace {
@@ -382,6 +392,7 @@ pub fn value_remove(path: &JsonPath, dest: &mut Map<String, Value>) {
     }
 }
 
+/// [`value_remove`] of `head` then `rest` under `value`.
 fn remove_in(head: &PathItem, rest: &[PathItem], value: &mut Value) {
     if let Some((next, tail)) = rest.split_first() {
         match (head, value) {

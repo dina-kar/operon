@@ -65,6 +65,8 @@ pub fn exclude_ids(q: Option<Query>, ids: &[PrimaryKey]) -> Option<Query> {
     })
 }
 
+/// A `Bool` query of the given clauses; the `filter` clauses do not
+/// score.
 fn bool_query(filter: Vec<Query>, should: Vec<Query>, must_not: Vec<Query>) -> Query {
     Query::Bool {
         must: Vec::new(),
@@ -127,6 +129,8 @@ fn payload_field(key: &str) -> Result<String, GatewayError> {
     Ok(format!("{PAYLOAD_FIELD}.{}", path.normalized()?))
 }
 
+/// One condition of a filter; the conditions Ruling 15 leaves out are
+/// `Unsupported`.
 fn condition(c: &Condition) -> Result<Query, GatewayError> {
     let unsupported = |name: &str| Err(GatewayError::Unsupported(format!("{name} condition")));
     match c {
@@ -145,6 +149,7 @@ fn condition(c: &Condition) -> Result<Query, GatewayError> {
     }
 }
 
+/// `has_id` ids as keys (Ruling 18).
 fn parse_ids(ids: &[serde_json::Value]) -> Result<Vec<PrimaryKey>, GatewayError> {
     ids.iter()
         .map(|v| PointId::from_json(v).map(PointId::to_pk))
@@ -204,6 +209,7 @@ fn flag(q: Query, on: bool) -> Query {
     }
 }
 
+/// The values of `match.any` or `match.except` as IR terms.
 fn any_values(list: &AnyVariants) -> Vec<FieldValue> {
     match list {
         AnyVariants::Ints(v) => v.iter().map(|n| FieldValue::I64(*n)).collect(),
@@ -318,6 +324,8 @@ pub fn parse_datetime(s: &str) -> Result<i64, GatewayError> {
         .ok_or_else(|| GatewayError::BadRequest(format!("Unable to parse datetime {s}")))
 }
 
+/// [`parse_datetime`]'s parser: epoch milliseconds, or `None` for a string
+/// in none of Qdrant's formats (row T4-9).
 fn parse_datetime_opt(s: &str) -> Option<i64> {
     let b = s.as_bytes();
     let num = |from: usize, len: usize| -> Option<i64> {
@@ -414,6 +422,7 @@ mod reference {
         eval_filter(filter, id, payload)
     }
 
+    /// A filter against one point, with Qdrant's clause rules.
     fn eval_filter(
         filter: &Filter,
         id: &PrimaryKey,
@@ -452,6 +461,7 @@ mod reference {
             && !must_not.iter().any(|m| *m))
     }
 
+    /// One condition against one point.
     fn eval_condition(
         c: &Condition,
         id: &PrimaryKey,
@@ -483,6 +493,7 @@ mod reference {
     /// Every non-array value at `path`, arrays flattened at every step
     /// (Operon's Json field).
     fn values<'a>(path: &[String], payload: &'a Map<String, Value>) -> Vec<&'a Value> {
+        /// Collects the leaves at `path`, flattening arrays at every level.
         fn walk<'a>(path: &[String], value: &'a Value, out: &mut Vec<&'a Value>) {
             match value {
                 Value::Array(items) => items.iter().for_each(|v| walk(path, v, out)),
@@ -533,6 +544,7 @@ mod reference {
         }
     }
 
+    /// Whether `v` is in the list, integers by value (E8).
     fn in_list(v: &Value, list: &AnyVariants) -> bool {
         match list {
             AnyVariants::Ints(ns) => ns.iter().any(|n| int_eq(v, *n)),
@@ -540,6 +552,7 @@ mod reference {
         }
     }
 
+    /// A field condition: true when any of its sub-conditions is (row T4-8).
     fn eval_field(fc: &FieldCondition, payload: &Map<String, Value>) -> Result<bool, GatewayError> {
         for (name, present) in [
             ("geo_bounding_box", fc.geo_bounding_box.is_some()),
@@ -575,6 +588,7 @@ mod reference {
         Ok(parts.into_iter().any(|p| p))
     }
 
+    /// `match` against the values at the key: true when any value matches.
     fn eval_match(m: &Match, vals: &[&Value]) -> bool {
         match m {
             Match::Value { value } => vals.iter().any(|v| match value {
@@ -646,6 +660,7 @@ mod reference {
         })
     }
 
+    /// Whether `x` satisfies every bound of `r`.
     fn check<T: PartialOrd + Copy>(x: T, r: &Range<T>) -> bool {
         r.gt.is_none_or(|b| x > b)
             && r.gte.is_none_or(|b| x >= b)
@@ -653,6 +668,8 @@ mod reference {
             && r.lte.is_none_or(|b| x <= b)
     }
 
+    /// `range` against the values at the key: numbers, or date strings for
+    /// datetime bounds.
     fn eval_range(r: &RangeInterface, vals: &[&Value]) -> Result<bool, GatewayError> {
         match r {
             RangeInterface::Number(r) => {
