@@ -42,6 +42,10 @@ use crate::inproc::{GROUP, SCHEME};
 /// The worker task that prunes finished operations (Ruling 8).
 pub const RETENTION_TASK: &str = "durable-op-retention";
 
+/// The most operations one retention sweep prunes; a sweep that prunes this
+/// many may have left more behind.
+pub const RETENTION_BATCH: usize = 1000;
+
 /// The tag every operation's root promise carries: its own id.
 pub const TAG_OP: &str = "loam:op";
 /// The root's kind (`collection.import`, …).
@@ -636,6 +640,13 @@ impl Operations {
     /// cascades remove their callbacks and listeners (T0-12). Returns how
     /// many. `now_ms` is the clock, so tests can move it.
     pub async fn prune_finished(&self, now_ms: i64) -> Result<usize, OpsError> {
+        // The store is the server's: once it stopped and released its lock,
+        // retention must not touch it (T7-9).
+        if !self.client.is_alive() {
+            return Err(OpsError::Unavailable(
+                "the durable server has stopped".into(),
+            ));
+        }
         let retention = i64::try_from(self.config.retention.as_millis()).unwrap_or(i64::MAX);
         let cutoff = now_ms.saturating_sub(retention);
         let pruned = retention::prune(&self.store, cutoff).await?;
@@ -1003,11 +1014,11 @@ pub(crate) fn now_ms() -> i64 {
 /// retention setting is proposed upstream as PR 5 (resonatehq/resonate#1166);
 /// this goes away when it lands.
 mod retention {
-    use super::{OPERATION_PREFIX, OpsError, TAG_OP};
+    use super::{OPERATION_PREFIX, OpsError, RETENTION_BATCH, TAG_OP};
     use crate::config::DurableStore;
 
     /// At most this many operations per sweep.
-    const BATCH: i64 = 1000;
+    const BATCH: usize = RETENTION_BATCH;
 
     /// Delete the finished operations settled before `cutoff`, with the
     /// origins they own outside their own (an import's file roots, tagged

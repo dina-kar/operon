@@ -401,6 +401,12 @@ jobs:
         run: |
           scripts/durable/tidb.sh up --tag loam-ci-durable --port-offset 27000 --timeout 180 | tee "$RUNNER_TEMP/tidb.out"
           sed -n 's/^export \(OPERON_TEST_TIDB[A-Z_]*=.*\)$/\1/p' "$RUNNER_TEMP/tidb.out" >> "$GITHUB_ENV"
+      # Without the CA, verify_ca_skips_the_host_name would skip and the job
+      # would pass without testing the sqlx-core patch (T7-13).
+      - name: require TiDB's CA certificate
+        run: |
+          test -n "${OPERON_TEST_TIDB_CA:-}" || { echo "tidb.sh printed no OPERON_TEST_TIDB_CA"; exit 1; }
+          test -r "$OPERON_TEST_TIDB_CA" || { echo "OPERON_TEST_TIDB_CA=$OPERON_TEST_TIDB_CA is not a readable file"; exit 1; }
       - name: TiDB suite
         run: cargo test -p operon-durable --features mysql --test tidb --locked
       - name: linearizability on TiDB (8 clients x 600 ops)

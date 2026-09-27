@@ -17,6 +17,7 @@
 //! and after the durable server stops, they answer 503
 //! `durable_unavailable`.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -29,7 +30,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use operon_common::meta::MetaStore;
 use operon_durable::import::ImportEnv;
-use operon_durable::ops::RETENTION_TASK;
+use operon_durable::ops::{RETENTION_BATCH, RETENTION_TASK};
 use operon_durable::{OperationId, OperationState, Operations, OpsError};
 use operon_worker::{
     Candidate, Priority, Task, TaskContext, TaskError, TaskKey, TaskOutcome, TaskSource,
@@ -204,12 +205,15 @@ async fn list(
 }
 
 /// Proposes `durable-op-retention` (priority `Maintenance`, Ruling 8) once
-/// per [`RETENTION_INTERVAL`], once the operations are served.
+/// per [`RETENTION_INTERVAL`], once the operations are served, and again at
+/// once after a sweep that pruned a full batch ([`RETENTION_BATCH`]).
 #[derive(Debug)]
 pub struct RetentionSource {
     slot: OperationsSlot,
     interval: Duration,
     last: Mutex<Option<Instant>>,
+    /// Set by a sweep that pruned a full batch: more may be due.
+    more: Arc<AtomicBool>,
 }
 
 impl RetentionSource {
@@ -219,6 +223,7 @@ impl RetentionSource {
             slot,
             interval: RETENTION_INTERVAL,
             last: Mutex::new(None),
+            more: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -237,11 +242,15 @@ impl TaskSource for RetentionSource {
             .last
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if last.is_some_and(|at| at.elapsed() < self.interval) {
+        let more = self.more.swap(false, Ordering::SeqCst);
+        if !more && last.is_some_and(|at| at.elapsed() < self.interval) {
             return Ok(Vec::new());
         }
         *last = Some(Instant::now());
-        let task: Arc<dyn Task> = Arc::new(Retention { ops });
+        let task: Arc<dyn Task> = Arc::new(Retention {
+            ops,
+            more: Arc::clone(&self.more),
+        });
         Ok(vec![(TaskKey::cluster(RETENTION_TASK), task)])
     }
 }
@@ -249,6 +258,7 @@ impl TaskSource for RetentionSource {
 /// One retention sweep.
 struct Retention {
     ops: Arc<Operations>,
+    more: Arc<AtomicBool>,
 }
 
 #[async_trait]
@@ -260,6 +270,11 @@ impl Task for Retention {
             .unwrap_or(0);
         match self.ops.prune_finished(now).await {
             Ok(0) => Ok(TaskOutcome::Idle),
+            // A full batch: sweep again without waiting for the interval.
+            Ok(pruned) if pruned >= RETENTION_BATCH => {
+                self.more.store(true, Ordering::SeqCst);
+                Ok(TaskOutcome::MoreWork)
+            }
             Ok(_) => Ok(TaskOutcome::Done),
             Err(e) => Err(TaskError::failed(e)),
         }
