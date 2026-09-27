@@ -27,7 +27,11 @@ clap = { version = "4", features = ["derive"] }
 # server, Task 12); operon-live-proto's `client` feature adds `client`.
 connectrpc = "0.9.1"
 connectrpc-build = "0.9"
+# CRC-16 of Loam Live document ids (R1 plan Task 8).
+crc = "3"
 crc32c = "0.6"
+# Crockford base32 of Loam Live document ids (R1 plan Task 8).
+data-encoding = "2"
 # Lance's feature set (no parquet or compression): adding operon-query does
 # not rebuild DataFusion for the workspace.
 datafusion = { version = "54.1", default-features = false, features = [
@@ -139,6 +143,7 @@ operon-es = { path = "crates/operon-es", version = "0.0.1" }
 operon-hnsw = { path = "crates/operon-hnsw", version = "0.0.1" }
 operon-hot = { path = "crates/operon-hot", version = "0.0.1" }
 operon-link = { path = "crates/operon-link", version = "0.0.1" }
+operon-live = { path = "crates/operon-live", version = "0.0.1" }
 operon-live-proto = { path = "crates/operon-live-proto", version = "0.0.1" }
 operon-log = { path = "crates/operon-log", version = "0.0.1" }
 operon-meta = { path = "crates/operon-meta", version = "0.0.1" }

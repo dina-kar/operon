@@ -176,11 +176,12 @@ message LiveError {
 
 enum ErrorCode {
   ERROR_CODE_UNSPECIFIED = 0;
-  // The arguments or a value are invalid, or a limit was exceeded.
+  // The arguments or a value are invalid.
   ERROR_CODE_INVALID_ARGUMENT = 1;
   // The function, table or document does not exist.
   ERROR_CODE_NOT_FOUND = 2;
   ERROR_CODE_FAILED_PRECONDITION = 3;
+  // A limit (design §20 §4.1, §5.1) was exceeded; the message names it.
   ERROR_CODE_RESOURCE_EXHAUSTED = 4;
   // The function threw.
   ERROR_CODE_FUNCTION_ERROR = 5;

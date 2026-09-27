@@ -4,7 +4,7 @@
 
 fn main() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../proto");
-    let files: Vec<String> = ["value", "live", "journal"]
+    let files: Vec<String> = ["value", "live", "journal", "catalog"]
         .iter()
         .map(|name| format!("{root}/loam/live/v1/{name}.proto"))
         .collect();

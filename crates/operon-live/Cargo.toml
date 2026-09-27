@@ -1,0 +1,28 @@
+[package]
+name = "operon-live"
+description = "Loam Live, the reactive document database on TiKV: values, document ids, tables, indexes and their key layout (design §20)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+# operon-tikv depends on tikv-client by git (R1 plan row R4), which crates.io
+# refuses.
+publish = false
+
+[dependencies]
+buffa.workspace = true
+crc.workspace = true
+data-encoding.workspace = true
+operon-live-proto.workspace = true
+operon-tikv.workspace = true
+# The OS random source for document ids (rand's OsRng).
+rand.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

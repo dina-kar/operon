@@ -593,7 +593,7 @@ export enum ErrorCode {
   UNSPECIFIED = 0,
 
   /**
-   * The arguments or a value are invalid, or a limit was exceeded.
+   * The arguments or a value are invalid.
    *
    * @generated from enum value: ERROR_CODE_INVALID_ARGUMENT = 1;
    */
@@ -612,6 +612,8 @@ export enum ErrorCode {
   FAILED_PRECONDITION = 3,
 
   /**
+   * A limit (design §20 §4.1, §5.1) was exceeded; the message names it.
+   *
    * @generated from enum value: ERROR_CODE_RESOURCE_EXHAUSTED = 4;
    */
   RESOURCE_EXHAUSTED = 4,
