@@ -2,13 +2,11 @@
 //! write engine; Task 6: document reads (`GET`/`HEAD` `_doc`, `_source`,
 //! `_mget`) and `_source` filtering.
 //!
-//! `_search` and `_count` are Task 9's, so these tests count through the
-//! collection service (row T4-1).
+//! They count through `_count` and search through `_search` (Task 9; row
+//! T4-1's interim service calls are gone).
 
 use operon_collection::PrimaryKey;
-use operon_query::{
-    AnnParams, Projection, ReadConsistency, Retriever, SearchRequest, SourceFilter,
-};
+use operon_query::{Projection, ReadConsistency, SourceFilter};
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 
@@ -45,13 +43,10 @@ pub async fn stored(es: &Es, index: &str, id: &str) -> Option<Value> {
     }
 }
 
-/// The live documents of `index`.
+/// The live documents of `index`, through `GET /{index}/_count`.
 pub async fn count(es: &Es, index: &str) -> u64 {
-    es.server
-        .collections()
-        .count(NS, index, None, ReadConsistency::Strong)
-        .await
-        .expect("count")
+    let a = Es::ok(es.get(&format!("/{index}/_count")).await);
+    a.body["count"].as_u64().expect("count")
 }
 
 /// The `es_env_fx` fixture of LangChain's `test_cache.py`.
@@ -524,25 +519,11 @@ async fn a_partial_update_replaces_and_removes_a_vector() {
         stored(&es, "v", "1").await,
         Some(json!({"text": "x", "vector": [0.3, 0.2, 0.1]}))
     );
-    let knn = || {
-        let mut request = SearchRequest::new("v");
-        request.retrievers = vec![Retriever::Vector {
-            field: "vector".to_string(),
-            query: vec![0.3, 0.2, 0.1],
-            k: 10,
-            params: AnnParams::default(),
-            filter: None,
-        }];
-        request
-    };
-    let hits = es
-        .server
-        .collections()
-        .search(NS, knn())
-        .await
-        .expect("search")
-        .hits;
-    assert_eq!(hits.len(), 1);
+    let knn = json!({"knn": {"field": "vector", "query_vector": [0.3, 0.2, 0.1], "k": 10,
+                             "num_candidates": 10}});
+    let hits = |a: crate::harness::Answer| a.body["hits"]["hits"].as_array().expect("hits").clone();
+    let found = hits(Es::ok(es.post("/v/_search", knn.clone()).await));
+    assert_eq!(found.len(), 1);
     Es::ok(
         es.post("/v/_update/1", json!({"doc": {"vector": null}}))
             .await,
@@ -551,14 +532,8 @@ async fn a_partial_update_replaces_and_removes_a_vector() {
         stored(&es, "v", "1").await,
         Some(json!({"text": "x", "vector": null}))
     );
-    let hits = es
-        .server
-        .collections()
-        .search(NS, knn())
-        .await
-        .expect("search")
-        .hits;
-    assert!(hits.is_empty(), "{hits:?}");
+    let found = hits(Es::ok(es.post("/v/_search", knn).await));
+    assert!(found.is_empty(), "{found:?}");
     es.server.shutdown().await.expect("shutdown");
 }
 

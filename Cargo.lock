@@ -5418,6 +5418,7 @@ version = "0.0.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "futures",
  "operon-collection",
  "operon-common",
  "operon-query",

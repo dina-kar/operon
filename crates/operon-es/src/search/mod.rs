@@ -1,19 +1,26 @@
-//! Search requests (plan M1.5 Task 8): the URL parameters and body of
-//! `_search` compiled to a [`SearchPlan`] over one index. Task 9 executes
-//! the plan and renders its hits.
+//! Search requests (plan M1.5 Tasks 8 and 9): the URL parameters and body
+//! of `_search` compiled to a [`SearchPlan`] over one index, executed over
+//! every index of the request and rendered with ES scores.
 //!
 //! - [`body`]: body keys, paging, sort, `search_after` and
 //!   `track_total_hits`.
 //! - [`compile`](mod@compile): the compilation cases (query, knn, hybrid sum, RRF,
 //!   `script_score`).
+//! - [`exec`]: `_search`, `_count` and `_msearch` (fan-out, hybrid sum,
+//!   totals).
+//! - [`render`]: ES scores and the answer's shape.
 
 pub mod body;
 pub mod compile;
+pub mod exec;
+pub mod render;
 
 use operon_query::{BoolOperator, Query, SearchRequest, SortKey, TrackTotalHits};
 use serde_json::Value;
 
 pub use compile::compile;
+pub use exec::{SearchOutcome, count, execute};
+pub use render::{render_hit, to_es_score};
 
 use crate::doc::SourceFilter;
 use crate::dsl::ScriptFunction;

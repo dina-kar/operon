@@ -146,6 +146,15 @@ fn knn_thresholds_are_in_engine_space() {
     assert_eq!(min("vector", 0.75), Some(0.5));
     assert_eq!(min("l2", 0.2), Some(-2.0));
     assert_eq!(min("dot", 0.75), Some(0.5));
+    // `min_score` is in boosted ES score space (Task 9): with boost 2 a
+    // min_score of 1.5 is an ES score of 0.75, cosine 0.5.
+    let body = json!({"knn": {"field": "vector", "k": 3, "query_vector": [1.0, 0.0, 0.0],
+        "boost": 2.0}, "min_score": 1.5});
+    let SearchPlan::Single { request, render } = plan(body) else {
+        panic!("not Single");
+    };
+    assert_eq!(request.score_threshold, Some(0.5));
+    assert_eq!(render.boost, 2.0);
 }
 
 #[test]

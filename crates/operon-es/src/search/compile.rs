@@ -159,6 +159,33 @@ impl Shape<'_> {
     }
 }
 
+/// The `query_string` query of the URL parameter `q` (Ruling 20), with
+/// `df` and `default_operator`; `_count` uses it too.
+pub(crate) fn url_query(
+    q: &str,
+    params: &SearchParams,
+    ctx: &QueryContext<'_>,
+) -> Result<Query, EsError> {
+    let mut qs = Map::new();
+    qs.insert("query".to_string(), json!(q));
+    if let Some(df) = &params.df {
+        qs.insert("default_field".to_string(), json!(df));
+    }
+    if let Some(op) = params.default_operator {
+        let op = match op {
+            operon_query::BoolOperator::Or => "or",
+            operon_query::BoolOperator::And => "and",
+        };
+        qs.insert("default_operator".to_string(), json!(op));
+    }
+    parse_leaf(&json!({"query_string": qs}), ctx)
+}
+
+/// `boost` when it is positive, else 1 (a threshold divides by it).
+fn positive(boost: f32) -> f32 {
+    if boost > 0.0 { boost } else { 1.0 }
+}
+
 /// Compiles the search `body` (with the URL `params`, Ruling 20) over
 /// `index` (Task 8).
 pub fn compile(
@@ -289,25 +316,11 @@ pub fn compile(
     };
     // The query (`q` replaces it, Ruling 20).
     let parsed = match (&params.q, body.get("query")) {
-        (Some(q), _) => {
-            let mut qs = Map::new();
-            qs.insert("query".to_string(), json!(q));
-            if let Some(df) = &params.df {
-                qs.insert("default_field".to_string(), json!(df));
-            }
-            if let Some(op) = params.default_operator {
-                let op = match op {
-                    operon_query::BoolOperator::Or => "or",
-                    operon_query::BoolOperator::And => "and",
-                };
-                qs.insert("default_operator".to_string(), json!(op));
-            }
-            ParsedQuery {
-                query: Some(parse_leaf(&json!({"query_string": qs}), &ctx)?),
-                knn: Vec::new(),
-                script: None,
-            }
-        }
+        (Some(q), _) => ParsedQuery {
+            query: Some(url_query(q, params, &ctx)?),
+            knn: Vec::new(),
+            script: None,
+        },
         (None, Some(v)) if !v.is_null() => parse_query(v, &ctx)?,
         _ => ParsedQuery {
             query: None,
@@ -394,11 +407,7 @@ pub fn compile(
         }];
         request.offset = from;
         request.limit = size;
-        let boost = if script.boost > 0.0 {
-            script.boost
-        } else {
-            1.0
-        };
+        let boost = positive(script.boost);
         let threshold =
             |s: Option<f32>| s.and_then(|s| script_threshold(script.function, s / boost));
         request.score_threshold = stricter(threshold(script.min_score), threshold(min_score));
@@ -475,8 +484,9 @@ pub fn compile(
                 .similarity
                 .map(|t| knn_similarity(similarity, t))
                 .transpose()?;
+            // `min_score` is in boosted ES score space.
             let by_score = match min_score {
-                Some(s) => knn_min_score(similarity, s)?,
+                Some(s) => knn_min_score(similarity, s / positive(spec.boost))?,
                 None => None,
             };
             request.score_threshold = stricter(by_similarity, by_score);
@@ -687,13 +697,16 @@ fn compile_retriever(
                 .map(|t| knn_similarity(similarity, t))
                 .transpose()?;
             let by_score = match min_score {
-                Some(s) => knn_min_score(similarity, s)?,
+                Some(s) => knn_min_score(similarity, s / positive(spec.boost))?,
                 None => None,
             };
             request.score_threshold = stricter(by_similarity, by_score);
             Ok(SearchPlan::Single {
                 request,
-                render: shape.render(EsScore::Knn(similarity)),
+                render: RenderSpec {
+                    boost: spec.boost,
+                    ..shape.render(EsScore::Knn(similarity))
+                },
             })
         }
     }

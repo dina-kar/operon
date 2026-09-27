@@ -21,7 +21,8 @@
 //! - `read`: `GET`/`HEAD` `_doc` and `_source`, and `_mget`, with
 //!   `_source` filtering ([`doc::SourceFilter`]).
 //! - [`dsl`]: the Query DSL → the search IR.
-//! - [`search`]: search bodies and URL parameters → a [`search::SearchPlan`].
+//! - [`search`]: search bodies and URL parameters → a [`search::SearchPlan`],
+//!   and `_search`, `_count` and `_msearch` with ES scores.
 //!
 //! # Divergences from Elasticsearch 8.19
 //!
@@ -248,6 +249,31 @@ impl EsGateway {
                 "/{index}/_mget",
                 get(read::mget_index).post(read::mget_index),
             )
+            // Task 9: searches.
+            .route(
+                "/_search",
+                get(search::exec::search_all).post(search::exec::search_all),
+            )
+            .route(
+                "/{index}/_search",
+                get(search::exec::search_index).post(search::exec::search_index),
+            )
+            .route(
+                "/_count",
+                get(search::exec::count_all).post(search::exec::count_all),
+            )
+            .route(
+                "/{index}/_count",
+                get(search::exec::count_index).post(search::exec::count_index),
+            )
+            .route(
+                "/_msearch",
+                get(search::exec::msearch_all).post(search::exec::msearch_all),
+            )
+            .route(
+                "/{index}/_msearch",
+                get(search::exec::msearch_index).post(search::exec::msearch_index),
+            )
             // Task 5: _bulk.
             .route("/_bulk", post(bulk::bulk).put(bulk::bulk))
             .route(
@@ -308,18 +334,6 @@ impl EsGateway {
 /// (row T1-2). A task that serves a route removes it here; axum panics on
 /// a method routed twice, so a forgotten row fails at router build time.
 const PENDING: &[(&str, &str, &str)] = &[
-    ("GET", "/_search", "9"),
-    ("POST", "/_search", "9"),
-    ("GET", "/{index}/_search", "9"),
-    ("POST", "/{index}/_search", "9"),
-    ("GET", "/_count", "9"),
-    ("POST", "/_count", "9"),
-    ("GET", "/{index}/_count", "9"),
-    ("POST", "/{index}/_count", "9"),
-    ("GET", "/_msearch", "9"),
-    ("POST", "/_msearch", "9"),
-    ("GET", "/{index}/_msearch", "9"),
-    ("POST", "/{index}/_msearch", "9"),
     ("POST", "/{index}/_update_by_query", "9a"),
     ("POST", "/{index}/_delete_by_query", "10"),
 ];
