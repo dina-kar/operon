@@ -238,6 +238,9 @@ jobs:
         if: steps.paths.outputs.run == 'true'
         env:
           OPERON_TEST_PD: 127.0.0.1:19379
+          # Nightly-only cases (operon_tikv::testing::nightly), such as
+          # old_versions_dropped_after_gc.
+          OPERON_TEST_NIGHTLY: "1"
         run: cargo test ${{ steps.packages.outputs.args }} --locked
       - name: playground logs
         if: failure() && steps.paths.outputs.run == 'true'

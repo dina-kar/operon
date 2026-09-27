@@ -43,7 +43,9 @@ impl std::fmt::Debug for Txn {
 }
 
 /// A read-only view at one timestamp, from [`Tikv::snapshot`]. Every key is
-/// relative to the handle's root.
+/// relative to the handle's root. Its reads are refused once its timestamp
+/// leaves the GC safe window, unless a [`GcBarrier`](crate::GcBarrier) of the
+/// handle covers it.
 pub struct Snap {
     inner: Snapshot,
     tikv: Tikv,
@@ -282,8 +284,15 @@ impl Snap {
             .map_err(|(e, _)| e)
     }
 
+    /// Past the window, reads go on only while a barrier of the handle
+    /// covers the snapshot's timestamp.
     fn check_window(&self) -> Result<(), TxnError> {
-        if Instant::now() > self.refuse_reads_after {
+        if Instant::now() > self.refuse_reads_after
+            && !self
+                .tikv
+                .barriers
+                .covers(tikv_client::TimestampExt::version(&self.at))
+        {
             return Err(TxnError::Fatal(BELOW_SAFE_POINT.to_string()));
         }
         Ok(())

@@ -1,4 +1,4 @@
-//! Loam's TiKV client layer (R1 plan Tasks 1–2; design §20 §5, §9).
+//! Loam's TiKV client layer (R1 plan Tasks 1–3; design §20 §5, §9).
 //!
 //! [`Tikv`] is a keyspace-scoped handle on a TiKV cluster on API v2: a
 //! `tikv-client` transaction client bound to one keyspace (rebuilt by a
@@ -10,15 +10,17 @@
 //! order-preserving tuple codec. [`ensure_keyspace`] creates a keyspace
 //! through PD's HTTP API if it is absent. [`testing`] is the cluster harness:
 //! tests that need TiKV call [`testing::cluster`], which skips them unless
-//! `OPERON_TEST_PD` is set.
-//!
-//! Task 3 adds the cluster GC loop.
+//! `OPERON_TEST_PD` is set. [`GcLoop`] is the cluster MVCC GC loop (one per
+//! cluster: Loam is the cluster's GC worker, row R6), and [`GcBarrier`] holds
+//! GC below a timestamp through a PD service safe point.
 
 mod classify;
 pub mod codec;
 mod config;
 pub mod faults;
+mod gc;
 mod keyspace;
+mod pd;
 mod runner;
 pub mod testing;
 pub mod token;
@@ -35,11 +37,14 @@ pub use config::{
     TikvConfig,
 };
 pub use faults::{Fault, FaultPlan, FaultPoint};
+pub use gc::{DEFAULT_GC_INTERVAL, GC_LEASE_KEY, GcBarrier, GcConfig, GcHandle, GcLoop, GcReport};
 pub use keyspace::{KeyspaceMeta, ensure_keyspace};
 pub use runner::{CommitMode, Committed, Mode, TikvStats, TxnError, TxnOptions};
 pub use tikv_client::{Timestamp, TimestampExt};
 pub use txn::{MAX_VALUE_BYTES, PAGE_KEYS, Pair, Snap, Txn};
 
+use gc::{Barriers, SafePointCache};
+use pd::Pd;
 use runner::Counters;
 use tikv_client::TransactionClient;
 use tso::{Supervisor, TsoClock};
@@ -82,6 +87,30 @@ pub enum TikvError {
     /// Any other error from `tikv-client`, its keys scrubbed.
     #[error("TiKV client: {0}")]
     Client(String),
+    /// A PD gRPC call failed or PD reported an error in its answer.
+    #[error("PD gRPC: {op}: {message}")]
+    PdGrpc { op: &'static str, message: String },
+    /// Another GC loop holds the cluster GC lease (or took it mid-run).
+    #[error("the cluster GC lease is held by another loop ({holder})")]
+    GcLease { holder: String },
+    /// The GC loop could not build a client for a keyspace, or resolve its
+    /// locks; the safe point did not move.
+    #[error("cluster GC: keyspace '{keyspace}': {message}")]
+    GcKeyspace { keyspace: String, message: String },
+    /// A GC barrier below the current minimum service safe point: PD saved
+    /// nothing, because GC may already be past `ts`.
+    #[error(
+        "GC barrier '{service_id}' at ts {ts} refused: the minimum service safe point is          already at ts {min_safe_point}"
+    )]
+    BarrierBelowSafePoint {
+        service_id: String,
+        ts: u64,
+        min_safe_point: u64,
+    },
+    /// A transaction of this layer's own (the GC loop's lease or token
+    /// sweep) failed.
+    #[error("transaction: {0}")]
+    Txn(#[from] TxnError),
 }
 
 impl From<tikv_client::Error> for TikvError {
@@ -104,6 +133,9 @@ pub struct Tikv {
     gc_life_time: Duration,
     faults: Option<Arc<dyn FaultPlan>>,
     counters: Arc<Counters>,
+    pd: Arc<Pd>,
+    barriers: Arc<Barriers>,
+    safe_point_cache: Arc<SafePointCache>,
 }
 
 impl fmt::Debug for Tikv {
@@ -159,6 +191,9 @@ impl Tikv {
         ));
         let tikv = Tikv {
             tso: Arc::new(TsoClock::new(clients.clone(), config.request_timeout)),
+            pd: Arc::new(Pd::new(config.pd.clone(), config.request_timeout)),
+            barriers: Arc::default(),
+            safe_point_cache: Arc::default(),
             clients,
             http,
             pd_http,
@@ -215,7 +250,7 @@ impl Tikv {
     }
 
     /// The current `tikv-client` transaction client (keyspace-scoped), for
-    /// this crate's own maintenance paths (Task 3's GC loop). Everything else
+    /// this crate's own maintenance paths (the GC loop). Everything else
     /// goes through [`Tikv::run`] and [`Tikv::snapshot`].
     pub(crate) fn client(&self) -> Arc<TransactionClient> {
         self.clients.client().0
@@ -224,6 +259,18 @@ impl Tikv {
     /// The handle's default commit mode.
     pub fn commit_mode(&self) -> CommitMode {
         self.commit_mode
+    }
+
+    /// How many locks with a start timestamp at or below `at` are left under
+    /// this handle's root (feature `faults`: the GC tests check with it that
+    /// the loop resolved them).
+    #[cfg(feature = "faults")]
+    pub async fn locks_below(&self, at: &Timestamp) -> Result<usize, TikvError> {
+        let hi = codec::tuple::successor(self.root());
+        let range =
+            tikv_client::BoundRange::from((self.root().to_vec(), (!hi.is_empty()).then_some(hi)));
+        let locks = self.client().scan_locks(at, range, 4096).await?;
+        Ok(locks.len())
     }
 
     /// This handle with `plan` consulted at every fault point of every

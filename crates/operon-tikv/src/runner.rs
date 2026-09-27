@@ -246,20 +246,32 @@ impl Tikv {
     /// A read-only view at `at`. Refused with [`TikvError::GcSafePoint`] when
     /// `at` is older than `now − (gc_life_time − 1 min)` (row R7): TiKV would
     /// answer such a read without an error, from versions GC may have dropped.
+    /// A [`GcBarrier`](crate::GcBarrier) set through this handle (or a clone)
+    /// at or below `at` lets it through while the barrier lives, provided the
+    /// cluster GC safe point has not passed `at` (Task 3, row T2-2).
     pub async fn snapshot(&self, at: Timestamp) -> Result<crate::Snap, TikvError> {
         let now_ms = self.now_ms_estimate().await?;
         let window_ms = u64::try_from(self.safe_window().as_millis()).unwrap_or(u64::MAX);
         let floor_ms = now_ms.saturating_sub(window_ms);
         let at_ms = Tikv::physical_ms(&at);
+        let version = tikv_client::TimestampExt::version(&at);
         if at_ms < floor_ms {
-            return Err(TikvError::GcSafePoint {
-                at: tikv_client::TimestampExt::version(&at),
-                safe_point: tikv_client::TimestampExt::version(&Timestamp {
-                    physical: i64::try_from(floor_ms).unwrap_or(i64::MAX),
-                    logical: 0,
-                    suffix_bits: 0,
-                }),
+            let refused = |safe_point: u64| TikvError::GcSafePoint {
+                at: version,
+                safe_point,
+            };
+            let floor = tikv_client::TimestampExt::version(&Timestamp {
+                physical: i64::try_from(floor_ms).unwrap_or(i64::MAX),
+                logical: 0,
+                suffix_bits: 0,
             });
+            if !self.barriers.covers(version) {
+                return Err(refused(floor));
+            }
+            let cluster = tikv_client::TimestampExt::version(&self.gc_safe_point().await?);
+            if cluster > version {
+                return Err(refused(cluster));
+            }
         }
         let (client, _) = self.clients.client();
         let inner = client.snapshot(
@@ -268,7 +280,7 @@ impl Tikv {
                 .read_only()
                 .drop_check(CheckLevel::None),
         );
-        let left = Duration::from_millis(at_ms - floor_ms);
+        let left = Duration::from_millis(at_ms.saturating_sub(floor_ms));
         Ok(crate::Snap::new(inner, self.clone(), at, left))
     }
 

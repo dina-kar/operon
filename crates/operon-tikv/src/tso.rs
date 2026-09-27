@@ -73,6 +73,12 @@ impl Supervisor {
         (client, self.generation.load(Ordering::Acquire))
     }
 
+    /// The PD endpoints, the client configuration and the connect limit
+    /// clients are built with (the GC loop builds one per keyspace).
+    pub(crate) fn blueprint(&self) -> (&[String], &tikv_client::Config, Duration) {
+        (&self.pd, &self.config, self.connect_limit)
+    }
+
     /// How many times the client was rebuilt.
     pub(crate) fn rebuilds(&self) -> u64 {
         self.rebuilds.load(Ordering::Relaxed)
