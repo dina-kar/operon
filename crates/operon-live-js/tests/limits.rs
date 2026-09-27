@@ -124,3 +124,48 @@ fn a_bad_top_level_is_refused_at_load() {
         }
     }
 }
+
+/// Review of #93: a thrown value whose `toString` loops is described under
+/// the CPU limit, so the call times out instead of hanging a worker.
+#[tokio::test]
+async fn describing_a_thrown_value_is_under_the_cpu_limit() {
+    let bundle = load(
+        &query_bundle("throw { toString() { for (;;) {} } };"),
+        small(Duration::from_millis(200), 64 << 20),
+    );
+    let run_once = async {
+        match run(&bundle, "t:q").await {
+            Err(LiveError::FunctionTimeout(m)) => assert!(m.contains("CPU limit"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), run_once)
+        .await
+        .expect("the call ends");
+    // The one worker is free again.
+    let ok = load(
+        &query_bundle("return 1n;"),
+        small(Duration::from_millis(200), 64 << 20),
+    );
+    assert!(matches!(run(&ok, "t:q").await, Ok(LiveValue::I64(1))));
+}
+
+/// Review of #93: a value that shares its parts (`a = [a, a]`, 40 times) is
+/// small in QuickJS but has 2^40 parts once copied out; the copy stops at
+/// its part budget instead of growing outside the memory limit.
+#[tokio::test]
+async fn a_shared_value_graph_is_refused() {
+    let bundle = load(
+        &query_bundle("let a = []; for (let i = 0; i < 40; i++) a = [a, a]; return a;"),
+        small(Duration::from_secs(5), 64 << 20),
+    );
+    let started = Instant::now();
+    let result = tokio::time::timeout(Duration::from_secs(20), run(&bundle, "t:q"))
+        .await
+        .expect("the call ends");
+    match result {
+        Err(LiveError::FunctionError(m)) => assert!(m.contains("parts"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(started.elapsed() < Duration::from_secs(20));
+}

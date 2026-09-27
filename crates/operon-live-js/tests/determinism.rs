@@ -237,3 +237,35 @@ async fn builtins_are_frozen_and_subclassing_still_works() {
         ]))
     );
 }
+
+/// Review of #93: `new` on a `Date` subclass builds an instance of the
+/// subclass, and a subclass without arguments still reads the start
+/// timestamp.
+#[tokio::test]
+async fn date_subclasses_keep_their_prototype_and_the_clock() {
+    let bundle = load(
+        &query_bundle(
+            r#"
+            class Stamp extends Date { fmt() { return "at " + this.getTime(); } }
+            const now = new Stamp();
+            const at = new Stamp(5);
+            return [
+              now instanceof Stamp, now instanceof Date, typeof now.fmt,
+              now.getTime() === Date.now(), at.getTime(), at.fmt(),
+            ];
+            "#,
+        ),
+        JsConfig::default(),
+    );
+    assert_eq!(
+        run(&bundle, "t:q").await,
+        Ok(LiveValue::Array(vec![
+            LiveValue::Bool(true),
+            LiveValue::Bool(true),
+            s("function"),
+            LiveValue::Bool(true),
+            LiveValue::F64(5.0),
+            s("at 5"),
+        ]))
+    );
+}

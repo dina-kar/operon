@@ -47,6 +47,13 @@ const PRELUDE: &str = include_str!("prelude.js");
 /// How deep a value may nest.
 const MAX_DEPTH: usize = 64;
 
+/// How many parts (scalars, arrays and objects) one value copied out of
+/// JavaScript may have. Shared references are copied at every use, so a
+/// value QuickJS holds in a few arrays can have 2^64 parts; the copy stops
+/// here rather than growing outside the runtime's memory limit (review of
+/// #93). 32 000 scanned documents of a few dozen fields each fit.
+const MAX_VALUE_PARTS: usize = 1 << 21;
+
 /// A bundle's functions, `(path, kind)`.
 type Functions = Vec<(String, FnKind)>;
 
@@ -456,7 +463,7 @@ fn host_call_fn<'js>(ctx: &Ctx<'js>, state: Rc<RefCell<State>>) -> rquickjs::Res
                     "the database is available inside a handler only",
                 ));
             };
-            let args = match from_js(&ctx, &helpers, args, 0) {
+            let args = match from_js(&ctx, &helpers, args, 0, &mut 0) {
                 Ok(v) => v,
                 Err(message) => {
                     return Err(Exception::throw_type(&ctx, &format!("db.{op}: {message}")));
@@ -566,9 +573,11 @@ fn call_in<'js>(
                         ));
                     }
                 };
-                return Ok(Outcome::Done(from_js(ctx, &helpers, value, 0).map_err(
-                    |m| LiveError::FunctionError(format!("{} returned {m}", job.path)),
-                )));
+                return Ok(Outcome::Done(
+                    from_js(ctx, &helpers, value, 0, &mut 0).map_err(|m| {
+                        LiveError::FunctionError(format!("{} returned {m}", job.path))
+                    }),
+                ));
             }
             PromiseState::Rejected => {
                 let thrown = rejection(ctx, &promise);
@@ -649,7 +658,8 @@ fn failure<'js>(
     if budget.fired() {
         return timeout(budget);
     }
-    budget.disarm();
+    // The budget stays armed: `errorId` and `describe` may run the thrown
+    // value's getters or `toString` (review of #93).
     if let Ok(id_of) = host.get::<_, Function>("errorId")
         && let Ok(id) = id_of.call::<_, f64>((thrown.clone(),))
         && id >= 0.0
@@ -658,6 +668,9 @@ fn failure<'js>(
         return e;
     }
     let text = describe(ctx, host, &thrown);
+    if budget.fired() {
+        return timeout(budget);
+    }
     if text.contains("out of memory") {
         return LiveError::FunctionOutOfMemory(text);
     }
@@ -760,9 +773,14 @@ fn from_js<'js>(
     helpers: &Helpers,
     v: Value<'js>,
     depth: usize,
+    parts: &mut usize,
 ) -> Result<LiveValue, String> {
     if depth > MAX_DEPTH {
         return Err(format!("a value nested deeper than {MAX_DEPTH} levels"));
+    }
+    *parts += 1;
+    if *parts > MAX_VALUE_PARTS {
+        return Err(format!("a value of more than {MAX_VALUE_PARTS} parts"));
     }
     let restore = |p: &Persistent<Function<'static>>| {
         p.clone()
@@ -802,6 +820,7 @@ fn from_js<'js>(
                     helpers,
                     item.map_err(|e| e.to_string())?,
                     depth + 1,
+                    parts,
                 )?);
             }
             Ok(LiveValue::Array(items))
@@ -822,7 +841,7 @@ fn from_js<'js>(
                 if item.is_undefined() {
                     continue;
                 }
-                fields.insert(k, from_js(ctx, helpers, item, depth + 1)?);
+                fields.insert(k, from_js(ctx, helpers, item, depth + 1, parts)?);
             }
             Ok(LiveValue::Object(fields))
         }

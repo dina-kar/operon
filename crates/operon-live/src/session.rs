@@ -59,6 +59,11 @@ pub const MAX_SESSION_QUERIES: usize = 1000;
 /// last timestamp before it refuses the resume.
 pub const RESUME_WAIT: Duration = Duration::from_secs(30);
 
+/// Resubscription rounds a lagged session gets to catch up with the ticks;
+/// one that still lags after them is closed and its client resumes (review
+/// of #93).
+pub const MAX_RESUBSCRIBE_ROUNDS: usize = 8;
+
 /// A session's state version (§20 §7.1). The zero version is the state of a
 /// client with no results.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -729,7 +734,7 @@ impl SessionTask {
         };
         self.add(set.queries).await;
         if self.sync() {
-            self.resubscribe().await;
+            self.resubscribe().await?;
         }
         if let Some(ts) = resume_at {
             self.wait_for(ts).await?;
@@ -765,7 +770,7 @@ impl SessionTask {
                     )));
                 }
                 Ok(Ok(tick)) => self.apply_tick(&tick),
-                Ok(Err(broadcast::error::RecvError::Lagged(_))) => self.resubscribe().await,
+                Ok(Err(broadcast::error::RecvError::Lagged(_))) => self.resubscribe().await?,
                 Ok(Err(broadcast::error::RecvError::Closed)) => {
                     return Err(LiveError::Internal(
                         "the subscription manager has stopped".into(),
@@ -797,7 +802,10 @@ impl SessionTask {
                     }
                     Err(broadcast::error::RecvError::Lagged(missed)) => {
                         tracing::debug!(session = %self.id, missed, "the session lagged; resubscribing");
-                        self.resubscribe().await;
+                        if let Err(e) = self.resubscribe().await {
+                            self.outbox.close(Some(e));
+                            return;
+                        }
                         self.push_changes();
                     }
                     Err(broadcast::error::RecvError::Closed) => {
@@ -943,8 +951,16 @@ impl SessionTask {
 
     /// Subscribes every query again (a lagged receiver may have missed
     /// changes), then drops the old references.
-    async fn resubscribe(&mut self) {
-        loop {
+    /// Subscribes every query again until a drain finds no lag, at most
+    /// [`MAX_RESUBSCRIBE_ROUNDS`] times; stops early when the server shuts
+    /// down. On an error nothing was published and the session must end.
+    async fn resubscribe(&mut self) -> Result<(), LiveError> {
+        for _ in 0..MAX_RESUBSCRIBE_ROUNDS {
+            if self.sessions.inner.shutdown.is_cancelled() {
+                return Err(LiveError::Txn(operon_tikv::TxnError::NotApplied(
+                    "the server is shutting down".into(),
+                )));
+            }
             let mut jobs = Vec::new();
             for (q, query) in &self.queries {
                 if let Some((id, key, f, args)) = &query.sub {
@@ -979,9 +995,16 @@ impl SessionTask {
                 }
             }
             if !self.sync() {
-                break;
+                return Ok(());
             }
         }
+        Err(LiveError::limit(
+            "resubscribe_rounds",
+            format!(
+                "the session still lagged behind the ticks after {MAX_RESUBSCRIBE_ROUNDS} \
+                 resubscriptions; resume"
+            ),
+        ))
     }
 
     async fn modify(&mut self, req: pb::ModifyQuerySetRequest) -> Result<(), LiveError> {
@@ -1030,8 +1053,13 @@ impl SessionTask {
             }
         }
         self.add(adds).await;
-        if self.sync() {
-            self.resubscribe().await;
+        if self.sync()
+            && let Err(e) = self.resubscribe().await
+        {
+            // The session cannot hold a consistent set: it ends, and the
+            // client resumes with its whole query set.
+            self.outbox.close(Some(e.clone()));
+            return Err(e);
         }
         let end = Version {
             query_set: req.new_version,
