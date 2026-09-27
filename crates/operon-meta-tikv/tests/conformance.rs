@@ -257,3 +257,42 @@ async fn id_blocks_leave_gaps_but_never_repeat() {
         .collect();
     assert_eq!(listed, unique.into_iter().collect::<Vec<_>>());
 }
+
+/// Dropping a collection removes its implicit link's pointer too (review of
+/// #61).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn drop_deletes_the_implicit_links_pointer() {
+    use operon_common::meta::{PointerCas, link_pointer_key};
+    use operon_common::schema::{CollectionSchema, DynamicMapping};
+
+    let Some(cluster) = testing::cluster().await else {
+        return;
+    };
+    let (metas, _) = open_handles(&cluster, 1, operon_meta_tikv::DEFAULT_ID_BLOCK).await;
+    let meta = &metas[0];
+    let ns = meta.create_namespace("drop-link").await.expect("namespace");
+    let schema = CollectionSchema::new(Vec::new(), Vec::new(), DynamicMapping::Ignore);
+    let (_, _, link) = meta
+        .create_collection(ns, "docs", schema, 1)
+        .await
+        .expect("create");
+    let key = link_pointer_key(link);
+    meta.cas_pointer(PointerCas {
+        namespace: ns,
+        key: key.clone(),
+        expected: None,
+        value: "drop-link/m-1".to_string(),
+        fence: None,
+        fresh: None,
+    })
+    .await
+    .into_result()
+    .expect("cas");
+    meta.drop_collection(ns, "docs").await.expect("drop");
+    assert_eq!(
+        meta.pointer(Consistency::Linearizable, ns, &key)
+            .await
+            .expect("read"),
+        None
+    );
+}

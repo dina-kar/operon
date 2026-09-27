@@ -674,9 +674,12 @@ impl TikvMeta {
                     txn.delete(&key).await?;
                     release_entry(txn, entry, now_ms).await?;
                 }
-                // The implicit link, the manifest pointer, the collection.
+                // The implicit link and its pointer, the manifest pointer,
+                // the collection.
                 txn.delete(&keys::link(collection.link)).await?;
                 txn.delete(&keys::link_name(ns, &implicit)).await?;
+                txn.delete(&keys::pointer(ns, &link_pointer_key(collection.link)))
+                    .await?;
                 txn.delete(&keys::pointer(ns, &collection_pointer_key(id)))
                     .await?;
                 txn.delete(&keys::collection(id)).await?;
