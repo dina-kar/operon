@@ -9,6 +9,7 @@
 //! (`Error::UndeterminedError`, or a commit the runner drops at its deadline)
 //! is resolved through the commit token when the options ask for one.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,7 @@ use tikv_client::{CheckLevel, Timestamp, TransactionOptions};
 use crate::classify::{Class, classify, describe};
 use crate::faults::{Fault, FaultPoint};
 use crate::token::{Token, fence_value, is_fence, new_token, token_key, token_value};
+use crate::tso::Supervisor;
 use crate::txn::Txn;
 use crate::{Tikv, TikvError};
 
@@ -310,6 +312,20 @@ impl Tikv {
         }
     }
 
+    /// Runs a supervisor step (recording a TSO failure, rebuilding the
+    /// client) in its own task and waits for it at most until `deadline`: a
+    /// slow rebuild then finishes in the background (one at a time, under
+    /// the supervisor's lock) instead of holding the run past its budget.
+    async fn supervise<F, Fut>(&self, deadline: Instant, step: F)
+    where
+        F: FnOnce(Arc<Supervisor>) -> Fut,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let task = tokio::spawn(step(self.clients.clone()));
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let _ = tokio::time::timeout(remaining, task).await;
+    }
+
     fn fault(&self, op: &str, point: FaultPoint, attempt: u32) -> Option<Fault> {
         self.faults.as_ref().and_then(|f| f.at(op, point, attempt))
     }
@@ -354,14 +370,20 @@ impl Tikv {
             Ok(Ok(inner)) => inner,
             Ok(Err(e)) => {
                 let class = classify(&e);
-                self.clients.tso_failed(Some(class), generation).await;
+                self.supervise(deadline, move |s| async move {
+                    s.tso_failed(Some(class), generation).await;
+                })
+                .await;
                 return match self.txn_error(&e) {
                     e if e.retryable() => Attempt::Retry(e),
                     e => Attempt::Fail(e),
                 };
             }
             Err(_) => {
-                self.clients.tso_failed(None, generation).await;
+                self.supervise(deadline, move |s| async move {
+                    s.tso_failed(None, generation).await;
+                })
+                .await;
                 return Attempt::Fail(TxnError::Deadline);
             }
         };
@@ -376,7 +398,11 @@ impl Tikv {
             Ok(Err(e)) => {
                 self.rollback(&mut txn).await;
                 if txn.tso_closed {
-                    self.clients.rebuild(generation).await;
+                    self.supervise(
+                        deadline,
+                        move |s| async move { s.rebuild(generation).await },
+                    )
+                    .await;
                 }
                 return if e.retryable() {
                     Attempt::Retry(e)
@@ -440,7 +466,11 @@ impl Tikv {
                 // Row R9: any other commit error means it did not commit.
                 self.rollback(&mut txn).await;
                 if class == Class::TsoClosed {
-                    self.clients.rebuild(generation).await;
+                    self.supervise(
+                        deadline,
+                        move |s| async move { s.rebuild(generation).await },
+                    )
+                    .await;
                 }
                 return match self.txn_error(&e) {
                     e if e.retryable() => Attempt::Retry(e),

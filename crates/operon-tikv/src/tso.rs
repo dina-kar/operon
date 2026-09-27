@@ -86,6 +86,7 @@ impl Supervisor {
 
     /// Makes the next TSO-dependent call fail as if the TSO stream had closed
     /// (the test hook of `tso_stream_loss_rebuilds_the_client`).
+    #[cfg(feature = "faults")]
     pub(crate) fn inject_tso_loss(&self) {
         self.inject_tso_loss.store(true, Ordering::Release);
     }

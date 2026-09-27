@@ -381,14 +381,18 @@ fn is_api_version_error(e: &tikv_client::Error) -> bool {
         || text.contains("api_version_not_matched")
 }
 
-/// An error's text, cut to 200 characters and scrubbed of keys, for a hint.
+/// An error's text, scrubbed of keys, then cut to 200 characters, for a
+/// hint. Scrubbing first keeps a key's byte list whole, so a cut inside one
+/// cannot leave the keyspace prefix and root in the hint.
 fn short(e: &tikv_client::Error, root: &[u8]) -> String {
-    let text = format!("{e:?}");
-    let text = match text.char_indices().nth(200) {
+    cut(classify::scrub_text(&format!("{e:?}"), root))
+}
+
+fn cut(text: String) -> String {
+    match text.char_indices().nth(200) {
         Some((i, _)) => format!("{}…", &text[..i]),
         None => text,
-    };
-    classify::scrub_text(&text, root)
+    }
 }
 
 struct EscapedBytes<'a>(&'a [u8]);
@@ -396,5 +400,25 @@ struct EscapedBytes<'a>(&'a [u8]);
 impl fmt::Debug for EscapedBytes<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "\"{}\"", self.0.escape_ascii())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hint_cut_inside_a_key_still_hides_the_key() {
+        // The keyspace prefix (x, 0, 0, 4) and the root (9, 9, 9, 9) of a key
+        // printed as a byte list that runs past the 200-character cut.
+        let root = [9u8; 4];
+        let mut key = vec![b'x', 0, 0, 4];
+        key.extend_from_slice(&root);
+        key.extend_from_slice(&[7; 60]);
+        let e = tikv_client::Error::StringError(format!("{}: {key:?}", "e".repeat(170)));
+        let hint = short(&e, &root);
+        assert!(!hint.contains("120, 0, 0, 4"), "{hint}");
+        assert!(!hint.contains("9, 9, 9, 9"), "{hint}");
+        assert!(hint.chars().count() <= 201, "{hint}");
     }
 }
