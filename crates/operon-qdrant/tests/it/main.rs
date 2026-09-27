@@ -3,3 +3,4 @@
 mod errors;
 mod ids;
 mod protos;
+mod schema;

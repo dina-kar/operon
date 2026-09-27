@@ -12,12 +12,14 @@ use tonic::codec::CompressionEncoding;
 use tonic::service::Routes;
 use tonic::{Request, Response, Status};
 
+use crate::convert::collections as conv;
 use crate::ctx::RequestCtx;
 use crate::error::GatewayError;
 use crate::model::points::CountRequest;
 use crate::proto::health as hpb;
 use crate::proto::qdrant as pb;
-use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, reads, schema};
+use crate::schema::NewVector;
+use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, reads, schema, snapshots};
 
 /// Every gRPC service, gzip on both ways and messages of up to
 /// `max_request_bytes`, inside `HotLayer` and the gateway's own
@@ -78,6 +80,25 @@ struct GrpcService {
 }
 
 impl GrpcService {
+    /// Builds the context and runs `op` under its timeout; the result with
+    /// the context (for `time`).
+    async fn run<T, F>(
+        &self,
+        meta: &tonic::metadata::MetadataMap,
+        timeout: Option<u64>,
+        op: impl FnOnce(QdrantGateway, RequestCtx) -> F,
+    ) -> Result<(T, RequestCtx), Status>
+    where
+        F: Future<Output = Result<T, GatewayError>>,
+    {
+        let ctx = self.ctx(meta, timeout)?;
+        let result = ctx
+            .run(op(self.gw.clone(), ctx.clone()))
+            .await
+            .map_err(|e| e.grpc_status())?;
+        Ok((result, ctx))
+    }
+
     fn ctx(
         &self,
         meta: &tonic::metadata::MetadataMap,
@@ -167,17 +188,139 @@ service! {
                 time: ctx.elapsed_secs(),
             }))
         }
+
+        async fn get(
+            &self,
+            request: Request<pb::GetCollectionInfoRequest>,
+        ) -> Result<Response<pb::GetCollectionInfoResponse>, Status> {
+            let name = request.get_ref().collection_name.clone();
+            let (info, ctx) = self
+                .run(request.metadata(), None, |gw, ctx| {
+                    schema::collection_info(gw, ctx, name)
+                })
+                .await?;
+            Ok(Response::new(pb::GetCollectionInfoResponse {
+                result: Some(conv::info_to_grpc(&info)),
+                time: ctx.elapsed_secs(),
+            }))
+        }
+
+        async fn create(
+            &self,
+            request: Request<pb::CreateCollection>,
+        ) -> Result<Response<pb::CollectionOperationResponse>, Status> {
+            let body = conv::create_to_json(request.get_ref());
+            let name = request.get_ref().collection_name.clone();
+            let (result, ctx) = self
+                .run(request.metadata(), request.get_ref().timeout, |gw, ctx| {
+                    schema::create_collection(gw, ctx, name, body)
+                })
+                .await?;
+            Ok(operation(result, &ctx))
+        }
+
+        async fn update(
+            &self,
+            request: Request<pb::UpdateCollection>,
+        ) -> Result<Response<pb::CollectionOperationResponse>, Status> {
+            let body = conv::update_to_json(request.get_ref());
+            let name = request.get_ref().collection_name.clone();
+            let (result, ctx) = self
+                .run(request.metadata(), request.get_ref().timeout, |gw, ctx| {
+                    schema::update_collection(gw, ctx, name, body)
+                })
+                .await?;
+            Ok(operation(result, &ctx))
+        }
+
+        async fn delete(
+            &self,
+            request: Request<pb::DeleteCollection>,
+        ) -> Result<Response<pb::CollectionOperationResponse>, Status> {
+            let name = request.get_ref().collection_name.clone();
+            let (result, ctx) = self
+                .run(request.metadata(), request.get_ref().timeout, |gw, ctx| {
+                    schema::delete_collection(gw, ctx, name)
+                })
+                .await?;
+            Ok(operation(result, &ctx))
+        }
+
+        async fn update_aliases(
+            &self,
+            request: Request<pb::ChangeAliases>,
+        ) -> Result<Response<pb::CollectionOperationResponse>, Status> {
+            let ops = conv::alias_ops_from_grpc(&request.get_ref().actions)
+                .map_err(|e| e.grpc_status())?;
+            let (result, ctx) = self
+                .run(request.metadata(), request.get_ref().timeout, |gw, ctx| {
+                    schema::update_aliases(gw, ctx, ops)
+                })
+                .await?;
+            Ok(operation(result, &ctx))
+        }
+
+        async fn list_collection_aliases(
+            &self,
+            request: Request<pb::ListCollectionAliasesRequest>,
+        ) -> Result<Response<pb::ListAliasesResponse>, Status> {
+            let name = request.get_ref().collection_name.clone();
+            let (aliases, ctx) = self
+                .run(request.metadata(), None, |gw, ctx| {
+                    schema::collection_aliases(gw, ctx, name)
+                })
+                .await?;
+            Ok(Response::new(pb::ListAliasesResponse {
+                aliases: conv::aliases_to_grpc(aliases),
+                time: ctx.elapsed_secs(),
+            }))
+        }
+
+        async fn list_aliases(
+            &self,
+            request: Request<pb::ListAliasesRequest>,
+        ) -> Result<Response<pb::ListAliasesResponse>, Status> {
+            let (aliases, ctx) = self
+                .run(request.metadata(), None, schema::list_aliases)
+                .await?;
+            Ok(Response::new(pb::ListAliasesResponse {
+                aliases: conv::aliases_to_grpc(aliases),
+                time: ctx.elapsed_secs(),
+            }))
+        }
+
+        async fn collection_cluster_info(
+            &self,
+            request: Request<pb::CollectionClusterInfoRequest>,
+        ) -> Result<Response<pb::CollectionClusterInfoResponse>, Status> {
+            let name = request.get_ref().collection_name.clone();
+            let (points, ctx) = self
+                .run(request.metadata(), None, |gw, ctx| {
+                    schema::cluster_points(gw, ctx, name)
+                })
+                .await?;
+            Ok(Response::new(conv::cluster_to_grpc(points, ctx.elapsed_secs())))
+        }
+
+        async fn collection_exists(
+            &self,
+            request: Request<pb::CollectionExistsRequest>,
+        ) -> Result<Response<pb::CollectionExistsResponse>, Status> {
+            let name = request.get_ref().collection_name.clone();
+            let (result, ctx) = self
+                .run(request.metadata(), None, |gw, ctx| {
+                    schema::collection_exists(gw, ctx, name)
+                })
+                .await?;
+            Ok(Response::new(pb::CollectionExistsResponse {
+                result: Some(pb::CollectionExists {
+                    exists: result.exists,
+                }),
+                time: ctx.elapsed_secs(),
+            }))
+        }
     }
     unsupported {
-        get(GetCollectionInfoRequest) -> GetCollectionInfoResponse;
-        create(CreateCollection) -> CollectionOperationResponse;
-        update(UpdateCollection) -> CollectionOperationResponse;
-        delete(DeleteCollection) -> CollectionOperationResponse;
-        update_aliases(ChangeAliases) -> CollectionOperationResponse;
-        list_collection_aliases(ListCollectionAliasesRequest) -> ListAliasesResponse;
-        list_aliases(ListAliasesRequest) -> ListAliasesResponse;
-        collection_cluster_info(CollectionClusterInfoRequest) -> CollectionClusterInfoResponse;
-        collection_exists(CollectionExistsRequest) -> CollectionExistsResponse;
         update_collection_cluster_setup(UpdateCollectionClusterSetupRequest) -> UpdateCollectionClusterSetupResponse;
         create_shard_key(CreateShardKeyRequest) -> CreateShardKeyResponse;
         delete_shard_key(DeleteShardKeyRequest) -> DeleteShardKeyResponse;
@@ -216,6 +359,34 @@ service! {
                 usage: None,
             }))
         }
+
+        async fn create_vector_name(
+            &self,
+            request: Request<pb::CreateVectorNameRequest>,
+        ) -> Result<Response<pb::PointsOperationResponse>, Status> {
+            let req = request.get_ref();
+            let body = match (&req.vector_config, conv::dense_creation_to_json(req)) {
+                (None, _) => {
+                    return Err(GatewayError::json("vector_config is required").grpc_status());
+                }
+                (_, Some(dense)) => NewVector::Dense(dense),
+                (_, None) => NewVector::Sparse,
+            };
+            let (collection, vector) = (req.collection_name.clone(), req.vector_name.clone());
+            let (result, ctx) = self
+                .run(request.metadata(), req.timeout, |gw, ctx| {
+                    schema::create_vector_name(gw, ctx, collection, vector, body)
+                })
+                .await?;
+            Ok(Response::new(pb::PointsOperationResponse {
+                result: Some(pb::UpdateResult {
+                    operation_id: result.operation_id,
+                    status: pb::UpdateStatus::Completed as i32,
+                }),
+                time: ctx.elapsed_secs(),
+                usage: None,
+            }))
+        }
     }
     unsupported {
         upsert(UpsertPoints) -> PointsOperationResponse;
@@ -229,7 +400,6 @@ service! {
         clear_payload(ClearPayloadPoints) -> PointsOperationResponse;
         create_field_index(CreateFieldIndexCollection) -> PointsOperationResponse;
         delete_field_index(DeleteFieldIndexCollection) -> PointsOperationResponse;
-        create_vector_name(CreateVectorNameRequest) -> PointsOperationResponse;
         delete_vector_name(DeleteVectorNameRequest) -> PointsOperationResponse;
         search(SearchPoints) -> SearchResponse;
         search_batch(SearchBatchPoints) -> SearchBatchResponse;
@@ -251,13 +421,53 @@ service! {
 }
 
 service! {
-    impl Snapshots for GrpcService as "Snapshots" {}
+    impl Snapshots for GrpcService as "Snapshots" {
+        async fn create(
+            &self,
+            request: Request<pb::CreateSnapshotRequest>,
+        ) -> Result<Response<pb::CreateSnapshotResponse>, Status> {
+            let name = request.get_ref().collection_name.clone();
+            let (m, ctx) = self
+                .run(request.metadata(), None, |gw, ctx| {
+                    snapshots::create(gw, ctx, name.clone())
+                })
+                .await?;
+            Ok(Response::new(pb::CreateSnapshotResponse {
+                snapshot_description: Some(conv::snapshot_to_grpc(&name, &m)),
+                time: ctx.elapsed_secs(),
+            }))
+        }
+
+        async fn list(
+            &self,
+            request: Request<pb::ListSnapshotsRequest>,
+        ) -> Result<Response<pb::ListSnapshotsResponse>, Status> {
+            let name = request.get_ref().collection_name.clone();
+            let (versions, ctx) = self
+                .run(request.metadata(), None, |gw, ctx| {
+                    snapshots::list(gw, ctx, name.clone())
+                })
+                .await?;
+            Ok(Response::new(pb::ListSnapshotsResponse {
+                snapshot_descriptions: versions
+                    .iter()
+                    .map(|m| conv::snapshot_to_grpc(&name, m))
+                    .collect(),
+                time: ctx.elapsed_secs(),
+            }))
+        }
+    }
     unsupported {
-        create(CreateSnapshotRequest) -> CreateSnapshotResponse;
-        list(ListSnapshotsRequest) -> ListSnapshotsResponse;
         delete(DeleteSnapshotRequest) -> DeleteSnapshotResponse;
         create_full(CreateFullSnapshotRequest) -> CreateSnapshotResponse;
         list_full(ListFullSnapshotsRequest) -> ListSnapshotsResponse;
         delete_full(DeleteFullSnapshotRequest) -> DeleteSnapshotResponse;
     }
+}
+
+fn operation(result: bool, ctx: &RequestCtx) -> Response<pb::CollectionOperationResponse> {
+    Response::new(pb::CollectionOperationResponse {
+        result,
+        time: ctx.elapsed_secs(),
+    })
 }

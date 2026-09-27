@@ -8,7 +8,7 @@ use axum::extract::{FromRequest, FromRequestParts, Path, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{MethodFilter, get, on, post};
+use axum::routing::{MethodFilter, get, on, post, put};
 use operon_collection::ConsistencyToken;
 use operon_query::hot::{HOT_HEADER, HotLayer, parse_hot_header};
 use serde::Serialize;
@@ -17,8 +17,10 @@ use serde_json::{Value, json};
 
 use crate::ctx::RequestCtx;
 use crate::error::GatewayError;
+use crate::model::collections::ChangeAliases;
 use crate::model::points::CountRequest;
-use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, reads, schema};
+use crate::schema::NewVector;
+use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, reads, schema, snapshots};
 
 /// The 1.19 OpenAPI routes (and the legacy search routes of Ruling 1) that
 /// no task serves yet: each answers `Unsupported("<method> <path>")` (501).
@@ -28,43 +30,27 @@ const UNSUPPORTED: &[(&str, &str)] = &[
     ("GET", "/metrics"),
     ("GET", "/issues"),
     ("DELETE", "/issues"),
-    ("GET", "/cluster"),
     ("GET", "/cluster/telemetry"),
     ("POST", "/cluster/recover"),
     ("DELETE", "/cluster/peer/{peer_id}"),
     ("GET", "/quotas"),
     ("PUT", "/quotas"),
-    ("GET", "/collections/{collection_name}"),
-    ("PUT", "/collections/{collection_name}"),
-    ("PATCH", "/collections/{collection_name}"),
-    ("DELETE", "/collections/{collection_name}"),
-    ("POST", "/collections/aliases"),
     ("PUT", "/collections/{collection_name}/index"),
-    ("GET", "/collections/{collection_name}/exists"),
     (
         "DELETE",
         "/collections/{collection_name}/index/{field_name}",
     ),
     (
-        "PUT",
-        "/collections/{collection_name}/vectors/{vector_name}",
-    ),
-    (
         "DELETE",
         "/collections/{collection_name}/vectors/{vector_name}",
     ),
-    ("GET", "/collections/{collection_name}/cluster"),
     ("POST", "/collections/{collection_name}/cluster"),
     ("GET", "/collections/{collection_name}/optimizations"),
-    ("GET", "/collections/{collection_name}/aliases"),
-    ("GET", "/aliases"),
     ("GET", "/collections/{collection_name}/shards"),
     ("PUT", "/collections/{collection_name}/shards"),
     ("POST", "/collections/{collection_name}/shards/delete"),
     ("POST", "/collections/{collection_name}/snapshots/upload"),
     ("PUT", "/collections/{collection_name}/snapshots/recover"),
-    ("GET", "/collections/{collection_name}/snapshots"),
-    ("POST", "/collections/{collection_name}/snapshots"),
     (
         "GET",
         "/collections/{collection_name}/snapshots/{snapshot_name}",
@@ -172,7 +158,34 @@ pub(crate) fn router(gw: QdrantGateway) -> Router {
         .route("/livez", get(|| async { text("livez check passed") }))
         .route("/readyz", get(readyz))
         .route("/collections", get(list_collections))
-        .route("/collections/{collection_name}/points/count", post(count));
+        .route("/collections/{collection_name}/points/count", post(count))
+        .route("/cluster", get(cluster_status))
+        .route(
+            "/collections/{collection_name}",
+            get(collection_info)
+                .put(create_collection)
+                .patch(update_collection)
+                .delete(delete_collection),
+        )
+        .route("/collections/aliases", post(update_aliases))
+        .route(
+            "/collections/{collection_name}/exists",
+            get(collection_exists),
+        )
+        .route(
+            "/collections/{collection_name}/vectors/{vector_name}",
+            put(create_vector_name),
+        )
+        .route("/collections/{collection_name}/cluster", get(cluster_info))
+        .route(
+            "/collections/{collection_name}/aliases",
+            get(collection_aliases),
+        )
+        .route("/aliases", get(list_aliases))
+        .route(
+            "/collections/{collection_name}/snapshots",
+            get(list_snapshots).post(create_snapshot),
+        );
     for &(method, path) in UNSUPPORTED {
         let filter = match method {
             "GET" => MethodFilter::GET,
@@ -348,10 +361,11 @@ impl<S: Send + Sync, T: DeserializeOwned> FromRequestParts<S> for QdrantQuery<T>
 
 /// The query parameters of a write route.
 #[derive(Debug, serde::Deserialize)]
-#[allow(dead_code)] // The write routes arrive with Task 5.
 pub(crate) struct WriteParams {
     #[serde(default)]
+    #[allow(dead_code)] // Read by the point writes (Task 5).
     pub wait: bool,
+    #[allow(dead_code)] // Accepted and ignored (Ruling 14).
     pub ordering: Option<String>,
     pub timeout: Option<u64>,
 }
@@ -435,6 +449,181 @@ async fn count(
 ) -> Response {
     serve(&gw, &headers, params.timeout, |ctx| {
         reads::count(gw.clone(), ctx, collection, request)
+    })
+    .await
+}
+
+// ----- collections, aliases, snapshots, cluster (Task 3) -----
+
+async fn cluster_status(
+    State(gw): State<QdrantGateway>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<AdminParams>,
+) -> Response {
+    serve(&gw, &headers, params.timeout, |_| async {
+        Ok(schema::cluster_status())
+    })
+    .await
+}
+
+async fn collection_info(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<ReadParams>,
+) -> Response {
+    serve(&gw, &headers, params.timeout, |ctx| {
+        schema::collection_info(gw.clone(), ctx, collection)
+    })
+    .await
+}
+
+async fn create_collection(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<AdminParams>,
+    QdrantJson(body): QdrantJson<Value>,
+) -> Response {
+    serve(&gw, &headers, params.timeout, |ctx| {
+        schema::create_collection(gw.clone(), ctx, collection, body)
+    })
+    .await
+}
+
+async fn update_collection(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<AdminParams>,
+    QdrantJson(body): QdrantJson<Value>,
+) -> Response {
+    serve(&gw, &headers, params.timeout, |ctx| {
+        schema::update_collection(gw.clone(), ctx, collection, body)
+    })
+    .await
+}
+
+async fn delete_collection(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<AdminParams>,
+) -> Response {
+    serve(&gw, &headers, params.timeout, |ctx| {
+        schema::delete_collection(gw.clone(), ctx, collection)
+    })
+    .await
+}
+
+async fn collection_exists(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<AdminParams>,
+) -> Response {
+    serve(&gw, &headers, params.timeout, |ctx| {
+        schema::collection_exists(gw.clone(), ctx, collection)
+    })
+    .await
+}
+
+async fn update_aliases(
+    State(gw): State<QdrantGateway>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<AdminParams>,
+    QdrantJson(request): QdrantJson<ChangeAliases>,
+) -> Response {
+    serve(&gw, &headers, params.timeout, |ctx| {
+        schema::update_aliases(gw.clone(), ctx, request.actions)
+    })
+    .await
+}
+
+async fn list_aliases(
+    State(gw): State<QdrantGateway>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<AdminParams>,
+) -> Response {
+    serve(&gw, &headers, params.timeout, |ctx| {
+        schema::list_aliases(gw.clone(), ctx)
+    })
+    .await
+}
+
+async fn collection_aliases(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<AdminParams>,
+) -> Response {
+    serve(&gw, &headers, params.timeout, |ctx| {
+        schema::collection_aliases(gw.clone(), ctx, collection)
+    })
+    .await
+}
+
+async fn create_vector_name(
+    State(gw): State<QdrantGateway>,
+    Path((collection, vector)): Path<(String, String)>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<WriteParams>,
+    QdrantJson(body): QdrantJson<Value>,
+) -> Response {
+    serve(&gw, &headers, params.timeout, |ctx| {
+        schema::create_vector_name(
+            gw.clone(),
+            ctx,
+            collection,
+            vector,
+            NewVector::from_json(body),
+        )
+    })
+    .await
+}
+
+async fn cluster_info(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<AdminParams>,
+) -> Response {
+    let points = |ctx| schema::cluster_points(gw.clone(), ctx, collection);
+    serve(&gw, &headers, params.timeout, |ctx| async move {
+        Ok(schema::cluster_info_json(points(ctx).await?))
+    })
+    .await
+}
+
+async fn create_snapshot(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<WriteParams>,
+) -> Response {
+    let name = collection.clone();
+    let create = |ctx| snapshots::create(gw.clone(), ctx, collection);
+    serve(&gw, &headers, params.timeout, |ctx| async move {
+        let m = create(ctx).await?;
+        Ok(snapshots::snapshot_description(&name, &m))
+    })
+    .await
+}
+
+async fn list_snapshots(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<AdminParams>,
+) -> Response {
+    let name = collection.clone();
+    let list = |ctx| snapshots::list(gw.clone(), ctx, collection);
+    serve(&gw, &headers, params.timeout, |ctx| async move {
+        let versions = list(ctx).await?;
+        Ok(versions
+            .iter()
+            .map(|m| snapshots::snapshot_description(&name, m))
+            .collect::<Vec<_>>())
     })
     .await
 }

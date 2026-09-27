@@ -2,6 +2,8 @@
 //! M1.2 contracts the gateway relies on; Task 2 serves the listeners;
 //! later tasks add the gateway's own suites here.
 
+#[cfg(feature = "qdrant")]
+mod collections;
 mod contract;
 #[cfg(feature = "qdrant")]
 mod harness;

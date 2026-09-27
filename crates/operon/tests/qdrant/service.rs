@@ -133,15 +133,88 @@ async fn malformed_json_is_400_format_error() {
     );
 }
 
+/// Sends `head` and then `chunks` on a raw connection, and reads the
+/// response's status and body. Write errors are ignored: the server may
+/// answer and stop reading before the request is complete.
+async fn raw_exchange(qd: &Qd, head: String, chunks: Vec<Vec<u8>>) -> (u16, Value) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let addr = qd.rest.trim_start_matches("http://");
+    let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    let (mut read, mut write) = stream.into_split();
+    let writer = tokio::spawn(async move {
+        if write.write_all(head.as_bytes()).await.is_err() {
+            return;
+        }
+        for chunk in chunks {
+            if write.write_all(&chunk).await.is_err() {
+                return;
+            }
+        }
+    });
+    let mut buf = Vec::new();
+    let response = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let mut piece = [0u8; 4096];
+        loop {
+            let n = read.read(&mut piece).await.expect("read");
+            assert!(n > 0, "closed before a full response: {buf:?}");
+            buf.extend_from_slice(&piece[..n]);
+            let text = String::from_utf8_lossy(&buf).to_string();
+            let Some(end) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            let length = text[..end]
+                .lines()
+                .find_map(|l| {
+                    let (k, v) = l.split_once(':')?;
+                    k.eq_ignore_ascii_case("content-length")
+                        .then(|| v.trim().parse::<usize>().ok())?
+                })
+                .expect("content-length");
+            if buf.len() >= end + 4 + length {
+                let status = text[9..12].parse::<u16>().expect("status");
+                let body = serde_json::from_slice(&buf[end + 4..end + 4 + length]).expect("JSON");
+                return (status, body);
+            }
+        }
+    })
+    .await
+    .expect("a response in time");
+    writer.abort();
+    response
+}
+
 #[tokio::test]
 async fn oversized_body_is_413() {
     let qd = Qd::start().await;
     qd.create_raw("default", "docs").await;
-    let mut body = b"{\"filter\": null, \"pad\": \"".to_vec();
-    body.resize(33 << 20, b'x');
-    body.extend_from_slice(b"\"}");
-    let (status, body) = qd.post_raw("/collections/docs/points/count", body).await;
-    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    // A declared length over the limit is refused before the body is read,
+    // so only a few bytes are sent.
+    let head = format!(
+        "POST /collections/docs/points/count HTTP/1.1\r\nhost: x\r\n\
+         content-type: application/json\r\ncontent-length: {}\r\n\r\n",
+        33 << 20
+    );
+    let (status, body) = raw_exchange(&qd, head, vec![b"{".to_vec()]).await;
+    assert_eq!(status, 413);
+    assert_eq!(
+        envelope_error(&body),
+        "Format error in JSON body: payload too large"
+    );
+}
+
+#[tokio::test]
+async fn oversized_chunked_body_is_413() {
+    let qd = Qd::start().await;
+    qd.create_raw("default", "docs").await;
+    // No declared length: the body is read up to the limit.
+    let head = "POST /collections/docs/points/count HTTP/1.1\r\nhost: x\r\n\
+                content-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n"
+        .to_string();
+    let mut chunk = format!("{:x}\r\n", 1 << 20).into_bytes();
+    chunk.extend(std::iter::repeat_n(b' ', 1 << 20));
+    chunk.extend_from_slice(b"\r\n");
+    let (status, body) = raw_exchange(&qd, head, vec![chunk; 33]).await;
+    assert_eq!(status, 413);
     assert_eq!(
         envelope_error(&body),
         "Format error in JSON body: payload too large"
