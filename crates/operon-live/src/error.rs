@@ -37,6 +37,13 @@ pub enum LiveError {
         position: u64,
         first: Option<u64>,
     },
+    /// The Live listener was asked to bind a non-loopback address, which R1
+    /// refuses (D111, §20 §7.1; [`check_listen`](crate::check_listen)).
+    #[error(
+        "--live-listen {0} is not a loopback address; the Live API has no authentication \
+         until the unified auth plan (D111)"
+    )]
+    NotLoopback(std::net::SocketAddr),
     /// A stored record could not be decoded.
     #[error("corrupt record: {0}")]
     Corrupt(String),
@@ -56,7 +63,9 @@ impl LiveError {
     /// The wire code of this error.
     pub fn code(&self) -> pb::ErrorCode {
         match self {
-            LiveError::InvalidArgument(_) => pb::ErrorCode::ERROR_CODE_INVALID_ARGUMENT,
+            LiveError::InvalidArgument(_) | LiveError::NotLoopback(_) => {
+                pb::ErrorCode::ERROR_CODE_INVALID_ARGUMENT
+            }
             LiveError::NotFound(_) => pb::ErrorCode::ERROR_CODE_NOT_FOUND,
             LiveError::FailedPrecondition(_) | LiveError::JournalTrimmed { .. } => {
                 pb::ErrorCode::ERROR_CODE_FAILED_PRECONDITION
