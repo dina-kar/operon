@@ -28,3 +28,15 @@ copied from qdrant/qdrant v1.19.1 (https://github.com/qdrant/qdrant, commit
 6ab21cac18ebb6f4ae29102c7f8f5cc11affd5de, lib/api/src/grpc/proto/),
 Copyright Qdrant Solutions GmbH, Apache License 2.0. qdrant.proto is
 modified (internal-service imports removed); the other files are unchanged.
+
+TiKV kvproto protocol definitions (crates/operon-tikv/proto/kvproto/),
+copied unchanged from pingcap/kvproto branch release-8.5 at commit
+07aa8c6a46fab0a4cd577119c249c9c8e718c553 (https://github.com/pingcap/kvproto),
+Copyright TiKV Project Authors, Apache License 2.0 (the LICENSE file beside
+them): pdpb.proto and the files it imports (metapb, raft_serverpb,
+replication_modepb, encryptionpb, kvrpcpb, disk_usage, errorpb, deadlock,
+tracepb, resource_manager, and eraftpb from kvproto's include/). kvproto's
+include/ also supplies two option files, kept as distributed there:
+gogoproto/gogo.proto, Copyright (c) 2013 The GoGo Authors, BSD 3-Clause
+License (its notice is in the file), and rustproto.proto from rust-protobuf
+(MIT License).
