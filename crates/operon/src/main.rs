@@ -238,6 +238,16 @@ struct Native {
     /// Serve no Qdrant API.
     #[arg(long)]
     no_qdrant: bool,
+    /// Address of the Elasticsearch REST API [default: 127.0.0.1:9200].
+    #[arg(long, conflicts_with = "no_es")]
+    es_listen: Option<SocketAddr>,
+    /// The namespace of Elasticsearch requests without an
+    /// `Operon-Namespace` header [default: default].
+    #[arg(long, conflicts_with = "no_es")]
+    es_namespace: Option<String>,
+    /// Serve no Elasticsearch API.
+    #[arg(long)]
+    no_es: bool,
     /// Whether this node runs a hot tier, and whether reads use it when a
     /// request does not say (`Operon-Hot`).
     #[arg(long, value_enum, default_value = "on")]
@@ -277,6 +287,7 @@ impl Native {
             Some(self.flight_sql_listen.unwrap_or(default_flight))
         };
         self.apply_qdrant(config);
+        self.apply_es(config);
         let hot = self.hot == HotSwitch::On;
         config.query.hot_default = hot;
         config.hot.enabled = hot;
@@ -322,6 +333,29 @@ impl Native {
     fn apply_qdrant(&self, _config: &mut ServerConfig) {
         if self.qdrant_listen.is_some() || self.qdrant_grpc_listen.is_some() {
             tracing::warn!("this build has no Qdrant API (the qdrant feature is off)");
+        }
+    }
+
+    /// The Elasticsearch gateway, unless `--no-es` (plan M1.5 Task 1, row
+    /// E13).
+    #[cfg(feature = "es")]
+    fn apply_es(&self, config: &mut ServerConfig) {
+        config.es = (!self.no_es).then(|| {
+            let mut es = operon_es::EsConfig::default();
+            if let Some(addr) = self.es_listen {
+                es.listen = addr;
+            }
+            if let Some(ns) = &self.es_namespace {
+                es.namespace = ns.clone();
+            }
+            es
+        });
+    }
+
+    #[cfg(not(feature = "es"))]
+    fn apply_es(&self, _config: &mut ServerConfig) {
+        if self.es_listen.is_some() {
+            tracing::warn!("this build has no Elasticsearch API (the es feature is off)");
         }
     }
 }
@@ -645,6 +679,11 @@ async fn main() -> ExitCode {
         println!("operon qdrant REST listening on http://{rest}");
         println!("operon qdrant gRPC listening on grpc://{grpc}");
     }
+    // Plan M1.5 Task 1 (row E13): also before the HTTP line.
+    #[cfg(feature = "es")]
+    if let Some(addr) = server.es_addr() {
+        println!("operon es listening on http://{addr}");
+    }
     println!("operon listening on http://{}", server.local_addr());
     // M1.6 W14, M1.7 A4: printed once the listener is bound.
     if let Some(addr) = server.flight_sql_addr() {
@@ -775,6 +814,63 @@ mod tests {
         assert!(cluster.qdrant.is_none());
         // ServerConfig::new serves no Qdrant API (E12).
         assert!(ServerConfig::new("/tmp/x").qdrant.is_none());
+    }
+
+    #[cfg(feature = "es")]
+    #[test]
+    fn es_flags_set_the_config() {
+        let es = dev_config(&[]).es.expect("on by default");
+        assert_eq!(es.listen, "127.0.0.1:9200".parse().unwrap());
+        assert_eq!(es.namespace, "default");
+        let es = dev_config(&["--es-listen", "127.0.0.1:0", "--es-namespace", "acme"])
+            .es
+            .expect("on");
+        assert_eq!(es.listen, "127.0.0.1:0".parse().unwrap());
+        assert_eq!(es.namespace, "acme");
+        assert!(dev_config(&["--no-es"]).es.is_none());
+        assert!(
+            Cli::try_parse_from(["operon", "dev", "--no-es", "--es-listen", "127.0.0.1:1"])
+                .is_err()
+        );
+        // D111: loopback in every mode.
+        let cli = Cli::try_parse_from(["operon", "standalone", "--bucket", "file:///tmp/b"])
+            .expect("parse");
+        let es = config_of(cli).es.expect("standalone serves it");
+        assert_eq!(es.listen, "127.0.0.1:9200".parse().unwrap());
+        let cluster = cluster_config(&[
+            "--node-id",
+            "1",
+            "--roles",
+            "meta,gateway",
+            "--listen",
+            "127.0.0.1:7001",
+            "--peers",
+            "1=127.0.0.1:7001",
+            "--bucket",
+            "file:///tmp/b",
+        ])
+        .expect("parse");
+        assert_eq!(
+            cluster.es.expect("cluster serves it").listen,
+            "127.0.0.1:9200".parse().unwrap()
+        );
+        let cluster = cluster_config(&[
+            "--node-id",
+            "1",
+            "--roles",
+            "meta,gateway",
+            "--listen",
+            "127.0.0.1:7001",
+            "--peers",
+            "1=127.0.0.1:7001",
+            "--bucket",
+            "file:///tmp/b",
+            "--no-es",
+        ])
+        .expect("parse");
+        assert!(cluster.es.is_none());
+        // ServerConfig::new serves no Elasticsearch API (row E13).
+        assert!(ServerConfig::new("/tmp/x").es.is_none());
     }
 
     #[test]
