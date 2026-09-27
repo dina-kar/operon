@@ -170,8 +170,6 @@ pub(crate) fn hot(id: CollectionId) -> Vec<u8> {
 /// `h/<stream>/<partition>` → the partition head ([`Head`]). Written by the
 /// first commit into the partition: an absent head of an existing partition
 /// is an empty one.
-// Written by Task 5's `commit_wal`; Task 4 only scans heads by prefix.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn head(stream: StreamId, partition: u32) -> Vec<u8> {
     tagged(b'h', &[&stream.0.to_be_bytes(), &partition.to_be_bytes()])
 }
@@ -193,10 +191,68 @@ pub(crate) fn index_entries(stream: StreamId) -> Vec<u8> {
     tagged(b'i', &[&stream.0.to_be_bytes(), b""])
 }
 
+/// The prefix of the index entries of one partition.
+pub(crate) fn partition_entries(stream: StreamId, partition: u32) -> Vec<u8> {
+    tagged(
+        b'i',
+        &[&stream.0.to_be_bytes(), &partition.to_be_bytes(), b""],
+    )
+}
+
+/// `i/<stream>/<partition>/<base offset>` → the index entry starting at
+/// `base` (base offsets are 8-byte big-endian, so key order is offset order).
+pub(crate) fn index_entry(stream: StreamId, partition: u32, base: u64) -> Vec<u8> {
+    tagged(
+        b'i',
+        &[
+            &stream.0.to_be_bytes(),
+            &partition.to_be_bytes(),
+            &base.to_be_bytes(),
+        ],
+    )
+}
+
+/// The prefix of every WAL commit record (`w/`).
+pub(crate) const WAL_RECORDS: &[u8] = b"w/";
+
+/// The prefix of the commit records of one WAL object: `w/<hash8>/<object>/`.
+/// A key under it is one of the object's records only when exactly the
+/// 4-byte group number follows ([`wal_group_of`]): another object's name may
+/// extend this one's.
+pub(crate) fn wal_groups(object: &str) -> Vec<u8> {
+    tagged(b'w', &[&hash8(object), object.as_bytes(), b""])
+}
+
+/// `w/<hash8>/<object>/<group>` → the commit record of one partition group
+/// of a WAL object ([`WalGroup`]); groups are 4-byte big-endian.
+pub(crate) fn wal_group(object: &str, group: u32) -> Vec<u8> {
+    tagged(
+        b'w',
+        &[&hash8(object), object.as_bytes(), &group.to_be_bytes()],
+    )
+}
+
+/// The group number of a key under [`wal_groups`]`(object)`, if the key is
+/// one of that object's records.
+pub(crate) fn wal_group_of(key: &[u8], object: &str) -> Option<u32> {
+    let rest = key.strip_prefix(wal_groups(object).as_slice())?;
+    Some(u32::from_be_bytes(rest.try_into().ok()?))
+}
+
 /// `W/<hash8>/<object>` → how many of a WAL object's chunks are still WAL
 /// index entries (u32 big-endian).
 pub(crate) fn wal_live(object: &str) -> Vec<u8> {
     tagged(b'W', &[&hash8(object), object.as_bytes()])
+}
+
+/// The prefix of the whole retired set (all shards).
+pub(crate) const RETIRED: &[u8] = b"r/";
+
+/// The path of a key under [`RETIRED`]: `r/<shard>/<path>`.
+pub(crate) fn retired_path(key: &[u8]) -> Option<String> {
+    let rest = key.strip_prefix(RETIRED)?;
+    let path = rest.get(2..).filter(|_| rest.get(1) == Some(&b'/'))?;
+    String::from_utf8(path.to_vec()).ok()
 }
 
 /// `r/<shard>/<path>` → when the path was retired (ms, u64 big-endian).
@@ -247,6 +303,18 @@ pub(crate) struct Head {
     pub next: u64,
     pub log_start: u64,
     pub bytes: u64,
+}
+
+/// The commit record of one partition group of a WAL object (design §20
+/// §11.3): how many groups the call had, the object's creation time (for
+/// pruning), and the base offset of each of the group's chunks, keyed by the
+/// chunk's position in the call, so a retry of a multi-group call can
+/// return every chunk's offset in call order.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct WalGroup {
+    pub groups: u32,
+    pub created_at_ms: u64,
+    pub offsets: Vec<(u32, u64)>,
 }
 
 /// An object's reference record: how many index entries or pointers name it,
@@ -338,6 +406,40 @@ mod tests {
             assert_eq!(head_partition(&head(s, p), s), Some(p));
         }
         assert_eq!(head_partition(&head(StreamId(8), 0), s), None);
+    }
+
+    #[test]
+    fn index_entry_keys_sort_by_offset_within_their_partition() {
+        let s = StreamId(3);
+        let keys: Vec<Vec<u8>> = [0u64, 1, 255, 256, 1 << 40]
+            .iter()
+            .map(|&base| index_entry(s, 2, base))
+            .collect();
+        assert!(keys.is_sorted());
+        assert!(keys.iter().all(|k| k.starts_with(&partition_entries(s, 2))));
+        assert!(keys.iter().all(|k| k.starts_with(&index_entries(s))));
+        assert!(!index_entry(s, 3, 0).starts_with(&partition_entries(s, 2)));
+    }
+
+    #[test]
+    fn wal_group_keys_belong_only_to_their_object() {
+        let key = wal_group("ns/1/wal/a", 7);
+        assert_eq!(wal_group_of(&key, "ns/1/wal/a"), Some(7));
+        assert!(key.starts_with(WAL_RECORDS));
+        // A longer name sharing the prefix is not one of its groups.
+        assert_eq!(
+            wal_group_of(&wal_group("ns/1/wal/a/x", 0), "ns/1/wal/a"),
+            None
+        );
+    }
+
+    #[test]
+    fn retired_keys_round_trip_their_path() {
+        for path in ["a", "ns/1/collections/2/", "x/y.bin"] {
+            assert_eq!(retired_path(&retired(path)).as_deref(), Some(path));
+        }
+        assert_eq!(retired_path(b"r/"), None);
+        assert_eq!(retired_path(b"W/x"), None);
     }
 
     #[test]

@@ -373,6 +373,16 @@ pub async fn collection_head_reads_pointer_bounds_and_clock(backend: &dyn Backen
         .await
         .expect("read")
         .expect("collection");
+    // The clock never goes backwards, so the head's clock is not earlier
+    // than a clock read before it. It may be later: a backend whose clock
+    // is a TSO (TiKV) advances it with time, not only with writes (R1 plan
+    // row T4-14).
+    assert!(
+        head.clock_ms >= clock,
+        "head clock {} < {clock}",
+        head.clock_ms
+    );
+    assert!(clock > 0);
     assert_eq!(
         head,
         CollectionHead {
@@ -383,19 +393,26 @@ pub async fn collection_head_reads_pointer_bounds_and_clock(backend: &dyn Backen
             }),
             log_start_offsets: vec![0, 3],
             high_watermarks: vec![0, 5],
-            // No write since the clock read.
-            clock_ms: clock,
+            clock_ms: head.clock_ms,
         }
     );
-    assert!(clock > 0);
-    assert_eq!(
+    // The same head from the lists, at a clock not earlier than its own.
+    for heads in [
         reader.collection_heads(L, Some(ns)).await.expect("read"),
-        vec![head.clone()]
-    );
-    assert_eq!(
         reader.collection_heads(L, None).await.expect("read"),
-        vec![head]
-    );
+    ] {
+        let [listed] = heads.as_slice() else {
+            panic!("expected one head, got {heads:?}");
+        };
+        assert!(listed.clock_ms >= head.clock_ms);
+        assert_eq!(
+            *listed,
+            CollectionHead {
+                clock_ms: listed.clock_ms,
+                ..head.clone()
+            }
+        );
+    }
     assert_eq!(
         reader
             .collection_head(L, CollectionId(cid.0 + 1000))

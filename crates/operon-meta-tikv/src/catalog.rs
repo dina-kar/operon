@@ -11,10 +11,10 @@
 use std::collections::BTreeMap;
 
 use operon_common::meta::{
-    AliasAction, ApplyError, COLLECTION_KIND, Collection, CollectionHead, EntryKind, HotConfig,
-    IndexEntry, Link, LinkHead, LinkId, MAX_COLLECTION_NAME_LEN, MAX_KEY_LEN, MAX_NAME_LEN,
-    MAX_PARTITIONS, MetaError, MetaResult, Namespace, Pointer, Retention, Stream, TargetRef,
-    WalClass, collection_pk_prefix, collection_pointer_key, collection_prefix, implicit_name,
+    AliasAction, ApplyError, COLLECTION_KIND, Collection, CollectionHead, HotConfig, IndexEntry,
+    Link, LinkHead, LinkId, MAX_COLLECTION_NAME_LEN, MAX_KEY_LEN, MAX_NAME_LEN, MAX_PARTITIONS,
+    MetaError, MetaResult, Namespace, Pointer, Retention, Stream, TargetRef, WalClass,
+    collection_pk_prefix, collection_pointer_key, collection_prefix, implicit_name,
     link_pointer_key,
 };
 use operon_common::schema::{CollectionSchema, SchemaError};
@@ -22,6 +22,7 @@ use operon_common::{CollectionId, NamespaceId, StreamId};
 use operon_tikv::{Tikv, Txn, TxnError};
 
 use crate::keys::{self, AliasMap, Head, IdKind};
+use crate::log::release_entries;
 use crate::{Reader, TikvMeta, decode_all, fatal, load, load_id, rejected};
 
 /// Most options one link may carry.
@@ -150,7 +151,7 @@ async fn records_by_names<T: serde::de::DeserializeOwned>(
     decode_all(what, &records)
 }
 
-async fn list_streams(
+pub(crate) async fn list_streams(
     r: &mut dyn Reader,
     ns: Option<NamespaceId>,
 ) -> Result<Vec<Stream>, TxnError> {
@@ -177,7 +178,7 @@ async fn list_links(r: &mut dyn Reader, ns: Option<NamespaceId>) -> Result<Vec<L
     }
 }
 
-async fn list_collections(
+pub(crate) async fn list_collections(
     r: &mut dyn Reader,
     ns: Option<NamespaceId>,
 ) -> Result<Vec<Collection>, TxnError> {
@@ -230,37 +231,6 @@ async fn collection_head(
         clock_ms,
         collection,
     })
-}
-
-/// Releases an index entry of a dropped stream: a WAL object whose last
-/// live chunk this was, and every segment, is retired at `now_ms` (as
-/// `operon-meta`'s `release_entry`).
-async fn release_entry(txn: &mut Txn, entry: IndexEntry, now_ms: u64) -> Result<(), TxnError> {
-    match entry.kind {
-        EntryKind::Wal => {
-            let live_key = keys::wal_live(&entry.object);
-            let remaining = match txn.get(&live_key).await? {
-                Some(v) => keys::decode_u32("WAL live count", &v)
-                    .map_err(fatal)?
-                    .saturating_sub(1),
-                // Every WAL entry is counted at commit, so this is
-                // unreachable; retiring keeps the object collectable.
-                None => 0,
-            };
-            if remaining == 0 {
-                txn.delete(&live_key).await?;
-                txn.put(&keys::retired(&entry.object), keys::encode_u64(now_ms))
-                    .await?;
-            } else {
-                txn.put(&live_key, remaining.to_be_bytes().to_vec()).await?;
-            }
-        }
-        EntryKind::Segment => {
-            txn.put(&keys::retired(&entry.object), keys::encode_u64(now_ms))
-                .await?;
-        }
-    }
-    Ok(())
 }
 
 impl TikvMeta {
@@ -637,6 +607,7 @@ impl TikvMeta {
         ns: NamespaceId,
         name: &str,
     ) -> MetaResult<Option<CollectionId>> {
+        self.reach_now().await;
         let name = name.to_string();
         self.write_plain("meta.drop_collection", move |txn| {
             let name = name.clone();
@@ -658,22 +629,27 @@ impl TikvMeta {
                     txn.put(&keys::aliases(ns), keys::encode(&aliases)).await?;
                 }
                 txn.delete(&keys::hot(id)).await?;
-                // The implicit stream, its heads and index entries.
+                // The implicit stream, its heads and index entries. Every
+                // partition's head is deleted, present or not, so a
+                // concurrent first commit into a partition (which creates its
+                // head under a pessimistic lock) conflicts with the drop
+                // instead of leaving entries behind it (row T5-3).
                 let implicit = implicit_name(&collection.name, id);
                 txn.delete(&keys::stream(collection.stream)).await?;
                 txn.delete(&keys::stream_name(ns, &implicit)).await?;
-                let heads = txn.scan_prefix(&keys::heads(collection.stream)).await?;
-                for (key, _) in heads {
-                    txn.delete(&key).await?;
+                for p in 0..collection.partitions {
+                    txn.delete(&keys::head(collection.stream, p)).await?;
                 }
                 let entries = txn
                     .scan_prefix(&keys::index_entries(collection.stream))
                     .await?;
+                let mut released = Vec::with_capacity(entries.len());
                 for (key, value) in entries {
                     let entry: IndexEntry = keys::decode("index entry", &value).map_err(fatal)?;
                     txn.delete(&key).await?;
-                    release_entry(txn, entry, now_ms).await?;
+                    released.push(entry);
                 }
+                release_entries(txn, &released, now_ms).await?;
                 // The implicit link and its pointer, the manifest pointer,
                 // the collection.
                 txn.delete(&keys::link(collection.link)).await?;

@@ -3,9 +3,9 @@
 //!
 //! [`TikvMeta`] maps each trait method onto one TiKV transaction through
 //! `operon-tikv`'s runner, with the key layout of §20 §11.2 (module `keys`)
-//! under the handle's root prefix. Writes are optimistic, carry a commit
-//! token, and are rerun as the trait's retry-safe rules describe when an
-//! attempt's outcome was unknown. Reads use one snapshot at a fresh TSO
+//! under the handle's root prefix. Writes carry a commit token and are rerun
+//! as the trait's retry-safe rules describe when an attempt's outcome was
+//! unknown; they are optimistic except the three log writes below. Reads use one snapshot at a fresh TSO
 //! timestamp, so every read is `Linearizable` (`Local` is served the same
 //! way, as the trait allows). The clock is the TSO's physical part:
 //! [`clock_ms`](operon_common::meta::MetaStore::clock_ms) fetches a fresh
@@ -13,16 +13,20 @@
 //! timestamp the handle saw (row R2). Ids come from per-handle blocks of
 //! [`TikvMetaConfig::id_block`] (gaps allowed, D18).
 //!
-//! Task 4 implements the clock and readiness, the catalog, leases, pointers
-//! and collections; the log, the garbage-collection reads and the change
-//! feed's counters arrive in Task 5, and their methods answer
-//! `MetaError::Unavailable("not implemented in R1 Task 4")` until then.
+//! `commit_wal`, `swap_segment` and `trim_partition` are pessimistic
+//! transactions that lock the partition heads they touch (R1 Ruling 2);
+//! `commit_wal` commits one transaction per partition group (module `log`).
 
 mod catalog;
+mod changes;
+mod gc;
 mod keys;
 mod leases;
+mod log;
 mod pointers;
 mod store;
+
+pub use log::{MAX_CLOCK_SKEW_MS, MAX_GROUP_BYTES, MAX_GROUP_CHUNKS};
 
 use std::collections::HashMap;
 use std::fmt;
@@ -32,7 +36,7 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use operon_common::meta::{ApplyError, MetaError, MetaResult};
-use operon_tikv::{Pair, Snap, Tikv, TikvConfig, TikvError, Txn, TxnError, TxnOptions};
+use operon_tikv::{Mode, Pair, Snap, Tikv, TikvConfig, TikvError, Txn, TxnError, TxnOptions};
 
 use crate::keys::IdKind;
 
@@ -45,6 +49,12 @@ pub const DEFAULT_POLL: Duration = Duration::from_millis(100);
 /// How often a write whose outcome was unknown is rerun before the call gives
 /// up with an unknown outcome.
 const UNKNOWN_RERUNS: u32 = 3;
+
+/// The longest a stamped write waits for the TSO to reach `now_ms`.
+const STAMP_WAIT: Duration = Duration::from_secs(1);
+
+/// Attempts of a pessimistic write (row T5-2).
+const PESSIMISTIC_ATTEMPTS: u32 = 64;
 
 /// How often a read is retried after a conflict (a lock it met) or an error
 /// after which it certainly read nothing.
@@ -157,6 +167,26 @@ impl TikvMeta {
         previous.max(estimate)
     }
 
+    /// Waits until the TSO's physical time reaches this handle's `now_ms`,
+    /// before a write the trait says is "stamped with `now_ms`"
+    /// (`swap_segment`, `trim_partition`, `prune_wal_commits`,
+    /// `drop_collection`), so the write's start timestamp, and the metastore
+    /// clock after it, are not behind the caller's clock (row T5-7). PD
+    /// advances the physical part in steps, so the extrapolated `now_ms` can
+    /// run up to one step ahead of it. Gives up after [`STAMP_WAIT`].
+    async fn reach_now(&self) {
+        let stamp = self.now_estimate();
+        let deadline = std::time::Instant::now() + STAMP_WAIT;
+        while let Ok(ts) = self.inner.tikv.now().await {
+            let physical = Tikv::physical_ms(&ts);
+            if physical >= stamp || std::time::Instant::now() >= deadline {
+                return;
+            }
+            let behind = Duration::from_millis((stamp - physical).clamp(1, 50));
+            tokio::time::sleep(behind).await;
+        }
+    }
+
     /// The next id of `kind`, taking a new block when this handle's is used
     /// up. A block is taken in its own transaction, so ids a handle never
     /// hands out (a rejected create, a handle that stops) leave gaps.
@@ -208,22 +238,44 @@ impl TikvMeta {
     /// both when the runner could not resolve the outcome (`Undetermined`)
     /// and when it resolved it through the commit token as committed (row
     /// T4-3).
-    async fn write<T, F>(&self, op: &'static str, mut body: F) -> (MetaResult<T>, bool)
+    async fn write<T, F>(&self, op: &'static str, body: F) -> (MetaResult<T>, bool)
     where
         T: Send,
         F: for<'t> FnMut(&'t mut Txn) -> BoxFuture<'t, Result<Result<T, ApplyError>, TxnError>>,
     {
+        self.write_in(Mode::Optimistic, op, body).await
+    }
+
+    /// [`write`](Self::write) in `mode`. A pessimistic write (`commit_wal`,
+    /// `swap_segment`, `trim_partition`: R1 Ruling 2) locks what it reads
+    /// with `get_for_update` as it goes, so a hot partition head queues
+    /// instead of aborting; its lock waits end in restarts often under load
+    /// (`tikv-client` does not retry a lock at a newer `for_update_ts`), so it
+    /// gets [`PESSIMISTIC_ATTEMPTS`] attempts within the same deadline.
+    async fn write_in<T, F>(
+        &self,
+        mode: Mode,
+        op: &'static str,
+        mut body: F,
+    ) -> (MetaResult<T>, bool)
+    where
+        T: Send,
+        F: for<'t> FnMut(&'t mut Txn) -> BoxFuture<'t, Result<Result<T, ApplyError>, TxnError>>,
+    {
+        let options = match mode {
+            Mode::Optimistic => TxnOptions::new(op),
+            Mode::Pessimistic => TxnOptions {
+                max_attempts: PESSIMISTIC_ATTEMPTS,
+                ..TxnOptions::pessimistic(op)
+            },
+        }
+        .with_token();
         let mut unknown = false;
         let mut outcome = Err(MetaError::Unavailable(format!(
             "{op}: the commit outcome stayed unknown after {UNKNOWN_RERUNS} reruns"
         )));
         for _ in 0..UNKNOWN_RERUNS {
-            match self
-                .inner
-                .tikv
-                .run(TxnOptions::new(op).with_token(), &mut body)
-                .await
-            {
+            match self.inner.tikv.run(options.clone(), &mut body).await {
                 Ok(committed) if committed.earlier_unknown => unknown = true,
                 Ok(committed) => {
                     outcome = committed.value.map_err(MetaError::Rejected);
@@ -271,6 +323,15 @@ impl TikvMeta {
             }
         }
     }
+}
+
+/// A snapshot at a fresh TSO timestamp, taken inside a pessimistic write
+/// after its locks: it sees every commit before the locks, which the
+/// transaction's own start-timestamp reads may miss (row T5-3).
+async fn fresh_snapshot(tikv: &Tikv) -> Result<Snap, TxnError> {
+    let not_applied = |e: TikvError| TxnError::NotApplied(e.to_string());
+    let ts = tikv.now().await.map_err(not_applied)?;
+    tikv.snapshot(ts).await.map_err(not_applied)
 }
 
 /// Maps the runner's final error. Every one of them leaves a write's
