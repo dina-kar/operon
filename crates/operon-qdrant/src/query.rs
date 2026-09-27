@@ -1,16 +1,22 @@
 //! The universal query (Task 7): a Qdrant `QueryRequest` compiled to one
 //! IR `SearchRequest` (nearest, sparse nearest, prefetch, fusion, rescore),
-//! then post-processed into Qdrant's scores, thresholds and pages.
+//! then post-processed into Qdrant's scores, thresholds and pages. Task 8
+//! adds the queries the gateway scores itself (Ruling 10): `recommend`'s
+//! `best_score` and `sum_scores`, `discover`, `context` (candidate searches
+//! whose union is rescored) and MMR (one candidate search, then Qdrant's
+//! greedy selection); `average_vector` stays one IR search.
 //!
 //! Example vectors given by id are read first ([`resolve_examples`]); the
 //! compiler ([`compile_query`]) is pure, so the crate tests pin its IR.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use operon_collection::{CollectionSchema, Distance, PrimaryKey, SparseModifier, SparseVector};
+use operon_collection::{
+    CollectionSchema, ConsistencyToken, Distance, PrimaryKey, SparseModifier, SparseVector,
+};
 use operon_query::{
-    CollectionInfo, Fusion, Hit, Projection, Query, Retriever, SearchRequest, SourceFilter,
-    SparseParams,
+    CollectionInfo, Fusion, Hit, Projection, Query, ReadConsistency, Retriever, SearchRequest,
+    SourceFilter, SparseParams,
 };
 use serde_json::Value;
 
@@ -20,11 +26,14 @@ use crate::filter::{and, compile_filter, exclude_ids};
 use crate::ids::{PointId, pk_to_json};
 use crate::model::common::{ScoredPoint, VectorInput, VectorValue};
 use crate::model::query::{
-    FusionName, IdfParams, LookupLocation, Prefetch, QueryInterface, QueryKind, QueryRequest,
-    QueryResponse, SearchParams,
+    ContextPair, FusionName, IdfParams, LookupLocation, Prefetch, QueryInterface, QueryKind,
+    QueryRequest, QueryResponse, RecommendStrategy, SearchParams,
 };
 use crate::reads::{Selectors, projection, render_payload, render_vectors, resolve_selectors};
-use crate::scoring::{ann_params, check_sparse, check_vector, passes_threshold, to_qdrant_score};
+use crate::scoring::{
+    Scorer, ann_params, average_vector, candidate_k, check_sparse, check_vector, mmr_select,
+    passes_threshold, to_qdrant_score,
+};
 use crate::{QdrantConfig, QdrantGateway};
 
 /// Qdrant's text for `params.idf` on a vector without the IDF modifier.
@@ -47,7 +56,7 @@ pub struct ResolvedExamples {
     pub exclude: BTreeSet<PrimaryKey>,
 }
 
-/// How a query runs. Task 8 adds the gateway-scored plans.
+/// How a query runs.
 #[derive(Clone, Debug, PartialEq)]
 pub enum QueryPlan {
     /// One IR search, then [`PostProcess`].
@@ -55,6 +64,34 @@ pub enum QueryPlan {
         request: SearchRequest,
         post: PostProcess,
     },
+    /// Task 8 semantics 3: the union of the `legs`' hits, each scored by
+    /// `scorer` over its `using` vector, then [`PostProcess`].
+    Scored {
+        legs: Vec<SearchRequest>,
+        scorer: Scorer,
+        using: String,
+        post: PostProcess,
+    },
+    /// Task 8 semantics 4: MMR over one nearest search's candidates (their
+    /// `using` vectors), keeping each pick's nearest score.
+    Mmr {
+        candidates: SearchRequest,
+        query: Vec<f32>,
+        lambda: f32,
+        using: String,
+        post: PostProcess,
+    },
+}
+
+impl QueryPlan {
+    /// What the gateway does with the plan's hits.
+    pub fn post(&self) -> &PostProcess {
+        match self {
+            QueryPlan::Ir { post, .. }
+            | QueryPlan::Scored { post, .. }
+            | QueryPlan::Mmr { post, .. } => post,
+        }
+    }
 }
 
 /// What the gateway does with the IR's hits (semantics step 3).
@@ -340,6 +377,25 @@ fn validate(level: &Level<'_>, threshold: Option<f32>) -> Result<(), GatewayErro
         return bad("Fusion queries cannot be combined with the 'using' field.");
     }
     Ok(())
+}
+
+/// A root query the gateway scores itself (Task 8): `recommend`,
+/// `discover`, `context`, or `nearest` with `mmr`.
+fn gateway_kind(q: Option<&QueryInterface>) -> Option<&QueryKind> {
+    match q {
+        Some(QueryInterface::Query(
+            kind @ (QueryKind::Recommend { .. }
+            | QueryKind::Discover { .. }
+            | QueryKind::Context { .. }
+            | QueryKind::Nearest { mmr: Some(_), .. }),
+        )) => Some(kind),
+        _ => None,
+    }
+}
+
+/// Neither a positive nor, where it may stand alone, a negative example.
+fn no_positive() -> GatewayError {
+    GatewayError::BadRequest("No positive examples given".to_string())
 }
 
 /// A fusion without prefetches.
@@ -637,34 +693,162 @@ impl Compiler<'_> {
         let QueryInterface::Query(kind) = q else {
             unreachable!("a bare vector is a nearest query")
         };
+        // `compile_query` plans the gateway-scored kinds (Task 8).
+        Err(GatewayError::Unsupported(kind.name().to_string()))
+    }
+
+    /// Task 8 semantics 1, 2 and 4: a root `recommend`, `discover`,
+    /// `context` or `nearest` with `mmr`, over the dense `level.using`.
+    /// Candidate searches read `candidate_k` points (MMR: its
+    /// `candidates_limit`, default `limit`), under the request's `filter`
+    /// (with the example ids excluded), fetching the `using` vector.
+    fn gateway(
+        &self,
+        level: &Level<'_>,
+        kind: &QueryKind,
+        params: Option<&SearchParams>,
+        filter: Option<Query>,
+        mut post: PostProcess,
+        config: &QdrantConfig,
+    ) -> Result<QueryPlan, GatewayError> {
         let name = kind.name();
-        Err(GatewayError::Unsupported(match kind {
-            QueryKind::Nearest { .. }
-            | QueryKind::Recommend { .. }
-            | QueryKind::Discover { .. }
-            | QueryKind::Context { .. } => {
-                if !level.prefetch.is_empty() {
-                    format!("prefetch under {name}")
-                } else if self.is_sparse(level.using) {
-                    format!("sparse {name}")
-                } else {
-                    // Task 8 scores these in the gateway.
-                    format!("{name} queries")
+        if !level.prefetch.is_empty() {
+            return Err(GatewayError::Unsupported(format!("prefetch under {name}")));
+        }
+        let using = level.using;
+        if self.is_sparse(using) {
+            return Err(GatewayError::Unsupported(format!("sparse {name}")));
+        }
+        let Some(spec) = self.schema.vectors.iter().find(|s| s.name == using) else {
+            return Err(not_existing(using));
+        };
+        post.distance = spec.distance;
+        let dense = |v: &VectorInput| self.dense(level, v).map(|(v, _)| v);
+        let dense_all = |vs: &[VectorInput]| vs.iter().map(dense).collect::<Result<Vec<_>, _>>();
+        let pairs = |ps: &[ContextPair]| {
+            ps.iter()
+                .map(|p| Ok((dense(&p.positive)?, dense(&p.negative)?)))
+                .collect::<Result<Vec<_>, GatewayError>>()
+        };
+        let mut select = projection(&post.selectors);
+        if !select.vectors.iter().any(|v| v == using) {
+            select.vectors.push(using.to_string());
+        }
+        let search = |query: Vec<f32>, k: usize| {
+            let mut request = SearchRequest::new(self.collection);
+            request.retrievers = vec![Retriever::Vector {
+                field: using.to_string(),
+                query,
+                k,
+                params: ann_params(params),
+                filter: None,
+            }];
+            request.filter = filter.clone();
+            request.offset = 0;
+            request.limit = k;
+            request.select = select.clone();
+            request
+        };
+        let k = candidate_k(post.offset, post.limit, config.max_candidates);
+        let scored = |legs: Vec<Vec<f32>>, scorer: Scorer, mut post: PostProcess| {
+            post.kind = ScoreKind::Custom;
+            QueryPlan::Scored {
+                legs: legs.into_iter().map(|q| search(q, k)).collect(),
+                scorer,
+                using: using.to_string(),
+                post,
+            }
+        };
+        match kind {
+            QueryKind::Recommend { recommend } => {
+                let pos = dense_all(&recommend.positive)?;
+                let neg = dense_all(&recommend.negative)?;
+                match recommend
+                    .strategy
+                    .unwrap_or(RecommendStrategy::AverageVector)
+                {
+                    RecommendStrategy::AverageVector => {
+                        let mut avg = average_vector(&pos, &neg)?;
+                        check_vector(self.schema, using, &mut avg)?;
+                        let mut request = search(avg, post.offset.saturating_add(post.limit));
+                        request.select = projection(&post.selectors);
+                        post.kind = ScoreKind::Distance;
+                        Ok(QueryPlan::Ir { request, post })
+                    }
+                    RecommendStrategy::BestScore => {
+                        if pos.is_empty() && neg.is_empty() {
+                            return Err(no_positive());
+                        }
+                        // Without positives the negatives' neighbourhoods
+                        // are the candidates.
+                        let legs = if pos.is_empty() { &neg } else { &pos }.clone();
+                        Ok(scored(legs, Scorer::BestScore { pos, neg }, post))
+                    }
+                    RecommendStrategy::SumScores => {
+                        if pos.is_empty() {
+                            return Err(no_positive());
+                        }
+                        let legs = pos.clone();
+                        Ok(scored(legs, Scorer::SumScores { pos, neg }, post))
+                    }
                 }
             }
-            _ => name.to_string(),
-        }))
+            QueryKind::Discover { discover } => {
+                let target = dense(&discover.target)?;
+                let pairs = pairs(discover.context.as_ref().map_or(&[], |c| c.as_slice()))?;
+                let legs = std::iter::once(target.clone())
+                    .chain(pairs.iter().map(|(p, _)| p.clone()))
+                    .collect();
+                Ok(scored(legs, Scorer::Discover { target, pairs }, post))
+            }
+            QueryKind::Context { context } => {
+                let pairs = pairs(context.as_slice())?;
+                if pairs.is_empty() {
+                    return Err(GatewayError::BadRequest(
+                        "Context query requires at least one pair".to_string(),
+                    ));
+                }
+                let legs = pairs.iter().map(|(p, _)| p.clone()).collect();
+                Ok(scored(legs, Scorer::Context { pairs }, post))
+            }
+            QueryKind::Nearest {
+                nearest,
+                mmr: Some(mmr),
+            } => {
+                let diversity = mmr.diversity.unwrap_or(0.5);
+                if !(0.0..=1.0).contains(&diversity) {
+                    return Err(GatewayError::BadRequest(format!(
+                        "mmr.diversity must be in the range [0, 1], got {diversity}"
+                    )));
+                }
+                let query = dense(nearest)?;
+                let k = mmr
+                    .candidates_limit
+                    .unwrap_or(post.limit)
+                    .min(config.max_candidates);
+                post.kind = ScoreKind::Distance;
+                Ok(QueryPlan::Mmr {
+                    candidates: search(query.clone(), k),
+                    query,
+                    lambda: 1.0 - diversity,
+                    using: using.to_string(),
+                    post,
+                })
+            }
+            other => Err(GatewayError::Unsupported(other.name().to_string())),
+        }
     }
 }
 
-/// Semantics step 2: the IR request and its post-processing. `collection`
-/// is the collection's name (example ids are keyed by it).
+/// Semantics step 2: the IR request (or, Task 8, the gateway-scored plan)
+/// and its post-processing. `collection` is the collection's name (example
+/// ids are keyed by it).
 pub fn compile_query(
     req: &QueryRequest,
     collection: &str,
     schema: &CollectionSchema,
     examples: &ResolvedExamples,
-    _config: &QdrantConfig,
+    config: &QdrantConfig,
 ) -> Result<QueryPlan, GatewayError> {
     if req.shard_key.is_some() {
         return Err(GatewayError::Unsupported("shard_key".to_string()));
@@ -685,6 +869,20 @@ pub fn compile_query(
     };
     let level = Level::root(req);
     validate(&level, req.score_threshold)?;
+    let mut post = PostProcess {
+        distance: Distance::Dot,
+        kind: ScoreKind::Filter,
+        threshold: req.score_threshold,
+        offset,
+        limit,
+        selectors,
+        exclude: examples.exclude.clone(),
+    };
+    if let Some(kind) = gateway_kind(level.query) {
+        let exclude: Vec<PrimaryKey> = examples.exclude.iter().cloned().collect();
+        let filter = exclude_ids(compiler.filter(req.filter.as_ref())?, &exclude);
+        return compiler.gateway(&level, kind, req.params.as_ref(), filter, post, config);
+    }
     let (retrievers, kind, distance) = compiler.root(&level, req.params.as_ref(), k_root)?;
     let filter = compiler.filter(req.filter.as_ref())?;
     let exclude: Vec<PrimaryKey> = examples.exclude.iter().cloned().collect();
@@ -693,55 +891,148 @@ pub fn compile_query(
     request.filter = exclude_ids(filter, &exclude);
     request.offset = 0;
     request.limit = k_root;
-    request.select = projection(&selectors);
-    Ok(QueryPlan::Ir {
-        request,
-        post: PostProcess {
-            distance,
-            kind,
-            threshold: req.score_threshold,
-            offset,
-            limit,
-            selectors,
-            exclude: examples.exclude.clone(),
-        },
-    })
+    request.select = projection(&post.selectors);
+    post.kind = kind;
+    post.distance = distance;
+    Ok(QueryPlan::Ir { request, post })
 }
 
 impl PostProcess {
-    /// Semantics step 3.2–3.7: drop the example ids, convert the scores,
-    /// keep the hits that pass the threshold, skip `offset`, take `limit`,
-    /// render. The IR's order is already Qdrant's (larger-is-better IR
-    /// scores are ascending distances).
-    pub fn apply(&self, hits: Vec<Hit>) -> Vec<ScoredPoint> {
-        let mut out = Vec::with_capacity(self.limit.min(hits.len()));
-        let mut skipped = 0;
-        for hit in hits {
-            if out.len() == self.limit {
-                break;
-            }
-            if self.exclude.contains(&hit.pk) {
-                continue;
-            }
-            let score = to_qdrant_score(self.distance, &self.kind, hit.score);
-            if let Some(t) = self.threshold
-                && !passes_threshold(self.distance, &self.kind, score, t)
-            {
-                continue;
-            }
-            if skipped < self.offset {
-                skipped += 1;
-                continue;
-            }
-            out.push(ScoredPoint {
-                id: pk_to_json(&hit.pk),
-                version: 0,
-                score,
-                payload: render_payload(&self.selectors, hit.source),
-                vector: render_vectors(&self.selectors, hit.vectors, hit.sparse_vectors),
-            });
+    /// Semantics steps 3.2, 3.3 and 3.5 for one hit: `None` for an example
+    /// id or a score that fails the threshold, else its Qdrant score.
+    pub fn keep(&self, hit: &Hit) -> Option<f32> {
+        if self.exclude.contains(&hit.pk) {
+            return None;
         }
-        out
+        let score = to_qdrant_score(self.distance, &self.kind, hit.score);
+        match self.threshold {
+            Some(t) if !passes_threshold(self.distance, &self.kind, score, t) => None,
+            _ => Some(score),
+        }
+    }
+
+    /// Semantics steps 3.2–3.6: the kept hits with their Qdrant scores,
+    /// `offset` skipped and at most `limit`. The input order is Qdrant's
+    /// (larger-is-better IR scores are ascending distances).
+    pub fn select(&self, hits: Vec<Hit>) -> Vec<(Hit, f32)> {
+        hits.into_iter()
+            .filter_map(|hit| self.keep(&hit).map(|score| (hit, score)))
+            .skip(self.offset)
+            .take(self.limit)
+            .collect()
+    }
+
+    /// Semantics step 3.7: a hit rendered with the request's selectors.
+    pub fn render(&self, hit: Hit, score: f32) -> ScoredPoint {
+        ScoredPoint {
+            id: pk_to_json(&hit.pk),
+            version: 0,
+            score,
+            payload: render_payload(&self.selectors, hit.source),
+            vector: render_vectors(&self.selectors, hit.vectors, hit.sparse_vectors),
+        }
+    }
+
+    /// [`PostProcess::select`], then [`PostProcess::render`].
+    pub fn apply(&self, hits: Vec<Hit>) -> Vec<ScoredPoint> {
+        self.select(hits)
+            .into_iter()
+            .map(|(hit, score)| self.render(hit, score))
+            .collect()
+    }
+}
+
+/// Runs a compiled plan at `consistency` (later searches of a plan at
+/// `AtLeast` the first one's read token): the kept hits with their Qdrant
+/// scores, unrendered, and the first search's read token (`None` when the
+/// plan searched nothing).
+pub(crate) async fn execute(
+    gw: &QdrantGateway,
+    ns: &str,
+    consistency: ReadConsistency,
+    plan: QueryPlan,
+) -> Result<(Vec<(Hit, f32)>, Option<ConsistencyToken>), GatewayError> {
+    match plan {
+        QueryPlan::Ir { mut request, post } => {
+            request.consistency = consistency;
+            let response = Box::pin(gw.service().search(ns, request)).await?;
+            Ok((post.select(response.hits), Some(response.read_token)))
+        }
+        QueryPlan::Scored {
+            legs,
+            scorer,
+            using,
+            post,
+        } => {
+            // Semantics 3.1–3.2: the legs in order, the first hit of each
+            // key kept.
+            let mut consistency = consistency;
+            let mut token = None;
+            let mut union: BTreeMap<PrimaryKey, Hit> = BTreeMap::new();
+            for mut leg in legs {
+                leg.consistency = consistency.clone();
+                let response = Box::pin(gw.service().search(ns, leg)).await?;
+                if token.is_none() {
+                    consistency = ReadConsistency::AtLeast(response.read_token.clone());
+                    token = Some(response.read_token);
+                }
+                for hit in response.hits {
+                    union.entry(hit.pk.clone()).or_insert(hit);
+                }
+            }
+            // Semantics 3.3–3.6.
+            let mut hits: Vec<Hit> = union
+                .into_values()
+                .filter_map(|mut hit| {
+                    hit.score = scorer.score(post.distance, hit.vectors.get(&using)?);
+                    Some(hit)
+                })
+                .collect();
+            hits.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.pk.cmp(&b.pk)));
+            Ok((post.select(hits), token))
+        }
+        QueryPlan::Mmr {
+            mut candidates,
+            query,
+            lambda,
+            using,
+            post,
+        } => {
+            // `candidates_limit: 0` gathers nothing, as in Qdrant.
+            if candidates.limit == 0 {
+                return Ok((Vec::new(), None));
+            }
+            candidates.consistency = consistency;
+            let response = Box::pin(gw.service().search(ns, candidates)).await?;
+            // Semantics 4.2: the example ids dropped, the threshold applied
+            // to the nearest scores.
+            let kept: Vec<(Hit, f32)> = response
+                .hits
+                .into_iter()
+                .filter(|hit| hit.vectors.contains_key(&using))
+                .filter_map(|hit| post.keep(&hit).map(|score| (hit, score)))
+                .collect();
+            let vectors: Vec<(PrimaryKey, Vec<f32>)> = kept
+                .iter()
+                .map(|(hit, _)| (hit.pk.clone(), hit.vectors[&using].clone()))
+                .collect();
+            // Semantics 4.3–4.4.
+            let picks = mmr_select(
+                post.distance,
+                &query,
+                &vectors,
+                lambda,
+                post.offset.saturating_add(post.limit),
+            );
+            let mut slots: Vec<Option<(Hit, f32)>> = kept.into_iter().map(Some).collect();
+            let hits = picks
+                .into_iter()
+                .skip(post.offset)
+                .take(post.limit)
+                .filter_map(|i| slots[i].take())
+                .collect();
+            Ok((hits, Some(response.read_token)))
+        }
     }
 }
 
@@ -754,11 +1045,13 @@ pub(crate) async fn run_query(
 ) -> Result<Vec<ScoredPoint>, GatewayError> {
     let info = gw.service().get_collection(&ctx.ns, &collection).await?;
     let examples = resolve_examples(&gw, &ctx, &info, &req).await?;
-    let QueryPlan::Ir { mut request, post } =
-        compile_query(&req, &info.name, &info.schema, &examples, gw.config())?;
-    request.consistency = ctx.consistency.clone();
-    let response = Box::pin(gw.service().search(&ctx.ns, request)).await?;
-    Ok(post.apply(response.hits))
+    let plan = compile_query(&req, &info.name, &info.schema, &examples, gw.config())?;
+    let post = plan.post().clone();
+    let (hits, _) = Box::pin(execute(&gw, &ctx.ns, ctx.consistency.clone(), plan)).await?;
+    Ok(hits
+        .into_iter()
+        .map(|(hit, score)| post.render(hit, score))
+        .collect())
 }
 
 /// Semantics step 4: the requests in order, with the same context; the

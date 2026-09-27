@@ -20,7 +20,9 @@
 //!   count with Qdrant's payload and vector selectors.
 //! - [`query`]: the universal query (Task 7) compiled to one IR search
 //!   (nearest, sparse nearest, prefetch, RRF and DBSF fusion, rescore), with
-//!   Qdrant's scores, thresholds and pages applied by the gateway.
+//!   Qdrant's scores, thresholds and pages applied by the gateway. Task 8
+//!   scores `recommend` (`best_score`, `sum_scores`), `discover`, `context`
+//!   and MMR in the gateway over IR candidates (Ruling 10).
 //!
 //! # Divergences from Qdrant 1.19
 //!
@@ -83,6 +85,16 @@
 //! - DBSF over Euclid or Manhattan prefetches normalizes Operon's
 //!   larger-is-better scores (negated distances), where Qdrant normalizes
 //!   the raw distances and so favours far points (Ruling 9).
+//! - `recommend` with `best_score` or `sum_scores`, `discover` and
+//!   `context` score the union of one candidate search per example (the
+//!   positives, or the target and each pair's positive; `best_score` without
+//!   positives reads the negatives'), each of `min(max(4 × (offset + limit),
+//!   100), max_candidates)` points, where Qdrant scores during its HNSW walk;
+//!   a point outside every neighbourhood is missed (Ruling 10). `sum_scores`
+//!   needs a positive, and a `context` query needs a pair, where Qdrant
+//!   accepts negatives alone and an empty context (row T8-7).
+//! - MMR's `candidates_limit` is capped at `max_candidates` (10,000), where
+//!   Qdrant refuses one over 16,384 (row T8-8).
 //! - Weighted RRF, a prefetch `score_threshold`, a leaf prefetch without a
 //!   query (Qdrant's scroll of `limit` points; row T8-1), `order_by`,
 //!   `formula`, `sample` and `relevance_feedback` queries, sparse rescoring

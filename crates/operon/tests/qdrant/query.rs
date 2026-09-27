@@ -15,10 +15,10 @@ use crate::harness::Qd;
 // ----- helpers -----
 
 /// A small deterministic generator (xorshift64*).
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 ^= self.0 >> 12;
         self.0 ^= self.0 << 25;
         self.0 ^= self.0 >> 27;
@@ -26,31 +26,31 @@ impl Rng {
     }
 
     /// Uniform in [-1, 1).
-    fn f(&mut self) -> f32 {
+    pub(crate) fn f(&mut self) -> f32 {
         (self.next() >> 40) as f32 / (1u64 << 23) as f32 - 1.0
     }
 
-    fn below(&mut self, n: u64) -> u64 {
+    pub(crate) fn below(&mut self, n: u64) -> u64 {
         self.next() % n
     }
 
-    fn vector(&mut self, dim: usize) -> Vec<f32> {
+    pub(crate) fn vector(&mut self, dim: usize) -> Vec<f32> {
         (0..dim).map(|_| self.f()).collect()
     }
 }
 
-fn error(body: &Value) -> &str {
+pub(crate) fn error(body: &Value) -> &str {
     body["status"]["error"]
         .as_str()
         .unwrap_or_else(|| panic!("no status.error: {body}"))
 }
 
-async fn create(qd: &Qd, name: &str, body: Value) {
+pub(crate) async fn create(qd: &Qd, name: &str, body: Value) {
     let (status, reply) = qd.put(&format!("/collections/{name}"), Some(body)).await;
     assert_eq!(status, StatusCode::OK, "{reply}");
 }
 
-async fn upsert(qd: &Qd, name: &str, points: Vec<Value>) {
+pub(crate) async fn upsert(qd: &Qd, name: &str, points: Vec<Value>) {
     for chunk in points.chunks(100) {
         let (status, reply) = qd
             .put(
@@ -62,20 +62,20 @@ async fn upsert(qd: &Qd, name: &str, points: Vec<Value>) {
     }
 }
 
-async fn query_raw(qd: &Qd, name: &str, body: Value) -> (StatusCode, Value) {
+pub(crate) async fn query_raw(qd: &Qd, name: &str, body: Value) -> (StatusCode, Value) {
     qd.post(&format!("/collections/{name}/points/query"), Some(body))
         .await
 }
 
 /// The `points` of a query that must succeed.
-async fn query(qd: &Qd, name: &str, body: Value) -> Value {
+pub(crate) async fn query(qd: &Qd, name: &str, body: Value) -> Value {
     let (status, reply) = query_raw(qd, name, body.clone()).await;
     assert_eq!(status, StatusCode::OK, "{body} → {reply}");
     reply["result"]["points"].clone()
 }
 
 /// `(id, score)` of each point.
-fn hits(points: &Value) -> Vec<(u64, f32)> {
+pub(crate) fn hits(points: &Value) -> Vec<(u64, f32)> {
     points
         .as_array()
         .unwrap_or_else(|| panic!("not a list: {points}"))
@@ -89,11 +89,11 @@ fn hits(points: &Value) -> Vec<(u64, f32)> {
         .collect()
 }
 
-fn ids(hits: &[(u64, f32)]) -> Vec<u64> {
+pub(crate) fn ids(hits: &[(u64, f32)]) -> Vec<u64> {
     hits.iter().map(|(id, _)| *id).collect()
 }
 
-fn assert_hits(got: &[(u64, f32)], want: &[(u64, f32)], tolerance: f32) {
+pub(crate) fn assert_hits(got: &[(u64, f32)], want: &[(u64, f32)], tolerance: f32) {
     assert_eq!(ids(got), ids(want), "got {got:?}\nwant {want:?}");
     for ((_, a), (_, b)) in got.iter().zip(want) {
         assert!(
@@ -118,7 +118,7 @@ fn pks(hits: &[(u64, f32)]) -> Vec<PrimaryKey> {
 
 /// Qdrant's score of `v` for `q` (vectors as stored: normalized for
 /// Cosine).
-fn qdrant_score(distance: Distance, q: &[f32], v: &[f32]) -> f32 {
+pub(crate) fn qdrant_score(distance: Distance, q: &[f32], v: &[f32]) -> f32 {
     let pairs = q.iter().zip(v);
     match distance {
         Distance::Cosine | Distance::Dot => pairs.map(|(a, b)| a * b).sum(),
@@ -127,12 +127,12 @@ fn qdrant_score(distance: Distance, q: &[f32], v: &[f32]) -> f32 {
     }
 }
 
-fn larger_is_better(distance: Distance) -> bool {
+pub(crate) fn larger_is_better(distance: Distance) -> bool {
     matches!(distance, Distance::Cosine | Distance::Dot)
 }
 
 /// The brute-force top `limit` over `points`, Qdrant-scored and ordered.
-fn brute(
+pub(crate) fn brute(
     distance: Distance,
     q: &[f32],
     points: &[(u64, Vec<f32>)],
@@ -164,7 +164,7 @@ fn brute(
     scored
 }
 
-fn name(distance: Distance) -> &'static str {
+pub(crate) fn name(distance: Distance) -> &'static str {
     match distance {
         Distance::Cosine => "Cosine",
         Distance::Dot => "Dot",
@@ -174,7 +174,7 @@ fn name(distance: Distance) -> &'static str {
 }
 
 /// A single-vector collection of `n` random points of `dim`; the points.
-async fn random_collection(
+pub(crate) async fn random_collection(
     qd: &Qd,
     coll: &str,
     distance: Distance,
