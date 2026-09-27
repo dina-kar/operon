@@ -6,10 +6,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use operon_collection::{DocOp, Document, PrimaryKey};
-use operon_qdrant::filter::{compile_filter, parse_datetime, reference_eval};
+use operon_qdrant::filter::{parse_datetime, reference_eval};
 use operon_qdrant::model::filter::Filter;
 use operon_qdrant::proto::qdrant as pb;
-use operon_query::{OpResult, Projection, ReadConsistency, WriteOptions};
+use operon_query::{OpResult, WriteOptions};
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
@@ -80,32 +80,27 @@ async fn applied(qd: &Qd, name: &str) {
     }
 }
 
-/// The ids the compiled filter selects, read with the collection
-/// service's scroll (the scroll route is Task 6's; row T4-1).
+/// The ids the filter selects, read through the scroll route (row T4-1:
+/// Task 6 serves it), every page followed.
 async fn scroll_ids(qd: &Qd, name: &str, filter: &Value) -> BTreeSet<u64> {
-    let service = qd.server.collections();
-    let schema = service.get_collection(NS, name).await.expect("info").schema;
-    let filter: Filter = serde_json::from_value(filter.clone()).expect("filter");
-    let query = compile_filter(&filter, &schema).expect("compiles");
-    let (docs, next) = service
-        .scroll(
-            NS,
-            name,
-            Some(query),
-            None,
-            1000,
-            &Projection::default(),
-            ReadConsistency::Strong,
-        )
-        .await
-        .expect("scroll");
-    assert!(next.is_none() || docs.len() < 1000);
-    docs.into_iter()
-        .map(|d| match d.pk {
-            PrimaryKey::U64(id) => id,
-            other => panic!("{other:?}"),
-        })
-        .collect()
+    let mut out = BTreeSet::new();
+    let mut offset = Value::Null;
+    loop {
+        let (status, reply) = qd
+            .post(
+                &format!("/collections/{name}/points/scroll"),
+                Some(json!({"filter": filter, "limit": 1000, "offset": offset, "with_payload": false})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{filter}: {reply}");
+        for point in reply["result"]["points"].as_array().expect("points") {
+            out.insert(point["id"].as_u64().expect("u64 id"));
+        }
+        offset = reply["result"]["next_page_offset"].clone();
+        if offset.is_null() {
+            return out;
+        }
+    }
 }
 
 /// `POST …/points/count` with `filter`.

@@ -12,12 +12,13 @@ use tonic::service::Routes;
 use tonic::{Request, Response, Status};
 
 use crate::convert::collections as conv;
+use crate::convert::common::{with_payload_from_grpc, with_vector_from_grpc};
 use crate::convert::filter::{field_index_from_grpc, filter_from_grpc};
 use crate::convert::points as pconv;
 use crate::ctx::RequestCtx;
 use crate::error::GatewayError;
 use crate::model::common::UpdateResult;
-use crate::model::points::{CountRequest, UpdateOperation};
+use crate::model::points::{CountRequest, PointRequest, ScrollRequest, UpdateOperation};
 use crate::proto::health as hpb;
 use crate::proto::qdrant as pb;
 use crate::schema::NewVector;
@@ -465,6 +466,69 @@ service! {
             ))
         }
 
+        async fn get(
+            &self,
+            request: Request<pb::GetPoints>,
+        ) -> Result<Response<pb::GetResponse>, Status> {
+            let r = request.get_ref();
+            let ids = r
+                .ids
+                .iter()
+                .map(|id| pconv::id_from_grpc(Some(id)))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.grpc_status())?;
+            let point_request = PointRequest {
+                ids,
+                with_payload: Some(with_payload_from_grpc(r.with_payload.as_ref(), true)),
+                with_vector: Some(with_vector_from_grpc(r.with_vectors.as_ref(), false)),
+            };
+            let collection = r.collection_name.clone();
+            let (records, ctx) = self
+                .run(request.metadata(), r.timeout, |gw, ctx| {
+                    reads::retrieve(gw, ctx, collection, point_request)
+                })
+                .await?;
+            Ok(Response::new(pb::GetResponse {
+                result: records.iter().map(pconv::record_to_grpc).collect(),
+                time: ctx.elapsed_secs(),
+                usage: None,
+            }))
+        }
+
+        async fn scroll(
+            &self,
+            request: Request<pb::ScrollPoints>,
+        ) -> Result<Response<pb::ScrollResponse>, Status> {
+            let r = request.get_ref();
+            let parsed = (|| {
+                Ok::<_, GatewayError>(ScrollRequest {
+                    offset: r
+                        .offset
+                        .as_ref()
+                        .map(|id| pconv::id_from_grpc(Some(id)))
+                        .transpose()?,
+                    limit: r.limit.map(|l| l as usize),
+                    filter: r.filter.as_ref().map(filter_from_grpc).transpose()?,
+                    with_payload: Some(with_payload_from_grpc(r.with_payload.as_ref(), true)),
+                    with_vector: Some(with_vector_from_grpc(r.with_vectors.as_ref(), false)),
+                    order_by: r.order_by.as_ref().map(|_| serde_json::Value::Bool(true)),
+                })
+            })()
+            .map_err(|e| e.grpc_status())?;
+            let collection = r.collection_name.clone();
+            let (page, ctx) = self
+                .run(request.metadata(), r.timeout, |gw, ctx| {
+                    reads::scroll(gw, ctx, collection, parsed)
+                })
+                .await?;
+            Ok(Response::new(pb::ScrollResponse {
+                next_page_offset: page.next_page_offset.as_ref().map(pconv::id_to_grpc),
+                result: page.points.iter().map(pconv::record_to_grpc).collect(),
+                time: ctx.elapsed_secs(),
+                usage: None,
+            }))
+        }
+
         async fn count(
             &self,
             request: Request<pb::CountPoints>,
@@ -553,13 +617,11 @@ service! {
         }
     }
     unsupported {
-        get(GetPoints) -> GetResponse;
         delete_field_index(DeleteFieldIndexCollection) -> PointsOperationResponse;
         delete_vector_name(DeleteVectorNameRequest) -> PointsOperationResponse;
         search(SearchPoints) -> SearchResponse;
         search_batch(SearchBatchPoints) -> SearchBatchResponse;
         search_groups(SearchPointGroups) -> SearchGroupsResponse;
-        scroll(ScrollPoints) -> ScrollResponse;
         recommend(RecommendPoints) -> RecommendResponse;
         recommend_batch(RecommendBatchPoints) -> RecommendBatchResponse;
         recommend_groups(RecommendPointGroups) -> RecommendGroupsResponse;

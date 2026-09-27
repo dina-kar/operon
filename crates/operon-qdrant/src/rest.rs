@@ -17,11 +17,12 @@ use serde_json::{Value, json};
 
 use crate::ctx::RequestCtx;
 use crate::error::GatewayError;
+use crate::ids::PointId;
 use crate::model::collections::{ChangeAliases, CreateFieldIndex};
 use crate::model::common::UpdateResult;
 use crate::model::points::{
-    CountRequest, DeletePayload, DeleteVectors, PointInsert, PointsSelector, SetPayload,
-    UpdateOperation, UpdateOperations, UpdateVectors,
+    CountRequest, DeletePayload, DeleteVectors, PointInsert, PointRequest, PointsSelector,
+    ScrollRequest, SetPayload, UpdateOperation, UpdateOperations, UpdateVectors,
 };
 use crate::schema::NewVector;
 use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, reads, schema, snapshots, writes};
@@ -94,9 +95,6 @@ const UNSUPPORTED: &[(&str, &str)] = &[
         "DELETE",
         "/collections/{collection_name}/shards/{shard_id}/snapshots/{snapshot_name}",
     ),
-    ("GET", "/collections/{collection_name}/points/{id}"),
-    ("POST", "/collections/{collection_name}/points"),
-    ("POST", "/collections/{collection_name}/points/scroll"),
     ("POST", "/collections/{collection_name}/facet"),
     ("POST", "/collections/{collection_name}/points/query"),
     ("POST", "/collections/{collection_name}/points/query/batch"),
@@ -144,7 +142,12 @@ pub(crate) fn router(gw: QdrantGateway) -> Router {
         .route("/readyz", get(readyz))
         .route("/collections", get(list_collections))
         .route("/collections/{collection_name}/points/count", post(count))
-        .route("/collections/{collection_name}/points", put(upsert_points))
+        .route(
+            "/collections/{collection_name}/points",
+            put(upsert_points).post(retrieve_points),
+        )
+        .route("/collections/{collection_name}/points/{id}", get(get_point))
+        .route("/collections/{collection_name}/points/scroll", post(scroll))
         .route(
             "/collections/{collection_name}/points/delete",
             post(delete_points),
@@ -846,6 +849,48 @@ async fn batch_update(
         let (results, token): (Vec<UpdateResult>, _) =
             writes::update(g, ctx, collection, request.operations, params.wait).await?;
         Ok((results, token))
+    })
+    .await
+}
+
+// ----- point reads (Task 6) -----
+
+async fn retrieve_points(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<ReadParams>,
+    QdrantJson(request): QdrantJson<PointRequest>,
+) -> Response {
+    serve(&gw, &headers, params.timeout, |ctx| {
+        reads::retrieve(gw.clone(), ctx, collection, request)
+    })
+    .await
+}
+
+async fn get_point(
+    State(gw): State<QdrantGateway>,
+    Path((collection, id)): Path<(String, String)>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<ReadParams>,
+) -> Response {
+    let g = gw.clone();
+    serve(&gw, &headers, params.timeout, |ctx| async move {
+        let id = PointId::parse_path(&id)?;
+        reads::get_point(g, ctx, collection, id).await
+    })
+    .await
+}
+
+async fn scroll(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<ReadParams>,
+    QdrantJson(request): QdrantJson<ScrollRequest>,
+) -> Response {
+    serve(&gw, &headers, params.timeout, |ctx| {
+        reads::scroll(gw.clone(), ctx, collection, request)
     })
     .await
 }

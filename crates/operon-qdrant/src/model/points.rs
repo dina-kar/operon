@@ -1,4 +1,4 @@
-//! Point request and response types: writes (Task 5) and count.
+//! Point request and response types: writes (Task 5) and reads (Task 6).
 //!
 //! The unions whose variants are told apart by one key (`PointInsert`,
 //! `PointsSelector`, `UpdateOperation`) are read through a raw struct or
@@ -11,7 +11,7 @@ use serde::de::{DeserializeOwned, Error as _};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
-use crate::model::common::VectorInput;
+use crate::model::common::{Record, VectorInput, WithPayload, WithVector};
 use crate::model::filter::Filter;
 
 /// A point's payload as a request gives it.
@@ -256,6 +256,41 @@ pub struct UpdateOperations {
 }
 
 // ----- reads -----
+
+/// `POST /collections/{c}/points` (retrieve).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct PointRequest {
+    pub ids: Vec<Value>,
+    #[serde(default)]
+    pub with_payload: Option<WithPayload>,
+    #[serde(default, alias = "with_vectors")]
+    pub with_vector: Option<WithVector>,
+}
+
+/// `POST /collections/{c}/points/scroll`.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct ScrollRequest {
+    #[serde(default)]
+    pub offset: Option<Value>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub filter: Option<Filter>,
+    #[serde(default)]
+    pub with_payload: Option<WithPayload>,
+    #[serde(default, alias = "with_vectors")]
+    pub with_vector: Option<WithVector>,
+    #[serde(default)]
+    pub order_by: Option<Value>,
+}
+
+/// `{"points": [...], "next_page_offset": id | null}`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ScrollResult {
+    pub points: Vec<Record>,
+    /// `null` on the last page (never omitted).
+    pub next_page_offset: Option<Value>,
+}
 
 /// `POST /collections/{c}/points/count`.
 #[derive(Clone, Debug, Default, Deserialize)]

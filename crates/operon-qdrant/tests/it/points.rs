@@ -1,10 +1,10 @@
 //! The write-side vector checks (plan M1.4 Task 5, Rulings 8 and 21) and
-//! the point request model (Task 5).
+//! the point request model (Tasks 5 and 6).
 
 use operon_qdrant::GatewayError;
 use operon_qdrant::model::collections::CreateCollection;
 use operon_qdrant::model::points::{
-    PointInsert, PointsSelector, UpdateOperation, UpdateOperations, VectorStruct,
+    PointInsert, PointsSelector, ScrollRequest, UpdateOperation, UpdateOperations, VectorStruct,
 };
 use operon_qdrant::schema::schema_from_create;
 use operon_qdrant::scoring::{check_sparse, check_vector, cosine_normalize};
@@ -144,4 +144,12 @@ fn update_operations_read_by_key() {
         ]
     ));
     assert!(serde_json::from_value::<UpdateOperation>(json!({"nope": {}})).is_err());
+}
+
+#[test]
+fn scroll_request_accepts_with_vectors_alias() {
+    let r: ScrollRequest =
+        serde_json::from_value(json!({"with_vectors": true, "limit": 3})).expect("scroll");
+    assert!(r.with_vector.is_some());
+    assert_eq!(r.limit, Some(3));
 }

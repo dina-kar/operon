@@ -1,14 +1,15 @@
-//! gRPC point messages to the REST model (Task 5) and results back.
+//! gRPC point messages to the REST model (Tasks 5 and 6) and results back.
 
 use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};
 
+use crate::convert::common::vector_output_to_grpc;
 use crate::convert::filter::filter_from_grpc;
-use crate::convert::value::payload_to_map;
+use crate::convert::value::{map_to_payload, payload_to_map};
 use crate::error::GatewayError;
 use crate::ids::{pk_to_json, point_id_from_grpc};
-use crate::model::common::{UpdateResult, UpdateStatus, VectorInput};
+use crate::model::common::{Record, UpdateResult, UpdateStatus, VectorInput};
 use crate::model::filter::Filter;
 use crate::model::points::{
     DeletePayload, DeleteVectors, PointInsert, PointStruct, PointVectors, PointsSelector,
@@ -24,6 +25,20 @@ pub fn id_from_grpc(id: Option<&pb::PointId>) -> Result<Value, GatewayError> {
 
 fn ids_from_grpc(ids: &[pb::PointId]) -> Result<Vec<Value>, GatewayError> {
     ids.iter().map(|id| id_from_grpc(Some(id))).collect()
+}
+
+/// A JSON id (a number or a string) as a gRPC id; a string travels in
+/// `uuid` (row T1-5).
+pub fn id_to_grpc(id: &Value) -> pb::PointId {
+    use pb::point_id::PointIdOptions;
+    let options = match id {
+        Value::Number(n) => PointIdOptions::Num(n.as_u64().unwrap_or_default()),
+        Value::String(s) => PointIdOptions::Uuid(s.clone()),
+        other => PointIdOptions::Uuid(other.to_string()),
+    };
+    pb::PointId {
+        point_id_options: Some(options),
+    }
 }
 
 /// One gRPC vector value: the `vector` oneof first, else the deprecated
@@ -333,5 +348,17 @@ pub fn update_result_to_grpc(r: &UpdateResult) -> pb::UpdateResult {
     pb::UpdateResult {
         operation_id: r.operation_id,
         status: status as i32,
+    }
+}
+
+/// A `Record` as gRPC's `RetrievedPoint`: a single `vector` for `[""]`,
+/// else named vectors (step 5).
+pub fn record_to_grpc(r: &Record) -> pb::RetrievedPoint {
+    pb::RetrievedPoint {
+        id: Some(id_to_grpc(&r.id)),
+        payload: r.payload.as_ref().map(map_to_payload).unwrap_or_default(),
+        vectors: r.vector.as_ref().map(vector_output_to_grpc),
+        shard_key: None,
+        order_value: None,
     }
 }
