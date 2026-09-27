@@ -6,7 +6,8 @@ on:
   pull_request:
   schedule:
     # Nightly: the long simulation sweep (M0.4 plan Task 6), the tail-merge
-    # property test (M1.2 plan Task 15) and the TiKV suites (R1 plan Task 1).
+    # property test (M1.2 plan Task 15), the TiKV suites (R1 plan Task 1) and
+    # the durable store on TiDB (D1 plan Task 5).
     - cron: "17 2 * * *"
 
 permissions:
@@ -292,6 +293,137 @@ jobs:
       - name: stop the playground
         if: always() && steps.paths.outputs.run == 'true'
         run: scripts/tikv/playground.sh stop --tag loam-ci
+
+  # D1 plan Task 5: the embedded durable server's tests and Resonate's
+  # linearizability check (porcupine) against `operon dev` on SQLite. Pull
+  # requests run it only when they touch the durable crate, its routes or
+  # scripts, this workflow, or the Resonate pin in Cargo.toml; the job still
+  # reports success otherwise. `durable` is an opt-in feature (O1).
+  durable:
+    name: durable execution (SQLite linearizability)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DURABLE_FORK_TARGET_DIR: ${{ github.workspace }}/target/durable-fork-build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The pull request's merge commit and its base parent.
+          fetch-depth: 2
+      - name: paths
+        id: paths
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pattern='^(crates/operon-durable/|crates/operon/src/api/(operations|import)\.rs$|crates/operon/tests/durable\.rs$|scripts/durable/|\.github/workflows/ci\.yml$)'
+          if git diff --name-only HEAD^1 HEAD | grep -qE "$pattern"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif git diff HEAD^1 HEAD -- Cargo.toml | grep -q '^[-+].*dina-kar/resonate'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "The Resonate pin changed."
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No durable paths changed; skipping the durable job."
+          fi
+      - name: protoc
+        if: steps.paths.outputs.run == 'true'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+        if: steps.paths.outputs.run == 'true'
+        with:
+          key: durable
+      - uses: actions/setup-go@v5
+        if: steps.paths.outputs.run == 'true'
+        with:
+          go-version: "1.24"
+          cache: false
+      - name: operon-durable tests
+        if: steps.paths.outputs.run == 'true'
+        run: cargo test -p operon-durable --locked
+      - name: operon durable tests
+        if: steps.paths.outputs.run == 'true'
+        run: cargo test -p operon --features durable --test durable --bin operon --locked
+      - name: checker self-test
+        if: steps.paths.outputs.run == 'true'
+        run: scripts/durable/conformance.sh --self-test
+      - name: linearizability on SQLite (8 clients x 600 ops)
+        if: steps.paths.outputs.run == 'true'
+        run: scripts/durable/conformance.sh --store sqlite --clients 8 --ops 600
+      - name: conformance output
+        if: failure() && steps.paths.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: durable-conformance-sqlite
+          path: target/durable-conformance/
+          if-no-files-found: ignore
+
+  # D1 plan Task 5, nightly: the TiDB backend's suite and the linearizability
+  # check against `operon dev --durable-store mysql://…` on a throwaway TiDB
+  # v8.5.8 (the optimistic-mode test flips a global variable). The TiDB leg
+  # drops 503 answers as not applied (porc-503.sh) until upstream PR 0b; the
+  # job summary shows how many there were.
+  durable-tidb:
+    name: durable execution on TiDB (nightly)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      DURABLE_FORK_TARGET_DIR: ${{ github.workspace }}/target/durable-fork-build
+    steps:
+      - uses: actions/checkout@v4
+      - name: protoc and the mysql client
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mysql-client
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: durable
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: false
+      # Everything is built before TiDB starts.
+      - name: build the TiDB suite and operon
+        run: |
+          cargo test -p operon-durable --features mysql --test tidb --locked --no-run
+          cargo build --release --locked -p operon --features durable-mysql
+      - uses: actions/cache@v4
+        with:
+          path: ~/.tiup/components
+          key: tiup-components-tidb-v8.5.8-${{ runner.os }}
+      - name: install tiup and the v8.5.8 components
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
+          echo "$HOME/.tiup/bin" >> "$GITHUB_PATH"
+          "$HOME/.tiup/bin/tiup" install playground pd:v8.5.8 tikv:v8.5.8 tidb:v8.5.8
+      - name: start TiDB
+        run: |
+          scripts/durable/tidb.sh up --tag loam-ci-durable --port-offset 27000 --timeout 180 | tee "$RUNNER_TEMP/tidb.out"
+          sed -n 's/^export \(OPERON_TEST_TIDB=.*\)$/\1/p' "$RUNNER_TEMP/tidb.out" >> "$GITHUB_ENV"
+      - name: TiDB suite
+        run: cargo test -p operon-durable --features mysql --test tidb --locked
+      - name: linearizability on TiDB (8 clients x 600 ops)
+        run: scripts/durable/conformance.sh --store tidb --clients 8 --ops 600 --operon-bin target/release/operon
+      - name: linearizability on TiDB (16 clients x 400 ops, seeds 11, 12, 13)
+        run: |
+          for seed in 11 12 13; do
+            scripts/durable/conformance.sh --store tidb --clients 16 --ops 400 --seed "$seed" \
+              --operon-bin target/release/operon
+          done
+      - name: conformance output and TiDB logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: durable-tidb-logs
+          path: |
+            target/durable-conformance/
+            target/durable-tidb/*.log
+            ~/.tiup/data/loam-ci-durable/**/*.log
+          if-no-files-found: ignore
+      - name: stop TiDB
+        if: always()
+        run: scripts/durable/tidb.sh down --tag loam-ci-durable
 
   deny:
     name: licenses, advisories, sources
