@@ -48,6 +48,7 @@ use ulid::Ulid;
 use crate::api::internal::NodeInfo;
 use crate::api::{self, AppState, ForwardedReads, NativeStreamProducer};
 use crate::cluster::{self, ClusterInfo, LateRouter, MembershipSource};
+use crate::exposure::warn_if_exposed;
 
 /// The meta node id of a single-process Operon.
 const NODE_ID: u64 = 1;
@@ -451,6 +452,9 @@ pub struct Server {
     es: Option<Es>,
     #[cfg(feature = "mcp")]
     mcp: Option<Mcp>,
+    /// The surfaces whose listeners D111's warning was logged for, in bind
+    /// order (rule 14).
+    exposed: Vec<&'static str>,
     /// Cluster mode only.
     cluster: Option<ClusterRuntime>,
 }
@@ -497,6 +501,8 @@ struct Assembled {
     es: Option<Es>,
     #[cfg(feature = "mcp")]
     mcp: Option<Mcp>,
+    /// Rule 14: the listeners `assemble` bound and flagged, in bind order.
+    exposed: Vec<&'static str>,
 }
 
 /// The running MCP listener (plan M1.6 Task 7, Ruling 19).
@@ -734,6 +740,7 @@ impl Server {
         );
         let meta_store: Arc<dyn MetaStore> = meta.clone().into();
         let (listener, local_addr) = bind(config.listen).await?;
+        let native_exposed = warn_if_exposed("native", local_addr);
         let setup = NodeSetup {
             node_id: NODE_ID,
             roles: Roles::all(),
@@ -756,6 +763,7 @@ impl Server {
             }
         });
         tracing::info!(%local_addr, "operon is serving");
+        let exposed = with_native(native_exposed, parts.exposed);
         Ok(Self {
             local_addr,
             node,
@@ -777,6 +785,7 @@ impl Server {
             es: parts.es,
             #[cfg(feature = "mcp")]
             mcp: parts.mcp,
+            exposed,
             cluster: None,
         })
     }
@@ -791,6 +800,7 @@ impl Server {
         config.log.node_id = node_id;
         let store = Store::from_url(&bucket_url(&config)?, Vec::<(String, String)>::new())?;
         let (listener, local_addr) = bind(config.listen).await?;
+        let native_exposed = warn_if_exposed("native", local_addr);
         let transport = HttpTransport::new(cluster.transport)?;
         let mut meta_config = MetaConfig::new(node_id, config.data_dir.join("meta"), store.clone());
         meta_config.snapshot_every = config.snapshot_every;
@@ -829,6 +839,7 @@ impl Server {
         match started {
             Ok((meta, meta_store, registry, parts)) => {
                 tracing::info!(%local_addr, node_id, %roles, "operon cluster node is serving");
+                let exposed = with_native(native_exposed, parts.exposed);
                 Ok(Self {
                     local_addr,
                     node,
@@ -850,6 +861,7 @@ impl Server {
                     es: parts.es,
                     #[cfg(feature = "mcp")]
                     mcp: parts.mcp,
+                    exposed,
                     cluster: Some(ClusterRuntime {
                         node_id,
                         roles,
@@ -1106,6 +1118,32 @@ impl Server {
             },
             None => None,
         };
+        // Rule 14: D111's warning once per listener, in bind order.
+        let mut exposed: Vec<&'static str> = Vec::new();
+        let mut flag = |surface: &'static str, addr: Option<SocketAddr>| {
+            if let Some(addr) = addr
+                && warn_if_exposed(surface, addr)
+            {
+                exposed.push(surface);
+            }
+        };
+        flag(
+            "flight-sql",
+            flight_listener.as_ref().map(|(_, addr)| *addr),
+        );
+        #[cfg(feature = "qdrant")]
+        if let Some((_, (rest, grpc))) = &qdrant_listeners {
+            flag("qdrant-rest", rest.local_addr().ok());
+            flag("qdrant-grpc", grpc.local_addr().ok());
+        }
+        #[cfg(feature = "es")]
+        if let Some((_, listener)) = &es_listener {
+            flag("es", listener.local_addr().ok());
+        }
+        #[cfg(feature = "mcp")]
+        if let Some((_, listener)) = &mcp_listener {
+            flag("mcp", listener.local_addr().ok());
+        }
 
         // Validated above, so this cannot fail. A node without the `log`
         // role still holds a writer (the service needs one), but serves no
@@ -1327,6 +1365,7 @@ impl Server {
             es,
             #[cfg(feature = "mcp")]
             mcp,
+            exposed,
         })
     }
 
@@ -1390,6 +1429,14 @@ impl Server {
     #[cfg(feature = "mcp")]
     pub fn mcp_addr(&self) -> Option<SocketAddr> {
         self.mcp.as_ref().map(|mcp| mcp.addr)
+    }
+
+    /// The surfaces whose listeners are bound to a non-loopback address and
+    /// so logged D111's unauthenticated-listener warning, in bind order
+    /// (plan M1.6 Task 7 rule 14): `native`, `flight-sql`, `qdrant-rest`,
+    /// `qdrant-grpc`, `es`, `mcp`.
+    pub fn exposed_listeners(&self) -> &[&'static str] {
+        &self.exposed
     }
 
     /// The server's log writer; M1.2 builds its `CollectionWriter` on it.
@@ -1502,6 +1549,17 @@ impl Server {
         stopped?;
         Ok(())
     }
+}
+
+/// Rule 14's list: `native` (bound before `assemble`) when flagged, then
+/// the listeners `assemble` flagged.
+fn with_native(native: bool, assembled: Vec<&'static str>) -> Vec<&'static str> {
+    let mut exposed = Vec::with_capacity(assembled.len() + 1);
+    if native {
+        exposed.push("native");
+    }
+    exposed.extend(assembled);
+    exposed
 }
 
 /// Binds `addr`.

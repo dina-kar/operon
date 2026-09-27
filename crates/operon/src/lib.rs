@@ -4,6 +4,7 @@
 
 pub mod api;
 pub mod cluster;
+pub mod exposure;
 mod server;
 
 #[cfg(feature = "mcp")]

@@ -1,5 +1,6 @@
 mod backpressure;
 mod common;
+mod exposure;
 mod filter_write_http;
 #[cfg(feature = "flight")]
 mod flight_ingest;
