@@ -88,6 +88,11 @@ pub struct ServiceConfig {
     pub lance_base_url: Option<String>,
     /// The unapplied-data budget of collection writes (Task 15, D86).
     pub backpressure: BackpressureConfig,
+    /// 60 s: a filter write's default deadline (M1.5 Task 9a).
+    pub filter_write_timeout: Duration,
+    /// 1 000 keys per atomic batch of a filter write
+    /// ([`FILTER_WRITE_BATCH`](crate::filter_write::FILTER_WRITE_BATCH)).
+    pub filter_write_batch: usize,
 }
 
 impl Default for ServiceConfig {
@@ -105,6 +110,8 @@ impl Default for ServiceConfig {
             schema_retries: 5,
             lance_base_url: None,
             backpressure: BackpressureConfig::default(),
+            filter_write_timeout: Duration::from_secs(60),
+            filter_write_batch: crate::filter_write::FILTER_WRITE_BATCH,
         }
     }
 }
