@@ -5,6 +5,7 @@
 #![allow(clippy::result_large_err)]
 
 mod bulk_parse;
+mod compile;
 mod dsl;
 mod fixture;
 mod mapping;

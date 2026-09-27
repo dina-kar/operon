@@ -21,6 +21,7 @@
 //! - `read`: `GET`/`HEAD` `_doc` and `_source`, and `_mget`, with
 //!   `_source` filtering ([`doc::SourceFilter`]).
 //! - [`dsl`]: the Query DSL → the search IR.
+//! - [`search`]: search bodies and URL parameters → a [`search::SearchPlan`].
 //!
 //! # Divergences from Elasticsearch 8.19
 //!
@@ -79,6 +80,7 @@ mod info;
 pub mod mapping;
 pub mod names;
 mod read;
+pub mod search;
 pub mod write;
 
 pub use error::{ErrorContext, EsError};
