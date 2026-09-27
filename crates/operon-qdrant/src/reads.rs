@@ -36,6 +36,7 @@ pub enum PayloadOut {
     Exclude(Vec<JsonPath>),
 }
 
+/// Parsed JsonPath keys.
 fn paths(keys: &[String]) -> Result<Vec<JsonPath>, GatewayError> {
     keys.iter().map(|k| k.parse()).collect()
 }
@@ -246,7 +247,8 @@ pub(crate) async fn get_point(
 
 /// Step 3: one page from the inclusive `offset`, and the id the next page
 /// starts at (`null` on the last page). A `limit` over the service's
-/// `max_scroll_limit` is read in consecutive pages.
+/// `max_scroll_limit` is read in consecutive pages; one over the search
+/// window (`max_window`) is refused.
 pub(crate) async fn scroll(
     gw: QdrantGateway,
     ctx: RequestCtx,
@@ -261,6 +263,14 @@ pub(crate) async fn scroll(
         return Err(GatewayError::BadRequest(
             "limit must be at least 1".to_string(),
         ));
+    }
+    // The pages below are buffered, so the total is bounded like a
+    // query's window (PR #50 review).
+    let max_window = gw.service().config().search.limits.max_window;
+    if limit > max_window {
+        return Err(GatewayError::BadRequest(format!(
+            "limit must be at most {max_window}"
+        )));
     }
     let info = gw.service().get_collection(&ctx.ns, &collection).await?;
     let sel = resolve_selectors(

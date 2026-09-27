@@ -51,6 +51,7 @@ struct RawInsert {
 }
 
 impl<'de> Deserialize<'de> for PointInsert {
+    /// By the one of `points` and `batch` that is present.
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let raw = RawInsert::deserialize(d)?;
         match (raw.points, raw.batch) {
@@ -127,6 +128,7 @@ struct RawSelector {
 }
 
 impl<'de> Deserialize<'de> for PointsSelector {
+    /// By the one of `points` and `filter` that is present.
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let raw = RawSelector::deserialize(d)?;
         match (raw.points, raw.filter) {
@@ -205,6 +207,7 @@ pub enum UpdateOperation {
 impl<'de> Deserialize<'de> for UpdateOperation {
     /// By its one key, so the inner error text survives.
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        /// `T` from `v`, keeping `v`'s own error text.
         fn inner<T: DeserializeOwned, E: serde::de::Error>(v: &Value) -> Result<T, E> {
             T::deserialize(v).map_err(E::custom)
         }

@@ -71,6 +71,8 @@
 //!   by filter see the points as they were before the batch, where Qdrant
 //!   applies the operations one after another (row T5-4, owner ruling
 //!   O2).
+//! - A scroll `limit` over the search window (100,000) is refused, where
+//!   Qdrant reads that many points (row T7-11).
 //! - A write request holds at most 10,000 operations after planning (the
 //!   collection service's limit, one atomic write); a larger one is 400,
 //!   asking the client to split the batch. Qdrant has no such limit (row

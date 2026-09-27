@@ -19,6 +19,7 @@ use crate::model::query::{
 };
 use crate::proto::qdrant as pb;
 
+/// `v`, or `<what> is required`.
 fn required<T>(v: Option<T>, what: &str) -> Result<T, GatewayError> {
     v.ok_or_else(|| GatewayError::BadRequest(format!("{what} is required")))
 }
@@ -43,10 +44,12 @@ pub fn vector_input_from_grpc(v: &pb::VectorInput) -> Result<VectorInput, Gatewa
     })
 }
 
+/// A required vector input.
 fn input(v: Option<&pb::VectorInput>, what: &str) -> Result<VectorInput, GatewayError> {
     vector_input_from_grpc(required(v, what)?)
 }
 
+/// A context's pairs; none without a context.
 fn pairs(c: Option<&pb::ContextInput>) -> Result<Vec<ContextPair>, GatewayError> {
     c.map_or(&[][..], |c| &c.pairs)
         .iter()
@@ -59,6 +62,7 @@ fn pairs(c: Option<&pb::ContextInput>) -> Result<Vec<ContextPair>, GatewayError>
         .collect()
 }
 
+/// Several vector inputs.
 fn inputs(vs: &[pb::VectorInput]) -> Result<Vec<VectorInput>, GatewayError> {
     vs.iter().map(vector_input_from_grpc).collect()
 }
@@ -170,6 +174,7 @@ fn params_from_grpc(p: &pb::SearchParams) -> Result<SearchParams, GatewayError> 
     })
 }
 
+/// `LookupLocation`; a shard key selector is kept as present.
 fn lookup_from_grpc(l: &pb::LookupLocation) -> LookupLocation {
     LookupLocation {
         collection: l.collection_name.clone(),
@@ -178,6 +183,7 @@ fn lookup_from_grpc(l: &pb::LookupLocation) -> LookupLocation {
     }
 }
 
+/// The prefetches; none when the list is empty.
 fn prefetches(ps: &[pb::PrefetchQuery]) -> Result<Option<Vec<Prefetch>>, GatewayError> {
     if ps.is_empty() {
         return Ok(None);

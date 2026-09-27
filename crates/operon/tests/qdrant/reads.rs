@@ -344,6 +344,35 @@ async fn scroll_with_filter_pages_the_matches_only() {
     assert_eq!(got, want);
 }
 
+/// PR #50 review: a scroll's total `limit` is bounded by the search
+/// window (`max_window`, 100,000), as a query's `offset + limit` is, so one
+/// request cannot buffer the whole collection.
+#[tokio::test]
+async fn scroll_limit_is_bounded_by_the_search_window() {
+    let qd = Qd::start_with(|config| {
+        config.query.max_scroll_limit = 2;
+        config.query.search.limits.max_window = 5;
+    })
+    .await;
+    create_single(&qd, "cap").await;
+    let points: Vec<Value> = (0..8_u64)
+        .map(|i| json!({"id": i, "vector": [1.0, 0.0]}))
+        .collect();
+    upsert(&qd, "cap", Value::Array(points)).await;
+    let page = scroll(&qd, "cap", json!({"limit": 5})).await;
+    assert_eq!(page["points"].as_array().expect("points").len(), 5);
+    for limit in [json!(6), json!(18_446_744_073_709_551_615_u64)] {
+        let (status, reply) = qd
+            .post(
+                "/collections/cap/points/scroll",
+                Some(json!({ "limit": limit })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
+        assert_eq!(error(&reply), "Wrong input: limit must be at most 5");
+    }
+}
+
 #[tokio::test]
 async fn scroll_limits_over_the_service_page_are_read_in_pages() {
     let qd = Qd::start_with(|config| config.query.max_scroll_limit = 3).await;

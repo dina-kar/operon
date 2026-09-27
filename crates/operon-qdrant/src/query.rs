@@ -91,6 +91,7 @@ struct Level<'a> {
 }
 
 impl<'a> Level<'a> {
+    /// The request's root level.
     fn root(req: &'a QueryRequest) -> Self {
         Self {
             prefetch: req.prefetch.as_deref().unwrap_or_default(),
@@ -100,6 +101,7 @@ impl<'a> Level<'a> {
         }
     }
 
+    /// A prefetch's level.
     fn of(p: &'a Prefetch) -> Self {
         Self {
             prefetch: p.prefetch.as_deref().unwrap_or_default(),
@@ -194,6 +196,7 @@ fn shown(pk: &PrimaryKey) -> String {
     }
 }
 
+/// Qdrant's text for an unknown vector name.
 fn not_existing(name: &str) -> GatewayError {
     GatewayError::BadRequest(format!("Not existing vector name error: {name}"))
 }
@@ -301,14 +304,17 @@ fn fusion_of(q: &QueryInterface) -> Option<Result<Fusion, GatewayError>> {
     })
 }
 
+/// Two or more prefetches under no query.
 fn several_prefetches() -> GatewayError {
     GatewayError::BadRequest("A query is required when there are several prefetches".to_string())
 }
 
+/// A fusion without prefetches.
 fn fusion_needs_prefetch() -> GatewayError {
     GatewayError::BadRequest("Fusion query requires prefetch".to_string())
 }
 
+/// A retriever's `k`.
 fn retriever_k(r: &Retriever) -> usize {
     match r {
         Retriever::Vector { k, .. }
@@ -336,10 +342,12 @@ struct Compiler<'a> {
 }
 
 impl Compiler<'_> {
+    /// Whether `name` is a sparse vector.
     fn is_sparse(&self, name: &str) -> bool {
         self.schema.sparse_vectors.iter().any(|s| s.name == name)
     }
 
+    /// A request filter compiled against the schema.
     fn filter(
         &self,
         f: Option<&crate::model::filter::Filter>,
@@ -493,6 +501,7 @@ impl Compiler<'_> {
         Ok((retriever, ScoreKind::Distance, distance))
     }
 
+    /// The compiled children of a prefetch or the root.
     fn children(
         &self,
         children: &[Prefetch],

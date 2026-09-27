@@ -23,6 +23,7 @@ pub fn id_from_grpc(id: Option<&pb::PointId>) -> Result<Value, GatewayError> {
     Ok(pk_to_json(&point_id_from_grpc(id)?.to_pk()))
 }
 
+/// Several gRPC ids as JSON ids.
 fn ids_from_grpc(ids: &[pb::PointId]) -> Result<Vec<Value>, GatewayError> {
     ids.iter().map(|id| id_from_grpc(Some(id))).collect()
 }
@@ -92,6 +93,7 @@ pub fn vectors_from_grpc(v: Option<&pb::Vectors>) -> Result<VectorStruct, Gatewa
     }
 }
 
+/// A gRPC point as the model's `PointStruct`.
 fn point_from_grpc(p: &pb::PointStruct) -> Result<PointStruct, GatewayError> {
     Ok(PointStruct {
         id: id_from_grpc(p.id.as_ref())?,
@@ -100,6 +102,7 @@ fn point_from_grpc(p: &pb::PointStruct) -> Result<PointStruct, GatewayError> {
     })
 }
 
+/// `update_mode` as its REST name; `upsert` (the default) is none.
 fn update_mode(mode: Option<i32>) -> Option<String> {
     let mode = pb::UpdateMode::try_from(mode?).unwrap_or(pb::UpdateMode::Upsert);
     match mode {
@@ -115,6 +118,7 @@ fn given<T>(v: Option<&T>) -> Option<Value> {
     v.map(|_| Value::Bool(true))
 }
 
+/// An insert of points as `PointInsert`, with the unsupported options kept for the executor.
 fn insert_from_grpc(
     points: &[pb::PointStruct],
     shard_key: Option<&pb::ShardKeySelector>,
@@ -162,6 +166,7 @@ fn points_or_filter(
     })
 }
 
+/// `set_payload` or `overwrite_payload` as the model's `SetPayload`.
 fn set_payload(
     payload: &std::collections::HashMap<String, pb::Value>,
     selector: Option<&pb::PointsSelector>,
@@ -176,6 +181,7 @@ fn set_payload(
     })
 }
 
+/// `update_vectors` as the model's `UpdateVectors`.
 fn update_vectors(
     points: &[pb::PointVectors],
     update_filter: Option<&pb::Filter>,
@@ -194,6 +200,7 @@ fn update_vectors(
     })
 }
 
+/// `delete_vectors` as the model's `DeleteVectors`.
 fn delete_vectors(
     selector: Option<&pb::PointsSelector>,
     names: Option<&pb::VectorsSelector>,

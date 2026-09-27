@@ -50,12 +50,14 @@ enum Target {
     Filter(Box<Filter>),
 }
 
+/// JSON ids as keys.
 fn parse_ids(ids: &[Value]) -> Result<Vec<PrimaryKey>, GatewayError> {
     ids.iter()
         .map(|v| PointId::from_json(v).map(PointId::to_pk))
         .collect()
 }
 
+/// The target of an operation: its ids, or its filter.
 fn target(points: Option<Vec<Value>>, filter: Option<Filter>) -> Result<Target, GatewayError> {
     match (points, filter) {
         (Some(points), None) => Ok(Target::Ids(parse_ids(&points)?)),
@@ -66,6 +68,7 @@ fn target(points: Option<Vec<Value>>, filter: Option<Filter>) -> Result<Target, 
     }
 }
 
+/// A selector's target.
 fn selector_target(selector: PointsSelector) -> Result<Target, GatewayError> {
     match selector {
         PointsSelector::Ids { points } => Ok(Target::Ids(parse_ids(&points)?)),

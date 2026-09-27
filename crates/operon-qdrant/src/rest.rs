@@ -252,6 +252,7 @@ async fn check_hot_header(request: Request, next: Next) -> Response {
 
 // ----- envelopes -----
 
+/// A JSON body with `status`.
 fn json_response(status: StatusCode, body: &Value) -> Response {
     let mut response = (status, body.to_string()).into_response();
     response.headers_mut().insert(
@@ -301,6 +302,7 @@ fn reject(e: GatewayError) -> Response {
     error_response(0.0, &e)
 }
 
+/// The error envelope at `time`, with `Retry-After` for backpressure (E2).
 fn error_response(time: f64, e: &GatewayError) -> Response {
     let mut response = json_response(
         e.http_status(),
@@ -314,10 +316,12 @@ fn error_response(time: f64, e: &GatewayError) -> Response {
     response
 }
 
+/// A `text/plain` body.
 fn text(body: &'static str) -> Response {
     ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
 }
 
+/// 404 for a path no route knows.
 async fn no_route(method: Method, uri: Uri) -> Response {
     let message = format!("Not found: route {method} {}", uri.path());
     json_response(
@@ -326,6 +330,7 @@ async fn no_route(method: Method, uri: Uri) -> Response {
     )
 }
 
+/// 405 for a known path with another method.
 async fn method_not_allowed(method: Method, uri: Uri) -> Response {
     let message = format!("Method not allowed: {method} {}", uri.path());
     json_response(
@@ -343,6 +348,7 @@ pub(crate) struct QdrantJson<T>(pub T);
 impl<T: DeserializeOwned> FromRequest<QdrantGateway> for QdrantJson<T> {
     type Rejection = Response;
 
+    /// Reads the body up to `max_request_bytes` and parses it.
     async fn from_request(request: Request, gw: &QdrantGateway) -> Result<Self, Response> {
         let started = Instant::now();
         let fail = |e: GatewayError| error_response(started.elapsed().as_secs_f64(), &e);
@@ -371,6 +377,7 @@ pub(crate) struct QdrantQuery<T>(pub T);
 impl<S: Send + Sync, T: DeserializeOwned> FromRequestParts<S> for QdrantQuery<T> {
     type Rejection = Response;
 
+    /// Parses the query string.
     async fn from_request_parts(
         parts: &mut axum::http::request::Parts,
         _state: &S,
@@ -477,6 +484,7 @@ async fn readyz(State(gw): State<QdrantGateway>) -> Response {
     }
 }
 
+/// `GET /collections`.
 async fn list_collections(
     State(gw): State<QdrantGateway>,
     headers: HeaderMap,
@@ -488,6 +496,7 @@ async fn list_collections(
     .await
 }
 
+/// `POST /collections/{c}/points/count`.
 async fn count(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -503,6 +512,7 @@ async fn count(
 
 // ----- collections, aliases, snapshots, cluster (Task 3) -----
 
+/// `GET /cluster`.
 async fn cluster_status(
     State(gw): State<QdrantGateway>,
     headers: HeaderMap,
@@ -514,6 +524,7 @@ async fn cluster_status(
     .await
 }
 
+/// `GET /collections/{c}`.
 async fn collection_info(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -526,6 +537,7 @@ async fn collection_info(
     .await
 }
 
+/// `PUT /collections/{c}`.
 async fn create_collection(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -539,6 +551,7 @@ async fn create_collection(
     .await
 }
 
+/// `PATCH /collections/{c}` (Ruling 16).
 async fn update_collection(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -552,6 +565,7 @@ async fn update_collection(
     .await
 }
 
+/// `DELETE /collections/{c}`.
 async fn delete_collection(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -564,6 +578,7 @@ async fn delete_collection(
     .await
 }
 
+/// `GET /collections/{c}/exists`.
 async fn collection_exists(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -576,6 +591,7 @@ async fn collection_exists(
     .await
 }
 
+/// `POST /collections/aliases`.
 async fn update_aliases(
     State(gw): State<QdrantGateway>,
     headers: HeaderMap,
@@ -588,6 +604,7 @@ async fn update_aliases(
     .await
 }
 
+/// `GET /aliases`.
 async fn list_aliases(
     State(gw): State<QdrantGateway>,
     headers: HeaderMap,
@@ -599,6 +616,7 @@ async fn list_aliases(
     .await
 }
 
+/// `GET /collections/{c}/aliases`.
 async fn collection_aliases(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -611,6 +629,7 @@ async fn collection_aliases(
     .await
 }
 
+/// `PUT /collections/{c}/vectors/{v}`.
 async fn create_vector_name(
     State(gw): State<QdrantGateway>,
     Path((collection, vector)): Path<(String, String)>,
@@ -630,6 +649,7 @@ async fn create_vector_name(
     .await
 }
 
+/// `GET /collections/{c}/cluster`.
 async fn cluster_info(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -643,6 +663,7 @@ async fn cluster_info(
     .await
 }
 
+/// `POST /collections/{c}/snapshots`.
 async fn create_snapshot(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -658,6 +679,7 @@ async fn create_snapshot(
     .await
 }
 
+/// `GET /collections/{c}/snapshots`.
 async fn list_snapshots(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -678,6 +700,7 @@ async fn list_snapshots(
 
 // ----- payload indexes (Task 4) -----
 
+/// `PUT /collections/{c}/index`.
 async fn create_field_index(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -707,6 +730,7 @@ async fn write_one(
     .await
 }
 
+/// `PUT /collections/{c}/points`.
 async fn upsert_points(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -724,6 +748,7 @@ async fn upsert_points(
     .await
 }
 
+/// `POST /collections/{c}/points/delete`.
 async fn delete_points(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -741,6 +766,7 @@ async fn delete_points(
     .await
 }
 
+/// `POST /collections/{c}/points/payload`.
 async fn set_payload(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -758,6 +784,7 @@ async fn set_payload(
     .await
 }
 
+/// `PUT /collections/{c}/points/payload`.
 async fn overwrite_payload(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -775,6 +802,7 @@ async fn overwrite_payload(
     .await
 }
 
+/// `POST /collections/{c}/points/payload/delete`.
 async fn delete_payload(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -792,6 +820,7 @@ async fn delete_payload(
     .await
 }
 
+/// `POST /collections/{c}/points/payload/clear`.
 async fn clear_payload(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -809,6 +838,7 @@ async fn clear_payload(
     .await
 }
 
+/// `PUT /collections/{c}/points/vectors`.
 async fn update_vectors(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -826,6 +856,7 @@ async fn update_vectors(
     .await
 }
 
+/// `POST /collections/{c}/points/vectors/delete`.
 async fn delete_vectors(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -862,6 +893,7 @@ async fn batch_update(
 
 // ----- point reads (Task 6) -----
 
+/// `POST /collections/{c}/points` (retrieve).
 async fn retrieve_points(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -875,6 +907,7 @@ async fn retrieve_points(
     .await
 }
 
+/// `GET /collections/{c}/points/{id}`.
 async fn get_point(
     State(gw): State<QdrantGateway>,
     Path((collection, id)): Path<(String, String)>,
@@ -889,6 +922,7 @@ async fn get_point(
     .await
 }
 
+/// `POST /collections/{c}/points/scroll`.
 async fn scroll(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,
@@ -904,6 +938,7 @@ async fn scroll(
 
 // ----- universal query (Task 7) -----
 
+/// `POST /collections/{c}/points/query`.
 async fn query_points(
     State(gw): State<QdrantGateway>,
     Path(collection): Path<String>,

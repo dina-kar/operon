@@ -28,6 +28,7 @@ pub fn cosine_normalize(v: &mut [f32]) {
     v.iter_mut().for_each(|x| *x /= length);
 }
 
+/// Qdrant's text for an unknown vector name.
 fn not_existing(name: &str) -> GatewayError {
     GatewayError::BadRequest(format!("Not existing vector name error: {name}"))
 }
@@ -148,6 +149,7 @@ pub fn ann_params(p: Option<&SearchParams>) -> AnnParams {
     }
 }
 
+/// Euclid and Manhattan scores are distances.
 fn smaller_is_better(distance: Distance) -> bool {
     matches!(distance, Distance::Euclid | Distance::Manhattan)
 }
