@@ -45,6 +45,7 @@ use tokio_util::sync::CancellationToken;
 pub mod error;
 pub mod http;
 mod info;
+pub mod mapping;
 pub mod names;
 
 pub use error::{ErrorContext, EsError};
