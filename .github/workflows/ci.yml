@@ -28,6 +28,16 @@ jobs:
         run: cargo fmt --all --check
       - name: clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Owner ruling T7-3: the TiKV metastore is behind operon's `tikv`
+      # feature (off by default), so lint that code too, and keep the default
+      # build free of the git-pinned tikv-client.
+      - name: clippy (operon with the tikv feature)
+        run: cargo clippy -p operon --all-targets --features tikv --locked -- -D warnings
+      - name: operon's default build has no tikv-client
+        run: |
+          if cargo tree -p operon -e normal --prefix none --locked | grep -q '^tikv-client v'; then
+            echo "operon's default features depend on tikv-client (owner ruling T7-3)"; exit 1
+          fi
       # The gateway's module doc holds its divergences from Qdrant (M1.4
       # Task 11); its links must resolve.
       - name: qdrant gateway docs
@@ -175,7 +185,7 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          pattern='^(crates/operon-tikv/|crates/operon-meta-tikv/|crates/operon-live[^/]*/|crates/operon/src/(server|meta_backend|main)\.rs$|crates/operon/tests/meta_tikv\.rs$|deploy/tikv/|scripts/tikv/|proto/loam/|\.github/workflows/ci\.yml$)'
+          pattern='^(crates/operon-tikv/|crates/operon-meta-tikv/|crates/operon-live[^/]*/|crates/operon/Cargo\.toml$|crates/operon/src/(server|meta_backend|main)\.rs$|crates/operon/tests/meta_tikv\.rs$|deploy/tikv/|scripts/tikv/|proto/loam/|\.github/workflows/ci\.yml$)'
           if git diff --name-only HEAD^1 HEAD | grep -qE "$pattern"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
@@ -201,7 +211,7 @@ jobs:
         if: steps.paths.outputs.run == 'true'
         run: |
           cargo test ${{ steps.packages.outputs.args }} --locked --no-run
-          cargo test -p operon --test meta_tikv --locked --no-run
+          cargo test -p operon --features tikv --test meta_tikv --locked --no-run
       - uses: actions/cache@v4
         if: steps.paths.outputs.run == 'true'
         with:
@@ -222,7 +232,7 @@ jobs:
           OPERON_TEST_PD: 127.0.0.1:19379
         run: |
           cargo test ${{ steps.packages.outputs.args }} --locked
-          cargo test -p operon --test meta_tikv --locked
+          cargo test -p operon --features tikv --test meta_tikv --locked
       - name: playground logs
         if: failure() && steps.paths.outputs.run == 'true'
         uses: actions/upload-artifact@v4
@@ -266,8 +276,8 @@ jobs:
         if: steps.paths.outputs.run == 'true'
         run: |
           cargo test ${{ steps.packages.outputs.args }} --locked --no-run
-          cargo test -p operon --test meta_tikv --locked --no-run
-          cargo test -p operon --features failpoints --test crash --locked --no-run
+          cargo test -p operon --features tikv --test meta_tikv --locked --no-run
+          cargo test -p operon --features failpoints,tikv --test crash --locked --no-run
       - uses: actions/cache@v4
         if: steps.paths.outputs.run == 'true'
         with:
@@ -291,7 +301,7 @@ jobs:
           OPERON_TEST_NIGHTLY: "1"
         run: |
           cargo test ${{ steps.packages.outputs.args }} --locked
-          cargo test -p operon --test meta_tikv --locked
+          cargo test -p operon --features tikv --test meta_tikv --locked
       # R1 plan Task 6: the M1.1 gates on the TiKV metastore. The kill -9
       # crash gate runs `operon dev --meta tikv://…` (its snapshot rows are
       # openraft-only and skip); the object-store fault matrix and the
@@ -301,7 +311,7 @@ jobs:
         env:
           OPERON_TEST_PD: 127.0.0.1:19379
           OPERON_GATE_META: tikv://127.0.0.1:19379/loam_test_meta
-        run: cargo test -p operon --features failpoints --test crash --locked
+        run: cargo test -p operon --features failpoints,tikv --test crash --locked
       - name: playground logs
         if: failure() && steps.paths.outputs.run == 'true'
         uses: actions/upload-artifact@v4
@@ -314,6 +324,39 @@ jobs:
       - name: stop the playground
         if: always() && steps.paths.outputs.run == 'true'
         run: scripts/tikv/playground.sh stop --tag loam-ci
+
+  # R1 plan Task 7: the loam.live.v1 protos pass `buf lint` (STANDARD), and
+  # the checked-in TypeScript in sdks/live-typescript/src/gen is what
+  # `buf generate` writes from them. buf and protoc-gen-es are pinned in
+  # sdks/live-typescript/package.json. The Rust code is generated at build
+  # time (operon-live-proto's build.rs), so the check job covers it.
+  live-protos:
+    name: loam.live.v1 protos and generated TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: sdks/live-typescript/pnpm-lock.yaml
+      - name: install
+        working-directory: sdks/live-typescript
+        run: pnpm install --frozen-lockfile
+      - name: buf lint
+        run: sdks/live-typescript/node_modules/.bin/buf lint
+      - name: regenerate the TypeScript
+        working-directory: sdks/live-typescript
+        run: pnpm run generate
+      - name: the generated code is up to date
+        run: |
+          git add -N sdks/live-typescript/src/gen
+          git diff --exit-code -- sdks/live-typescript/src/gen || {
+            echo "sdks/live-typescript/src/gen is stale: run 'pnpm run generate' in sdks/live-typescript and commit the result"; exit 1;
+          }
 
   deny:
     name: licenses, advisories, sources

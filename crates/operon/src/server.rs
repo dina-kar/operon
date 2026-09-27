@@ -368,7 +368,7 @@ pub enum ServerError {
     #[error("metastore: {0}")]
     Meta(#[from] operon_meta::MetaError),
     /// The TiKV metastore's GC loop could not start (R1 plan Task 6).
-    #[cfg(feature = "meta-tikv")]
+    #[cfg(feature = "tikv")]
     #[error("TiKV: {0}")]
     Tikv(#[from] operon_tikv::TikvError),
     #[error("cache: {0}")]
@@ -408,7 +408,7 @@ pub struct Server {
     /// The openraft metastore client; `None` on the TiKV metastore.
     meta: Option<MetaClient>,
     /// The cluster MVCC GC loop the TiKV metastore runs.
-    #[cfg(feature = "meta-tikv")]
+    #[cfg(feature = "tikv")]
     tikv_gc: Option<TikvGc>,
     /// The metastore as the trait object every component holds.
     meta_store: Arc<dyn MetaStore>,
@@ -434,14 +434,14 @@ pub struct Server {
 
 /// The running cluster MVCC GC loop of a server on the TiKV metastore (R1
 /// plan Task 3).
-#[cfg(feature = "meta-tikv")]
+#[cfg(feature = "tikv")]
 #[derive(Debug)]
 struct TikvGc {
     handle: operon_tikv::GcHandle,
     stop: CancellationToken,
 }
 
-#[cfg(feature = "meta-tikv")]
+#[cfg(feature = "tikv")]
 impl TikvGc {
     /// Starts the GC loop on the metastore's handle. The loop sweeps its own
     /// handle's commit tokens; Loam Live's handles join `sweep` when Live
@@ -662,7 +662,7 @@ impl Server {
             return Self::start_cluster(config).await;
         }
         let store = Store::from_url(&bucket_url(&config)?, Vec::<(String, String)>::new())?;
-        #[cfg(feature = "meta-tikv")]
+        #[cfg(feature = "tikv")]
         if let MetaBackend::Tikv(tikv) = &config.meta {
             return Self::start_on_tikv(tikv.clone(), store, config).await;
         }
@@ -705,7 +705,7 @@ impl Server {
     /// `dev` or `standalone` on the TiKV metastore (R1 plan Task 6): opens
     /// the metastore, starts the cluster GC loop on its handle, then every
     /// role as on the openraft store. Nothing is kept in `<data_dir>/meta`.
-    #[cfg(feature = "meta-tikv")]
+    #[cfg(feature = "tikv")]
     async fn start_on_tikv(
         tikv: operon_meta_tikv::TikvMetaConfig,
         store: Store,
@@ -760,7 +760,7 @@ impl Server {
             local_addr,
             node: None,
             meta: None,
-            #[cfg(feature = "meta-tikv")]
+            #[cfg(feature = "tikv")]
             tikv_gc: None,
             meta_store,
             writer: parts.writer,
@@ -833,7 +833,7 @@ impl Server {
                     local_addr,
                     node: Some(node),
                     meta: Some(meta),
-                    #[cfg(feature = "meta-tikv")]
+                    #[cfg(feature = "tikv")]
                     tikv_gc: None,
                     meta_store,
                     writer: parts.writer,
@@ -1447,7 +1447,7 @@ impl Server {
         if let Err(err) = self.cache.close().await {
             tracing::warn!(%err, "closing the cache failed");
         }
-        #[cfg(feature = "meta-tikv")]
+        #[cfg(feature = "tikv")]
         if let Some(gc) = self.tikv_gc {
             gc.stop().await;
         }
