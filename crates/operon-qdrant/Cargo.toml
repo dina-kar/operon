@@ -27,6 +27,14 @@ tracing.workspace = true
 time.workspace = true
 uuid.workspace = true
 
+operon-text = { workspace = true, optional = true }
+tantivy = { workspace = true, optional = true }
+
+[features]
+# `filter::reference_eval`, the reference evaluator of the differential
+# filter tests (Task 4).
+test-util = ["dep:operon-text", "dep:tantivy"]
+
 [build-dependencies]
 tonic-prost-build.workspace = true
 

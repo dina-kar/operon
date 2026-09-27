@@ -3,9 +3,10 @@
 use std::collections::BTreeMap;
 
 use operon_common::meta::{
-    AliasAction, ApplyError, COLLECTION_KIND, Collection, CollectionHead, Consistency,
-    MAX_COLLECTION_NAME_LEN, Pointer, Retention, TargetRef, WalClass, collection_pk_prefix,
-    collection_pointer_key, collection_prefix, implicit_name,
+    AliasAction, AliasTargetAction, AliasTargets, ApplyError, COLLECTION_KIND, Collection,
+    CollectionHead, Consistency, MAX_COLLECTION_NAME_LEN, MetaStore, NameTarget, Pointer,
+    Retention, TargetRef, WalClass, collection_pk_prefix, collection_pointer_key,
+    collection_prefix, implicit_name,
 };
 use operon_common::{CollectionId, NamespaceId};
 
@@ -478,5 +479,353 @@ pub async fn collection_for_link_finds_the_implicit_link(backend: &dyn Backend) 
             .await
             .expect("read"),
         None
+    );
+}
+
+// ----- Aliases with several members (M1.5 Task 0a) -----
+
+fn add(alias: &str, collection: &str, is_write_index: Option<bool>) -> AliasTargetAction {
+    AliasTargetAction::Add {
+        alias: alias.to_string(),
+        collection: collection.to_string(),
+        is_write_index,
+    }
+}
+
+fn remove(alias: &str, collection: &str) -> AliasTargetAction {
+    AliasTargetAction::Remove {
+        alias: alias.to_string(),
+        collection: collection.to_string(),
+    }
+}
+
+fn targets(pairs: &[(CollectionId, Option<bool>)]) -> AliasTargets {
+    AliasTargets {
+        members: pairs.iter().copied().collect(),
+    }
+}
+
+/// An alias's members by id and its write target.
+type AliasView = (Vec<(CollectionId, Option<bool>)>, Option<CollectionId>);
+
+/// Alias `name` through `resolve_name`, `Linearizable`; panics when `name`
+/// is a collection.
+async fn alias_of(meta: &dyn MetaStore, ns: NamespaceId, name: &str) -> Option<AliasView> {
+    match meta.resolve_name(L, ns, name).await.expect("read")? {
+        NameTarget::Alias {
+            members,
+            write_target,
+        } => Some((
+            members.into_iter().map(|(c, w)| (c.id, w)).collect(),
+            write_target,
+        )),
+        NameTarget::Collection(c) => panic!("{name} is collection {}", c.id),
+    }
+}
+
+/// Collections `names` in a fresh namespace; their ids in order.
+async fn fresh_collections(
+    meta: &dyn MetaStore,
+    ns_name: &str,
+    names: &[&str],
+) -> (NamespaceId, Vec<CollectionId>) {
+    let ns = namespace(meta, ns_name).await;
+    let mut ids = Vec::new();
+    for name in names {
+        let (id, _, _) = meta
+            .create_collection(ns, name, schema(), 1)
+            .await
+            .expect("create collection");
+        ids.push(id);
+    }
+    (ns, ids)
+}
+
+pub async fn alias_targets_apply_atomically_and_resolve(backend: &dyn Backend) {
+    let db = backend.start().await;
+    let meta = db.first();
+    let (ns, ids) = fresh_collections(meta, "at-atomic", &["t1", "t2", "t3"]).await;
+    meta.update_alias_targets(ns, vec![add("al", "t1", None), add("al", "t2", None)])
+        .await
+        .expect("alias");
+    let reader = db.last();
+    assert_eq!(
+        alias_of(reader, ns, "al").await,
+        Some((vec![(ids[0], None), (ids[1], None)], None))
+    );
+    // All or nothing: the unknown collection refuses the whole command.
+    assert_eq!(
+        rejected(
+            meta.update_alias_targets(ns, vec![add("al", "t3", None), add("al", "missing", None)])
+                .await
+        ),
+        ApplyError::UnknownCollection("missing".to_string())
+    );
+    assert_eq!(
+        reader.alias_targets(L, ns).await.expect("read"),
+        vec![("al".to_string(), targets(&[(ids[0], None), (ids[1], None)]))]
+    );
+    // An alias names collections, not aliases, and never a collection's name.
+    assert_eq!(
+        rejected(
+            meta.update_alias_targets(ns, vec![add("other", "al", None)])
+                .await
+        ),
+        ApplyError::UnknownCollection("al".to_string())
+    );
+    assert_eq!(
+        rejected(
+            meta.update_alias_targets(ns, vec![add("t3", "t1", None)])
+                .await
+        ),
+        ApplyError::NameTaken("t3".to_string())
+    );
+    assert!(matches!(
+        rejected(meta.update_alias_targets(ns, Vec::new()).await),
+        ApplyError::InvalidArgument(_)
+    ));
+    let missing = NamespaceId(ns.0 + 1000);
+    assert_eq!(
+        rejected(
+            meta.update_alias_targets(missing, vec![add("x", "t1", None)])
+                .await
+        ),
+        ApplyError::NamespaceNotFound(missing)
+    );
+    // Applying the same command twice leaves the same state.
+    for _ in 0..2 {
+        meta.update_alias_targets(ns, vec![add("al", "t3", None), remove("al", "t1")])
+            .await
+            .expect("retry-safe");
+    }
+    assert_eq!(
+        alias_of(reader, ns, "al").await,
+        Some((vec![(ids[1], None), (ids[2], None)], None))
+    );
+    assert_eq!(
+        reader.aliases(L, ns).await.expect("read"),
+        vec![("al".to_string(), ids[1]), ("al".to_string(), ids[2])]
+    );
+    // resolve_name: a collection, and nothing.
+    assert!(matches!(
+        reader.resolve_name(L, ns, "t1").await.expect("read"),
+        Some(NameTarget::Collection(c)) if c.id == ids[0]
+    ));
+    assert_eq!(
+        reader.resolve_name(L, ns, "none").await.expect("read"),
+        None
+    );
+}
+
+pub async fn alias_write_target_follows_elasticsearch_rules(backend: &dyn Backend) {
+    let db = backend.start().await;
+    let meta = db.first();
+    let (ns, ids) = fresh_collections(meta, "at-write", &["i1", "i2", "i3"]).await;
+    let reader = db.last();
+    let steps: Vec<(Vec<AliasTargetAction>, Option<CollectionId>)> = vec![
+        // The only member, unset, is the write target.
+        (vec![add("al", "i1", None)], Some(ids[0])),
+        // The member set to true.
+        (vec![add("al", "i2", Some(true))], Some(ids[1])),
+        // Set to false: none.
+        (vec![add("al", "i2", Some(false))], None),
+        (vec![add("al", "i1", Some(true))], Some(ids[0])),
+        // Two members, neither set to true.
+        (vec![remove("al", "i1"), add("al", "i3", None)], None),
+        // One member set to false is no write target either.
+        (vec![remove("al", "i3")], None),
+    ];
+    for (actions, want) in steps {
+        meta.update_alias_targets(ns, actions.clone())
+            .await
+            .expect("update");
+        let (_, write_target) = alias_of(reader, ns, "al").await.expect("alias");
+        assert_eq!(write_target, want, "after {actions:?}");
+    }
+    assert_eq!(
+        alias_of(reader, ns, "al").await,
+        Some((vec![(ids[1], Some(false))], None))
+    );
+}
+
+pub async fn an_alias_with_two_write_targets_is_refused(backend: &dyn Backend) {
+    let db = backend.start().await;
+    let meta = db.first();
+    let (ns, _) = fresh_collections(meta, "at-two", &["b", "a"]).await;
+    assert_eq!(
+        rejected(
+            meta.update_alias_targets(
+                ns,
+                vec![add("al", "b", Some(true)), add("al", "a", Some(true))]
+            )
+            .await
+        ),
+        ApplyError::InvalidArgument("alias [al] has more than one write index [a,b]".to_string())
+    );
+    assert_eq!(
+        db.last().resolve_name(L, ns, "al").await.expect("read"),
+        None
+    );
+    assert_eq!(db.last().aliases(L, ns).await.expect("read"), Vec::new());
+}
+
+pub async fn single_target_aliases_read_back_through_both_alias_apis(backend: &dyn Backend) {
+    let db = backend.start().await;
+    let meta = db.first();
+    let (ns, ids) = fresh_collections(meta, "at-single", &["s1", "s2"]).await;
+    meta.update_aliases(ns, vec![create("old", "s1")])
+        .await
+        .expect("M1.1 alias");
+    meta.update_alias_targets(ns, vec![add("new", "s2", None)])
+        .await
+        .expect("M1.5 alias");
+    let reader = db.last();
+    assert_eq!(
+        reader.aliases(L, ns).await.expect("read"),
+        vec![("new".to_string(), ids[1]), ("old".to_string(), ids[0])]
+    );
+    assert_eq!(
+        reader.alias_targets(L, ns).await.expect("read"),
+        vec![
+            ("new".to_string(), targets(&[(ids[1], None)])),
+            ("old".to_string(), targets(&[(ids[0], None)])),
+        ]
+    );
+    for (name, id) in [("old", ids[0]), ("new", ids[1])] {
+        assert_eq!(
+            reader
+                .resolve_collection(L, ns, name)
+                .await
+                .expect("read")
+                .map(|c| c.id),
+            Some(id)
+        );
+        assert_eq!(
+            alias_of(reader, ns, name).await,
+            Some((vec![(id, None)], Some(id)))
+        );
+    }
+}
+
+pub async fn update_aliases_repoints_a_multi_target_alias(backend: &dyn Backend) {
+    let db = backend.start().await;
+    let meta = db.first();
+    let (ns, ids) = fresh_collections(meta, "at-repoint", &["r1", "r2", "r3"]).await;
+    meta.update_alias_targets(ns, vec![add("al", "r1", None), add("al", "r2", Some(true))])
+        .await
+        .expect("alias");
+    meta.update_aliases(ns, vec![create("al", "r3")])
+        .await
+        .expect("re-point");
+    let reader = db.last();
+    assert_eq!(
+        reader.aliases(L, ns).await.expect("read"),
+        vec![("al".to_string(), ids[2])]
+    );
+    assert_eq!(
+        reader
+            .resolve_collection(L, ns, "al")
+            .await
+            .expect("read")
+            .map(|c| c.id),
+        Some(ids[2])
+    );
+    meta.update_alias_targets(ns, vec![add("al", "r1", None)])
+        .await
+        .expect("grow");
+    meta.update_aliases(
+        ns,
+        vec![AliasAction::Delete {
+            alias: "al".to_string(),
+        }],
+    )
+    .await
+    .expect("delete");
+    assert_eq!(reader.resolve_name(L, ns, "al").await.expect("read"), None);
+    // The freed name can hold a collection.
+    meta.create_collection(ns, "al", schema(), 1)
+        .await
+        .expect("create over the freed name");
+}
+
+pub async fn drop_removes_a_collection_from_every_alias(backend: &dyn Backend) {
+    let db = backend.start().await;
+    let meta = db.first();
+    let (ns, ids) = fresh_collections(meta, "at-drop", &["a", "b", "c"]).await;
+    meta.update_alias_targets(
+        ns,
+        vec![
+            add("p", "a", None),
+            add("p", "b", Some(true)),
+            add("q", "b", None),
+            add("r", "a", Some(false)),
+            add("r", "b", Some(true)),
+            add("s", "a", None),
+            add("s", "b", None),
+            add("s", "c", None),
+        ],
+    )
+    .await
+    .expect("aliases");
+    // A multi-target alias holds its name against collections.
+    assert_eq!(
+        rejected(meta.create_collection(ns, "s", schema(), 1).await),
+        ApplyError::NameTaken("s".to_string())
+    );
+    assert_eq!(
+        meta.drop_collection(ns, "b").await.expect("drop"),
+        Some(ids[1])
+    );
+    let reader = db.last();
+    // p: one unset member left, which becomes the write target.
+    assert_eq!(
+        alias_of(reader, ns, "p").await,
+        Some((vec![(ids[0], None)], Some(ids[0])))
+    );
+    // q: its last member gone, so is the alias.
+    assert_eq!(alias_of(reader, ns, "q").await, None);
+    // r: one member set to false, no write target.
+    assert_eq!(
+        alias_of(reader, ns, "r").await,
+        Some((vec![(ids[0], Some(false))], None))
+    );
+    assert_eq!(
+        alias_of(reader, ns, "s").await,
+        Some((vec![(ids[0], None), (ids[2], None)], None))
+    );
+    assert_eq!(
+        reader.aliases(L, ns).await.expect("read"),
+        vec![
+            ("p".to_string(), ids[0]),
+            ("r".to_string(), ids[0]),
+            ("s".to_string(), ids[0]),
+            ("s".to_string(), ids[2]),
+        ]
+    );
+}
+
+pub async fn resolve_collection_is_none_for_a_multi_target_alias(backend: &dyn Backend) {
+    let db = backend.start().await;
+    let meta = db.first();
+    let (ns, ids) = fresh_collections(meta, "at-resolve", &["x1", "x2"]).await;
+    meta.update_alias_targets(ns, vec![add("al", "x1", None), add("al", "x2", Some(true))])
+        .await
+        .expect("alias");
+    let reader = db.last();
+    assert_eq!(
+        reader.resolve_collection(L, ns, "al").await.expect("read"),
+        None
+    );
+    // One member left, set to true: resolve_collection finds it again.
+    meta.update_alias_targets(ns, vec![remove("al", "x1")])
+        .await
+        .expect("shrink");
+    assert_eq!(
+        reader
+            .resolve_collection(L, ns, "al")
+            .await
+            .expect("read")
+            .map(|c| c.id),
+        Some(ids[1])
     );
 }

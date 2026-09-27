@@ -8,10 +8,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use operon_common::meta::{
-    AliasAction, ApplyError, Collection, CollectionHead, CollectionRoots, Freshness, Lease, Link,
-    LinkHead, LinkId, MetaError, MetaStore, Namespace, PartitionBounds, PartitionIndex, Pointer,
-    PointerCas, Retention, SegmentSwap, Stream, StreamState, TargetRef, WalChunk, WalClass,
-    WalCommit, collection_pointer_key, implicit_name, link_pointer_key,
+    AliasAction, AliasTargetAction, AliasTargets, ApplyError, Collection, CollectionHead,
+    CollectionRoots, Freshness, Lease, Link, LinkHead, LinkId, MetaError, MetaStore, NameTarget,
+    Namespace, PartitionBounds, PartitionIndex, Pointer, PointerCas, Retention, SegmentSwap,
+    Stream, StreamState, TargetRef, WalChunk, WalClass, WalCommit, collection_pointer_key,
+    implicit_name, link_pointer_key,
 };
 use operon_common::schema::{
     CollectionSchema, Distance, DynamicMapping, FieldKind, FieldSpec, HnswParams, VectorElement,
@@ -250,6 +251,8 @@ struct Reads {
     collection_for_link: Vec<Option<Collection>>,
     collections: Vec<Vec<Collection>>,
     aliases: Vec<Vec<(String, CollectionId)>>,
+    alias_targets: Vec<Vec<(String, AliasTargets)>>,
+    resolve_name: Vec<Option<NameTarget>>,
     collection_head: Vec<Option<CollectionHead>>,
     collection_heads: Vec<Vec<CollectionHead>>,
     retired_expired: Vec<Vec<String>>,
@@ -280,6 +283,8 @@ async fn trait_reads(meta: &dyn MetaStore, c: Consistency, q: &Queries) -> Reads
         collection_for_link: Vec::new(),
         collections: Vec::new(),
         aliases: Vec::new(),
+        alias_targets: Vec::new(),
+        resolve_name: Vec::new(),
         collection_head: Vec::new(),
         collection_heads: Vec::new(),
         retired_expired: Vec::new(),
@@ -313,6 +318,8 @@ async fn trait_reads(meta: &dyn MetaStore, c: Consistency, q: &Queries) -> Reads
         r.links_with_pointers
             .push(meta.links_with_pointers(c, ns).await.expect("read"));
         r.aliases.push(meta.aliases(c, ns).await.expect("read"));
+        r.alias_targets
+            .push(meta.alias_targets(c, ns).await.expect("read"));
     }
     for (ns, name) in &q.link_names {
         r.link_by_name
@@ -341,6 +348,8 @@ async fn trait_reads(meta: &dyn MetaStore, c: Consistency, q: &Queries) -> Reads
     for (ns, name) in &q.resolve {
         r.resolve_collection
             .push(meta.resolve_collection(c, *ns, name).await.expect("read"));
+        r.resolve_name
+            .push(meta.resolve_name(c, *ns, name).await.expect("read"));
     }
     for &link in &q.links {
         r.collection_for_link
@@ -519,6 +528,20 @@ fn state_reads(s: &MetaState, q: &Queries) -> Reads {
             .namespaces
             .iter()
             .map(|&ns| s.aliases(ns).map(|(a, id)| (a.to_string(), id)).collect())
+            .collect(),
+        alias_targets: q
+            .namespaces
+            .iter()
+            .map(|&ns| {
+                s.alias_targets(ns)
+                    .map(|(a, t)| (a.to_string(), t))
+                    .collect()
+            })
+            .collect(),
+        resolve_name: q
+            .resolve
+            .iter()
+            .map(|(ns, n)| s.resolve_name(*ns, n))
             .collect(),
         collection_head: q
             .collections
@@ -712,6 +735,28 @@ async fn composite_reads_equal_one_state_machine_closure() {
     )
     .await
     .unwrap();
+    // An alias with two members, one of them the write target (M1.5).
+    let (shelf, _, _) = meta
+        .create_collection(a, "shelf", schema(), 1)
+        .await
+        .unwrap();
+    meta.update_alias_targets(
+        a,
+        vec![
+            AliasTargetAction::Add {
+                alias: "multi".to_string(),
+                collection: "docs".to_string(),
+                is_write_index: None,
+            },
+            AliasTargetAction::Add {
+                alias: "multi".to_string(),
+                collection: "shelf".to_string(),
+                is_write_index: Some(true),
+            },
+        ],
+    )
+    .await
+    .unwrap();
     commit(meta, "wal/4.wal", vec![chunk(docs_stream, 1, 6, 0..60)]).await;
     let docs_key = collection_pointer_key(docs);
     set_pointer(meta, a, &docs_key, None, "ns/1/collections/1/m-1").await;
@@ -759,10 +804,12 @@ async fn composite_reads_equal_one_state_machine_closure() {
             (a, collection_pointer_key(notes)),
             (b, counts_key.clone()),
         ],
-        collections: vec![docs, notes, items, CollectionId(99)],
+        collections: vec![docs, notes, items, shelf, CollectionId(99)],
         resolve: vec![
             (a, "docs"),
             (a, "latest"),
+            (a, "multi"),
+            (a, "shelf"),
             (a, "notes"),
             (b, "items"),
             (b, "latest"),
@@ -824,6 +871,13 @@ async fn composite_reads_equal_one_state_machine_closure() {
             .is_some()
     );
     assert_eq!(expected.collection_roots[0].retired_prefixes.len(), 1);
+    // (a, "multi"): an alias with two members; resolve_collection has none.
+    assert!(
+        matches!(&expected.resolve_name[2], Some(NameTarget::Alias { members, write_target })
+            if members.len() == 2 && *write_target == Some(shelf)),
+        "{expected:?}"
+    );
+    assert_eq!(expected.resolve_collection[2], None);
     assert_eq!(
         expected.partition_index[0]
             .as_ref()

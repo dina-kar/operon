@@ -2,7 +2,6 @@
 //! M1.4 Task 3).
 
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
 
 use operon_collection::{
     CollectionSchema, DocOp, Document, DynamicMapping, PrimaryKey, Quantization, SparseModifier,
@@ -75,24 +74,6 @@ impl Qd {
             .expect("write");
         for op in &result.results {
             assert!(!matches!(op, OpResult::Rejected(_)), "{op:?}");
-        }
-    }
-
-    /// Waits until the link has applied every record of `name`.
-    async fn settled(&self, name: &str) {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        loop {
-            let info = self
-                .server
-                .collections()
-                .get_collection(NS, name)
-                .await
-                .expect("info");
-            if info.link_lag_records == 0 && info.manifest_version > 0 {
-                return;
-            }
-            assert!(Instant::now() < deadline, "{name} did not settle");
-            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 }
@@ -598,8 +579,8 @@ fn info_with_aliases(name: &str, aliases: &[&str]) -> CollectionInfo {
     }
 }
 
-/// D57's multi-target aliases cannot be made until M1.5 merges (E14), so
-/// the several-member rules are checked on `CollectionInfo`s directly.
+/// The several-member rules on `CollectionInfo`s directly; the end-to-end
+/// test is `a_multi_member_alias_is_listed_per_member_and_refused_where_one_is_needed`.
 #[test]
 fn alias_pairs_cover_every_member() {
     let infos = [
@@ -677,6 +658,68 @@ fn alias_pairs_cover_every_member() {
             ..
         }))
     ));
+}
+
+/// E14: now that M1.5 Task 0a makes aliases with several members, the
+/// Task 3 paths run end to end: `GET /aliases` lists such an alias once per
+/// member, `rename_alias` refuses it, a single-collection operation through
+/// it is 400, and `create_alias` makes it single-target again.
+#[tokio::test]
+async fn a_multi_member_alias_is_listed_per_member_and_refused_where_one_is_needed() {
+    let qd = Qd::start().await;
+    qd.create("c1", json!({"vectors": dense(4)})).await;
+    qd.create("c2", json!({"vectors": dense(4)})).await;
+    let add = |collection: &str| operon_query::AliasTargetAction::Add {
+        alias: "m".to_string(),
+        collection: collection.to_string(),
+        is_write_index: None,
+    };
+    qd.server
+        .collections()
+        .update_alias_targets(NS, vec![add("c1"), add("c2")])
+        .await
+        .expect("multi-member alias");
+    let (_, body) = qd.get("/aliases", None).await;
+    assert_eq!(
+        body["result"],
+        json!({"aliases": [
+            {"alias_name": "m", "collection_name": "c1"},
+            {"alias_name": "m", "collection_name": "c2"},
+        ]})
+    );
+    let (_, body) = qd.get("/collections/c2/aliases", None).await;
+    assert_eq!(
+        body["result"],
+        json!({"aliases": [{"alias_name": "m", "collection_name": "c2"}]})
+    );
+    let (status, body) = qd
+        .aliases(
+            json!({"actions": [{"rename_alias": {"old_alias_name": "m", "new_alias_name": "n"}}]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        error(&body).contains(
+            "alias [m] names 2 collections [c1, c2]; this operation needs one collection"
+        ),
+        "{body}"
+    );
+    let (status, body) = qd
+        .post("/collections/m/points/count", Some(json!({"exact": true})))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(error(&body).contains("names 2 collections"), "{body}");
+    let (status, body) = qd
+        .aliases(
+            json!({"actions": [{"create_alias": {"collection_name": "c2", "alias_name": "m"}}]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, body) = qd.get("/aliases", None).await;
+    assert_eq!(
+        body["result"],
+        json!({"aliases": [{"alias_name": "m", "collection_name": "c2"}]})
+    );
 }
 
 #[tokio::test]
@@ -843,17 +886,24 @@ async fn snapshots_list_manifest_versions() {
     let qd = Qd::start().await;
     qd.create("c", json!({"vectors": {"size": 2, "distance": "Cosine"}}))
         .await;
+    // An empty collection has committed no manifest: its snapshot is
+    // version 0, the empty collection, and the list shows it (the Python
+    // client run of Task 10 found a 503 where Qdrant answers).
     let (status, body) = qd.post("/collections/c/snapshots", None).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
-    assert_eq!(
-        error(&body),
-        "Service unavailable: no committed manifest yet"
-    );
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let empty = body["result"].clone();
+    assert_eq!(empty["name"], "c-00000000000000000000.snapshot", "{body}");
+    assert_eq!(empty["size"], 0, "{body}");
+    let (status, body) = qd.get("/collections/c/snapshots", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["result"], json!([empty]), "{body}");
+    // Right after the first write the snapshot waits for the first
+    // manifest, which holds the write.
     qd.write_docs("c", 4).await;
-    qd.settled("c").await;
     let (status, body) = qd.post("/collections/c/snapshots?wait=true", None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let created = body["result"].clone();
+    assert_ne!(created["name"], empty["name"], "{body}");
     let name = created["name"].as_str().expect("name");
     let digits = name
         .strip_prefix("c-")

@@ -34,10 +34,11 @@ pub use log_store::LogStore;
 pub use network::Router;
 pub use node::{MembershipView, MetaConfig, MetaNode, RaftStatus};
 pub use operon_common::meta::{
-    AliasAction, ApplyError, COLLECTION_KIND, Collection, Consistency, EntryKind, Fence, Freshness,
-    HotConfig, IndexEntry, Lease, LeaseGrant, Link, LinkId, MAX_COLLECTION_NAME_LEN, MAX_KEY_LEN,
-    MAX_LEASE_TTL_MS, MAX_NAME_LEN, MAX_PARTITIONS, MetaError, Namespace, Pointer, Retention,
-    StaleLag, Stream, TargetRef, WAL_COMMIT_WINDOW_MS, WalChunk, WalClass, collection_pk_prefix,
+    AliasAction, AliasTargetAction, AliasTargets, ApplyError, COLLECTION_KIND, Collection,
+    Consistency, EntryKind, Fence, Freshness, HotConfig, IndexEntry, Lease, LeaseGrant, Link,
+    LinkId, MAX_ALIAS_TARGETS, MAX_COLLECTION_NAME_LEN, MAX_KEY_LEN, MAX_LEASE_TTL_MS,
+    MAX_NAME_LEN, MAX_PARTITIONS, MetaError, NameTarget, Namespace, Pointer, Retention, StaleLag,
+    Stream, TargetRef, WAL_COMMIT_WINDOW_MS, WalChunk, WalClass, collection_pk_prefix,
     collection_pointer_key, collection_prefix, implicit_name, log_stale_object,
 };
 pub use raft::{EntryReply, NodeId, SnapshotData, TypeConfig};
