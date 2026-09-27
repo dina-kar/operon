@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
+import { type DocumentInput, type SchemaInput, s } from "../dist/index.js";
+
 const REPO = fileURLToPath(new URL("../../../", import.meta.url));
 const LISTENING = /operon listening on (http:\/\/\S+)/;
 const FLIGHT = /operon flight sql listening on (grpc:\/\/\S+)/;
@@ -152,4 +154,34 @@ export function unavailable(retryAfter?: string): Response {
     { error: "unavailable", message: "try again" },
     retryAfter === undefined ? {} : { "retry-after": retryAfter },
   );
+}
+
+/** The fixture's `kb` collection (scenario.json step 6). */
+export function kbSchema(): SchemaInput {
+  return {
+    fields: [s.text("body"), s.keyword("tenant"), s.i64("n")],
+    vectors: [s.vector("embedding", 3)],
+    dynamic: "ignore",
+  };
+}
+
+/** The fixture's first three documents (scenario.json step 10). */
+export function kbDocs(): DocumentInput[] {
+  return [
+    {
+      id: 1,
+      source: { body: "refund policy", tenant: "a", n: 1 },
+      vectors: { embedding: [1, 0, 0] },
+    },
+    {
+      id: 2,
+      source: { body: "shipping times", tenant: "a", n: 2 },
+      vectors: { embedding: [0.9, 0.1, 0] },
+    },
+    {
+      id: 3,
+      source: { body: "refund window", tenant: "b", n: 3 },
+      vectors: { embedding: [0, 0, 1] },
+    },
+  ];
 }
