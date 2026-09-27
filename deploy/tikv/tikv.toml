@@ -1,0 +1,12 @@
+# TiKV for Loam's dev playground and CI (R1 plan Task 1; design §20 §9.1).
+# Every TiKV config in the repo runs API v2 with TTL: keyspaces need both.
+# TiKV otherwise sizes itself from host RAM (12 GB on a 16 GB host). The
+# startup peak stays near 2.6 GB whatever these say (spike report (g) check 5).
+memory-usage-limit = "3GB"
+
+[storage]
+api-version = 2
+enable-ttl = true
+
+[storage.block-cache]
+capacity = "1GB"

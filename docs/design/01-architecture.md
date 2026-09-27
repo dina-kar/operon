@@ -123,14 +123,15 @@ Every backend serves the same relaxed contract (D59): `commit_wal` is atomic per
 
 | Surface | Default port | Objects | Scope | Milestone |
 |---|---|---|---|---|
-| Native REST | 8080 | All | Collections, the hybrid query (§05 §4), SQL; the MCP server (§15) is mounted at `/mcp`; the native streaming API (M0.3 routes, completed in M2, D72) | M1 |
+| Native REST | 8080 | All | Collections, the hybrid query (§05 §4), SQL; the native streaming API (M0.3 routes, completed in M2, D72). Never serves `/mcp` (D111) | M1 |
+| MCP (Streamable HTTP) | 8083 | Collections | The MCP server (§15) at `/mcp` on its own listener, bound to 127.0.0.1 by default (D111) | M1 |
 | Native gRPC | 8081 | All | The native API over gRPC, including streaming subscribe | M2 |
 | OTLP (HTTP / gRPC) | 4318 / 4317 | Streams (collections through links) | Logs only: OTLP/HTTP (protobuf, JSON) and OTLP/gRPC (D73, §02 §7.1) | M2 |
 | Kafka | 9092 | Streams | Produce, Fetch, ListOffsets, Metadata, ApiVersions; idempotent producers; consumer groups; no transactions (D74, §02 §7.2) | M5 |
 | Arrow Flight SQL | 8082 | Collections, tables, streams | SQL queries; Flight `DoPut` bulk ingest into collections and streams (D49), `DoGet` replay of streams (M5); used by the ADBC Flight SQL drivers | M1 |
 | Qdrant REST / gRPC | 6333 / 6334 | Collections | Qdrant API Phase A with sparse vectors (§06) | M1 |
 | Elasticsearch REST | 9200 | Collections | What the LangChain and LlamaIndex ES suites and BEIR send (D48, §06) | M1 |
-| Resonate HTTP | 8001 | Durable promises | The Resonate protocol (§14) | M3 |
+| Resonate HTTP | 8001 | Durable promises | The Resonate protocol (§14, §21), embedded in the binary behind the `durable` feature, bound to 127.0.0.1 and refusing other addresses until auth exists (D138) | D1 |
 
 Each surface is enabled individually (§10 §2). The Kafka wire protocol follows in M5 (D74); there is no Bolt/Cypher (D44) or ClickHouse (D45) surface.
 
@@ -171,6 +172,7 @@ Each surface is enabled individually (§10 §2). The Kafka wire protocol follows
 ```
 s3://<bucket>/<cluster_prefix>/
   meta/snapshots/<node_id>/<raft_term>-<index>.snap # metastore snapshots, one set per meta node (D17; openraft backend)
+  _erasure/<org_id>/<erasure_id>/{request,completion}.rec # write-once erasure-log records (conditional put), kept outside every snapshot (M2, D115)
   wal/<class>/<node_id>/<ulid>.wal                  # standard/express WAL objects: multi-partition, multi-namespace (D25); CMEK namespaces' chunks are envelope-encrypted (M2, D96)
   ns/<namespace_id>/
     keys/<ulid>.key                                  # a CMEK namespace's wrapped key-encryption keys (M2, D96)

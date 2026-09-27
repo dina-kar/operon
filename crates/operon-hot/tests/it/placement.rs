@@ -167,7 +167,10 @@ fn owned_by(id: u64, nodes: &[NodeDescriptor]) -> CollectionId {
 fn a_suspect_node_is_skipped_until_it_recovers() {
     let all = nodes(1..=3);
     let registry = NodeRegistry::fixed(node(1), all.clone());
-    let placement = PlacementImpl::with_suspect_for(registry, 1, Duration::from_millis(300));
+    // A suspicion that never ends during a test on its own: the test ends it
+    // with `advance_clock` (CI fix C3).
+    let suspect_for = Duration::from_secs(60 * 60);
+    let placement = PlacementImpl::with_suspect_for(registry, 1, suspect_for);
     let cid = owned_by(2, &all);
     let remote_2 = Owner::Remote {
         node_id: 2,
@@ -181,7 +184,7 @@ fn a_suspect_node_is_skipped_until_it_recovers() {
     let key = PlacementKey::collection(NamespaceId(1), cid);
     let next = ranking(&key, &all, 1)[1].node_id;
     assert_eq!(placement.owners_of(&key)[0].node_id, next);
-    std::thread::sleep(Duration::from_millis(350));
+    placement.advance_clock(suspect_for + Duration::from_secs(1));
     assert!(!placement.is_suspect(2));
     assert_eq!(placement.owner(NamespaceId(1), cid), remote_2);
 
