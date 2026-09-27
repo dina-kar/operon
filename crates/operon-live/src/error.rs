@@ -25,6 +25,18 @@ pub enum LiveError {
         limit: &'static str,
         message: String,
     },
+    /// A journal consumer's position is below what the janitor has kept:
+    /// the entries after `position` in `shard` are gone (`first` is the
+    /// oldest one left, if any). The consumer must resynchronise (rerun
+    /// everything) and start again from the current heads.
+    #[error(
+        "journal shard {shard} was trimmed past position {position} (oldest entry left: {first:?})"
+    )]
+    JournalTrimmed {
+        shard: u16,
+        position: u64,
+        first: Option<u64>,
+    },
     /// A stored record could not be decoded.
     #[error("corrupt record: {0}")]
     Corrupt(String),
@@ -46,7 +58,9 @@ impl LiveError {
         match self {
             LiveError::InvalidArgument(_) => pb::ErrorCode::ERROR_CODE_INVALID_ARGUMENT,
             LiveError::NotFound(_) => pb::ErrorCode::ERROR_CODE_NOT_FOUND,
-            LiveError::FailedPrecondition(_) => pb::ErrorCode::ERROR_CODE_FAILED_PRECONDITION,
+            LiveError::FailedPrecondition(_) | LiveError::JournalTrimmed { .. } => {
+                pb::ErrorCode::ERROR_CODE_FAILED_PRECONDITION
+            }
             LiveError::LimitExceeded { .. } => pb::ErrorCode::ERROR_CODE_RESOURCE_EXHAUSTED,
             LiveError::Corrupt(_) | LiveError::Internal(_) => pb::ErrorCode::ERROR_CODE_INTERNAL,
             LiveError::Txn(e) => match e {

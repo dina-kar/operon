@@ -8,7 +8,10 @@
 //! document     = prefix ‖ 0x02 ‖ table_id:u32 BE ‖ doc_id[16]            → DocumentRecord
 //! index entry  = prefix ‖ 0x03 ‖ table_id:u32 BE ‖ index_id:u32 BE
 //!                ‖ tuple(values…) ‖ creation_ms:u64 BE ‖ doc_id[16]      → ""
-//! journal      = prefix ‖ 0x04 ‖ …   (Task 9)
+//! journal head = prefix ‖ 0x04 ‖ 0x00 ‖ shard:u16 BE                     → last seq:u64 BE
+//! journal entry= prefix ‖ 0x04 ‖ 0x01 ‖ shard:u16 BE ‖ seq:u64 BE        → JournalEntry
+//! checkpoint   = prefix ‖ 0x04 ‖ 0x02 ‖ shard:u16 BE ‖ consumer
+//!                → seq:u64 BE ‖ expires_ms:u64 BE (0 = never)
 //! idempotency  = prefix ‖ 0x05 ‖ …   (Task 10)
 //! ```
 //!
@@ -29,6 +32,12 @@ pub const DOCUMENT: u8 = 0x02;
 pub const INDEX: u8 = 0x03;
 /// The journal tag (Task 9).
 pub const JOURNAL: u8 = 0x04;
+/// Journal sub-kind: a shard's head (its last sequence).
+pub const JOURNAL_HEAD: u8 = 0x00;
+/// Journal sub-kind: an entry.
+pub const JOURNAL_ENTRY: u8 = 0x01;
+/// Journal sub-kind: a consumer's checkpoint in one shard.
+pub const JOURNAL_CHECKPOINT: u8 = 0x02;
 /// The idempotency record tag (Task 10).
 pub const IDEMPOTENCY: u8 = 0x05;
 /// The first byte of a shared-keyspace app prefix (reserved, unused in R1).
@@ -179,6 +188,49 @@ impl AppKeys {
         key.extend_from_slice(&creation_ms.to_be_bytes());
         key.extend_from_slice(&id.bytes);
         key
+    }
+
+    fn journal_key(&self, kind: u8, shard: u16, extra: usize) -> Vec<u8> {
+        let mut key = self.with(JOURNAL, 3 + extra);
+        key.push(kind);
+        key.extend_from_slice(&shard.to_be_bytes());
+        key
+    }
+
+    /// A journal shard's head.
+    pub fn journal_head(&self, shard: u16) -> Vec<u8> {
+        self.journal_key(JOURNAL_HEAD, shard, 0)
+    }
+
+    /// A journal entry.
+    pub fn journal_entry(&self, shard: u16, seq: u64) -> Vec<u8> {
+        let mut key = self.journal_key(JOURNAL_ENTRY, shard, 8);
+        key.extend_from_slice(&seq.to_be_bytes());
+        key
+    }
+
+    /// Every entry of a journal shard.
+    pub fn journal_entries(&self, shard: u16) -> KeyRange {
+        prefix_range(self.journal_key(JOURNAL_ENTRY, shard, 0))
+    }
+
+    /// The sequence of a journal entry key of `shard`.
+    pub fn seq_of_journal_entry(&self, shard: u16, key: &[u8]) -> Option<u64> {
+        let prefix = self.journal_key(JOURNAL_ENTRY, shard, 0);
+        let seq = key.strip_prefix(prefix.as_slice())?;
+        Some(u64::from_be_bytes(seq.try_into().ok()?))
+    }
+
+    /// A consumer's checkpoint in a journal shard.
+    pub fn journal_checkpoint(&self, shard: u16, consumer: &str) -> Vec<u8> {
+        let mut key = self.journal_key(JOURNAL_CHECKPOINT, shard, consumer.len());
+        key.extend_from_slice(consumer.as_bytes());
+        key
+    }
+
+    /// Every consumer checkpoint of a journal shard.
+    pub fn journal_checkpoints(&self, shard: u16) -> KeyRange {
+        prefix_range(self.journal_key(JOURNAL_CHECKPOINT, shard, 0))
     }
 
     /// The document id of a document key of `table`.
