@@ -48,6 +48,7 @@ use ulid::Ulid;
 use crate::api::internal::NodeInfo;
 use crate::api::{self, AppState, ForwardedReads, NativeStreamProducer};
 use crate::cluster::{self, ClusterInfo, LateRouter, MembershipSource};
+use crate::meta_backend::MetaBackend;
 
 /// The meta node id of a single-process Operon.
 const NODE_ID: u64 = 1;
@@ -236,6 +237,15 @@ pub struct ServerConfig {
     /// CLI sets it unless `--no-durable`. A cluster node needs a MySQL store.
     #[cfg(feature = "durable")]
     pub durable: Option<operon_durable::DurableConfig>,
+    /// The metastore (R1 plan Task 6, D124): the embedded openraft store
+    /// (the default) or TiKV (`--meta tikv://…`, on `dev` and `standalone`
+    /// only; `operon cluster` refuses it).
+    pub meta: MetaBackend,
+    /// The Elasticsearch gateway's listener and limits (plan M1.5, feature
+    /// `es`), served on gateway nodes. `None` (the default here, row E13)
+    /// serves no Elasticsearch API; the CLI sets it unless `--no-es`.
+    #[cfg(feature = "es")]
+    pub es: Option<operon_es::EsConfig>,
 }
 
 impl ServerConfig {
@@ -269,6 +279,9 @@ impl ServerConfig {
             qdrant: None,
             #[cfg(feature = "durable")]
             durable: None,
+            meta: MetaBackend::Raft,
+            #[cfg(feature = "es")]
+            es: None,
         }
     }
 
@@ -287,6 +300,13 @@ impl ServerConfig {
     pub fn validate(&self) -> Result<(), ServerError> {
         if let Some(cluster) = &self.cluster {
             cluster.validate()?;
+            if self.meta != MetaBackend::Raft {
+                return Err(ServerError::Config(
+                    "operon cluster runs its own openraft metastore; --meta is for dev and \
+                     standalone only"
+                        .to_string(),
+                ));
+            }
         }
         self.validate_durable()?;
         self.flight.validate().map_err(ServerError::Config)?;
@@ -376,6 +396,10 @@ pub enum ServerError {
     Store(#[from] operon_store::StoreError),
     #[error("metastore: {0}")]
     Meta(#[from] operon_meta::MetaError),
+    /// The TiKV metastore's GC loop could not start (R1 plan Task 6).
+    #[cfg(feature = "tikv")]
+    #[error("TiKV: {0}")]
+    Tikv(#[from] operon_tikv::TikvError),
     #[error("cache: {0}")]
     Cache(#[from] operon_cache::CacheError),
     #[error("log: {0}")]
@@ -391,6 +415,14 @@ pub enum ServerError {
     #[cfg(feature = "qdrant")]
     #[error("qdrant listen on {addr}: {source}")]
     QdrantListen {
+        addr: SocketAddr,
+        source: std::io::Error,
+    },
+    /// The Elasticsearch gateway's listener could not be bound (plan M1.5
+    /// Task 1).
+    #[cfg(feature = "es")]
+    #[error("elasticsearch listen on {addr}: {source}")]
+    EsListen {
         addr: SocketAddr,
         source: std::io::Error,
     },
@@ -469,9 +501,14 @@ fn shutdown_phase(phase: &'static str) {
 #[derive(Debug)]
 pub struct Server {
     local_addr: SocketAddr,
-    node: MetaNode,
-    meta: MetaClient,
-    /// `meta` as the trait object every component holds.
+    /// The openraft metastore node; `None` on the TiKV metastore.
+    node: Option<MetaNode>,
+    /// The openraft metastore client; `None` on the TiKV metastore.
+    meta: Option<MetaClient>,
+    /// The cluster MVCC GC loop the TiKV metastore runs.
+    #[cfg(feature = "tikv")]
+    tikv_gc: Option<TikvGc>,
+    /// The metastore as the trait object every component holds.
     meta_store: Arc<dyn MetaStore>,
     writer: LogWriter,
     cache: RangeCache,
@@ -489,8 +526,40 @@ pub struct Server {
     qdrant: Option<Qdrant>,
     /// The embedded durable server (D1).
     durable: Durable,
+    #[cfg(feature = "es")]
+    es: Option<Es>,
     /// Cluster mode only.
     cluster: Option<ClusterRuntime>,
+}
+
+/// The running cluster MVCC GC loop of a server on the TiKV metastore (R1
+/// plan Task 3).
+#[cfg(feature = "tikv")]
+#[derive(Debug)]
+struct TikvGc {
+    handle: operon_tikv::GcHandle,
+    stop: CancellationToken,
+}
+
+#[cfg(feature = "tikv")]
+impl TikvGc {
+    /// Starts the GC loop on the metastore's handle. The loop sweeps its own
+    /// handle's commit tokens; Loam Live's handles join `sweep` when Live
+    /// runs in the process (R1 plan Task 12).
+    fn start(meta: &operon_meta_tikv::TikvMeta) -> Result<Self, ServerError> {
+        let stop = CancellationToken::new();
+        let handle = operon_tikv::GcLoop::spawn(
+            meta.tikv().clone(),
+            operon_tikv::GcConfig::default(),
+            stop.clone(),
+        )?;
+        Ok(TikvGc { handle, stop })
+    }
+
+    async fn stop(self) {
+        self.stop.cancel();
+        self.handle.stopped().await;
+    }
 }
 
 /// What a cluster node keeps for its shutdown.
@@ -534,6 +603,8 @@ struct Assembled {
     /// Started by the caller before `assemble` and handed over here (a
     /// cluster node's start returns it with the parts).
     durable: Durable,
+    #[cfg(feature = "es")]
+    es: Option<Es>,
 }
 
 /// The running Qdrant gateway (plan M1.4 Task 2).
@@ -541,6 +612,14 @@ struct Assembled {
 #[derive(Debug)]
 struct Qdrant {
     handle: operon_qdrant::QdrantHandle,
+    stop: CancellationToken,
+}
+
+/// The running Elasticsearch gateway (plan M1.5 Task 1).
+#[cfg(feature = "es")]
+#[derive(Debug)]
+struct Es {
+    handle: operon_es::EsHandle,
     stop: CancellationToken,
 }
 
@@ -686,6 +765,10 @@ impl Server {
             return Self::start_cluster(config).await;
         }
         let store = Store::from_url(&bucket_url(&config)?, Vec::<(String, String)>::new())?;
+        #[cfg(feature = "tikv")]
+        if let MetaBackend::Tikv(tikv) = &config.meta {
+            return Self::start_on_tikv(tikv.clone(), store, config).await;
+        }
         let mut meta_config = MetaConfig::new(NODE_ID, config.data_dir.join("meta"), store.clone());
         meta_config.snapshot_every = config.snapshot_every;
         let node = MetaNode::start(meta_config, &Router::new()).await?;
@@ -704,7 +787,7 @@ impl Server {
     async fn start_on(
         node: MetaNode,
         store: Store,
-        mut config: ServerConfig,
+        config: ServerConfig,
     ) -> Result<Self, ServerError> {
         // A no-op once the node is initialized, so restarts keep their state.
         node.initialize([NODE_ID]).await?;
@@ -716,6 +799,43 @@ impl Server {
             MetaClientConfig::default(),
         );
         let meta_store: Arc<dyn MetaStore> = meta.clone().into();
+        let mut server = Self::serve_single(meta_store, store, config).await?;
+        server.node = Some(node);
+        server.meta = Some(meta);
+        Ok(server)
+    }
+
+    /// `dev` or `standalone` on the TiKV metastore (R1 plan Task 6): opens
+    /// the metastore, starts the cluster GC loop on its handle, then every
+    /// role as on the openraft store. Nothing is kept in `<data_dir>/meta`.
+    #[cfg(feature = "tikv")]
+    async fn start_on_tikv(
+        tikv: operon_meta_tikv::TikvMetaConfig,
+        store: Store,
+        config: ServerConfig,
+    ) -> Result<Self, ServerError> {
+        let meta = operon_meta_tikv::TikvMeta::open(tikv).await?;
+        let gc = TikvGc::start(&meta)?;
+        let meta_store: Arc<dyn MetaStore> = Arc::new(meta);
+        match Self::serve_single(meta_store, store, config).await {
+            Ok(mut server) => {
+                server.tikv_gc = Some(gc);
+                Ok(server)
+            }
+            Err(err) => {
+                gc.stop().await;
+                Err(err)
+            }
+        }
+    }
+
+    /// Every role of a single-process server on `meta_store`, and the HTTP
+    /// API. The caller keeps its metastore handles in the result.
+    async fn serve_single(
+        meta_store: Arc<dyn MetaStore>,
+        store: Store,
+        mut config: ServerConfig,
+    ) -> Result<Self, ServerError> {
         let (listener, local_addr) = bind(config.listen).await?;
         // After the leader, before the collection service (row T0-6).
         let durable = Durable::start(&config, NODE_ID).await?;
@@ -750,8 +870,10 @@ impl Server {
         tracing::info!(%local_addr, "operon is serving");
         Ok(Self {
             local_addr,
-            node,
-            meta,
+            node: None,
+            meta: None,
+            #[cfg(feature = "tikv")]
+            tikv_gc: None,
             meta_store,
             writer: parts.writer,
             cache: parts.cache,
@@ -766,6 +888,8 @@ impl Server {
             #[cfg(feature = "qdrant")]
             qdrant: parts.qdrant,
             durable,
+            #[cfg(feature = "es")]
+            es: parts.es,
             cluster: None,
         })
     }
@@ -820,8 +944,10 @@ impl Server {
                 tracing::info!(%local_addr, node_id, %roles, "operon cluster node is serving");
                 Ok(Self {
                     local_addr,
-                    node,
-                    meta,
+                    node: Some(node),
+                    meta: Some(meta),
+                    #[cfg(feature = "tikv")]
+                    tikv_gc: None,
                     meta_store,
                     writer: parts.writer,
                     cache: parts.cache,
@@ -836,6 +962,8 @@ impl Server {
                     #[cfg(feature = "qdrant")]
                     qdrant: parts.qdrant,
                     durable: parts.durable,
+                    #[cfg(feature = "es")]
+                    es: parts.es,
                     cluster: Some(ClusterRuntime {
                         node_id,
                         roles,
@@ -1066,6 +1194,25 @@ impl Server {
             },
             None => None,
         };
+        // The Elasticsearch gateway's listener, next to Qdrant's (plan M1.5
+        // Task 1, row E13): bound here and served once the collection
+        // service exists.
+        #[cfg(feature = "es")]
+        let es_listener = match config.es.clone().filter(|_| roles.gateway) {
+            Some(es) => match tokio::net::TcpListener::bind(es.listen).await {
+                Ok(bound) => Some((es, bound)),
+                Err(source) => {
+                    if let Err(err) = cache.close().await {
+                        tracing::warn!(%err, "closing the cache after a failed start");
+                    }
+                    return Err(ServerError::EsListen {
+                        addr: es.listen,
+                        source,
+                    });
+                }
+            },
+            None => None,
+        };
 
         // Validated above, so this cannot fail. A node without the `log`
         // role still holds a writer (the service needs one), but serves no
@@ -1212,6 +1359,13 @@ impl Server {
             }
             None => None,
         };
+        #[cfg(feature = "es")]
+        let es = es_listener.map(|(es, listener)| {
+            let stop = CancellationToken::new();
+            let handle =
+                operon_es::EsGateway::new(collections.clone(), es).serve(listener, stop.clone());
+            Es { handle, stop }
+        });
         let internal = reqwest::Client::builder()
             .connect_timeout(api::hot::OWNER_CONNECT_TIMEOUT)
             .timeout(api::hot::OWNER_TIMEOUT)
@@ -1267,6 +1421,8 @@ impl Server {
             #[cfg(feature = "qdrant")]
             qdrant,
             durable: Durable::none(),
+            #[cfg(feature = "es")]
+            es,
         })
     }
 
@@ -1275,9 +1431,10 @@ impl Server {
         self.local_addr
     }
 
-    /// The metastore client, for embedding and tests.
-    pub fn meta(&self) -> &MetaClient {
-        &self.meta
+    /// The openraft metastore client, for embedding and tests; `None` on the
+    /// TiKV metastore (use [`Server::meta_store`]).
+    pub fn meta(&self) -> Option<&MetaClient> {
+        self.meta.as_ref()
     }
 
     /// The metastore as the trait object the server hands to every
@@ -1326,14 +1483,21 @@ impl Server {
         self.qdrant.as_ref().map(|q| q.handle.grpc_addr)
     }
 
+    /// The address the Elasticsearch API listens on, when it does.
+    #[cfg(feature = "es")]
+    pub fn es_addr(&self) -> Option<SocketAddr> {
+        self.es.as_ref().map(|es| es.handle.addr)
+    }
+
     /// The server's log writer; M1.2 builds its `CollectionWriter` on it.
     pub fn log_writer(&self) -> &LogWriter {
         &self.writer
     }
 
-    /// Stops the Qdrant gateway (waiting up to 10 s for its requests), stops
-    /// accepting requests, stops Flight SQL, stops the durable server (D1:
-    /// before anything it may call into), stops the collection
+    /// Stops the Qdrant and Elasticsearch gateways (waiting up to 10 s for
+    /// their requests), stops accepting requests, stops Flight SQL, stops the
+    /// durable server (D1: before anything it may call into), stops the
+    /// collection
     /// service's tails, flushes the writer (buffered appends are
     /// acknowledged), stops the worker (releasing its task leases), stops
     /// the hot tier, closes the collection targets' PK index handles, waits
@@ -1348,12 +1512,24 @@ impl Server {
         // The Qdrant gateway stops first, within the HTTP grace period
         // (plan M1.4 Task 2 rule 3).
         shutdown_phase("qdrant");
+        // The Elasticsearch gateway stops together with it (plan M1.5 Task
+        // 1, row E13): both tokens are cancelled before either is awaited.
+        #[cfg(feature = "es")]
+        if let Some(es) = &self.es {
+            es.stop.cancel();
+        }
         #[cfg(feature = "qdrant")]
         if let Some(qdrant) = self.qdrant {
             qdrant.stop.cancel();
             if let Err(err) = qdrant.handle.stop_within(HTTP_GRACE).await {
                 tracing::warn!(%err, "the Qdrant gateway stopped with an error");
             }
+        }
+        #[cfg(feature = "es")]
+        if let Some(es) = self.es
+            && let Err(err) = es.handle.stop_within(HTTP_GRACE).await
+        {
+            tracing::warn!(%err, "the Elasticsearch gateway stopped with an error");
         }
         let mut stop_http = Some(self.stop_http);
         shutdown_phase("http");
@@ -1417,7 +1593,14 @@ impl Server {
             tracing::warn!(%err, "closing the cache failed");
         }
         shutdown_phase("metastore");
-        let stopped = self.node.shutdown().await;
+        #[cfg(feature = "tikv")]
+        if let Some(gc) = self.tikv_gc {
+            gc.stop().await;
+        }
+        let stopped = match &self.node {
+            Some(node) => node.shutdown().await,
+            None => Ok(()),
+        };
         // A cluster node serves its metastore routes until the replica stops.
         if let Some(stop) = stop_http.take() {
             let _ = stop.send(());

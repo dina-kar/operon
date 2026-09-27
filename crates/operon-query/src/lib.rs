@@ -21,11 +21,14 @@
 //! Task 12: Arrow Flight SQL ([`flight`]). Task 13: Flight `DoPut` bulk
 //! ingest into collections and streams ([`flight_ingest`]). Task 14: scan
 //! pinning, a collection resolved into a pinned scan plan ([`scan`], D53).
+//! M1.5 Task 9a: delete-by-filter and patch-by-filter ([`filter_write`],
+//! D87).
 
 pub mod backlog;
 pub mod catalog_cache;
 pub mod error;
 pub mod exec;
+pub mod filter_write;
 pub mod flight;
 pub mod flight_ingest;
 pub mod hot;
@@ -50,6 +53,10 @@ pub use backlog::{
 };
 pub use catalog_cache::CatalogCache;
 pub use error::{NOT_FOUND_KINDS, ServiceError};
+pub use filter_write::{
+    FILTER_WRITE_BATCH, FilterWriteCursor, FilterWriteOptions, FilterWritePin, FilterWriteResult,
+    MAX_DELETE_BY_FILTER_ROWS, MAX_PATCH_BY_FILTER_ROWS, PatchSpec,
+};
 pub use ir::{
     AnnParams, BoolOperator, FieldValue, Fusion, Fuzziness, GroupBy, Highlight, HighlightField,
     Hit, HitGroup, MissingOrder, MultiMatchKind, Query, ReadConsistency, Retriever, SearchRequest,
@@ -64,8 +71,9 @@ pub use scan::{
 };
 pub use service::{CREATED_AT_ANNOTATION, CollectionService, ScrollPage, ServiceConfig, SqlConfig};
 pub use types::{
-    AliasAction, CollectionInfo, ManifestInfo, OpPosition, OpResult, PinnedRead, Projection,
-    SourceFilter, StoredDoc, WriteOptions, WriteResult,
+    AliasAction, AliasInfo, AliasMember, AliasTargetAction, CollectionInfo, ManifestInfo, NameInfo,
+    OpPosition, OpResult, PinnedRead, Projection, SourceFilter, StoredDoc, WriteOptions,
+    WriteResult,
 };
 pub use validate::{SearchLimits, validate_request};
 pub use write::rejected_op_index;

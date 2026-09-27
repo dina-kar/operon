@@ -19,3 +19,6 @@
 # Env
 .env
 .env.*
+
+# Node
+node_modules/

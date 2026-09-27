@@ -83,6 +83,74 @@ pub(crate) async fn get(
     }
 }
 
+/// Keyspaces per page of [`list`].
+const LIST_PAGE: u32 = 100;
+
+/// One page of `GET /pd/api/v2/keyspaces`.
+#[derive(Debug, Deserialize)]
+struct KeyspacePage {
+    #[serde(default)]
+    keyspaces: Vec<KeyspaceMeta>,
+    #[serde(default)]
+    next_page_token: Option<String>,
+}
+
+/// Every keyspace PD knows, in every state, through
+/// `GET /pd/api/v2/keyspaces?page_token=…&limit=…` (the GC loop's list).
+pub(crate) async fn list(
+    http: &reqwest::Client,
+    base: &str,
+) -> Result<Vec<KeyspaceMeta>, TikvError> {
+    const OP: &str = "GET keyspaces";
+    let mut out: Vec<KeyspaceMeta> = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let mut url = format!("{base}/pd/api/v2/keyspaces?limit={LIST_PAGE}");
+        if let Some(token) = &token {
+            url.push_str("&page_token=");
+            url.push_str(token);
+        }
+        let (status, body) = send(OP, http.get(url)).await?;
+        if status != 200 {
+            return Err(TikvError::Pd {
+                op: OP,
+                status,
+                body,
+            });
+        }
+        let page = parse_page(&body)?;
+        let got = page.keyspaces.len();
+        out.extend(page.keyspaces);
+        match page.next_page_token.filter(|t| !t.is_empty()) {
+            // A token is a keyspace id; anything else could loop or change
+            // the URL.
+            Some(next) if got > 0 && next.bytes().all(|b| b.is_ascii_digit()) => {
+                if token.as_deref() == Some(next.as_str()) {
+                    break;
+                }
+                token = Some(next);
+            }
+            Some(next) if got > 0 => {
+                return Err(TikvError::Http {
+                    op: OP,
+                    message: format!("unexpected next_page_token '{next}'"),
+                });
+            }
+            _ => break,
+        }
+    }
+    out.sort_by_key(|k| k.id);
+    out.dedup_by_key(|k| k.id);
+    Ok(out)
+}
+
+fn parse_page(body: &str) -> Result<KeyspacePage, TikvError> {
+    serde_json::from_str(body).map_err(|e| TikvError::Http {
+        op: "GET keyspaces",
+        message: format!("unreadable keyspace list ({e})"),
+    })
+}
+
 /// `POST /pd/api/v2/keyspaces`; `None` when PD says it already exists.
 async fn create(
     http: &reqwest::Client,
@@ -199,6 +267,19 @@ mod tests {
         assert!(validate_name("").is_err());
         assert!(validate_name("a/b").is_err());
         assert!(validate_name(&"x".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn keyspace_pages_parse_pd_json() {
+        let body = r#"{"keyspaces":[{"id":0,"name":"DEFAULT","state":"ENABLED"},
+                       {"id":4,"name":"old","state":"TOMBSTONE"}],"next_page_token":"5"}"#;
+        let page = parse_page(body).unwrap();
+        assert_eq!(page.keyspaces.len(), 2);
+        assert_eq!(page.keyspaces[1].state, "TOMBSTONE");
+        assert_eq!(page.next_page_token.as_deref(), Some("5"));
+        let last = parse_page(r#"{"keyspaces":[]}"#).unwrap();
+        assert!(last.keyspaces.is_empty() && last.next_page_token.is_none());
+        assert!(parse_page("not json").is_err());
     }
 
     #[test]

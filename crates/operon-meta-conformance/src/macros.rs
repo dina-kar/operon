@@ -52,6 +52,13 @@ macro_rules! for_each_case {
             aliases_apply_atomically_and_resolve,
             collection_head_reads_pointer_bounds_and_clock,
             collection_for_link_finds_the_implicit_link,
+            alias_targets_apply_atomically_and_resolve,
+            alias_write_target_follows_elasticsearch_rules,
+            an_alias_with_two_write_targets_is_refused,
+            single_target_aliases_read_back_through_both_alias_apis,
+            update_aliases_repoints_a_multi_target_alias,
+            drop_removes_a_collection_from_every_alias,
+            resolve_collection_is_none_for_a_multi_target_alias,
             // hot
             collection_hot_defaults_and_set_is_retry_safe,
             collection_hot_needs_the_collection_in_its_namespace,
@@ -72,6 +79,7 @@ macro_rules! for_each_case {
             a_lost_ack_on_commit_wal_returns_the_first_offsets_and_flags_it,
             a_lost_ack_on_create_collection_returns_the_same_ids,
             a_lost_ack_on_cas_reports_a_mismatch_with_the_callers_value,
+            a_lost_ack_on_update_alias_targets_applies_once,
             // linearizable
             concurrent_cas_on_two_keys_is_linearizable,
             concurrent_wal_commits_are_linearizable,
@@ -96,7 +104,12 @@ macro_rules! __case_tests {
         $(
             #[::tokio::test(flavor = "multi_thread", worker_threads = 4)]
             async fn $case() {
-                $crate::bounded(stringify!($case), $crate::suite::$case(&$backend)).await
+                let backend = &$backend;
+                if let Some(reason) = $crate::Backend::unavailable(backend) {
+                    println!("skipped: {} needs {reason}", stringify!($case));
+                    return;
+                }
+                $crate::bounded(stringify!($case), $crate::suite::$case(backend)).await
             }
         )*
     };
@@ -107,8 +120,15 @@ macro_rules! __case_tests {
 /// `#[tokio::test(flavor = "multi_thread", worker_threads = 4)]` per entry of
 /// [`CASES`](crate::CASES), named after the case. Expand it inside a module
 /// of its own per backend.
+///
+/// `metastore_conformance!($backend; cases = [a, b, ..])` expands only the
+/// named cases, for a backend that implements part of the trait so far (R1
+/// plan row R3). A name that is not a case fails to compile.
 #[macro_export]
 macro_rules! metastore_conformance {
+    ($backend:expr; cases = [$($case:ident),* $(,)?]) => {
+        $crate::__case_tests! { ($backend) $($case),* }
+    };
     ($backend:expr) => {
         $crate::for_each_case!([$crate::__case_tests] $backend);
     };

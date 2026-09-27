@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use operon_common::meta::{
-    AliasAction, ApplyError, Consistency, Fence, Freshness, HotConfig, LeaseGrant, LinkId,
-    MetaError, Retention, TargetRef, WalChunk, WalClass,
+    AliasAction, AliasTargetAction, ApplyError, Consistency, Fence, Freshness, HotConfig,
+    LeaseGrant, LinkId, MetaError, Retention, TargetRef, WalChunk, WalClass,
 };
 use operon_common::schema::CollectionSchema;
 use operon_common::{CollectionId, NamespaceId, StreamId};
@@ -937,6 +937,22 @@ impl MetaClient {
     ) -> Result<(), MetaError> {
         match self
             .write(Command::UpdateAliases { namespace, actions })
+            .await?
+        {
+            Reply::AliasesUpdated => Ok(()),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
+        }
+    }
+
+    /// Applies alias-target actions atomically
+    /// ([`Command::UpdateAliasTargets`]).
+    pub async fn update_alias_targets(
+        &self,
+        namespace: NamespaceId,
+        actions: Vec<AliasTargetAction>,
+    ) -> Result<(), MetaError> {
+        match self
+            .write(Command::UpdateAliasTargets { namespace, actions })
             .await?
         {
             Reply::AliasesUpdated => Ok(()),

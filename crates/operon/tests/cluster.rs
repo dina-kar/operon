@@ -99,6 +99,7 @@ impl Cluster {
             .args([
                 "--no-flight-sql",
                 "--no-qdrant",
+                "--no-es",
                 "--maintenance",
                 "off",
                 "--lease-ttl-ms",

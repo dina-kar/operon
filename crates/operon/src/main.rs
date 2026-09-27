@@ -8,7 +8,7 @@ use std::time::Duration;
 use std::collections::BTreeMap;
 
 use clap::{Parser, Subcommand};
-use operon::{ClusterConfig, Server, ServerConfig};
+use operon::{ClusterConfig, MetaBackend, Server, ServerConfig};
 use operon_hot::Roles;
 
 #[derive(Debug, Parser)]
@@ -238,6 +238,16 @@ struct Native {
     /// Serve no Qdrant API.
     #[arg(long)]
     no_qdrant: bool,
+    /// Address of the Elasticsearch REST API [default: 127.0.0.1:9200].
+    #[arg(long, conflicts_with = "no_es")]
+    es_listen: Option<SocketAddr>,
+    /// The namespace of Elasticsearch requests without an
+    /// `Operon-Namespace` header [default: default].
+    #[arg(long, conflicts_with = "no_es")]
+    es_namespace: Option<String>,
+    /// Serve no Elasticsearch API.
+    #[arg(long)]
+    no_es: bool,
     /// Whether this node runs a hot tier, and whether reads use it when a
     /// request does not say (`Operon-Hot`).
     #[arg(long, value_enum, default_value = "on")]
@@ -419,6 +429,7 @@ impl Native {
         };
         self.apply_qdrant(config);
         self.apply_durable(config);
+        self.apply_es(config);
         let hot = self.hot == HotSwitch::On;
         config.query.hot_default = hot;
         config.hot.enabled = hot;
@@ -520,6 +531,29 @@ impl Native {
             tracing::warn!("this build has no durable execution (the durable feature is off)");
         }
     }
+
+    /// The Elasticsearch gateway, unless `--no-es` (plan M1.5 Task 1, row
+    /// E13).
+    #[cfg(feature = "es")]
+    fn apply_es(&self, config: &mut ServerConfig) {
+        config.es = (!self.no_es).then(|| {
+            let mut es = operon_es::EsConfig::default();
+            if let Some(addr) = self.es_listen {
+                es.listen = addr;
+            }
+            if let Some(ns) = &self.es_namespace {
+                es.namespace = ns.clone();
+            }
+            es
+        });
+    }
+
+    #[cfg(not(feature = "es"))]
+    fn apply_es(&self, _config: &mut ServerConfig) {
+        if self.es_listen.is_some() {
+            tracing::warn!("this build has no Elasticsearch API (the es feature is off)");
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -535,6 +569,10 @@ enum Command {
         /// How long appends are buffered before a WAL flush.
         #[arg(long)]
         flush_interval_ms: Option<u64>,
+        /// The metastore: tikv://<pd-host:port>[,<pd…>]/<keyspace> runs it on
+        /// TiKV [default: the embedded store in --data-dir].
+        #[arg(long, value_parser = MetaBackend::parse)]
+        meta: Option<MetaBackend>,
         #[command(flatten)]
         native: Native,
         #[command(flatten)]
@@ -551,6 +589,10 @@ enum Command {
         /// Address of the HTTP API.
         #[arg(long, default_value = "127.0.0.1:8080")]
         listen: SocketAddr,
+        /// The metastore: tikv://<pd-host:port>[,<pd…>]/<keyspace> runs it on
+        /// TiKV [default: the embedded store in --data-dir].
+        #[arg(long, value_parser = MetaBackend::parse)]
+        meta: Option<MetaBackend>,
         #[command(flatten)]
         native: Native,
     },
@@ -702,11 +744,13 @@ fn config(command: Command) -> ServerConfig {
             data_dir,
             listen,
             flush_interval_ms,
+            meta,
             native,
             tuning,
         } => {
             let mut config = ServerConfig::new(data_dir);
             config.listen = listen;
+            config.meta = meta.unwrap_or_default();
             if let Some(ms) = flush_interval_ms {
                 config.log.flush_interval = Duration::from_millis(ms);
             }
@@ -718,10 +762,12 @@ fn config(command: Command) -> ServerConfig {
             bucket,
             data_dir,
             listen,
+            meta,
             native,
         } => {
             let mut config = ServerConfig::new(data_dir);
             config.listen = listen;
+            config.meta = meta.unwrap_or_default();
             config.bucket = Some(bucket);
             native.apply(&mut config, STANDALONE_FLIGHT_SQL);
             config
@@ -897,6 +943,11 @@ async fn main() -> ExitCode {
         println!("operon qdrant REST listening on http://{rest}");
         println!("operon qdrant gRPC listening on grpc://{grpc}");
     }
+    // Plan M1.5 Task 1 (row E13): also before the HTTP line.
+    #[cfg(feature = "es")]
+    if let Some(addr) = server.es_addr() {
+        println!("operon es listening on http://{addr}");
+    }
     println!("operon listening on http://{}", server.local_addr());
     // M1.6 W14, M1.7 A4: printed once the listener is bound.
     if let Some(addr) = server.flight_sql_addr() {
@@ -1029,6 +1080,63 @@ mod tests {
         assert!(ServerConfig::new("/tmp/x").qdrant.is_none());
     }
 
+    #[cfg(feature = "es")]
+    #[test]
+    fn es_flags_set_the_config() {
+        let es = dev_config(&[]).es.expect("on by default");
+        assert_eq!(es.listen, "127.0.0.1:9200".parse().unwrap());
+        assert_eq!(es.namespace, "default");
+        let es = dev_config(&["--es-listen", "127.0.0.1:0", "--es-namespace", "acme"])
+            .es
+            .expect("on");
+        assert_eq!(es.listen, "127.0.0.1:0".parse().unwrap());
+        assert_eq!(es.namespace, "acme");
+        assert!(dev_config(&["--no-es"]).es.is_none());
+        assert!(
+            Cli::try_parse_from(["operon", "dev", "--no-es", "--es-listen", "127.0.0.1:1"])
+                .is_err()
+        );
+        // D111: loopback in every mode.
+        let cli = Cli::try_parse_from(["operon", "standalone", "--bucket", "file:///tmp/b"])
+            .expect("parse");
+        let es = config_of(cli).es.expect("standalone serves it");
+        assert_eq!(es.listen, "127.0.0.1:9200".parse().unwrap());
+        let cluster = cluster_config(&[
+            "--node-id",
+            "1",
+            "--roles",
+            "meta,gateway",
+            "--listen",
+            "127.0.0.1:7001",
+            "--peers",
+            "1=127.0.0.1:7001",
+            "--bucket",
+            "file:///tmp/b",
+        ])
+        .expect("parse");
+        assert_eq!(
+            cluster.es.expect("cluster serves it").listen,
+            "127.0.0.1:9200".parse().unwrap()
+        );
+        let cluster = cluster_config(&[
+            "--node-id",
+            "1",
+            "--roles",
+            "meta,gateway",
+            "--listen",
+            "127.0.0.1:7001",
+            "--peers",
+            "1=127.0.0.1:7001",
+            "--bucket",
+            "file:///tmp/b",
+            "--no-es",
+        ])
+        .expect("parse");
+        assert!(cluster.es.is_none());
+        // ServerConfig::new serves no Elasticsearch API (row E13).
+        assert!(ServerConfig::new("/tmp/x").es.is_none());
+    }
+
     #[test]
     fn backpressure_flags_set_the_config() {
         let config = dev_config(&[]);
@@ -1152,6 +1260,96 @@ mod tests {
             Duration::from_millis(200)
         );
         assert!(dev_config(&["--collection-trim", "true"]).collection.trim);
+    }
+
+    /// R1 plan Task 6: `--meta` on `dev` and `standalone` selects the TiKV
+    /// metastore; `cluster` has no such flag, and a cluster config with a
+    /// TiKV metastore is refused.
+    #[cfg(feature = "tikv")]
+    #[test]
+    fn meta_flag_selects_the_tikv_metastore_on_dev_and_standalone_only() {
+        assert_eq!(dev_config(&[]).meta, MetaBackend::Raft);
+        let url = "tikv://127.0.0.1:2379/loam_meta";
+        let MetaBackend::Tikv(tikv) = dev_config(&["--meta", url]).meta else {
+            panic!("expected the TiKV metastore");
+        };
+        assert_eq!(tikv.tikv.keyspace, "loam_meta");
+        assert_eq!(tikv.tikv.pd, ["127.0.0.1:2379"]);
+        let standalone = Cli::try_parse_from([
+            "operon",
+            "standalone",
+            "--bucket",
+            "file:///tmp/b",
+            "--meta",
+            url,
+        ])
+        .map(config_of)
+        .expect("parse");
+        assert!(matches!(standalone.meta, MetaBackend::Tikv(_)));
+        assert!(Cli::try_parse_from(["operon", "dev", "--meta", "raft://x"]).is_err());
+        let cluster = Cli::try_parse_from([
+            "operon",
+            "cluster",
+            "--node-id",
+            "1",
+            "--roles",
+            "meta",
+            "--listen",
+            "127.0.0.1:7001",
+            "--peers",
+            "1=127.0.0.1:7001",
+            "--bucket",
+            "file:///tmp/b",
+            "--meta",
+            url,
+        ]);
+        assert!(cluster.is_err(), "operon cluster has no --meta");
+        let mut config = cluster_config(&[
+            "--node-id",
+            "1",
+            "--roles",
+            "meta",
+            "--listen",
+            "127.0.0.1:7001",
+            "--peers",
+            "1=127.0.0.1:7001",
+            "--bucket",
+            "file:///tmp/b",
+        ])
+        .expect("parse");
+        config.meta = MetaBackend::parse(url).expect("url");
+        let err = config.validate().expect_err("refused").to_string();
+        assert!(err.contains("dev and standalone only"), "{err}");
+    }
+
+    /// Owner ruling T7-3: a build without the `tikv` feature refuses
+    /// `--meta tikv://…` at parse time with an error naming the feature.
+    #[cfg(not(feature = "tikv"))]
+    #[test]
+    fn meta_flag_without_the_tikv_feature_is_refused_naming_it() {
+        let url = "tikv://127.0.0.1:2379/loam_meta";
+        for args in [
+            &["operon", "dev", "--meta", url][..],
+            &[
+                "operon",
+                "standalone",
+                "--bucket",
+                "file:///tmp/b",
+                "--meta",
+                url,
+            ],
+        ] {
+            let command = args[1];
+            let err = Cli::try_parse_from(args)
+                .map(|_| ())
+                .expect_err("refused")
+                .to_string();
+            assert!(
+                err.contains("built without the tikv feature"),
+                "{command}: {err}"
+            );
+            assert!(err.contains("--features tikv"), "{command}: {err}");
+        }
     }
 
     fn cluster_config(args: &[&str]) -> Result<ServerConfig, clap::Error> {
