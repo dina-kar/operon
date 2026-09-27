@@ -48,6 +48,7 @@ use ulid::Ulid;
 use crate::api::internal::NodeInfo;
 use crate::api::{self, AppState, ForwardedReads, NativeStreamProducer};
 use crate::cluster::{self, ClusterInfo, LateRouter, MembershipSource};
+use crate::meta_backend::MetaBackend;
 
 /// The meta node id of a single-process Operon.
 const NODE_ID: u64 = 1;
@@ -231,6 +232,15 @@ pub struct ServerConfig {
     /// serves no Qdrant API; the CLI sets it unless `--no-qdrant`.
     #[cfg(feature = "qdrant")]
     pub qdrant: Option<operon_qdrant::QdrantConfig>,
+    /// The embedded durable server (D1, feature `durable`): its loopback
+    /// listener and its store. `None` (the default here) serves none; the
+    /// CLI sets it unless `--no-durable`. A cluster node needs a MySQL store.
+    #[cfg(feature = "durable")]
+    pub durable: Option<operon_durable::DurableConfig>,
+    /// The metastore (R1 plan Task 6, D124): the embedded openraft store
+    /// (the default) or TiKV (`--meta tikv://…`, on `dev` and `standalone`
+    /// only; `operon cluster` refuses it).
+    pub meta: MetaBackend,
     /// The Elasticsearch gateway's listener and limits (plan M1.5, feature
     /// `es`), served on gateway nodes. `None` (the default here, row E13)
     /// serves no Elasticsearch API; the CLI sets it unless `--no-es`.
@@ -267,6 +277,9 @@ impl ServerConfig {
             cluster: None,
             #[cfg(feature = "qdrant")]
             qdrant: None,
+            #[cfg(feature = "durable")]
+            durable: None,
+            meta: MetaBackend::Raft,
             #[cfg(feature = "es")]
             es: None,
         }
@@ -287,7 +300,15 @@ impl ServerConfig {
     pub fn validate(&self) -> Result<(), ServerError> {
         if let Some(cluster) = &self.cluster {
             cluster.validate()?;
+            if self.meta != MetaBackend::Raft {
+                return Err(ServerError::Config(
+                    "operon cluster runs its own openraft metastore; --meta is for dev and \
+                     standalone only"
+                        .to_string(),
+                ));
+            }
         }
+        self.validate_durable()?;
         self.flight.validate().map_err(ServerError::Config)?;
         self.validate_backpressure()?;
         self.gc
@@ -309,6 +330,27 @@ impl ServerConfig {
 }
 
 impl ServerConfig {
+    /// D1 Task 3: SQLite is a single-node store, so a cluster node needs
+    /// MySQL (TiDB).
+    #[cfg(feature = "durable")]
+    fn validate_durable(&self) -> Result<(), ServerError> {
+        if self.cluster.is_some()
+            && let Some(durable) = &self.durable
+            && let operon_durable::DurableStore::Sqlite { .. } = durable.store
+        {
+            return Err(ServerError::Config(
+                "the sqlite durable store is single-node; use --durable-store mysql://…"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "durable"))]
+    fn validate_durable(&self) -> Result<(), ServerError> {
+        Ok(())
+    }
+
     /// Task 15 rule 8: the byte budget at most half the live tail (so a
     /// backlog at the budget fits the tail and strong reads need no range
     /// tail), non-zero budgets, `override_factor >= 1` and
@@ -354,6 +396,10 @@ pub enum ServerError {
     Store(#[from] operon_store::StoreError),
     #[error("metastore: {0}")]
     Meta(#[from] operon_meta::MetaError),
+    /// The TiKV metastore's GC loop could not start (R1 plan Task 6).
+    #[cfg(feature = "tikv")]
+    #[error("TiKV: {0}")]
+    Tikv(#[from] operon_tikv::TikvError),
     #[error("cache: {0}")]
     Cache(#[from] operon_cache::CacheError),
     #[error("log: {0}")]
@@ -380,15 +426,89 @@ pub enum ServerError {
         addr: SocketAddr,
         source: std::io::Error,
     },
+    /// The embedded durable server did not start (D1); its message as is.
+    #[cfg(feature = "durable")]
+    #[error("{0}")]
+    Durable(#[from] operon_durable::DurableError),
+}
+
+/// The embedded durable server (D1 Task 3), when the build has the `durable`
+/// feature and the config asks for it.
+#[cfg(feature = "durable")]
+#[derive(Debug)]
+struct Durable(Option<operon_durable::DurableServer>);
+
+/// The embedded durable server: none in a build without `durable`.
+#[cfg(not(feature = "durable"))]
+#[derive(Debug)]
+struct Durable;
+
+impl Durable {
+    /// No durable server (a placeholder until the caller hands one over).
+    #[cfg(feature = "durable")]
+    fn none() -> Self {
+        Self(None)
+    }
+
+    #[cfg(not(feature = "durable"))]
+    fn none() -> Self {
+        Self
+    }
+
+    /// Starts `config.durable`, if any, for node `node_id`. Runs after the
+    /// metastore has a leader and before [`Server::assemble`] (row T0-6).
+    #[cfg(feature = "durable")]
+    async fn start(config: &ServerConfig, node_id: u64) -> Result<Self, ServerError> {
+        match &config.durable {
+            Some(durable) => Ok(Self(Some(
+                operon_durable::DurableServer::start(durable.clone(), &node_id.to_string()).await?,
+            ))),
+            None => Ok(Self(None)),
+        }
+    }
+
+    #[cfg(not(feature = "durable"))]
+    async fn start(_config: &ServerConfig, _node_id: u64) -> Result<Self, ServerError> {
+        Ok(Self)
+    }
+
+    /// Drains and stops the server; its port and store are free afterwards.
+    async fn stop(self) {
+        #[cfg(feature = "durable")]
+        if let Some(server) = self.0 {
+            server.stop().await;
+        }
+    }
+
+    #[cfg(feature = "durable")]
+    fn addr(&self) -> Option<SocketAddr> {
+        self.0.as_ref().map(|server| server.listen())
+    }
+
+    #[cfg(not(feature = "durable"))]
+    fn addr(&self) -> Option<SocketAddr> {
+        None
+    }
+}
+
+/// Marks one step of [`Server::shutdown`], in order (target
+/// `operon::shutdown`, field `phase`), so tests can check the stop order.
+fn shutdown_phase(phase: &'static str) {
+    tracing::debug!(target: "operon::shutdown", phase, "stopping");
 }
 
 /// A running Operon process.
 #[derive(Debug)]
 pub struct Server {
     local_addr: SocketAddr,
-    node: MetaNode,
-    meta: MetaClient,
-    /// `meta` as the trait object every component holds.
+    /// The openraft metastore node; `None` on the TiKV metastore.
+    node: Option<MetaNode>,
+    /// The openraft metastore client; `None` on the TiKV metastore.
+    meta: Option<MetaClient>,
+    /// The cluster MVCC GC loop the TiKV metastore runs.
+    #[cfg(feature = "tikv")]
+    tikv_gc: Option<TikvGc>,
+    /// The metastore as the trait object every component holds.
     meta_store: Arc<dyn MetaStore>,
     writer: LogWriter,
     cache: RangeCache,
@@ -404,10 +524,42 @@ pub struct Server {
     flight: Option<Flight>,
     #[cfg(feature = "qdrant")]
     qdrant: Option<Qdrant>,
+    /// The embedded durable server (D1).
+    durable: Durable,
     #[cfg(feature = "es")]
     es: Option<Es>,
     /// Cluster mode only.
     cluster: Option<ClusterRuntime>,
+}
+
+/// The running cluster MVCC GC loop of a server on the TiKV metastore (R1
+/// plan Task 3).
+#[cfg(feature = "tikv")]
+#[derive(Debug)]
+struct TikvGc {
+    handle: operon_tikv::GcHandle,
+    stop: CancellationToken,
+}
+
+#[cfg(feature = "tikv")]
+impl TikvGc {
+    /// Starts the GC loop on the metastore's handle. The loop sweeps its own
+    /// handle's commit tokens; Loam Live's handles join `sweep` when Live
+    /// runs in the process (R1 plan Task 12).
+    fn start(meta: &operon_meta_tikv::TikvMeta) -> Result<Self, ServerError> {
+        let stop = CancellationToken::new();
+        let handle = operon_tikv::GcLoop::spawn(
+            meta.tikv().clone(),
+            operon_tikv::GcConfig::default(),
+            stop.clone(),
+        )?;
+        Ok(TikvGc { handle, stop })
+    }
+
+    async fn stop(self) {
+        self.stop.cancel();
+        self.handle.stopped().await;
+    }
 }
 
 /// What a cluster node keeps for its shutdown.
@@ -448,6 +600,9 @@ struct Assembled {
     flight: Option<Flight>,
     #[cfg(feature = "qdrant")]
     qdrant: Option<Qdrant>,
+    /// Started by the caller before `assemble` and handed over here (a
+    /// cluster node's start returns it with the parts).
+    durable: Durable,
     #[cfg(feature = "es")]
     es: Option<Es>,
 }
@@ -610,6 +765,10 @@ impl Server {
             return Self::start_cluster(config).await;
         }
         let store = Store::from_url(&bucket_url(&config)?, Vec::<(String, String)>::new())?;
+        #[cfg(feature = "tikv")]
+        if let MetaBackend::Tikv(tikv) = &config.meta {
+            return Self::start_on_tikv(tikv.clone(), store, config).await;
+        }
         let mut meta_config = MetaConfig::new(NODE_ID, config.data_dir.join("meta"), store.clone());
         meta_config.snapshot_every = config.snapshot_every;
         let node = MetaNode::start(meta_config, &Router::new()).await?;
@@ -628,7 +787,7 @@ impl Server {
     async fn start_on(
         node: MetaNode,
         store: Store,
-        mut config: ServerConfig,
+        config: ServerConfig,
     ) -> Result<Self, ServerError> {
         // A no-op once the node is initialized, so restarts keep their state.
         node.initialize([NODE_ID]).await?;
@@ -640,7 +799,46 @@ impl Server {
             MetaClientConfig::default(),
         );
         let meta_store: Arc<dyn MetaStore> = meta.clone().into();
+        let mut server = Self::serve_single(meta_store, store, config).await?;
+        server.node = Some(node);
+        server.meta = Some(meta);
+        Ok(server)
+    }
+
+    /// `dev` or `standalone` on the TiKV metastore (R1 plan Task 6): opens
+    /// the metastore, starts the cluster GC loop on its handle, then every
+    /// role as on the openraft store. Nothing is kept in `<data_dir>/meta`.
+    #[cfg(feature = "tikv")]
+    async fn start_on_tikv(
+        tikv: operon_meta_tikv::TikvMetaConfig,
+        store: Store,
+        config: ServerConfig,
+    ) -> Result<Self, ServerError> {
+        let meta = operon_meta_tikv::TikvMeta::open(tikv).await?;
+        let gc = TikvGc::start(&meta)?;
+        let meta_store: Arc<dyn MetaStore> = Arc::new(meta);
+        match Self::serve_single(meta_store, store, config).await {
+            Ok(mut server) => {
+                server.tikv_gc = Some(gc);
+                Ok(server)
+            }
+            Err(err) => {
+                gc.stop().await;
+                Err(err)
+            }
+        }
+    }
+
+    /// Every role of a single-process server on `meta_store`, and the HTTP
+    /// API. The caller keeps its metastore handles in the result.
+    async fn serve_single(
+        meta_store: Arc<dyn MetaStore>,
+        store: Store,
+        mut config: ServerConfig,
+    ) -> Result<Self, ServerError> {
         let (listener, local_addr) = bind(config.listen).await?;
+        // After the leader, before the collection service (row T0-6).
+        let durable = Durable::start(&config, NODE_ID).await?;
         let setup = NodeSetup {
             node_id: NODE_ID,
             roles: Roles::all(),
@@ -651,7 +849,14 @@ impl Server {
             extra_sources: Vec::new(),
             node_info: None,
         };
-        let parts = Self::assemble(&mut config, store, setup).await?;
+        let parts = match Self::assemble(&mut config, store, setup).await {
+            Ok(parts) => parts,
+            Err(err) => {
+                durable.stop().await;
+                return Err(err);
+            }
+        };
+        // Task 6 starts the DurableRuntime here, before the listener serves.
         let (stop_http, stopped) = oneshot::channel::<()>();
         let app = parts.app;
         let http = tokio::spawn(async move {
@@ -665,8 +870,10 @@ impl Server {
         tracing::info!(%local_addr, "operon is serving");
         Ok(Self {
             local_addr,
-            node,
-            meta,
+            node: None,
+            meta: None,
+            #[cfg(feature = "tikv")]
+            tikv_gc: None,
             meta_store,
             writer: parts.writer,
             cache: parts.cache,
@@ -680,6 +887,7 @@ impl Server {
             flight: parts.flight,
             #[cfg(feature = "qdrant")]
             qdrant: parts.qdrant,
+            durable,
             #[cfg(feature = "es")]
             es: parts.es,
             cluster: None,
@@ -736,8 +944,10 @@ impl Server {
                 tracing::info!(%local_addr, node_id, %roles, "operon cluster node is serving");
                 Ok(Self {
                     local_addr,
-                    node,
-                    meta,
+                    node: Some(node),
+                    meta: Some(meta),
+                    #[cfg(feature = "tikv")]
+                    tikv_gc: None,
                     meta_store,
                     writer: parts.writer,
                     cache: parts.cache,
@@ -751,6 +961,7 @@ impl Server {
                     flight: parts.flight,
                     #[cfg(feature = "qdrant")]
                     qdrant: parts.qdrant,
+                    durable: parts.durable,
                     #[cfg(feature = "es")]
                     es: parts.es,
                     cluster: Some(ClusterRuntime {
@@ -911,13 +1122,24 @@ impl Server {
                 join_changed,
             })),
         };
-        let parts = match Self::assemble(config, store, setup).await {
-            Ok(parts) => parts,
+        // After the leader, before the collection service (row T0-6).
+        let durable = match Durable::start(config, node_id).await {
+            Ok(durable) => durable,
             Err(err) => {
                 registry.deregister().await;
                 return Err(err);
             }
         };
+        let mut parts = match Self::assemble(config, store, setup).await {
+            Ok(parts) => parts,
+            Err(err) => {
+                durable.stop().await;
+                registry.deregister().await;
+                return Err(err);
+            }
+        };
+        parts.durable = durable;
+        // Task 6 starts the DurableRuntime here, before the routes serve.
         late.set(parts.app.clone());
         Ok((meta, meta_store, registry, parts))
     }
@@ -1198,6 +1420,7 @@ impl Server {
             flight,
             #[cfg(feature = "qdrant")]
             qdrant,
+            durable: Durable::none(),
             #[cfg(feature = "es")]
             es,
         })
@@ -1208,9 +1431,10 @@ impl Server {
         self.local_addr
     }
 
-    /// The metastore client, for embedding and tests.
-    pub fn meta(&self) -> &MetaClient {
-        &self.meta
+    /// The openraft metastore client, for embedding and tests; `None` on the
+    /// TiKV metastore (use [`Server::meta_store`]).
+    pub fn meta(&self) -> Option<&MetaClient> {
+        self.meta.as_ref()
     }
 
     /// The metastore as the trait object the server hands to every
@@ -1241,6 +1465,12 @@ impl Server {
         self.flight.as_ref().map(|flight| flight.addr)
     }
 
+    /// The address the durable execution API listens on, when it does (D1,
+    /// feature `durable`).
+    pub fn durable_addr(&self) -> Option<SocketAddr> {
+        self.durable.addr()
+    }
+
     /// The address the Qdrant REST API listens on, when it does.
     #[cfg(feature = "qdrant")]
     pub fn qdrant_rest_addr(&self) -> Option<SocketAddr> {
@@ -1265,8 +1495,9 @@ impl Server {
     }
 
     /// Stops the Qdrant and Elasticsearch gateways (waiting up to 10 s for
-    /// their requests), stops
-    /// accepting requests, stops Flight SQL, stops the collection
+    /// their requests), stops accepting requests, stops Flight SQL, stops the
+    /// durable server (D1: before anything it may call into), stops the
+    /// collection
     /// service's tails, flushes the writer (buffered appends are
     /// acknowledged), stops the worker (releasing its task leases), stops
     /// the hot tier, closes the collection targets' PK index handles, waits
@@ -1280,6 +1511,7 @@ impl Server {
     pub async fn shutdown(self) -> Result<(), ServerError> {
         // The Qdrant gateway stops first, within the HTTP grace period
         // (plan M1.4 Task 2 rule 3).
+        shutdown_phase("qdrant");
         // The Elasticsearch gateway stops together with it (plan M1.5 Task
         // 1, row E13): both tokens are cancelled before either is awaited.
         #[cfg(feature = "es")]
@@ -1300,6 +1532,7 @@ impl Server {
             tracing::warn!(%err, "the Elasticsearch gateway stopped with an error");
         }
         let mut stop_http = Some(self.stop_http);
+        shutdown_phase("http");
         match &self.cluster {
             Some(cluster) => {
                 cluster.late.close();
@@ -1325,18 +1558,28 @@ impl Server {
                 }
             }
         }
+        shutdown_phase("flight");
         if let Some(flight) = self.flight {
             flight.stop().await;
         }
+        // D1 (T0-6, X8): after Flight (and, in cluster mode, after
+        // `late.close()`), before the collection service. Task 6 stops the
+        // DurableRuntime first, then the server.
+        shutdown_phase("durable");
+        self.durable.stop().await;
+        shutdown_phase("collections");
         self.collections.shutdown().await;
+        shutdown_phase("writer");
         if let Err(err) = self.writer.shutdown().await {
             tracing::warn!(%err, "the final flush failed");
         }
+        shutdown_phase("worker");
         if let Some(worker) = self.worker {
             worker.stop().await;
         }
         // The tier stops after the worker and before the metastore (Task 8
         // rule 5).
+        shutdown_phase("hot");
         if let Some(tier) = &self.hot {
             tier.shutdown().await;
         }
@@ -1349,7 +1592,15 @@ impl Server {
         if let Err(err) = self.cache.close().await {
             tracing::warn!(%err, "closing the cache failed");
         }
-        let stopped = self.node.shutdown().await;
+        shutdown_phase("metastore");
+        #[cfg(feature = "tikv")]
+        if let Some(gc) = self.tikv_gc {
+            gc.stop().await;
+        }
+        let stopped = match &self.node {
+            Some(node) => node.shutdown().await,
+            None => Ok(()),
+        };
         // A cluster node serves its metastore routes until the replica stops.
         if let Some(stop) = stop_http.take() {
             let _ = stop.send(());

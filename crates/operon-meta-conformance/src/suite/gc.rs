@@ -307,7 +307,9 @@ pub async fn collection_roots_lists_prefixes_under_a_path(backend: &dyn Backend)
         collections,
         retired_prefixes,
     } = reader.collection_roots(ns, &under).await.expect("read");
-    assert_eq!(clock_ms, clock);
+    // Not earlier than a clock read before it (a TSO clock may be later:
+    // R1 plan row T4-14).
+    assert!(clock_ms >= clock, "roots clock {clock_ms} < {clock}");
     let ids: Vec<_> = collections
         .iter()
         .map(|(c, pointer)| (c.id, pointer.clone()))

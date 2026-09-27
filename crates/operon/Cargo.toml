@@ -22,15 +22,19 @@ http.workspace = true
 operon-cache.workspace = true
 operon-collection.workspace = true
 operon-common.workspace = true
+# The embedded Resonate server (D1), with the durable feature only.
+operon-durable = { workspace = true, optional = true }
 operon-es = { workspace = true, optional = true }
 operon-hnsw.workspace = true
 operon-hot.workspace = true
 operon-link.workspace = true
 operon-log.workspace = true
 operon-meta.workspace = true
+operon-meta-tikv = { workspace = true, optional = true }
 operon-qdrant = { workspace = true, optional = true }
 operon-query.workspace = true
 operon-store.workspace = true
+operon-tikv = { workspace = true, optional = true }
 operon-worker.workspace = true
 reqwest.workspace = true
 serde.workspace = true
@@ -48,6 +52,11 @@ url.workspace = true
 default = ["es", "flight", "hnsw", "qdrant"]
 # Serve the Elasticsearch REST API (plan M1.5; `--es-listen`).
 es = ["dep:operon-es"]
+# The TiKV metastore (R1 plan Task 6; `--meta tikv://…` on `dev` and
+# `standalone`), with the cluster MVCC GC loop it runs. Off by default (owner
+# ruling T7-3): it pulls in the git-pinned tikv-client (row R4), which the
+# default build must not. CI's TiKV jobs build with `--features tikv`.
+tikv = ["dep:operon-meta-tikv", "dep:operon-tikv"]
 # Serve Arrow Flight SQL (Task 12; `--flight-sql-listen`).
 flight = []
 # Serve the Qdrant REST and gRPC APIs (plan M1.4; `--qdrant-listen`).
@@ -55,6 +64,13 @@ qdrant = ["dep:operon-qdrant"]
 # The qdrant-edge HNSW engine for hot artifacts (M1.3); without it the hot
 # tier builds only when `ServerConfig.hnsw_engine` is set.
 hnsw = ["operon-hot/hnsw"]
+# Durable execution (D1, design §21): the embedded Resonate server on SQLite,
+# on 127.0.0.1:8001 (--durable-*). Opt-in (owner ruling O1): toggling it
+# rebuilds about 480 crates. Release builds, CI's durable jobs and the Loam
+# cloud build turn it on; without it, a --durable-* flag only logs.
+durable = ["dep:operon-durable"]
+# The TiDB durable store through Resonate's MySQL plugin (D1 Task 4).
+durable-mysql = ["durable", "operon-durable/mysql"]
 # Builds the multi-process cluster tests (`tests/cluster.rs`, M1.3 Task 11;
 # E43); CI runs them in their own job.
 cluster-tests = []
