@@ -267,6 +267,16 @@ pub fn compile(
     {
         return Err(EsError::unsupported("sort on _score after another key"));
     }
+    // The engine breaks score ties by PK only: a field key after `_score`
+    // would be ignored and its sort values unknown (PR #74 review).
+    if score_first
+        && keys
+            .iter()
+            .skip(1)
+            .any(|k| matches!(k, SortKey::Field { .. }))
+    {
+        return Err(EsError::unsupported("sort on a field after _score"));
+    }
     if field_first && track_scores {
         return Err(EsError::unsupported("track_scores with a field sort"));
     }
@@ -443,16 +453,15 @@ pub fn compile(
             render: shape.render(EsScore::Bm25),
         });
     }
+    // A `_score`-first sort keeps every user key, then the PK tie-break.
     let score_sort = |request: &mut SearchRequest| {
         if sort_given {
-            request.sort = vec![
-                keys.first().cloned().unwrap_or(SortKey::Score {
-                    order: SortOrder::Desc,
-                }),
-                SortKey::Pk {
+            request.sort = keys.clone();
+            if !keys.iter().any(|k| matches!(k, SortKey::Pk { .. })) {
+                request.sort.push(SortKey::Pk {
                     order: SortOrder::Asc,
-                },
-            ];
+                });
+            }
         }
     };
     match (parsed.query, knn.len()) {

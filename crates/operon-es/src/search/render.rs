@@ -46,20 +46,17 @@ pub fn sort_value_json(value: &SortValue) -> Value {
     }
 }
 
-/// A hit's `sort` values: one per user sort key. A `_score` key prints the
-/// ES score; in a field-first sort the other keys print the engine's
-/// values, which are in the user's order; after a leading `_score` the
-/// engine breaks ties by PK only, so later keys print `null`.
+/// A hit's `sort` values: one per user sort key, which lead the request's
+/// sort. A `_score` key prints the ES score, the others the engine's
+/// values.
 fn sort_values(hit: &Hit, spec: &RenderSpec, es_score: Option<f32>) -> Vec<Value> {
-    let field_first = !matches!(spec.sort_keys.first(), Some(SortKey::Score { .. }));
     spec.sort_keys
         .iter()
         .take(spec.user_sort_len)
         .enumerate()
         .map(|(i, key)| match key {
             SortKey::Score { .. } => es_score.map_or(Value::Null, f32_json),
-            _ if field_first => hit.sort_values.get(i).map_or(Value::Null, sort_value_json),
-            _ => Value::Null,
+            _ => hit.sort_values.get(i).map_or(Value::Null, sort_value_json),
         })
         .collect()
 }

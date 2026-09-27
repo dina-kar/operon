@@ -220,7 +220,8 @@ fn parse_zone(c: &mut Cursor<'_>) -> Option<UtcOffset> {
 /// `at` plus `months` calendar months, the day clamped to the month's end
 /// (`2026-01-31 + 1M` is `2026-02-28`).
 fn add_months(at: PrimitiveDateTime, months: i64) -> Option<PrimitiveDateTime> {
-    let index = i64::from(at.year()) * 12 + i64::from(u8::from(at.month())) - 1 + months;
+    let index =
+        (i64::from(at.year()) * 12 + i64::from(u8::from(at.month())) - 1).checked_add(months)?;
     let year = i32::try_from(index.div_euclid(12)).ok()?;
     let month = Month::try_from(u8::try_from(index.rem_euclid(12) + 1).ok()?).ok()?;
     let last = time::util::days_in_month(month, year);
@@ -266,13 +267,15 @@ fn floor(at: PrimitiveDateTime, unit: u8) -> Option<PrimitiveDateTime> {
 
 /// `at` plus `n` of `unit`.
 fn add(at: PrimitiveDateTime, n: i64, unit: u8) -> Option<PrimitiveDateTime> {
+    // `Duration::{weeks, days, hours, minutes}` panic on overflow.
+    let secs = |per: i64| n.checked_mul(per).map(Duration::seconds);
     match unit {
         b'y' => add_months(at, n.checked_mul(12)?),
         b'M' => add_months(at, n),
-        b'w' => at.checked_add(Duration::weeks(n)),
-        b'd' => at.checked_add(Duration::days(n)),
-        b'h' | b'H' => at.checked_add(Duration::hours(n)),
-        b'm' => at.checked_add(Duration::minutes(n)),
+        b'w' => at.checked_add(secs(604_800)?),
+        b'd' => at.checked_add(secs(86_400)?),
+        b'h' | b'H' => at.checked_add(secs(3_600)?),
+        b'm' => at.checked_add(secs(60)?),
         b's' => at.checked_add(Duration::seconds(n)),
         _ => None,
     }

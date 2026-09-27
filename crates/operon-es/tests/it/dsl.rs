@@ -1024,6 +1024,22 @@ fn date_math_rounds_per_bound() {
         "parse_exception",
         "unit [x] not supported for date math [+1x]",
     );
+    // Amounts that overflow are parse errors, not panics (PR #74 review).
+    for expr in [
+        "now+9223372036854775807m",
+        "now-99999999999999999d",
+        "now+9223372036854775807w",
+        "now+9223372036854775807h",
+        "now+9223372036854775807M",
+        "now-9223372036854775807y",
+    ] {
+        let err = parse_date_math(expr, NOW_MS, Rounding::Down).expect_err(expr);
+        assert_eq!(
+            (err.status, err.kind.as_str()),
+            (400, "parse_exception"),
+            "{expr}"
+        );
+    }
 }
 
 #[test]

@@ -1126,3 +1126,40 @@ async fn min_score_and_boost_shape_the_scores() {
     assert!(hits(&a).is_empty(), "{}", a.text);
     es.server.shutdown().await.expect("shutdown");
 }
+
+#[tokio::test]
+async fn a_field_after_a_score_sort_is_refused() {
+    let es = Es::start().await;
+    bulk_index(
+        &es,
+        "tie",
+        &[
+            ("b", json!({"text": "foo", "n": 3})),
+            ("a", json!({"text": "foo", "n": 1})),
+        ],
+    )
+    .await;
+    // The engine breaks score ties by PK only (PR #74 review).
+    let a = es
+        .post(
+            "/tie/_search",
+            json!({"query": {"match": {"text": "foo"}}, "sort": ["_score", {"n": "desc"}]}),
+        )
+        .await;
+    a.assert_error(
+        400,
+        "illegal_argument_exception",
+        Some("Operon does not support [sort on a field after _score] (Elasticsearch API Phase A)"),
+    );
+    let a = search(
+        &es,
+        "/tie/_search",
+        json!({"query": {"match": {"text": "foo"}}, "sort": ["_score"]}),
+    )
+    .await;
+    assert_eq!(ids(&a), ["a", "b"], "{}", a.text);
+    for hit in hits(&a) {
+        assert_eq!(hit["sort"], json!([hit["_score"]]), "{hit}");
+    }
+    es.server.shutdown().await.expect("shutdown");
+}

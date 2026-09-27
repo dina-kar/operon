@@ -464,14 +464,33 @@ fn field_sort_hides_scores_and_filters() {
             }
         ]
     );
-    // `_score` first keeps scores and the retriever.
+    // `_score` first keeps scores and the retriever, and a `_doc` after it.
     let SearchPlan::Single { request, render } =
-        plan(json!({"query": match_foo(), "sort": ["_score", {"created_at": "desc"}]}))
+        plan(json!({"query": match_foo(), "sort": ["_score", "_doc"]}))
     else {
         panic!("not Single");
     };
     assert!(render.scores_visible);
     assert_eq!(request.retrievers.len(), 1);
+    assert_eq!(
+        request.sort,
+        vec![
+            SortKey::Score {
+                order: SortOrder::Desc
+            },
+            SortKey::Pk {
+                order: SortOrder::Asc
+            }
+        ]
+    );
+    assert_eq!(render.user_sort_len, 2);
+    // A field after `_score` is refused: the engine breaks score ties by PK
+    // only (PR #74 review).
+    let err = plan_err(json!({"query": match_foo(), "sort": ["_score", {"created_at": "desc"}]}));
+    assert_eq!(
+        err.reason,
+        "Operon does not support [sort on a field after _score] (Elasticsearch API Phase A)"
+    );
     // An unmapped key with `unmapped_type` is dropped.
     let render = plan(json!({"sort": [{"nope": {"unmapped_type": "long"}}]}))
         .render()
