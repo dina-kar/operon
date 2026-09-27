@@ -216,5 +216,42 @@ The embedded server was started with `OPERON_D1_SERVE=1 OPERON_D1_PROBE=sqlite:â
 | #1164 | PR 0c: dependency hygiene (`deps/advisories-rustls`, `c3f25b9`). It clears 9 of the 14 advisories in upstream's own graph, removes OpenSSL and pins rustls 0.23.45 | Open |
 | #1165 | Issue: a public router constructor (PR 4) | Open |
 | #1166 | Issue: settled-promise retention (PR 5) | Open |
+| (0d, not yet opened) | `gcp-idtoken` feature on `resonate-transport-http-push` (fork branch `feat/push-gcp-idtoken-feature`, `849813f`) | Body ready for the owner (Task 1) |
+| (0e, not yet opened) | SDK: reqwest defaults as the `reqwest-default` feature (`feat/sdk-rs-reqwest-default-feature`, `e5ddb8a`) | Body ready for the owner (Task 1) |
 
-The fork's CI run for the pinned `loam/0.10.1` revision is Task 1's to record.
+The fork's CI run for the pinned `loam/0.10.1` revision is Task 1's to record: see (j).
+
+## (j) Task 1: the fork branch `loam/0.10.1`
+
+`dina-kar/resonate` `loam/0.10.1` = **`e3606698e6e3f2502bb018bba1e618deb63f907a`**. It was built in the worktree `~/Documents/research-clones/resonate-loam`.
+
+| Commit | What | Upstream |
+|---|---|---|
+| `c3f25b9` | `deps: clear RustSec advisories, drop OpenSSL, version internal path deps` | #1164 (0c), the same commit |
+| `229a2f1` | `transport-http-push: gate the GCP ID token behind a gcp-idtoken feature` | 0d (branch `feat/push-gcp-idtoken-feature`, `849813f`, on `28dfd01`) |
+| `c5dfe9e` | `server-mysql: classify retryable errors by MySQL error number` | #1162 (0a); cherry-pick of `6968aa2`, with the conflict in `resonate-server-mysql/Cargo.toml` resolved as 0c's versions plus 0a's `features = ["mysql"]` |
+| `3ff482b` | `server-mysql: run on TiDB; xtask and CI legs for it` | #1163 (1); cherry-pick of `f8d7ef2` |
+| `e360669` | `sdk-rs: reqwest without default TLS` (default-on SDK feature `reqwest-default`) | 0e (branch `feat/sdk-rs-reqwest-default-feature`, `e5ddb8a`, on `28dfd01`) |
+
+**Fork CI.** Not run. GitHub keeps a fork's workflows disabled until they are enabled in its Actions tab. `gh api repos/dina-kar/resonate/actions/workflows` lists none, and `gh workflow run server-core-ci.yml --ref loam/0.10.1` answers 404. The workflows also trigger only on pushes to `main`, on PRs and on `workflow_dispatch`.
+
+**Local verification.** It is scoped, because `cargo xtask check` covers the whole workspace, and that includes `resonate-server-scylladb`. The commands used `CARGO_BUILD_JOBS=4 CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=~/.cache/cargo-target/resonate`.
+
+| Command (in `impl/server/core` unless noted) | Result |
+|---|---|
+| `cargo fmt -p <11 crates> -- --check`: `resonate-base`, `-plugin`, `-core`, `-sql`, `-timer-wheel`, `-auth`, `-server-sqlite`, `-server-mysql`, `-transport-http-poll`, `-transport-http-push`, `-gateway-http` | clean |
+| `cargo clippy -p <the 11> --all-targets --all-features -- -D warnings` | clean |
+| `cargo test -p <the 11> --all-features` | 150 passed, 0 failed, 10 ignored |
+| `cargo test -p resonate-transport-http-push` with and without `--no-default-features`; `cargo clippy` the same, both ways | 12 passed each way; clippy clean each way |
+| `impl/sdk/rs`: `cargo clippy -p resonate-sdk --all-targets [--no-default-features] -- -D warnings`; `cargo test -p resonate-sdk --no-default-features`; `cargo fmt --all --check` | clean both ways; 287 passed, 38 ignored (they need `RESONATE_URL`); clean |
+
+The engine and port differentials, porcupine and the TiDB leg were not run locally. The fork's CI is where they run (Ruling 4).
+
+**In Operon.** The committed `deny.toml` passes `cargo deny check` with two warnings (`unmatched-source`, `advisory-not-detected`), because no crate uses the pins until Task 2. A throwaway crate `zz-d1t1-probe` depended on all nine Resonate crates and `parquet`, and was then removed with `Cargo.lock` restored:
+
+| Check | Result |
+|---|---|
+| `cargo deny check` | `advisories ok, bans ok, licenses ok, sources ok`, no warnings |
+| `cargo tree -p zz-d1t1-probe -e normal -i {openssl-sys, native-tls, google-cloud-auth} --target all` | no match for any of them |
+| `â€¦ -i sqlx`, `-i libsqlite3-sys`, `-i parquet`, `-i jsonwebtoken` | 0.8.6; 0.30.1 only; 58.4.0; 9.3.1 only (`resonate-auth`), since 11 went with `google-cloud-auth` |
+| `cargo check -p zz-d1t1-probe` (target `~/.cache/cargo-target/operon-d1`) | 45 s, clean |

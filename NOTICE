@@ -28,3 +28,10 @@ copied from qdrant/qdrant v1.19.1 (https://github.com/qdrant/qdrant, commit
 6ab21cac18ebb6f4ae29102c7f8f5cc11affd5de, lib/api/src/grpc/proto/),
 Copyright Qdrant Solutions GmbH, Apache License 2.0. qdrant.proto is
 modified (internal-service imports removed); the other files are unchanged.
+
+Resonate (https://github.com/resonatehq/resonate), Apache License 2.0.
+operon-durable links the Resonate server plugins and the Resonate Rust SDK
+from the fork https://github.com/dina-kar/resonate, branch loam/0.10.1
+(upstream revision 28dfd016aa970332dc283e2431c406845e2ccc8f plus the
+patches listed in docs/plans/d1-dependency-spike.md), pinned by revision in
+Cargo.toml. Copyright 2026 Resonate HQ, Inc.
