@@ -1247,6 +1247,59 @@ async fn a_corrupt_hot_split_file_falls_back_and_is_quarantined() {
     fixture.shutdown().await;
 }
 
+/// A request whose warm-up fails to compile (review of #42) is the
+/// request's fault: the pinned file stays, and the remote path answers with
+/// the same error.
+#[tokio::test]
+async fn a_request_error_does_not_quarantine_the_hot_split_file() {
+    let fixture = TailFixture::start(body_schema(), 2).await;
+    fixture.append_all(&[body(1, "apple river")]).await;
+    fixture.apply_link().await;
+    let reads = reads(&fixture);
+    let collection = fixture.collection().await;
+    let cold = view(&fixture, &reads).await;
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let mut files = BTreeMap::new();
+    for split in cold.snapshot.splits() {
+        let (bytes, _) = fixture
+            .store
+            .get(&split_path(fixture.ns, fixture.cid, split.ulid))
+            .await
+            .expect("split bytes");
+        let path = dir.path().join(format!("{}.split", split.ulid));
+        std::fs::write(&path, &bytes).expect("write");
+        operon_query::text::SplitChecksums::of(&bytes)
+            .write_for(&path)
+            .expect("checksums");
+        files.insert(split.ulid, path);
+    }
+    assert!(!files.is_empty());
+    let tier = Arc::new(LocalSplits {
+        files,
+        quarantined: Default::default(),
+    });
+    let hot = RequestHot {
+        enabled: true,
+        used: Default::default(),
+    };
+    let warm = Arc::new(
+        reads
+            .view(fixture.ns, &collection, &strong(), &hot, tier.clone())
+            .await
+            .expect("view"),
+    );
+    let failing = |_: &tantivy::schema::Schema| -> Result<WarmupInfo, ServiceError> {
+        Err(ServiceError::InvalidArgument("unknown field `nope`".into()))
+    };
+    let Err(err) = open_splits(&warm, &failing).await else {
+        panic!("the request's error");
+    };
+    assert!(matches!(err, ServiceError::InvalidArgument(_)), "{err:?}");
+    assert!(tier.quarantined.lock().expect("lock").is_empty());
+    reads.shutdown().await;
+    fixture.shutdown().await;
+}
+
 #[tokio::test]
 async fn term_sets_and_query_string_leaves_are_warmed() {
     let fixture = TailFixture::start(body_schema(), 2).await;

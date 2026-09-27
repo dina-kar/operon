@@ -335,6 +335,7 @@ async fn membership_request<Req: Serialize>(
     let mut last = MetaError::Timeout;
     loop {
         let mut targets: Vec<String> = seeds.to_vec();
+        let mut rejected = 0;
         let mut i = 0;
         while i < targets.len() {
             let addr = targets[i].clone();
@@ -364,10 +365,17 @@ async fn membership_request<Req: Serialize>(
                     }
                 }
                 Ok(WireMembership::Unavailable(msg)) => last = MetaError::Unavailable(msg),
-                // A 4xx is answered the same way on every retry.
-                Err(PostError::Rejected(msg)) => return Err(MetaError::Config(msg)),
+                // A 4xx is answered the same way on every retry, but only by
+                // that target: another one may serve the route.
+                Err(PostError::Rejected(msg)) => {
+                    rejected += 1;
+                    last = MetaError::Config(msg);
+                }
                 Err(err) => last = post_error(err),
             }
+        }
+        if rejected == targets.len() {
+            return Err(last);
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -392,5 +400,64 @@ pub(crate) fn post_error(err: PostError) -> MetaError {
         // A 4xx: the request did nothing and a retry gets the same answer.
         PostError::Rejected(msg) => MetaError::Config(msg),
         other => MetaError::Unavailable(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::HttpTransportConfig;
+
+    /// Serves `app` on a free local port.
+    async fn serve(app: axum::Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        addr
+    }
+
+    fn rejecting() -> axum::Router {
+        axum::Router::new().fallback(|| async { StatusCode::NOT_FOUND })
+    }
+
+    fn transport() -> HttpTransport {
+        HttpTransport::new(HttpTransportConfig::default()).unwrap()
+    }
+
+    fn request() -> LeaveRequest {
+        LeaveRequest { node_id: 4 }
+    }
+
+    #[tokio::test]
+    async fn a_seed_that_rejects_the_route_does_not_stop_the_next_seed() {
+        let first = serve(rejecting()).await;
+        let second = serve(axum::Router::new().route(
+            META_LEAVE,
+            post(|| async { ok(&WireMembership::Done { changed: true }) }),
+        ))
+        .await;
+        let changed = leave(
+            &transport(),
+            &[first, second],
+            request(),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("the second seed answers");
+        assert!(changed);
+    }
+
+    #[tokio::test]
+    async fn every_seed_rejecting_is_a_definite_failure_before_the_deadline() {
+        let seeds = [serve(rejecting()).await, serve(rejecting()).await];
+        let started = Instant::now();
+        let err = leave(&transport(), &seeds, request(), Duration::from_secs(30))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, MetaError::Config(_)), "{err:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "no retry until the deadline"
+        );
     }
 }

@@ -373,7 +373,7 @@ Stages 1–3 are what breaks first and are cheap, so they ship in v1.0. The trai
   |---|---|
   | Request rate per namespace, per surface | Token bucket at the rendezvous owner of the placement key (§5.3), which receives most of that key's traffic; fallback: a bucket per gateway sized quota ÷ gateways |
   | Ingest bytes/s | Token bucket at the gateway |
-  | Concurrent queries | A cost-weighted semaphore per collection at its owner, 16 slots by default (text, filter and ANN queries 1; exact vector 2; aggregations, `group_by` and SQL scans 4), with an 800 ms wait before 429 (D98); a namespace-wide semaphore at the gateway |
+  | Concurrent queries | A cost-weighted semaphore per collection at its owner, 16 slots by default (text, filter and ANN queries 1; exact and brute-force vector 2; aggregations, `group_by` and SQL scans 4), with an 800 ms wait before 429 (D98); a namespace-wide semaphore at the gateway |
   | Unapplied data per collection | At write admission, from the collection's backlog (records past `applied` and their log bytes); M1.3 enforces fixed defaults (1 000 000 records, 128 MiB), M2 reads per-namespace and per-collection values from here (D86) |
   | Storage bytes | Soft limit at write admission, computed periodically from partition bytes and manifest sizes, including bytes held only by tags (§17 §4.3) |
   | Metadata operations (collection creates, alias updates, leases per namespace) | Rate limit, protecting the shared metastore; matters most on DynamoDB's per-item limits and on Postgres |
@@ -441,7 +441,7 @@ Both modes ship in **M2.x (v1.1)**, after v1.0.
 **The path (M2):**
 
 1. **`erase`**, by primary key or by filter, on the native API. It runs the normal delete, which hides the data at once, and records an **erasure request** in the metastore: `{ns, collection, key hashes, offset, deadline}`.
-2. **Forced purge**, a worker task per affected collection: a compaction that materializes the deletions in the Lance fragments that hold the rows; a merge that re-indexes the affected splits; rewritten PK deltas, PK index entries and dead letters; rebuilt hot artifacts; and **time travel dropped before the erasure point** (older manifests released early, overriding D38's 24 h).
+2. **Forced purge**, a worker task per affected collection: a compaction that materializes the deletions in the Lance fragments that hold the rows; a merge that re-indexes the affected splits; rewritten PK deltas, PK index entries and dead letters; rebuilt hot artifacts; and **time travel dropped before the erasure point**. M1.3 built the primitives the purge drives: a merge that rewrites one split alone (a split with many deleted docs), Lance compaction's materialized deletions, and the hot build policy, which gains a forced rebuild here (M1.3 E69) (older manifests released early, overriding D38's 24 h).
 3. **Stream trim.** Once older manifests are released, the implicit stream is trimmed past the erasure offset. Segments below it are retired, and each WAL object is retired once all its chunks are segmented or trimmed.
 4. **GC** deletes the retired objects after the grace period and **explicitly evicts their keys from the RAM and NVMe caches**, not only by LRU.
 5. **Tags** *(default, D69)*: an erasure **rewrites a tagged manifest onto a purged copy**; the tag records that it was rewritten, by which erasure and from which manifest version. Erasure wins over bit-exact reproducibility.

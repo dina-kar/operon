@@ -467,7 +467,11 @@ async fn promotion_held(f: &Fixture) -> Option<String> {
     }
 }
 
-/// A tier with auto-promotion and a short heat window.
+/// A heat window that never passes during a test: tests that cool a
+/// collection tick windows with `decay_heat_windows` (CI fix C1).
+const STILL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// A tier with auto-promotion and heat window `window`.
 fn promoting(f: &Fixture, name: &str, window: Duration) -> HotTierConfig {
     HotTierConfig {
         auto_promote: true,
@@ -601,7 +605,7 @@ async fn a_hot_collection_is_promoted_and_holds_the_lease() {
     f.commit(docs(0..50)).await;
     let tier = f
         .tier_with(
-            promoting(&f, "promote", Duration::from_secs(60)),
+            promoting(&f, "promote", STILL),
             Arc::new(LocalOnly),
             Arc::new(FlatEngine),
         )
@@ -635,10 +639,12 @@ async fn a_hot_collection_is_promoted_and_holds_the_lease() {
 async fn a_cooled_collection_is_demoted_and_releases_the_lease() {
     let f = Fixture::start().await;
     f.commit(docs(0..50)).await;
-    let window = Duration::from_millis(50);
+    // Cooling is driven by explicit window ticks, not the wall clock: a
+    // window this long never passes during the test, however slow the
+    // runner (CI fix C1).
     let tier = f
         .tier_with(
-            promoting(&f, "cool", window),
+            promoting(&f, "cool", STILL),
             Arc::new(LocalOnly),
             Arc::new(FlatEngine),
         )
@@ -650,14 +656,22 @@ async fn a_cooled_collection_is_demoted_and_releases_the_lease() {
     assert!(promotion_held(&f).await.is_some());
     let ulid = f.manifest().await.splits[0].ulid;
     assert!(tier.split_file(f.ns, f.cid, ulid).is_some());
-    // 100 → 50 → 25 → 12 → 6 → 3: five windows to fall under 4.
-    let deadline = Instant::now() + WAIT;
-    while promotion_held(&f).await.is_some() {
-        assert!(Instant::now() < deadline, "never demoted");
-        tokio::time::sleep(window).await;
+    // 100 → 50 → 25 → 12 → 6 → 3: promoted while at least 4, demoted by
+    // the fifth window.
+    for (window, heat) in [50, 25, 12, 6].into_iter().enumerate() {
+        tier.decay_heat_windows(1);
         tier.reconcile_once().await.expect("reconcile");
+        assert_eq!(tier.heat(f.ns, f.cid), heat);
+        assert!(
+            promotion_held(&f).await.is_some(),
+            "demoted after {} windows",
+            window + 1
+        );
     }
-    assert!(tier.heat(f.ns, f.cid) < 4);
+    tier.decay_heat_windows(1);
+    tier.reconcile_once().await.expect("reconcile");
+    assert_eq!(tier.heat(f.ns, f.cid), 3);
+    assert_eq!(promotion_held(&f).await, None, "not demoted under 4 hits");
     assert!(tier.split_file(f.ns, f.cid, ulid).is_none());
     // Hits again promote it again.
     for _ in 0..100 {
@@ -676,11 +690,11 @@ async fn warm_loads_an_unpinned_collection_until_its_heat_decays() {
     // An artifact built while pinned; then unpinned.
     let v = build(&f).await;
     f.pin(f.cid, HotConfig::default()).await;
-    let window = Duration::from_millis(100);
+    // Explicit window ticks drive the cooling (CI fix C1).
     let tier = f
         .tier_with(
             HotTierConfig {
-                heat_window: window,
+                heat_window: STILL,
                 ..config_in(&f, "warm")
             },
             Arc::new(LocalOnly),
@@ -697,12 +711,16 @@ async fn warm_loads_an_unpinned_collection_until_its_heat_decays() {
     // Warm never writes the metastore.
     assert_eq!(promotion_held(&f).await, None);
 
-    let deadline = Instant::now() + WAIT;
-    while ann(&f, &tier, v).is_some() {
-        assert!(Instant::now() < deadline, "never cooled");
-        tokio::time::sleep(window).await;
+    // 64 → 32 → 16 → 8 → 4: still warm; 2 is under `demote_below_hits`.
+    for window in 1..=4 {
+        tier.decay_heat_windows(1);
         tier.reconcile_once().await.expect("reconcile");
+        assert!(ann(&f, &tier, v).is_some(), "cooled after {window} windows");
     }
+    tier.decay_heat_windows(1);
+    tier.reconcile_once().await.expect("reconcile");
+    assert_eq!(tier.heat(f.ns, f.cid), 2);
+    assert!(ann(&f, &tier, v).is_none(), "served after it cooled");
     assert!(tier.split_file(f.ns, f.cid, ulid).is_none());
 
     // A disabled tier refuses.

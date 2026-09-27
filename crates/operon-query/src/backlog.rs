@@ -158,7 +158,9 @@ pub fn retry_after(config: &BackpressureConfig, backlog: Backlog, rate: f64) -> 
             config.max_retry_after
         }
     };
-    wait.clamp(config.min_retry_after, config.max_retry_after)
+    // Not `clamp`, which panics on an inverted config (a monitor built
+    // without `ServerConfig::validate`): then `max_retry_after` wins.
+    wait.max(config.min_retry_after).min(config.max_retry_after)
 }
 
 /// One measurement and the rate samples of a collection.
