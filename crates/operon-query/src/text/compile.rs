@@ -1754,7 +1754,8 @@ impl<'c, 'a> Build<'c, 'a> {
             clauses.push((Occur::Should, self.query(query)?));
         }
         for query in must_not {
-            clauses.push((Occur::MustNot, self.query(query)?));
+            let inner = self.query(query)?;
+            clauses.push((Occur::MustNot, Box::new(Excluded(inner))));
         }
         for query in filter {
             let inner = self.query(query)?;
@@ -1780,5 +1781,54 @@ impl<'c, 'a> Build<'c, 'a> {
             query.set_minimum_number_should_match(minimum);
         }
         Ok(Box::new(query))
+    }
+}
+
+/// A `must_not` clause. Its scorer is a `ConstScorer`, whose
+/// `seek_danger` never seeks backwards: Tantivy 0.26's `Exclude` asks the
+/// excluded scorer for documents before its current one, which
+/// `PhraseScorer::seek_danger` refuses (a debug assertion; M1.4 row T4-7).
+/// `ConstScoreQuery` would not do: it drops its wrapper when scoring is
+/// off.
+#[derive(Debug)]
+struct Excluded(Boxed);
+
+impl Clone for Excluded {
+    fn clone(&self) -> Self {
+        Excluded(self.0.box_clone())
+    }
+}
+
+impl TantivyQuery for Excluded {
+    fn weight(
+        &self,
+        enable_scoring: tantivy::query::EnableScoring<'_>,
+    ) -> tantivy::Result<Box<dyn tantivy::query::Weight>> {
+        Ok(Box::new(ExcludedWeight(self.0.weight(enable_scoring)?)))
+    }
+
+    fn query_terms<'a>(&'a self, visitor: &mut dyn FnMut(&'a Term, bool)) {
+        self.0.query_terms(visitor);
+    }
+}
+
+struct ExcludedWeight(Box<dyn tantivy::query::Weight>);
+
+impl tantivy::query::Weight for ExcludedWeight {
+    fn scorer(
+        &self,
+        reader: &tantivy::SegmentReader,
+        boost: tantivy::Score,
+    ) -> tantivy::Result<Box<dyn tantivy::query::Scorer>> {
+        let inner = self.0.scorer(reader, boost)?;
+        Ok(Box::new(tantivy::query::ConstScorer::new(inner, 0.0)))
+    }
+
+    fn explain(
+        &self,
+        reader: &tantivy::SegmentReader,
+        doc: tantivy::DocId,
+    ) -> tantivy::Result<tantivy::query::Explanation> {
+        self.0.explain(reader, doc)
     }
 }
