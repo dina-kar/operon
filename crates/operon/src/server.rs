@@ -236,6 +236,10 @@ pub struct ServerConfig {
     /// CLI sets it unless `--no-durable`. A cluster node needs a MySQL store.
     #[cfg(feature = "durable")]
     pub durable: Option<operon_durable::DurableConfig>,
+    /// Whether an import may read a `file://` source (D1 Task 8): only on
+    /// `operon dev`, which the CLI sets. Default false.
+    #[cfg(feature = "durable")]
+    pub import_file_sources: bool,
 }
 
 impl ServerConfig {
@@ -269,6 +273,8 @@ impl ServerConfig {
             qdrant: None,
             #[cfg(feature = "durable")]
             durable: None,
+            #[cfg(feature = "durable")]
+            import_file_sources: false,
         }
     }
 
@@ -411,6 +417,8 @@ struct Durable {
     /// The operations API's handle (D1 Task 7): handed to the routes and the
     /// retention task at assembly, filled once the runtime has started.
     operations: Option<api::operations::OperationsSlot>,
+    /// The import's settings (D1 Task 8), from the server config.
+    import: operon_durable::import::ImportConfig,
 }
 
 /// The embedded durable server: none in a build without `durable`.
@@ -426,6 +434,7 @@ impl Durable {
             server: None,
             runtime: None,
             operations: None,
+            import: operon_durable::import::ImportConfig::new(false),
         }
     }
 
@@ -446,6 +455,7 @@ impl Durable {
                 ),
                 runtime: None,
                 operations: Some(api::operations::OperationsSlot::default()),
+                import: import_config(config),
             }),
             None => Ok(Self::none()),
         }
@@ -462,22 +472,31 @@ impl Durable {
     /// before the routes serve (row T0-6, X8). A failure stops the server
     /// too.
     #[cfg(feature = "durable")]
-    async fn start_runtime(&mut self, node_id: u64) -> Result<(), ServerError> {
+    async fn start_runtime(
+        &mut self,
+        node_id: u64,
+        collections: Arc<CollectionService>,
+    ) -> Result<(), ServerError> {
         let Some(server) = &self.server else {
             return Ok(());
         };
-        let kinds = operon_durable::ops::loam_kinds();
-        match operon_durable::DurableRuntime::start_with(
+        let import = operon_durable::import::ImportEnv::new(
+            Arc::new(api::import::CollectionSink::new(collections)),
+            self.import.clone(),
+        );
+        let kinds = operon_durable::ops::loam_kinds(import.clone());
+        match operon_durable::DurableRuntime::start_kinds(
             server,
             &node_id.to_string(),
             operon_durable::RuntimeOptions::default(),
-            |sdk| kinds.register(sdk),
+            &kinds,
         )
         .await
         {
             Ok(runtime) => {
                 self.runtime = Some(runtime);
                 if let Some(slot) = &self.operations {
+                    slot.set_import(import);
                     slot.set(Arc::new(operon_durable::Operations::new(
                         server.client(),
                         server.store().clone(),
@@ -498,7 +517,11 @@ impl Durable {
 
     #[cfg(not(feature = "durable"))]
     #[allow(clippy::unused_async)]
-    async fn start_runtime(&mut self, _node_id: u64) -> Result<(), ServerError> {
+    async fn start_runtime(
+        &mut self,
+        _node_id: u64,
+        _collections: Arc<CollectionService>,
+    ) -> Result<(), ServerError> {
         Ok(())
     }
 
@@ -534,6 +557,15 @@ impl Durable {
     fn addr(&self) -> Option<SocketAddr> {
         None
     }
+}
+
+/// The import's settings for `config` (D1 Task 8): `put_chunk_rows` rows per
+/// write (T0-3), and `file://` sources on `operon dev` only.
+#[cfg(feature = "durable")]
+fn import_config(config: &ServerConfig) -> operon_durable::import::ImportConfig {
+    let mut import = operon_durable::import::ImportConfig::new(config.import_file_sources);
+    import.chunk_rows = config.flight.put_chunk_rows;
+    import
 }
 
 /// Marks one step of [`Server::shutdown`], in order (target
@@ -875,7 +907,11 @@ impl Server {
         };
         // The runtime after the collection service, before the listener
         // serves (T0-6, X8). A failure shuts everything down again.
-        if let Err(err) = server.durable.start_runtime(NODE_ID).await {
+        if let Err(err) = server
+            .durable
+            .start_runtime(NODE_ID, server.collections.clone())
+            .await
+        {
             drop(serve_now);
             if let Err(shutdown) = server.shutdown().await {
                 tracing::warn!(%shutdown, "stopping after a failed start");
@@ -967,7 +1003,11 @@ impl Server {
                 };
                 // The runtime after the collection service, before the
                 // routes serve (T0-6, X8). A failure shuts the node down.
-                if let Err(err) = server.durable.start_runtime(node_id).await {
+                if let Err(err) = server
+                    .durable
+                    .start_runtime(node_id, server.collections.clone())
+                    .await
+                {
                     if let Err(shutdown) = server.shutdown().await {
                         tracing::warn!(%shutdown, "stopping the node after a failed start");
                     }

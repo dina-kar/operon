@@ -15,9 +15,18 @@ default = []
 mysql = ["dep:resonate-server-mysql", "dep:rustls", "dep:sqlx"]
 
 [dependencies]
+arrow-array.workspace = true
+arrow-json.workspace = true
+arrow-schema.workspace = true
 async-trait.workspace = true
 base64.workspace = true
+bytes.workspace = true
+futures.workspace = true
 hex.workspace = true
+# Bulk import (D1 Task 8): the source bucket and its files.
+object_store.workspace = true
+operon-store.workspace = true
+parquet.workspace = true
 resonate-base.workspace = true
 resonate-gateway-http.workspace = true
 resonate-plugin.workspace = true

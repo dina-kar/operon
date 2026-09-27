@@ -15,6 +15,9 @@
 //! [`Operations`] is the operations API (D146): an operation is a durable
 //! promise, submitted with an optional idempotency key and then polled.
 //!
+//! [`import`] is the first operation kind: bulk import from object storage
+//! into a collection (D145), one durable branch per file.
+//!
 //! The embed leaves its host alone: no tracing subscriber, no signal handler,
 //! no panic hook, and a handler panic answers 500.
 
@@ -22,6 +25,7 @@ mod config;
 mod embed;
 mod error;
 mod ids;
+pub mod import;
 pub mod inproc;
 mod listen;
 #[cfg(feature = "mysql")]

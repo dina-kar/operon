@@ -18,6 +18,7 @@ use resonate_sdk::resonate::{Resonate, ResonateConfig};
 use crate::embed::DurableServer;
 use crate::error::DurableError;
 use crate::inproc::{GROUP, InProcNetwork};
+use crate::ops::OperationKinds;
 
 /// How long [`DurableRuntime::start`] waits for the network to subscribe.
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -74,6 +75,39 @@ impl DurableRuntime {
     where
         F: FnOnce(&Resonate) -> resonate_sdk::error::Result<()>,
     {
+        Self::start_inner(server, node_id, options, |sdk| sdk, register).await
+    }
+
+    /// [`start_with`](Self::start_with) for `kinds`: their dependencies are
+    /// added to the SDK and their functions registered before the runtime
+    /// subscribes (D1 Task 8).
+    pub async fn start_kinds(
+        server: &DurableServer,
+        node_id: &str,
+        options: RuntimeOptions,
+        kinds: &OperationKinds,
+    ) -> Result<Self, DurableError> {
+        Self::start_inner(
+            server,
+            node_id,
+            options,
+            |sdk| kinds.with_dependencies(sdk),
+            |sdk| kinds.register(sdk),
+        )
+        .await
+    }
+
+    async fn start_inner<D, F>(
+        server: &DurableServer,
+        node_id: &str,
+        options: RuntimeOptions,
+        dependencies: D,
+        register: F,
+    ) -> Result<Self, DurableError>
+    where
+        D: FnOnce(Resonate) -> Resonate,
+        F: FnOnce(&Resonate) -> resonate_sdk::error::Result<()>,
+    {
         let worker = server.inproc().ok_or_else(|| {
             DurableError::Config("this durable server has no in-process worker".into())
         })?;
@@ -96,6 +130,7 @@ impl DurableRuntime {
         // Workflows reach the server through it between steps, for
         // `ops::check_canceled` (D1 Task 7).
         .with_dependency(server.client());
+        let sdk = dependencies(sdk);
         let runtime = Self { sdk, network };
         if let Err(e) = register(&runtime.sdk) {
             runtime.stop().await;

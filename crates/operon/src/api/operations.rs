@@ -7,7 +7,8 @@
 //!   `{operations, next}`;
 //! - `POST /v1/operations/{id}/cancel` → 202, or 409 `operation_finished`.
 //!
-//! A submit route answers with [`submitted`]: 202 and
+//! The import route (`super::import`, Task 8) submits operations; a submit
+//! route answers with [`submitted`]: 202 and
 //! `Location: /v1/operations/{id}`, or 200 with the same `Location` for an
 //! idempotent repeat (an `Idempotency-Key` header, [`idempotency_key`]).
 //!
@@ -27,6 +28,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use operon_common::meta::MetaStore;
+use operon_durable::import::ImportEnv;
 use operon_durable::ops::RETENTION_TASK;
 use operon_durable::{OperationId, OperationState, Operations, OpsError};
 use operon_worker::{
@@ -44,23 +46,37 @@ pub const IDEMPOTENCY_KEY: &str = "Idempotency-Key";
 /// this is only the cadence).
 pub const RETENTION_INTERVAL: Duration = Duration::from_secs(3600);
 
-/// The node's [`Operations`], set once Loam's durable runtime has started.
-/// The routes and the retention task hold it from assembly on.
+/// The node's [`Operations`] and the import's environment (D1 Task 8), set
+/// once Loam's durable runtime has started. The routes and the retention
+/// task hold it from assembly on.
 #[derive(Clone, Default, Debug)]
-pub struct OperationsSlot(Arc<OnceLock<Arc<Operations>>>);
+pub struct OperationsSlot {
+    ops: Arc<OnceLock<Arc<Operations>>>,
+    import: Arc<OnceLock<ImportEnv>>,
+}
 
 impl OperationsSlot {
     /// Serve `ops` from now on. A second call keeps the first.
     pub fn set(&self, ops: Arc<Operations>) {
-        let _ = self.0.set(ops);
+        let _ = self.ops.set(ops);
+    }
+
+    /// Serve imports with `env` from now on. A second call keeps the first.
+    pub fn set_import(&self, env: ImportEnv) {
+        let _ = self.import.set(env);
     }
 
     /// The operations, when the runtime has started.
     pub fn get(&self) -> Option<Arc<Operations>> {
-        self.0.get().cloned()
+        self.ops.get().cloned()
     }
 
-    fn serving(&self) -> Result<Arc<Operations>, ApiError> {
+    /// The import's environment, when the runtime has started.
+    pub fn import(&self) -> Option<ImportEnv> {
+        self.import.get().cloned()
+    }
+
+    pub(super) fn serving(&self) -> Result<Arc<Operations>, ApiError> {
         self.get().ok_or_else(|| {
             ApiError::new(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -77,7 +93,8 @@ pub fn routes(slot: OperationsSlot) -> Router {
         .route("/v1/operations/{id}", get(get_operation))
         .route("/v1/operations/{id}/cancel", post(cancel))
         .route("/v1/namespaces/{ns}/operations", get(list))
-        .with_state(slot)
+        .with_state(slot.clone())
+        .merge(super::import::routes(slot))
 }
 
 /// A submit's answer: 202 (created) or 200 (an idempotent repeat), with
