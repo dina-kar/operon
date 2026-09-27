@@ -25,10 +25,14 @@
 //!   returns `Err` rejects its promise for good (T6-6).
 //! - **Fan-in**: `{files_total, files_done, files_failed, rows_written,
 //!   bytes_read, token}`, with every slice's consistency token merged (D76).
+//! - **Scheduled import** ([`schedule`], D1 Task 9): a Resonate schedule
+//!   whose runs start the same file function as roots of their own,
+//!   `impf-…`, one per `(schedule, key, etag)`.
 
 mod ndjson;
 mod parquet;
 mod plan;
+pub mod schedule;
 mod slice;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -52,7 +56,7 @@ use crate::ops::{
 };
 
 pub use plan::{PlannedFile, glob_matches};
-pub use slice::{MappedSlice, derived_id, map_slice};
+pub use slice::{IdSeed, MappedSlice, derived_id, map_slice, scheduled_id};
 
 /// The operation kind (the workflow's registered name).
 pub const IMPORT_KIND: &str = "collection.import";
@@ -68,7 +72,7 @@ pub const FILE_PREFIX: &str = "opf-";
 /// The longest a step waits between two write or read attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
 /// A step's timeout: the operation's (a child's default is 24 h).
-const STEP_TIMEOUT: Duration = Duration::from_secs(7 * 24 * 3600);
+pub(crate) const STEP_TIMEOUT: Duration = Duration::from_secs(7 * 24 * 3600);
 
 /// The file format of an import.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,13 +228,18 @@ pub enum ImportError {
     },
     /// The source cannot be listed now: 503.
     Unavailable(String),
+    /// The name is taken (D1 Task 9: an import schedule): 409
+    /// `already_exists`.
+    Conflict(String),
     Ops(OpsError),
 }
 
 impl fmt::Display for ImportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Invalid(m) | Self::NotFound(m) | Self::Unavailable(m) => f.write_str(m),
+            Self::Invalid(m) | Self::NotFound(m) | Self::Unavailable(m) | Self::Conflict(m) => {
+                f.write_str(m)
+            }
             Self::TooManyOperations { limit } => write!(
                 f,
                 "this namespace already runs {limit} imports; wait for one to finish"
@@ -415,6 +424,7 @@ pub fn kinds(kinds: OperationKinds, env: ImportEnv) -> OperationKinds {
         .function(import_file)
         .function(import_layout)
         .function(import_slice)
+        .function(schedule::import_run)
         .progress(IMPORT_KIND, progress_fn())
         .resumable(IMPORT_KIND)
         .dependency(env)
@@ -486,8 +496,15 @@ pub struct Plan {
 /// The argument of every file-level function.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileArgs {
-    /// The operation, for cancel checks and ids.
-    pub op: OperationId,
+    /// The operation the file belongs to: its cancel is checked between
+    /// slices, and its id seeds the file root's id, its tags and the
+    /// generated row ids. `None` for a file a schedule started (D1 Task 9),
+    /// which no cancel stops and whose ids come from `schedule`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op: Option<OperationId>,
+    /// The schedule of a scheduled file (`isched-…`, D1 Task 9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
     pub namespace: String,
     pub collection: String,
     pub source: String,
@@ -495,6 +512,23 @@ pub struct FileArgs {
     pub mapping: Option<Mapping>,
     pub index: usize,
     pub file: PlannedFile,
+}
+
+impl FileArgs {
+    /// Whose rows the generated ids belong to: the operation's file, or the
+    /// schedule's key.
+    pub fn seed(&self) -> IdSeed<'_> {
+        match (&self.op, &self.schedule) {
+            (Some(op), _) => IdSeed::File {
+                op,
+                file: self.index,
+            },
+            (None, schedule) => IdSeed::Scheduled {
+                schedule: schedule.as_deref().unwrap_or(""),
+                key: &self.file.key,
+            },
+        }
+    }
 }
 
 /// A slice step's value.
@@ -545,7 +579,7 @@ pub fn file_id(op: &OperationId, file: &PlannedFile) -> String {
 }
 
 /// A `fail` of `code` with `message`, as an SDK error.
-fn failed(code: &str, message: impl fmt::Display) -> resonate_sdk::error::Error {
+pub(crate) fn failed(code: &str, message: impl fmt::Display) -> resonate_sdk::error::Error {
     fail(code, message)
 }
 
@@ -578,7 +612,8 @@ async fn import(ctx: &Context, input: OpInput) -> Result<Value> {
             outcomes.push(outcome);
         }
         let args = FileArgs {
-            op: input.id.clone(),
+            op: Some(input.id.clone()),
+            schedule: None,
             namespace: input.namespace.clone(),
             collection: params.collection.clone(),
             source: params.request.source.clone(),
@@ -667,7 +702,11 @@ async fn import_plan(info: &Info, request: ImportRequest) -> Result<Plan> {
 async fn import_run_file(info: &Info, args: FileArgs) -> Result<FileOutcome> {
     let env = info.get_dependency::<ImportEnv>();
     let client = info.get_dependency::<DurableClient>();
-    let id = file_id(&args.op, &args.file);
+    let op = args
+        .op
+        .clone()
+        .ok_or_else(|| failed("internal", "an operation's file without its operation"))?;
+    let id = file_id(&op, &args.file);
     let create = json!({
         "kind": "promise.create",
         "data": {
@@ -675,7 +714,7 @@ async fn import_run_file(info: &Info, args: FileArgs) -> Result<FileOutcome> {
             "timeoutAt": info.timeout_at(),
             "param": encode(&json!({ "func": FILE_FUNCTION, "args": args })),
             "tags": {
-                TAG_OP: args.op.as_str(),
+                TAG_OP: op.as_str(),
                 TAG_KIND: FILE_KIND,
                 TAG_FILE: args.index.to_string(),
                 "resonate:target": format!("{SCHEME}://any@{GROUP}"),
@@ -711,7 +750,7 @@ async fn import_run_file(info: &Info, args: FileArgs) -> Result<FileOutcome> {
         }
         // The root may be canceled while this file runs.
         let root = client
-            .process(json!({ "kind": "promise.get", "data": { "id": args.op.as_str() } }))
+            .process(json!({ "kind": "promise.get", "data": { "id": op.as_str() } }))
             .await;
         if let Ok(root) = root
             && root["data"]["promise"]["state"] == "rejected_canceled"
@@ -730,7 +769,7 @@ async fn import_run_file(info: &Info, args: FileArgs) -> Result<FileOutcome> {
 
 /// One in-process protocol call, retried while the server is unavailable
 /// for up to `retry_for`.
-async fn retry_protocol(
+pub(crate) async fn retry_protocol(
     env: &ImportEnv,
     client: &DurableClient,
     request: Value,
@@ -751,11 +790,14 @@ async fn retry_protocol(
 }
 
 /// A file branch: the root of its own origin. Its layout, then each slice,
-/// with a cancel check between slices (T7-7).
+/// with a cancel check between slices (T7-7) when it belongs to an
+/// operation. A schedule's run starts the same function (D1 Task 9).
 #[resonate_sdk::function(name = "collection.import.file")]
 async fn import_file(ctx: &Context, args: FileArgs) -> Result<FileResult> {
     let env = ctx.get_dependency::<ImportEnv>();
-    check_canceled(ctx, &args.op).await?;
+    if let Some(op) = &args.op {
+        check_canceled(ctx, op).await?;
+    }
     let layout: Layout = ctx
         .run(import_layout, args.clone())
         .timeout(STEP_TIMEOUT)
@@ -767,7 +809,9 @@ async fn import_file(ctx: &Context, args: FileArgs) -> Result<FileResult> {
     };
     let mut tokens = Vec::new();
     for n in 0..layout.slices {
-        check_canceled(ctx, &args.op).await?;
+        if let Some(op) = &args.op {
+            check_canceled(ctx, op).await?;
+        }
         let value: SliceValue = ctx
             .run(
                 import_slice,
@@ -878,7 +922,11 @@ async fn progress(client: &DurableClient, id: &OperationId) -> Result<Value, Ops
     }))
 }
 
-async fn call(client: &DurableClient, kind: &str, data: Value) -> Result<Value, OpsError> {
+pub(crate) async fn call(
+    client: &DurableClient,
+    kind: &str,
+    data: Value,
+) -> Result<Value, OpsError> {
     match client.process(json!({ "kind": kind, "data": data })).await {
         Ok(mut answer) => Ok(answer
             .get_mut("data")
@@ -893,10 +941,22 @@ async fn call(client: &DurableClient, kind: &str, data: Value) -> Result<Value, 
 
 /// Every promise matching `tags`.
 async fn search(client: &DurableClient, tags: Value) -> Result<Vec<crate::ops::Record>, OpsError> {
+    search_in(client, tags, None).await
+}
+
+/// Every promise matching `tags`, only in `state` when given.
+pub(crate) async fn search_in(
+    client: &DurableClient,
+    tags: Value,
+    state: Option<&str>,
+) -> Result<Vec<crate::ops::Record>, OpsError> {
     let mut out = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
         let mut data = json!({ "tags": tags, "limit": 500 });
+        if let Some(state) = state {
+            data["state"] = json!(state);
+        }
         if let Some(cursor) = &cursor {
             data["cursor"] = json!(cursor);
         }

@@ -50,14 +50,51 @@ pub struct MappedSlice {
     pub id_type: Option<IdType>,
 }
 
+/// Whose rows a generated `_id` belongs to (Ruling 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdSeed<'a> {
+    /// File `file` (its index in the plan) of operation `op` (T8-5).
+    File { op: &'a OperationId, file: usize },
+    /// File `key` of schedule `schedule` (D1 Task 9): every run of the
+    /// schedule, and every version of the file, derives the same ids, so a
+    /// changed file overwrites its rows by position instead of adding a copy.
+    Scheduled { schedule: &'a str, key: &'a str },
+}
+
+impl IdSeed<'_> {
+    /// The id of row `row` of slice `slice`.
+    pub fn id(&self, slice: u64, row: u64) -> String {
+        match self {
+            Self::File { op, file } => derived_id(op, *file, slice, row),
+            Self::Scheduled { schedule, key } => scheduled_id(schedule, key, slice, row),
+        }
+    }
+}
+
 /// Ruling 7's id for row `row` of slice `slice` of file `file` of operation
 /// `op`: SHA-256 of `op ‖ 0 ‖ file ‖ slice ‖ row` (big-endian u64s),
 /// truncated to 16 bytes as a UUIDv8. A re-run slice derives the same ids.
 pub fn derived_id(op: &OperationId, file: usize, slice: u64, row: u64) -> String {
+    seeded_id(op.as_str().as_bytes(), file as u64, slice, row)
+}
+
+/// The id of row `row` of slice `slice` of file `key` of schedule
+/// `schedule` (D1 Task 9): SHA-256 of `schedule ‖ 0 ‖ key ‖ 0 ‖ 0 ‖ slice ‖
+/// row`, as [`derived_id`] does it. A schedule id starts with `isched-` and
+/// an operation id with `op-`, so the two never share a seed.
+pub fn scheduled_id(schedule: &str, key: &str, slice: u64, row: u64) -> String {
+    let mut seed = Vec::with_capacity(schedule.len() + 1 + key.len());
+    seed.extend_from_slice(schedule.as_bytes());
+    seed.push(0);
+    seed.extend_from_slice(key.as_bytes());
+    seeded_id(&seed, 0, slice, row)
+}
+
+fn seeded_id(seed: &[u8], file: u64, slice: u64, row: u64) -> String {
     let mut hash = Sha256::new();
-    hash.update(op.as_str().as_bytes());
+    hash.update(seed);
     hash.update([0u8]);
-    hash.update((file as u64).to_be_bytes());
+    hash.update(file.to_be_bytes());
     hash.update(slice.to_be_bytes());
     hash.update(row.to_be_bytes());
     let digest = hash.finalize();
@@ -77,12 +114,11 @@ pub fn derived_id(op: &OperationId, file: usize, slice: u64, row: u64) -> String
 }
 
 /// `batch` under `mapping`, the rows numbered from `first_row` within slice
-/// `slice` of file `file`; the error is `(code, message)`.
+/// `slice` of the file `seed` names; the error is `(code, message)`.
 pub fn map_slice(
     batch: &RecordBatch,
     mapping: Option<&Mapping>,
-    op: &OperationId,
-    file: usize,
+    seed: IdSeed<'_>,
     slice: u64,
     first_row: u64,
 ) -> Result<MappedSlice, (String, String)> {
@@ -130,7 +166,7 @@ pub fn map_slice(
     } else {
         // No `_id` and no `id_column` (O5): Ruling 7's ids.
         let ids: StringArray = (0..batch.num_rows() as u64)
-            .map(|row| Some(derived_id(op, file, slice, first_row + row)))
+            .map(|row| Some(seed.id(slice, first_row + row)))
             .collect();
         fields.push(
             Field::new(ID_COLUMN, DataType::Utf8, false).with_metadata(
@@ -228,8 +264,7 @@ pub(super) async fn run(env: &ImportEnv, args: &SliceArgs) -> Result<SliceValue,
             let mapped = map_slice(
                 &chunk,
                 file.mapping.as_ref(),
-                &file.op,
-                file.index,
+                file.seed(),
                 args.slice,
                 first_row,
             )
@@ -291,19 +326,38 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_ids_follow_the_key_not_the_run() {
+        let a = scheduled_id("isched-1", "a.ndjson", 0, 3);
+        assert_eq!(a, scheduled_id("isched-1", "a.ndjson", 0, 3));
+        assert_eq!(
+            a,
+            IdSeed::Scheduled { schedule: "isched-1", key: "a.ndjson" }.id(0, 3)
+        );
+        assert_ne!(a, scheduled_id("isched-1", "b.ndjson", 0, 3));
+        assert_ne!(a, scheduled_id("isched-2", "a.ndjson", 0, 3));
+        assert_ne!(a, scheduled_id("isched-1", "a.ndjson", 1, 3));
+        assert_eq!(&a[14..15], "8", "{a}");
+    }
+
+    #[test]
     fn renames_run_first_and_ids_follow_the_rules() {
         let text: ArrayRef = Arc::new(StringArray::from(vec!["a", "b"]));
         let n: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
         // No _id: generated, uuid.
-        let m = map_slice(&batch(vec![("t", text.clone())]), None, &op(), 0, 0, 0).expect("map");
+        let m = map_slice(
+            &batch(vec![("t", text.clone())]),
+            None,
+            IdSeed::File { op: &op(), file: 0 },
+            0,
+            0,
+        ).expect("map");
         assert_eq!(m.id_type, Some(IdType::Uuid));
         assert_eq!(m.batch.schema().field(1).name(), "_id");
         // The file's own _id (O5): kept, nothing generated.
         let m = map_slice(
             &batch(vec![("_id", n.clone()), ("t", text.clone())]),
             None,
-            &op(),
-            0,
+            IdSeed::File { op: &op(), file: 0 },
             0,
             0,
         )
@@ -318,8 +372,7 @@ mod tests {
         let m = map_slice(
             &batch(vec![("key", text.clone())]),
             Some(&mapping),
-            &op(),
-            0,
+            IdSeed::File { op: &op(), file: 0 },
             0,
             0,
         )
@@ -329,8 +382,7 @@ mod tests {
         let err = map_slice(
             &batch(vec![("t", text.clone())]),
             Some(&mapping),
-            &op(),
-            0,
+            IdSeed::File { op: &op(), file: 0 },
             0,
             0,
         )
@@ -344,8 +396,7 @@ mod tests {
         let err = map_slice(
             &batch(vec![("t", text.clone()), ("u", text)]),
             Some(&mapping),
-            &op(),
-            0,
+            IdSeed::File { op: &op(), file: 0 },
             0,
             0,
         )

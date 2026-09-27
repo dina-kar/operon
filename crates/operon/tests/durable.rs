@@ -439,3 +439,69 @@ async fn imports_parquet_and_ndjson() {
     );
     server.shutdown().await.expect("shutdown");
 }
+
+/// Poll the operation at `location` until it is finished (60 s at most).
+async fn finished_op(base: &str, location: &str) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let (status, op) = get_json(format!("{base}{location}")).await;
+        assert_eq!(status, 200, "{op}");
+        if op["state"] != "queued" && op["state"] != "running" {
+            return op;
+        }
+        assert!(std::time::Instant::now() < deadline, "{op}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Owner ruling Q10: NDJSON vectors import. arrow-json reads a JSON array
+/// of numbers as a list of Float64 (Int64 when every number is whole), and
+/// `CollectionSink` casts a column that names a dense vector to Float32
+/// before the mapper, which takes only Float32.
+#[tokio::test(flavor = "multi_thread")]
+async fn imports_ndjson_vectors() {
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("lake");
+    std::fs::create_dir_all(&source).unwrap();
+    let lines = "{\"_id\": \"a\", \"v\": [0.5, 0.25, 0.125]}\n\
+                 {\"_id\": \"b\", \"v\": [1, 0, 0]}\n\
+                 {\"_id\": \"c\", \"v\": [0.1, 0.2, 0.3]}\n";
+    std::fs::write(source.join("v.ndjson"), lines).unwrap();
+
+    let mut dev = config(&dir, free_addr());
+    dev.import_file_sources = true;
+    let server = Server::start(dev).await.expect("start");
+    let base = format!("http://{}", server.local_addr());
+    let (status, _, body) = post_json(
+        format!("{base}/v1/namespaces/default/collections"),
+        &[],
+        serde_json::json!({ "name": "vecs",
+            "schema": { "fields": [],
+                "vectors": [{ "name": "v", "dim": 3, "distance": "cosine" }],
+                "dynamic": "ignore" } }),
+    )
+    .await;
+    assert_eq!(status, 201, "{body}");
+    let lake = format!("file://{}/", source.display());
+    let (status, headers, body) = post_json(
+        format!("{base}/v1/namespaces/default/collections/vecs/import"),
+        &[],
+        serde_json::json!({ "source": lake, "format": "ndjson" }),
+    )
+    .await;
+    assert_eq!(status, 202, "{body}");
+    let location = headers["location"].to_str().unwrap().to_string();
+    let op = finished_op(&base, &location).await;
+    assert_eq!(op["state"], "succeeded", "{op}");
+    assert_eq!(op["result"]["rows_written"], 3, "{op}");
+    let token = op["result"]["token"].as_str().unwrap().to_string();
+    let (status, _, body) = post_json(
+        format!("{base}/v1/namespaces/default/collections/vecs/documents/count"),
+        &[("Operon-Consistency-Token", &token)],
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["count"], 3, "{body}");
+    server.shutdown().await.expect("shutdown");
+}

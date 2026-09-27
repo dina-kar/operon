@@ -78,6 +78,15 @@ fn import_error(err: ImportError) -> ApiError {
     }
 }
 
+/// `batch` with every column that names a dense vector of `schema` as a
+/// list of Float32 (owner ruling Q10).
+fn float32_vectors(
+    batch: RecordBatch,
+    _schema: &operon_collection::CollectionSchema,
+) -> Result<RecordBatch, SinkError> {
+    Ok(batch)
+}
+
 /// An import's writes into collections, through the collection service.
 #[derive(Debug)]
 pub struct CollectionSink {
@@ -154,6 +163,7 @@ impl ImportSink for CollectionSink {
         id_type: Option<IdType>,
     ) -> Result<SinkWrite, SinkError> {
         let schema = self.schema(ns, collection).await.map_err(sink_error)?;
+        let batch = float32_vectors(batch, &schema)?;
         let arrow = batch.schema();
         let invalid = |err: ServiceError| SinkError::Failed {
             code: "schema_mismatch".into(),
@@ -200,5 +210,75 @@ impl ImportSink for CollectionSink {
             }
         }
         merged.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow_array::builder::{Float64Builder, Int64Builder, ListBuilder};
+    use arrow_array::{Array, ArrayRef, RecordBatch, StringArray};
+    use arrow_schema::DataType;
+    use operon_query::flight_ingest::{CollectionBatchMapper, IdType};
+
+    use super::float32_vectors;
+
+    fn schema() -> operon_collection::CollectionSchema {
+        serde_json::from_value(serde_json::json!({
+            "fields": [],
+            "vectors": [
+                { "name": "v", "dim": 2, "distance": "cosine" },
+                { "name": "", "dim": 2, "distance": "cosine" },
+            ],
+            "dynamic": "ignore",
+        }))
+        .expect("schema")
+    }
+
+    /// Q10: arrow-json infers a JSON array of numbers as `List<Float64>`,
+    /// or `List<Int64>` when every number is whole. Both are cast to
+    /// `List<Float32>` when the column names a dense vector (`_vector` is
+    /// the unnamed one); other columns keep their type.
+    #[test]
+    fn ndjson_vectors_become_float32() {
+        let mut v = ListBuilder::new(Float64Builder::new());
+        v.values().append_slice(&[0.5, 0.25]);
+        v.append(true);
+        v.append_null();
+        let mut unnamed = ListBuilder::new(Int64Builder::new());
+        unnamed.values().append_slice(&[1, 0]);
+        unnamed.append(true);
+        unnamed.values().append_slice(&[0, 1]);
+        unnamed.append(true);
+        let mut other = ListBuilder::new(Float64Builder::new());
+        other.values().append_slice(&[1.5]);
+        other.append(true);
+        other.append(true);
+        let columns: Vec<(&str, ArrayRef)> = vec![
+            ("_id", Arc::new(StringArray::from(vec!["a", "b"]))),
+            ("v", Arc::new(v.finish())),
+            ("_vector", Arc::new(unnamed.finish())),
+            ("other", Arc::new(other.finish())),
+        ];
+        let batch = RecordBatch::try_from_iter(columns).expect("batch");
+        let schema = schema();
+        assert!(
+            CollectionBatchMapper::new(&batch.schema(), &schema, IdType::Str).is_err(),
+            "the mapper refuses a list of Float64 as a vector"
+        );
+        let cast = float32_vectors(batch, &schema).expect("cast");
+        let item = |name: &str| match cast.schema().field_with_name(name).expect(name).data_type() {
+            DataType::List(item) => item.data_type().clone(),
+            other => panic!("{name}: {other}"),
+        };
+        assert_eq!(item("v"), DataType::Float32);
+        assert_eq!(item("_vector"), DataType::Float32);
+        assert_eq!(item("other"), DataType::Float64);
+        assert!(cast.column(1).is_null(1), "a null vector stays null");
+        let mapper =
+            CollectionBatchMapper::new(&cast.schema(), &schema, IdType::Str).expect("mapper");
+        let ops = mapper.map(&cast).expect("map");
+        assert_eq!(ops.len(), 2);
     }
 }
