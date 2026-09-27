@@ -6,10 +6,14 @@ import math
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol, TypeAlias, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, runtime_checkable
 
 from .schema import Schema
 from .token import ConsistencyToken
+
+if TYPE_CHECKING:
+    import polars
+    import pyarrow
 
 __all__ = [
     "CollectionInfo",
@@ -247,11 +251,33 @@ class Hit:
 
 @dataclass(frozen=True, slots=True)
 class SearchResponse:
+    """A search answer. `to_arrow()`/`to_polars()` need the `arrow`/`polars` extras.
+
+    Any Arrow PyCapsule consumer takes it directly: `pyarrow.table(response)`,
+    `polars.DataFrame(response)`.
+    """
+
     hits: list[Hit]
     total: TotalHits | None
     aggregations: dict[str, Any] | None
     groups: list[dict[str, Any]] | None
     read_token: ConsistencyToken
+
+    def to_arrow(self, *, source: Literal["json", "columns"] = "json") -> pyarrow.Table:
+        """The hits as a table: `_id`, `_score`, the source, then vectors (`operon.arrow`)."""
+        from .arrow import search_response_to_arrow
+
+        return search_response_to_arrow(self, source=source)
+
+    def to_polars(self) -> polars.DataFrame:
+        """`to_arrow()` as a Polars DataFrame, through the Arrow C stream."""
+        from .arrow import to_polars
+
+        return to_polars(self.to_arrow())
+
+    def __arrow_c_stream__(self, requested_schema: object | None = None) -> object:
+        """The Arrow PyCapsule stream of `to_arrow()`."""
+        return self.to_arrow().__arrow_c_stream__(requested_schema)
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,6 +300,22 @@ class SqlResult:
         """Each row as a dict keyed by column name."""
         names = [c.name for c in self.columns]
         return [dict(zip(names, row, strict=True)) for row in self.rows]
+
+    def to_arrow(self) -> pyarrow.Table:
+        """The rows as a table, typed from each column's Arrow type name (`operon.arrow`)."""
+        from .arrow import sql_result_to_arrow
+
+        return sql_result_to_arrow(self)
+
+    def to_polars(self) -> polars.DataFrame:
+        """`to_arrow()` as a Polars DataFrame, through the Arrow C stream."""
+        from .arrow import to_polars
+
+        return to_polars(self.to_arrow())
+
+    def __arrow_c_stream__(self, requested_schema: object | None = None) -> object:
+        """The Arrow PyCapsule stream of `to_arrow()`."""
+        return self.to_arrow().__arrow_c_stream__(requested_schema)
 
 
 @dataclass(frozen=True, slots=True)

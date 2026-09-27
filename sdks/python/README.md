@@ -166,3 +166,36 @@ print(dataset.count_rows())  # == plan.live_rows
 
 The SDK does not open Lance itself. Ray, Polars and torch readers built on scan
 plans arrive in M2.
+
+## Arrow and Polars results
+
+`SearchResponse` and `SqlResult` convert to Arrow and Polars (extras `arrow` and
+`polars`):
+
+```python
+table = kb.search().retrieve(q.text("refund", k=10)).execute().to_arrow()  # pyarrow.Table
+frame = ns.sql("SELECT tenant, count(*) AS n FROM kb GROUP BY tenant").to_polars()
+```
+
+Both results implement the Arrow PyCapsule interface (`__arrow_c_stream__`), so
+any consumer takes them directly: `pyarrow.table(result)`,
+`polars.DataFrame(result)`, DuckDB. Polars shares the buffers where its layout
+matches (numbers, booleans, fixed-size lists).
+
+A search table has one row per hit, in rank order: `_id` (a string: a u64 id in
+decimal, a string id as is, a UUID hyphenated), `_score` (float32), `_source`
+(the source as a JSON string), then one column per dense vector name
+(`fixed_size_list<float32>` when every hit has the same length, else
+`list<float32>`) and one per sparse vector name (`struct<indices, values>`), each
+sorted by name. The schema metadata `operon.read_token` holds the read token.
+`to_arrow(source="columns")` spreads the source's top-level keys into columns
+instead. The default table has the shape Flight SQL ingest takes, so it loads
+back into a collection (`_score` is ignored).
+
+A SQL table is typed from each column's Arrow type name: integers, floats,
+booleans, strings, binaries, dates, timestamps (with their unit and zone) and
+fixed-size lists get their exact type; decimals stay the strings the server sent,
+and anything else is inferred by pyarrow.
+
+REST results arrive as JSON and are converted on each call. For exact types and
+large results, use Flight SQL, which is Arrow end to end.
