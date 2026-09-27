@@ -38,6 +38,14 @@ Only M1.1 and M1.2a were written against code that existed. Each later plan star
 
 M1.4, M1.5 and M1.6 can run in parallel once M1.2 is merged.
 
+## PG: Postgres wire access (after M1)
+
+Spike and decision: [Postgres wire spike](pgwire-spike.md) (D-PG-1, numbered at merge). Serves collections over the Postgres protocol through `datafusion-postgres`: read-only first, then writes behind `--pg-allow-writes`. It is analytical and ingest access; OLTP clients use Loam Live / TiDB.
+
+| Plan | Scope | Depends on | Status |
+|---|---|---|---|
+| [PG1: Postgres wire access over collections](2026-09-28-pg1-postgres-wire.md) | Tasks 0–5, read-only: upstream `arrow-pg`/DataFusion-feature fixes, the loopback listener in `Server`, per-connection sessions (database = namespace, consistency tokens), catalog polish, `COPY TO`, a psql/psycopg/node-postgres CI job. Tasks 6–10, writes behind `--pg-allow-writes`: one-write autocommit transactions, `INSERT`/`ON CONFLICT`, `UPDATE`/`DELETE` through filter writes (D87), `COPY FROM STDIN` through the bulk path, a differential against REST writes | M1.2 (read-only half); M1.5 Task 9a (Task 8); slot: after M1.7, before M2 | Planned |
+
 ## Track R: Loam Live, TiDB SQL and the TiKV metastore (parallel to M1)
 
 Design reference: [20 Loam Live: reactive database on TiKV](../design/20-reactive-database-on-tikv.md) (D116–D131). Track R runs beside M1 and M2, interleaved with them because the build machine builds one crate graph at a time (D127).
