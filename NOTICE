@@ -22,3 +22,9 @@ reference implementation (release 3, 25 Mar 2014), and
 crates/operon-text/tests/data/porter_voc.txt and porter_output.txt are his
 published test vocabulary and its stems. The site states that all the
 software there "is completely free for any purpose", free of charge.
+
+Qdrant gRPC protocol definitions (crates/operon-qdrant/proto/*.proto),
+copied from qdrant/qdrant v1.19.1 (https://github.com/qdrant/qdrant, commit
+6ab21cac18ebb6f4ae29102c7f8f5cc11affd5de, lib/api/src/grpc/proto/),
+Copyright Qdrant Solutions GmbH, Apache License 2.0. qdrant.proto is
+modified (internal-service imports removed); the other files are unchanged.

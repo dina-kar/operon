@@ -226,6 +226,11 @@ pub struct ServerConfig {
     /// `None`: `dev` or `standalone` (one node, every role). `Some`: one
     /// node of `operon cluster` (plan M1.3 Task 11).
     pub cluster: Option<ClusterConfig>,
+    /// The Qdrant gateway's listeners and limits (plan M1.4, feature
+    /// `qdrant`), served on gateway nodes. `None` (the default here, E12)
+    /// serves no Qdrant API; the CLI sets it unless `--no-qdrant`.
+    #[cfg(feature = "qdrant")]
+    pub qdrant: Option<operon_qdrant::QdrantConfig>,
 }
 
 impl ServerConfig {
@@ -255,6 +260,8 @@ impl ServerConfig {
             flight_sql: None,
             flight: FlightConfig::default(),
             cluster: None,
+            #[cfg(feature = "qdrant")]
+            qdrant: None,
         }
     }
 
@@ -351,6 +358,13 @@ pub enum ServerError {
         addr: SocketAddr,
         source: std::io::Error,
     },
+    /// A Qdrant gateway listener could not be bound (plan M1.4 Task 2).
+    #[cfg(feature = "qdrant")]
+    #[error("qdrant listen on {addr}: {source}")]
+    QdrantListen {
+        addr: SocketAddr,
+        source: std::io::Error,
+    },
 }
 
 /// A running Operon process.
@@ -373,6 +387,8 @@ pub struct Server {
     http: JoinHandle<()>,
     stop_http: oneshot::Sender<()>,
     flight: Option<Flight>,
+    #[cfg(feature = "qdrant")]
+    qdrant: Option<Qdrant>,
     /// Cluster mode only.
     cluster: Option<ClusterRuntime>,
 }
@@ -413,6 +429,31 @@ struct Assembled {
     hot: Option<HotTierImpl>,
     app: axum::Router,
     flight: Option<Flight>,
+    #[cfg(feature = "qdrant")]
+    qdrant: Option<Qdrant>,
+}
+
+/// The running Qdrant gateway (plan M1.4 Task 2).
+#[cfg(feature = "qdrant")]
+#[derive(Debug)]
+struct Qdrant {
+    handle: operon_qdrant::QdrantHandle,
+    stop: CancellationToken,
+}
+
+/// Binds the Qdrant gateway's REST and gRPC listeners.
+#[cfg(feature = "qdrant")]
+async fn bind_qdrant(
+    config: &operon_qdrant::QdrantConfig,
+) -> Result<(tokio::net::TcpListener, tokio::net::TcpListener), ServerError> {
+    let bind_one = async |addr: SocketAddr| {
+        tokio::net::TcpListener::bind(addr)
+            .await
+            .map_err(|source| ServerError::QdrantListen { addr, source })
+    };
+    let rest = bind_one(config.rest_listen).await?;
+    let grpc = bind_one(config.grpc_listen).await?;
+    Ok((rest, grpc))
 }
 
 /// The running Flight SQL server.
@@ -610,6 +651,8 @@ impl Server {
             http,
             stop_http,
             flight: parts.flight,
+            #[cfg(feature = "qdrant")]
+            qdrant: parts.qdrant,
             cluster: None,
         })
     }
@@ -677,6 +720,8 @@ impl Server {
                     http,
                     stop_http,
                     flight: parts.flight,
+                    #[cfg(feature = "qdrant")]
+                    qdrant: parts.qdrant,
                     cluster: Some(ClusterRuntime {
                         node_id,
                         roles,
@@ -880,6 +925,22 @@ impl Server {
             },
             None => None,
         };
+        // The Qdrant gateway's listeners, on gateways only (plan M1.4 Task
+        // 2): bound here, before any task is spawned, and served once the
+        // collection service exists (row T2-2).
+        #[cfg(feature = "qdrant")]
+        let qdrant_listeners = match config.qdrant.clone().filter(|_| roles.gateway) {
+            Some(qdrant) => match bind_qdrant(&qdrant).await {
+                Ok(bound) => Some((qdrant, bound)),
+                Err(err) => {
+                    if let Err(err) = cache.close().await {
+                        tracing::warn!(%err, "closing the cache after a failed start");
+                    }
+                    return Err(err);
+                }
+            },
+            None => None,
+        };
 
         // Validated above, so this cannot fail. A node without the `log`
         // role still holds a writer (the service needs one), but serves no
@@ -1015,6 +1076,17 @@ impl Server {
         if let Some((placement, remote)) = routing {
             collections.set_placement(placement, remote);
         }
+        #[cfg(feature = "qdrant")]
+        let qdrant = match qdrant_listeners {
+            Some((qdrant, (rest, grpc))) => {
+                let stop = CancellationToken::new();
+                let handle = operon_qdrant::QdrantGateway::new(collections.clone(), qdrant)
+                    .serve(rest, grpc, stop.clone())
+                    .await;
+                Some(Qdrant { handle, stop })
+            }
+            None => None,
+        };
         let internal = reqwest::Client::builder()
             .connect_timeout(api::hot::OWNER_CONNECT_TIMEOUT)
             .timeout(api::hot::OWNER_TIMEOUT)
@@ -1067,6 +1139,8 @@ impl Server {
             hot,
             app,
             flight,
+            #[cfg(feature = "qdrant")]
+            qdrant,
         })
     }
 
@@ -1108,12 +1182,25 @@ impl Server {
         self.flight.as_ref().map(|flight| flight.addr)
     }
 
+    /// The address the Qdrant REST API listens on, when it does.
+    #[cfg(feature = "qdrant")]
+    pub fn qdrant_rest_addr(&self) -> Option<SocketAddr> {
+        self.qdrant.as_ref().map(|q| q.handle.rest_addr)
+    }
+
+    /// The address the Qdrant gRPC API listens on, when it does.
+    #[cfg(feature = "qdrant")]
+    pub fn qdrant_grpc_addr(&self) -> Option<SocketAddr> {
+        self.qdrant.as_ref().map(|q| q.handle.grpc_addr)
+    }
+
     /// The server's log writer; M1.2 builds its `CollectionWriter` on it.
     pub fn log_writer(&self) -> &LogWriter {
         &self.writer
     }
 
-    /// Stops accepting requests, stops Flight SQL, stops the collection
+    /// Stops the Qdrant gateway (waiting up to 10 s for its requests), stops
+    /// accepting requests, stops Flight SQL, stops the collection
     /// service's tails, flushes the writer (buffered appends are
     /// acknowledged), stops the worker (releasing its task leases), stops
     /// the hot tier, closes the collection targets' PK index handles, waits
@@ -1125,6 +1212,15 @@ impl Server {
     /// metastore routes keep serving until the replica stops (Task 11
     /// rule 4).
     pub async fn shutdown(self) -> Result<(), ServerError> {
+        // The Qdrant gateway stops first, within the HTTP grace period
+        // (plan M1.4 Task 2 rule 3).
+        #[cfg(feature = "qdrant")]
+        if let Some(qdrant) = self.qdrant {
+            qdrant.stop.cancel();
+            if let Err(err) = qdrant.handle.stop_within(HTTP_GRACE).await {
+                tracing::warn!(%err, "the Qdrant gateway stopped with an error");
+            }
+        }
         let mut stop_http = Some(self.stop_http);
         match &self.cluster {
             Some(cluster) => {
