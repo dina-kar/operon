@@ -174,6 +174,31 @@ fn partition_index_accessors_report_what_it_was_built_with() {
     assert_eq!(empty.entries().count(), 0);
 }
 
+/// M1.5 Ruling 9: the member set to true; else the only member when it is
+/// unset; else none.
+#[test]
+fn an_alias_write_target_follows_elasticsearch() {
+    let targets = |members: &[(u64, Option<bool>)]| operon_common::meta::AliasTargets {
+        members: members
+            .iter()
+            .map(|(id, w)| (CollectionId(*id), *w))
+            .collect(),
+    };
+    assert_eq!(targets(&[]).write_target(), None);
+    assert_eq!(targets(&[(1, None)]).write_target(), Some(CollectionId(1)));
+    assert_eq!(targets(&[(1, Some(false))]).write_target(), None);
+    assert_eq!(
+        targets(&[(1, Some(true))]).write_target(),
+        Some(CollectionId(1))
+    );
+    assert_eq!(targets(&[(1, None), (2, None)]).write_target(), None);
+    assert_eq!(
+        targets(&[(1, None), (2, Some(true))]).write_target(),
+        Some(CollectionId(2))
+    );
+    assert_eq!(targets(&[(1, Some(false)), (2, None)]).write_target(), None);
+}
+
 /// A `MetaStore` that only has to compile: the trait must stay usable as
 /// `Arc<dyn MetaStore>` (M1.2a Ruling 2).
 mod dyn_compatible {
@@ -183,10 +208,10 @@ mod dyn_compatible {
 
     use async_trait::async_trait;
     use operon_common::meta::{
-        AliasAction, Collection, CollectionHead, CollectionRoots, Consistency, Fence, HotConfig,
-        Lease, LeaseGrant, Link, LinkHead, LinkId, MetaChanges, MetaResult, MetaStore, Namespace,
-        PartitionIndex, Pointer, PointerCas, Retention, SegmentSwap, Stream, StreamState,
-        TargetRef, Tracked, WalClass, WalCommit,
+        AliasAction, AliasTargetAction, AliasTargets, Collection, CollectionHead, CollectionRoots,
+        Consistency, Fence, HotConfig, Lease, LeaseGrant, Link, LinkHead, LinkId, MetaChanges,
+        MetaResult, MetaStore, NameTarget, Namespace, PartitionIndex, Pointer, PointerCas,
+        Retention, SegmentSwap, Stream, StreamState, TargetRef, Tracked, WalClass, WalCommit,
     };
     use operon_common::schema::CollectionSchema;
     use operon_common::{CollectionId, NamespaceId, StreamId};
@@ -378,6 +403,28 @@ mod dyn_compatible {
             unimplemented!()
         }
         async fn update_aliases(&self, _: NamespaceId, _: Vec<AliasAction>) -> MetaResult<()> {
+            unimplemented!()
+        }
+        async fn update_alias_targets(
+            &self,
+            _: NamespaceId,
+            _: Vec<AliasTargetAction>,
+        ) -> MetaResult<()> {
+            unimplemented!()
+        }
+        async fn alias_targets(
+            &self,
+            _: Consistency,
+            _: NamespaceId,
+        ) -> MetaResult<Vec<(String, AliasTargets)>> {
+            unimplemented!()
+        }
+        async fn resolve_name(
+            &self,
+            _: Consistency,
+            _: NamespaceId,
+            _: &str,
+        ) -> MetaResult<Option<NameTarget>> {
             unimplemented!()
         }
         async fn collection(

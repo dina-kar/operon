@@ -5542,6 +5542,8 @@ dependencies = [
  "operon-store",
  "postcard",
  "proptest",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
  "redb",
  "reqwest 0.12.28",
  "serde",

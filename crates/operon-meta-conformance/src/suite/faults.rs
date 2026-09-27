@@ -1,7 +1,9 @@
 //! Unknown outcomes: a lost acknowledgement, which the implementation
 //! retries, must surface as the trait documents.
 
-use operon_common::meta::{ApplyError, Consistency, Pointer, WalCommit};
+use operon_common::meta::{
+    AliasTargetAction, AliasTargets, ApplyError, Consistency, Pointer, WalCommit,
+};
 
 use super::{
     cas, chunk, commit, high_watermark, namespace, rejected, schema, skip_without_faults, stream,
@@ -104,4 +106,65 @@ pub async fn a_lost_ack_on_cas_reports_a_mismatch_with_the_callers_value(backend
         db.last().pointer(L, ns, key).await.expect("read"),
         Some(current)
     );
+}
+
+pub async fn a_lost_ack_on_update_alias_targets_applies_once(backend: &dyn Backend) {
+    let db = backend.start().await;
+    let Some(faults) = db.faults.clone() else {
+        return skip_without_faults("a_lost_ack_on_update_alias_targets_applies_once");
+    };
+    let meta = db.first();
+    let ns = namespace(meta, "faults-alias-targets").await;
+    let mut ids = Vec::new();
+    for name in ["a", "b"] {
+        let (id, _, _) = meta
+            .create_collection(ns, name, schema(), 1)
+            .await
+            .expect("create collection");
+        ids.push(id);
+    }
+    faults.lose_next_ack(0);
+    // The retry applies the same actions to the state the lost attempt
+    // left: every action is idempotent, so it succeeds with that state.
+    meta.update_alias_targets(
+        ns,
+        vec![
+            AliasTargetAction::Add {
+                alias: "al".to_string(),
+                collection: "a".to_string(),
+                is_write_index: None,
+            },
+            AliasTargetAction::Add {
+                alias: "al".to_string(),
+                collection: "b".to_string(),
+                is_write_index: Some(true),
+            },
+        ],
+    )
+    .await
+    .expect("update alias targets");
+    assert_eq!(
+        db.last().alias_targets(L, ns).await.expect("read"),
+        vec![(
+            "al".to_string(),
+            AliasTargets {
+                members: [(ids[0], None), (ids[1], Some(true))].into_iter().collect(),
+            }
+        )]
+    );
+    // Without a lost acknowledgement, a second write target is refused.
+    assert!(matches!(
+        rejected(
+            meta.update_alias_targets(
+                ns,
+                vec![AliasTargetAction::Add {
+                    alias: "al".to_string(),
+                    collection: "a".to_string(),
+                    is_write_index: Some(true),
+                }],
+            )
+            .await
+        ),
+        ApplyError::InvalidArgument(_)
+    ));
 }

@@ -12,8 +12,8 @@ mod sequencer;
 use std::collections::BTreeMap;
 
 use operon_common::meta::{
-    ApplyError, Collection, HotConfig, Lease, Link, LinkId, MAX_KEY_LEN, MAX_NAME_LEN, Namespace,
-    Pointer, Stream,
+    AliasTargets, ApplyError, Collection, HotConfig, Lease, Link, LinkId, MAX_KEY_LEN,
+    MAX_NAME_LEN, Namespace, Pointer, Stream,
 };
 use operon_common::{CollectionId, NamespaceId, StreamId};
 use serde::{Deserialize, Serialize};
@@ -68,6 +68,13 @@ pub struct MetaState {
     /// 20).
     #[serde(skip)]
     collection_hot: BTreeMap<CollectionId, HotConfig>,
+    /// Every alias that is not exactly one unset member (M1.5 Ruling 22):
+    /// several members, or one whose `is_write_index` is set. An alias is
+    /// in exactly one of `aliases` and this map, and no entry is empty.
+    /// Serde skips it, so the derived encoding stays M1.1's; a snapshot
+    /// carries it only in format 7, written while it is non-empty.
+    #[serde(skip)]
+    alias_targets: BTreeMap<(NamespaceId, String), AliasTargets>,
 }
 
 impl MetaState {
@@ -175,6 +182,9 @@ impl MetaState {
             }
             Command::SetCollectionHot { collection, hot } => {
                 self.set_collection_hot(collection, hot)
+            }
+            Command::UpdateAliasTargets { namespace, actions } => {
+                self.update_alias_targets(namespace, actions)
             }
         }
     }
