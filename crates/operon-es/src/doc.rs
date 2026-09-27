@@ -1,7 +1,7 @@
-//! ES documents ⇄ collection documents (plan M1.5 Task 4 steps 2, 4 and 9):
-//! id rules, `dense_vector` values moved out of `_source` into
+//! ES documents ⇄ collection documents (plan M1.5 Task 4 steps 2, 4 and 9,
+//! Task 6): id rules, `dense_vector` values moved out of `_source` into
 //! `Document.vectors` and put back on read (Ruling 2, overview A9), `binary`
-//! values, and ES's partial-document merge.
+//! values, ES's partial-document merge, and `_source` filtering.
 
 use std::collections::BTreeMap;
 
@@ -10,6 +10,7 @@ use operon_collection::{Document, PrimaryKey, extract};
 use serde_json::{Map, Number, Value, json};
 
 use crate::error::EsError;
+use crate::http::Params;
 use crate::mapping::{EsSimilarity, IndexView};
 
 /// The longest `_id`, in UTF-8 bytes.
@@ -344,6 +345,284 @@ pub fn to_document(
 /// A source that is not a JSON object (step 4).
 pub(crate) fn not_an_object() -> EsError {
     parsing_error("[1:1] failed to parse: source is not an object")
+}
+
+// ----- `_source` filtering (Task 6) -----
+
+/// A request's `_source` filter (Task 6 rule 1, ES `FetchSourceContext`):
+/// `enabled == false` returns no `_source`; otherwise `includes` (empty:
+/// everything) and `excludes` are glob patterns over dot paths.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceFilter {
+    pub enabled: bool,
+    pub includes: Vec<String>,
+    pub excludes: Vec<String>,
+}
+
+impl Default for SourceFilter {
+    /// The whole source.
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            includes: Vec::new(),
+            excludes: Vec::new(),
+        }
+    }
+}
+
+impl SourceFilter {
+    /// `_source`, `_source_includes` and `_source_excludes` (rule 2):
+    /// `_source` is `true`, `false` or a comma list of includes, which
+    /// `_source_includes` replaces; `_source=false` wins. `None` when none
+    /// is given.
+    pub fn from_params(p: &Params) -> Result<Option<SourceFilter>, EsError> {
+        let source = p.str("_source");
+        let mut includes = None;
+        let enabled = match source {
+            None => None,
+            Some("true") => Some(true),
+            Some("false") => Some(false),
+            Some(_) => {
+                includes = p.list("_source");
+                None
+            }
+        };
+        if let Some(list) = p.list("_source_includes") {
+            includes = Some(list);
+        }
+        let excludes = p.list("_source_excludes");
+        if source.is_none() && includes.is_none() && excludes.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(SourceFilter {
+            enabled: enabled.unwrap_or(true),
+            includes: includes.unwrap_or_default(),
+            excludes: excludes.unwrap_or_default(),
+        }))
+    }
+
+    /// A `_source` in a body: `true`, `false`, a pattern, a list of
+    /// patterns, or `{"includes"|"include", "excludes"|"exclude"}` with a
+    /// pattern or a list each.
+    pub fn from_body(v: &Value) -> Result<SourceFilter, EsError> {
+        let unknown = |key: &str, value: &Value| {
+            EsError::parsing(format!(
+                "Unknown key for a {} in [{key}].",
+                token_name(value)
+            ))
+        };
+        let patterns = |key: &str, value: &Value| -> Result<Vec<String>, EsError> {
+            match value {
+                Value::String(s) => Ok(vec![s.clone()]),
+                Value::Array(items) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::String(s) => Ok(s.clone()),
+                        other => Err(unknown(key, other)),
+                    })
+                    .collect(),
+                other => Err(unknown(key, other)),
+            }
+        };
+        match v {
+            Value::Bool(enabled) => Ok(SourceFilter {
+                enabled: *enabled,
+                ..SourceFilter::default()
+            }),
+            Value::String(_) | Value::Array(_) => Ok(SourceFilter {
+                includes: patterns("_source", v)?,
+                ..SourceFilter::default()
+            }),
+            Value::Object(map) => {
+                let mut filter = SourceFilter::default();
+                for (key, value) in map {
+                    match key.as_str() {
+                        "includes" | "include" => filter.includes = patterns(key, value)?,
+                        "excludes" | "exclude" => filter.excludes = patterns(key, value)?,
+                        _ => return Err(unknown(key, value)),
+                    }
+                }
+                Ok(filter)
+            }
+            other => Err(EsError::parsing(format!(
+                "Expected one of [VALUE_BOOLEAN, VALUE_STRING, START_ARRAY, START_OBJECT] but \
+                 found [{}]",
+                token_name(other)
+            ))),
+        }
+    }
+
+    /// Whether a leaf value at `path` survives [`SourceFilter::apply`]:
+    /// what decides which vectors a read fetches (rule 3).
+    pub fn keeps_path(&self, path: &str) -> bool {
+        self.enabled
+            && (self.includes.is_empty() || accepts(&self.includes, path))
+            && !accepts(&self.excludes, path)
+    }
+
+    /// `source` filtered as ES's `XContentMapValues.filter` does (rule 1).
+    /// The caller leaves `_source` out when `enabled` is false.
+    pub fn apply(&self, source: Map<String, Value>) -> Map<String, Value> {
+        if self.includes.is_empty() && self.excludes.is_empty() {
+            return source;
+        }
+        let include = (!self.includes.is_empty()).then_some(self.includes.as_slice());
+        filter_map(&source, "", include, &self.excludes)
+    }
+}
+
+/// ES's name of a JSON value's first token.
+fn token_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "VALUE_NULL",
+        Value::Bool(_) => "VALUE_BOOLEAN",
+        Value::Number(_) => "VALUE_NUMBER",
+        Value::String(_) => "VALUE_STRING",
+        Value::Array(_) => "START_ARRAY",
+        Value::Object(_) => "START_OBJECT",
+    }
+}
+
+/// The positions an NFA for `pattern` can be at after reading `text` (`*`
+/// matches any run of bytes, dots included); all false once it is dead.
+fn glob_states(pattern: &[u8], text: &[u8]) -> Vec<bool> {
+    let n = pattern.len();
+    let close = |states: &mut [bool]| {
+        for p in 0..n {
+            if states[p] && pattern[p] == b'*' {
+                states[p + 1] = true;
+            }
+        }
+    };
+    let mut states = vec![false; n + 1];
+    states[0] = true;
+    close(&mut states);
+    for &c in text {
+        let mut next = vec![false; n + 1];
+        for p in (0..n).filter(|&p| states[p]) {
+            if pattern[p] == b'*' {
+                next[p] = true;
+            } else if pattern[p] == c {
+                next[p + 1] = true;
+            }
+        }
+        close(&mut next);
+        states = next;
+    }
+    states
+}
+
+/// Whether `pattern` matches all of `path`; `*` matches any sequence,
+/// dots included.
+pub fn glob_match(pattern: &str, path: &str) -> bool {
+    glob_states(pattern.as_bytes(), path.as_bytes())[pattern.len()]
+}
+
+/// Whether some suffix `t` gives `glob_match(pattern, prefix + t)`.
+pub fn glob_prefix_alive(pattern: &str, prefix: &str) -> bool {
+    glob_states(pattern.as_bytes(), prefix.as_bytes()).contains(&true)
+}
+
+/// Whether some pattern matches `path` or one of its ancestors (ES's
+/// automaton is built from `P` and `P.*`).
+fn accepts(patterns: &[String], path: &str) -> bool {
+    patterns.iter().any(|pattern| {
+        glob_match(pattern, path)
+            || path
+                .match_indices('.')
+                .any(|(at, _)| glob_match(pattern, &path[..at]))
+    })
+}
+
+/// Whether some pattern can still match `path` or a path below it.
+fn alive(patterns: &[String], path: &str) -> bool {
+    accepts(patterns, path)
+        || patterns
+            .iter()
+            .any(|pattern| glob_prefix_alive(pattern, path))
+}
+
+/// ES's map filter at `prefix` (empty, or a path ending in `.`). `include`
+/// is `None` for "everything": no includes, or an ancestor matched one.
+fn filter_map(
+    map: &Map<String, Value>,
+    prefix: &str,
+    include: Option<&[String]>,
+    excludes: &[String],
+) -> Map<String, Value> {
+    let mut out = Map::new();
+    for (key, value) in map {
+        let path = format!("{prefix}{key}");
+        if include.is_some_and(|include| !alive(include, &path)) || accepts(excludes, &path) {
+            continue;
+        }
+        let included = include.is_none_or(|include| accepts(include, &path));
+        let inner = format!("{path}.");
+        let sub_include = if included {
+            // No exclude can match below: the value is kept whole.
+            if !excludes.iter().any(|e| glob_prefix_alive(e, &inner)) {
+                out.insert(key.clone(), value.clone());
+                continue;
+            }
+            None
+        } else {
+            include
+        };
+        match value {
+            Value::Object(object) => {
+                if sub_include.is_some_and(|sub| !alive(sub, &inner)) {
+                    continue;
+                }
+                let kept = filter_map(object, &inner, sub_include, excludes);
+                if included || !kept.is_empty() {
+                    out.insert(key.clone(), Value::Object(kept));
+                }
+            }
+            Value::Array(items) => {
+                let kept = filter_array(items, &path, sub_include, excludes, included);
+                if !kept.is_empty() {
+                    out.insert(key.clone(), Value::Array(kept));
+                }
+            }
+            _ if included => {
+                out.insert(key.clone(), value.clone());
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// ES's list filter: objects are filtered at `path.`, nested arrays alike,
+/// and scalars are kept iff the array's key is included.
+fn filter_array(
+    items: &[Value],
+    path: &str,
+    include: Option<&[String]>,
+    excludes: &[String],
+    included: bool,
+) -> Vec<Value> {
+    let inner = format!("{path}.");
+    let mut out = Vec::new();
+    for item in items {
+        match item {
+            Value::Object(object) => {
+                let kept = filter_map(object, &inner, include, excludes);
+                if !kept.is_empty() {
+                    out.push(Value::Object(kept));
+                }
+            }
+            Value::Array(nested) => {
+                let kept = filter_array(nested, path, include, excludes, included);
+                if !kept.is_empty() {
+                    out.push(Value::Array(kept));
+                }
+            }
+            scalar if included => out.push(scalar.clone()),
+            _ => {}
+        }
+    }
+    out
 }
 
 #[cfg(test)]

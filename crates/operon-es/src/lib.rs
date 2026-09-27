@@ -18,6 +18,8 @@
 //! - [`write`]: the write engine and `_doc`, `_create`, `_update`,
 //!   `DELETE`.
 //! - [`bulk`] serves `_bulk`.
+//! - `read`: `GET`/`HEAD` `_doc` and `_source`, and `_mget`, with
+//!   `_source` filtering ([`doc::SourceFilter`]).
 //!
 //! # Divergences from Elasticsearch 8.19
 //!
@@ -68,6 +70,7 @@ pub mod http;
 mod info;
 pub mod mapping;
 pub mod names;
+mod read;
 pub mod write;
 
 pub use error::{ErrorContext, EsError};
@@ -218,7 +221,8 @@ impl EsGateway {
             .route("/{index}/_doc", post(write::index_auto_id))
             .route(
                 "/{index}/_doc/{id}",
-                put(write::index_doc)
+                get(read::get_doc)
+                    .put(write::index_doc)
                     .post(write::index_doc)
                     .delete(write::delete_doc),
             )
@@ -227,6 +231,13 @@ impl EsGateway {
                 put(write::create_doc).post(write::create_doc),
             )
             .route("/{index}/_update/{id}", post(write::update_doc))
+            // Task 6: document reads (a `get` route answers `HEAD` too).
+            .route("/{index}/_source/{id}", get(read::get_source))
+            .route("/_mget", get(read::mget_all).post(read::mget_all))
+            .route(
+                "/{index}/_mget",
+                get(read::mget_index).post(read::mget_index),
+            )
             // Task 5: _bulk.
             .route("/_bulk", post(bulk::bulk).put(bulk::bulk))
             .route(
@@ -287,14 +298,6 @@ impl EsGateway {
 /// (row T1-2). A task that serves a route removes it here; axum panics on
 /// a method routed twice, so a forgotten row fails at router build time.
 const PENDING: &[(&str, &str, &str)] = &[
-    ("GET", "/{index}/_doc/{id}", "6"),
-    ("HEAD", "/{index}/_doc/{id}", "6"),
-    ("GET", "/{index}/_source/{id}", "6"),
-    ("HEAD", "/{index}/_source/{id}", "6"),
-    ("GET", "/_mget", "6"),
-    ("POST", "/_mget", "6"),
-    ("GET", "/{index}/_mget", "6"),
-    ("POST", "/{index}/_mget", "6"),
     ("GET", "/_search", "9"),
     ("POST", "/_search", "9"),
     ("GET", "/{index}/_search", "9"),
