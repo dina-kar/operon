@@ -88,7 +88,7 @@ pub struct SearchOutcome {
     pub read_token: Option<ConsistencyToken>,
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
@@ -523,7 +523,12 @@ async fn run_multi(
         render.get_or_insert_with(|| spec.clone());
         calls.push(async move { run_single(gw, ctx, view, request, &spec).await });
     }
-    let parts = futures::future::join_all(calls)
+    // At most `msearch_concurrency` index searches at once, so an `_all`
+    // search over many collections does not run them all together (PR #75
+    // review); `buffered` keeps the part order.
+    let parts = futures::stream::iter(calls)
+        .buffered(gw.config().msearch_concurrency.max(1))
+        .collect::<Vec<_>>()
         .await
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
@@ -827,7 +832,7 @@ pub async fn count(
 }
 
 /// The index-expression options of a request's parameters.
-fn resolve_options(params: &Params, search: &SearchParams) -> ResolveOptions {
+pub(crate) fn resolve_options(params: &Params, search: &SearchParams) -> ResolveOptions {
     ResolveOptions {
         ignore_unavailable: search.ignore_unavailable,
         allow_no_indices: search.allow_no_indices,
@@ -838,7 +843,7 @@ fn resolve_options(params: &Params, search: &SearchParams) -> ResolveOptions {
 }
 
 /// The mappings of the indices `expr` covers.
-async fn views(
+pub(crate) async fn views(
     gw: &EsGateway,
     ctx: &RequestCtx,
     expr: &IndexExpr,
@@ -860,7 +865,7 @@ async fn views(
     Ok(out)
 }
 
-fn expr_of(index: Option<&str>) -> IndexExpr {
+pub(crate) fn expr_of(index: Option<&str>) -> IndexExpr {
     match index {
         Some(index) => IndexExpr::parse(&crate::http::percent_decode_path(index)),
         None => IndexExpr::All,

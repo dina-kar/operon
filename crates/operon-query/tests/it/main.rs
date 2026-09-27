@@ -6,6 +6,7 @@ mod ann;
 mod backlog;
 mod compile;
 mod determinism;
+mod filter_write;
 mod flight;
 mod flight_ingest;
 mod hot_hooks;

@@ -76,19 +76,23 @@
 //!   `is_null` when one is set; row T4-8). A numeric `range` without
 //!   bounds matches any value (the IR's `Exists`).
 //! - Writes by filter (`delete`, the payload operations and
-//!   `delete_vectors` with `filter`) are not atomic: their ids are read with
-//!   `scroll` and written in chunks of `filter_write_chunk` ops. A chunk
-//!   after the first that is refused for backpressure is retried until the
-//!   request's `timeout` (60 s without one); then the answer is 429 and the
-//!   chunks already written stay. Points inserted meanwhile may be missed
-//!   (Ruling 13, E4; until D87's `delete_by_filter`/`patch_by_filter`).
-//! - `set_payload` and `overwrite_payload` with `key`, and `delete_payload`
-//!   of paths with `[]` or `[n]`, read the point and write its whole new
-//!   payload, so a concurrent write to the same point in between is lost
-//!   (Ruling 12). Inside a batch, these reads and the id lookups of writes
-//!   by filter see the points as they were before the batch, where Qdrant
-//!   applies the operations one after another (row T5-4, owner ruling
-//!   O2).
+//!   `delete_vectors` with `filter`) are not atomic: they run as the
+//!   collection service's `delete_by_filter`/`patch_by_filter` (D87), which
+//!   evaluate the filter at one pin, so points inserted meanwhile are not
+//!   touched, and write atomic batches. A batch refused for backpressure is
+//!   retried until the request's `timeout` (60 s without one); then the
+//!   answer is 429 and the batches already written stay (M1.5 row T9a-9).
+//!   Inside a batch request, the operations before a write by filter are
+//!   written before it runs, and those after it once it is done.
+//! - `set_payload` with a `key` that is not a plain dotted path or with an
+//!   object or `null` value, `overwrite_payload` with `key`, and
+//!   `delete_payload` of paths with `[]` or `[n]`, read the point and write
+//!   its whole new payload, so a concurrent write to the same point in
+//!   between is lost (Ruling 12); by filter, their ids are read with
+//!   `scroll` and written in chunks of `filter_write_chunk` ops (Ruling 13,
+//!   M1.4 row E4's exceptions). Inside a batch, these reads see the points
+//!   as they were before the batch, where Qdrant applies the operations one
+//!   after another (row T5-4, owner ruling O2).
 //! - A scroll `limit` over the search window (100,000) is refused, where
 //!   Qdrant reads that many points (row T7-11).
 //! - A write request holds at most 10,000 operations after planning, not
@@ -218,7 +222,9 @@ pub struct QdrantConfig {
     pub max_request_bytes: usize,
     /// The most candidates a gateway-scored query gathers (Ruling 10).
     pub max_candidates: usize,
-    /// Ops per `write` call of a write by filter (Ruling 13).
+    /// Ops per `write` call of a read-modify-write by filter (Ruling 13);
+    /// the native writes by filter batch by the collection service's
+    /// `filter_write_batch`.
     pub filter_write_chunk: usize,
 }
 
