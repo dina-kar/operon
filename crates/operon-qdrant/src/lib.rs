@@ -10,6 +10,24 @@
 //!   messages; [`ctx`]: the per-request namespace, consistency and timeout.
 //! - [`QdrantGateway::serve`]: the REST listener (axum, Qdrant's envelope)
 //!   and the gRPC listener (tonic, gzip), both inside `HotLayer` (Task 2).
+//! - [`filter`]: Qdrant filters compiled to the IR over the catch-all
+//!   `payload` field (Rulings 5, 6); [`jsonpath`]: Qdrant's key paths and
+//!   payload selectors (Ruling 12); [`schema`]: collections and payload
+//!   indexes.
+//! - Point writes (Task 5) plan each Qdrant operation into `DocOp`s and
+//!   write a request with one atomic `write` call; [`scoring`] checks and
+//!   normalizes vectors. Point reads (Task 6) serve retrieve, scroll and
+//!   count with Qdrant's payload and vector selectors.
+//! - [`query`]: the universal query (Task 7) compiled to one IR search
+//!   (nearest, sparse nearest, prefetch, RRF and DBSF fusion, rescore), with
+//!   Qdrant's scores, thresholds and pages applied by the gateway. Task 8
+//!   scores `recommend` (`best_score`, `sum_scores`), `discover`, `context`
+//!   and MMR in the gateway over IR candidates (Ruling 10), and serves the
+//!   legacy `search`, `recommend` and `discover` routes and methods (and
+//!   their batches) by converting them into universal queries (Ruling 1).
+//! - [`groups`]: `query/groups` and the legacy `search/groups` and
+//!   `recommend/groups` (Task 9), with Qdrant's collect-then-fill driver
+//!   over the compiled query and `with_lookup` (Ruling 11).
 //!
 //! # Divergences from Qdrant 1.19
 //!
@@ -25,6 +43,81 @@
 //!   stored and echoed, but change nothing; `PATCH /collections/{c}` answers
 //!   `true` for them and changes nothing (Ruling 16). Cluster info is
 //!   synthetic: one active local shard (Task 3).
+//! - Filters see a key's values after Operon's array flattening: a plain
+//!   `a.b` also reaches `{"a": [{"b": …}]}`, and nested arrays are
+//!   flattened ("Filter semantics"). A key whose values hold no non-null
+//!   leaf (`{}`, `{"d": null}`) counts as missing for `is_empty` and
+//!   `except`, and `except` on an array is true only when no element is in
+//!   the list, where Qdrant needs one element outside it (row T4-8).
+//! - An integer condition (`match.value`, `match.any`, `match.except`)
+//!   matches an integral float: `1` matches `1.0` (E8).
+//! - `match.text`, `text_any` and `phrase` use the `standard` analyzer
+//!   (UAX #29 words, lowercased) over every string at the key, indexed or
+//!   not; `text_any` matches whole tokens, not substrings, and `text` may
+//!   find its tokens in different values of an array (Ruling 6, row T4-8).
+//!   A `text` index with any other tokenizer option is unsupported.
+//! - A datetime `range` compares the strings M1.1 reads as dates (RFC 3339,
+//!   `YYYY-MM-DD'T'HH:MM:SS[.SSS]`, `YYYY-MM-DD`, `YYYY/MM/DD[ HH:MM:SS]`), at
+//!   millisecond precision; other Qdrant formats (`2023-02-08 10:49:00`)
+//!   never match, though they are accepted as bounds (Ruling 6).
+//! - A `FieldCondition` with several sub-conditions matches when any
+//!   matches (Qdrant 1.19 evaluates only `values_count`, `is_empty` or
+//!   `is_null` when one is set; row T4-8). A numeric `range` without
+//!   bounds matches any value (the IR's `Exists`).
+//! - Writes by filter (`delete`, the payload operations and
+//!   `delete_vectors` with `filter`) are not atomic: their ids are read with
+//!   `scroll` and written in chunks of `filter_write_chunk` ops. A chunk
+//!   after the first that is refused for backpressure is retried until the
+//!   request's `timeout` (60 s without one); then the answer is 429 and the
+//!   chunks already written stay. Points inserted meanwhile may be missed
+//!   (Ruling 13, E4; until D87's `delete_by_filter`/`patch_by_filter`).
+//! - `set_payload` and `overwrite_payload` with `key`, and `delete_payload`
+//!   of paths with `[]` or `[n]`, read the point and write its whole new
+//!   payload, so a concurrent write to the same point in between is lost
+//!   (Ruling 12). Inside a batch, these reads and the id lookups of writes
+//!   by filter see the points as they were before the batch, where Qdrant
+//!   applies the operations one after another (row T5-4, owner ruling
+//!   O2).
+//! - A scroll `limit` over the search window (100,000) is refused, where
+//!   Qdrant reads that many points (row T7-11).
+//! - A write request holds at most 10,000 operations after planning, not
+//!   counting those a filter resolved (the collection service's limit, one
+//!   atomic write); a larger one is 400, asking the client to split the
+//!   batch, even next to a filter operation. Qdrant has no such limit (row
+//!   T5-12, owner ruling O1, row T8-11).
+//! - Geo conditions and indexes, `nested`, `has_vector` and `slice`
+//!   conditions, keys with `[n]` or quoted keys holding `.`, payload-index
+//!   deletion and type changes are unsupported (Ruling 15).
+//! - DBSF over Euclid or Manhattan prefetches normalizes Operon's
+//!   larger-is-better scores (negated distances), where Qdrant normalizes
+//!   the raw distances and so favours far points (Ruling 9).
+//! - `recommend` with `best_score` or `sum_scores`, `discover` and
+//!   `context` score the union of one candidate search per example (the
+//!   positives, or the target and each pair's positive; `best_score` without
+//!   positives reads the negatives'), each of `min(max(4 × (offset + limit),
+//!   100), max_candidates)` points, where Qdrant scores during its HNSW walk;
+//!   a point outside every neighbourhood is missed (Ruling 10). `sum_scores`
+//!   needs a positive, and a `context` query needs a pair, where Qdrant
+//!   accepts negatives alone and an empty context (row T8-7).
+//! - MMR's `candidates_limit` is capped at `max_candidates` (10,000), where
+//!   Qdrant refuses one over 16,384 (row T8-8).
+//! - Groups (Ruling 11, rows T9-2 and T9-3): a collect request leaves out
+//!   every point holding a key of a full group, where Qdrant's `except`
+//!   keeps a point with one key outside them; a fill request takes the
+//!   unsatisfied groups' integer or string keys, where Qdrant requires a
+//!   match in both lists at once; groups whose best hits tie are ordered by
+//!   key (integers first); an integer key above `i64::MAX` voids its point;
+//!   MMR's default `candidates_limit` under groups is `limit × group_size`,
+//!   where Qdrant takes `limit`.
+//! - Weighted RRF, a prefetch `score_threshold`, a leaf prefetch without a
+//!   query (Qdrant's scroll of `limit` points; row T8-1), `order_by`,
+//!   `formula`, `sample` and `relevance_feedback` queries, sparse rescoring
+//!   (a sparse root query over prefetches) and shard keys are unsupported
+//!   (Rulings 15, 21).
+
+// The write futures hold the collection service's futures, whose `Send`
+// check walks deep SQL types.
+#![recursion_limit = "256"]
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -39,13 +132,19 @@ use tokio_util::sync::CancellationToken;
 pub mod convert;
 pub mod ctx;
 pub mod error;
+pub mod filter;
+pub mod groups;
 mod grpc;
 pub mod ids;
+pub mod jsonpath;
 pub mod model;
+pub mod query;
 mod reads;
 mod rest;
 pub mod schema;
+pub mod scoring;
 pub mod snapshots;
+mod writes;
 
 pub use ctx::RequestCtx;
 pub use error::GatewayError;
@@ -115,12 +214,14 @@ struct Inner {
 }
 
 impl QdrantGateway {
+    /// A gateway over `service`.
     pub fn new(service: Arc<CollectionService>, config: QdrantConfig) -> Self {
         Self {
             inner: Arc::new(Inner { service, config }),
         }
     }
 
+    /// How the gateway listens and bounds its requests.
     pub fn config(&self) -> &QdrantConfig {
         &self.inner.config
     }

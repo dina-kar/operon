@@ -131,7 +131,7 @@ Every backend serves the same relaxed contract (D59): `commit_wal` is atomic per
 | Arrow Flight SQL | 8082 | Collections, tables, streams | SQL queries; Flight `DoPut` bulk ingest into collections and streams (D49), `DoGet` replay of streams (M5); used by the ADBC Flight SQL drivers | M1 |
 | Qdrant REST / gRPC | 6333 / 6334 | Collections | Qdrant API Phase A with sparse vectors (§06) | M1 |
 | Elasticsearch REST | 9200 | Collections | What the LangChain and LlamaIndex ES suites and BEIR send (D48, §06) | M1 |
-| Resonate HTTP | 8001 | Durable promises | The Resonate protocol (§14) | M3 |
+| Resonate HTTP | 8001 | Durable promises | The Resonate protocol (§14, §21), embedded in the binary behind the `durable` feature, bound to 127.0.0.1 and refusing other addresses until auth exists (D138) | D1 |
 
 Each surface is enabled individually (§10 §2). The Kafka wire protocol follows in M5 (D74); there is no Bolt/Cypher (D44) or ClickHouse (D45) surface.
 
