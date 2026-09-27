@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use operon_collection::{ConsistencyToken, DocOp, Document, PatchMode, PrimaryKey};
+use operon_collection::{ConsistencyToken, DocOp, Document, MAX_WRITE_OPS, PatchMode, PrimaryKey};
 use operon_query::{
     CollectionInfo, OpResult, Projection, ReadConsistency, ServiceError, SourceFilter, StoredDoc,
     WriteOptions, WriteResult,
@@ -571,6 +571,14 @@ pub(crate) async fn execute(
         must_exist.extend(p.must_exist.into_iter().map(|(i, pk)| (base + i, pk)));
         from_filter |= p.from_filter;
         ops.extend(p.ops);
+    }
+    // Owner ruling O1: a request is one atomic write, so the service's
+    // limit holds for the whole request; name the way out.
+    if !from_filter && ops.len() > MAX_WRITE_OPS {
+        return Err(GatewayError::BadRequest(format!(
+            "a write request holds at most {MAX_WRITE_OPS} operations, got {}; split the batch into smaller requests",
+            ops.len()
+        )));
     }
     let opts = WriteOptions {
         report_existence: !must_exist.is_empty(),

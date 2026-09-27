@@ -69,9 +69,12 @@
 //!   payload, so a concurrent write to the same point in between is lost
 //!   (Ruling 12). Inside a batch, these reads and the id lookups of writes
 //!   by filter see the points as they were before the batch, where Qdrant
-//!   applies the operations one after another (row T5-4).
+//!   applies the operations one after another (row T5-4, owner ruling
+//!   O2).
 //! - A write request holds at most 10,000 operations after planning (the
-//!   collection service's limit); Qdrant has no such limit (row T5-12).
+//!   collection service's limit, one atomic write); a larger one is 400,
+//!   asking the client to split the batch. Qdrant has no such limit (row
+//!   T5-12, owner ruling O1).
 //! - Geo conditions and indexes, `nested`, `has_vector` and `slice`
 //!   conditions, keys with `[n]` or quoted keys holding `.`, payload-index
 //!   deletion and type changes are unsupported (Ruling 15).
