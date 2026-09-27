@@ -49,12 +49,14 @@ ulid.workspace = true
 url.workspace = true
 
 [features]
-default = ["es", "flight", "hnsw", "meta-tikv", "qdrant"]
+default = ["es", "flight", "hnsw", "qdrant"]
 # Serve the Elasticsearch REST API (plan M1.5; `--es-listen`).
 es = ["dep:operon-es"]
 # The TiKV metastore (R1 plan Task 6; `--meta tikv://…` on `dev` and
-# `standalone`), with the cluster MVCC GC loop it runs.
-meta-tikv = ["dep:operon-meta-tikv", "dep:operon-tikv"]
+# `standalone`), with the cluster MVCC GC loop it runs. Off by default (owner
+# ruling T7-3): it pulls in the git-pinned tikv-client (row R4), which the
+# default build must not. CI's TiKV jobs build with `--features tikv`.
+tikv = ["dep:operon-meta-tikv", "dep:operon-tikv"]
 # Serve Arrow Flight SQL (Task 12; `--flight-sql-listen`).
 flight = []
 # Serve the Qdrant REST and gRPC APIs (plan M1.4; `--qdrant-listen`).
@@ -95,8 +97,6 @@ object_store.workspace = true
 operon-es = { workspace = true, features = ["test-util"] }
 # The reference evaluator of the Qdrant filter tests (plan M1.4 Task 4).
 operon-qdrant = { workspace = true, features = ["test-util"] }
-# tests/meta_tikv.rs: the cluster harness (operon_tikv::testing).
-operon-tikv.workspace = true
 proptest.workspace = true
 prost.workspace = true
 prost-types.workspace = true

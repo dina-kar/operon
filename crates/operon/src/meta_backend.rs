@@ -12,9 +12,13 @@ pub enum MetaBackend {
     /// The TiKV metastore in a keyspace (`loam_meta` in production). The
     /// server also runs the cluster MVCC GC loop on its handle (R1 plan
     /// Task 3).
-    #[cfg(feature = "meta-tikv")]
+    #[cfg(feature = "tikv")]
     Tikv(operon_meta_tikv::TikvMetaConfig),
 }
+
+/// Why a build without the `tikv` feature refuses a `tikv://` URL.
+pub const NO_TIKV_FEATURE: &str = "--meta tikv://…: this operon was built without the tikv feature; \
+     rebuild with `cargo build -p operon --features tikv` to use the TiKV metastore";
 
 /// The URL scheme of the TiKV metastore.
 pub const TIKV_SCHEME: &str = "tikv://";
@@ -67,7 +71,7 @@ impl MetaBackend {
         Self::tikv(pd, keyspace, root)
     }
 
-    #[cfg(feature = "meta-tikv")]
+    #[cfg(feature = "tikv")]
     fn tikv(pd: Vec<String>, keyspace: &str, root: Vec<u8>) -> Result<Self, String> {
         let tikv = operon_tikv::TikvConfig {
             root,
@@ -78,9 +82,9 @@ impl MetaBackend {
         )))
     }
 
-    #[cfg(not(feature = "meta-tikv"))]
+    #[cfg(not(feature = "tikv"))]
     fn tikv(_pd: Vec<String>, _keyspace: &str, _root: Vec<u8>) -> Result<Self, String> {
-        Err("this build has no TiKV metastore (the meta-tikv feature is off)".to_string())
+        Err(NO_TIKV_FEATURE.to_string())
     }
 }
 
@@ -94,7 +98,22 @@ fn decode_hex(hex: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-#[cfg(all(test, feature = "meta-tikv"))]
+#[cfg(all(test, not(feature = "tikv")))]
+mod no_tikv_tests {
+    use super::*;
+
+    /// Owner ruling T7-3: without the feature, a well-formed `tikv://` URL is
+    /// refused with an error naming the feature.
+    #[test]
+    fn a_tikv_url_without_the_feature_names_the_feature() {
+        let err = MetaBackend::parse("tikv://127.0.0.1:2379/loam_meta").expect_err("refused");
+        assert_eq!(err, NO_TIKV_FEATURE);
+        assert!(err.contains("built without the tikv feature"), "{err}");
+        assert!(err.contains("--features tikv"), "{err}");
+    }
+}
+
+#[cfg(all(test, feature = "tikv"))]
 mod tests {
     use super::*;
 

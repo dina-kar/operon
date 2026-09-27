@@ -2,7 +2,7 @@
 //! `--meta tikv://…`, and a restart on the same keyspace and root keeps the
 //! state. Each test uses a random root in the test keyspace and skips
 //! without `OPERON_TEST_PD`.
-#![cfg(feature = "meta-tikv")]
+#![cfg(feature = "tikv")]
 
 #[path = "it/common/mod.rs"]
 mod common;

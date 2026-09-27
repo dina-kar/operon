@@ -1149,7 +1149,7 @@ mod tests {
     /// R1 plan Task 6: `--meta` on `dev` and `standalone` selects the TiKV
     /// metastore; `cluster` has no such flag, and a cluster config with a
     /// TiKV metastore is refused.
-    #[cfg(feature = "meta-tikv")]
+    #[cfg(feature = "tikv")]
     #[test]
     fn meta_flag_selects_the_tikv_metastore_on_dev_and_standalone_only() {
         assert_eq!(dev_config(&[]).meta, MetaBackend::Raft);
@@ -1204,6 +1204,36 @@ mod tests {
         config.meta = MetaBackend::parse(url).expect("url");
         let err = config.validate().expect_err("refused").to_string();
         assert!(err.contains("dev and standalone only"), "{err}");
+    }
+
+    /// Owner ruling T7-3: a build without the `tikv` feature refuses
+    /// `--meta tikv://…` at parse time with an error naming the feature.
+    #[cfg(not(feature = "tikv"))]
+    #[test]
+    fn meta_flag_without_the_tikv_feature_is_refused_naming_it() {
+        let url = "tikv://127.0.0.1:2379/loam_meta";
+        for args in [
+            &["operon", "dev", "--meta", url][..],
+            &[
+                "operon",
+                "standalone",
+                "--bucket",
+                "file:///tmp/b",
+                "--meta",
+                url,
+            ],
+        ] {
+            let command = args[1];
+            let err = Cli::try_parse_from(args)
+                .map(|_| ())
+                .expect_err("refused")
+                .to_string();
+            assert!(
+                err.contains("built without the tikv feature"),
+                "{command}: {err}"
+            );
+            assert!(err.contains("--features tikv"), "{command}: {err}");
+        }
     }
 
     fn cluster_config(args: &[&str]) -> Result<ServerConfig, clap::Error> {
