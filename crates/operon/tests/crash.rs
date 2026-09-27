@@ -104,6 +104,7 @@ impl Dev {
                 "--no-qdrant",
                 // Nor the durable listener's (feature durable).
                 "--no-durable",
+                "--no-es",
             ])
             .arg("--data-dir")
             .arg(dir)

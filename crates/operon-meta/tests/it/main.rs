@@ -1,3 +1,4 @@
+mod alias_targets;
 mod catalog;
 mod client;
 mod cluster;

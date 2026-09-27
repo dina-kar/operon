@@ -773,6 +773,7 @@ impl Dev {
                 "127.0.0.1:0",
                 "--no-qdrant",
                 "--no-durable",
+                "--no-es",
             ])
             .arg("--data-dir")
             .arg(dir.path())
@@ -1078,6 +1079,7 @@ fn a_build_without_failpoints_refuses_to_arm_them() {
             "127.0.0.1:0",
             "--no-qdrant",
             "--no-durable",
+            "--no-es",
         ])
         .arg("--data-dir")
         .arg(dir.path())
@@ -1309,6 +1311,7 @@ fn the_dev_binary_prints_the_flight_sql_line() {
             "127.0.0.1:0",
             "--no-qdrant",
             "--no-durable",
+            "--no-es",
         ])
         .arg("--data-dir")
         .arg(dir.path())

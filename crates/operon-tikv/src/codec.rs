@@ -22,6 +22,9 @@ pub enum CodecError {
     /// A string element is not UTF-8.
     #[error("tuple: string at byte {0} is not UTF-8")]
     BadUtf8(usize),
+    /// Arrays nested deeper than [`tuple::MAX_DEPTH`].
+    #[error("tuple: arrays nested too deep at byte {0}")]
+    TooDeep(usize),
 }
 
 /// The tuple codec.
@@ -161,10 +164,18 @@ pub mod tuple {
     /// Decodes one element from the start of `buf` and returns it with the
     /// number of bytes it took.
     pub fn decode(buf: &[u8]) -> Result<(Elem<'static>, usize), CodecError> {
-        decode_at(buf, 0)
+        decode_at(buf, 0, 0)
     }
 
-    fn decode_at(buf: &[u8], at: usize) -> Result<(Elem<'static>, usize), CodecError> {
+    /// The deepest array nesting [`decode`] accepts; deeper input is
+    /// [`CodecError::TooDeep`], so a crafted key cannot exhaust the stack.
+    pub const MAX_DEPTH: usize = 64;
+
+    fn decode_at(
+        buf: &[u8],
+        at: usize,
+        depth: usize,
+    ) -> Result<(Elem<'static>, usize), CodecError> {
         let tag = *buf.get(at).ok_or(CodecError::Truncated(at))?;
         let body = at + 1;
         match tag {
@@ -189,6 +200,9 @@ pub mod tuple {
                 Ok((Elem::Bytes(Cow::Owned(bytes)), end))
             }
             ARRAY => {
+                if depth >= MAX_DEPTH {
+                    return Err(CodecError::TooDeep(at));
+                }
                 let mut items = Vec::new();
                 let mut pos = body;
                 loop {
@@ -200,7 +214,7 @@ pub mod tuple {
                             None => return Err(CodecError::Truncated(pos + 1)),
                         },
                         Some(_) => {
-                            let (item, next) = decode_at(buf, pos)?;
+                            let (item, next) = decode_at(buf, pos, depth + 1)?;
                             items.push(item);
                             pos = next;
                         }
@@ -258,6 +272,22 @@ pub mod tuple {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn deep_nesting_is_refused_not_a_stack_overflow() {
+            // MAX_DEPTH arrays nest fine.
+            let mut e = Elem::Null;
+            for _ in 0..MAX_DEPTH {
+                e = Elem::Array(vec![e]);
+            }
+            let buf = enc(&e);
+            assert_eq!(decode(&buf).unwrap().0, e);
+            // One more is refused, and so is a hostile buffer of array tags.
+            let deeper = enc(&Elem::Array(vec![e]));
+            assert!(matches!(decode(&deeper), Err(CodecError::TooDeep(_))));
+            let hostile = vec![ARRAY; 1_000_000];
+            assert!(matches!(decode(&hostile), Err(CodecError::TooDeep(_))));
+        }
 
         fn enc(e: &Elem) -> Vec<u8> {
             let mut out = Vec::new();

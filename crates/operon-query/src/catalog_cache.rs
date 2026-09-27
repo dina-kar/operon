@@ -14,6 +14,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use std::time::Duration;
 
+use operon_common::CollectionId;
 use operon_common::meta::{Collection, Consistency, MetaResult, MetaStore, Namespace};
 use tokio::task::JoinHandle;
 
@@ -86,7 +87,8 @@ impl CatalogCache {
     }
 
     /// The sorted names of the collections and aliases of namespace `ns`, as
-    /// of the last refresh; empty for an unknown namespace.
+    /// of the last refresh; empty for an unknown namespace. An alias with
+    /// several members is left out (M1.5 Task 0a).
     pub fn names(&self, ns: &str) -> Vec<String> {
         self.inner
             .names
@@ -200,9 +202,18 @@ async fn read_namespace(meta: &dyn MetaStore, namespace: &Namespace) -> MetaResu
             .collections
             .insert(collection.name.clone(), collection.clone());
     }
+    // One pair per member: an alias with several members is left out, since
+    // SQL addresses one collection per table (M1.5 Task 0a rule 8).
+    let mut members: BTreeMap<String, Vec<CollectionId>> = BTreeMap::new();
     for (alias, cid) in aliases {
+        members.entry(alias).or_default().push(cid);
+    }
+    for (alias, cids) in members {
+        let [cid] = cids.as_slice() else {
+            continue;
+        };
         names.insert(alias.clone());
-        if let Some(collection) = collections.iter().find(|c| c.id == cid) {
+        if let Some(collection) = collections.iter().find(|c| c.id == *cid) {
             // A collection's own name wins over an alias of the same name.
             entry
                 .collections

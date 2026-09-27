@@ -15,8 +15,8 @@ use operon_collection::{
     CollectionSchema, ConsistencyToken, Distance, PrimaryKey, SparseModifier, SparseVector,
 };
 use operon_query::{
-    CollectionInfo, Fusion, Hit, Projection, Query, ReadConsistency, Retriever, SearchRequest,
-    SourceFilter, SparseParams,
+    AnnParams, CollectionInfo, Fusion, Hit, Projection, Query, ReadConsistency, Retriever,
+    SearchRequest, SourceFilter, SparseParams,
 };
 use serde_json::Value;
 
@@ -743,13 +743,13 @@ impl Compiler<'_> {
         if !select.vectors.iter().any(|v| v == using) {
             select.vectors.push(using.to_string());
         }
-        let search = |query: Vec<f32>, k: usize| {
+        let search_with = |query: Vec<f32>, k: usize, params: AnnParams| {
             let mut request = SearchRequest::new(self.collection);
             request.retrievers = vec![Retriever::Vector {
                 field: using.to_string(),
                 query,
                 k,
-                params: ann_params(params),
+                params,
                 filter: None,
             }];
             request.filter = filter.clone();
@@ -758,11 +758,27 @@ impl Compiler<'_> {
             request.select = select.clone();
             request
         };
+        let search = |query: Vec<f32>, k: usize| search_with(query, k, ann_params(params));
         let k = candidate_k(post.offset, post.limit, config.max_candidates);
         let scored = |legs: Vec<Vec<f32>>, scorer: Scorer, mut post: PostProcess| {
             post.kind = ScoreKind::Custom;
             QueryPlan::Scored {
                 legs: legs.into_iter().map(|q| search(q, k)).collect(),
+                scorer,
+                using: using.to_string(),
+                post,
+            }
+        };
+        // Without positives the best scores belong to the points farthest
+        // from the negatives, which no negative's neighbourhood holds: the
+        // legs search away from the negatives instead (review of #57).
+        let away = |neg: &[Vec<f32>], scorer: Scorer, mut post: PostProcess| {
+            post.kind = ScoreKind::Custom;
+            QueryPlan::Scored {
+                legs: away_from(post.distance, neg, ann_params(params))
+                    .into_iter()
+                    .map(|(q, p)| search_with(q, k, p))
+                    .collect(),
                 scorer,
                 using: using.to_string(),
                 post,
@@ -788,9 +804,11 @@ impl Compiler<'_> {
                         if pos.is_empty() && neg.is_empty() {
                             return Err(no_positive());
                         }
-                        // Without positives the negatives' neighbourhoods
-                        // are the candidates.
-                        let legs = if pos.is_empty() { &neg } else { &pos }.clone();
+                        if pos.is_empty() {
+                            let legs = neg.clone();
+                            return Ok(away(&legs, Scorer::BestScore { pos, neg }, post));
+                        }
+                        let legs = pos.clone();
                         Ok(scored(legs, Scorer::BestScore { pos, neg }, post))
                     }
                     RecommendStrategy::SumScores => {
@@ -798,9 +816,12 @@ impl Compiler<'_> {
                             return Err(no_positive());
                         }
                         // Negatives alone are accepted, as in Qdrant (owner
-                        // ruling on row T8-7); their neighbourhoods are the
-                        // candidates, as for `best_score`.
-                        let legs = if pos.is_empty() { &neg } else { &pos }.clone();
+                        // ruling on row T8-7), searched away from them.
+                        if pos.is_empty() {
+                            let legs = neg.clone();
+                            return Ok(away(&legs, Scorer::SumScores { pos, neg }, post));
+                        }
+                        let legs = pos.clone();
                         Ok(scored(legs, Scorer::SumScores { pos, neg }, post))
                     }
                 }
@@ -1089,4 +1110,50 @@ pub(crate) async fn run_batch(
         out.push(QueryResponse { points });
     }
     Ok(out)
+}
+
+/// The legs of a negatives-only `best_score` or `sum_scores` query. On
+/// Cosine and Dot: one per negative, plus one for their sum when there are
+/// several; the nearest points to `-v` are exactly the ones least similar
+/// to `v`, and the nearest to `-Σ v` minimize `Σ sim(c, v)` (the negated
+/// `sum_scores`), so the ANN index finds them. No index answers "farthest"
+/// on Euclid or Manhattan: there the query runs one exact scan by dot
+/// product with `-Σ v` (or `-v` of the first negative when the sum is
+/// zero or overflows f32), which leans away from the negatives but may miss a far point of
+/// small norm (candidate-bounded, as Ruling 10 says). One scan per query,
+/// whatever the number of negatives, bounds the work as an `exact` search
+/// does (review of #60).
+fn away_from(
+    distance: Distance,
+    neg: &[Vec<f32>],
+    params: AnnParams,
+) -> Vec<(Vec<f32>, AnnParams)> {
+    let negate = |v: &[f32]| v.iter().map(|x| -x).collect::<Vec<f32>>();
+    let dim = neg.first().map_or(0, Vec::len);
+    let sum = (0..dim)
+        .map(|i| neg.iter().map(|v| v[i]).sum::<f32>())
+        .collect::<Vec<f32>>();
+    // Cosine example vectors are normalized, so this is Σ v̂. A sum that
+    // overflows f32 is not searched (review of #62).
+    let sum = (neg.len() > 1 && sum.iter().all(|x| x.is_finite()) && sum.iter().any(|x| *x != 0.0))
+        .then(|| negate(&sum));
+    match distance {
+        Distance::Cosine | Distance::Dot => neg
+            .iter()
+            .map(|v| negate(v))
+            .chain(sum)
+            .map(|q| (q, params.clone()))
+            .collect(),
+        Distance::Euclid | Distance::Manhattan => {
+            let exact = AnnParams {
+                exact: true,
+                distance: Some(Distance::Dot),
+                ..params
+            };
+            sum.or_else(|| neg.first().map(|v| negate(v)))
+                .into_iter()
+                .map(|q| (q, exact.clone()))
+                .collect()
+        }
+    }
 }

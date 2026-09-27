@@ -236,6 +236,11 @@ pub struct ServerConfig {
     /// CLI sets it unless `--no-durable`. A cluster node needs a MySQL store.
     #[cfg(feature = "durable")]
     pub durable: Option<operon_durable::DurableConfig>,
+    /// The Elasticsearch gateway's listener and limits (plan M1.5, feature
+    /// `es`), served on gateway nodes. `None` (the default here, row E13)
+    /// serves no Elasticsearch API; the CLI sets it unless `--no-es`.
+    #[cfg(feature = "es")]
+    pub es: Option<operon_es::EsConfig>,
 }
 
 impl ServerConfig {
@@ -269,6 +274,8 @@ impl ServerConfig {
             qdrant: None,
             #[cfg(feature = "durable")]
             durable: None,
+            #[cfg(feature = "es")]
+            es: None,
         }
     }
 
@@ -394,6 +401,14 @@ pub enum ServerError {
         addr: SocketAddr,
         source: std::io::Error,
     },
+    /// The Elasticsearch gateway's listener could not be bound (plan M1.5
+    /// Task 1).
+    #[cfg(feature = "es")]
+    #[error("elasticsearch listen on {addr}: {source}")]
+    EsListen {
+        addr: SocketAddr,
+        source: std::io::Error,
+    },
     /// The embedded durable server did not start (D1); its message as is.
     #[cfg(feature = "durable")]
     #[error("{0}")]
@@ -489,6 +504,8 @@ pub struct Server {
     qdrant: Option<Qdrant>,
     /// The embedded durable server (D1).
     durable: Durable,
+    #[cfg(feature = "es")]
+    es: Option<Es>,
     /// Cluster mode only.
     cluster: Option<ClusterRuntime>,
 }
@@ -534,6 +551,8 @@ struct Assembled {
     /// Started by the caller before `assemble` and handed over here (a
     /// cluster node's start returns it with the parts).
     durable: Durable,
+    #[cfg(feature = "es")]
+    es: Option<Es>,
 }
 
 /// The running Qdrant gateway (plan M1.4 Task 2).
@@ -541,6 +560,14 @@ struct Assembled {
 #[derive(Debug)]
 struct Qdrant {
     handle: operon_qdrant::QdrantHandle,
+    stop: CancellationToken,
+}
+
+/// The running Elasticsearch gateway (plan M1.5 Task 1).
+#[cfg(feature = "es")]
+#[derive(Debug)]
+struct Es {
+    handle: operon_es::EsHandle,
     stop: CancellationToken,
 }
 
@@ -766,6 +793,8 @@ impl Server {
             #[cfg(feature = "qdrant")]
             qdrant: parts.qdrant,
             durable,
+            #[cfg(feature = "es")]
+            es: parts.es,
             cluster: None,
         })
     }
@@ -836,6 +865,8 @@ impl Server {
                     #[cfg(feature = "qdrant")]
                     qdrant: parts.qdrant,
                     durable: parts.durable,
+                    #[cfg(feature = "es")]
+                    es: parts.es,
                     cluster: Some(ClusterRuntime {
                         node_id,
                         roles,
@@ -1066,6 +1097,25 @@ impl Server {
             },
             None => None,
         };
+        // The Elasticsearch gateway's listener, next to Qdrant's (plan M1.5
+        // Task 1, row E13): bound here and served once the collection
+        // service exists.
+        #[cfg(feature = "es")]
+        let es_listener = match config.es.clone().filter(|_| roles.gateway) {
+            Some(es) => match tokio::net::TcpListener::bind(es.listen).await {
+                Ok(bound) => Some((es, bound)),
+                Err(source) => {
+                    if let Err(err) = cache.close().await {
+                        tracing::warn!(%err, "closing the cache after a failed start");
+                    }
+                    return Err(ServerError::EsListen {
+                        addr: es.listen,
+                        source,
+                    });
+                }
+            },
+            None => None,
+        };
 
         // Validated above, so this cannot fail. A node without the `log`
         // role still holds a writer (the service needs one), but serves no
@@ -1212,6 +1262,13 @@ impl Server {
             }
             None => None,
         };
+        #[cfg(feature = "es")]
+        let es = es_listener.map(|(es, listener)| {
+            let stop = CancellationToken::new();
+            let handle =
+                operon_es::EsGateway::new(collections.clone(), es).serve(listener, stop.clone());
+            Es { handle, stop }
+        });
         let internal = reqwest::Client::builder()
             .connect_timeout(api::hot::OWNER_CONNECT_TIMEOUT)
             .timeout(api::hot::OWNER_TIMEOUT)
@@ -1267,6 +1324,8 @@ impl Server {
             #[cfg(feature = "qdrant")]
             qdrant,
             durable: Durable::none(),
+            #[cfg(feature = "es")]
+            es,
         })
     }
 
@@ -1326,14 +1385,21 @@ impl Server {
         self.qdrant.as_ref().map(|q| q.handle.grpc_addr)
     }
 
+    /// The address the Elasticsearch API listens on, when it does.
+    #[cfg(feature = "es")]
+    pub fn es_addr(&self) -> Option<SocketAddr> {
+        self.es.as_ref().map(|es| es.handle.addr)
+    }
+
     /// The server's log writer; M1.2 builds its `CollectionWriter` on it.
     pub fn log_writer(&self) -> &LogWriter {
         &self.writer
     }
 
-    /// Stops the Qdrant gateway (waiting up to 10 s for its requests), stops
-    /// accepting requests, stops Flight SQL, stops the durable server (D1:
-    /// before anything it may call into), stops the collection
+    /// Stops the Qdrant and Elasticsearch gateways (waiting up to 10 s for
+    /// their requests), stops accepting requests, stops Flight SQL, stops the
+    /// durable server (D1: before anything it may call into), stops the
+    /// collection
     /// service's tails, flushes the writer (buffered appends are
     /// acknowledged), stops the worker (releasing its task leases), stops
     /// the hot tier, closes the collection targets' PK index handles, waits
@@ -1348,12 +1414,24 @@ impl Server {
         // The Qdrant gateway stops first, within the HTTP grace period
         // (plan M1.4 Task 2 rule 3).
         shutdown_phase("qdrant");
+        // The Elasticsearch gateway stops together with it (plan M1.5 Task
+        // 1, row E13): both tokens are cancelled before either is awaited.
+        #[cfg(feature = "es")]
+        if let Some(es) = &self.es {
+            es.stop.cancel();
+        }
         #[cfg(feature = "qdrant")]
         if let Some(qdrant) = self.qdrant {
             qdrant.stop.cancel();
             if let Err(err) = qdrant.handle.stop_within(HTTP_GRACE).await {
                 tracing::warn!(%err, "the Qdrant gateway stopped with an error");
             }
+        }
+        #[cfg(feature = "es")]
+        if let Some(es) = self.es
+            && let Err(err) = es.handle.stop_within(HTTP_GRACE).await
+        {
+            tracing::warn!(%err, "the Elasticsearch gateway stopped with an error");
         }
         let mut stop_http = Some(self.stop_http);
         shutdown_phase("http");

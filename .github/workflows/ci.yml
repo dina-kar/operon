@@ -111,7 +111,7 @@ jobs:
       - name: start operon dev
         run: |
           nohup target/debug/operon dev --data-dir "$RUNNER_TEMP/operon" \
-            --qdrant-listen 127.0.0.1:6333 --qdrant-grpc-listen 127.0.0.1:6334 \
+            --qdrant-listen 127.0.0.1:6333 --qdrant-grpc-listen 127.0.0.1:6334 --no-es \
             > "$RUNNER_TEMP/operon.log" 2>&1 &
           for _ in $(seq 1 60); do
             curl -sf http://127.0.0.1:6333/ && exit 0
@@ -279,6 +279,9 @@ jobs:
         if: steps.paths.outputs.run == 'true'
         env:
           OPERON_TEST_PD: 127.0.0.1:19379
+          # Nightly-only cases (operon_tikv::testing::nightly), such as
+          # old_versions_dropped_after_gc.
+          OPERON_TEST_NIGHTLY: "1"
         run: cargo test ${{ steps.packages.outputs.args }} --locked
       - name: playground logs
         if: failure() && steps.paths.outputs.run == 'true'

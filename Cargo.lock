@@ -5639,6 +5639,7 @@ dependencies = [
  "operon-collection",
  "operon-common",
  "operon-durable",
+ "operon-es",
  "operon-hnsw",
  "operon-hot",
  "operon-link",
@@ -5758,6 +5759,26 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "operon-es"
+version = "0.0.1"
+dependencies = [
+ "axum 0.8.9",
+ "base64 0.22.1",
+ "operon-collection",
+ "operon-common",
+ "operon-query",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tower 0.5.3",
+ "tracing",
+ "ulid 3.0.0",
 ]
 
 [[package]]
@@ -5892,6 +5913,8 @@ dependencies = [
  "operon-store",
  "postcard",
  "proptest",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
  "redb",
  "reqwest 0.12.28",
  "serde",
@@ -5911,6 +5934,21 @@ dependencies = [
  "rand 0.9.5",
  "rand_chacha 0.9.0",
  "tokio",
+]
+
+[[package]]
+name = "operon-meta-tikv"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "futures",
+ "operon-common",
+ "operon-meta-conformance",
+ "operon-tikv",
+ "postcard",
+ "serde",
+ "tokio",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -6112,9 +6150,11 @@ name = "operon-tikv"
 version = "0.0.1"
 dependencies = [
  "axum 0.8.9",
+ "fail 0.4.0",
  "futures",
  "operon-tikv",
  "proptest",
+ "prost 0.14.4",
  "rand 0.9.5",
  "reqwest 0.12.28",
  "serde",
@@ -6122,6 +6162,10 @@ dependencies = [
  "thiserror 2.0.20",
  "tikv-client",
  "tokio",
+ "tokio-util",
+ "tonic 0.14.6",
+ "tonic-prost",
+ "tonic-prost-build",
  "tracing",
 ]
 
