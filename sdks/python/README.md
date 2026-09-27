@@ -199,3 +199,45 @@ and anything else is inferred by pyarrow.
 
 REST results arrive as JSON and are converted on each call. For exact types and
 large results, use Flight SQL, which is Arrow end to end.
+
+## Arrow results over Flight SQL
+
+With the `flight` extra, `operon.flight.FlightSqlClient` runs read-only SQL over
+Arrow Flight SQL (`operon dev` listens on `grpc://127.0.0.1:8082`):
+
+```python
+import polars
+from operon.flight import FlightSqlClient
+
+with FlightSqlClient("grpc://127.0.0.1:8082", namespace="docs") as flight:
+    table = flight.sql("SELECT * FROM kb WHERE n > 1")  # pyarrow.Table
+    df = table.to_pandas()  # pandas
+    frame = polars.DataFrame(table)  # Polars, zero-copy through the C stream
+    for batch in flight.sql_batches("SELECT * FROM kb"):  # streamed record batches
+        ...
+```
+
+`consistency=` takes `"strong"` (the default), a token (at least that token) or
+a scan plan's `Pin`. Flight SQL has no eventual reads: `"eventual"` raises
+`ValueError`. Errors map to the same `OperonError` subclasses as REST, with the
+ADBC error as `__cause__`; an error with no REST equivalent has code `"flight"`.
+
+## Bulk loading Arrow data
+
+`FlightSqlClient.ingest` appends an Arrow table or record batch reader to an
+existing collection, `ingest_stream` to a stream; each returns the row count:
+
+```python
+flight.ingest("kb", table)  # columns: _id, _source or fields, vectors by name
+flight.ingest("kb", table, id_type="u64")  # string _id values are u64 ids
+flight.ingest_stream("events", records)  # columns: key, value, headers, timestamp, partition
+```
+
+The server maps the columns: `_id` is the document id (integers are u64 ids;
+strings are string ids unless `id_type` is `"u64"` or `"uuid"`), `_source` a JSON
+string (or one column per schema field instead), vectors by field name
+(fixed-size or variable lists of floats), sparse vectors as
+`struct<indices, values>`; `_score`, `_seq_no` and `_partition` are ignored. Rows
+are upserts (`mode="append"`), so loading the same ids again replaces them. Ingest
+returns no consistency token (a strong read sees the rows) and is never retried,
+because a stream ingest is not idempotent.

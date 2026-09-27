@@ -1,4 +1,4 @@
-"""Shared fixtures: a spawned `operon dev` (plan M1.6 Task 2 rule 10, rows E13 and E21)."""
+"""Shared fixtures: a spawned `operon dev` (M1.6 Task 2 rule 10, Task 4 rule 6, E13, E21)."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from operon import schema
 
 REPO = Path(__file__).resolve().parents[3]
 LISTENING = re.compile(r"operon listening on (http://\S+)")
+FLIGHT = re.compile(r"operon flight sql listening on (grpc://\S+)")
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 STARTUP_TIMEOUT_S = 60.0
 
@@ -29,36 +30,41 @@ def _binary() -> Path:
     return binary
 
 
-def _read_until_listening(proc: subprocess.Popen[str]) -> str:
-    """Reads stdout lines until the native listener's line; tracing logs are interleaved."""
+def _read_until_listening(proc: subprocess.Popen[str]) -> tuple[str, str]:
+    """Reads stdout lines until the native and then the Flight SQL listener's line.
+
+    Tracing logs are interleaved; the Flight line comes after the HTTP one (E13).
+    """
     assert proc.stdout is not None
     seen: list[str] = []
-    found: list[str] = []
+    found: dict[str, str] = {}
 
     def read() -> None:
         assert proc.stdout is not None
         for raw in proc.stdout:
             line = ANSI.sub("", raw.rstrip("\n"))
             seen.append(line)
-            match = LISTENING.search(line)
-            if match:
-                found.append(match.group(1))
+            for key, pattern in (("http", LISTENING), ("flight", FLIGHT)):
+                match = pattern.search(line)
+                if match:
+                    found[key] = match.group(1)
+            if len(found) == 2:
                 return
 
     reader = threading.Thread(target=read, daemon=True)
     reader.start()
     reader.join(STARTUP_TIMEOUT_S)
-    if not found:
+    if len(found) != 2:
         proc.kill()
-        pytest.fail(f"operon dev did not print its address within 60 s: {seen[-20:]}")
+        pytest.fail(f"operon dev did not print its addresses within 60 s: {seen[-20:]}")
     # Keep draining stdout so the child never blocks on a full pipe.
     threading.Thread(target=lambda: [None for _ in proc.stdout or ()], daemon=True).start()
-    return found[0]
+    return found["http"], found["flight"]
 
 
 @pytest.fixture(scope="session")
-def operon_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
-    """The base URL of an `operon dev` child on an ephemeral port."""
+def operon_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[str, str]]:
+    """An `operon dev` child on ephemeral ports: its REST base URL and Flight SQL URI."""
     data = tmp_path_factory.mktemp("operon-data")
     proc = subprocess.Popen(
         [
@@ -72,7 +78,8 @@ def operon_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
             str(data),
             "--no-qdrant",
             "--no-es",
-            "--no-flight-sql",
+            "--flight-sql-listen",
+            "127.0.0.1:0",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -88,6 +95,18 @@ def operon_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+
+
+@pytest.fixture(scope="session")
+def operon_url(operon_server: tuple[str, str]) -> str:
+    """The base URL of the spawned server's native REST API."""
+    return operon_server[0]
+
+
+@pytest.fixture(scope="session")
+def flight_uri(operon_server: tuple[str, str]) -> str:
+    """The spawned server's Flight SQL URI, `grpc://127.0.0.1:<port>`."""
+    return operon_server[1]
 
 
 @pytest.fixture
