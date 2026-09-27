@@ -212,6 +212,98 @@ async fn pessimistic_retry_restarts_the_transaction() {
     assert_eq!(as_u64(read(&tikv, b"c").await), 2);
 }
 
+/// `batch_get_for_update` in a pessimistic transaction reads the latest
+/// committed values, newer than its start timestamp, leaves absent keys out,
+/// sorts by key, and locks: a writer of a locked key waits for the commit.
+#[tokio::test]
+async fn batch_get_for_update_reads_latest_values_and_locks() {
+    let Some(cluster) = testing::cluster().await else {
+        return;
+    };
+    let tikv = cluster.connect(TEST_META).await;
+    tikv.run(TxnOptions::new("seed"), |txn| {
+        Box::pin(async move {
+            txn.put(b"a", 1u64.to_be_bytes().to_vec()).await?;
+            txn.put(b"b", 2u64.to_be_bytes().to_vec()).await
+        })
+    })
+    .await
+    .expect("seed");
+    let started = Arc::new(Notify::new());
+    let written = Arc::new(Notify::new());
+    let locked = Arc::new(Notify::new());
+    let hold = Duration::from_millis(300);
+    let holder = {
+        let (tikv, started, written, locked) = (
+            tikv.clone(),
+            started.clone(),
+            written.clone(),
+            locked.clone(),
+        );
+        async move {
+            tikv.run(TxnOptions::pessimistic("batch_lock"), move |txn| {
+                let (started, written, locked) = (started.clone(), written.clone(), locked.clone());
+                Box::pin(async move {
+                    if txn.attempt() == 1 {
+                        // `a` changes after this transaction began.
+                        started.notify_one();
+                        written.notified().await;
+                    }
+                    let got = txn
+                        .batch_get_for_update([b"zz".as_slice(), b"b", b"a"])
+                        .await?;
+                    if txn.attempt() == 1 {
+                        locked.notify_one();
+                        tokio::time::sleep(hold).await;
+                    }
+                    txn.put(b"b", 3u64.to_be_bytes().to_vec()).await?;
+                    Ok(got)
+                })
+            })
+            .await
+            .expect("the holder commits")
+        }
+    };
+    let other = {
+        let tikv = tikv.clone();
+        async move {
+            started.notified().await;
+            tikv.run(TxnOptions::new("write_a"), |txn| {
+                Box::pin(async move { txn.put(b"a", 10u64.to_be_bytes().to_vec()).await })
+            })
+            .await
+            .expect("write a");
+            written.notify_one();
+            locked.notified().await;
+            let asked = Instant::now();
+            // `b` is locked: this writer queues behind the holder's commit.
+            let n = tikv
+                .run(TxnOptions::pessimistic("write_b"), |txn| {
+                    Box::pin(async move {
+                        let n = as_u64(txn.get_for_update(b"b").await?) + 1;
+                        txn.put(b"b", n.to_be_bytes().to_vec()).await?;
+                        Ok(n)
+                    })
+                })
+                .await
+                .expect("write b")
+                .value;
+            (n, asked.elapsed())
+        }
+    };
+    let (held, (n, waited)) = tokio::join!(holder, other);
+    assert_eq!(held.attempts, 1);
+    assert_eq!(
+        held.value,
+        vec![
+            (b"a".to_vec(), 10u64.to_be_bytes().to_vec()),
+            (b"b".to_vec(), 2u64.to_be_bytes().to_vec()),
+        ]
+    );
+    assert_eq!(n, 4, "the queued writer saw the holder's write");
+    assert!(waited >= hold / 2, "the writer did not wait: {waited:?}");
+}
+
 // ---- unknown outcomes, refusals, deadlines, fault points ----
 
 #[tokio::test]

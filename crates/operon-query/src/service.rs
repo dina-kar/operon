@@ -15,7 +15,8 @@ use operon_collection::{
     VectorSpec, live_manifest, retained_chain,
 };
 use operon_common::meta::{
-    AliasAction, ApplyError, Collection, CollectionHead, Consistency, MetaError,
+    AliasAction, AliasTargetAction, ApplyError, Collection, CollectionHead, Consistency, MetaError,
+    NameTarget,
 };
 use operon_common::{CollectionId, NamespaceId};
 use operon_log::LogReader;
@@ -30,7 +31,10 @@ use crate::placement::{LocalOnly, NoRemoteReads, Owner, Placement, RemoteReads};
 use crate::read::{ReadConfig, Reads};
 use crate::scan::{ScanAt, ScanPlan};
 use crate::tail::TailConfig;
-use crate::types::{CollectionInfo, ManifestInfo, PinnedRead, Projection, StoredDoc};
+use crate::types::{
+    AliasInfo, AliasMember, CollectionInfo, ManifestInfo, NameInfo, PinnedRead, Projection,
+    StoredDoc,
+};
 use crate::validate::validate_request;
 use crate::vector::AnnConfig;
 
@@ -161,6 +165,32 @@ fn collection_not_found(name: &str) -> ServiceError {
     }
 }
 
+/// An alias's info from its member records, members by collection name.
+fn alias_info(
+    alias: &str,
+    members: &[(Collection, Option<bool>)],
+    write_target: Option<CollectionId>,
+) -> AliasInfo {
+    let mut listed: Vec<AliasMember> = members
+        .iter()
+        .map(|(collection, is_write_index)| AliasMember {
+            collection: collection.name.clone(),
+            is_write_index: *is_write_index,
+        })
+        .collect();
+    listed.sort_by(|a, b| a.collection.cmp(&b.collection));
+    AliasInfo {
+        alias: alias.to_string(),
+        members: listed,
+        write_target: write_target.and_then(|id| {
+            members
+                .iter()
+                .find(|(collection, _)| collection.id == id)
+                .map(|(collection, _)| collection.name.clone())
+        }),
+    }
+}
+
 /// `schema` without its version and creation annotation, for the
 /// retry-safety comparison of `create_collection` (Ruling 13).
 fn requested_shape(schema: &CollectionSchema) -> CollectionSchema {
@@ -262,7 +292,9 @@ impl CollectionService {
     }
 
     /// The collection named (or aliased) `name_or_alias` in namespace `ns`;
-    /// an absent namespace behaves like an empty one (S7).
+    /// an absent namespace behaves like an empty one (S7). An alias with
+    /// several members is `InvalidArgument`: this operation needs one
+    /// collection (M1.5 Task 0a rule 8).
     pub(crate) async fn resolve(
         &self,
         ns: &str,
@@ -276,9 +308,37 @@ impl CollectionService {
             .meta
             .resolve_collection(Consistency::Local, ns_id, name_or_alias)
             .await?
-            .filter(|collection| collection.namespace == ns_id)
-            .ok_or_else(|| collection_not_found(name_or_alias))?;
-        Ok((ns_id, collection))
+            .filter(|collection| collection.namespace == ns_id);
+        match collection {
+            Some(collection) => Ok((ns_id, collection)),
+            None => Err(self.unresolved(ns_id, name_or_alias).await?),
+        }
+    }
+
+    /// Why `name` did not resolve to one collection: an alias with several
+    /// members, or nothing.
+    async fn unresolved(
+        &self,
+        ns_id: NamespaceId,
+        name: &str,
+    ) -> Result<ServiceError, ServiceError> {
+        let target = self
+            .ctx
+            .meta
+            .resolve_name(Consistency::Local, ns_id, name)
+            .await?;
+        Ok(match target {
+            Some(NameTarget::Alias { members, .. }) if members.len() > 1 => {
+                let mut names: Vec<&str> = members.iter().map(|(c, _)| c.name.as_str()).collect();
+                names.sort_unstable();
+                ServiceError::InvalidArgument(format!(
+                    "alias [{name}] names {} collections [{}]; this operation needs one collection",
+                    names.len(),
+                    names.join(", ")
+                ))
+            }
+            _ => collection_not_found(name),
+        })
     }
 
     /// The request's hot scope, or the server default outside one (Ruling
@@ -709,6 +769,102 @@ impl CollectionService {
             Err(MetaError::Rejected(ApplyError::NamespaceNotFound(_))) => absent(&actions),
             Err(err) => Err(err.into()),
         }
+    }
+
+    /// Applies alias-target actions atomically (M1.5 Task 0a rule 8): an
+    /// alias may name several collections, at most one of them its write
+    /// target. Errors map as for [`Self::update_aliases`].
+    pub async fn update_alias_targets(
+        &self,
+        ns: &str,
+        actions: Vec<AliasTargetAction>,
+    ) -> Result<(), ServiceError> {
+        // An absent namespace holds no collection an alias could name.
+        let absent =
+            |actions: &[AliasTargetAction]| match actions.iter().find_map(|action| match action {
+                AliasTargetAction::Add { collection, .. } => Some(collection),
+                AliasTargetAction::Remove { .. } | AliasTargetAction::RemoveAlias { .. } => None,
+            }) {
+                Some(collection) => Err(collection_not_found(collection)),
+                None => Ok(()),
+            };
+        let Some(ns_id) = self.namespace_id(ns).await? else {
+            return absent(&actions);
+        };
+        match self
+            .ctx
+            .meta
+            .update_alias_targets(ns_id, actions.clone())
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(MetaError::Rejected(ApplyError::NameTaken(name))) => {
+                Err(ServiceError::AlreadyExists(name))
+            }
+            Err(MetaError::Rejected(ApplyError::UnknownCollection(name))) => {
+                Err(collection_not_found(&name))
+            }
+            Err(MetaError::Rejected(ApplyError::InvalidArgument(message))) => {
+                Err(ServiceError::InvalidArgument(message))
+            }
+            Err(MetaError::Rejected(ApplyError::NamespaceNotFound(_))) => absent(&actions),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    /// What `name` names in `ns`: a collection or an alias with its members
+    /// (`Local`); `NotFound { kind: "collection" }` when neither.
+    pub async fn resolve_name(&self, ns: &str, name: &str) -> Result<NameInfo, ServiceError> {
+        let Some(ns_id) = self.namespace_id(ns).await? else {
+            return Err(collection_not_found(name));
+        };
+        match self
+            .ctx
+            .meta
+            .resolve_name(Consistency::Local, ns_id, name)
+            .await?
+        {
+            Some(NameTarget::Collection(collection)) => Ok(NameInfo::Collection(collection.name)),
+            Some(NameTarget::Alias {
+                members,
+                write_target,
+            }) => Ok(NameInfo::Alias(alias_info(name, &members, write_target))),
+            None => Err(collection_not_found(name)),
+        }
+    }
+
+    /// Every alias of `ns` with its members, by alias name (`Local`); `[]`
+    /// for an absent namespace.
+    pub async fn list_aliases(&self, ns: &str) -> Result<Vec<AliasInfo>, ServiceError> {
+        let Some(ns_id) = self.namespace_id(ns).await? else {
+            return Ok(Vec::new());
+        };
+        let aliases = self
+            .ctx
+            .meta
+            .alias_targets(Consistency::Local, ns_id)
+            .await?;
+        let collections: BTreeMap<CollectionId, Collection> = self
+            .ctx
+            .meta
+            .collections(Consistency::Local, Some(ns_id))
+            .await?
+            .into_iter()
+            .map(|collection| (collection.id, collection))
+            .collect();
+        Ok(aliases
+            .into_iter()
+            .map(|(alias, targets)| {
+                // Two reads: a member dropped in between is left out.
+                let members: Vec<(Collection, Option<bool>)> = targets
+                    .members
+                    .iter()
+                    .filter_map(|(id, w)| collections.get(id).map(|c| (c.clone(), *w)))
+                    .collect();
+                alias_info(&alias, &members, targets.write_target())
+            })
+            .filter(|info| !info.members.is_empty())
+            .collect())
     }
 
     // ----- Reads -----

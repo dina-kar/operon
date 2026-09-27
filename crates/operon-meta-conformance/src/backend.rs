@@ -53,6 +53,14 @@ impl Instance {
 pub trait Backend: Send + Sync {
     /// A fresh, empty metastore, ready to serve writes through every handle.
     async fn start(&self) -> Instance;
+
+    /// Why the backend cannot run here (such as `OPERON_TEST_PD` for a
+    /// backend that needs a TiKV cluster), or `None`. Each case of an
+    /// unavailable backend prints `skipped: <case> needs <reason>` and passes
+    /// without calling [`Backend::start`].
+    fn unavailable(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Fault injection a backend may offer.

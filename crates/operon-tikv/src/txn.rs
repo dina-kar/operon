@@ -43,7 +43,9 @@ impl std::fmt::Debug for Txn {
 }
 
 /// A read-only view at one timestamp, from [`Tikv::snapshot`]. Every key is
-/// relative to the handle's root.
+/// relative to the handle's root. Its reads are refused once its timestamp
+/// leaves the GC safe window, unless a [`GcBarrier`](crate::GcBarrier) of the
+/// handle covers it.
 pub struct Snap {
     inner: Snapshot,
     tikv: Tikv,
@@ -97,6 +99,34 @@ impl Txn {
         let full = self.tikv.key(key);
         let res = self.inner.get_for_update(full).await;
         self.map(res)
+    }
+
+    /// Reads `keys` and locks them all, in one request per region: in a
+    /// pessimistic transaction at once, returning the latest committed values
+    /// (a second holder waits or restarts); in an optimistic one at commit,
+    /// returning the values at the start timestamp. Absent keys are left out;
+    /// the result is sorted by key. Not paged: meant for small records, such
+    /// as partition heads (design §20 §11.4: batching the locks matters).
+    pub async fn batch_get_for_update<K: AsRef<[u8]>>(
+        &mut self,
+        keys: impl IntoIterator<Item = K>,
+    ) -> Result<Vec<Pair>, TxnError> {
+        self.check_window()?;
+        let keys: Vec<Vec<u8>> = keys
+            .into_iter()
+            .map(|k| self.tikv.key(k.as_ref()))
+            .collect();
+        let res = self.inner.batch_get_for_update(keys).await;
+        let pairs = self.map(res)?;
+        let mut out: Vec<Pair> = pairs
+            .into_iter()
+            .map(|pair| {
+                let (key, value): (Key, Vec<u8>) = pair.into();
+                (self.tikv.relative(key), value)
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
     }
 
     /// Reads `keys` at the start timestamp, in pages; absent keys are left
@@ -282,8 +312,15 @@ impl Snap {
             .map_err(|(e, _)| e)
     }
 
+    /// Past the window, reads go on only while a barrier of the handle
+    /// covers the snapshot's timestamp.
     fn check_window(&self) -> Result<(), TxnError> {
-        if Instant::now() > self.refuse_reads_after {
+        if Instant::now() > self.refuse_reads_after
+            && !self
+                .tikv
+                .barriers
+                .covers(tikv_client::TimestampExt::version(&self.at))
+        {
             return Err(TxnError::Fatal(BELOW_SAFE_POINT.to_string()));
         }
         Ok(())

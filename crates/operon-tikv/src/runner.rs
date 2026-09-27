@@ -9,6 +9,7 @@
 //! (`Error::UndeterminedError`, or a commit the runner drops at its deadline)
 //! is resolved through the commit token when the options ask for one.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,7 @@ use tikv_client::{CheckLevel, Timestamp, TransactionOptions};
 use crate::classify::{Class, classify, describe};
 use crate::faults::{Fault, FaultPoint};
 use crate::token::{Token, fence_value, is_fence, new_token, token_key, token_value};
+use crate::tso::Supervisor;
 use crate::txn::Txn;
 use crate::{Tikv, TikvError};
 
@@ -246,20 +248,32 @@ impl Tikv {
     /// A read-only view at `at`. Refused with [`TikvError::GcSafePoint`] when
     /// `at` is older than `now − (gc_life_time − 1 min)` (row R7): TiKV would
     /// answer such a read without an error, from versions GC may have dropped.
+    /// A [`GcBarrier`](crate::GcBarrier) set through this handle (or a clone)
+    /// at or below `at` lets it through while the barrier lives, provided the
+    /// cluster GC safe point has not passed `at` (Task 3, row T2-2).
     pub async fn snapshot(&self, at: Timestamp) -> Result<crate::Snap, TikvError> {
         let now_ms = self.now_ms_estimate().await?;
         let window_ms = u64::try_from(self.safe_window().as_millis()).unwrap_or(u64::MAX);
         let floor_ms = now_ms.saturating_sub(window_ms);
         let at_ms = Tikv::physical_ms(&at);
+        let version = tikv_client::TimestampExt::version(&at);
         if at_ms < floor_ms {
-            return Err(TikvError::GcSafePoint {
-                at: tikv_client::TimestampExt::version(&at),
-                safe_point: tikv_client::TimestampExt::version(&Timestamp {
-                    physical: i64::try_from(floor_ms).unwrap_or(i64::MAX),
-                    logical: 0,
-                    suffix_bits: 0,
-                }),
+            let refused = |safe_point: u64| TikvError::GcSafePoint {
+                at: version,
+                safe_point,
+            };
+            let floor = tikv_client::TimestampExt::version(&Timestamp {
+                physical: i64::try_from(floor_ms).unwrap_or(i64::MAX),
+                logical: 0,
+                suffix_bits: 0,
             });
+            if !self.barriers.covers(version) {
+                return Err(refused(floor));
+            }
+            let cluster = tikv_client::TimestampExt::version(&self.gc_safe_point().await?);
+            if cluster > version {
+                return Err(refused(cluster));
+            }
         }
         let (client, _) = self.clients.client();
         let inner = client.snapshot(
@@ -268,7 +282,7 @@ impl Tikv {
                 .read_only()
                 .drop_check(CheckLevel::None),
         );
-        let left = Duration::from_millis(at_ms - floor_ms);
+        let left = Duration::from_millis(at_ms.saturating_sub(floor_ms));
         Ok(crate::Snap::new(inner, self.clone(), at, left))
     }
 
@@ -296,6 +310,20 @@ impl Tikv {
             Class::NotApplied | Class::TsoClosed => TxnError::NotApplied(text),
             Class::TooLarge | Class::Fatal => TxnError::Fatal(text),
         }
+    }
+
+    /// Runs a supervisor step (recording a TSO failure, rebuilding the
+    /// client) in its own task and waits for it at most until `deadline`: a
+    /// slow rebuild then finishes in the background (one at a time, under
+    /// the supervisor's lock) instead of holding the run past its budget.
+    async fn supervise<F, Fut>(&self, deadline: Instant, step: F)
+    where
+        F: FnOnce(Arc<Supervisor>) -> Fut,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let task = tokio::spawn(step(self.clients.clone()));
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let _ = tokio::time::timeout(remaining, task).await;
     }
 
     fn fault(&self, op: &str, point: FaultPoint, attempt: u32) -> Option<Fault> {
@@ -342,14 +370,20 @@ impl Tikv {
             Ok(Ok(inner)) => inner,
             Ok(Err(e)) => {
                 let class = classify(&e);
-                self.clients.tso_failed(Some(class), generation).await;
+                self.supervise(deadline, move |s| async move {
+                    s.tso_failed(Some(class), generation).await;
+                })
+                .await;
                 return match self.txn_error(&e) {
                     e if e.retryable() => Attempt::Retry(e),
                     e => Attempt::Fail(e),
                 };
             }
             Err(_) => {
-                self.clients.tso_failed(None, generation).await;
+                self.supervise(deadline, move |s| async move {
+                    s.tso_failed(None, generation).await;
+                })
+                .await;
                 return Attempt::Fail(TxnError::Deadline);
             }
         };
@@ -364,7 +398,11 @@ impl Tikv {
             Ok(Err(e)) => {
                 self.rollback(&mut txn).await;
                 if txn.tso_closed {
-                    self.clients.rebuild(generation).await;
+                    self.supervise(
+                        deadline,
+                        move |s| async move { s.rebuild(generation).await },
+                    )
+                    .await;
                 }
                 return if e.retryable() {
                     Attempt::Retry(e)
@@ -428,7 +466,11 @@ impl Tikv {
                 // Row R9: any other commit error means it did not commit.
                 self.rollback(&mut txn).await;
                 if class == Class::TsoClosed {
-                    self.clients.rebuild(generation).await;
+                    self.supervise(
+                        deadline,
+                        move |s| async move { s.rebuild(generation).await },
+                    )
+                    .await;
                 }
                 return match self.txn_error(&e) {
                     e if e.retryable() => Attempt::Retry(e),

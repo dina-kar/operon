@@ -55,11 +55,11 @@ use crate::meta::error::MetaResult;
 #[cfg(doc)]
 use crate::meta::error::{ApplyError, MetaError};
 use crate::meta::types::{
-    AliasAction, Collection, Fence, HotConfig, Lease, LeaseGrant, Link, LinkId, Namespace, Pointer,
-    Retention, Stream, TargetRef, WalClass,
+    AliasAction, AliasTargetAction, AliasTargets, Collection, Fence, HotConfig, Lease, LeaseGrant,
+    Link, LinkId, Namespace, Pointer, Retention, Stream, TargetRef, WalClass,
 };
 use crate::meta::views::{
-    CollectionHead, CollectionRoots, LinkHead, PartitionIndex, PointerCas, SegmentSwap,
+    CollectionHead, CollectionRoots, LinkHead, NameTarget, PartitionIndex, PointerCas, SegmentSwap,
     StreamState, WalCommit,
 };
 use crate::schema::CollectionSchema;
@@ -480,8 +480,42 @@ pub trait MetaStore: Send + Sync + fmt::Debug + 'static {
         id: CollectionId,
     ) -> MetaResult<Option<Collection>>;
 
+    /// Applies 1..=100 alias-target actions in order, atomically: if any
+    /// fails, nothing changes (M1.5 Task 0a). An alias names up to
+    /// [`MAX_ALIAS_TARGETS`](crate::meta::MAX_ALIAS_TARGETS) collections,
+    /// each with an `is_write_index` setting, at most one of them
+    /// `Some(true)`. Rejected with [`ApplyError::NamespaceNotFound`],
+    /// [`ApplyError::NameTaken`] for an alias named like a collection,
+    /// [`ApplyError::UnknownCollection`] for an `Add` of a name that is not
+    /// a collection, or [`ApplyError::InvalidArgument`]. Every action is
+    /// idempotent, so a retry after a lost acknowledgement succeeds with the
+    /// same state.
+    async fn update_alias_targets(
+        &self,
+        namespace: NamespaceId,
+        actions: Vec<AliasTargetAction>,
+    ) -> MetaResult<()>;
+
+    /// Every alias of `namespace` with its members, by alias name; an alias
+    /// made by [`MetaStore::update_aliases`] is one unset member.
+    async fn alias_targets(
+        &self,
+        consistency: Consistency,
+        namespace: NamespaceId,
+    ) -> MetaResult<Vec<(String, AliasTargets)>>;
+
+    /// What `name` names in `namespace`: a collection, or an alias with its
+    /// member records, from one state; `None` if neither.
+    async fn resolve_name(
+        &self,
+        consistency: Consistency,
+        namespace: NamespaceId,
+        name: &str,
+    ) -> MetaResult<Option<NameTarget>>;
+
     /// The collection named `name_or_alias` in `namespace`, directly or
-    /// through an alias.
+    /// through an alias with exactly one member; `None` for an alias with
+    /// several members (M1.5 Task 0a).
     async fn resolve_collection(
         &self,
         consistency: Consistency,
@@ -503,8 +537,9 @@ pub trait MetaStore: Send + Sync + fmt::Debug + 'static {
         namespace: Option<NamespaceId>,
     ) -> MetaResult<Vec<Collection>>;
 
-    /// The aliases of `namespace` with the collections they point at, by alias
-    /// name.
+    /// The aliases of `namespace` with the collections they point at: one
+    /// `(alias, collection)` pair per member, by alias name and then
+    /// collection id.
     async fn aliases(
         &self,
         consistency: Consistency,
