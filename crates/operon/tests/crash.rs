@@ -102,6 +102,7 @@ impl Dev {
                 "127.0.0.1:0",
                 // Nor the Qdrant gateway's.
                 "--no-qdrant",
+                "--no-es",
             ])
             .arg("--data-dir")
             .arg(dir)

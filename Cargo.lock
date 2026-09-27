@@ -5638,6 +5638,7 @@ dependencies = [
  "operon-cache",
  "operon-collection",
  "operon-common",
+ "operon-es",
  "operon-hnsw",
  "operon-hot",
  "operon-link",
@@ -5757,6 +5758,26 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "operon-es"
+version = "0.0.1"
+dependencies = [
+ "axum 0.8.9",
+ "base64 0.22.1",
+ "operon-collection",
+ "operon-common",
+ "operon-query",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tower 0.5.3",
+ "tracing",
+ "ulid 3.0.0",
 ]
 
 [[package]]
