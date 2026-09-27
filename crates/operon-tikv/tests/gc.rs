@@ -171,11 +171,24 @@ async fn barrier_below_the_safe_point_is_refused() {
     };
     let _serial = SERIAL.lock().await;
     let tikv = cluster.connect(TEST_META).await;
-    let id = GcBarrier::service_id("test", "below");
-    match GcBarrier::new(&tikv)
-        .set(&id, &Timestamp::from_version(1), Duration::from_secs(60))
+    // A fresh cluster's safe point is 0, so a barrier at version 1 is not
+    // below it until some round has advanced it: run one first, whatever
+    // order the tests run in.
+    GcLoop::new(tikv.clone(), short_config())
+        .expect("a loop")
+        .run_once()
         .await
-    {
+        .expect("a run");
+    let id = GcBarrier::service_id("test", "below");
+    let barrier = GcBarrier::new(&tikv);
+    let set = barrier
+        .set(&id, &Timestamp::from_version(1), Duration::from_secs(60))
+        .await;
+    if set.is_ok() {
+        // Never leave the barrier to hold the safe point for the other tests.
+        barrier.delete(&id).await.expect("delete the barrier");
+    }
+    match set {
         Err(TikvError::BarrierBelowSafePoint { min_safe_point, .. }) => {
             assert!(min_safe_point > 1);
         }
