@@ -2,7 +2,7 @@
 
 Date: 2026-09-28. Branch `r1-t16`, stacked on `r1-t14` (PR #97). R1 plan: [`2026-09-27-r1-reactive-core.md`](2026-09-27-r1-reactive-core.md), Task 16; its rows T16-1 to T16-14 record the rulings made here.
 
-**Status: R1's gates pass on the as-built tree, with two gaps.** The reactive checker, the transaction checker and the nemesis passed. The metastore conformance suite and fault matrix on TiKV passed as of Tasks 5–6. The gaps are:
+**Status: R1's local gates pass on the as-built tree; the nightly gate is pending, and there are two gaps.** The reactive checker, the transaction checker and the nemesis passed in local runs: 60 s and 30 s per PR, and 180 s under the nemesis on one TiKV store. The metastore conformance suite and fault matrix on TiKV passed as of Tasks 5–6. **Pending:** the nightly `tikv-nemesis` job (30-minute checkers, one store on the standard runner per owner ruling T17-2) has not run yet, so the nightly gate is not shown. The gaps are:
 - **Task 15** (TiDB SQL beside Live) is **not done: it is parked** until the owner decides about TiDB. The question is open.
 - **PR #80** (the `loam` fork of `tikv-client`) **is not in this branch.** So the re-measurement "with the fork's read-path lock resolution" (Task 16 semantics 5) measured the upstream pin `ab4be1c` again. It must be repeated once #80 lands.
 

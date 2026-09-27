@@ -101,6 +101,13 @@ test("errors_read_the_live_error_detail", () => {
     ),
   });
   assert.equal(toLiveError(wire).code, "FUNCTION_TIMEOUT");
+  // An unusable first detail does not hide a usable later one (review of #101).
+  const second = new ConnectError("x", Code.Internal, undefined, [
+    detail(pb.ErrorCode.UNSPECIFIED, "unspecified"),
+    detail(pb.ErrorCode.UNAVAILABLE, "busy"),
+  ]);
+  assert.equal(toLiveError(second).code, "UNAVAILABLE");
+  assert.equal(toLiveError(second).retryable, true);
   // Without a detail (an older server) the Connect code is mapped as before.
   assert.equal(toLiveError(new ConnectError("busy", Code.Unavailable)).code, "UNAVAILABLE");
   assert.equal(
