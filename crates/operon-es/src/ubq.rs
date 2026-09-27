@@ -194,8 +194,13 @@ pub fn compile_update_script(script: &Value) -> Result<PatchSpec, EsError> {
     for (path, value) in assigned {
         insert(&mut out.source, &path, value);
     }
-    out.delete_keys = removed.iter().map(|path| path.join(".")).collect();
-    out.delete_keys.dedup();
+    // Every duplicate goes, adjacent or not, in first-appearance order.
+    let mut seen = std::collections::HashSet::new();
+    out.delete_keys = removed
+        .iter()
+        .map(|path| path.join("."))
+        .filter(|key| seen.insert(key.clone()))
+        .collect();
     Ok(out)
 }
 
@@ -321,6 +326,12 @@ mod tests {
         )
         .expect("recognised");
         assert_eq!(Value::Object(patch.source), json!({"a": 2}));
+        // A key removed twice, not adjacently, is deleted once.
+        let patch = compile_update_script(&json!(
+            "ctx._source.remove('a'); ctx._source.remove('b'); ctx._source.remove('a')"
+        ))
+        .expect("recognised");
+        assert_eq!(patch.delete_keys, vec!["a", "b"]);
         // The short string form, without params.
         let patch = compile_update_script(&json!("ctx._source.remove('k')")).expect("recognised");
         assert_eq!(patch.delete_keys, vec!["k"]);

@@ -233,7 +233,16 @@ pub(crate) fn parse_body(body: &Value, with_script: bool) -> Result<ByQueryBody<
         match key.as_str() {
             "query" => out.query = Some(value).filter(|v| !v.is_null()),
             "max_docs" => out.max_docs = Some(max_docs(value)?),
-            "conflicts" => check_conflicts(value.as_str().unwrap_or_default())?,
+            // ES fails a non-string with a 500 class cast; a 400 names it.
+            "conflicts" => match value.as_str() {
+                Some(text) => check_conflicts(text)?,
+                None => {
+                    return Err(EsError::parsing(format!(
+                        "[conflicts] must be a string, found [{}]",
+                        token_name(value)
+                    )));
+                }
+            },
             "script" if with_script => out.script = Some(value).filter(|v| !v.is_null()),
             "slice" | "sort" => return Err(EsError::unsupported(key)),
             // ES's `AbstractBulkByQueryRequest` parser text (row T11-3).
@@ -489,6 +498,19 @@ mod tests {
         for bad in ["1", "s", "1x", "-2s"] {
             assert!(time_value("timeout", bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_non_string_conflicts_is_a_parse_error() {
+        let body = serde_json::json!({"query": {"match_all": {}}, "conflicts": 1});
+        let err = parse_body(&body, false).err().expect("refused");
+        assert_eq!(err.kind, "parsing_exception");
+        assert_eq!(
+            err.reason,
+            "[conflicts] must be a string, found [VALUE_NUMBER]"
+        );
+        let body = serde_json::json!({"query": {"match_all": {}}, "conflicts": "proceed"});
+        assert!(parse_body(&body, false).is_ok());
     }
 
     #[test]
