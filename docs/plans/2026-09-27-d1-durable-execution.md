@@ -91,7 +91,7 @@ crates/operon-durable/                       # new
   src/import/{mod.rs,plan.rs,parquet.rs,ndjson.rs,slice.rs,schedule.rs}
   tests/{embed.rs,tidb.rs,inproc.rs,ops.rs,import.rs,import_crash.rs,schedule.rs}
 crates/operon/
-  Cargo.toml                                 # features durable, durable-mysql (default on)
+  Cargo.toml                                 # features durable, durable-mysql (opt-in, O1)
   src/{server.rs,main.rs}                    # --durable-* flags, start/stop order
   src/api/{mod.rs,operations.rs,import.rs}   # operations and import routes
 scripts/durable/{conformance.sh,examples.sh,porc-503.sh}
@@ -192,7 +192,7 @@ pub enum DurableError { NotLoopback { addr: SocketAddr }, Bind { addr: SocketAdd
    - for SQLite: `servers.server_sqlite.path`, `migrate = true`, `server_url = "http://<listen>"`, `retry_timeout = <ms>`;
    - for MySQL: `servers.server_mysql.url`, `server_url`, `retry_timeout`;
    - `workers.transport_http_push.enabled = <push>` (`debug` is not a configuration key: it is the argument of `Running::start(debug)`, T0-9);
-   - then each override, in order. An override of `abort_on_panic`, `bind`, `servers.active`, `gateways.gateway_http.auth` or `gateways.gateway_http.workos` is refused (`Config`).
+   - then each override, in order. An override of `abort_on_panic`, `bind`, `servers.active`, `gateways.gateway_http.auth` or `gateways.gateway_http.workos` is refused (`Config`), and so are `servers.server_sqlite.path`, `servers.server_mysql.url` (`--durable-store` owns them) and `workers.transport_http_push.enabled` (`--durable-push`), any key above or below one of these, a quoted key, a key outside `servers.*`, `workers.*` and `gateways.*`, and a plugin id the registry does not carry (amended, T2-4).
    - `build` gets `Options::default().default_server("server_sqlite")`; it reads no file or environment (T0-9).
 3. Before `build`, `listen` is checked for loopback (`NotLoopback`) and bound once with a `std::net::TcpListener` probe that is dropped at once, so a port conflict becomes `Bind` naming `--durable-listen` and `--no-durable`. Resonate's gateway then binds the port itself; the race window is accepted and logged.
 4. `start` = `build` + `Running::start(debug)`. `stop` = `Running::stop(shutdown_timeout)`, then wait until the port is free (at most 2 s).
@@ -347,7 +347,7 @@ impl Operations {
 **Tests** (`tests/import.rs`, `tests/import_crash.rs`; sources are a `file://` bucket and the in-memory store with fault injection):
 - `imports_parquet_and_ndjson` (row counts, a search finds the documents, and the result token makes a strong read see them);
 - `rows_without_id_get_deterministic_ids`;
-- `id_column_becomes_the_id` (and `id_column_missing` fails the file; `id_column` with a `columns` target of `_id` is 400; two `columns` entries with one target are 400; a target that collides with an unrenamed column is `mapping_conflict`; a null `_id` is a row error);
+- `id_column_becomes_the_id` (and `id_column_missing` fails the file; `id_column` with a `columns` target of `_id` is 400; two `columns` entries with one target are 400; a target that collides with an unrenamed column is `mapping_conflict`; a null `_id` is a row error; without `id_column`, a file's own `_id` column is the id and no UUID is generated, O5);
 - `file_changed_fails_its_branch`;
 - `skip_file_on_error_counts_failures`;
 - `backpressure_is_retried_not_failed` (a tiny unapplied budget);
@@ -493,7 +493,29 @@ Owner questions from Task 0: all four were answered on 2026-09-27; the rulings a
 Owner questions from Task 1:
 5. **The fork's CI (T1-4).** Enable Actions on `dina-kar/resonate` (its Actions tab), then dispatch `server-core` and `sdk-rs` on `loam/0.10.1`. Ruling 4 needs the green run, and `server-core` runs only on pushes to `main`, on PRs and on `workflow_dispatch`.
 6. **Upstream PRs 0d and 0e (T1-6).** Their bodies are ready to post against `resonatehq/resonate` `main`, from the fork branches `feat/push-gcp-idtoken-feature` and `feat/sdk-rs-reqwest-default-feature`.
-7. **`id_column` absent while the file has an `_id` column (O3).** Task 8 as amended uses the file's own `_id` in that case, and generates UUIDs only when the slice has no `_id`. Should an absent `id_column` always generate UUIDs instead?
+7. **`id_column` absent while the file has an `_id` column (O3).** Task 8 as amended uses the file's own `_id` in that case, and generates UUIDs only when the slice has no `_id`. Should an absent `id_column` always generate UUIDs instead? Answered by O5.
+
+### Owner ruling on the Task 1 question (2026-09-27)
+
+| # | Question | Ruling | Amends | Tasks |
+|---|---|---|---|---|
+| O5 | 7: `id_column` absent while the file has its own `_id` column (O3, T1-8) | **Use the file's `_id` column.** Generate Ruling 7's UUIDs only when the slice has no `_id` column at all (after the renames). This matches the Elasticsearch and Qdrant import conventions. A null in the file's `_id` stays a row error under `on_error` (T1-8) | Task 8 semantics 4 (confirmed as written) and its tests | 8, 9 |
+
+### Task 2: the embedded server (2026-09-27)
+
+| # | Checked | As built / found | Ruling |
+|---|---|---|---|
+| T2-1 | The crate | `crates/operon-durable`: `lib.rs`, `config.rs`, `embed.rs`, `registry.rs`, `listen.rs`, `error.rs`, and `inproc.rs` with the placeholder `worker_inproc` plugin (krate `worker-inproc`, scheme `inproc`, configures to nothing until Task 6). Feature `mysql` makes `resonate-server-mysql` optional. The SDK is not a dependency yet (Task 6) | As planned |
+| T2-2 | `cargo deny check` with the pins in use | Refused `bans` first: `wildcard` for the seven Resonate git dependencies. cargo-deny's `allow-wildcard-paths` spares only private crates; T0-18's "git dependencies without `version` pass" held because the scratch crate was `publish = false` | `operon-durable` is `publish = false`, like `operon-tikv` (crates.io refuses git dependencies). Then `advisories ok, bans ok, licenses ok, sources ok` with **no warnings**: Task 1's `unmatched-source` and `advisory-not-detected` are gone (`[graph] all-features` reaches `sqlx-mysql`). `cargo tree -i` finds no `openssl-sys`, `native-tls` or `google-cloud-auth`; sqlx 0.8.6 and `libsqlite3-sys` 0.30.1 only. `operon` names `operon-durable` by path and version, so Task 3 is not affected |
+| T2-3 | `DurableError` | thiserror takes a field named `source` for an error source, and `Bind`'s `source` is a `String` | `Display` and `Error` are written by hand; the plan's variants and field names stand |
+| T2-4 | `--durable-set` refusals (semantics 2) | Resonate's own key-space check (`check_key_space`) is private to `resonate_base::run`, and the process section (`level`, `debug`, `shutdown_timeout`) is read only there, so either would be silently ignored in the embed. The store path/URL and push have Loam flags; overriding them would bypass the store lock or the push warning | Refused as well (amended in semantics 2): the store and push keys; any key equal to, under, or a table above a protected key; quoted keys; keys outside the three sections; a plugin id the registry does not carry. An unknown field under a carried plugin fails `build` through `deny_unknown_fields` and names the key (`Config`) |
+| T2-5 | `process` (semantics 5) | `ResponseEnvelope` is `Serialize` only | `process` answers a 2xx with the whole response envelope (`kind`, `head.status`, `data`); any other status is `Protocol { status, body }` with the response's `data`; no answer is `Unavailable`. A caller's `head` fields (such as `resonate:debug_time`) are kept; a missing `corrId` becomes `loam-<node_id>-<n>` |
+| T2-6 | Parsing `--durable-listen` (for Task 3) | `SocketAddr` cannot hold `localhost` | `operon_durable::parse_listen` takes an IP socket address or `localhost:<port>` (127.0.0.1) and refuses any other host name without resolving it. `is_loopback` accepts 127.0.0.0/8, `::1` and IPv4-mapped loopback |
+| T2-7 | Start order (semantics 3, 4, 6) | Loopback check → `registry.check()` → the configuration (overrides) → the SQLite directory and `durable.lock` (`std::fs::File::try_lock`, flock) → the port probe → `build` → `Running::start(debug)`. A gateway bind that loses the race after the probe is `Bind` (logged); any other start failure is `Start`. A `Mysql` store without the `mysql` feature is `Config`: `this build has no MySQL durable store (the durable-mysql feature is off)` | `stop` runs `Running::stop(shutdown_timeout)`, drops it, waits up to 2 s for the port, then releases the lock. A loopback start logs one line that the API is unauthenticated; `push` logs the SSRF warning |
+| T2-8 | `handler_panic_answers_500` | `Routes` is created inside `resonate_base::build`; only a plugin's `configure` can add to it | A hidden `DurableServer::start_with_plugins(config, node_id, &[&'static WorkerPlugin])` appends test workers. The test's worker registers a panicking route and configures to nothing; the gateway's catch-panic layer answers 500 and the server keeps serving |
+| T2-9 | `second_process_on_same_store_is_refused` | flock conflicts between two open file descriptions in one process exactly as between two processes | The test opens the second server in the same process; no child process is spawned |
+| T2-10 | MySQL (Task 4) | Task 2 sets `servers.server_mysql.url`, `server_url` and `retry_timeout`, never `migrate` | `MysqlTls` is carried but not yet applied: Task 4 maps it onto the URL's `ssl-mode` |
+| T2-11 | CodeRabbit on #70 | "No actionable comments were generated" | Nothing to fold in |
 
 ## Self-review
 
