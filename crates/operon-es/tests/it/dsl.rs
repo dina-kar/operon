@@ -405,11 +405,26 @@ fn leaf_parameters_outside_phase_a_are_refused() {
         "illegal_argument_exception",
         "[match] analyzer [french] not found",
     );
-    assert_error(
-        &leaf_err(json!({"range": {"metadata.page": {"gt": 1, "gte": 2}}})),
-        400,
-        "parsing_exception",
-        "[range]",
+    // Both lower bounds: the last key wins, as in ES (row T11-3).
+    assert_eq!(
+        leaf(json!({"range": {"metadata.page": {"gt": 1, "gte": 2}}})),
+        Query::Range {
+            field: "metadata.page".to_string(),
+            gt: None,
+            gte: Some(FieldValue::I64(2)),
+            lt: None,
+            lte: None,
+        }
+    );
+    assert_eq!(
+        leaf(json!({"range": {"metadata.page": {"lte": 9, "lt": 5, "from": 1}}})),
+        Query::Range {
+            field: "metadata.page".to_string(),
+            gt: None,
+            gte: Some(FieldValue::I64(1)),
+            lt: Some(FieldValue::I64(5)),
+            lte: None,
+        }
     );
     let many: Vec<u32> = (0..65_537).collect();
     assert_error(
@@ -638,16 +653,21 @@ fn unindexed_fields_refuse_queries() {
             json!({"range": {field: {"gte": "a"}}}),
             json!({"multi_match": {"query": "x", "fields": [field]}}),
         ] {
+            // ES's texts (row T11-3): the binary mapper's own.
+            let why = if field == "vector_dump" {
+                "Binary fields do not support searching".to_string()
+            } else {
+                format!("Cannot search on field [{field}] since it is not indexed.")
+            };
             assert_error(
                 &leaf_err(q.clone()),
                 400,
                 "query_shard_exception",
-                &format!(
-                    "failed to create query: Cannot search on field [{field}] since it is not indexed."
-                ),
+                &format!("failed to create query: {why}"),
             );
         }
-        assert_eq!(leaf(json!({"exists": {"field": field}})), exists(field));
+        // Neither keeps norms nor doc values in ES: `exists` finds nothing.
+        assert_eq!(leaf(json!({"exists": {"field": field}})), Query::MatchNone);
     }
     // Wildcard expansion skips them.
     let Query::MultiMatch { fields, .. } =
@@ -793,8 +813,9 @@ fn knn_defaults_and_bounds() {
     assert_error(
         &err(json!({"field": "dot", "query_vector": [1, 1, 0]})),
         400,
-        "illegal_argument_exception",
-        "The [dot_product] similarity can only be used with unit-length vectors.",
+        "query_shard_exception",
+        "failed to create query: The [dot_product] similarity can only be used with unit-length \
+         vectors. Preview of invalid vector: [1.0, 1.0, 0.0]",
     );
     assert_error(
         &err(json!({"field": "v2", "query_vector": [1, 0, 0]})),
@@ -997,8 +1018,14 @@ fn date_math_rounds_per_bound() {
         us("2026-09-24T10:41:00Z")
     );
     assert_eq!(at("now-1y/y", Rounding::Down), us("2025-01-01T00:00:00Z"));
-    // A bare date's missing parts are filled by the rounding.
-    assert_eq!(at("2026-09", Rounding::Up), us("2026-09-30T23:59:59.999Z"));
+    // A bare date rounds up its time of day only: a missing month or day
+    // stays 1, as ES's round-up parser fills it (row T11-3).
+    assert_eq!(at("2026-09", Rounding::Up), us("2026-09-01T23:59:59.999Z"));
+    assert_eq!(at("2026", Rounding::Up), us("2026-01-01T23:59:59.999Z"));
+    assert_eq!(
+        at("2026-09-24", Rounding::Up),
+        us("2026-09-24T23:59:59.999Z")
+    );
     assert_eq!(
         at("2026-09-24T10:11", Rounding::Up),
         us("2026-09-24T10:11:59.999Z")

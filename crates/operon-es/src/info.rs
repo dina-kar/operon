@@ -99,7 +99,10 @@ pub(crate) async fn health(State(gw): State<EsGateway>, ctx: RequestCtx, uri: Ur
 }
 
 /// `GET /_cluster/health/{index}`: green, over the indices `index` covers;
-/// a missing one is 404.
+/// with a missing one, 408 and red with `timed_out`, as ES answers once its
+/// wait times out (owner ruling O-M15-7, checked against the 8.19 oracle,
+/// row T11-3). Operon answers at once: nothing it could wait for turns red
+/// green.
 pub(crate) async fn health_index(
     State(gw): State<EsGateway>,
     ctx: RequestCtx,
@@ -115,7 +118,11 @@ pub(crate) async fn health_index(
 /// the resolved indices' partitions.
 async fn health_of(gw: EsGateway, ns: String, expr: IndexExpr) -> Result<(u16, Value), EsError> {
     let service = gw.service();
-    let resolved = resolve(service, &ns, &expr, ResolveOptions::default()).await?;
+    let (resolved, missing) = match resolve(service, &ns, &expr, ResolveOptions::default()).await {
+        Ok(resolved) => (resolved, false),
+        Err(err) if err.kind == "index_not_found_exception" => (Vec::new(), true),
+        Err(err) => return Err(err),
+    };
     let partitions: BTreeMap<String, u32> = service
         .collection_records(&ns)
         .await
@@ -129,11 +136,11 @@ async fn health_of(gw: EsGateway, ns: String, expr: IndexExpr) -> Result<(u16, V
         .map(|p| u64::from(*p))
         .sum();
     Ok((
-        200,
+        if missing { 408 } else { 200 },
         json!({
             "cluster_name": gw.config().cluster_name,
-            "status": "green",
-            "timed_out": false,
+            "status": if missing { "red" } else { "green" },
+            "timed_out": missing,
             "number_of_nodes": 1,
             "number_of_data_nodes": 1,
             "active_primary_shards": shards,
@@ -141,6 +148,7 @@ async fn health_of(gw: EsGateway, ns: String, expr: IndexExpr) -> Result<(u16, V
             "relocating_shards": 0,
             "initializing_shards": 0,
             "unassigned_shards": 0,
+            "unassigned_primary_shards": 0,
             "delayed_unassigned_shards": 0,
             "number_of_pending_tasks": 0,
             "number_of_in_flight_fetch": 0,

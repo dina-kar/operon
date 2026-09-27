@@ -3,7 +3,7 @@
 
 use operon_collection::FieldKind;
 use operon_query::{FieldValue, MissingOrder, Query, SortKey, SortOrder, TrackTotalHits};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::dsl::Rounding;
 use crate::dsl::query::token_name;
@@ -329,10 +329,24 @@ fn after_value(
     if v.is_null() {
         return Ok(None);
     }
+    // A shard failure in ES, with the value's parse error below it (row
+    // T11-3).
     let bad = || {
-        EsError::illegal_argument(format!(
-            "Failed to parse search_after value for field [{field}]."
-        ))
+        let cause = match v {
+            Value::String(text) => json!({
+                "type": "number_format_exception",
+                "reason": format!("For input string: \"{text}\""),
+            }),
+            other => json!({"type": "illegal_argument_exception", "reason": other.to_string()}),
+        };
+        EsError::search_phase(
+            EsError::illegal_argument(format!(
+                "Failed to parse search_after value for field [{field}]."
+            ))
+            .with("caused_by", cause),
+            &view.name,
+            SEARCH_NODE,
+        )
     };
     match resolve(view, field) {
         FieldRef::Json { .. } => Ok(Some(json_class(v))),
@@ -405,11 +419,15 @@ pub fn search_after_filter(
     now_ms: i64,
 ) -> Result<Query, EsError> {
     if values.len() != keys.len() {
-        return Err(EsError::illegal_argument(format!(
-            "search_after has {} value(s) but sort has {}.",
-            values.len(),
-            keys.len()
-        )));
+        return Err(EsError::search_phase(
+            EsError::illegal_argument(format!(
+                "search_after has {} value(s) but sort has {}.",
+                values.len(),
+                keys.len()
+            )),
+            &view.name,
+            SEARCH_NODE,
+        ));
     }
     let mut disjuncts = Vec::new();
     let mut prefix: Vec<Query> = Vec::new();

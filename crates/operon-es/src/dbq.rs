@@ -90,11 +90,7 @@ impl DbqParams {
             check_conflicts(conflicts)?;
         }
         let scroll_size = p.usize("scroll_size")?.unwrap_or(1_000);
-        if !(1..=10_000).contains(&scroll_size) {
-            return Err(EsError::illegal_argument(format!(
-                "[scroll_size] must be between 1 and 10000, got [{scroll_size}]"
-            )));
-        }
+        check_scroll_size(scroll_size)?;
         let max_docs = match p.str("max_docs") {
             None => None,
             Some(text) => max_docs(&parse_i64("max_docs", text)?)?,
@@ -112,6 +108,30 @@ impl DbqParams {
             search: crate::search::parse_params(p)?,
         })
     }
+}
+
+/// ES's answers to a `scroll_size` of 0 and to one past the result window
+/// (the scroll search's own checks; row T11-3).
+fn check_scroll_size(scroll_size: usize) -> Result<(), EsError> {
+    if scroll_size == 0 {
+        return Err(EsError::new(
+            400,
+            "action_request_validation_exception",
+            "Validation Failed: 1: [size] cannot be [0] in a scroll context;",
+        ));
+    }
+    if scroll_size > 10_000 {
+        return Err(EsError::search_phase(
+            EsError::illegal_argument(format!(
+                "Batch size is too large, size must be less than or equal to: [10000] but was \
+                 [{scroll_size}]. Scroll batch sizes cost as much memory as result windows so \
+                 they are controlled by the [index.max_result_window] index level setting."
+            )),
+            "",
+            crate::search::body::SEARCH_NODE,
+        ));
+    }
+    Ok(())
 }
 
 fn parse_i64(name: &str, text: &str) -> Result<Value, EsError> {
@@ -133,12 +153,20 @@ fn check_conflicts(value: &str) -> Result<(), EsError> {
     }
 }
 
-/// `max_docs`: a positive integer, or `-1` for every match.
+/// `max_docs`: a positive integer, or `-1` for every match. ES's texts
+/// (row T11-3): 0 is below the one slice, another negative is refused as
+/// negative.
 fn max_docs(value: &Value) -> Result<Option<u64>, EsError> {
     match value.as_i64() {
         Some(-1) => Ok(None),
         Some(n) if n > 0 => Ok(Some(n as u64)),
-        _ => Err(EsError::new(
+        Some(0) => Err(EsError::illegal_argument(
+            "[max_docs] should be >= [slices]",
+        )),
+        Some(n) => Err(EsError::illegal_argument(format!(
+            "[max_docs] parameter cannot be negative, found [{n}]"
+        ))),
+        None => Err(EsError::new(
             400,
             "action_request_validation_exception",
             format!(
@@ -208,9 +236,11 @@ pub(crate) fn parse_body(body: &Value, with_script: bool) -> Result<ByQueryBody<
             "conflicts" => check_conflicts(value.as_str().unwrap_or_default())?,
             "script" if with_script => out.script = Some(value).filter(|v| !v.is_null()),
             "slice" | "sort" => return Err(EsError::unsupported(key)),
+            // ES's `AbstractBulkByQueryRequest` parser text (row T11-3).
             other => {
                 return Err(EsError::parsing(format!(
-                    "request does not support [{other}]"
+                    "Unknown key for a {} in [{other}].",
+                    token_name(value)
                 )));
             }
         }
@@ -219,11 +249,13 @@ pub(crate) fn parse_body(body: &Value, with_script: bool) -> Result<ByQueryBody<
 }
 
 /// The query of each index: `q` when given, else the body's `query`, which
-/// one of them must give (knn and `script_score` are refused).
+/// one of them must give unless `match_all` stands in (knn and
+/// `script_score` are refused).
 pub(crate) fn compile_queries(
     indices: &[IndexView],
     body_query: Option<&Value>,
     search: &SearchParams,
+    match_all: bool,
 ) -> Result<Vec<Query>, EsError> {
     let now = now_ms();
     indices
@@ -233,6 +265,7 @@ pub(crate) fn compile_queries(
             match (&search.q, body_query) {
                 (Some(q), _) => url_query(q, search, &qctx),
                 (None, Some(query)) => parse_leaf(query, &qctx),
+                (None, None) if match_all => Ok(Query::MatchAll),
                 (None, None) => Err(EsError::new(
                     400,
                     "action_request_validation_exception",
@@ -356,7 +389,7 @@ pub async fn delete_by_query(
     let max_docs = parsed.max_docs.unwrap_or(params.max_docs);
     let mut indices = indices.to_vec();
     indices.sort_by(|a, b| a.name.cmp(&b.name));
-    let queries = compile_queries(&indices, parsed.query, &params.search)?;
+    let queries = compile_queries(&indices, parsed.query, &params.search, false)?;
     let targets: Vec<(IndexView, Query)> = indices.into_iter().zip(queries).collect();
     let totals = run(
         gw,

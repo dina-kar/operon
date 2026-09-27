@@ -219,10 +219,10 @@ async fn pit_requests_are_refused() {
     let a = es
         .send(Method::POST, "/i/_pit?keep_alive=1m", None, &[])
         .await;
-    a.assert_error(
-        400,
-        "illegal_argument_exception",
-        Some("no handler found for uri [/i/_pit?keep_alive=1m] and method [POST]"),
+    assert_eq!(a.status, StatusCode::BAD_REQUEST, "{}", a.text);
+    assert_eq!(
+        a.body,
+        json!({"error": "no handler found for uri [/i/_pit?keep_alive=1m] and method [POST]"})
     );
     let a = es
         .post(
@@ -498,8 +498,40 @@ async fn delete_by_query_errors_follow_es() {
     a.assert_error(
         400,
         "parsing_exception",
-        Some("request does not support [script]"),
+        Some("Unknown key for a VALUE_STRING in [script]."),
     );
+    // ES's `max_docs` and `scroll_size` texts (row T11-3).
+    for (path, body, kind, reason) in [
+        (
+            "/i/_delete_by_query?max_docs=0",
+            json!({"query": {"match_all": {}}}),
+            "illegal_argument_exception",
+            "[max_docs] should be >= [slices]",
+        ),
+        (
+            "/i/_delete_by_query",
+            json!({"query": {"match_all": {}}, "max_docs": -2}),
+            "illegal_argument_exception",
+            "[max_docs] parameter cannot be negative, found [-2]",
+        ),
+        (
+            "/i/_delete_by_query?scroll_size=0",
+            json!({"query": {"match_all": {}}}),
+            "action_request_validation_exception",
+            "Validation Failed: 1: [size] cannot be [0] in a scroll context;",
+        ),
+        (
+            "/i/_delete_by_query?scroll_size=20000",
+            json!({"query": {"match_all": {}}}),
+            "search_phase_execution_exception",
+            "all shards failed",
+        ),
+    ] {
+        let a = dbq(&es, path, body).await;
+        assert_eq!(a.status.as_u16(), 400, "{}", a.text);
+        assert_eq!(a.body["error"]["type"], kind, "{}", a.text);
+        assert_eq!(a.body["error"]["reason"], reason, "{}", a.text);
+    }
     let a = dbq(
         &es,
         "/missing/_delete_by_query",

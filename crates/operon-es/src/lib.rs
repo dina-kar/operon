@@ -33,17 +33,23 @@
 //!   with a fast column (M1.1 keeps a field only if it is indexed or fast;
 //!   row T2-2); a field ES neither indexes nor keeps doc values for is fast.
 //! - `PUT /{index}/_mapping` cannot change the root `dynamic` (row T3-3).
-//! - A comma-list `DELETE /{index}` deletes the indices in order and stops
-//!   at the first missing one, leaving the earlier ones deleted (row T3-2).
-//! - A write to a comma list or a wildcard is refused as an invalid index
-//!   name (row T1-5).
 //! - `_seq_no` is the partition offset of a write's record and `_version`
 //!   is `_seq_no + 1`, so versions increase but are not dense (Ruling 4).
 //! - A `null` `dense_vector` value stays in `_source` as `null` (row T4-3).
 //! - The contents of an `enabled: false` object are mapped dynamically by
 //!   the collection service, and refused under `dynamic: strict` (row T4-6).
 //! - The error texts of document parsing carry `[1:1]` rather than the
-//!   value's line and column (row T4-5).
+//!   value's line and column, and JSON syntax errors carry serde_json's text
+//!   rather than Jackson's (rows T4-5, T11-5).
+//! - Texts ES builds from its own internals differ: a negative `boost`
+//!   names the query without ES's rendering of it, a query nested past 30
+//!   levels is one `illegal_argument_exception` rather than one
+//!   `x_content_parse_exception` per level, a `dense_vector` value that is
+//!   not an array is a field parse error, and the field-limit error counts
+//!   the new fields of the whole document (row T11-5).
+//! - `_delete_by_query` and `_update_by_query` count `batches` per index,
+//!   so a request over an alias with two members reports at least two
+//!   (row T11-5).
 //! - A `range` with numeric bounds on a `flattened` path compares numbers
 //!   numerically; ES compares flattened values as keywords (row E11,
 //!   O-M15-2).
@@ -339,12 +345,13 @@ impl EsGateway {
     }
 }
 
-/// 400 for a path no route knows (rule 7).
+/// 400 for a path no route knows (rule 7), in ES's shape: a string
+/// `error` and no `status`.
 async fn no_route(ctx: RequestCtx, method: Method, uri: Uri) -> Response {
-    let error = EsError::illegal_argument(format!(
-        "no handler found for uri [{uri}] and method [{method}]"
-    ));
-    http::fail(&ctx, &error)
+    let body = serde_json::json!({
+        "error": format!("no handler found for uri [{uri}] and method [{method}]")
+    });
+    http::respond(&ctx, 400, &body)
 }
 
 /// The running gateway listener.

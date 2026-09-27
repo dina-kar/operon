@@ -216,7 +216,8 @@ pub async fn update_by_query(
     let max_docs = parsed.max_docs.unwrap_or(params.max_docs);
     let mut indices = indices.to_vec();
     indices.sort_by(|a, b| a.name.cmp(&b.name));
-    let queries = dbq::compile_queries(&indices, parsed.query, &params.search)?;
+    // Without a query every document matches, as in ES (row T11-3).
+    let queries = dbq::compile_queries(&indices, parsed.query, &params.search, true)?;
     let targets: Vec<(IndexView, _)> = indices.into_iter().zip(queries).collect();
     let totals = dbq::run(
         gw,

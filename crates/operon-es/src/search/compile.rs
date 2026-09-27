@@ -187,8 +187,18 @@ fn positive(boost: f32) -> f32 {
 }
 
 /// Compiles the search `body` (with the URL `params`, Ruling 20) over
-/// `index` (Task 8).
+/// `index` (Task 8). A failure ES raises on the shard comes wrapped in
+/// `search_phase_execution_exception` ([`EsError::at_shard`]).
 pub fn compile(
+    index: &IndexView,
+    body: &Value,
+    params: &SearchParams,
+    now_ms: i64,
+) -> Result<SearchPlan, EsError> {
+    compile_body(index, body, params, now_ms).map_err(|e| e.at_shard(&index.name, SEARCH_NODE))
+}
+
+fn compile_body(
     index: &IndexView,
     body: &Value,
     params: &SearchParams,
@@ -349,8 +359,11 @@ pub fn compile(
         None | Some(Value::Null) => None,
         Some(Value::Array(values)) => {
             if from != 0 {
-                return Err(EsError::illegal_argument(
-                    "[from] parameter must be set to 0 when [search_after] is used",
+                return Err(EsError::new(
+                    400,
+                    "action_request_validation_exception",
+                    "Validation Failed: 1: [from] parameter must be set to 0 when [search_after] \
+                     is used;",
                 ));
             }
             if !field_first {

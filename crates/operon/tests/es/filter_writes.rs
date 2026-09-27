@@ -255,18 +255,18 @@ async fn update_by_query_without_a_script_is_refused() {
             "re-indexing without a script needs online index changes (D97); not supported in Elasticsearch API Phase A",
         ),
     );
-    // A script without a query (and no `q`) is refused as well.
-    let a = ubq(
-        &es,
-        "/i/_update_by_query",
-        json!({"script": "ctx._source.remove('text')"}),
-    )
-    .await;
-    a.assert_error(
-        400,
-        "action_request_validation_exception",
-        Some("Validation Failed: 1: query is missing;"),
+    // A script without a query (and no `q`) updates every document, as in
+    // ES (row T11-3).
+    let a = Es::ok(
+        ubq(
+            &es,
+            "/i/_update_by_query?refresh=true",
+            json!({"script": "ctx._source.remove('text')"}),
+        )
+        .await,
     );
+    assert_eq!(a.body["updated"], a.body["total"], "{}", a.text);
+    assert!(a.body["updated"].as_u64().expect("updated") > 0);
     es.server.shutdown().await.expect("shutdown");
 }
 
@@ -314,7 +314,11 @@ async fn update_by_query_with_max_docs_stops() {
         json!({"query": {"match_all": {}}, "max_docs": 0, "script": script}),
     )
     .await;
-    a.assert_error(400, "action_request_validation_exception", None);
+    a.assert_error(
+        400,
+        "illegal_argument_exception",
+        Some("[max_docs] should be >= [slices]"),
+    );
     es.server.shutdown().await.expect("shutdown");
 }
 

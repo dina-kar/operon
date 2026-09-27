@@ -281,8 +281,8 @@ async fn a_comma_list_delete_deletes_every_index() {
         "index_not_found_exception",
         Some("no such index [nope]"),
     );
-    assert_eq!(es.head("/test_1").await.status, StatusCode::NOT_FOUND);
-    Es::ok(es.put("/test_1", None).await);
+    // ES resolves the whole list first: nothing is deleted (row T11-3).
+    assert_eq!(es.head("/test_1").await.status, StatusCode::OK);
     Es::ok(es.delete("/test_1,nope?ignore_unavailable=true").await);
     assert_eq!(es.head("/test_1").await.status, StatusCode::NOT_FOUND);
     es.server.shutdown().await.expect("shutdown");
@@ -648,7 +648,7 @@ async fn put_mapping_adds_a_field() {
         .await,
     );
     let a = es.put("/i/_mapping", None).await;
-    a.assert_error(400, "action_request_validation_exception", None);
+    a.assert_error(400, "parse_exception", Some("request body is required"));
     es.server.shutdown().await.expect("shutdown");
 }
 

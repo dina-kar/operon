@@ -242,10 +242,19 @@ async fn update_of_a_missing_document_is_404_unless_upserting() {
         .await;
     assert_eq!(status(&a), 201, "{}", a.text);
     assert_eq!(stored(&es, "i", "yy").await, Some(json!({"a": 0})));
-    // A missing index without an upsert is 404 and creates nothing.
+    // A missing index without an upsert: ES creates the index and answers
+    // that the document is missing (row T11-3); a delete creates nothing.
     let a = es.post("/nope/_update/1", json!({"doc": {"a": 1}})).await;
+    a.assert_error(
+        404,
+        "document_missing_exception",
+        Some("[1]: document missing"),
+    );
+    assert_eq!(a.body["error"]["index"], "nope");
+    assert_eq!(es.head("/nope").await.status, StatusCode::OK);
+    let a = es.delete("/nope2/_doc/1").await;
     a.assert_error(404, "index_not_found_exception", None);
-    assert_eq!(es.head("/nope").await.status, StatusCode::NOT_FOUND);
+    assert_eq!(es.head("/nope2").await.status, StatusCode::NOT_FOUND);
     // Scripts are Phase A's refusal.
     let a = es
         .post(
@@ -426,7 +435,10 @@ async fn a_vector_in_source_is_stored_once_and_restored() {
     a.assert_error(
         400,
         "document_parsing_exception",
-        Some("The number of dimensions for field [vector] should be [3] but found [2]"),
+        Some(
+            "[1:1] failed to parse: The [dense_vector] field [vector] in doc [document with id \
+             '2'] has a different number of dimensions [2] than defined in the mapping [3]",
+        ),
     );
     let a = es
         .put("/v/_doc/2", Some(json!({"vector": [0, 0, 0]})))
@@ -434,7 +446,10 @@ async fn a_vector_in_source_is_stored_once_and_restored() {
     a.assert_error(
         400,
         "document_parsing_exception",
-        Some("The [cosine] similarity does not support vectors with zero magnitude."),
+        Some(
+            "[1:1] failed to parse: The [cosine] similarity does not support vectors with zero \
+             magnitude. Preview of invalid vector: [0.0, 0.0, 0.0]",
+        ),
     );
     let a = es.put("/v/_doc/2", Some(json!({"vector": "abc"}))).await;
     a.assert_error(400, "document_parsing_exception", None);
@@ -458,7 +473,10 @@ async fn dot_product_needs_unit_vectors() {
     a.assert_error(
         400,
         "document_parsing_exception",
-        Some("The [dot_product] similarity can only be used with unit-length vectors."),
+        Some(
+            "[1:1] failed to parse: The [dot_product] similarity can only be used with \
+             unit-length vectors. Preview of invalid vector: [1.0, 1.0]",
+        ),
     );
     es.server.shutdown().await.expect("shutdown");
 }
@@ -495,7 +513,10 @@ async fn a_vector_declared_without_dims_takes_them_from_the_first_document() {
     a.assert_error(
         400,
         "document_parsing_exception",
-        Some("The number of dimensions for field [emb] should be [4] but found [2]"),
+        Some(
+            "[1:1] failed to parse: The [dense_vector] field [emb] in doc [document with id '2'] \
+             has a different number of dimensions [2] than defined in the mapping [4]",
+        ),
     );
     es.server.shutdown().await.expect("shutdown");
 }
@@ -595,7 +616,9 @@ async fn strict_mapping_rejects_an_unmapped_field() {
     a.assert_error(
         400,
         "strict_dynamic_mapping_exception",
-        Some("[dynamic] set to [strict], dynamic introduction of [x] within [_doc] is not allowed"),
+        Some(
+            "[1:1] mapping set to strict, dynamic introduction of [x] within [_doc] is not allowed",
+        ),
     );
     let a = es.put("/s/_doc/1", Some(json!({"a": 1}))).await;
     assert_eq!(status(&a), 201, "{}", a.text);
@@ -616,6 +639,7 @@ async fn the_field_limit_rejects_a_document() {
         reason.contains("Limit of total fields [3] has been exceeded"),
         "{reason}"
     );
+    assert_eq!(a.body["error"]["type"], "document_parsing_exception");
     assert_eq!(count(&es, "l").await, 0);
     es.server.shutdown().await.expect("shutdown");
 }
@@ -675,8 +699,11 @@ async fn ids_are_validated() {
     let a = es
         .put(&format!("/i/_doc/{long}"), Some(json!({"a": 1})))
         .await;
-    a.assert_error(400, "illegal_argument_exception", None);
+    a.assert_error(400, "action_request_validation_exception", None);
     assert!(a.text.contains("is too long"), "{}", a.text);
+    // A body-less index request (row T11-3).
+    let a = es.put("/i/_doc/1", None).await;
+    a.assert_error(400, "parse_exception", Some("request body is required"));
     let a = es.put("/i/_doc/a%2Fb", Some(json!({"a": 1}))).await;
     assert_eq!(status(&a), 201, "{}", a.text);
     assert_eq!(a.body["_id"], "a/b");
@@ -685,7 +712,7 @@ async fn ids_are_validated() {
 }
 
 #[tokio::test]
-async fn a_binary_value_must_be_base64() {
+async fn a_binary_value_is_stored_as_it_is() {
     let es = Es::start().await;
     let body = json!({"mappings": {"properties": {
         "text_input": {"type": "text", "index": false},
@@ -703,15 +730,12 @@ async fn a_binary_value_must_be_base64() {
         stored(&es, "e", "1").await,
         Some(json!({"vector_dump": "AAAAAA=="}))
     );
+    // ES 8.19 does not check a `binary` value without doc values (row
+    // T11-3).
     let a = es
         .put("/e/_doc/2", Some(json!({"vector_dump": "not base64!"})))
         .await;
-    a.assert_error(400, "document_parsing_exception", None);
-    let reason = a.body["error"]["reason"].as_str().expect("reason");
-    assert!(
-        reason.contains("failed to parse field [vector_dump] of type [binary]"),
-        "{reason}"
-    );
+    assert_eq!(status(&a), 201, "{}", a.text);
     es.server.shutdown().await.expect("shutdown");
 }
 
@@ -1129,17 +1153,34 @@ async fn mget_request_errors() {
         Some("Validation Failed: 1: no documents to get;"),
     );
     let a = es.post("/i/_mget", json!({"nope": []})).await;
-    a.assert_error(400, "parse_exception", None);
+    a.assert_error(
+        400,
+        "parsing_exception",
+        Some("unknown key [nope] for a START_ARRAY, expected [docs] or [ids]"),
+    );
     let a = es
         .post("/i/_mget", json!({"docs": [{"_id": "1", "x": 1}]}))
         .await;
     a.assert_error(400, "parse_exception", None);
-    // Without a path index, an entry without `_index` fails on its own.
-    let a = Es::ok(es.post("/_mget", json!({"ids": ["1"]})).await);
-    let doc = &a.body["docs"][0];
-    assert_eq!(doc["_index"], Value::Null, "{}", a.text);
-    assert_eq!(doc["_id"], "1");
-    assert_eq!(doc["error"]["type"], "action_request_validation_exception");
+    // An entry without an index or an id fails the request, numbered by
+    // position (ES's `MultiGetRequest.validate`, row T11-3).
+    let a = es.post("/_mget", json!({"ids": ["1"]})).await;
+    a.assert_error(
+        400,
+        "action_request_validation_exception",
+        Some("Validation Failed: 1: index is missing for doc 0;"),
+    );
+    let a = es
+        .post(
+            "/_mget",
+            json!({"docs": [{"_index": "i", "_id": "1"}, {"_id": "2"}, {"_index": "i"}]}),
+        )
+        .await;
+    a.assert_error(
+        400,
+        "action_request_validation_exception",
+        Some("Validation Failed: 1: index is missing for doc 1;2: id is missing for doc 2;"),
+    );
     es.server.shutdown().await.expect("shutdown");
 }
 

@@ -99,9 +99,21 @@ fn an_object_matching_nothing_is_dropped() {
     // An object an include names itself is kept, even when empty.
     let f = filter(&["e"], &[]);
     assert_eq!(apply(&f, json!({"e": {}, "f": {}})), json!({"e": {}}));
-    // An object that matched an include stays when excludes empty it.
+    // An object the excludes empty is dropped, even when an include matched
+    // it; one that was empty already stays (ES 8.19, row T11-3).
     let f = filter(&["metadata"], &["metadata.*"]);
-    assert_eq!(apply(&f, doc()), json!({"metadata": {}}));
+    assert_eq!(apply(&f, doc()), json!({}));
+    let doc = json!({"a": {"b": 1}, "e": {}, "arr": [], "m": {"n": {"o": 1}}, "x": 1});
+    assert_eq!(
+        apply(&filter(&[], &["a.b"]), doc.clone()),
+        json!({"e": {}, "arr": [], "m": {"n": {"o": 1}}, "x": 1})
+    );
+    assert_eq!(apply(&filter(&["m"], &["m.n.o"]), doc.clone()), json!({}));
+    assert_eq!(
+        apply(&filter(&["e", "arr", "x"], &[]), doc.clone()),
+        json!({"e": {}, "arr": [], "x": 1})
+    );
+    assert_eq!(apply(&filter(&["a", "x"], &["a.b"]), doc), json!({"x": 1}));
 }
 
 #[test]
