@@ -648,11 +648,15 @@ struct Flight {
     stop: CancellationToken,
     /// The `DoPut` tasks, which outlive an aborted `task`.
     puts: PutTasks,
+    /// Serving starts once this is sent ([`Flight::open`]): after the
+    /// durable runtime has started, as for the HTTP listener (T0-6, X8).
+    open: Option<oneshot::Sender<()>>,
 }
 
 impl Flight {
     /// Serves Flight SQL over `collections` on `listener` until stopped
-    /// (Task 12), with stream ingest through `streams` (Task 13).
+    /// (Task 12), with stream ingest through `streams` (Task 13), from the
+    /// moment [`open`](Self::open) is called. The listener is bound now.
     fn start(
         listener: tokio::net::TcpListener,
         addr: SocketAddr,
@@ -662,19 +666,33 @@ impl Flight {
     ) -> Self {
         let stop = CancellationToken::new();
         let puts = PutTasks::new();
-        let task = tokio::spawn(serve(
-            listener,
-            collections,
-            streams,
-            config,
-            stop.clone(),
-            puts.clone(),
-        ));
+        let (open, opened) = oneshot::channel::<()>();
+        let task = {
+            let stop = stop.clone();
+            let puts = puts.clone();
+            tokio::spawn(async move {
+                // A dropped gate (a failed start, or a stop first) serves
+                // nothing.
+                tokio::select! {
+                    opened = opened => if opened.is_err() { return },
+                    () = stop.cancelled() => return,
+                }
+                serve(listener, collections, streams, config, stop, puts).await;
+            })
+        };
         Self {
             addr,
             task,
             stop,
             puts,
+            open: Some(open),
+        }
+    }
+
+    /// Start serving (once).
+    fn open(&mut self) {
+        if let Some(open) = self.open.take() {
+            let _ = open.send(());
         }
     }
 
@@ -865,6 +883,9 @@ impl Server {
             return Err(err);
         }
         let _ = serve_now.send(());
+        if let Some(flight) = &mut server.flight {
+            flight.open();
+        }
         tracing::info!(%local_addr, "operon is serving");
         Ok(server)
     }
@@ -953,6 +974,9 @@ impl Server {
                     return Err(err);
                 }
                 serve.set(app);
+                if let Some(flight) = &mut server.flight {
+                    flight.open();
+                }
                 tracing::info!(%local_addr, node_id, %roles, "operon cluster node is serving");
                 Ok(server)
             }
