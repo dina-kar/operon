@@ -85,6 +85,28 @@ fn dynamic_mapping_follows_es_rules() {
 }
 
 #[test]
+fn an_integer_above_i64_max_maps_to_f64() {
+    // ES maps an integer above 2^63−1 to `float` (M1.5 owner ruling
+    // O-M15-3); i64::MAX itself is still a long.
+    let empty = schema(vec![], DynamicMapping::Map);
+    let source = json!({
+        "big": 18_446_744_073_709_551_615_u64,
+        "above": 9_223_372_036_854_775_808_u64,
+        "top": i64::MAX,
+        "low": i64::MIN,
+    });
+    assert_eq!(
+        propose(&empty, &[source]),
+        [
+            proposed("above", "above", FieldKind::F64),
+            proposed("big", "big", FieldKind::F64),
+            proposed("low", "low", FieldKind::I64),
+            proposed("top", "top", FieldKind::I64),
+        ]
+    );
+}
+
+#[test]
 fn dynamic_mapping_is_deterministic() {
     let empty = schema(vec![], DynamicMapping::Map);
     let sources = [

@@ -104,13 +104,18 @@
 //!   the raw distances and so favours far points (Ruling 9).
 //! - `recommend` with `best_score` or `sum_scores`, `discover` and
 //!   `context` score the union of one candidate search per example (the
-//!   positives, or the target and each pair's positive; `best_score` and
-//!   `sum_scores` without positives read the negatives'), each of
+//!   positives, or the target and each pair's positive), each of
 //!   `min(max(4 × (offset + limit), 100), max_candidates)` points, where
 //!   Qdrant scores during its HNSW walk; a point outside every neighbourhood
-//!   is missed (Ruling 10). With negatives only, the best points lie far
-//!   from the negatives, so their neighbourhoods rarely hold them: such a
-//!   query answers from a small candidate set (owner rulings on row T8-7).
+//!   is missed (Ruling 10). With negatives only (`best_score` or
+//!   `sum_scores`, accepted as Qdrant does, row T8-7), the best points lie
+//!   far from the negatives, so the searches go away from them: on Cosine
+//!   and Dot the nearest points to each negated negative and to their
+//!   negated sum, which are exactly the least similar ones; on Euclid and
+//!   Manhattan one exact scan by dot product with their negated sum (the
+//!   negated negative when there is one, or when the sum is zero), which
+//!   can miss a far point of small norm (owner ruling O-M15-1; one scan per
+//!   query, review of #60).
 //!   An empty `context` scores `candidate_k` points of the filter 0 each, in
 //!   id order, where Qdrant returns the first points of its walk.
 //! - Refusal texts for example sets differ from Qdrant's: `No positive

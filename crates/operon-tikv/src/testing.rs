@@ -27,6 +27,41 @@ use crate::{Tikv, TikvConfig};
 pub const PD_ENV: &str = "OPERON_TEST_PD";
 /// Overrides PD's HTTP API base URL (default `http://<first endpoint>`).
 pub const PD_HTTP_ENV: &str = "OPERON_TEST_PD_HTTP";
+/// The TiKV status address (`host:port`) of the test cluster's store, for
+/// its metrics and online config (default [`DEFAULT_TIKV_STATUS`]).
+pub const TIKV_STATUS_ENV: &str = "OPERON_TEST_TIKV_STATUS";
+/// The playground's TiKV status address at port offset 17000.
+pub const DEFAULT_TIKV_STATUS: &str = "127.0.0.1:37180";
+/// Set (to anything non-empty) by CI's nightly job: nightly-only cluster
+/// tests run only then.
+pub const NIGHTLY_ENV: &str = "OPERON_TEST_NIGHTLY";
+
+/// Whether nightly-only tests run; prints a `skipped:` line naming the
+/// current test when they do not.
+pub fn nightly() -> bool {
+    let on = std::env::var(NIGHTLY_ENV).is_ok_and(|v| !v.trim().is_empty());
+    if !on {
+        eprintln!(
+            "skipped: {} is nightly-only ({NIGHTLY_ENV})",
+            current_test()
+        );
+    }
+    on
+}
+
+/// The test cluster's TiKV status base URL (`http://host:port`).
+pub fn tikv_status() -> String {
+    let addr = std::env::var(TIKV_STATUS_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_TIKV_STATUS.to_string());
+    let addr = addr.trim().trim_end_matches('/');
+    if addr.starts_with("http://") || addr.starts_with("https://") {
+        addr.to_string()
+    } else {
+        format!("http://{addr}")
+    }
+}
 
 /// The metastore test keyspace.
 pub const TEST_META: &str = "loam_test_meta";

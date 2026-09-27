@@ -1,0 +1,16 @@
+# The loam.live.v1 protos (R1 plan Task 7). `buf lint` runs the STANDARD
+# rules; `buf breaking` is not enforced in R1 (the API is unstable).
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  ignore_only:
+    # Watch streams `Transition`, the protocol's unit (design §20 §7.1),
+    # rather than a `WatchResponse` wrapper (plan row T7-4).
+    RPC_RESPONSE_STANDARD_NAME:
+      - proto/loam/live/v1/live.proto
+breaking:
+  use:
+    - FILE

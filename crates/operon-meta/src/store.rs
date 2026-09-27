@@ -11,11 +11,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use operon_common::meta::{
-    AliasAction, ApplyError, ChangeWait, Collection, CollectionHead, CollectionRoots, Consistency,
-    Fence, HotConfig, Lease, LeaseGrant, Link, LinkHead, LinkId, MetaChanges, MetaError,
-    MetaResult, MetaStopped, MetaStore, Namespace, PartitionBounds, PartitionIndex, Pointer,
-    PointerCas, Retention, SegmentSwap, Stream, StreamState, TargetRef, Tracked, WalClass,
-    WalCommit, collection_pointer_key, link_pointer_key,
+    AliasAction, AliasTargetAction, AliasTargets, ApplyError, ChangeWait, Collection,
+    CollectionHead, CollectionRoots, Consistency, Fence, HotConfig, Lease, LeaseGrant, Link,
+    LinkHead, LinkId, MetaChanges, MetaError, MetaResult, MetaStopped, MetaStore, NameTarget,
+    Namespace, PartitionBounds, PartitionIndex, Pointer, PointerCas, Retention, SegmentSwap,
+    Stream, StreamState, TargetRef, Tracked, WalClass, WalCommit, collection_pointer_key,
+    link_pointer_key,
 };
 use operon_common::schema::CollectionSchema;
 use operon_common::{CollectionId, NamespaceId, StreamId};
@@ -423,6 +424,37 @@ impl MetaStore for MetaClient {
         actions: Vec<AliasAction>,
     ) -> MetaResult<()> {
         MetaClient::update_aliases(self, namespace, actions).await
+    }
+
+    async fn update_alias_targets(
+        &self,
+        namespace: NamespaceId,
+        actions: Vec<AliasTargetAction>,
+    ) -> MetaResult<()> {
+        MetaClient::update_alias_targets(self, namespace, actions).await
+    }
+
+    async fn alias_targets(
+        &self,
+        consistency: Consistency,
+        namespace: NamespaceId,
+    ) -> MetaResult<Vec<(String, AliasTargets)>> {
+        self.read(consistency, |s| {
+            s.alias_targets(namespace)
+                .map(|(alias, targets)| (alias.to_string(), targets))
+                .collect()
+        })
+        .await
+    }
+
+    async fn resolve_name(
+        &self,
+        consistency: Consistency,
+        namespace: NamespaceId,
+        name: &str,
+    ) -> MetaResult<Option<NameTarget>> {
+        self.read(consistency, |s| s.resolve_name(namespace, name))
+            .await
     }
 
     async fn collection(

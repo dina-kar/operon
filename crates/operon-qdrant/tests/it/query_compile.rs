@@ -627,16 +627,69 @@ fn gateway_scored_kinds_compile_to_their_plans() {
         (post.kind, post.distance, post.offset, post.limit),
         (ScoreKind::Custom, Distance::Euclid, 5, 30)
     );
-    // `best_score` with negatives only reads the negatives' neighbourhoods.
+    // `best_score` with negatives only searches away from the negatives
+    // (review of #57): on Dot, the nearest points to `-v`.
+    let leg_queries = |plan: &QueryPlan| match plan {
+        QueryPlan::Scored { legs, .. } => legs
+            .iter()
+            .map(|leg| match &leg.retrievers[..] {
+                [Retriever::Vector { query, params, .. }] => (query.clone(), params.exact),
+                other => panic!("{other:?}"),
+            })
+            .collect::<Vec<_>>(),
+        other => panic!("{other:?}"),
+    };
     let plan = compile(json!({"query": {"recommend": {"negative": [[1.0, 1.0]], "strategy": "best_score"}}, "using": "d"}))
         .expect("compiles");
-    assert!(matches!(plan, QueryPlan::Scored { ref legs, .. } if legs.len() == 1));
+    assert_eq!(leg_queries(&plan), vec![(vec![-1.0, -1.0], false)]);
     // So does `sum_scores` with negatives only, which Qdrant accepts (owner
-    // ruling on row T8-7).
+    // ruling on row T8-7), plus a leg away from the negatives' sum.
     let plan = compile(json!({"query": {"recommend": {"negative": [[1.0, 1.0], [0.0, 1.0]], "strategy": "sum_scores"}}, "using": "d"}))
         .expect("compiles");
     assert!(
-        matches!(plan, QueryPlan::Scored { ref legs, scorer: Scorer::SumScores { ref pos, ref neg }, .. } if legs.len() == 2 && pos.is_empty() && neg.len() == 2)
+        matches!(plan, QueryPlan::Scored { scorer: Scorer::SumScores { ref pos, ref neg }, .. } if pos.is_empty() && neg.len() == 2)
+    );
+    assert_eq!(
+        leg_queries(&plan),
+        vec![
+            (vec![-1.0, -1.0], false),
+            (vec![-0.0, -1.0], false),
+            (vec![-1.0, -2.0], false),
+        ]
+    );
+    // On Euclid no index finds far points: exact scans by dot product.
+    let plan = compile(json!({"query": {"recommend": {"negative": [[1.0, 1.0]], "strategy": "best_score"}}, "using": "e"}))
+        .expect("compiles");
+    let QueryPlan::Scored { legs, .. } = &plan else {
+        panic!("{plan:?}")
+    };
+    assert!(matches!(
+        &legs[0].retrievers[..],
+        [Retriever::Vector { params, .. }] if params.exact && params.distance == Some(Distance::Dot)
+    ));
+    // However many negatives, one exact scan, away from their sum (review
+    // of #60); with a zero sum, away from the first negative.
+    let plan = compile(json!({"query": {"recommend": {"negative": [[1.0, 1.0], [0.0, 1.0], [2.0, 0.0]], "strategy": "sum_scores"}}, "using": "e"}))
+        .expect("compiles");
+    assert_eq!(leg_queries(&plan), vec![(vec![-3.0, -2.0], true)]);
+    let plan = compile(json!({"query": {"recommend": {"negative": [[1.0, 1.0], [-1.0, -1.0]], "strategy": "best_score"}}, "using": "e"}))
+        .expect("compiles");
+    assert_eq!(leg_queries(&plan), vec![(vec![-1.0, -1.0], true)]);
+    // A sum that overflows f32 is not searched (review of #62): on Euclid
+    // the scan goes away from the first negative, on Dot the sum leg goes.
+    let big = json!([[3.0e38, 1.0], [3.0e38, 1.0]]);
+    let plan = compile(
+        json!({"query": {"recommend": {"negative": big, "strategy": "sum_scores"}}, "using": "e"}),
+    )
+    .expect("compiles");
+    assert_eq!(leg_queries(&plan), vec![(vec![-3.0e38, -1.0], true)]);
+    let plan = compile(
+        json!({"query": {"recommend": {"negative": big, "strategy": "sum_scores"}}, "using": "d"}),
+    )
+    .expect("compiles");
+    assert_eq!(
+        leg_queries(&plan),
+        vec![(vec![-3.0e38, -1.0], false), (vec![-3.0e38, -1.0], false)]
     );
     // An empty context is accepted, as in Qdrant: one filter-only leg,
     // every candidate scoring 0.
