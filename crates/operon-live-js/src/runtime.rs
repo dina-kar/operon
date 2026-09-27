@@ -54,6 +54,31 @@ const MAX_DEPTH: usize = 64;
 /// #93). 32 000 scanned documents of a few dozen fields each fit.
 const MAX_VALUE_PARTS: usize = 1 << 21;
 
+/// The most bytes of strings and byte buffers copied out of one JavaScript
+/// value: the runtime's default memory limit. A value that repeats one
+/// large string is small in QuickJS and large once copied (review of #97).
+const MAX_VALUE_BYTES: usize = 64 << 20;
+
+/// What copying one value out of JavaScript has used so far.
+#[derive(Debug, Default)]
+struct Copied {
+    parts: usize,
+    bytes: usize,
+}
+
+impl Copied {
+    /// Counts `n` more copied bytes, refusing the value past its budget.
+    fn bytes(&mut self, n: usize) -> Result<(), String> {
+        self.bytes = self.bytes.saturating_add(n);
+        if self.bytes > MAX_VALUE_BYTES {
+            return Err(format!(
+                "a value of more than {MAX_VALUE_BYTES} bytes of strings and buffers"
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// A bundle's functions, `(path, kind)`.
 type Functions = Vec<(String, FnKind)>;
 
@@ -463,7 +488,7 @@ fn host_call_fn<'js>(ctx: &Ctx<'js>, state: Rc<RefCell<State>>) -> rquickjs::Res
                     "the database is available inside a handler only",
                 ));
             };
-            let args = match from_js(&ctx, &helpers, args, 0, &mut 0) {
+            let args = match from_js(&ctx, &helpers, args, 0, &mut Copied::default()) {
                 Ok(v) => v,
                 Err(message) => {
                     return Err(Exception::throw_type(&ctx, &format!("db.{op}: {message}")));
@@ -573,9 +598,16 @@ fn call_in<'js>(
                         ));
                     }
                 };
+                // Converting runs getters, which may loop: a conversion
+                // that fails once the CPU budget fired is a timeout (review
+                // of #97).
                 return Ok(Outcome::Done(
-                    from_js(ctx, &helpers, value, 0, &mut 0).map_err(|m| {
-                        LiveError::FunctionError(format!("{} returned {m}", job.path))
+                    from_js(ctx, &helpers, value, 0, &mut Copied::default()).map_err(|m| {
+                        if budget.fired() {
+                            timeout(budget)
+                        } else {
+                            LiveError::FunctionError(format!("{} returned {m}", job.path))
+                        }
                     }),
                 ));
             }
@@ -773,13 +805,13 @@ fn from_js<'js>(
     helpers: &Helpers,
     v: Value<'js>,
     depth: usize,
-    parts: &mut usize,
+    copied: &mut Copied,
 ) -> Result<LiveValue, String> {
     if depth > MAX_DEPTH {
         return Err(format!("a value nested deeper than {MAX_DEPTH} levels"));
     }
-    *parts += 1;
-    if *parts > MAX_VALUE_PARTS {
+    copied.parts += 1;
+    if copied.parts > MAX_VALUE_PARTS {
         return Err(format!("a value of more than {MAX_VALUE_PARTS} parts"));
     }
     let restore = |p: &Persistent<Function<'static>>| {
@@ -791,11 +823,14 @@ fn from_js<'js>(
         Type::Undefined | Type::Uninitialized | Type::Null => Ok(LiveValue::Null),
         Type::Bool => Ok(LiveValue::Bool(v.as_bool().unwrap_or_default())),
         Type::Int | Type::Float => Ok(LiveValue::F64(v.as_number().unwrap_or_default())),
-        Type::String => v
-            .as_string()
-            .and_then(|s| s.to_string().ok())
-            .map(LiveValue::Str)
-            .ok_or_else(|| "an unreadable string".to_string()),
+        Type::String => {
+            let s = v
+                .as_string()
+                .and_then(|s| s.to_string().ok())
+                .ok_or_else(|| "an unreadable string".to_string())?;
+            copied.bytes(s.len())?;
+            Ok(LiveValue::Str(s))
+        }
         Type::BigInt => {
             let fits: bool = restore(&helpers.fits_i64)?
                 .call((v.clone(),))
@@ -813,14 +848,20 @@ fn from_js<'js>(
             let array = v
                 .into_array()
                 .ok_or_else(|| "an unreadable array".to_string())?;
-            let mut items = Vec::with_capacity(array.len());
+            // A sparse array's length reserves no more than the parts
+            // left (review of #97).
+            let mut items = Vec::with_capacity(
+                array
+                    .len()
+                    .min(MAX_VALUE_PARTS.saturating_sub(copied.parts)),
+            );
             for item in array.iter::<Value>() {
                 items.push(from_js(
                     ctx,
                     helpers,
                     item.map_err(|e| e.to_string())?,
                     depth + 1,
-                    parts,
+                    copied,
                 )?);
             }
             Ok(LiveValue::Array(items))
@@ -830,6 +871,7 @@ fn from_js<'js>(
                 .call((v.clone(),))
                 .map_err(|e| e.to_string())?;
             if let Some(bytes) = bytes {
+                copied.bytes(bytes.len())?;
                 return Ok(LiveValue::Bytes(bytes));
             }
             let object = v
@@ -841,7 +883,8 @@ fn from_js<'js>(
                 if item.is_undefined() {
                     continue;
                 }
-                fields.insert(k, from_js(ctx, helpers, item, depth + 1, parts)?);
+                copied.bytes(k.len())?;
+                fields.insert(k, from_js(ctx, helpers, item, depth + 1, copied)?);
             }
             Ok(LiveValue::Object(fields))
         }

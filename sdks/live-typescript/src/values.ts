@@ -59,12 +59,28 @@ function encode(v: unknown, depth: number, path: string): Value {
   if (proto !== Object.prototype && proto !== null) {
     throw new TypeError(`${path}: only plain objects are Loam values`);
   }
-  const fields: { [key: string]: Value } = {};
+  // The fields are set on the created message: `create` copies a map by
+  // assignment, which would drop a `__proto__` key.
+  const out = create(ValueSchema, { kind: { case: "objectValue", value: {} } });
+  const fields = (out.kind.value as { fields: { [key: string]: Value } }).fields;
   for (const [key, item] of Object.entries(v)) {
     if (item === undefined) continue;
-    fields[key] = encode(item, depth + 1, `${path}.${key}`);
+    setOwn(fields, key, encode(item, depth + 1, `${path}.${key}`));
   }
-  return create(ValueSchema, { kind: { case: "objectValue", value: { fields } } });
+  return out;
+}
+
+/**
+ * Sets `key` as an own enumerable property: plain assignment of `__proto__`
+ * would call the prototype setter instead (review of #97).
+ */
+function setOwn<T>(target: { [key: string]: T }, key: string, value: T): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
 }
 
 /** The TypeScript form of a wire value; an absent value is `null`. */
@@ -85,7 +101,8 @@ export function fromValue(v: Value | undefined): LiveValue {
       return kind.value.values.map(fromValue);
     case "objectValue": {
       const out: { [key: string]: LiveValue } = {};
-      for (const [key, item] of Object.entries(kind.value.fields)) out[key] = fromValue(item);
+      for (const [key, item] of Object.entries(kind.value.fields))
+        setOwn(out, key, fromValue(item));
       return out;
     }
   }

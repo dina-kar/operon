@@ -42,6 +42,27 @@ test("nested_values_roundtrip", () => {
   assert.throws(() => toValue(new Date() as unknown as LiveValue), TypeError);
 });
 
+// Review of #97: a key named __proto__ is an own property on both sides of
+// this layer and never changes a prototype. (protobuf-es's own `fromBinary`
+// and `toJson` drop such a map key; that is upstream, row T16 carries it.)
+test("proto_keys_stay_own_properties", () => {
+  const v = JSON.parse('{"__proto__": {"x": 1}, "a": 2}') as LiveValue;
+  const wire = toValue(v);
+  assert.equal(wire.kind.case, "objectValue");
+  const fields = (wire.kind.value as { fields: Record<string, unknown> }).fields;
+  assert.deepEqual(Object.keys(fields).sort(), ["__proto__", "a"]);
+  assert.ok(
+    toBinary(ValueSchema, wire).length > toBinary(ValueSchema, toValue({ a: 2 })).length,
+    "the key is on the wire",
+  );
+  const back = fromValue(wire) as Record<string, LiveValue>;
+  assert.equal(Object.getPrototypeOf(back), Object.prototype);
+  assert.ok(Object.hasOwn(back, "__proto__"));
+  assert.deepEqual(Object.keys(back).sort(), ["__proto__", "a"]);
+  assert.deepEqual(Object.getOwnPropertyDescriptor(back, "__proto__")?.value, { x: 1 });
+  assert.equal(canonical(back), canonical(v));
+});
+
 test("canonical_keys_ignore_key_order_and_keep_types", () => {
   assert.equal(canonical({ a: 1n, b: [true] }), canonical({ b: [true], a: 1n }));
   assert.notEqual(canonical(1n), canonical(1));
