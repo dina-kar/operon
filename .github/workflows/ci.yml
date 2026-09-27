@@ -133,6 +133,40 @@ jobs:
         if: failure()
         run: tail -n 200 "$RUNNER_TEMP/operon.log" || true
 
+  es-client:
+    name: Elasticsearch client suite
+    runs-on: ubuntu-latest
+    # The Elasticsearch 8.19 oracle (plan M1.5 Task 11, owner ruling
+    # O-M15-6): a CI-only test oracle, never vendored or shipped (R14).
+    services:
+      elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.19.22
+        env:
+          discovery.type: single-node
+          xpack.security.enabled: "false"
+          xpack.license.self_generated.type: trial
+          ES_JAVA_OPTS: -Xms512m -Xmx512m
+        ports:
+          - 9250:9200
+        options: >-
+          --health-cmd "curl -sf http://127.0.0.1:9200/_cluster/health"
+          --health-interval 5s --health-timeout 5s --health-retries 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+      - name: build
+        run: cargo build -p operon --locked
+      - uses: astral-sh/setup-uv@v6
+      # The suite starts `operon dev` on ephemeral ports (conftest.py) and
+      # runs the oracle checks against the service above.
+      - name: elasticsearch-py 8.19.3 against operon dev
+        env:
+          OPERON_BIN: target/debug/operon
+          ES_ORACLE_URL: http://127.0.0.1:9250
+        run: conformance/es-client/run.sh
+
   sim:
     name: simulation seed sweep
     runs-on: ubuntu-latest
