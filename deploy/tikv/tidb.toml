@@ -1,0 +1,4 @@
+# A keyspace-mode TiDB for MySQL clients in the dev playground (design §20 §10).
+# Never run a TiDB without keyspace-name beside Loam: it would be a second
+# cluster GC worker (R1 plan rows R6, X2).
+keyspace-name = "sql_dev"
