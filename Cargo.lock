@@ -5866,6 +5866,8 @@ name = "operon-tikv"
 version = "0.0.1"
 dependencies = [
  "axum 0.8.9",
+ "futures",
+ "operon-tikv",
  "proptest",
  "rand 0.9.5",
  "reqwest 0.12.28",

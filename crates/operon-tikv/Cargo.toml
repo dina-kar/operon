@@ -1,6 +1,6 @@
 [package]
 name = "operon-tikv"
-description = "Loam's TiKV client layer: keyspace-scoped transactions, the TSO clock, keyspace bootstrap and the cluster test harness."
+description = "Loam's TiKV client layer: keyspace-scoped transactions, the transaction runner, the tuple codec, the TSO clock, keyspace bootstrap and the cluster test harness."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,13 @@ authors.workspace = true
 # tikv-client is a git dependency (R1 plan row R4), which crates.io refuses.
 publish = false
 
+[features]
+# Tikv::with_faults and Tikv::inject_tso_stream_loss: the runner's fault hooks
+# for tests and the fault matrix (R1 plan Tasks 2 and 6).
+faults = []
+
 [dependencies]
+futures.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 serde.workspace = true
@@ -21,9 +27,10 @@ tracing.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
+# The integration tests use the fault hooks.
+operon-tikv = { path = ".", features = ["faults"] }
 proptest.workspace = true
 serde_json.workspace = true
-tikv-client.workspace = true
 
 [lints]
 workspace = true
