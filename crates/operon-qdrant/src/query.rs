@@ -92,6 +92,15 @@ impl QueryPlan {
             | QueryPlan::Mmr { post, .. } => post,
         }
     }
+
+    /// Every IR search the plan runs (Task 9 adds the group filters).
+    pub(crate) fn requests_mut(&mut self) -> Vec<&mut SearchRequest> {
+        match self {
+            QueryPlan::Ir { request, .. } => vec![request],
+            QueryPlan::Scored { legs, .. } => legs.iter_mut().collect(),
+            QueryPlan::Mmr { candidates, .. } => vec![candidates],
+        }
+    }
 }
 
 /// What the gateway does with the IR's hits (semantics step 3).

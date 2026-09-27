@@ -23,7 +23,9 @@ use crate::model::points::{CountRequest, PointRequest, ScrollRequest, UpdateOper
 use crate::proto::health as hpb;
 use crate::proto::qdrant as pb;
 use crate::schema::NewVector;
-use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, query, reads, schema, snapshots, writes};
+use crate::{
+    QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, groups, query, reads, schema, snapshots, writes,
+};
 
 /// Every gRPC service, gzip on both ways and messages of up to
 /// `max_request_bytes`, inside `HotLayer` and the gateway's own
@@ -158,6 +160,23 @@ impl GrpcService {
             points.iter().map(qconv::scored_point_to_grpc).collect(),
             ctx.elapsed_secs(),
         ))
+    }
+
+    /// A groups method: the groups and the time.
+    async fn groups(
+        &self,
+        meta: &tonic::metadata::MetadataMap,
+        timeout: Option<u64>,
+        collection: &str,
+        request: crate::model::query::QueryGroupsRequest,
+    ) -> Result<(pb::GroupsResult, f64), Status> {
+        let collection = collection.to_string();
+        let (result, ctx) = self
+            .run(meta, timeout, |gw, ctx| {
+                groups::run_groups(gw, ctx, collection, request)
+            })
+            .await?;
+        Ok((qconv::groups_to_grpc(&result), ctx.elapsed_secs()))
     }
 
     /// A legacy batch method: one list per request, in order.
@@ -825,6 +844,57 @@ service! {
             }))
         }
 
+        /// `Points/QueryGroups`.
+        async fn query_groups(
+            &self,
+            request: Request<pb::QueryPointGroups>,
+        ) -> Result<Response<pb::QueryGroupsResponse>, Status> {
+            let r = request.get_ref();
+            let parsed = qconv::query_groups_from_grpc(r).map_err(|e| e.grpc_status())?;
+            let (result, time) = self
+                .groups(request.metadata(), r.timeout, &r.collection_name, parsed)
+                .await?;
+            Ok(Response::new(pb::QueryGroupsResponse {
+                result: Some(result),
+                time,
+                usage: None,
+            }))
+        }
+
+        /// `Points/SearchGroups` (legacy).
+        async fn search_groups(
+            &self,
+            request: Request<pb::SearchPointGroups>,
+        ) -> Result<Response<pb::SearchGroupsResponse>, Status> {
+            let r = request.get_ref();
+            let parsed = qconv::search_groups_from_grpc(r).map_err(|e| e.grpc_status())?;
+            let (result, time) = self
+                .groups(request.metadata(), r.timeout, &r.collection_name, parsed)
+                .await?;
+            Ok(Response::new(pb::SearchGroupsResponse {
+                result: Some(result),
+                time,
+                usage: None,
+            }))
+        }
+
+        /// `Points/RecommendGroups` (legacy).
+        async fn recommend_groups(
+            &self,
+            request: Request<pb::RecommendPointGroups>,
+        ) -> Result<Response<pb::RecommendGroupsResponse>, Status> {
+            let r = request.get_ref();
+            let parsed = qconv::recommend_groups_from_grpc(r).map_err(|e| e.grpc_status())?;
+            let (result, time) = self
+                .groups(request.metadata(), r.timeout, &r.collection_name, parsed)
+                .await?;
+            Ok(Response::new(pb::RecommendGroupsResponse {
+                result: Some(result),
+                time,
+                usage: None,
+            }))
+        }
+
         /// The batch's collection holds for every request (as Qdrant).
         async fn query_batch(
             &self,
@@ -858,9 +928,6 @@ service! {
     unsupported {
         delete_field_index(DeleteFieldIndexCollection) -> PointsOperationResponse;
         delete_vector_name(DeleteVectorNameRequest) -> PointsOperationResponse;
-        search_groups(SearchPointGroups) -> SearchGroupsResponse;
-        recommend_groups(RecommendPointGroups) -> RecommendGroupsResponse;
-        query_groups(QueryPointGroups) -> QueryGroupsResponse;
         facet(FacetCounts) -> FacetResponse;
         search_matrix_pairs(SearchMatrixPoints) -> SearchMatrixPairsResponse;
         search_matrix_offsets(SearchMatrixPoints) -> SearchMatrixOffsetsResponse;

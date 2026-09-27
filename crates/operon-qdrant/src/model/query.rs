@@ -11,7 +11,7 @@ use serde::de::{DeserializeOwned, Error as _};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
-use crate::model::common::{ScoredPoint, VectorInput, WithPayload, WithVector};
+use crate::model::common::{Record, ScoredPoint, VectorInput, WithPayload, WithVector};
 use crate::model::filter::{Filter, OneOrMany};
 
 /// `T` from a JSON value, with the value's own error text.
@@ -567,4 +567,95 @@ impl From<DiscoverRequest> for QueryRequest {
             ..QueryRequest::default()
         }
     }
+}
+
+// ----- groups (Task 9) -----
+
+/// `POST /collections/{c}/points/query/groups`: a query whose `limit` is
+/// the number of groups.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct QueryGroupsRequest {
+    #[serde(flatten)]
+    pub query: QueryRequest,
+    pub group_by: String,
+    #[serde(default)]
+    pub group_size: Option<usize>,
+    #[serde(default)]
+    pub with_lookup: Option<WithLookupInterface>,
+}
+
+/// Where each group's key is looked up as a point id: a collection name,
+/// or a collection with selectors (payload by default, no vectors).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum WithLookupInterface {
+    Collection(String),
+    Lookup {
+        collection: String,
+        #[serde(default)]
+        with_payload: Option<WithPayload>,
+        #[serde(default, alias = "with_vector")]
+        with_vectors: Option<WithVector>,
+    },
+}
+
+/// `POST /collections/{c}/points/search/groups` (legacy): `group_size` and
+/// `limit` (the number of groups) are required.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct SearchGroupsRequest {
+    #[serde(flatten)]
+    pub search: SearchRequest,
+    pub group_by: String,
+    pub group_size: usize,
+    #[serde(default)]
+    pub with_lookup: Option<WithLookupInterface>,
+}
+
+/// `POST /collections/{c}/points/recommend/groups` (legacy).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct RecommendGroupsRequest {
+    #[serde(flatten)]
+    pub recommend: RecommendRequest,
+    pub group_by: String,
+    pub group_size: usize,
+    #[serde(default)]
+    pub with_lookup: Option<WithLookupInterface>,
+}
+
+impl From<SearchGroupsRequest> for QueryGroupsRequest {
+    fn from(r: SearchGroupsRequest) -> Self {
+        QueryGroupsRequest {
+            query: r.search.into(),
+            group_by: r.group_by,
+            group_size: Some(r.group_size),
+            with_lookup: r.with_lookup,
+        }
+    }
+}
+
+impl From<RecommendGroupsRequest> for QueryGroupsRequest {
+    fn from(r: RecommendGroupsRequest) -> Self {
+        QueryGroupsRequest {
+            query: r.recommend.into(),
+            group_by: r.group_by,
+            group_size: Some(r.group_size),
+            with_lookup: r.with_lookup,
+        }
+    }
+}
+
+/// `{"groups": [...]}`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct GroupsResult {
+    pub groups: Vec<PointGroup>,
+}
+
+/// One group: its key (a JSON integer or string), its hits, and the
+/// looked-up point.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PointGroup {
+    pub id: Value,
+    pub hits: Vec<ScoredPoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lookup: Option<Record>,
 }

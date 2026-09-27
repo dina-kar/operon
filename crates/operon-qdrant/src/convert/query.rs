@@ -1,6 +1,6 @@
 //! gRPC query messages to the REST model (Task 7 step 5) and scored points
 //! back; Task 8 adds the legacy search, recommend and discover messages
-//! (semantics 6).
+//! (semantics 6), Task 9 the group messages and results.
 
 use serde_json::{Map, Value};
 
@@ -8,15 +8,15 @@ use crate::convert::common::{
     vector_output_to_grpc, with_payload_from_grpc, with_vector_from_grpc,
 };
 use crate::convert::filter::filter_from_grpc;
-use crate::convert::points::{id_from_grpc, id_to_grpc, vector_input};
+use crate::convert::points::{id_from_grpc, id_to_grpc, record_to_grpc, vector_input};
 use crate::convert::value::map_to_payload;
 use crate::error::GatewayError;
 use crate::model::common::{ScoredPoint, VectorInput};
 use crate::model::filter::OneOrMany;
 use crate::model::query::{
-    ContextPair, DiscoverInput, FusionName, IdfParams, IdfScope, LookupLocation, Mmr, Prefetch,
-    QuantizationSearchParams, QueryInterface, QueryKind, QueryRequest, RecommendInput,
-    RecommendStrategy, RrfParams, SearchParams,
+    ContextPair, DiscoverInput, FusionName, GroupsResult, IdfParams, IdfScope, LookupLocation, Mmr,
+    Prefetch, QuantizationSearchParams, QueryGroupsRequest, QueryInterface, QueryKind,
+    QueryRequest, RecommendInput, RecommendStrategy, RrfParams, SearchParams, WithLookupInterface,
 };
 use crate::proto::qdrant as pb;
 
@@ -396,4 +396,139 @@ pub fn discover_from_grpc(r: &pb::DiscoverPoints) -> Result<QueryRequest, Gatewa
         lookup_from: r.lookup_from.as_ref().map(lookup_from_grpc),
         ..common.request()?
     })
+}
+
+// ----- groups (Task 9 semantics 5) -----
+
+/// `WithLookup`: payload unless told otherwise, no vectors.
+fn with_lookup_from_grpc(l: &pb::WithLookup) -> WithLookupInterface {
+    WithLookupInterface::Lookup {
+        collection: l.collection.clone(),
+        with_payload: Some(with_payload_from_grpc(l.with_payload.as_ref(), true)),
+        with_vectors: Some(with_vector_from_grpc(l.with_vectors.as_ref(), false)),
+    }
+}
+
+/// `QueryPointGroups`: a universal query whose `limit` is the number of
+/// groups.
+pub fn query_groups_from_grpc(
+    g: &pb::QueryPointGroups,
+) -> Result<QueryGroupsRequest, GatewayError> {
+    let query = QueryRequest {
+        prefetch: prefetches(&g.prefetch)?,
+        query: query_from_grpc(g.query.as_ref())?,
+        using: g.using.clone(),
+        filter: g.filter.as_ref().map(filter_from_grpc).transpose()?,
+        params: g.params.as_ref().map(params_from_grpc).transpose()?,
+        score_threshold: g.score_threshold,
+        limit: g.limit.map(|l| usize::try_from(l).unwrap_or(usize::MAX)),
+        offset: None,
+        with_payload: Some(with_payload_from_grpc(g.with_payload.as_ref(), false)),
+        with_vector: Some(with_vector_from_grpc(g.with_vectors.as_ref(), false)),
+        lookup_from: g.lookup_from.as_ref().map(lookup_from_grpc),
+        shard_key: g.shard_key_selector.as_ref().map(|_| Value::Bool(true)),
+    };
+    Ok(QueryGroupsRequest {
+        query,
+        group_by: g.group_by.clone(),
+        group_size: g
+            .group_size
+            .map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
+        with_lookup: g.with_lookup.as_ref().map(with_lookup_from_grpc),
+    })
+}
+
+/// `SearchPointGroups` (legacy).
+pub fn search_groups_from_grpc(
+    g: &pb::SearchPointGroups,
+) -> Result<QueryGroupsRequest, GatewayError> {
+    let common = Common {
+        filter: g.filter.as_ref(),
+        params: g.params.as_ref(),
+        limit: u64::from(g.limit),
+        offset: None,
+        with_payload: g.with_payload.as_ref(),
+        with_vectors: g.with_vectors.as_ref(),
+        shard_key: g.shard_key_selector.is_some(),
+    };
+    let query = QueryRequest {
+        query: Some(QueryInterface::Vector(search_input(
+            &g.vector,
+            g.sparse_indices.as_ref(),
+        ))),
+        using: g.vector_name.clone(),
+        score_threshold: g.score_threshold,
+        ..common.request()?
+    };
+    Ok(QueryGroupsRequest {
+        query,
+        group_by: g.group_by.clone(),
+        group_size: Some(g.group_size as usize),
+        with_lookup: g.with_lookup.as_ref().map(with_lookup_from_grpc),
+    })
+}
+
+/// `RecommendPointGroups` (legacy).
+pub fn recommend_groups_from_grpc(
+    g: &pb::RecommendPointGroups,
+) -> Result<QueryGroupsRequest, GatewayError> {
+    let common = Common {
+        filter: g.filter.as_ref(),
+        params: g.params.as_ref(),
+        limit: u64::from(g.limit),
+        offset: None,
+        with_payload: g.with_payload.as_ref(),
+        with_vectors: g.with_vectors.as_ref(),
+        shard_key: g.shard_key_selector.is_some(),
+    };
+    let query = QueryRequest {
+        query: Some(QueryInterface::Query(QueryKind::Recommend {
+            recommend: RecommendInput {
+                positive: examples(&g.positive, &g.positive_vectors)?,
+                negative: examples(&g.negative, &g.negative_vectors)?,
+                strategy: g.strategy.map(strategy_from_grpc).transpose()?,
+            },
+        })),
+        using: g.using.clone(),
+        score_threshold: g.score_threshold,
+        lookup_from: g.lookup_from.as_ref().map(lookup_from_grpc),
+        ..common.request()?
+    };
+    Ok(QueryGroupsRequest {
+        query,
+        group_by: g.group_by.clone(),
+        group_size: Some(g.group_size as usize),
+        with_lookup: g.with_lookup.as_ref().map(with_lookup_from_grpc),
+    })
+}
+
+/// A group's JSON key as a `GroupId`: a non-negative integer is
+/// `unsigned_value`, a negative one `integer_value`, a string
+/// `string_value`.
+fn group_id_to_grpc(id: &Value) -> pb::GroupId {
+    use pb::group_id::Kind;
+    let kind = match id {
+        Value::String(s) => Some(Kind::StringValue(s.clone())),
+        Value::Number(n) => n
+            .as_u64()
+            .map(Kind::UnsignedValue)
+            .or_else(|| n.as_i64().map(Kind::IntegerValue)),
+        _ => None,
+    };
+    pb::GroupId { kind }
+}
+
+/// A `GroupsResult` as gRPC sends it.
+pub fn groups_to_grpc(r: &GroupsResult) -> pb::GroupsResult {
+    pb::GroupsResult {
+        groups: r
+            .groups
+            .iter()
+            .map(|g| pb::PointGroup {
+                id: Some(group_id_to_grpc(&g.id)),
+                hits: g.hits.iter().map(scored_point_to_grpc).collect(),
+                lookup: g.lookup.as_ref().map(record_to_grpc),
+            })
+            .collect(),
+    }
 }

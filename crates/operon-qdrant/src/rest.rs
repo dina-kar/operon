@@ -25,11 +25,13 @@ use crate::model::points::{
     ScrollRequest, SetPayload, UpdateOperation, UpdateOperations, UpdateVectors,
 };
 use crate::model::query::{
-    Batch, DiscoverRequest, QueryRequest, QueryRequestBatch, QueryResponse, RecommendRequest,
-    SearchRequest,
+    Batch, DiscoverRequest, QueryGroupsRequest, QueryRequest, QueryRequestBatch, QueryResponse,
+    RecommendGroupsRequest, RecommendRequest, SearchGroupsRequest, SearchRequest,
 };
 use crate::schema::NewVector;
-use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, query, reads, schema, snapshots, writes};
+use crate::{
+    QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, groups, query, reads, schema, snapshots, writes,
+};
 
 /// The 1.19 OpenAPI routes (and the legacy search routes of Ruling 1) that
 /// no task serves yet: each answers `Unsupported("<method> <path>")` (501).
@@ -100,7 +102,6 @@ const UNSUPPORTED: &[(&str, &str)] = &[
         "/collections/{collection_name}/shards/{shard_id}/snapshots/{snapshot_name}",
     ),
     ("POST", "/collections/{collection_name}/facet"),
-    ("POST", "/collections/{collection_name}/points/query/groups"),
     (
         "POST",
         "/collections/{collection_name}/points/search/matrix/pairs",
@@ -108,16 +109,6 @@ const UNSUPPORTED: &[(&str, &str)] = &[
     (
         "POST",
         "/collections/{collection_name}/points/search/matrix/offsets",
-    ),
-    // Legacy routes, gone from the 1.19 OpenAPI but served by the 1.19.1
-    // server (Ruling 1; Task 9).
-    (
-        "POST",
-        "/collections/{collection_name}/points/search/groups",
-    ),
-    (
-        "POST",
-        "/collections/{collection_name}/points/recommend/groups",
     ),
 ];
 
@@ -197,6 +188,18 @@ pub(crate) fn router(gw: QdrantGateway) -> Router {
         .route(
             "/collections/{collection_name}/points/discover/batch",
             post(discover_batch),
+        )
+        .route(
+            "/collections/{collection_name}/points/query/groups",
+            post(query_groups),
+        )
+        .route(
+            "/collections/{collection_name}/points/search/groups",
+            post(search_groups),
+        )
+        .route(
+            "/collections/{collection_name}/points/recommend/groups",
+            post(recommend_groups),
         )
         .route("/cluster", get(cluster_status))
         .route(
@@ -1082,4 +1085,54 @@ async fn discover_batch(
     QdrantJson(batch): QdrantJson<Batch<DiscoverRequest>>,
 ) -> Response {
     legacy_batch(gw, collection, headers, params, batch).await
+}
+
+// ----- groups (Task 9) -----
+
+/// A groups route: `{"groups": [...]}`.
+async fn groups_route(
+    gw: QdrantGateway,
+    collection: String,
+    headers: HeaderMap,
+    params: ReadParams,
+    request: QueryGroupsRequest,
+) -> Response {
+    let g = gw.clone();
+    serve(&gw, &headers, params.timeout, |ctx| {
+        groups::run_groups(g, ctx, collection, request)
+    })
+    .await
+}
+
+/// `POST /collections/{c}/points/query/groups`.
+async fn query_groups(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<ReadParams>,
+    QdrantJson(request): QdrantJson<QueryGroupsRequest>,
+) -> Response {
+    groups_route(gw, collection, headers, params, request).await
+}
+
+/// `POST /collections/{c}/points/search/groups` (legacy).
+async fn search_groups(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<ReadParams>,
+    QdrantJson(request): QdrantJson<SearchGroupsRequest>,
+) -> Response {
+    groups_route(gw, collection, headers, params, request.into()).await
+}
+
+/// `POST /collections/{c}/points/recommend/groups` (legacy).
+async fn recommend_groups(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<ReadParams>,
+    QdrantJson(request): QdrantJson<RecommendGroupsRequest>,
+) -> Response {
+    groups_route(gw, collection, headers, params, request.into()).await
 }
