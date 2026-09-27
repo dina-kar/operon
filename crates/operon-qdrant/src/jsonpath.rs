@@ -300,8 +300,14 @@ fn merge_map(dest: &mut Map<String, Value>, src: &Map<String, Value>) {
 pub fn value_set(path: Option<&JsonPath>, dest: &mut Map<String, Value>, src: &Map<String, Value>) {
     match path {
         None => merge_map(dest, src),
-        Some(path) => set_in_map(&path.first, &path.rest, dest, src),
+        Some(path) => set_in_map(&path.first, &path.rest, dest, src, false),
     }
+}
+
+/// `overwrite_payload` with `key`: as [`value_set`], but the object at
+/// `path` is replaced by `src` instead of merged with it (Task 5 step 4).
+pub fn value_overwrite(path: &JsonPath, dest: &mut Map<String, Value>, src: &Map<String, Value>) {
+    set_in_map(&path.first, &path.rest, dest, src, true);
 }
 
 fn set_in_map(
@@ -309,19 +315,24 @@ fn set_in_map(
     rest: &[PathItem],
     dest: &mut Map<String, Value>,
     src: &Map<String, Value>,
+    replace: bool,
 ) {
     match dest.get_mut(key) {
-        Some(value) => set_in_value(rest, value, src),
+        Some(value) => set_in_value(rest, value, src, replace),
         None => {
             let mut value = Value::Null;
-            set_in_value(rest, &mut value, src);
+            set_in_value(rest, &mut value, src, replace);
             dest.insert(key.to_string(), value);
         }
     }
 }
 
-fn set_in_value(path: &[PathItem], dest: &mut Value, src: &Map<String, Value>) {
+fn set_in_value(path: &[PathItem], dest: &mut Value, src: &Map<String, Value>, replace: bool) {
     let Some((head, rest)) = path.split_first() else {
+        if replace {
+            *dest = Value::Object(src.clone());
+            return;
+        }
         if !dest.is_object() {
             *dest = Value::Object(Map::new());
         }
@@ -336,7 +347,7 @@ fn set_in_value(path: &[PathItem], dest: &mut Value, src: &Map<String, Value>) {
                 *dest = Value::Object(Map::new());
             }
             if let Value::Object(map) = dest {
-                set_in_map(k, rest, map, src);
+                set_in_map(k, rest, map, src, replace);
             }
         }
         PathItem::Index(i) => {
@@ -344,11 +355,13 @@ fn set_in_value(path: &[PathItem], dest: &mut Value, src: &Map<String, Value>) {
                 *dest = Value::Array(Vec::new());
             }
             if let Some(v) = dest.as_array_mut().and_then(|a| a.get_mut(*i)) {
-                set_in_value(rest, v, src);
+                set_in_value(rest, v, src, replace);
             }
         }
         PathItem::Wildcard => match dest {
-            Value::Array(items) => items.iter_mut().for_each(|v| set_in_value(rest, v, src)),
+            Value::Array(items) => items
+                .iter_mut()
+                .for_each(|v| set_in_value(rest, v, src, replace)),
             other => *other = Value::Array(Vec::new()),
         },
     }

@@ -18,9 +18,13 @@ use serde_json::{Value, json};
 use crate::ctx::RequestCtx;
 use crate::error::GatewayError;
 use crate::model::collections::{ChangeAliases, CreateFieldIndex};
-use crate::model::points::CountRequest;
+use crate::model::common::UpdateResult;
+use crate::model::points::{
+    CountRequest, DeletePayload, DeleteVectors, PointInsert, PointsSelector, SetPayload,
+    UpdateOperation, UpdateOperations, UpdateVectors,
+};
 use crate::schema::NewVector;
-use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, reads, schema, snapshots};
+use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, reads, schema, snapshots, writes};
 
 /// The 1.19 OpenAPI routes (and the legacy search routes of Ruling 1) that
 /// no task serves yet: each answers `Unsupported("<method> <path>")` (501).
@@ -92,24 +96,6 @@ const UNSUPPORTED: &[(&str, &str)] = &[
     ),
     ("GET", "/collections/{collection_name}/points/{id}"),
     ("POST", "/collections/{collection_name}/points"),
-    ("PUT", "/collections/{collection_name}/points"),
-    ("POST", "/collections/{collection_name}/points/delete"),
-    ("PUT", "/collections/{collection_name}/points/vectors"),
-    (
-        "POST",
-        "/collections/{collection_name}/points/vectors/delete",
-    ),
-    ("POST", "/collections/{collection_name}/points/payload"),
-    ("PUT", "/collections/{collection_name}/points/payload"),
-    (
-        "POST",
-        "/collections/{collection_name}/points/payload/delete",
-    ),
-    (
-        "POST",
-        "/collections/{collection_name}/points/payload/clear",
-    ),
-    ("POST", "/collections/{collection_name}/points/batch"),
     ("POST", "/collections/{collection_name}/points/scroll"),
     ("POST", "/collections/{collection_name}/facet"),
     ("POST", "/collections/{collection_name}/points/query"),
@@ -158,6 +144,35 @@ pub(crate) fn router(gw: QdrantGateway) -> Router {
         .route("/readyz", get(readyz))
         .route("/collections", get(list_collections))
         .route("/collections/{collection_name}/points/count", post(count))
+        .route("/collections/{collection_name}/points", put(upsert_points))
+        .route(
+            "/collections/{collection_name}/points/delete",
+            post(delete_points),
+        )
+        .route(
+            "/collections/{collection_name}/points/payload",
+            post(set_payload).put(overwrite_payload),
+        )
+        .route(
+            "/collections/{collection_name}/points/payload/delete",
+            post(delete_payload),
+        )
+        .route(
+            "/collections/{collection_name}/points/payload/clear",
+            post(clear_payload),
+        )
+        .route(
+            "/collections/{collection_name}/points/vectors",
+            put(update_vectors),
+        )
+        .route(
+            "/collections/{collection_name}/points/vectors/delete",
+            post(delete_vectors),
+        )
+        .route(
+            "/collections/{collection_name}/points/batch",
+            post(batch_update),
+        )
         .route("/cluster", get(cluster_status))
         .route(
             "/collections/{collection_name}",
@@ -251,7 +266,6 @@ pub(crate) fn ok<T: Serialize>(ctx: &RequestCtx, result: T) -> Response {
 }
 
 /// [`ok`], plus the write's `Operon-Consistency-Token`.
-#[allow(dead_code)] // The write routes arrive with Task 5.
 pub(crate) fn ok_write<T: Serialize>(
     ctx: &RequestCtx,
     result: T,
@@ -405,6 +419,28 @@ where
     };
     match ctx.run(op(ctx.clone())).await {
         Ok(result) => ok(&ctx, result),
+        Err(err) => fail(&ctx, err),
+    }
+}
+
+/// [`serve`] for a write: the answer carries the write's
+/// `Operon-Consistency-Token`.
+async fn serve_write<T, F>(
+    gw: &QdrantGateway,
+    headers: &HeaderMap,
+    timeout: Option<u64>,
+    op: impl FnOnce(RequestCtx) -> F,
+) -> Response
+where
+    T: Serialize,
+    F: Future<Output = Result<(T, ConsistencyToken), GatewayError>>,
+{
+    let ctx = match RequestCtx::from_http(headers, timeout, gw.config()) {
+        Ok(ctx) => ctx,
+        Err(err) => return reject(err),
+    };
+    match ctx.run(op(ctx.clone())).await {
+        Ok((result, token)) => ok_write(&ctx, result, &token),
         Err(err) => fail(&ctx, err),
     }
 }
@@ -641,6 +677,175 @@ async fn create_field_index(
 ) -> Response {
     serve(&gw, &headers, params.timeout, |ctx| {
         schema::create_field_index(gw.clone(), ctx, collection, request, params.wait)
+    })
+    .await
+}
+
+// ----- point writes (Task 5) -----
+
+/// A write route of one operation.
+async fn write_one(
+    gw: QdrantGateway,
+    collection: String,
+    headers: HeaderMap,
+    params: WriteParams,
+    op: UpdateOperation,
+) -> Response {
+    serve_write(&gw, &headers, params.timeout, |ctx| {
+        writes::update_one(gw.clone(), ctx, collection, op, params.wait)
+    })
+    .await
+}
+
+async fn upsert_points(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<WriteParams>,
+    QdrantJson(upsert): QdrantJson<PointInsert>,
+) -> Response {
+    write_one(
+        gw,
+        collection,
+        headers,
+        params,
+        UpdateOperation::Upsert { upsert },
+    )
+    .await
+}
+
+async fn delete_points(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<WriteParams>,
+    QdrantJson(delete): QdrantJson<PointsSelector>,
+) -> Response {
+    write_one(
+        gw,
+        collection,
+        headers,
+        params,
+        UpdateOperation::Delete { delete },
+    )
+    .await
+}
+
+async fn set_payload(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<WriteParams>,
+    QdrantJson(set_payload): QdrantJson<SetPayload>,
+) -> Response {
+    write_one(
+        gw,
+        collection,
+        headers,
+        params,
+        UpdateOperation::SetPayload { set_payload },
+    )
+    .await
+}
+
+async fn overwrite_payload(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<WriteParams>,
+    QdrantJson(overwrite_payload): QdrantJson<SetPayload>,
+) -> Response {
+    write_one(
+        gw,
+        collection,
+        headers,
+        params,
+        UpdateOperation::OverwritePayload { overwrite_payload },
+    )
+    .await
+}
+
+async fn delete_payload(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<WriteParams>,
+    QdrantJson(delete_payload): QdrantJson<DeletePayload>,
+) -> Response {
+    write_one(
+        gw,
+        collection,
+        headers,
+        params,
+        UpdateOperation::DeletePayload { delete_payload },
+    )
+    .await
+}
+
+async fn clear_payload(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<WriteParams>,
+    QdrantJson(clear_payload): QdrantJson<PointsSelector>,
+) -> Response {
+    write_one(
+        gw,
+        collection,
+        headers,
+        params,
+        UpdateOperation::ClearPayload { clear_payload },
+    )
+    .await
+}
+
+async fn update_vectors(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<WriteParams>,
+    QdrantJson(update_vectors): QdrantJson<UpdateVectors>,
+) -> Response {
+    write_one(
+        gw,
+        collection,
+        headers,
+        params,
+        UpdateOperation::UpdateVectors { update_vectors },
+    )
+    .await
+}
+
+async fn delete_vectors(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<WriteParams>,
+    QdrantJson(delete_vectors): QdrantJson<DeleteVectors>,
+) -> Response {
+    write_one(
+        gw,
+        collection,
+        headers,
+        params,
+        UpdateOperation::DeleteVectors { delete_vectors },
+    )
+    .await
+}
+
+/// One `UpdateResult` per operation, all equal (one atomic write).
+async fn batch_update(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<WriteParams>,
+    QdrantJson(request): QdrantJson<UpdateOperations>,
+) -> Response {
+    let g = gw.clone();
+    serve_write(&gw, &headers, params.timeout, |ctx| async move {
+        let (results, token): (Vec<UpdateResult>, _) =
+            writes::update(g, ctx, collection, request.operations, params.wait).await?;
+        Ok((results, token))
     })
     .await
 }

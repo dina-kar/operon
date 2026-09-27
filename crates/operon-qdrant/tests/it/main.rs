@@ -4,5 +4,6 @@ mod errors;
 mod filter;
 mod ids;
 mod jsonpath;
+mod points;
 mod protos;
 mod schema;

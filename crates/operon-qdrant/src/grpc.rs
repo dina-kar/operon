@@ -13,13 +13,15 @@ use tonic::{Request, Response, Status};
 
 use crate::convert::collections as conv;
 use crate::convert::filter::{field_index_from_grpc, filter_from_grpc};
+use crate::convert::points as pconv;
 use crate::ctx::RequestCtx;
 use crate::error::GatewayError;
-use crate::model::points::CountRequest;
+use crate::model::common::UpdateResult;
+use crate::model::points::{CountRequest, UpdateOperation};
 use crate::proto::health as hpb;
 use crate::proto::qdrant as pb;
 use crate::schema::NewVector;
-use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, reads, schema, snapshots};
+use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, reads, schema, snapshots, writes};
 
 /// Every gRPC service, gzip on both ways and messages of up to
 /// `max_request_bytes`, inside `HotLayer` and the gateway's own
@@ -65,7 +67,6 @@ async fn check_hot_metadata(request: HttpRequest, next: Next) -> HttpResponse {
 }
 
 /// Adds a write's `operon-consistency-token` response metadata.
-#[allow(dead_code)] // The write methods arrive with Task 5.
 pub(crate) fn with_token<T>(mut response: Response<T>, token: &ConsistencyToken) -> Response<T> {
     if let Ok(value) = token.to_string().parse() {
         response.metadata_mut().insert(TOKEN_HEADER, value);
@@ -105,6 +106,33 @@ impl GrpcService {
         timeout: Option<u64>,
     ) -> Result<RequestCtx, Status> {
         RequestCtx::from_grpc(meta, timeout, self.gw.config()).map_err(|e| e.grpc_status())
+    }
+
+    /// A write method of one operation (Task 5 step 8): `wait` defaults to
+    /// `false`; the answer carries the consistency token.
+    async fn write_one(
+        &self,
+        meta: &tonic::metadata::MetadataMap,
+        timeout: Option<u64>,
+        collection: String,
+        wait: Option<bool>,
+        op: Result<UpdateOperation, GatewayError>,
+    ) -> Result<Response<pb::PointsOperationResponse>, Status> {
+        let op = op.map_err(|e| e.grpc_status())?;
+        let wait = wait.unwrap_or(false);
+        let ((result, token), ctx) = self
+            .run(meta, timeout, |gw, ctx| {
+                writes::update_one(gw, ctx, collection, op, wait)
+            })
+            .await?;
+        Ok(with_token(
+            Response::new(pb::PointsOperationResponse {
+                result: Some(pconv::update_result_to_grpc(&result)),
+                time: ctx.elapsed_secs(),
+                usage: None,
+            }),
+            &token,
+        ))
     }
 }
 
@@ -330,6 +358,113 @@ service! {
 
 service! {
     impl Points for GrpcService as "Points" {
+        async fn upsert(
+            &self,
+            request: Request<pb::UpsertPoints>,
+        ) -> Result<Response<pb::PointsOperationResponse>, Status> {
+            let r = request.get_ref();
+            let op = pconv::upsert_from_grpc(r);
+            self.write_one(request.metadata(), r.timeout, r.collection_name.clone(), r.wait, op)
+                .await
+        }
+
+        async fn delete(
+            &self,
+            request: Request<pb::DeletePoints>,
+        ) -> Result<Response<pb::PointsOperationResponse>, Status> {
+            let r = request.get_ref();
+            let op = pconv::delete_from_grpc(r);
+            self.write_one(request.metadata(), r.timeout, r.collection_name.clone(), r.wait, op)
+                .await
+        }
+
+        async fn set_payload(
+            &self,
+            request: Request<pb::SetPayloadPoints>,
+        ) -> Result<Response<pb::PointsOperationResponse>, Status> {
+            let r = request.get_ref();
+            let op = pconv::set_payload_from_grpc(r, false);
+            self.write_one(request.metadata(), r.timeout, r.collection_name.clone(), r.wait, op)
+                .await
+        }
+
+        async fn overwrite_payload(
+            &self,
+            request: Request<pb::SetPayloadPoints>,
+        ) -> Result<Response<pb::PointsOperationResponse>, Status> {
+            let r = request.get_ref();
+            let op = pconv::set_payload_from_grpc(r, true);
+            self.write_one(request.metadata(), r.timeout, r.collection_name.clone(), r.wait, op)
+                .await
+        }
+
+        async fn delete_payload(
+            &self,
+            request: Request<pb::DeletePayloadPoints>,
+        ) -> Result<Response<pb::PointsOperationResponse>, Status> {
+            let r = request.get_ref();
+            let op = pconv::delete_payload_from_grpc(r);
+            self.write_one(request.metadata(), r.timeout, r.collection_name.clone(), r.wait, op)
+                .await
+        }
+
+        async fn clear_payload(
+            &self,
+            request: Request<pb::ClearPayloadPoints>,
+        ) -> Result<Response<pb::PointsOperationResponse>, Status> {
+            let r = request.get_ref();
+            let op = pconv::clear_payload_from_grpc(r);
+            self.write_one(request.metadata(), r.timeout, r.collection_name.clone(), r.wait, op)
+                .await
+        }
+
+        async fn update_vectors(
+            &self,
+            request: Request<pb::UpdatePointVectors>,
+        ) -> Result<Response<pb::PointsOperationResponse>, Status> {
+            let r = request.get_ref();
+            let op = pconv::update_vectors_from_grpc(r);
+            self.write_one(request.metadata(), r.timeout, r.collection_name.clone(), r.wait, op)
+                .await
+        }
+
+        async fn delete_vectors(
+            &self,
+            request: Request<pb::DeletePointVectors>,
+        ) -> Result<Response<pb::PointsOperationResponse>, Status> {
+            let r = request.get_ref();
+            let op = pconv::delete_vectors_from_grpc(r);
+            self.write_one(request.metadata(), r.timeout, r.collection_name.clone(), r.wait, op)
+                .await
+        }
+
+        async fn update_batch(
+            &self,
+            request: Request<pb::UpdateBatchPoints>,
+        ) -> Result<Response<pb::UpdateBatchResponse>, Status> {
+            let r = request.get_ref();
+            let ops = r
+                .operations
+                .iter()
+                .map(pconv::batch_operation_from_grpc)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.grpc_status())?;
+            let (collection, wait) = (r.collection_name.clone(), r.wait.unwrap_or(false));
+            let ((results, token), ctx): ((Vec<UpdateResult>, _), _) = self
+                .run(request.metadata(), r.timeout, |gw, ctx| {
+                    writes::update(gw, ctx, collection, ops, wait)
+                })
+                .await?;
+            Ok(with_token(
+                Response::new(pb::UpdateBatchResponse {
+                    result: results.iter().map(pconv::update_result_to_grpc).collect(),
+                    time: ctx.elapsed_secs(),
+                    usage: None,
+                }),
+                &token,
+            ))
+        }
+
         async fn count(
             &self,
             request: Request<pb::CountPoints>,
@@ -418,15 +553,7 @@ service! {
         }
     }
     unsupported {
-        upsert(UpsertPoints) -> PointsOperationResponse;
-        delete(DeletePoints) -> PointsOperationResponse;
         get(GetPoints) -> GetResponse;
-        update_vectors(UpdatePointVectors) -> PointsOperationResponse;
-        delete_vectors(DeletePointVectors) -> PointsOperationResponse;
-        set_payload(SetPayloadPoints) -> PointsOperationResponse;
-        overwrite_payload(SetPayloadPoints) -> PointsOperationResponse;
-        delete_payload(DeletePayloadPoints) -> PointsOperationResponse;
-        clear_payload(ClearPayloadPoints) -> PointsOperationResponse;
         delete_field_index(DeleteFieldIndexCollection) -> PointsOperationResponse;
         delete_vector_name(DeleteVectorNameRequest) -> PointsOperationResponse;
         search(SearchPoints) -> SearchResponse;
@@ -438,7 +565,6 @@ service! {
         recommend_groups(RecommendPointGroups) -> RecommendGroupsResponse;
         discover(DiscoverPoints) -> DiscoverResponse;
         discover_batch(DiscoverBatchPoints) -> DiscoverBatchResponse;
-        update_batch(UpdateBatchPoints) -> UpdateBatchResponse;
         query(QueryPoints) -> QueryResponse;
         query_batch(QueryBatchPoints) -> QueryBatchResponse;
         query_groups(QueryPointGroups) -> QueryGroupsResponse;
