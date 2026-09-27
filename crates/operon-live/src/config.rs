@@ -8,8 +8,9 @@ use crate::{Limits, LiveError, catalog};
 /// (R1 plan Ruling 7).
 pub const KEYSPACE_PREFIX: &str = "loam_live_";
 
-/// The journal shard count of an app in R1 (R1 plan Ruling 4).
-pub const DEFAULT_JOURNAL_SHARDS: u16 = 16;
+/// The journal shard count a new app gets (R1 plan Ruling 4, raised from 16
+/// to 64 by the owner, row T11-1; stored per app, row T10-1).
+pub const DEFAULT_JOURNAL_SHARDS: u16 = 64;
 
 /// One Live app: its TiKV handle configuration (keyspace and root prefix,
 /// R1 plan Ruling 1), its limits and its journal shard count.

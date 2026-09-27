@@ -14,8 +14,9 @@ use operon_live::keys::{IDEMPOTENCY, KIND_APP};
 use operon_live::system::{self, DELETE, GET, INSERT, PATCH, QUERY, REPLACE};
 use operon_live::txn::{MUTATION_OP, idempotency_hash};
 use operon_live::{
-    AppKeys, DocId, FnKind, Function, IndexId, IndexRange, Janitor, Journal, Limits, LiveConfig,
-    LiveError, LiveTxn, LiveValue, Mutated, Runner, RunnerOptions, TableId, pb,
+    AppKeys, DEFAULT_JOURNAL_SHARDS, DocId, FnKind, Function, IndexId, IndexRange, Janitor,
+    Journal, Limits, LiveConfig, LiveError, LiveTxn, LiveValue, Mutated, Runner, RunnerOptions,
+    TableId, Tailer, pb,
 };
 use operon_tikv::testing::{self, TEST_LIVE};
 use operon_tikv::{Fault, FaultPlan, FaultPoint, TimestampExt, TxnOptions};
@@ -69,7 +70,12 @@ async fn open_with(shards: u16, limits: Limits, options: RunnerOptions) -> Optio
 }
 
 async fn open() -> Option<Runner> {
-    open_with(16, Limits::default(), RunnerOptions::default()).await
+    open_with(
+        DEFAULT_JOURNAL_SHARDS,
+        Limits::default(),
+        RunnerOptions::default(),
+    )
+    .await
 }
 
 async fn mutate(r: &Runner, f: Arc<dyn Function>, args: LiveValue) -> Mutated {
@@ -1126,15 +1132,49 @@ async fn janitor_sweeps_expired_idempotency_records() {
     assert_eq!(all(&r, "t").await.len(), 2);
 }
 
-/// Owner ruling on T9-7 (rows T10-2, T10-3): 32 writers and 2 000
-/// mutations on the default 16 shards all commit within the default budget
-/// of 16 attempts, with no `Conflict` failure. Prints the rerun rate.
+/// Owner rulings on T9-7 and T10-3 (rows T10-2, T10-3, T11-1): 32 writers
+/// and 2 000 mutations on the default 64 shards all commit within the
+/// default budget of 16 attempts, with no `Conflict` failure, while a
+/// tailer ticks continuously beside them (the tailer's cost at 64 shards).
+/// Prints the rerun rate and the tick counts and latencies.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mutations_under_contention_complete_within_the_default_budget() {
     let Some(r) = open().await else { return };
     insert(&r, "load", &[]).await;
     const WRITERS: usize = 32;
     const MUTATIONS: usize = 2000;
+    let journal = r.journal().await.expect("the journal");
+    assert_eq!(journal.shards(), DEFAULT_JOURNAL_SHARDS);
+    let at = r.tikv().now().await.expect("now");
+    let mut tailer = Tailer::start(r.tikv().clone(), journal, at)
+        .await
+        .expect("a tailer");
+    let stop = Arc::new(AtomicBool::new(false));
+    let tailing = {
+        let (r, stop) = (r.clone(), stop.clone());
+        tokio::spawn(async move {
+            let mut latencies = Vec::new();
+            let mut entries = 0usize;
+            let mut moved = 0usize;
+            while !stop.load(Ordering::Relaxed) {
+                let started = std::time::Instant::now();
+                let at = r.tikv().now().await.expect("now");
+                let batch = tailer.tick(at).await.expect("a tick");
+                tailer.ack(&batch).expect("ack");
+                latencies.push(started.elapsed());
+                entries += batch.entries.len();
+                moved += batch
+                    .from
+                    .iter()
+                    .zip(&batch.heads)
+                    .filter(|(f, h)| f != h)
+                    .count();
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            (latencies, entries, moved)
+        })
+    };
+    let started = std::time::Instant::now();
     let next = Arc::new(AtomicUsize::new(0));
     let mut tasks = Vec::new();
     for _ in 0..WRITERS {
@@ -1164,6 +1204,9 @@ async fn mutations_under_contention_complete_within_the_default_budget() {
     for t in tasks {
         results.extend(t.await.expect("a writer"));
     }
+    let elapsed = started.elapsed();
+    stop.store(true, Ordering::Relaxed);
+    let (mut latencies, entries, moved) = tailing.await.expect("the tailer");
     let failures: Vec<&LiveError> = results.iter().filter_map(|m| m.as_ref().err()).collect();
     assert!(failures.is_empty(), "failures: {failures:?}");
     let attempts: Vec<u32> = results
@@ -1172,10 +1215,18 @@ async fn mutations_under_contention_complete_within_the_default_budget() {
         .collect();
     let reruns: u32 = attempts.iter().map(|a| a - 1).sum();
     let max = attempts.iter().max().copied().unwrap_or(0);
+    latencies.sort();
+    let pct = |p: usize| latencies[(latencies.len() - 1) * p / 100];
     eprintln!(
-        "{MUTATIONS} mutations by {WRITERS} writers: {reruns} reruns ({:.3} per mutation), \
-         at most {max} attempts",
-        f64::from(reruns) / MUTATIONS as f64
+        "{MUTATIONS} mutations by {WRITERS} writers on {DEFAULT_JOURNAL_SHARDS} shards in {elapsed:?}: \
+         {reruns} reruns ({:.3} per mutation), at most {max} attempts; tailer: {} ticks, \
+         {entries} entries, {:.1} shards moved per tick, tick latency p50 {:?} p99 {:?} max {:?}",
+        f64::from(reruns) / MUTATIONS as f64,
+        latencies.len(),
+        moved as f64 / latencies.len().max(1) as f64,
+        pct(50),
+        pct(99),
+        pct(100),
     );
     assert!(max <= 16);
     assert_eq!(heads(&r).await.iter().sum::<u64>(), MUTATIONS as u64 + 1);

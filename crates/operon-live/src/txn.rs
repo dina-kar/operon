@@ -537,6 +537,9 @@ struct Inner {
     /// Mutations hold it shared for their whole run; [`Runner::try_quiesce`]
     /// takes it exclusively.
     gate: Arc<tokio::sync::RwLock<()>>,
+    /// Counts this runner's commits that wrote a journal entry; the
+    /// subscription manager ticks when it moves (§20 §8.2 step 1).
+    commits: tokio::sync::watch::Sender<u64>,
 }
 
 /// Exclusive admission to an app's mutations, from [`Runner::try_quiesce`]:
@@ -617,6 +620,7 @@ impl Runner {
                 limits: config.limits.clone(),
                 options,
                 gate: Arc::default(),
+                commits: tokio::sync::watch::Sender::new(0),
             }),
         })
     }
@@ -650,6 +654,13 @@ impl Runner {
             .try_write_owned()
             .ok()
             .map(|guard| Quiesced { _guard: guard })
+    }
+
+    /// A receiver that changes after every mutation of this runner that
+    /// committed a journal entry, so a subscription manager on this node can
+    /// tick right after a local commit (§20 §8.2 step 1).
+    pub fn commits(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.commits.subscribe()
     }
 
     /// The app's journal, with its stored shard count (read now).
@@ -752,6 +763,15 @@ impl Runner {
                 return Err(LiveError::Txn(e));
             }
         };
+        if matches!(
+            committed.value,
+            Outcome::Ran {
+                journal: Some(_),
+                ..
+            }
+        ) {
+            self.inner.commits.send_modify(|n| *n = n.wrapping_add(1));
+        }
         Ok(match committed.value {
             Outcome::Ran {
                 result,

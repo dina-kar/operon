@@ -55,7 +55,8 @@ pub const MAX_CONSUMERS: usize = 4096;
 /// Entries the janitor deletes per transaction.
 pub const TRIM_BATCH: usize = 256;
 
-/// Entries per scan request of [`Journal::read_bounded`].
+/// Entries per batch get of [`Journal::read_bounded`] (the store layer pages
+/// further on gRPC size limits).
 pub const READ_PAGE_ENTRIES: usize = 256;
 
 /// The encoded bytes of entries one [`Tailer::tick`] reads by default
@@ -203,6 +204,11 @@ impl Journal {
     /// entry): returns the entries and the last sequence read in every shard
     /// (`to[s]` for the shards read to the end, `from[s]` for those not
     /// reached).
+    ///
+    /// Every key wanted is known (`(from[s], to[s]]` of each shard), so the
+    /// entries are read by batch gets of up to [`READ_PAGE_ENTRIES`] keys over
+    /// all the moved shards at once, not by one scan per shard: at 64
+    /// shards a tick under load reads most of them (R1 plan row T11-3).
     pub async fn read_bounded(
         &self,
         reads: &mut impl Reads,
@@ -212,9 +218,6 @@ impl Journal {
     ) -> Result<(Vec<Read>, Vec<u64>), LiveError> {
         self.check_positions(from)?;
         self.check_positions(to)?;
-        let mut out = Vec::new();
-        let mut reached = from.to_vec();
-        let mut bytes = 0usize;
         for shard in 0..self.shards {
             let (lo, hi) = (from[usize::from(shard)], to[usize::from(shard)]);
             if hi < lo {
@@ -222,61 +225,79 @@ impl Journal {
                     "journal shard {shard}: head {hi} is below position {lo}"
                 )));
             }
-            let mut expected = lo + 1;
-            while expected <= hi {
+        }
+        let mut out = Vec::new();
+        let mut reached = from.to_vec();
+        let mut bytes = 0usize;
+        // The next sequence wanted in each shard, and the shard being read.
+        let mut next: Vec<u64> = from.iter().map(|p| p + 1).collect();
+        let mut shard = 0u16;
+        while shard < self.shards && bytes < max_bytes {
+            // The next batch: the wanted keys in shard, then sequence, order.
+            let mut wanted: Vec<(u16, u64)> = Vec::new();
+            let mut s = shard;
+            while s < self.shards && wanted.len() < READ_PAGE_ENTRIES {
+                let hi = to[usize::from(s)];
+                let seq = &mut next[usize::from(s)];
+                while *seq <= hi && wanted.len() < READ_PAGE_ENTRIES {
+                    wanted.push((s, *seq));
+                    *seq += 1;
+                }
+                if *seq > hi {
+                    s += 1;
+                }
+            }
+            if wanted.is_empty() {
+                break;
+            }
+            let keys: Vec<Vec<u8>> = wanted
+                .iter()
+                .map(|(s, seq)| self.app.journal_entry(*s, *seq))
+                .collect();
+            let mut found: std::collections::HashMap<Vec<u8>, Vec<u8>> =
+                reads.batch_get(keys.clone()).await?.into_iter().collect();
+            for ((s, seq), key) in wanted.into_iter().zip(keys) {
+                let Some(value) = found.remove(&key) else {
+                    let position = from[usize::from(s)];
+                    return Err(if seq == position + 1 {
+                        LiveError::JournalTrimmed {
+                            shard: s,
+                            position,
+                            first: self.first_entry(reads, s, seq, to[usize::from(s)]).await?,
+                        }
+                    } else {
+                        LiveError::Corrupt(format!("journal shard {s}: entry {seq} is missing"))
+                    });
+                };
+                bytes = bytes.saturating_add(value.len());
+                out.push((s, seq, decode_entry(&value)?));
+                reached[usize::from(s)] = seq;
                 if bytes >= max_bytes {
                     return Ok((out, reached));
                 }
-                let left = usize::try_from(hi - expected + 1).unwrap_or(usize::MAX);
-                let range = KeyRange {
-                    lo: self.app.journal_entry(shard, expected),
-                    hi: key_after(&self.app.journal_entry(shard, hi)),
-                };
-                let pairs = reads
-                    .scan(&range, left.min(READ_PAGE_ENTRIES), false)
-                    .await?;
-                if pairs.is_empty() {
-                    return Err(if expected == lo + 1 {
-                        LiveError::JournalTrimmed {
-                            shard,
-                            position: lo,
-                            first: None,
-                        }
-                    } else {
-                        LiveError::Corrupt(format!(
-                            "journal shard {shard}: entries {expected}..={hi} are missing"
-                        ))
-                    });
-                }
-                for (key, value) in pairs {
-                    let seq = self
-                        .app
-                        .seq_of_journal_entry(shard, &key)
-                        .ok_or_else(|| LiveError::Corrupt("a journal entry key".into()))?;
-                    if seq != expected {
-                        return Err(if expected == lo + 1 {
-                            LiveError::JournalTrimmed {
-                                shard,
-                                position: lo,
-                                first: Some(seq),
-                            }
-                        } else {
-                            LiveError::Corrupt(format!(
-                                "journal shard {shard}: entry {expected} is missing before {seq}"
-                            ))
-                        });
-                    }
-                    bytes = bytes.saturating_add(value.len());
-                    out.push((shard, seq, decode_entry(&value)?));
-                    reached[usize::from(shard)] = seq;
-                    expected += 1;
-                    if bytes >= max_bytes {
-                        break;
-                    }
-                }
             }
+            shard = s;
         }
         Ok((out, reached))
+    }
+
+    /// The first entry of `shard` in `from..=to`, if any (the error path of
+    /// a trimmed read).
+    async fn first_entry(
+        &self,
+        reads: &mut impl Reads,
+        shard: u16,
+        from: u64,
+        to: u64,
+    ) -> Result<Option<u64>, LiveError> {
+        let range = KeyRange {
+            lo: self.app.journal_entry(shard, from),
+            hi: key_after(&self.app.journal_entry(shard, to)),
+        };
+        let pairs = reads.scan(&range, 1, false).await?;
+        Ok(pairs
+            .first()
+            .and_then(|(key, _)| self.app.seq_of_journal_entry(shard, key)))
     }
 
     /// Writes `consumer`'s checkpoint at `positions`, expiring `ttl` after
