@@ -9,8 +9,8 @@ use std::fmt;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use resonate_base::{Options, Registry, Running};
@@ -41,7 +41,8 @@ pub struct DurableServer {
     listen: SocketAddr,
     node_id: String,
     shutdown_timeout: Duration,
-    next_corr: AtomicU64,
+    store: DurableStore,
+    client: DurableClient,
     lock: Option<File>,
     inproc: Option<Arc<InProcWorker>>,
 }
@@ -111,12 +112,18 @@ impl DurableServer {
                  resonate:target a caller names, a server-side request forgery risk"
             );
         }
+        let client = DurableClient {
+            server: Arc::downgrade(running.server()),
+            node_id: node_id.to_string(),
+            next_corr: Arc::new(AtomicU64::new(0)),
+        };
         Ok(Self {
             running,
             listen: config.listen,
             node_id: node_id.to_string(),
             shutdown_timeout: config.shutdown_timeout,
-            next_corr: AtomicU64::new(0),
+            store: config.store,
+            client,
             lock,
             inproc,
         })
@@ -171,12 +178,72 @@ impl DurableServer {
         &self.node_id
     }
 
+    /// The store this server serves (Loam's retention reads it, D1 Task 7).
+    pub fn store(&self) -> &DurableStore {
+        &self.store
+    }
+
+    /// An in-process client of this server that does not keep it alive:
+    /// after [`stop`](Self::stop), every call is
+    /// [`DurableError::Unavailable`].
+    pub fn client(&self) -> DurableClient {
+        self.client.clone()
+    }
+
+    /// One protocol request, in process; see [`DurableClient::process`].
+    pub async fn process(&self, req: Value) -> Result<Value, DurableError> {
+        self.client.process(req).await
+    }
+
+    /// Whether the server can serve right now (its store answers).
+    pub async fn ready(&self) -> bool {
+        self.running.server().ready().await
+    }
+
+    /// Drain and stop, then wait until the listener's port is free (at most
+    /// 2 s). The store lock is released last.
+    pub async fn stop(self) {
+        self.running.stop(self.shutdown_timeout).await;
+        let Self {
+            running,
+            listen,
+            lock,
+            ..
+        } = self;
+        drop(running);
+        if !listen::wait_free(listen, PORT_RELEASE).await {
+            tracing::warn!(addr = %listen, "the durable port is still bound after stop");
+        }
+        drop(lock);
+    }
+}
+
+/// An in-process protocol client of a [`DurableServer`] (D1 Task 7). It
+/// holds the server weakly, so a holder that outlives the server (a route,
+/// a worker task) gets [`DurableError::Unavailable`] instead of keeping it
+/// running.
+#[derive(Clone)]
+pub struct DurableClient {
+    server: Weak<dyn ResonateServer>,
+    node_id: String,
+    next_corr: Arc<AtomicU64>,
+}
+
+impl fmt::Debug for DurableClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DurableClient")
+            .field("node_id", &self.node_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl DurableClient {
     /// One protocol request, in process: `{"kind": …, "data": …}`, with an
     /// optional `head` (its `corrId` and `version` are filled in when absent).
     ///
     /// A 2xx answer is the whole response envelope (`kind`, `head` with
     /// `status`, `data`). Any other status is [`DurableError::Protocol`] with
-    /// the response's `data`; no answer at all is
+    /// the response's `data`; no answer at all, or a stopped server, is
     /// [`DurableError::Unavailable`].
     pub async fn process(&self, req: Value) -> Result<Value, DurableError> {
         let Value::Object(mut req) = req else {
@@ -203,12 +270,15 @@ impl DurableServer {
             .or_insert_with(|| Value::String(PROTOCOL_VERSION.into()));
         let envelope: RequestEnvelope = serde_json::from_value(Value::Object(req))
             .map_err(|e| DurableError::Config(format!("a malformed durable request: {e}")))?;
-        let response = self
-            .running
-            .server()
+        let server = self
+            .server
+            .upgrade()
+            .ok_or_else(|| DurableError::Unavailable("the durable server has stopped".into()))?;
+        let response = server
             .process(&envelope)
             .await
             .map_err(|e| DurableError::Unavailable(e.to_string()))?;
+        drop(server);
         let status = response.head.status;
         let response = serde_json::to_value(&response)
             .map_err(|e| DurableError::Unavailable(format!("an unreadable response: {e}")))?;
@@ -220,28 +290,6 @@ impl DurableServer {
                 body: response.get("data").cloned().unwrap_or(Value::Null),
             })
         }
-    }
-
-    /// Whether the server can serve right now (its store answers).
-    pub async fn ready(&self) -> bool {
-        self.running.server().ready().await
-    }
-
-    /// Drain and stop, then wait until the listener's port is free (at most
-    /// 2 s). The store lock is released last.
-    pub async fn stop(self) {
-        self.running.stop(self.shutdown_timeout).await;
-        let Self {
-            running,
-            listen,
-            lock,
-            ..
-        } = self;
-        drop(running);
-        if !listen::wait_free(listen, PORT_RELEASE).await {
-            tracing::warn!(addr = %listen, "the durable port is still bound after stop");
-        }
-        drop(lock);
     }
 }
 

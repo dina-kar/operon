@@ -16,6 +16,8 @@ mysql = ["dep:resonate-server-mysql", "dep:rustls", "dep:sqlx"]
 
 [dependencies]
 async-trait.workspace = true
+base64.workspace = true
+hex.workspace = true
 resonate-base.workspace = true
 resonate-gateway-http.workspace = true
 resonate-plugin.workspace = true
@@ -26,12 +28,16 @@ resonate-server-mysql = { workspace = true, optional = true }
 resonate-server-sqlite.workspace = true
 resonate-transport-http-poll.workspace = true
 resonate-transport-http-push.workspace = true
+# Retention deletes a finished operation's promises directly (D1 Task 7).
+rusqlite.workspace = true
 rustls = { workspace = true, optional = true, features = ["ring", "std"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 sqlx = { workspace = true, optional = true, features = ["mysql", "runtime-tokio", "tls-rustls"] }
 tokio.workspace = true
 tracing.workspace = true
+ulid.workspace = true
 url.workspace = true
 
 [dev-dependencies]

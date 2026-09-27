@@ -92,7 +92,10 @@ impl DurableRuntime {
             pid: Some(node_id.to_string()),
             ttl: Some(ttl),
             ..ResonateConfig::default()
-        });
+        })
+        // Workflows reach the server through it between steps, for
+        // `ops::check_canceled` (D1 Task 7).
+        .with_dependency(server.client());
         let runtime = Self { sdk, network };
         if let Err(e) = register(&runtime.sdk) {
             runtime.stop().await;
