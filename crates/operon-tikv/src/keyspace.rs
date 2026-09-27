@@ -73,7 +73,7 @@ pub(crate) async fn get(
     validate_name(name)?;
     let (status, body) = send(OP, http.get(format!("{base}/pd/api/v2/keyspaces/{name}"))).await?;
     match classify(status, &body) {
-        Answer::Ok => parse(OP, &body).map(Some),
+        Answer::Ok => parse(OP, &body, name).map(Some),
         Answer::DoesNotExist => Ok(None),
         Answer::AlreadyExists | Answer::Other => Err(TikvError::Pd {
             op: OP,
@@ -95,7 +95,7 @@ async fn create(
         .json(&serde_json::json!({ "name": name }));
     let (status, body) = send(OP, request).await?;
     match classify(status, &body) {
-        Answer::Ok => parse(OP, &body).map(Some),
+        Answer::Ok => parse(OP, &body, name).map(Some),
         Answer::AlreadyExists => Ok(None),
         Answer::DoesNotExist | Answer::Other => Err(TikvError::Pd {
             op: OP,
@@ -121,11 +121,21 @@ async fn send(
     Ok((status, body))
 }
 
-fn parse(op: &'static str, body: &str) -> Result<KeyspaceMeta, TikvError> {
-    serde_json::from_str(body).map_err(|e| TikvError::Http {
+/// Parses PD's keyspace answer and checks that it names the keyspace asked
+/// for, so a misrouted or wrong PD HTTP endpoint cannot hand back another
+/// keyspace's metadata.
+fn parse(op: &'static str, body: &str, name: &str) -> Result<KeyspaceMeta, TikvError> {
+    let meta: KeyspaceMeta = serde_json::from_str(body).map_err(|e| TikvError::Http {
         op,
         message: format!("unreadable keyspace ({e}): {body}"),
-    })
+    })?;
+    if meta.name != name {
+        return Err(TikvError::Http {
+            op,
+            message: format!("asked for keyspace '{name}', PD answered '{}'", meta.name),
+        });
+    }
+    Ok(meta)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -195,9 +205,14 @@ mod tests {
     fn keyspace_meta_parses_pd_json() {
         let body = r#"{"id":4,"name":"loam_test_meta","state":"ENABLED",
                        "created_at":1790000000,"state_changed_at":1790000000}"#;
-        let meta = parse("test", body).unwrap();
+        let meta = parse("test", body, "loam_test_meta").unwrap();
         assert_eq!(meta.id, 4);
         assert_eq!(meta.name, "loam_test_meta");
         assert!(meta.config.is_empty());
+        // An answer about another keyspace is refused.
+        assert!(matches!(
+            parse("test", body, "loam_meta"),
+            Err(TikvError::Http { .. })
+        ));
     }
 }
