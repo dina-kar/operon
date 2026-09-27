@@ -5523,7 +5523,7 @@ dependencies = [
 name = "operon-es"
 version = "0.0.1"
 dependencies = [
- "axum",
+ "axum 0.8.9",
  "base64 0.22.1",
  "operon-collection",
  "operon-common",
@@ -5534,7 +5534,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-util",
- "tower",
+ "tower 0.5.3",
  "tracing",
  "ulid 3.0.0",
 ]
