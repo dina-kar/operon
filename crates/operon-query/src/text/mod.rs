@@ -15,6 +15,7 @@
 //! P28, row 0.44); splits and the tail index keep Tantivy's
 //! `operon_text::tokenizer_manager()`.
 
+pub mod checksums;
 pub mod coerce;
 pub mod compile;
 pub mod fields;
@@ -27,6 +28,7 @@ pub mod stats;
 use operon_quickwit::query::tokenizers::TokenizerManager;
 use operon_text::{ENGLISH, KEYWORD, SIMPLE, STANDARD, WHITESPACE};
 
+pub use checksums::{SPLIT_CHECK_BLOCK, SplitChecksums, SplitChecksumsBuilder, checksums_path};
 pub use coerce::{Coerced, RangeOp, coerce_bound, coerce_term, date_bound_ms, format_date_us};
 pub use compile::{
     CompileMode, CompiledQuery, QueryCompiler, fuzziness_edits, highlight_terms,

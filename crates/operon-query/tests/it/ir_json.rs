@@ -317,14 +317,30 @@ fn service_errors_round_trip_their_bodies() {
             "internal",
             500,
         ),
+        (
+            ServiceError::ResourceExhausted {
+                message: "collection c: 10 records (99 bytes) are not yet applied".to_string(),
+                retry_after_ms: 2500,
+            },
+            "resource_exhausted",
+            429,
+        ),
     ];
     for (err, code, status) in cases {
         assert_eq!(err.code(), code);
         assert_eq!(err.http_status(), status);
         assert_eq!(
             err.is_retryable(),
-            matches!(err, ServiceError::Unavailable(_) | ServiceError::Timeout)
+            matches!(
+                err,
+                ServiceError::Unavailable(_)
+                    | ServiceError::Timeout
+                    | ServiceError::ResourceExhausted { .. }
+            )
         );
+        if let ServiceError::ResourceExhausted { retry_after_ms, .. } = &err {
+            assert_eq!(err.to_body()["retry_after_ms"], json!(retry_after_ms));
+        }
         let body = err.to_body();
         assert_eq!(body["error"], json!(code));
         assert_eq!(body["message"], json!(err.to_string()));
@@ -1269,6 +1285,12 @@ fn service_error() -> impl Strategy<Value = ServiceError> {
         ".{0,8}".prop_map(ServiceError::Unavailable),
         Just(ServiceError::Timeout),
         ".{0,8}".prop_map(ServiceError::Internal),
+        (".{0,8}", any::<u64>()).prop_map(|(message, retry_after_ms)| {
+            ServiceError::ResourceExhausted {
+                message,
+                retry_after_ms,
+            }
+        }),
     ]
 }
 
@@ -1393,6 +1415,14 @@ fn collection_info() -> impl Strategy<Value = CollectionInfo> {
                         text,
                         fragments,
                     },
+                    unapplied_bytes: size_bytes / 2,
+                    backpressure: operon_query::BackpressureStatus {
+                        state: operon_query::BackpressureState::Throttling,
+                        unapplied_records: link_lag_records,
+                        unapplied_bytes: size_bytes / 2,
+                        max_unapplied_records: 10,
+                        max_unapplied_bytes: 1 << 20,
+                    },
                 }
             },
         )
@@ -1419,6 +1449,10 @@ fn write_result() -> impl Strategy<Value = WriteResult> {
     )
         .prop_map(|(token, results, positions)| WriteResult {
             token,
+            backlog: operon_query::Backlog {
+                records: results.len() as u64,
+                bytes: positions.len() as u64 * 100,
+            },
             results,
             positions,
         })

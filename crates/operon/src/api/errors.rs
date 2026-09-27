@@ -61,6 +61,11 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        // A 429's `Retry-After`: its `retry_after_ms`, rounded up to seconds.
+        let retry_after = (self.status == StatusCode::TOO_MANY_REQUESTS)
+            .then(|| self.extra.get("retry_after_ms").and_then(Value::as_u64))
+            .flatten()
+            .map(|ms| ms.div_ceil(1000).max(1));
         let mut body = serde_json::Map::new();
         body.insert("error".to_string(), Value::from(self.code));
         body.insert("message".to_string(), Value::from(self.message));
@@ -71,6 +76,10 @@ impl IntoResponse for ApiError {
             response
                 .headers_mut()
                 .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        } else if let Some(seconds) = retry_after {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from(seconds));
         }
         response
     }
@@ -120,8 +129,9 @@ impl From<BytesRejection> for ApiError {
 
 impl From<ServiceError> for ApiError {
     /// `{status: http_status(), error: code(), message: Display}` plus
-    /// `kind` and `name` for `NotFound` and `field` for `SchemaViolation`
-    /// (rule 3).
+    /// `kind` and `name` for `NotFound`, `field` for `SchemaViolation` and
+    /// `retry_after_ms` for `ResourceExhausted` (429 with `Retry-After`, the
+    /// wait rounded up to seconds; Task 15 rule 5) (rule 3).
     fn from(err: ServiceError) -> Self {
         let status =
             StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -131,6 +141,9 @@ impl From<ServiceError> for ApiError {
                 api = api.with("kind", kind).with("name", name);
             }
             ServiceError::SchemaViolation { field, .. } => api = api.with("field", field),
+            ServiceError::ResourceExhausted { retry_after_ms, .. } => {
+                api = api.with("retry_after_ms", retry_after_ms);
+            }
             _ => {}
         }
         api

@@ -42,6 +42,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tonic::{Request, Response, Status, Streaming};
 
+use crate::backlog::Override;
 use crate::error::ServiceError;
 use crate::flight_ingest::{
     Acks, ID_TYPE_METADATA, IngestAction, Put, PutTarget, Sink, StreamProducer, ingest_action,
@@ -242,8 +243,23 @@ pub fn status_of(err: &ServiceError) -> Status {
         ServiceError::Unavailable(_) => Status::unavailable(message),
         ServiceError::Timeout => Status::deadline_exceeded(message),
         ServiceError::Internal(_) => Status::internal(message),
+        ServiceError::ResourceExhausted { retry_after_ms, .. } => {
+            let mut status = Status::resource_exhausted(message);
+            if let Ok(value) = retry_after_ms.to_string().parse() {
+                status.metadata_mut().insert(RETRY_AFTER_METADATA, value);
+            }
+            status
+        }
     }
 }
+
+/// The metadata of a `RESOURCE_EXHAUSTED` status: how long to wait, in
+/// milliseconds (Task 15 rule 5).
+pub const RETRY_AFTER_METADATA: &str = "retry-after-ms";
+
+/// The request metadata whose value `off` admits a put over the plain
+/// budget (`Override::Bulk`, Task 15 rule 5).
+pub const BACKPRESSURE_METADATA: &str = "operon-backpressure";
 
 impl From<ServiceError> for Status {
     fn from(err: ServiceError) -> Self {
@@ -302,6 +318,20 @@ fn namespace_of<T>(request: &Request<T>) -> String {
         .filter(|ns| !ns.is_empty())
         .unwrap_or(DEFAULT_NAMESPACE)
         .to_string()
+}
+
+/// The request's [`BACKPRESSURE_METADATA`]: `off` is `Override::Bulk`,
+/// absent is `None`, anything else is refused.
+fn backpressure_of<T>(request: &Request<T>) -> Result<Override, Status> {
+    match request.metadata().get(BACKPRESSURE_METADATA) {
+        None => Ok(Override::None),
+        Some(value) => match value.to_str() {
+            Ok("off") => Ok(Override::Bulk),
+            _ => Err(Status::invalid_argument(format!(
+                "{BACKPRESSURE_METADATA} must be \"off\", got {value:?}"
+            ))),
+        },
+    }
 }
 
 /// The request's [`ID_TYPE_METADATA`], for a string `_id` column whose field
@@ -696,6 +726,7 @@ impl FlightSqlService for OperonFlightSql {
         }
         let ns = namespace_of(&request);
         let id_type = id_type_of(&request);
+        let backpressure = backpressure_of(&request)?;
         let path = match request.get_mut().peek().await {
             Some(Ok(first)) => first
                 .flight_descriptor
@@ -713,6 +744,7 @@ impl FlightSqlService for OperonFlightSql {
                     name,
                     schema: Some(info.schema),
                     id_type,
+                    backpressure,
                 }
             }
             PutTarget::Stream { name, partition } => {
@@ -767,6 +799,7 @@ impl FlightSqlService for OperonFlightSql {
     ) -> Result<i64, Status> {
         let default_ns = namespace_of(&request);
         let id_type = id_type_of(&request);
+        let backpressure = backpressure_of(&request)?;
         let (ns, target) = put_target_from_ingest(&cmd, &default_ns)?;
         let options = cmd.table_definition_options.as_ref();
         let sink = match target {
@@ -786,6 +819,7 @@ impl FlightSqlService for OperonFlightSql {
                     name,
                     schema,
                     id_type,
+                    backpressure,
                 }
             }
             PutTarget::Stream { name, partition } => {

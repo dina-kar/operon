@@ -52,6 +52,8 @@ pub struct TierCounters {
     pub ann_served: u64,
     pub ann_missed: u64,
     pub split_files_served: u64,
+    /// Pinned split files evicted because a read of them failed (row F3).
+    pub split_files_quarantined: u64,
     /// Artifacts loaded.
     pub loads: u64,
     /// Artifact loads that failed.
@@ -83,6 +85,7 @@ struct Counters {
     ann_served: AtomicU64,
     ann_missed: AtomicU64,
     split_files_served: AtomicU64,
+    split_files_quarantined: AtomicU64,
     loads: AtomicU64,
     load_failures: AtomicU64,
 }
@@ -213,6 +216,9 @@ struct TierInner {
     /// Heat (rule 4) and when it was last halved.
     heat: HeatSketch,
     last_decay: Mutex<Instant>,
+    /// How far tests moved this tier's clock ahead of `Instant::now()`
+    /// ([`HotTierImpl::advance_clock`]); zero in production.
+    clock_offset: Mutex<Duration>,
     /// The budget enforced (rule 3); starts from the configuration.
     budget: Mutex<Budget>,
     /// Collections warmed on this node (rule 5).
@@ -352,6 +358,7 @@ impl HotTierImpl {
                 fragments: Mutex::new(HashMap::new()),
                 heat: HeatSketch::new(),
                 last_decay: Mutex::new(Instant::now()),
+                clock_offset: Mutex::new(Duration::ZERO),
                 budget: Mutex::new(budget),
                 warm: Mutex::new(HashSet::new()),
                 promotions: Mutex::new(HashMap::new()),
@@ -367,6 +374,17 @@ impl HotTierImpl {
                 task: Mutex::new(None),
             }),
         })
+    }
+
+    /// This tier's clock: `Instant::now()` plus whatever tests advanced it
+    /// by. Split linger, eviction and heat windows read it.
+    fn now(&self) -> Instant {
+        Instant::now()
+            + *self
+                .inner
+                .clock_offset
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn read_state(&self) -> std::sync::RwLockReadGuard<'_, HashMap<Key, Columns>> {
@@ -498,6 +516,7 @@ impl HotTierImpl {
             ann_served: c.ann_served.load(Ordering::Relaxed),
             ann_missed: c.ann_missed.load(Ordering::Relaxed),
             split_files_served: c.split_files_served.load(Ordering::Relaxed),
+            split_files_quarantined: c.split_files_quarantined.load(Ordering::Relaxed),
             loads: c.loads.load(Ordering::Relaxed),
             load_failures: c.load_failures.load(Ordering::Relaxed),
         }
@@ -514,7 +533,7 @@ impl HotTierImpl {
         }
         let _pass = inner.reconciling.lock().await;
         let meta = &*inner.ctx.meta;
-        let now = Instant::now();
+        let now = self.now();
         self.decay_heat(now);
 
         // 1. One `Local` read of every collection, its pointer and its
@@ -890,6 +909,29 @@ impl HotTierImpl {
         self.inner.heat.estimate(ns, cid)
     }
 
+    /// Halves the heat sketch `windows` times now, as if that many heat
+    /// windows had passed. Tests drive cooling with it instead of the wall
+    /// clock (CI fix C1); the wall-clock decay still applies on top.
+    #[doc(hidden)]
+    pub fn decay_heat_windows(&self, windows: u32) {
+        for _ in 0..windows.min(8) {
+            self.inner.heat.decay();
+        }
+    }
+
+    /// Moves this tier's clock `by` ahead: the next pass sees split linger,
+    /// evicted files' linger and heat windows as if `by` had passed. Tests
+    /// expire a linger with it instead of sleeping (CI fix C3). Promotion
+    /// lease renewal keeps the wall clock.
+    #[doc(hidden)]
+    pub fn advance_clock(&self, by: Duration) {
+        *self
+            .inner
+            .clock_offset
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) += by;
+    }
+
     /// Every budgeted structure this node holds (rule 3): loaded artifacts,
     /// their delta indexes and pinned splits, with their class and heat.
     pub fn resident(&self) -> Vec<Resident> {
@@ -1249,7 +1291,7 @@ impl HotTierImpl {
         }
         let live = live_rows_cached(snapshot, &inner.deleted).await?;
         let pinned = self.info(ns, cid).is_some_and(|info| info.pinned.vectors);
-        let now = Instant::now();
+        let now = self.now();
         for (column, reference) in columns {
             let mut state = self
                 .read_state()
@@ -1638,6 +1680,28 @@ impl HotTier for HotTierImpl {
             .split_files_served
             .fetch_add(1, Ordering::Relaxed);
         Some(path)
+    }
+
+    /// Row F3: a pinned file that failed a read (checksums, footer or
+    /// warm-up) is evicted, so its next pass downloads it again.
+    fn quarantine_split(
+        &self,
+        ns: NamespaceId,
+        cid: CollectionId,
+        split: ulid::Ulid,
+        path: &std::path::Path,
+    ) {
+        if self
+            .inner
+            .splits
+            .quarantine(&(ns, cid, split), path, self.now())
+        {
+            self.inner
+                .counters
+                .split_files_quarantined
+                .fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(namespace = %ns, collection = %cid, %split, path = %path.display(), "quarantined a pinned split file");
+        }
     }
 
     /// Task 8: the state and source version of each structure as of the

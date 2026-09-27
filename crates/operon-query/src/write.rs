@@ -192,6 +192,12 @@ impl CollectionService {
                 ops.len()
             )));
         }
+        // Task 15 rule 2: admission before dynamic mapping, so a refused
+        // write proposes no field and appends nothing.
+        let backlog = self
+            .backlog
+            .admit(ns_id, &collection, opts.backpressure)
+            .await?;
         // 2.
         let collection = self.map_dynamically(ns_id, collection, &ops).await?;
         // 3.
@@ -248,6 +254,7 @@ impl CollectionService {
             token: outcome.token,
             results,
             positions,
+            backlog,
         })
     }
 

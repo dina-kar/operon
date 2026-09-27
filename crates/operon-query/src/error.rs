@@ -26,6 +26,12 @@ pub enum ServiceError {
     Timeout,
     #[error("internal error: {0}")]
     Internal(String),
+    /// A write refused over the unapplied-data budget (Task 15, D86).
+    #[error("resource exhausted: {message}")]
+    ResourceExhausted {
+        message: String,
+        retry_after_ms: u64,
+    },
 }
 
 /// The kinds a [`ServiceError::NotFound`] names; a body naming another kind
@@ -53,6 +59,7 @@ impl ServiceError {
             ServiceError::Unavailable(_) => "unavailable",
             ServiceError::Timeout => "timeout",
             ServiceError::Internal(_) => "internal",
+            ServiceError::ResourceExhausted { .. } => "resource_exhausted",
         }
     }
 
@@ -65,16 +72,23 @@ impl ServiceError {
             ServiceError::Unavailable(_) => 503,
             ServiceError::Timeout => 504,
             ServiceError::Internal(_) => 500,
+            ServiceError::ResourceExhausted { .. } => 429,
         }
     }
 
     /// Whether the same call may succeed later.
     pub fn is_retryable(&self) -> bool {
-        matches!(self, ServiceError::Unavailable(_) | ServiceError::Timeout)
+        matches!(
+            self,
+            ServiceError::Unavailable(_)
+                | ServiceError::Timeout
+                | ServiceError::ResourceExhausted { .. }
+        )
     }
 
     /// `{"error": code, "message": Display}`, plus `kind` and `name` for
-    /// `NotFound` and `field` for `SchemaViolation`.
+    /// `NotFound`, `field` for `SchemaViolation` and `retry_after_ms` for
+    /// `ResourceExhausted`.
     pub fn to_body(&self) -> Value {
         let mut body = json!({"error": self.code(), "message": self.to_string()});
         match self {
@@ -83,6 +97,9 @@ impl ServiceError {
                 body["name"] = json!(name);
             }
             ServiceError::SchemaViolation { field, .. } => body["field"] = json!(field),
+            ServiceError::ResourceExhausted { retry_after_ms, .. } => {
+                body["retry_after_ms"] = json!(retry_after_ms);
+            }
             _ => {}
         }
         body
@@ -119,6 +136,13 @@ impl ServiceError {
             "unavailable" => ServiceError::Unavailable(detail("unavailable: ")),
             "timeout" => ServiceError::Timeout,
             "internal" => ServiceError::Internal(detail("internal error: ")),
+            "resource_exhausted" => ServiceError::ResourceExhausted {
+                message: detail("resource exhausted: "),
+                retry_after_ms: body
+                    .get("retry_after_ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default(),
+            },
             _ => return None,
         })
     }

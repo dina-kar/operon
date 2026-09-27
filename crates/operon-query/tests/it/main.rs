@@ -2,6 +2,7 @@ mod common;
 
 mod aggs;
 mod ann;
+mod backlog;
 mod compile;
 mod determinism;
 mod flight;

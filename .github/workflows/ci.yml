@@ -76,6 +76,22 @@ jobs:
       - name: crash gate
         run: cargo test -p operon --features failpoints --test crash --locked
 
+  cluster:
+    name: multi-process cluster
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+      - name: build
+        run: cargo build -p operon --locked
+      - name: clippy with cluster tests
+        run: cargo clippy -p operon --all-targets --features cluster-tests --locked -- -D warnings
+      # Each test starts five or six `operon` processes: one at a time.
+      - name: cluster tests
+        run: cargo test -p operon --features cluster-tests --test cluster --locked -- --test-threads=1
+
   sim:
     name: simulation seed sweep
     runs-on: ubuntu-latest

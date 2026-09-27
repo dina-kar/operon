@@ -30,7 +30,7 @@ use bytes::Bytes;
 use operon_collection::ConsistencyToken;
 use operon_common::meta::{Consistency, MetaStore, Retention, StreamState, TargetRef, WalClass};
 use operon_common::{NamespaceId, StreamId};
-use operon_hot::HotTierImpl;
+use operon_hot::{ForwardStats, HotTierImpl, Roles};
 use operon_link::{COUNTER_KIND, CounterTable, TargetRegistry};
 use operon_log::{FetchRequest, LogReader, LogWriter, Record};
 use operon_query::hot::HotLayer;
@@ -60,6 +60,14 @@ const IMPLICIT_STREAM_PREFIX: &str = "_collection.";
 /// case, which `HeaderName` refuses).
 pub const CONSISTENCY_TOKEN: HeaderName = HeaderName::from_static("operon-consistency-token");
 
+/// The backlog a collection write was admitted at (or refused over), on
+/// every write response (Task 15 rule 5).
+pub const UNAPPLIED_RECORDS_HEADER: &str = "Operon-Unapplied-Records";
+pub const UNAPPLIED_BYTES_HEADER: &str = "Operon-Unapplied-Bytes";
+/// The request header whose value `off` admits a write up to
+/// `override_factor` × the budget (`Override::Bulk`); any other value is 400.
+pub const BACKPRESSURE_HEADER: &str = "Operon-Backpressure";
+
 /// What the handlers share.
 #[derive(Clone, Debug)]
 pub struct AppState {
@@ -81,13 +89,30 @@ pub struct AppState {
     pub internal: reqwest::Client,
     /// `--hot-pin-all`, reported by a node whose hot tier is off.
     pub hot_pin_all: bool,
+    /// This node's roles (every role on a single node; plan M1.3 Task 11).
+    pub roles: Roles,
+    /// The receiving side of forwarded reads; `Some` on query nodes.
+    pub forwarded: Option<ForwardedReads>,
+    /// This node's forwarding counters (reads sent and received).
+    pub forward_stats: Arc<ForwardStats>,
+    /// The metastore view `GET /internal/v1/node/stats` reports in cluster
+    /// mode.
+    pub node_info: Option<Arc<dyn internal::NodeInfo>>,
+}
+
+/// What a query node needs to run forwarded reads (plan M1.3 Task 11).
+#[derive(Clone, Debug)]
+pub struct ForwardedReads {
+    /// The node's routed service; forwarded reads use its `*_local` methods.
+    pub service: Arc<CollectionService>,
+    pub stats: Arc<ForwardStats>,
 }
 
 /// The API's routes, inside `HotLayer` (the `Operon-Hot` switch, with the
 /// service's `hot_default` for requests without it), and the internal hot
 /// routes outside it.
 pub fn router(state: AppState) -> Router {
-    let internal = internal::hot_routes().with_state(state.clone());
+    let internal = internal::routes().with_state(state.clone());
     let hot_layer = HotLayer::new(state.collections.config().hot_default);
     let collection = "/v1/namespaces/{ns}/collections/{c}";
     Router::new()
@@ -142,6 +167,17 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
         .layer(hot_layer)
         .merge(internal)
+}
+
+/// The routes of a node without the `gateway` role (plan M1.3 Task 11):
+/// `/health`, `/ready` and the internal routes, no native API.
+pub fn internal_router(state: AppState) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/ready", get(ready))
+        .fallback(no_route)
+        .with_state(state.clone())
+        .merge(internal::routes().with_state(state))
 }
 
 async fn no_route() -> ApiError {

@@ -40,6 +40,7 @@ use tokio_util::sync::CancellationToken;
 use tonic::Status;
 use xxhash_rust::xxh3::xxh3_64;
 
+use crate::backlog::Override;
 use crate::error::ServiceError;
 use crate::service::CollectionService;
 use crate::sql::value_to_json;
@@ -1012,6 +1013,8 @@ pub(crate) enum Sink {
         name: String,
         schema: Option<CollectionSchema>,
         id_type: Option<String>,
+        /// From the request metadata `operon-backpressure` (Task 15).
+        backpressure: Override,
     },
     Stream {
         ns: String,
@@ -1047,12 +1050,14 @@ impl PutError {
         if written == 0 {
             return status;
         }
-        Status::new(
+        // The metadata (a refusal's `retry-after-ms`) stays.
+        Status::with_metadata(
             status.code(),
             format!(
                 "{} ({written} rows were written before the failure)",
                 status.message()
             ),
+            status.metadata().clone(),
         )
     }
 }
@@ -1155,6 +1160,7 @@ impl Put {
                 name,
                 schema,
                 id_type,
+                ..
             } => {
                 let id_type = IdType::of_schema(arrow, id_type.as_deref())?;
                 let resolved = match schema {
@@ -1265,10 +1271,16 @@ impl Put {
         batch: &RecordBatch,
         acks: Option<&Acks>,
     ) -> Result<Option<PutAck>, PutError> {
-        let Sink::Collection { ns, name, .. } = &self.sink else {
+        let Sink::Collection {
+            ns,
+            name,
+            backpressure,
+            ..
+        } = &self.sink
+        else {
             unreachable!("a collection mapper writes to a collection");
         };
-        let (ns, name) = (ns.clone(), name.clone());
+        let (ns, name, backpressure) = (ns.clone(), name.clone(), *backpressure);
         let mut ops = mapper
             .map(batch)
             .map_err(|err| Self::row_error(batch_no, err))?;
@@ -1289,6 +1301,7 @@ impl Put {
                     WriteOptions {
                         atomic: true,
                         report_existence: false,
+                        backpressure,
                     },
                 )
                 .await
