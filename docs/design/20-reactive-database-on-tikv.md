@@ -1,6 +1,6 @@
 # 20 — Loam Live: a Reactive Database on TiKV, TiDB SQL Access and the TiKV Metastore
 
-Status: **Proposed** · 2026-09-27. The direction (D116–D118, D122–D124, D126–D128) was approved by the owner on 2026-09-27: "build convex like layer on TiKV, and use it for our metadata and control if possible, other than convex like api, can we provide mysql protocol for normal uses, build this as soon as possible, loam will a ai native cloud". The design choices this document makes on top of that direction (D119–D121, D125, D129, D131) are **proposals** until the owner confirms them. Open questions are Q31–Q37 in §16.
+Status: **Proposed** · 2026-09-27. The direction (D116–D118, D122–D124, D126–D128) was approved by the owner on 2026-09-27: "build convex like layer on TiKV, and use it for our metadata and control if possible, other than convex like api, can we provide mysql protocol for normal uses, build this as soon as possible, loam will a ai native cloud". The design choices this document makes on top of that direction (D119–D121, D125, D129, D131) are **proposals** until the owner confirms them. Open questions are Q31–Q38 in §16. Measurements and cluster facts marked **(spike)** come from the TiKV feasibility spike of 2026-09-27 on `tiup playground` v8.5.8 with `tikv-client` 0.4.0 (report: `.superpowers/research/tikv-spike.md` in the m1.2a worktree, not committed); its latencies were taken on a heavily loaded shared machine and are indicative only.
 
 This document starts a second product line beside the retrieval engine (§00–§18). It amends D1 and D2 for that product line only (D130), supersedes D58's TiDB-over-sqlx clause (D124), and adds a parallel roadmap track, **R** (D127).
 
@@ -15,7 +15,7 @@ Markers: **(estimate)** is computed from code or specs, not measured. **(verify)
 | D116 | Loam is an **AI-native cloud**: the retrieval engine, a reactive application database, SQL, streams and AI-gateway integration | Approved (owner) | — |
 | D117 | **Loam Live** (working name "Loam Reactive"), a Convex-style reactive database built on TiKV: reactive queries, server functions, a protobuf sync API, a namespace router over keyspaces, and a bridge into Loam collections | Approved (owner); the name is proposed | R1–R4 |
 | D118 | A mutation is **one TiKV optimistic transaction**, retried on conflict; isolation is snapshot isolation with point reads promoted to locks; serializable range reads are open (Q31) | Approved (owner) for the transaction model; the isolation detail is proposed | R1 |
-| D119 | Invalidation comes from a **sharded, sequenced commit journal** written inside each mutation's transaction, not from TiKV CDC | Proposed | R1 |
+| D119 | Invalidation comes from a **sharded, sequenced commit journal** written inside each mutation's transaction; TiKV CDC (validated from Rust with `kv_api=TiDB`) is a secondary path for consumers that tolerate ~1 s lag | Proposed | R1 |
 | D120 | Server functions run in **QuickJS through `rquickjs`** in R1; V8 and wasmtime stay options (Q35) | Proposed | R1 |
 | D121 | The sync API is **protobuf over connect-rust** (Connect, gRPC, gRPC-Web): a server-streamed session plus unary calls; clients are generated | Proposed (the transport was the owner's choice) | R1 |
 | D122 | **Multi-tenancy by keyspace**, with size classes: large apps and every SQL tenant get their own keyspace; small apps share one under a key prefix | Approved (owner) for the router; the size classes are proposed | R2 |
@@ -168,7 +168,11 @@ The order is null < int64 < float64 < bool < string < bytes < array. Objects are
 - **Timestamps** are PD TSO values (physical ms << 18 | logical). They are Loam Live's version numbers: a query result is "valid at ts", a mutation returns its commit timestamp, and a client waits until its query set has reached that timestamp before it drops an optimistic update.
 - **Limits per mutation (R1 defaults):** 8 MiB written, 16 000 documents written, 32 000 documents scanned, 4 096 index ranges, 1 s of JavaScript CPU, a 10 s wall-clock deadline. These follow Convex's published limits in shape, scaled down for R1, and are configurable.
 - **Idempotency.** A `Mutate` call may carry an idempotency key. The runner writes the key's record inside the same transaction and, on a retry of the call, returns the recorded commit timestamp instead of running again. A lost acknowledgement therefore never applies a mutation twice.
-- **Commit options.** R1 uses plain two-phase commit. Async commit and 1PC (`use_async_commit`, `try_one_pc`, `transaction.rs:1206,1213`) cut a round trip, but an async-commit timestamp can be larger than a start timestamp fetched later by another client unless `min_commit_ts` is seeded from a fresh TSO, which is what TiDB's `tidb_guarantee_linearizability` does **(verify for client-rust)**. They are turned on only after R1 Task 16's checker passes with them.
+- **Commit options.** **R1 defaults to async commit with 1PC** (`use_async_commit` and `try_one_pc`, `transaction.rs:1206,1213`). In the spike they cut commit p50 by roughly 30–50% against 2PC: about 3.5–5.3 ms against 7.1–7.3 ms for optimistic transactions under heavy host load **(spike)**. Two risks come with them:
+  1. An async-commit timestamp can be larger than a start timestamp fetched later by another client unless `min_commit_ts` is seeded from a fresh TSO, as TiDB's `tidb_guarantee_linearizability` does.
+  2. `tikv-client` 0.4.0's async commit `unwrap()`s `min_commit_ts` and never sets `max_commit_ts` (a FIXME in `transaction.rs`) **(spike)**.
+
+  So the commit mode is a config switch (`commit_mode = async_1pc | two_pc`). The R1 gates (the linearizability histories of the metastore suite, and the reactive and transaction checkers) must pass with the default. If one fails, that component falls back to `two_pc` until the upstream fix lands (§11.4).
 
 ### 5.2 Isolation level
 
@@ -201,14 +205,25 @@ JournalEntry {
 
 **Sequencing.** The journal has `S` shards (16 by default, up to 1 024; set per app). A mutation picks a shard, reads the shard's head `h` at its start timestamp, and writes the entry at `seq = h + 1` and the head `= h + 1` in the same transaction. Two mutations that pick the same shard conflict on the head and one retries on another shard. So each shard's sequence is **dense and ordered by commit**, and an entry is visible at timestamp `T` exactly when its transaction committed at or before `T`.
 
-**Why not TiKV CDC.** TiKV has a change feed, but it cannot serve R1:
+**Why the journal, and where TiKV CDC fits.** TiKV's change feed **does** serve a txn-API keyspace. The spike subscribed to `cdcpb.ChangeData/EventFeed` from Rust and received Prewrite and Commit rows with values, 1PC `Committed` rows, deletes and resolved timestamps, both for a Rust-client keyspace (1 region) and for a keyspace-mode TiDB (62 regions) **(spike)**. It needs:
 
-- TiKV's CDC service accepts only `kv_api = TiDB`, or `RawKV` on API v2. A TxnKV request is refused: "TxnKv is not supported now" (`tikv/components/cdc/src/endpoint.rs:843-845`, `service.rs:27-30`).
-- The feed is per region. A consumer tracks region epochs, splits and merges, resolved timestamps and lock resolution, as TiCDC's log puller does in Go (`ticdc/logservice/logpuller/region_request_worker.go`, `region_tracker.go`, `region_failure_handler.go`). The only Rust consumer is TiKV's own test harness, over grpcio (`tikv/components/cdc/tests/mod.rs:19,58-70`).
-- `client-rust` vendors `cdcpb.proto` and generates a tonic `ChangeDataClient` (`client-rust/src/generated/cdcpb.rs:383,462,492`), but its `proto` module is private (`client-rust/src/lib.rs`, `mod proto`), so using it means our own stubs or an upstream change.
-- TiCDC is TiDB-table oriented: it never sets `kv_api` and keys its spans by table id (`ticdc/logservice/eventstore/event_store.go:218`), so it cannot capture a TxnKV keyspace.
+- **`kv_api = TiDB`, even for non-TiDB transactional keys.** `TxnKV` is refused with a misleading `Compatibility{required_version: "6.2.0"}` error. `validate_kv_api` accepts only `TiDB`, or `RawKV` on API v2, and the txn path handles any non-raw key (`tikv/components/cdc/src/service.rs:27-30`, `endpoint.rs:843-845`, `delegate.rs:1023-1029`).
+- **Its own client stubs.** `tikv-client` ships generated `cdcpb` and `pdpb` code, but `mod proto` is private (`client-rust/src/lib.rs`). The spike copied `src/generated/` from the 0.4.0 crate, which builds with prost 0.12 and tonic 0.10 and needs no protoc. The alternative is running tonic-build over `client-rust/proto/*.proto`.
+- **A hand-written, region-by-region subscriber.** The subscriber gets the cluster id from PD, calls `ScanRegions` over the keyspace's memcomparable-encoded range, finds each leader's store, and opens one `EventFeed` per store with one registration per region. It then matches Prewrite to Commit by `(start_ts, key)`, drops rollbacks and orders by `commit_ts`. Region splits, merges and leader moves arrive as per-region errors, and the subscriber must re-scan and re-register from the last resolved ts. That path was **not** exercised in the spike. TiCDC's Go log puller is the model (`ticdc/logservice/logpuller/`).
+- **About 1 s of lag for commit order.** Raw events arrive within milliseconds, but store-level resolved ts advances about once a second **(spike)**. So a consumer that needs changes in commit order waits ~1 s, unless `cdc.min-ts-interval` is lowered, which costs TiKV CPU.
 
-The journal costs two extra keys per mutation (the entry and the shard head). In exchange it is exactly once, ordered per shard, carries the old index keys the invalidation needs, and gives the bridge dense producer sequences (§12). TiKV CDC stays relevant for **TiDB tables** (through TiCDC, Q34).
+TiCDC itself stays TiDB-table oriented (spans keyed by table id, `ticdc/logservice/eventstore/event_store.go:218`), so capturing a Live keyspace would mean our own Rust subscriber.
+
+**R1 keeps the in-transaction journal** for invalidation, because:
+
+1. it invalidates within milliseconds of a commit, with no resolved-ts wait;
+2. it needs no region tracking;
+3. it carries the old index keys, which CDC gives only with `extra_op=ReadOldValue`;
+4. its dense per-shard sequences serve both the journal-based serializability validation (Q31, option 2) and the bridge's exactly-once producer sequences.
+
+**TiKV CDC is a validated secondary path.** It is the fallback if the journal's shard heads become a bottleneck, and a candidate feed for consumers where ~1 s is fine. The collections bridge (§12) is the first such candidate: search freshness of about a second is acceptable there, and CDC would remove the journal's retention coupling.
+
+The journal costs two extra keys per mutation (the entry and the shard head). In exchange it is exactly once, ordered per shard, carries the old index keys the invalidation needs, and gives the bridge dense producer sequences (§12). TiKV CDC stays relevant for **TiDB tables** (through TiCDC, Q34) and as the secondary path above.
 
 **Retention.** A janitor deletes entries once every consumer (each node's tailer, the bridge) has passed them and they are older than `journal_retention` (10 min). Consumers checkpoint per shard.
 
@@ -387,7 +402,7 @@ TiKV keeps old versions until a GC safe point passes them. TiDB advances it for 
 ### 10.1 What keyspace mode requires
 
 - TiDB's `keyspace-name` (config key, or env `KEYSPACE_NAME`; `tidb/pkg/config/config.go:124,240`) switches its driver to API v2 with a keyspace codec (`tidb/pkg/store/driver/tikv_driver.go:190-202`).
-- TiKV must run API v2 (§9.1), and the keyspace must exist in PD before TiDB starts: the driver loads the keyspace's metadata from PD **(inferred; the loading is in client-go, not cloned)**.
+- TiKV must run API v2 (§9.1), and the keyspace must exist in PD before TiDB starts, created with PD's `[keyspace] pre-alloc` or the HTTP API. **Verified on playground v8.5.8** (classic Community build): TiDB with `keyspace-name = "ks_tidb"` wrote keys prefixed `x 00 00 01`, served MySQL clients (CREATE, INSERT, UPDATE, BEGIN/COMMIT, SELECT), and ran beside a Rust client in keyspace `ks_rust`. A key written in `ks_rust` read back as absent from both `ks_tidb` and `DEFAULT` **(spike)**.
 - A keyspace-mode TiDB runs its own keyspace-level GC worker; `unified` keyspaces need one TiDB without a keyspace (§9.3).
 
 ### 10.2 One TiDB per tenant, not a shared TiDB
@@ -395,7 +410,7 @@ TiKV keeps old versions until a GC safe point passes them. TiDB advances it for 
 - **A TiDB process serves exactly one keyspace**: its store holds a single keyspace name (`tikv_driver.go:252,494`). `tidb/pkg/domain/crossks` is internal plumbing for the next-gen SYSTEM keyspace, not multi-tenant serving; `tidb/pkg/keyspace/doc.go:15-38` describes keyspaces as logical clusters for next-gen and serverless.
 - **So each SQL-enabled tenant gets its own TiDB pool** (one or more stateless TiDB pods with `keyspace-name` set), in its own dedicated keyspace, on the shared TiKV cluster. A shared TiDB with resource groups gives quotas but **no data isolation** between tenants and is not used for tenant SQL.
 - **Cost.** An idle TiDB server takes several hundred MB of memory **(estimate)**, so SQL is opt-in per app, and idle pools scale to zero later (R4) behind a MySQL-protocol proxy that routes by user or database name. PingCAP's TiProxy (Apache-2.0) is the candidate **(verify its keyspace routing)**.
-- **Next-gen only?** tidb-operator v2's `TiDB.spec.keyspace` says "For classic tidb, keyspace name is not supported" (`tidb-operator/api/core/v1alpha1/tidb_types.go:204-208`), while TiDB's classic driver code accepts `keyspace-name` with no kernel check (`config.go:1719`, `tikv_driver.go:193-198`). Whether released classic TiDB binaries support keyspace mode is **Q33** and is the first thing R1 Task 0 checks on `tiup playground`. If they do not, per-tenant SQL needs next-gen TiDB images or a separate TiDB cluster (API v1) per SQL tenant, and D123 is revisited.
+- **Next-gen only? No, for the binaries.** tidb-operator v2's `TiDB.spec.keyspace` says "For classic tidb, keyspace name is not supported" (`tidb-operator/api/core/v1alpha1/tidb_types.go:204-208`), but classic TiDB v8.5.8 runs in keyspace mode on `tiup playground` (above). Q33 is therefore narrowed. The binaries work; what remains is whether tidb-operator v2 accepts `keyspace` for classic clusters or needs the setting through its free-form config, and whether PingCAP supports the mode for classic deployments. That remaining question is checked with the operator in R4.
 
 ### 10.3 What SQL can and cannot see
 
@@ -411,6 +426,8 @@ The owner asked whether Loam can use these instead of, or beside, its own engine
 | **Next-gen kernel: object storage as the single source of truth** | **No.** TiDB's side is open (a `nextgen` build tag, a separate binary; components of different kernel types cannot be mixed), but the matching shared-storage TiKV engine is not public: `tikv/tikv`'s `cloud-engine` branch was last touched on 2022-09-26, and master has no such engine (`tikv/components/cloud/` holds only the AWS, Azure and GCP clients for external storage) | `tidb/pkg/config/kerneltype/doc.go:15-39`; the coordinator's check of the tikv branches | **Not used.** Self-hosted TiKV keeps its row store on local disks with Raft. Loam Live's durability to object storage comes from BR log backup (below) |
 | **TiFlash**: columnar replicas, disaggregated compute and storage on S3, the `VECTOR` type with HNSW vector indexes | **Yes.** pingcap/tiflash is Apache-2.0 and active **(not cloned; verify the S3 mode and vector index on the pinned release)**. TiDB builds vector indexes as *columnar indexes* backfilled on TiFlash (`tidb/pkg/ddl/index.go:997,1028-1115`) | As listed | **Optional add-on for SQL tenants** (R4) who want analytical or vector queries inside SQL. It is C++, heavy in memory, and replicates TiDB tables only, so it cannot see Live tables |
 | **Full-text search** (`MATCH … AGAINST`, `FTS_MATCH_WORD`) | **Not in the open-source build, in practice.** TiDB parses it (`tidb/pkg/expression/builtin_fts.go`, `tidb/pkg/planner/core/fts_resolve_index.go`), but execution needs "the TiFlash FTS path", and the coordinator's search of public TiFlash found no full-text implementation. In a plain boolean `WHERE` position TiDB rewrites the match to `ILIKE '%term%'` predicates: no relevance score, no stop words, no word boundaries ("cat" matches "concatenate"), no index; phrases, `*`, `> < ~` and grouping are refused at plan time. A scoring position (`SELECT` list, `ORDER BY`, comparisons) keeps the native builtin and then needs TiFlash to execute (`tidb/pkg/planner/core/fulltext_to_like.go:19-70`, `tidb/pkg/expression/fts_to_like.go`) | As listed | **Not used.** Full-text over SQL data should go through a collection instead (SQL → collections, §10.3, Q34) |
+| **`tiup playground --mode tidb-x` and `--mode tidb-cse`** (next-gen, S3-backed TiDB, with `--cse.s3_endpoint` and similar flags) | **Unknown.** The modes exist in tiup playground 1.17.1 **(spike; not run)**. Where their TiKV binaries come from and under what license is unverified, and no public source for a next-gen TiKV was found | tiup 1.17.1 `--help` | **Evaluate (Q38)** before any use. If the binaries are closed or unlicensed for self-hosting, they are not usable (D11, D126) |
+| **`tici*` tiup components** (v0.1.0-alpha-nightly; probably TiDB's full-text and columnar indexing service) | **No.** Binary-only, with no public repository, and alpha | tiup component list **(spike)** | **Not usable:** no source, no license to check, alpha |
 | **BR and log backup (PITR) to object storage** | **Yes.** TiKV's `backup-stream` component streams change logs to external storage (S3, GCS, Azure; `tikv/components/backup-stream`, `external_storage`, `cloud/{aws,azure,gcp}`); BR takes full snapshot backups and restores to a point in time | As listed | **Mandatory for every Live cluster** (below) |
 
 **Position:**
@@ -470,9 +487,17 @@ WAL object names are ULIDs, which are time-ordered, so their keys get an 8-byte 
 ### 11.4 Gaps and risks
 
 1. **MVCC GC** for the metastore keyspace needs Loam's GC loop (§9.3, Q32).
-2. **`tikv-client` maturity.** 0.4.0 says "not suitable for production use - APIs are not yet stable" (`client-rust/README.md`). It pins `tonic` 0.12 and `prost` 0.13 (`client-rust/Cargo.toml:39,49`) while the workspace uses 0.14, so the tree carries two tonic and two prost versions (build time and binary size). Loam pins a git revision, runs its own conformance and fault suites against it, and contributes fixes upstream.
-3. **Latency.** Each call costs a TSO fetch plus prewrite and commit round trips, several ms against the openraft backend's in-process apply **(estimate)**. `commit_wal` sits on the write path; M2's write-latency budget must include it for TiKV deployments.
-4. **Async commit and 1PC** stay off in the metastore until their linearizability is verified (§5.1).
+2. **`tikv-client` maturity.** Its README says 0.4.0 is "not suitable for production use - APIs are not yet stable" (`client-rust/README.md`).
+   - **Dependency versions.** The crates.io 0.4.0 release pulls in prost 0.12 and tonic 0.10; the git master pulls in prost 0.13 and tonic 0.12 (`client-rust/Cargo.toml:39,49`). The workspace uses 0.14, so the tree carries two versions of each (build time and binary size).
+   - **Client gotchas found in the spike:**
+     - **TSO stream.** A PD stall (a 3 s etcd read) killed the client's TSO stream permanently (`TimestampRequest channel is closed`). Every later `begin` fails until the client is rebuilt, so `operon-tikv` wraps the client in a supervisor that rebuilds it on that error and on repeated TSO failures.
+     - **Pessimistic lock conflicts** surface as `PessimisticLockError{WriteConflict{reason: PessimisticRetry}}`. The client does not retry at a new `for_update_ts` as TiDB and client-go do; the runner restarts the whole transaction instead.
+     - **Async commit** `unwrap()`s `min_commit_ts` and does not set `max_commit_ts` (a FIXME in `transaction.rs`).
+     - **Keyspace required on API v2.** A client without a keyspace fails with `InvalidKeyMode` on an API v2 cluster, so every client must be configured with one.
+     - **Error messages** include keyspace-prefixed raw keys, which must be scrubbed before they reach users.
+   - **Upstream first.** Loam pins a version, runs its own conformance and fault suites against it, and contributes fixes upstream (D126). The **first upstream PR candidates** are (1) reconnecting the TSO stream after a PD stall and (2) exposing the generated proto modules (`cdcpb`, `pdpb`, `keyspacepb`) as a public module. Two follow-ups come after: setting `max_commit_ts` in async commit, and optional pessimistic lock retry at a new `for_update_ts`.
+3. **Latency.** Each call costs a TSO fetch plus prewrite and commit round trips. In the spike, commit p50 was about 3.5–7 ms under heavy host load (1PC or async commit at the low end, 2PC at the high end). A 10-key pessimistic transaction took about 13–25 ms in total, dominated by ten sequential `get_for_update` round trips of about 1 ms each **(spike; indicative only)**. Batching locks (`batch_get_for_update`) matters for `commit_wal`. `commit_wal` sits on the write path; M2's write-latency budget must include it for TiKV deployments.
+4. **Async commit and 1PC** are the default here too (§5.1). The metastore's linearizability histories must pass with them; otherwise the metastore runs `two_pc` until the `max_commit_ts` fix lands.
 5. **Hot keys.** A busy partition head is written by every flush that touches it. Pessimistic locking bounds the damage; TiKV splits regions by load but cannot split one key.
 
 ### 11.5 Where it lands
@@ -485,6 +510,7 @@ The owner's item (e), and the reason Loam Live is more than a Convex clone.
 
 - **Declaring it.** A table in the deployed schema may say `searchable: { collection, fields, vectors, text }`. The bridge creates (or binds to) a Loam collection in the app's namespace with a matching schema.
 - **Feeding it.** A bridge task per (app, table) tails the journal like a subscription tailer, but checkpoints durably. For each batch of entries visible at tick `T`, it reads the changed documents at `T`, maps each to a `DocOp` (upsert or delete by `_id`), and appends them to the collection's implicit stream through the log writer with an **idempotent producer id = (app, shard)** and **sequence = journal seq** (the D72 idempotent producers). A crash between append and checkpoint re-appends, and the producer sequence drops the duplicate: exactly once, end to end.
+- **Alternative feed.** The spike showed that TiKV CDC (`kv_api=TiDB`) delivers a Live keyspace's changes to a Rust subscriber, with commit order about 1 s behind (§5.3). R3's plan decides between the journal and CDC as the bridge's source. CDC removes the journal-retention coupling; the journal gives ready-made dense producer sequences.
 - **Embeddings** come from the collection's own ingest path (AI-gateway integration, D116), not from the mutation, so a mutation never waits on a model call.
 - **Read-your-writes across the bridge.** A mutation returns `commit_ts`. The bridge records, per collection, the highest `T` it has fully appended and the consistency token of that append. A search from a Live query or action can pass `after_ts`; the service waits until the bridge's `T ≥ after_ts` and then reads with the matching token (D76). A query function that searches is re-run when the collection's manifest or tail advances past its token, which extends the read set with a "collection version" entry.
 - **Back-pressure.** The bridge is an ordinary link-style task under the worker leases (§09); it honours the collection's unapplied-data budget (D86). A lagging bridge delays search freshness, never mutations.
@@ -516,10 +542,10 @@ The owner's item (e), and the reason Loam Live is more than a Convex clone.
 4. **Transaction checker.** A list-append workload over Live documents, checked for snapshot isolation (and, once Q31 lands, serializability) with an Elle-style cycle search implemented in `operon-sim`'s checker module; point-read promotion is checked by a write-skew workload that must show no anomaly on `db.get` reads.
 5. **Jepsen-style nemesis** (nightly). On `tiup playground`: kill and restart TiKV stores and the PD leader, partition a Live node from TiKV with toxiproxy, pause processes; the workloads of items 3 and 4 run throughout and their checkers must pass.
 6. **Where it runs.**
-   - `tiup playground` pinned to a TiDB release (v8.5.x) with `--kv.config` for API v2 and `--pd.config` for pre-allocated keyspaces **(verify the flags)**, installed in CI by the tiup installer script.
+   - `tiup playground v8.5.8` with `--kv.config` (API v2 and TTL), `--pd.config` (pre-allocated keyspaces) and `--db.config` (`keyspace-name`), verified in the spike. It is installed in CI by the tiup installer script, and the first run downloads about 500 MB. Every script uses `--tag` and `--port-offset`, because other playgrounds on the machine take the default ports.
    - Per PR: jobs touching `operon-tikv`, `operon-meta-tikv` or `operon-live*` start one playground (1 PD, 1 TiKV, 1 TiDB when SQL tests run) and run the suites. Tests skip unless `OPERON_TEST_PD` is set.
    - Nightly: 3 TiKV stores, the nemesis, the M1.1 gates over the TiKV metastore.
-   - Locally: the playground takes about 2–3 GB of RAM **(estimate)**; it runs only when no cargo build is running (the build machine's limit).
+   - **Sizing.** 1 PD + 1 TiKV + 1 TiDB peaked at about **3.2 GB RSS**: TiKV 2.62 GB, TiDB 428 MB, PD 114 MB, and the playground wrapper spiked to 1 GB at startup **(spike)**. TiKV sizes its memory from host RAM, and capping `storage.block-cache.capacity` at 1 GB still peaked at 2.56 GB. The dev and CI configs therefore also set `memory-usage-limit` explicitly, and CI runners need at least 8 GB. Locally the playground runs only when no cargo build is running (the build machine's limit); under memory pressure the kernel swapped out about 1.9 GB of TiKV.
 
 ## 15. Licensing
 
@@ -556,11 +582,12 @@ Every dependency is compatible with D11. Running PD, TiKV and TiDB unmodified as
 |---|---|---|
 | Q31 | Serializable range reads in mutations: guard keys per equality-prefix bucket, or validation against the journal after prewrite (§5.2) | R2 plan |
 | Q32 | MVCC GC for txn-API keyspaces: does TiKV honour keyspace-level safe points set through PD's GC-state API, or must a `unified` GC TiDB run per cluster; and will `client-rust` accept a patch exposing keyspace GC (§9.3) | R1 Task 0 |
-| Q33 | Do released classic TiDB binaries (v8.5.x) support `keyspace-name`, which tidb-operator v2 documents as next-gen only (§10.2) | R1 Task 0 |
+| Q33 | ~~Do released classic TiDB binaries (v8.5.x) support `keyspace-name`?~~ **Verified on playground v8.5.8**: yes, with the keyspace pre-allocated in PD and TiKV on API v2 (§10.1). Narrowed to whether tidb-operator v2 accepts `keyspace` for classic clusters (§10.2) | R4 plan |
 | Q34 | Can TiCDC capture a keyspace-mode TiDB's tables on a classic cluster into a Kafka or storage sink, for SQL → collections (§10.3) | R3 plan |
 | Q35 | The long-term function engine: QuickJS only, or V8 (`deno_core`) for CPU-bound functions and npm compatibility, or wasmtime for Rust and Go functions (§6.3) | R2 plan |
 | Q36 | Keyspaces per cluster before region overhead dominates, and whether TiKV request units can be attributed to a txn-API keyspace; these set the size-class thresholds and per-app quotas (§9.2) | R2 plan |
 | Q37 | Do BR's log backup and PITR restore cover a txn-API keyspace (not only TiDB tables), per keyspace, on a classic cluster; what recovery point does the default flush interval give (§10.4, D131) | R2 plan |
+| Q38 | What `tiup playground --mode tidb-x` / `tidb-cse` (next-gen, S3-backed TiDB) runs: where its TiKV binaries come from, under what license, and whether they can be self-hosted. If they are open, S3 could become the source of truth for Live keyspaces, removing the D130 tension (§10.4) | R2 plan |
 
 ## 17. Contradictions with earlier decisions, and how they are resolved
 

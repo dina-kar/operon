@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists the interfaces it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (names, paths, formats, constants), use them verbatim. The code is not pre-written in this plan (M0.3 Ruling 1).
 
-> **Status: Planned** (2026-09-27). Track R, beside M1 (D127). Branches `r1-t<N>`, stacked; PRs target `main`. R1 tasks interleave with M1 tasks on the one-build machine: never start an R1 build while an M1 build runs, and never run the TiKV playground during a build.
+> **Status: Planned** (2026-09-27). **Amended 2026-09-27 with the TiKV feasibility spike** (playground v8.5.8, `tikv-client` 0.4.0; design §20 notes marked *(spike)*): Task 1 has the exact playground command and configs; async commit with 1PC is the default (Ruling 3); the runner restarts on `PessimisticRetry` and supervises the TSO stream (Task 2); Q33 is verified for the binaries. Track R, beside M1 (D127). Branches `r1-t<N>`, stacked; PRs target `main`. R1 tasks interleave with M1 tasks on the one-build machine: never start an R1 build while an M1 build runs, and never run the TiKV playground during a build.
 
 **Goal:** Ship the first slice of design §20 (D116–D131):
 - `operon-tikv`, the TiKV client layer: config and keyspace bootstrap, the TSO clock, a transaction runner with error classification, retries, commit tokens and a fault hook, the order-preserving tuple codec, the keyspace MVCC GC loop, the test harness;
@@ -22,12 +22,12 @@
 **Tech Stack:**
 - Rust 1.97.1, edition 2024, workspace lints.
 - New dependencies (Task 0 verifies versions, licenses and that they build together in a throwaway crate, as the M1 dependency spike did):
-  - `tikv-client` 0.4 (Apache-2.0): crates.io 0.4.0 or a git pin of `tikv/client-rust` (the clone is at `ab4be1c`, 2026-09-03), whichever has `Config::with_keyspace`. It brings `tonic` 0.12 and `prost` 0.13 beside the workspace's 0.14.
+  - `tikv-client` 0.4 (Apache-2.0): crates.io 0.4.0 or a git pin of `tikv/client-rust` (the clone is at `ab4be1c`, 2026-09-03), whichever has `Config::with_keyspace`. The spike used crates.io 0.4.0, which has it and brings `tonic` 0.10 and `prost` 0.12 (master: 0.12 and 0.13) beside the workspace's 0.14. The generated `cdcpb`/`pdpb` code in `src/generated/` is private: Loam copies it from the pinned version (Apache-2.0, noted in `NOTICE`) until the upstream PR that exposes it merges.
   - `connectrpc` 0.9.1 and `connectrpc-build` 0.9 (Apache-2.0), features `axum`; `buffa` 0.9.2 (Apache-2.0).
   - `rquickjs` 0.14.0 (MIT), features chosen in Task 0 (`futures`, `loader`, `macro` expected).
   - Workspace crates reused: `tonic` 0.14 and `tonic-prost-build` 0.14 (the PD GC-state stubs), `reqwest` 0.12 (PD HTTP API), `proptest` 1, `rand` 0.9, `rand_chacha` 0.9, `axum` 0.8, `tokio`, `async-trait`, `tracing`, `thiserror`.
 - TypeScript (versions checked in Task 0): `@bufbuild/protobuf` 2, `@connectrpc/connect` 2, `@connectrpc/connect-web` 2 (runtime); `@bufbuild/protoc-gen-es` 2, `@bufbuild/buf` 1, `@connectrpc/connect-node` 2 (dev); plus M1.6's toolchain (`typescript` ~7.0.2, `@biomejs/biome` ~2.5.14, `pnpm` 11.13.0, Node ≥ 22), all Apache-2.0 or MIT.
-- Cluster: `tiup` (Apache-2.0) with `tiup playground v8.5.<latest patch>` (PD, TiKV, TiDB, all Apache-2.0). Local installs use the tiup installer script; CI installs it the same way. `mysql` client (MariaDB client package) for the SQL smoke test.
+- Cluster: `tiup` 1.17.1 (Apache-2.0) with `tiup playground v8.5.8` (PD, TiKV, TiDB, all Apache-2.0; verified in the spike). Local installs use the tiup installer script; CI installs it the same way. `mysql` client (MariaDB client package) for the SQL smoke test.
 - System `protoc`, as for M1.
 
 **Spec:**
@@ -45,7 +45,8 @@ Same as the M1 overview §8, plus:
 - **API v2 only.** Every TiKV config in the repo sets `storage.api-version = 2` and `storage.enable-ttl = true`. `operon-tikv` refuses to start against a cluster whose keyspace lookup fails, with a message naming the setting.
 - **Loopback by default (D111).** The Live listener binds 127.0.0.1:7710 unless `--live-listen` says otherwise; a non-loopback bind logs the D111 warning. No auth in R1.
 - **Determinism in functions.** Queries and mutations never see wall-clock time, randomness, timers or I/O except through the host API (§20 §6.2).
-- **The build machine.** One cargo build at a time, the shared target directory, `-j 6`, lld; the playground (about 2–3 GB) is stopped before a build and started after it.
+- **The build machine.** One cargo build at a time, the shared target directory, `-j 6`, lld; the playground (about 3.2 GB peak RSS, TiKV 2.6 GB of it, measured in the spike) is stopped before a build and started after it.
+- **Ports.** Other playgrounds run on this machine and grab the default ports. Every playground Loam starts uses `--tag loam-<purpose>` and `--port-offset 17000` (PD `127.0.0.1:19379`, TiDB `127.0.0.1:21000`); CI uses the same offset for uniformity.
 - **Commit areas:** `tikv`, `meta`, `live`, `sdk`, `ci`, `docs`.
 
 ## Rulings made while writing this plan
@@ -54,7 +55,7 @@ Same as the M1 overview §8, plus:
 |---|---|---|---|
 | 1 | **Tests isolate by root prefix, not by keyspace.** `TikvMetaConfig` and `LiveConfig` take a `root: Vec<u8>` that prefixes every key inside the keyspace | Keyspace creation splits regions and is slow; the conformance suite starts a fresh metastore per case | If a GC or range operation ignores the prefix, tests interfere; Task 2 has a test that two prefixes never see each other |
 | 2 | **`commit_wal`, `swap_segment` and `trim_partition` are pessimistic transactions** that lock partition heads in key order with `get_for_update`; every other write is optimistic | Hot heads queue instead of aborting in a loop (§20 §11.3) | If pessimistic transactions misbehave in `tikv-client` 0.4, fall back to optimistic with a larger retry budget; the fault matrix shows it |
-| 3 | **Async commit and 1PC are off** in R1 for both the metastore and Live (`use_async_commit` and `try_one_pc` not called) | Their commit timestamps can break read-after-commit unless `min_commit_ts` is seeded from a fresh TSO (§20 §5.1) | Slower commits (one more round trip); a follow-up turns them on once Task 16's checkers pass with them |
+| 3 | **Async commit with 1PC is the default** for the metastore and Live (`commit_mode = async_1pc`; `two_pc` is the switch back) | The spike measured commit p50 30–50% lower than 2PC (§20 §5.1) | `tikv-client` 0.4.0 does not set `max_commit_ts` and `min_commit_ts` may not come from a fresh TSO, so read-after-commit can break: the metastore linearizability histories (Task 5) and the reactive and transaction checkers (Task 16) run with the default, and a failing component switches to `two_pc` (recorded as a ruling) until the upstream fix |
 | 4 | **The journal has 16 shards per app in R1**, fixed at app creation | Enough for R1's single app; changing the count is an R2 catalog operation | Shard-head conflicts under high concurrency; Task 16 measures the conflict rate |
 | 5 | **Index changes on non-empty tables are refused** (`FailedPrecondition: index changes need an empty table in R1`) | Online backfill is R2 | Users must recreate tables to add indexes in R1 |
 | 6 | **Live's tick timestamp is a TSO timestamp**, and every query of every session of an app is evaluated at the app's current tick | Gives one timestamp per session with no coordination (§20 §8.3) | None expected; the checker verifies it |
@@ -65,7 +66,7 @@ Same as the M1 overview §8, plus:
 
 ## Carried in
 
-None from M0 or M1. From design §20: Q32 and Q33 are answered in Task 0 before any other task starts.
+None from M0 or M1. From design §20: Q32 is answered in Task 0 before any other task starts. Q33 is verified for the v8.5.8 binaries by the spike; Task 0 re-confirms it on the pinned release.
 
 ## Review Focus
 
@@ -139,12 +140,12 @@ macro_rules! metastore_conformance { … }        // one #[tokio::test] per entr
 ```
 
 **Checks on a live playground** (record each result, with the command, in the spike doc):
-1. `tiup playground v8.5.<patch> --kv.config deploy/tikv/tikv.toml --pd.config deploy/tikv/pd.toml --db 0` starts with API v2; creating a keyspace through `POST /pd/api/v2/keyspaces` works; `tikv-client` with `Config::with_keyspace` reads and writes it (which crate version or revision has it).
-2. **Q33:** a TiDB started with `keyspace-name = "loam_test_sql"` from the same release serves MySQL on `127.0.0.1:4000`, and its keys stay inside that keyspace's range. If it does not, stop and escalate to the owner before Task 15 (D123 is revisited).
+1. Task 1's playground command starts with API v2 (verified in the spike: `SHOW CONFIG` reports `storage.api-version=2`, `storage.enable-ttl=true`); creating a keyspace through `POST /pd/api/v2/keyspaces` at runtime works (not tried in the spike, which pre-allocated); `tikv-client` 0.4.0 with `Config::with_keyspace` reads and writes it (verified).
+2. **Q33 (re-confirm):** a TiDB with `keyspace-name` from the pinned release serves MySQL and its keys stay inside its keyspace (verified on v8.5.8 in the spike). Only a regression on the pinned release stops the plan.
 3. **Q32:** after writing and overwriting keys in a txn keyspace with `gc_management_type = keyspace_level`, advancing that keyspace's txn and GC safe points through `AdvanceTxnSafePoint` and `AdvanceGCSafePoint` makes TiKV drop old versions (a read at an old timestamp fails with the GC error, and the store's MVCC stats shrink after compaction). If TiKV ignores it, record the fallback (a `unified` GC TiDB) and change Task 3's semantics before it starts.
 4. `tikv-client`, `connectrpc`, `buffa` and `rquickjs` build together with the workspace's pins; `cargo deny check` passes; record the duplicate `tonic`/`prost`/`hyper` versions and the added build time.
-5. `tiup playground` flags for per-component config (`--kv.config`, `--pd.config`, `--db.config`) exist as assumed; the RAM of 1 PD + 1 TiKV + 1 TiDB at idle.
-6. Whether `tikv-client`'s commit error types distinguish a failed prewrite from a lost primary commit (feeds Task 2's classification).
+5. ~~Playground flags and RAM~~: verified in the spike (Task 1's command; 3.2 GB peak). Task 0 instead records the effect of `memory-usage-limit` on TiKV's peak RSS, since the block-cache cap alone did not lower it.
+6. Whether `tikv-client`'s commit error types distinguish a failed prewrite from a lost primary commit (feeds Task 2's classification). Known from the spike: an optimistic conflict is `MultipleKeyErrors[KeyError{conflict: WriteConflict{reason: Optimistic}}]`; a pessimistic lock conflict is `PessimisticLockError{WriteConflict{reason: PessimisticRetry}}` with no client retry; an existing key on `insert` is `already_exist`; a PD stall can close the TSO stream for good (`TimestampRequest channel is closed`).
 7. Pick the interval index for Task 11 (a hand-written centered interval tree, or `rust-lapper` (MIT) if it supports incremental insert and delete).
 
 **Produces:** the spike doc and a filled "Rulings made during execution" table (no empty rows).
@@ -175,11 +176,39 @@ impl TestCluster { pub fn config(&self, keyspace: &str) -> TikvConfig; }   // ke
 ```
 
 **Semantics:**
-1. `tikv.toml`: `[storage] api-version = 2`, `enable-ttl = true`. `pd.toml`: `[keyspace] pre-alloc = ["loam_meta", "loam_live_dev", "sql_dev", "loam_test_meta", "loam_test_live", "loam_test_sql"]` (or the script creates them through the HTTP API, per Task 0). `tidb.toml`: `keyspace-name = "sql_dev"`.
-2. `playground.sh start [--with-tidb] [--stores N]` starts the pinned release in the background with those configs, then `wait-ready.sh` polls PD health and keyspace listing (60 s limit). `playground.sh stop` kills it and deletes its data directory. The script refuses to start if `cargo` or `rustc` is running (the build-machine rule), unless `--force`.
-3. CI job `tikv` ("TiKV suites"): runs on PRs whose paths match `crates/operon-tikv/**`, `crates/operon-meta-tikv/**`, `crates/operon-live*/**`, `deploy/tikv/**`, `scripts/tikv/**`, `proto/loam/**`; installs tiup, starts the playground, sets `OPERON_TEST_PD=127.0.0.1:2379`, runs `cargo test -p operon-tikv -p operon-meta-tikv -p operon-live -p operon-live-js`. Job `tikv-nightly` runs the same plus later tasks' nightly suites on a schedule.
+1. **Configs** (the spike's working files, with Loam's keyspaces and an explicit memory limit):
 
-**Tests** (`tests/keyspace.rs`): `connect_to_missing_keyspace_names_it`; `ensure_keyspace_is_idempotent`; `two_roots_never_see_each_other` (writes under two random roots, scans each); `now_is_monotonic` (1 000 calls); `physical_ms_is_close_to_wall_clock` (within 1 s).
+   `deploy/tikv/tikv.toml`:
+   ```toml
+   memory-usage-limit = "3GB"          # TiKV otherwise sizes itself from host RAM (12 GB on a 16 GB host)
+   [storage]
+   api-version = 2
+   enable-ttl = true
+   [storage.block-cache]
+   capacity = "1GB"
+   ```
+   `deploy/tikv/pd.toml`:
+   ```toml
+   [keyspace]
+   pre-alloc = ["loam_meta", "loam_live_dev", "sql_dev", "loam_test_meta", "loam_test_live", "loam_test_sql"]
+   ```
+   `deploy/tikv/tidb.toml` (the CI variant `tidb-test.toml` names `loam_test_sql`):
+   ```toml
+   keyspace-name = "sql_dev"
+   ```
+2. **Install and start** (`playground.sh start [--with-tidb] [--stores N] [--tag T]`):
+   ```sh
+   # once; user-local under ~/.tiup (the installer edits ~/.zshrc only: add ~/.tiup/bin to PATH in fish yourself)
+   curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
+   # the first run downloads ~500 MB (the TiKV tarball is 402 MB)
+   tiup playground v8.5.8 --tag loam-dev --port-offset 17000 --pd 1 --kv 1 --db 1 --tiflash 0 --without-monitor \
+     --kv.config deploy/tikv/tikv.toml --pd.config deploy/tikv/pd.toml --db.config deploy/tikv/tidb.toml
+   ```
+   Without `--with-tidb` the script passes `--db 0`. It runs in the background with its pid in `target/tikv-playground/<tag>.pid`. `wait-ready.sh` then polls `curl -s http://127.0.0.1:19379/pd/api/v2/keyspaces` until every pre-allocated keyspace is listed, and with TiDB also runs `mysql -h127.0.0.1 -P21000 -uroot -e 'select 1'` (60 s limit). The script refuses to start if `cargo` or `rustc` is running (the build-machine rule), unless `--force`.
+3. **Stop** (`playground.sh stop [--tag T]`): `kill -INT <pid>`, wait for exit, then `rm -rf ~/.tiup/data/<tag>`. `tiup clean <tag>` fails after an INT shutdown ("missing meta file"), so the script never uses it.
+4. CI job `tikv` ("TiKV suites"): runs on PRs whose paths match `crates/operon-tikv/**`, `crates/operon-meta-tikv/**`, `crates/operon-live*/**`, `deploy/tikv/**`, `scripts/tikv/**`, `proto/loam/**`; installs tiup (caching `~/.tiup/components`), starts the playground, sets `OPERON_TEST_PD=127.0.0.1:19379`, runs `cargo test -p operon-tikv -p operon-meta-tikv -p operon-live -p operon-live-js`. Job `tikv-nightly` runs the same plus later tasks' nightly suites on a schedule.
+
+**Tests** (`tests/keyspace.rs`): `connect_to_missing_keyspace_names_it`; `ensure_keyspace_is_idempotent`; `two_roots_never_see_each_other` (writes under two random roots, scans each); `now_is_monotonic` (1 000 calls); `physical_ms_is_close_to_wall_clock` (within 1 s); `client_without_keyspace_is_refused_with_a_hint` (the `InvalidKeyMode` error on API v2 becomes `TikvError::ApiVersion` naming the keyspace setting).
 
 **Commit:** `tikv: add the dev playground and the TiKV client skeleton`; `ci: run the TiKV suites against a tiup playground`.
 
@@ -216,13 +245,16 @@ pub mod tuple { pub enum Elem<'a> { Null, I64(i64), F64(f64), Bool(bool), Str(&'
 ```
 
 **Semantics:**
-1. **Classification:** `WriteConflict` and `KeyIsLocked` after the client's own backoff → `Conflict`; region errors, TSO unavailable, `ServerIsBusy` and any error before prewrite → `NotApplied`; an error or timeout after the primary's prewrite succeeded and before commit returned → `Undetermined`; everything else → `Fatal`. Task 0 check 6 fixes the exact mapping.
+1. **Classification:** `WriteConflict` (optimistic, and pessimistic `PessimisticRetry`, which the client does not retry itself) and `KeyIsLocked` after the client's own backoff → `Conflict`, and the runner restarts the whole transaction at a new start timestamp; region errors, TSO unavailable, `ServerIsBusy` and any error before prewrite → `NotApplied`; an error or timeout after the primary's prewrite succeeded and before commit returned → `Undetermined`; everything else → `Fatal`. Task 0 check 6 fixes the exact mapping.
 2. **Undetermined resolution:** with a token, read `t/<token>` at a fresh timestamp (TiKV resolves the lock or rolls it back); present → success with `earlier_unknown = true`; absent → `NotApplied`. Without a token, return `Undetermined`.
 3. Token keys carry `expires_ms = now + 30 min`; a sweep in Task 3's GC loop deletes expired tokens.
-4. The tuple codec implements §20 §4.3's table exactly: tags, escaping, terminators, float transform, NaN last, `-0.0 == 0.0`.
+4. **Commit mode.** `TxnOptions` gains `commit_mode: CommitMode { Async1pc, TwoPc }`, from config and defaulting to `Async1pc` (Ruling 3). It maps to `use_async_commit()` + `try_one_pc()`.
+5. **TSO supervisor.** `Tikv` holds the `TransactionClient` behind a `std::sync::RwLock<Arc<_>>` (no new dependency). On `TimestampRequest channel is closed`, or on three consecutive TSO failures, it rebuilds the client (with backoff, one rebuild at a time) and retries the operation as `NotApplied`. The rebuild count is a metric.
+6. **Error scrubbing.** Keys in errors are shown with the keyspace prefix and root removed, and truncated to 64 bytes.
+7. The tuple codec implements §20 §4.3's table exactly: tags, escaping, terminators, float transform, NaN last, `-0.0 == 0.0`.
 
 **Tests:**
-- `tests/runner.rs`: `conflicting_writers_both_finish_one_retries`; `pessimistic_lock_queues_second_writer`; `undetermined_commit_resolves_by_token` (fault `LoseAck` at `AfterCommit`); `refused_before_prewrite_is_not_applied`; `deadline_stops_retries`; `faults_fire_per_op_and_attempt`.
+- `tests/runner.rs`: `conflicting_writers_both_finish_one_retries`; `pessimistic_lock_queues_second_writer`; `undetermined_commit_resolves_by_token` (fault `LoseAck` at `AfterCommit`); `refused_before_prewrite_is_not_applied`; `deadline_stops_retries`; `faults_fire_per_op_and_attempt`; `pessimistic_retry_restarts_the_transaction` (two `get_for_update` holders: the loser restarts and both finish); `tso_stream_loss_rebuilds_the_client` (a test hook closes the TSO stream; the next `run` succeeds after a rebuild); `commit_mode_two_pc_and_async_1pc_both_commit`.
 - `tests/codec.rs`: `tuple_order_matches_reference` (proptest: `encode(a) < encode(b)` iff `cmp_ref(a, b) == Less`, over nested arrays, strings with `0x00`, NaN, ±0, i64 extremes); `decode_inverts_encode`; `successor_bounds_every_extension`.
 
 **Commit:** `tikv: add the transaction runner with retries, commit tokens and fault hooks`; `tikv: add the order-preserving tuple codec`.
@@ -542,7 +574,7 @@ export type LiveValue = null | bigint | number | boolean | string | Uint8Array |
 
 **Semantics:**
 1. `playground.sh start --with-tidb` starts one TiDB with `keyspace-name = "sql_dev"` (tests: `loam_test_sql`) on `127.0.0.1:4000`; `operon dev --live-pd …` prints `operon sql (TiDB) at mysql://root@127.0.0.1:4000` when it finds the playground's TiDB.
-2. If Task 0 found keyspace mode unsupported (Q33), this task instead documents a separate API v1 TiDB playground and the D123 revisit, and its tests change accordingly.
+2. Keyspace mode is verified on v8.5.8 (Q33). If Task 0 found a regression on the pinned release, this task would instead document a separate API v1 TiDB playground and the D123 revisit.
 
 **Tests:** `sql-smoke.sh`: create a table, insert and select through the `mysql` client. `sql_coexistence.rs`: `live_keyspace_does_not_see_sql_keys` (after the smoke script, a `Tikv` on `loam_test_live` scans its whole range and finds no TiDB `t`/`m` keys); `sql_keyspace_does_not_see_live_keys` (a `Tikv` on `loam_test_sql` finds no Live key layout under its range beyond TiDB's own prefixes); `both_commit_concurrently` (a Live mutation loop and a SQL insert loop run together; both finish).
 
@@ -556,7 +588,7 @@ export type LiveValue = null | bigint | number | boolean | string | Uint8Array |
 1. **Reactive checker** (seeded; per PR 60 s, nightly 30 min): N sessions subscribe to random index ranges and point reads over a small keyspace of tables; M writers run random mutations. For every Transition: each updated query equals a fresh `Runner::query` at the Transition's timestamp; versions strictly increase per session; every committed mutation that touches a subscribed range is reflected by the first Transition at or after its commit timestamp; resumed sessions converge. Faults from Task 2's plan are injected at random.
 2. **Transaction checker:** a list-append workload over Live documents; the history is checked for snapshot isolation with an Elle-style dependency-cycle search (G0, G1a–c, lost update, and G-single must not occur; G2 write skew is allowed only on range reads, per D118); a point-read write-skew workload must show none.
 3. **Nemesis** (nightly, 3 TiKV stores): `nemesis.sh` kills and restarts a TiKV store and the PD leader, and pauses the Live process (SIGSTOP/SIGCONT), while checkers 1 and 2 run; both must pass.
-4. **Exit report:** results of every gate, the metastore conformance and fault matrix on TiKV, measured commit latencies (metastore `commit_wal`, Live mutation p50/p99), journal shard conflict rate (feeds Q31 and Ruling 4), playground RAM, and the answers to Q32 and Q33.
+4. **Exit report:** results of every gate (with `commit_mode` recorded per component), the metastore conformance and fault matrix on TiKV, commit latencies measured on a quiet machine with the spike's interleaved method (metastore `commit_wal`, Live mutation p50/p99, `async_1pc` against `two_pc`), journal shard conflict rate (feeds Q31 and Ruling 4), playground RAM, the TSO rebuild count under the nemesis, the answer to Q32, and the status of the upstream `tikv-client` PRs (TSO stream reconnect, public proto modules).
 
 **Tests:** the checkers themselves, plus `checker_catches_injected_stale_result` and `checker_catches_injected_lost_update` (each checker must fail on a deliberately broken build hook).
 
@@ -613,6 +645,7 @@ One PR per group, stacked in order; each PR builds and passes CI on its own. The
 | Keyspaces on API v2, keyspace GC (§20 §9.1, §9.3, D122) | Tasks 0, 1, 3 |
 | D111 loopback default and warning | Task 12 |
 | Testing: conformance, fault matrices, reactive and transaction checkers, nemesis, playground in CI (§20 §14) | Tasks 1, 5, 6, 16 |
-| Q32, Q33 answered before dependent work | Task 0 (checks 2, 3), Task 17 |
+| Q32 answered, Q33 re-confirmed before dependent work | Task 0 (checks 2, 3), Task 17 |
+| Spike findings: playground command and configs, async commit/1PC default, `PessimisticRetry` restarts, TSO supervisor, RAM and port sizing | Tasks 1, 2; Ruling 3; Global Constraints |
 | Review Focus → tests | 1: T9/T11/T16 · 2: T2/T6/T10 · 3: T5/T6 · 4: T2/T8 · 5: T12/T14/T16 · 6: T13 |
 | Carried in | None |
