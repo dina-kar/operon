@@ -2,6 +2,8 @@
 
 Status: **Proposed** · 2026-09-27. The direction (D116–D118, D122–D124, D126–D128) was approved by the owner on 2026-09-27: "build convex like layer on TiKV, and use it for our metadata and control if possible, other than convex like api, can we provide mysql protocol for normal uses, build this as soon as possible, loam will a ai native cloud". The design choices this document makes on top of that direction (D119–D121, D125, D129, D131) are **proposals** until the owner confirms them. Open questions are Q31–Q38 in §16. Measurements and cluster facts marked **(spike)** come from the TiKV feasibility spike of 2026-09-27 on `tiup playground` v8.5.8 with `tikv-client` 0.4.0 (report: `.superpowers/research/tikv-spike.md` in the m1.2a worktree, not committed); its latencies were taken on a heavily loaded shared machine and are indicative only.
 
+**R1 is built** (2026-09-28), except its TiDB task (R1 Task 15, parked until the owner decides about TiDB). Where R1 changed this design, the text below says what was built and cites the R1 plan's row (`T<task>-<n>`, in [`2026-09-27-r1-reactive-core.md`](../plans/2026-09-27-r1-reactive-core.md), "Rulings made during execution"). §20 lists the changes in one place, and the [R1 exit report](../plans/r1-exit-report.md) has the gate results and measurements.
+
 This document starts a second product line beside the retrieval engine (§00–§18). It amends D1 and D2 for that product line only (D130), supersedes D58's TiDB-over-sqlx clause (D124), and adds a parallel roadmap track, **R** (D127).
 
 Markers: **(estimate)** is computed from code or specs, not measured. **(verify)** is not checked against a primary source; the plan that builds it resolves it (R1 Task 0 checks the ones R1 depends on). Paths of the form `tikv/…`, `pd/…`, `tidb/…`, `client-rust/…`, `ticdc/…`, `connect-rust/…` point into the reference clones under `~/Documents/research-clones/` as of 2026-09-26 (TiKV `548812e`, PD `9186d07`, TiDB `8936d7b`, client-rust `ab4be1c`, connect-rust `fb5f5aa`).
@@ -101,10 +103,10 @@ Crates keep working names until the rename (D33).
 
 | Crate | Owns |
 |---|---|
-| `operon-tikv` | The TiKV client layer every TiKV user shares: config and keyspace bootstrap through PD's HTTP API, the TSO clock, a transaction runner with error classification, retries and a `FaultPlan` hook, commit tokens, the order-preserving tuple codec, the keyspace GC loop, the test harness |
+| `operon-tikv` | The TiKV client layer every TiKV user shares: config and keyspace bootstrap through PD's HTTP API, the TSO clock, a transaction runner with error classification, retries and a `FaultPlan` hook, commit tokens, the order-preserving tuple codec, the cluster MVCC GC loop (§9.3), the test harness |
 | `operon-meta-tikv` | `impl MetaStore` over `operon-tikv` (§11) |
 | `operon-live-proto` | The `loam.live.v1` protos and the Rust code generated from them (buffa messages, connect-rust services) |
-| `operon-live` | Data model and key layout, `LiveTxn`, the commit journal and tailer, the subscription and session managers, the sync service |
+| `operon-live` | Data model and key layout, `LiveTxn`, the commit journal and tailer, the subscription and session managers, the sync service, the Elle-style history checker (`operon_live::testing::elle`, T16-4) |
 | `operon-live-js` | The QuickJS function runtime (`rquickjs`) and the host database API |
 | `sdks/live-typescript` | `@operon/live` (renamed `@loamdb/live` with D33): generated protobuf-es and Connect stubs plus the reactive client |
 
@@ -127,20 +129,26 @@ Crates keep working names until the rename (D33).
 
 ### 4.3 Key encoding
 
-All keys are inside the app's keyspace, which the client codec prefixes with `x` and the 3-byte keyspace id (`tikv/components/api_version/src/api_v2.rs:16-20`; `client-rust/src/request/keyspace.rs:11-13`). A shared keyspace (§7.2) adds an app prefix.
+All keys are inside the app's keyspace, which the client codec prefixes with `x` and the 3-byte keyspace id (`tikv/components/api_version/src/api_v2.rs:16-20`; `client-rust/src/request/keyspace.rs:11-13`). A shared keyspace (§9.2) adds an app prefix.
 
 ```
 app prefix      = ""                              (dedicated keyspace)
                 | 0xA0 ‖ app_id:u32 BE            (shared keyspace)
 
-catalog         = prefix ‖ 0x01 ‖ kind:u8 ‖ name                 → TableDef | IndexDef | Deployment pointer | Schema
+catalog         = prefix ‖ 0x01 ‖ kind:u8 ‖ name                 → counters | table id | TableDef | Deployment record | Schema | AppDef
 document        = prefix ‖ 0x02 ‖ table_id:u32 BE ‖ doc_id[16]    → DocumentRecord (protobuf)
 index entry     = prefix ‖ 0x03 ‖ table_id:u32 BE ‖ index_id:u32 BE ‖ tuple(values…) ‖ creation_ms:u64 BE ‖ doc_id[16] → ""
 journal head    = prefix ‖ 0x04 ‖ 0x00 ‖ shard:u16 BE             → last sequence:u64
 journal entry   = prefix ‖ 0x04 ‖ 0x01 ‖ shard:u16 BE ‖ seq:u64 BE → JournalEntry (protobuf)
-idempotency     = prefix ‖ 0x05 ‖ key_hash[16]                   → {commit_ts, result, expires_ms}   (key_hash = first 16 bytes of SHA-256(key))
+checkpoint      = prefix ‖ 0x04 ‖ 0x02 ‖ shard:u16 BE ‖ consumer   → seq:u64 BE ‖ expires_ms:u64 BE
+idempotency     = prefix ‖ 0x05 ‖ key_hash[16]                   → IdempotencyRecord (protobuf)   (key_hash = first 16 bytes of SHA-256(key))
 scheduler (R2)  = prefix ‖ 0x06 ‖ …
 ```
+
+**As built (R1).**
+- **Catalog kinds** (T8-4, T10-1, T13-10): `0x00` counters (the next table id), `0x01` a table's name → its id, `0x02` a table by id → `TableDef`, `0x03` the deployment record, `0x04` the schema record, `0x05` the app record `AppDef { journal_shards }`. The records are in the internal `catalog.proto`.
+- **The idempotency record** (T10-6, T11-13) is `IdempotencyRecord { format, result, expires_ms, function, start_ts, args_hash }` in the internal `idempotency.proto`. It holds **no commit timestamp**, because a transaction cannot write its own. A replay returns the timestamp of the read that found the record, which is at or after the commit. That is an upper bound, and it is safe for a client that waits for `commit_ts` before it drops an optimistic update. A key reused for another function, or with other arguments, is `INVALID_ARGUMENT`.
+- **Indexes** (T8-5): `by_creation_time` entries have an empty tuple part, and `by_id` has no entries, because the document key is the index. A missing indexed field is indexed as `null`.
 
 **The tuple codec** is order-preserving (memcomparable), so a TiKV range scan returns index entries in value order:
 
@@ -154,7 +162,7 @@ scheduler (R2)  = prefix ‖ 0x06 ‖ …
 | `0x50` | bytes | same escaping as strings |
 | `0x60` | array | encoded elements, terminated by `0x00 0x00` |
 
-The order is null < int64 < float64 < bool < string < bytes < array. Objects are not indexable in R1. The codec is fuzzed for order preservation against a reference comparator (R1 Task 8).
+The order is null < int64 < float64 < bool < string < bytes < array. Objects are not indexable in R1. Order preservation is property-tested against a reference comparator: the tuple codec in R1 Task 2 (`tuple_order_matches_reference`), and index keys against value order in Task 8 (`index_keys_sort_in_value_order` without a cluster, `index_scan_order_matches_value_order` on TiKV). Arrays nest at most 64 deep (T3-10).
 
 **Document bodies** are a protobuf `DocumentRecord { format: 1, creation_ms, fields: map<string, Value> }` from the same `loam.live.v1` package the clients use, so a value means the same in storage, on the wire and in every generated client.
 
@@ -163,16 +171,16 @@ The order is null < int64 < float64 < bool < string < bytes < array. Objects are
 ### 5.1 The transaction model
 
 - **A mutation is one TiKV optimistic transaction** (`client-rust/src/transaction/client.rs:174`, `begin_optimistic`). The function reads at the transaction's start timestamp, buffers writes, and commits. TiKV's Percolator two-phase commit makes the commit atomic across regions and keyspace ranges.
-- **Retry on conflict.** A write conflict at prewrite aborts the transaction; the runner reruns the whole function at a new start timestamp, with jittered backoff, up to 8 attempts or the mutation's deadline. Functions are deterministic (§6.2), so a rerun is safe.
+- **Retry on conflict.** A write conflict at prewrite aborts the transaction; the runner reruns the whole function at a new start timestamp, with jittered backoff, up to the attempt budget or the mutation's deadline. Functions are deterministic (§6.2), so a rerun is safe. **As built:** Live mutations get **16 attempts** (`DEFAULT_MUTATION_ATTEMPTS`, owner ruling T10-3) and the metastore keeps 8. The runner scales its backoff pauses down so that a run's pauses fit half its deadline (T11-1). It also reruns on `NotApplied`, which means the transaction certainly did not commit (T2-4, T2-16).
 - **Queries** read a snapshot (`snapshot`, `client.rs:233`) at the tick timestamp of the subscription manager (§8.2), so every query in a session is evaluated at one timestamp.
 - **Timestamps** are PD TSO values (physical ms << 18 | logical). They are Loam Live's version numbers: a query result is "valid at ts", a mutation returns its commit timestamp, and a client waits until its query set has reached that timestamp before it drops an optimistic update.
 - **Limits per mutation (R1 defaults):** 8 MiB written, 16 000 documents written, 32 000 documents scanned, 4 096 index ranges, 1 s of JavaScript CPU, a 10 s wall-clock deadline. These follow Convex's published limits in shape, scaled down for R1, and are configurable.
-- **Idempotency.** A `Mutate` call may carry an idempotency key. The runner writes the key's record inside the same transaction and, on a retry of the call, returns the recorded commit timestamp instead of running again. A lost acknowledgement therefore never applies a mutation twice.
-- **Commit options.** **R1 defaults to async commit with 1PC** (`use_async_commit` and `try_one_pc`, `transaction.rs:1206,1213`). In the spike they cut commit p50 by roughly 30–50% against 2PC: about 3.5–5.3 ms against 7.1–7.3 ms for optimistic transactions under heavy host load **(spike)**. Two risks come with them:
+- **Idempotency.** A `Mutate` call may carry an idempotency key. The runner writes the key's record inside the same transaction. On a retry of the call it returns the recorded result, with the timestamp of the read that found the record, instead of running again (§4.3 as built, T10-6). A lost acknowledgement therefore never applies a mutation twice. A read-only mutation writes no record.
+- **Commit options.** **As built, R1 commits with two-phase commit** (`commit_mode = two_pc`) for the metastore and for Live, and async commit with 1PC is a switch (owner ruling T7-1, after row T6-5). The pinned client resolves an async-commit lock on the read path with `CheckTxnStatus` only, which keeps the primary locked. So a crashed async-commit writer blocked readers until GC ran, about 10 minutes later. The plan's default, kept here as history: async commit with 1PC (`use_async_commit` and `try_one_pc`, `transaction.rs:1206,1213`). In the spike they cut commit p50 by roughly 30–50% against 2PC: about 3.5–5.3 ms against 7.1–7.3 ms for optimistic transactions under heavy host load **(spike)**. Two risks come with them:
   1. An async-commit timestamp can be larger than a start timestamp fetched later by another client unless `min_commit_ts` is seeded from a fresh TSO, as TiDB's `tidb_guarantee_linearizability` does.
   2. `tikv-client` 0.4.0's async commit `unwrap()`s `min_commit_ts` and never sets `max_commit_ts` (a FIXME in `transaction.rs`) **(spike)**.
 
-  So the commit mode is a config switch (`commit_mode = async_1pc | two_pc`). The R1 gates (the linearizability histories of the metastore suite, and the reactive and transaction checkers) must pass with the default. If one fails, that component falls back to `two_pc` until the upstream fix lands (§11.4).
+  So the commit mode is a config switch (`commit_mode = async_1pc | two_pc`). The R1 gates (the linearizability histories of the metastore suite, and the reactive and transaction checkers) pass with `two_pc`. A component moves back to `async_1pc` by a ruling, once the pinned `tikv-client` resolves async-commit and 1PC locks on the read path (§11.4 item 2) and its gates pass with it. The exit report measured Live's commit p50 at 38–49 ms with `two_pc` and 27–32 ms with `async_1pc` on a loaded host.
 
 ### 5.2 Isolation level
 
@@ -190,20 +198,22 @@ TiKV gives **snapshot isolation**. Convex promises **serializability**. The gap 
 
   R2 decides after R1's checker (R1 Task 16) measures how often the first option would conflict on realistic workloads.
 
+- **As built (T10-4, T11-2):** R1 also has an opt-in, `RunnerOptions::serializable_ranges`, off by default. A mutation that read an index range and writes also locks every journal head, so it conflicts with every mutation that commits between its start and its commit. It is correct but coarse, and R2's journal validation (Q31) replaces it. The transaction checker (§14) found no anomaly at all, G2 included, because its workload reads by id (T16-8).
+
 ### 5.3 The commit journal (D119)
 
 Every mutation transaction also writes one **journal entry** into its app's journal. The entry lists what the transaction changed:
 
 ```
 JournalEntry {
-  commit_hint_ms,                        // TSO physical time of the start timestamp; diagnostics only
+  commit_hint_ms,                        // TSO physical time of the start timestamp; the janitor's age test (T9-4)
   writes: [ { table_id, doc_id, kind: insert | replace | delete,
               index_keys_removed: [bytes], index_keys_added: [bytes] } ],
   function, request_id                   // for tracing
 }
 ```
 
-**Sequencing.** The journal has `S` shards (16 by default, up to 1 024; set per app). A mutation picks a shard, reads the shard's head `h` at its start timestamp, and writes the entry at `seq = h + 1` and the head `= h + 1` in the same transaction. Two mutations that pick the same shard conflict on the head and one retries on another shard. So each shard's sequence is **dense and ordered by commit**, and an entry is visible at timestamp `T` exactly when its transaction committed at or before `T`.
+**Sequencing.** The journal has `S` shards (**64 by default** as built, owner ruling T11-1; up to 1 024). The count is stored per app in its catalog (`AppDef`) and changes only while the journal is empty (T10-1). A mutation picks a shard, reads the shard's head `h` at its start timestamp, and writes the entry at `seq = h + 1` and the head `= h + 1` in the same transaction. Two mutations that pick the same shard conflict on the head and one retries on another shard: a rerun draws uniformly among the shards other than its previous attempt's (T10-2). An entry larger than 1 MiB is split over consecutive sequences of its shard, in the same transaction (T9-3). So each shard's sequence is **dense and ordered by commit**, and an entry is visible at timestamp `T` exactly when its transaction committed at or before `T`.
 
 **Why the journal, and where TiKV CDC fits.** TiKV's change feed **does** serve a txn-API keyspace. The spike subscribed to `cdcpb.ChangeData/EventFeed` from Rust and received Prewrite and Commit rows with values, 1PC `Committed` rows, deletes and resolved timestamps, both for a Rust-client keyspace (1 region) and for a keyspace-mode TiDB (62 regions) **(spike)**. It needs:
 
@@ -225,7 +235,7 @@ TiCDC itself stays TiDB-table oriented (spans keyed by table id, `ticdc/logservi
 
 The journal costs two extra keys per mutation (the entry and the shard head). In exchange it is exactly once, ordered per shard, carries the old index keys the invalidation needs, and gives the bridge dense producer sequences (§12). TiKV CDC stays relevant for **TiDB tables** (through TiCDC, Q34) and as the secondary path above.
 
-**Retention.** A janitor deletes entries once every consumer (each node's tailer, the bridge) has passed them and they are older than `journal_retention` (10 min). Consumers checkpoint per shard.
+**Retention.** A janitor deletes entries once every consumer (each node's tailer, the bridge) has passed them and they are older than `journal_retention` (10 min). Consumers checkpoint per shard. **As built (T9-5, T11-11):** a node's tailer checkpoints with a 2-minute TTL, so a crashed node cannot hold the journal. A checkpoint without a TTL is for the bridge (R3). The janitor also deletes expired idempotency records (T10-6). At 64 shards, 32 writers and 2 000 mutations, the rerun rate was 0.25–0.28 per mutation (the exit report).
 
 ## 6. Server functions
 
@@ -234,7 +244,7 @@ The journal costs two extra keys per mutation (the entry and the shard head). In
 | Kind | Transactional | Side effects | Retried by Loam | Where |
 |---|---|---|---|---|
 | **Query** | Reads one snapshot | None | Rerun on invalidation | R1 |
-| **Mutation** | One TiKV transaction | None | On conflict, up to 8 attempts | R1 |
+| **Mutation** | One TiKV transaction | None | On conflict, up to 16 attempts (T10-3) | R1 |
 | **Action** | No; each `runQuery`/`runMutation` inside it is its own transaction | `fetch` (allowlisted hosts), AI-gateway calls | Never automatically | R2 |
 | **Scheduled function** | A mutation schedules it transactionally (a row in the scheduler range) | As its kind | Mutations exactly once; actions at most once | R2 |
 
@@ -247,6 +257,7 @@ Queries and mutations must return the same result from the same snapshot:
 - `Date.now()` returns the transaction's start timestamp in ms; `Math.random()` is a deterministic PRNG seeded from the start timestamp and the request id, and is documented as not suitable for secrets. **`crypto.getRandomValues()` and `crypto.randomUUID()` are never seeded**: in queries and mutations they throw (`DeterminismError: crypto randomness is not available in queries and mutations; use an action`), and in actions (R2) they draw from the OS CSPRNG. A deterministic value can then never be mistaken for a cryptographic one. Document ids are drawn by the host from the OS CSPRNG (§4.1), outside the function's view.
 - No timers, no `fetch`, no network, no filesystem.
 - Host calls (`db.get`, `db.query`, `db.insert`, `db.patch`, `db.replace`, `db.delete`) are the only I/O. Each read call adds to the read set.
+- **As built (T13-8, T13-9):** `Math.random` is ChaCha8, seeded with SHA-256 of the start timestamp and the request id (the idempotency key, or empty). `setTimeout`, `fetch`, `WebAssembly` and the like are absent, and `console` is a no-op. Built-ins and `globalThis` are deep-frozen with override taming, so an Error subclass can still set `this.name`. A host call that fails with a storage error or an exceeded limit ends the call at once, and no JavaScript `catch` sees it (owner ruling T14-2).
 
 ### 6.3 The sandbox (D120, Q35)
 
@@ -259,7 +270,7 @@ Queries and mutations must return the same result from the same snapshot:
 
 **Recommendation for R1: QuickJS through `rquickjs` 0.14.** Server functions in Convex are mostly small, I/O-bound TypeScript that reads and writes a few documents, so an interpreter's speed is enough. QuickJS keeps the build small (it matters on a machine that builds one crate graph at a time) and gives CPU and memory limits out of the box. Users write TypeScript; the CLI bundles it to one ES module with esbuild (MIT) before `Deploy`. wasmtime comes back when users want functions in Rust or Go; V8 comes back if profiles show CPU-bound functions. The function API is engine-neutral, so switching engines does not change user code.
 
-**Runtime model.** One QuickJS runtime per (node, app, deployment), with a pool of pre-initialised contexts; memory limit 64 MiB per runtime; the interrupt handler enforces the CPU limit. **A context serves exactly one invocation and is then discarded**, whether the call succeeded or threw: module-level variables, caches and patched globals can never carry state from one call to the next, which §6.2's determinism needs. The pool keeps `contexts` (4) fresh contexts warm, each with the bundle's module already evaluated, and refills in the background, so the evaluation cost stays off the request path. Built-in globals are frozen before the bundle is evaluated. Deployed bundles are stored in object storage (`live/<app>/deployments/<id>.js`) and the current deployment is a pointer in the app's catalog.
+**Runtime model, as built (T13-5, owner ruling T14-1).** **Each pooled context has its own QuickJS runtime, on its own worker thread.** A deployment gets `contexts` of them: 4 by default, set with `--live-js-contexts 1–256`. The memory limit (64 MiB) is therefore per call, so one deployment can use up to `contexts` × 64 MiB. rquickjs runtimes are not `Send` without its `parallel` feature, and one runtime per thread keeps an interrupt or an out-of-memory error from hitting a neighbouring call. R2 revisits one shared runtime per deployment with `parallel`. The CPU limit counts the time a call runs JavaScript, excluding its waits on host calls (T13-6). A copied result is bounded at 2^21 parts and 64 MiB of strings and buffers (T14-11, T16-12). Functions are addressed as `module:export` (T13-7). The plan's model, kept as history: one QuickJS runtime per (node, app, deployment), with a pool of pre-initialised contexts; memory limit 64 MiB per runtime; the interrupt handler enforces the CPU limit. **A context serves exactly one invocation and is then discarded**, whether the call succeeded or threw: module-level variables, caches and patched globals can never carry state from one call to the next, which §6.2's determinism needs. The pool keeps `contexts` (4) fresh contexts warm, each with the bundle's module already evaluated, and refills in the background, so the evaluation cost stays off the request path. Built-in globals are frozen before the bundle is evaluated. Deployed bundles are stored in object storage (`live/<app>/deployments/<id>.js`) and the current deployment is a pointer in the app's catalog. **As built (T13-10, T14-3, T9-1):** `Deploy` validates the bundle, checks whether the schema changes the indexes of an existing table, and if so takes the app's gate, which refuses with `UNAVAILABLE` (busy) while a mutation is in flight. Only then does it store the bundle and commit the records. A refused deploy stores nothing. A running subscription moves to the new code at its next evaluation (T13-11).
 
 ## 7. Sync protocol (D121)
 
@@ -295,8 +306,14 @@ message Transition {
 - **Consistency.** Every query in one session is evaluated at the same tick timestamp, so a client never shows two results from different moments (§8.3 gives the argument).
 - **Mutations and optimistic updates.** `Mutate` returns `commit_ts`. The client keeps its optimistic update until its session's `ts` reaches `commit_ts`, then drops it; the server sends a ts-only Transition to a session with a pending mutation at most once per second, so the client does not wait for an unrelated change.
 - **Resume.** A client that reconnects sends `WatchRequest { resume: { last_version, query_set } }`. The server reruns the set at a tick at or after `last_version.ts` and sends full results. R1 sends no diffs.
-- **Session routing.** A session lives on the node that holds its `Watch` stream. `session_id` carries that node's id; another node that receives a `ModifyQuerySet` forwards it with M1.3's request forwarding.
+- **Session routing.** A session lives on the node that holds its `Watch` stream. `session_id` carries that node's id; another node that receives a `ModifyQuerySet` forwards it with M1.3's request forwarding. **R1 has one node and no forwarding:** an unknown session is `NOT_FOUND` (T12-14).
 - **Encoding.** Connect's JSON and binary codecs both work; `int64` values are strings in JSON and `bigint` in protobuf-es, so ids and counters stay lossless in TypeScript.
+- **As built (T7-5, T12-4–T12-6, T13-18, T16-1).**
+  - **Messages.** The `Transition` above, plus the messages row T7-5 lists: `Null {}`, `Resume`, `QuerySetChange`, `QueryUpdate { query_id; value | error | removed }`, `QueryRequest { function, args, optional ts }`, and `LiveError { code, message }` with `ErrorCode`.
+  - **Heartbeats and ts-only Transitions.** A heartbeat is an empty Transition with `start == end`. A `Mutate` that carries the header `loam-session-id` marks its commit timestamp pending in that session, and ts-only Transitions follow at most once per second until the session reaches it.
+  - **Resume.** A resumed session's first Transition starts at the client's `last_version` and carries every result.
+  - **Errors.** They map to Connect codes: `FUNCTION_ERROR` → `unknown`, `FUNCTION_TIMEOUT` → `deadline_exceeded`, `FUNCTION_OUT_OF_MEMORY` and limits → `resource_exhausted`, busy → `unavailable`. **Every error also carries its `LiveError` as a Connect error detail of type `loam.live.v1.LiveError`** (`service::ERROR_DETAIL_TYPE`), so clients read the exact code. `@operon/live` reads the detail first and falls back to the Connect code.
+  - **Query without `ts`.** It reads at the manager's current tick, which is `tick_read_lag` behind (§8.2).
 - **Listener: loopback only in R1.** `127.0.0.1:7710` by default (`--live-listen`). `LiveService` exposes `Query`, `Mutate` and the admin `Deploy` with no authentication in R1 (D111), so **a non-loopback `--live-listen` is refused at startup** (`operon: --live-listen <addr> is not a loopback address; the Live API has no authentication until the unified auth plan (D111)`) rather than only warned about, which is stricter than D111's default for the other listeners. A loopback bind still logs one startup line saying the Live API is unauthenticated. Remote access in R1 goes through an SSH tunnel or a reverse proxy the operator secures. The refusal is lifted when the unified auth plan covers the Live API (R3). The dev playground's TiDB (root without a password) binds 127.0.0.1, as `tiup playground` does by default.
 
 ### 7.2 Generated clients
@@ -309,7 +326,7 @@ message Transition {
 | Python | `connect-python` **(verify maturity)** | R2 |
 | Go | `connect-go` | R2 |
 
-The generated stubs are the contract; each platform's hand-written layer is small (session state machine, reconnect, optimistic updates) and shares one conformance fixture set (R1 Task 14 starts it).
+The generated stubs are the contract; each platform's hand-written layer is small (session state machine, reconnect, optimistic updates) and shares one conformance fixture set. **As built:** R1 ships `@operon/live` only (Connect and gRPC-Web over `fetch`, no `connect-node`, T14-5). The shared fixture set waits for a second client in R2, seeded from `session.test.ts`'s Transition scripts (owner ruling T16-2).
 
 ## 8. Reactivity
 
@@ -322,18 +339,18 @@ The generated stubs are the contract; each platform's hand-written layer is smal
 
 Per app, on each node with sessions for that app:
 
-1. **Tick.** The tailer takes a TSO timestamp `T`, reads all shard heads at `T` (one `batch_get`), and scans the new entries of each shard whose head moved, at `T`. It wakes immediately after a local commit and otherwise polls with backoff from 20 ms to 200 ms.
-2. **Match.** For every write in the new entries, the removed and added index keys and the document key are looked up in the app's **read-set index**: an interval tree per (table, index) and a hash set of point keys, mapping to subscription ids. A lookup is O(log n + matches).
+1. **Tick.** The tailer takes a TSO timestamp `T`, reads all shard heads at `T` (one `batch_get`), and scans the new entries of each shard whose head moved, at `T`. It wakes immediately after a local commit and otherwise polls with backoff from 20 ms to 200 ms. **As built:** `T` is a fresh TSO timestamp moved back by `tick_read_lag`, **200 ms by default** (owner rulings T12-1, T13-1; `--live-tick-read-lag-ms`). Without the lag, a tick waited on in-flight two-phase-commit locks at the shard heads: p50 0.28–0.81 s under 32 writers, against 9.5–14.7 ms at 200 ms (T11-3, T16-9). New entries are read by batch gets of the known keys, and a tick reads at most 64 MiB, so a backlog takes several ticks and a subscription is evaluated at `T` only after a complete batch (T10-12).
+2. **Match.** For every write in the new entries, the removed and added index keys and the document key are looked up in the app's **read-set index**: an interval tree per (table, index) and a hash set of point keys, mapping to subscription ids. A lookup is O(log n + matches). **As built (T11-4):** one augmented AVL tree for the whole app, because a read of a table that does not exist yet spans every future table's index range (T10-8).
 3. **Rerun.** Each invalidated subscription is rerun at `T`, at most `rerun_concurrency` (16) at once per app. A rerun produces a new result and a new read set, which replaces the old one in the index. Identical subscriptions (same function, arguments and identity) share one cache entry, so a thousand clients watching one chat room cost one rerun.
 4. **Push.** Every session gets one Transition to `T` with the queries whose result hash changed. Sessions with no changed query get nothing (except the ts-only Transition of §7.1).
 5. **Advance.** All subscriptions of the app are now valid at `T`: the untouched ones because nothing in their read set changed between their last timestamp and `T`.
 
 **Backpressure:**
 
-- **Reruns.** If invalidations arrive faster than reruns finish, the next tick simply reruns at a newer timestamp. Intermediate results are skipped, never reordered: a client may see fewer versions, never an inconsistent one. A subscription is rerun at most once per `min_rerun_interval` (50 ms).
+- **Reruns.** If invalidations arrive faster than reruns finish, the next tick simply reruns at a newer timestamp. Intermediate results are skipped, never reordered: a client may see fewer versions, never an inconsistent one. A subscription is rerun at most once per `min_rerun_interval` (50 ms). **As built (T11-6):** the interval applies per tick for the whole app, so every subscription stays valid at the app's tick. A query that fails holds its error as its result and is rerun on every tick until it succeeds (T11-8).
 - **Sessions.** Each session has a bounded outbound queue (16 Transitions). When it is full, queued Transitions are merged into one from the client's acknowledged version to the newest. A session blocked for more than 30 s is closed, and the client resumes.
 - **Quotas.** Subscriptions per session (1 000), sessions per app and reruns per second per app are limits; over a limit the server answers `RESOURCE_EXHAUSTED`, as D65's quotas do.
-- **Safety net.** Every subscription is also rerun unconditionally every 5 minutes and compared; a difference is a bug, is logged with both read sets, and is counted in a metric that alerts.
+- **Safety net.** Every subscription is also rerun unconditionally every 5 minutes and compared; a difference is a bug, is logged with both read sets, and is counted in a metric that alerts. **As built (T11-10, T13-3):** the counter is `SubsStats::missed_invalidations`. It is exported as `live_missed_invalidation_total` once M1.7 Task 1 adds the `/metrics` listener.
 
 ### 8.3 Why no update is missed
 
@@ -343,7 +360,7 @@ Let a subscription's result `R` be computed at tick `t` with read set `S`, and l
 2. A shard's entries visible at `T` but not at `t` are exactly those with `head(t) < seq ≤ head(T)`, because the head and the entry are written in one transaction and the head only grows.
 3. So if no new entry touches `S`, no write between `t` and `T` changed what the query read, and `R` is also the result at `T`. Otherwise the subscription is rerun at `T`.
 
-Every query in a session is therefore valid at the session's tick, and results never go back in time. R1 Task 16 checks exactly this: every pushed result equals a fresh snapshot evaluation at its timestamp.
+Every query in a session is therefore valid at the session's tick, and results never go back in time. R1 Task 16 checks exactly this: every pushed result equals a fresh snapshot evaluation at its timestamp. The read lag of §8.2 changes nothing in the argument, because `T` is still a TSO timestamp and ticks never move back. **As built (T12-3):** the manager publishes each tick before it moves its current tick. A session drains its updates after subscribing and keeps each query's newer result, so a Transition never pairs results of two ticks. The reactive checker passed per PR (60 s) and under the nemesis (180 s), with 0 missed invalidations (the exit report).
 
 ## 9. Multi-tenancy and keyspaces (D122)
 
@@ -375,7 +392,22 @@ TiKV keeps old versions until a GC safe point passes them. TiDB advances it for 
 - PD keeps per-keyspace GC state (txn safe point, GC safe point, GC barriers) and a keyspace's `gc_management_type` is `keyspace_level` or `unified` (`pd/pkg/gc/gc_state_manager.go`; `pd/pkg/keyspace/keyspace.go:51-75`). A `unified` keyspace needs a TiDB **without** `keyspace-name` to run the GC worker (`tidb/pkg/store/gcworker/gc_worker.go:108-117,334`).
 - `client-rust`'s `gc()` resolves locks and updates the **cluster-level** safe point only (`client-rust/src/transaction/client.rs:268`, `src/pd/cluster.rs:88`). The keyspace-scoped RPCs (`AdvanceTxnSafePoint`, `AdvanceGCSafePoint`, `SetGCBarrier`, `GetGCState` with a `KeyspaceScope`) are in its vendored `pdpb.proto` (lines 82–112, kvproto `b41e863`), but not exposed.
 - TiKV's own GC worker reads one safe point (`tikv/components/pd_client/src/client.rs:864`) and has no keyspace logic in `tikv/src/server/gc_worker/`; how PD combines keyspace states for it is unverified.
-- **R1:** `operon-tikv` runs a GC loop per Live and metastore keyspace with `keyspace_level` management. It generates tonic stubs for the needed `pdpb` RPCs from the same kvproto revision (Apache-2.0), resolves locks below the target, and advances the keyspace's txn and GC safe points to `now − gc_life_time` (10 min), held back by GC barriers for open snapshots (the collections bridge, backups). If R1 Task 0 finds that TiKV ignores keyspace-level safe points, the fallback is one `unified` GC TiDB per cluster. We also offer `client-rust` a patch that exposes keyspace GC. This is Q32.
+- **The plan (superseded):** `operon-tikv` runs a GC loop per Live and metastore keyspace with `keyspace_level` management. It generates tonic stubs for the needed `pdpb` RPCs from the same kvproto revision (Apache-2.0), resolves locks below the target, and advances the keyspace's txn and GC safe points to `now − gc_life_time` (10 min), held back by GC barriers for open snapshots (the collections bridge, backups). If R1 Task 0 finds that TiKV ignores keyspace-level safe points, the fallback is one `unified` GC TiDB per cluster. We also offer `client-rust` a patch that exposes keyspace GC. This is Q32.
+
+**As built (Q32 answered by R1 Task 0: no keyspace-level GC on v8.5.8; rows R5–R7, T3-1–T3-13).** The bullets above describe PD's master branch. On the pinned release, PD v8.5.8 answers `Unimplemented` for `AdvanceTxnSafePoint` and `GetGCState`. TiKV v8.5.8 reads only the cluster safe point: a keyspace safe point set with `UpdateGCSafePointV2` was ignored for 90 s. A keyspace-mode TiDB neither computes the safe point nor resolves locks (`gc_worker.go:386-389`). So:
+
+- **One Loam GC loop per cluster** (`operon_tikv::GcLoop`), leased at `e/cluster/gc` under its handle's root, acts as the cluster's GC worker. Each round:
+  1. takes `min(now − life_time, UpdateServiceGCSafePoint("gc_worker", …))`;
+  2. resolves locks below that point in **every** keyspace PD lists (all states but `TOMBSTONE`, `DEFAULT` included), renewing its lease after each keyspace;
+  3. calls `UpdateGCSafePoint`;
+  4. sweeps expired commit tokens and fences in the roots it was given (the metastore's and Live's).
+- **The stubs.** It calls only `GetMembers`, `GetGCSafePoint`, `UpdateGCSafePoint` and `UpdateServiceGCSafePoint`, from `pdpb.proto` and its imports vendored byte for byte from kvproto `release-8.5` `07aa8c6` (`NOTICE`).
+- **GC barriers are PD service safe points** (`GcBarrier`, service id `loam/<purpose>/<id>`). PD refuses a barrier below the current minimum.
+- **Reads below the window are refused.** TiKV serves a read below the safe point without an error: `None` after GC, or the old value until compaction. So `operon-tikv` refuses snapshots older than `now − (life_time − 1 min)`, unless a barrier set through the same handle covers them.
+- **One stuck keyspace blocks GC for all.** A keyspace whose locks cannot be resolved stops cluster GC for every keyspace (owner ruling T3-12: accepted; R2 adds a `gc_blocked_seconds` gauge and an alert).
+- **No other GC worker.** No TiDB without `keyspace-name` may run beside Loam, since it would run its own GC worker.
+- **Who runs it.** `operon dev --meta tikv://…` runs the loop on the metastore's handle. Live joins its sweep when both use the same PD, and otherwise runs its own (T6-9, T12-10).
+- **Later.** Per-keyspace GC returns when a pinned PD release ships the GC-state API. The upstream patch that exposes GC safe points in `client-rust` is part of tikv/client-rust#564 (open).
 
 ### 9.4 Namespace router (the owner's item d)
 
@@ -403,7 +435,7 @@ TiKV keeps old versions until a GC safe point passes them. TiDB advances it for 
 
 - TiDB's `keyspace-name` (config key, or env `KEYSPACE_NAME`; `tidb/pkg/config/config.go:124,240`) switches its driver to API v2 with a keyspace codec (`tidb/pkg/store/driver/tikv_driver.go:190-202`).
 - TiKV must run API v2 (§9.1), and the keyspace must exist in PD before TiDB starts, created with PD's `[keyspace] pre-alloc` or the HTTP API. **Verified on playground v8.5.8** (classic Community build): TiDB with `keyspace-name = "ks_tidb"` wrote keys prefixed `x 00 00 01`, served MySQL clients (CREATE, INSERT, UPDATE, BEGIN/COMMIT, SELECT), and ran beside a Rust client in keyspace `ks_rust`. A key written in `ks_rust` read back as absent from both `ks_tidb` and `DEFAULT` **(spike)**.
-- A keyspace-mode TiDB runs its own keyspace-level GC worker; `unified` keyspaces need one TiDB without a keyspace (§9.3).
+- ~~A keyspace-mode TiDB runs its own keyspace-level GC worker; `unified` keyspaces need one TiDB without a keyspace (§9.3).~~ **As built (Q32, row R6):** on v8.5.8 a keyspace-mode TiDB neither computes the safe point nor resolves locks; Loam's cluster GC loop does both for every keyspace, TiDB's included, and no TiDB without `keyspace-name` may run beside Loam (§9.3). Q33 was re-confirmed on the pinned release in R1 Task 0 (row R8). R1 Task 15 (a keyspace-mode TiDB in the dev playground, with its SQL smoke test and coexistence tests) is **parked** until the owner decides about TiDB; `playground.sh --with-tidb` and `deploy/tikv/tidb.toml` exist from Task 1.
 
 ### 10.2 One TiDB per tenant, not a shared TiDB
 
@@ -448,45 +480,49 @@ One keyspace per Loam cluster (`loam_meta`, or `loam_meta_<cluster_id>` for each
 
 | Record | Key | Value |
 |---|---|---|
-| Namespace by name | `n/<org_id>/<name>` | `id` |
+| Namespace by name | `n/<name>` (as built, row R17: the trait's `create_namespace` takes no org; the org segment arrives with the router in R2) | `id` |
 | Namespace | `N/<id:u64 BE>` | record, state |
 | Id block | `c/<kind>` | next unallocated id; each node takes blocks of 1 000 (gaps allowed, D18) |
 | Stream, link, collection by name | `s/`, `l/`, `k/` + `<ns>/<name>` | `id` |
 | Stream, link, collection record | `S/`, `L/`, `K/` + `<id>` | record, `ns`, `state` |
 | Aliases | `a/<ns>` | alias map, version |
+| Hot configuration (as built, R17) | `H/<collection id>` | the collection's hot configuration, deleted with the collection |
 | Partition head | `h/<stream>/<p>` | `next`, `log_start`, `bytes` |
 | Index entry | `i/<stream>/<p>/<base:u64 BE>` | kind, records, object, byte range, max ts |
 | WAL commit record | `w/<hash8(object)>/<object>/<group>` | base offsets, `created_at` |
 | WAL live-chunk count | `W/<hash8(object)>/<object>` | `live` |
 | Retired object | `r/<shard 0..63>/<path>` | `retired_at` |
-| Object reference | `o/<hash8(path)>/<path>` | `refs`, `gc_claim` |
-| Lease | `e/<scope>/<key>` | `owner`, `epoch`, `deadline_ms` |
+| Object reference | `o/<hash8(path)>/<path>` | `refs`, `gc_claim` (as built, T5-5: read and locked, never written in R1) |
+| Lease | `e/<scope>/<key>` (as built: `e/m/<key>`; the GC loop's `e/cluster/gc` is separate) | `owner`, `epoch`, `deadline_ms` |
 | Pointer | `p/<ns>/<key>` | `version`, `value` |
-| Commit token | `t/<token>` | `expires_ms` |
-| Change counters | `v/<scope>` | `u64` |
+| Commit token | `t/<token>` | `expires_ms` (or a fence, `expires_ms ‖ "F"`, T2-5) |
+| ~~Change counters~~ | ~~`v/<scope>`~~ | Not built (T5-4, owner ruling T5-14; §11.3) |
 
 WAL object names are ULIDs, which are time-ordered, so their keys get an 8-byte hash prefix to spread them over regions.
+
+**As built (T4-4, T5-10).** Ids are 8-byte big-endian and partitions 4-byte big-endian, with names and paths last. Records are a format byte and postcard. Counters and stamps are u64 big-endian, and `W/` is a u32. `K/` has no state field: the record exists while the collection is live. A WAL commit record `w/…/<group BE4>` holds `{groups, created_at_ms, offsets: [(call position, base)]}`. Partition heads are written lazily: an absent head of an existing partition is an empty one (T4-5).
 
 ### 11.3 Mapping the contract
 
 | Contract item | On TiKV |
 |---|---|
-| **One transaction per call** (D47) | Every trait method is one TiKV transaction: optimistic for single-record writes (leases, `cas_pointer`, creates), **pessimistic** (`begin_pessimistic`, `get_for_update` on partition heads in key order) for `commit_wal`, `swap_segment` and `trim_partition`, so hot heads queue instead of aborting in a loop |
+| **One transaction per call** (D47) | Every trait method is one TiKV transaction: optimistic for single-record writes (leases, `cas_pointer`, creates), **pessimistic** (`begin_pessimistic`, `get_for_update` on partition heads in key order) for `commit_wal`, `swap_segment` and `trim_partition`, so hot heads queue instead of aborting in a loop. **As built (T5-2, T5-3, T6-5):** every write commits with `two_pc` (`operon_meta_tikv::COMMIT_MODE`). A pessimistic write locks its rows in one `batch_get_for_update` and reads index entries from a fresh snapshot taken after the locks. It gets 64 attempts, because a waiter woken by a commit gets `PessimisticRetry` and the runner restarts it: the pinned client never retries at a newer `for_update_ts` |
 | **`commit_wal` atomicity** (§18 §3.1) | **One transaction per partition group.** A group is at most 1 024 chunks and at most 4 MiB of metastore writes (index entries, heads, commit and reference rows), well under TiKV's per-request Raft entry limit (`raftstore.raft-entry-max-size`, 8 MiB by default) and the lock-holding time a pessimistic transaction should have **(verify the limits on the pinned release)**. A call that fits in one group, which is every flush the log writer produces today **(estimate)**, is **atomic across all its partitions and namespaces**, stronger than D59. A larger call is split into groups; **one stream's chunks are never split across groups** (D59's rule, §18 §3.1), and a single stream's chunks that alone exceed one group are refused with `InvalidArgument` so the writer splits the WAL object. Each group commits in its own transaction with its own commit record `w/<object>/<group>`, so it is idempotent. The call returns success only after every group has committed. After a crash or error some groups may be committed and others not; that WAL object is unacknowledged, and the writer's retry recommits only the missing groups (their records show which), or the stale-commit rule (D27) settles them. Visibility is atomic per group, as D59 requires |
 | **Compare-and-swap** | Read the pointer at the start timestamp, compare, write. A concurrent writer is a write-write conflict at prewrite, so no update is lost; the loser re-reads and returns `VersionMismatch` when the version moved |
-| **Fences and GC claims** (§18 §3.2) | Checked in the same transaction: the lease record's epoch, the collection's `live` state, and `gc_claim` on every `o/` row the command makes reachable. A claim and a new reference write the same `o/` row, so they conflict and serialize, with no clock |
-| **Clock and stamps** (§18 §3.2, D113) | `clock_ms` is the TSO's physical part. The TSO is one cluster-wide monotonic clock with no hot row, so the TiKV backend keeps the strong "one monotonic clock" behaviour, and bounded skew holds trivially. Lease deadlines are judged against the transaction's start timestamp |
+| **Fences and GC claims** (§18 §3.2) | Checked in the same transaction: the lease record's epoch, the collection's `live` state, and `gc_claim` on every `o/` row the command makes reachable. A claim and a new reference write the same `o/` row, so they conflict and serialize, with no clock. **As built (T4-6, T4-7, T5-5):** a read that decides a write but is not overwritten by it is locked with `lock_keys` (the fence's lease, the collection record, the `o/` row), so write skew cannot pass a check. `o/` rows are read and locked, not written: no trait method claims an object in R1, and `W/` and the index already count references. The lock is what will make R2's claim protocol conflict with a new reference |
+| **Clock and stamps** (§18 §3.2, D113) | `clock_ms` is the TSO's physical part. The TSO is one cluster-wide monotonic clock with no hot row, so the TiKV backend keeps the strong "one monotonic clock" behaviour, and bounded skew holds trivially. Lease deadlines are judged against the transaction's start timestamp. **As built (R2, T4-11, T5-7, T4-17):** the trait's `now_ms` is synchronous, so it is `max(previous, physical(latest TSO) + elapsed)`. A stamped write first waits, for at most 1 s, until a fresh TSO reaches `now_ms`, because PD advances the physical part in 50 ms steps. A TSO clock moves with time, not only with writes, so the suite's two clock-equality cases were relaxed to "not earlier" for every backend (owner ruling) |
 | **Leases** | A read-modify-write of `e/…` comparing owner, epoch and deadline |
-| **Consistency tokens** (D76) | Offsets are assigned by `commit_wal` from the partition head inside the transaction, dense per partition. `Linearizable` reads use a fresh TSO timestamp, and any transaction acknowledged before that TSO fetch has a smaller commit timestamp, so a token's offsets are always visible. `Local` is served as `Linearizable` in R1; TiKV stale reads can serve it later |
+| **Consistency tokens** (D76) | Offsets are assigned by `commit_wal` from the partition head inside the transaction, dense per partition. `Linearizable` reads use a fresh TSO timestamp, and any transaction acknowledged before that TSO fetch has a smaller commit timestamp, so a token's offsets are always visible. `Local` is served as `Linearizable` in R1; TiKV stale reads can serve it later. As built, every read is one snapshot at a fresh TSO, retried up to 4 times when it meets a lock (T4-9) |
 | **Composite reads** (§18 §3.3) | Real snapshots: every read of one call uses one start timestamp. No read order is needed |
-| **Unknown outcomes** | Each write transaction also writes `t/<token>`. After an error during commit, the backend reads the token at a fresh timestamp. TiKV's lock resolution either finds the transaction committed or rolls it back, so the answer is always known. Conflict, `KeyIsLocked` after backoff, region errors and TSO unavailability before prewrite are definitely-not-applied |
-| **`watch_changes`** | No native primitive. Writers bump a change counter per scope (`v/catalog`, `v/ns/<id>`), and watchers poll counters every 100 ms and wake on the handle's own writes. `commit_wal` does not bump the catalog counter (D63's scoped feed) |
+| **Unknown outcomes** | Each write transaction also writes `t/<token>`. After an error during commit, the backend reads the token at a fresh timestamp. TiKV's lock resolution either finds the transaction committed or rolls it back, so the answer is always known. Conflict, `KeyIsLocked` after backoff, region errors and TSO unavailability before prewrite are definitely-not-applied. **As built (T2-5, T2-15, T4-3, T4-16):** a resolver that finds the token absent **writes a fence** at it and commits the fence before it reports "not applied", so a late prewrite of the lost commit meets a newer write and conflicts. A call whose attempt had an unknown outcome is rerun (at most 3 times) and reports `Tracked.earlier_unknown`, which keeps the trait's retry answers alike on every backend. Only `UndeterminedError` and a commit future dropped at the deadline are undetermined (row R9) |
+| **`watch_changes`** | No native primitive. ~~Writers bump a change counter per scope (`v/catalog`, `v/ns/<id>`), and watchers poll counters every 100 ms and wake on the handle's own writes. `commit_wal` does not bump the catalog counter (D63's scoped feed)~~ **As built (T5-4, owner ruling T5-14): no `v/` counters.** The watch wakes at once on the handle's own writes, `commit_wal` included, and unconditionally every 100 ms. The trait has one unscoped watch whose consumers need other nodes' commits and pointer writes, so the poll must wake unconditionally anyway. Counters would then be unread writes, and on every commit a hot key. Scoped counters belong to D63's scoped change feed (M2.x) |
 | **Pagination** (D99) | Range scans with `(prefix, after, limit)` |
 | **Snapshots and restore** (D17, §10 §6) | Not applicable: TiKV replicates by Raft. Backups use BR full backups plus log backup (PITR) to object storage, mandatory as for Live (§10.4, D131; Q37) |
+| **`drop_collection`** (as built, T4-8, T5-3, T5-15) | One transaction that deletes every partition's head (present or not), every index entry and the implicit link's pointer, releasing entries as the openraft state machine does. A collection with a large index is one large transaction; batching it is an R2 item |
 
 ### 11.4 Gaps and risks
 
-1. **MVCC GC** for the metastore keyspace needs Loam's GC loop (§9.3, Q32).
+1. **MVCC GC** for the metastore keyspace needs Loam's GC loop (§9.3, Q32). As built, the loop is cluster-wide and runs beside the metastore in `operon dev --meta tikv://…` (T6-9).
 2. **`tikv-client` maturity.** Its README says 0.4.0 is "not suitable for production use - APIs are not yet stable" (`client-rust/README.md`).
    - **Dependency versions.** The crates.io 0.4.0 release pulls in prost 0.12 and tonic 0.10; the git master pulls in prost 0.13 and tonic 0.12 (`client-rust/Cargo.toml:39,49`). The workspace uses 0.14, so the tree carries two versions of each (build time and binary size).
    - **Client gotchas found in the spike:**
@@ -495,14 +531,21 @@ WAL object names are ULIDs, which are time-ordered, so their keys get an 8-byte 
      - **Async commit** `unwrap()`s `min_commit_ts` and does not set `max_commit_ts` (a FIXME in `transaction.rs`).
      - **Keyspace required on API v2.** A client without a keyspace fails with `InvalidKeyMode` on an API v2 cluster, so every client must be configured with one.
      - **Error messages** include keyspace-prefixed raw keys, which must be scrubbed before they reach users.
-   - **Upstream first.** Loam pins a version, runs its own conformance and fault suites against it, and contributes fixes upstream (D126). The **first upstream PR candidates** are (1) reconnecting the TSO stream after a PD stall and (2) exposing the generated proto modules (`cdcpb`, `pdpb`, `keyspacepb`) as a public module. Two follow-ups come after: setting `max_commit_ts` in async commit, and optional pessimistic lock retry at a new `for_update_ts`. A third is **resolving async-commit and 1PC locks on the read path** (`CheckSecondaryLocks` from the reader's lock resolver; today only GC's `cleanup_locks` checks secondaries, so a crashed async-commit writer blocks readers until GC). Until it lands, the metastore and Live commit with `two_pc` (R1 plan rows T6-5, T7-1).
-3. **Latency.** Each call costs a TSO fetch plus prewrite and commit round trips. In the spike, commit p50 was about 3.5–7 ms under heavy host load (1PC or async commit at the low end, 2PC at the high end). A 10-key pessimistic transaction took about 13–25 ms in total, dominated by ten sequential `get_for_update` round trips of about 1 ms each **(spike; indicative only)**. Batching locks (`batch_get_for_update`) matters for `commit_wal`. `commit_wal` sits on the write path; M2's write-latency budget must include it for TiKV deployments.
+   - **The pin, as built (rows R4, X1).** crates.io 0.4.0 fails `cargo deny`'s advisories through its `tonic` 0.10, and misreports unknown outcomes of async-commit and 1PC prewrites. So Loam pins git `tikv/client-rust` `ab4be1c` with `default-features = false`, and `deny.toml` allows that git source. Crates depending on it are `publish = false` until a release carries the fixes; publishing waits for the Loam rename (owner ruling T8-1). The client's gRPC decoding limit is raised to 16 MiB, and reads also page from 256 keys, halving on `OutOfRange` (T2-12).
+   - **Upstream first.** Loam pins a version, runs its own conformance and fault suites against it, and contributes fixes upstream (D126). The **first upstream PR candidates** are (1) reconnecting the TSO stream after a PD stall and (2) exposing the generated proto modules (`cdcpb`, `pdpb`, `keyspacepb`) as a public module. Two follow-ups come after: setting `max_commit_ts` in async commit, and optional pessimistic lock retry at a new `for_update_ts`. A third is **resolving async-commit and 1PC locks on the read path** (`CheckSecondaryLocks` from the reader's lock resolver; today only GC's `cleanup_locks` checks secondaries, so a crashed async-commit writer blocks readers until GC). Until it lands, the metastore and Live commit with `two_pc` (R1 plan rows T6-5, T7-1). **As built, four PRs are open upstream** (checked 2026-09-28): tikv/client-rust#563 (reopen the TSO stream), #564 (public kvproto modules), #565 (resolve async-commit locks on the read path) and #566 (bound the async-commit commit ts). dina-kar/operon#80 pins a `loam` fork that carries all four; it merges into `main` after #76 and reaches the R1 stack then (owner ruling T17-1).
+3. **Latency.** Each call costs a TSO fetch plus prewrite and commit round trips. As built, `commit_wal` (one chunk, `two_pc`) measured p50 57–75 ms and p99 157–296 ms on a loaded host (the exit report); a quiet-machine run is an R2 item. In the spike, commit p50 was about 3.5–7 ms under heavy host load (1PC or async commit at the low end, 2PC at the high end). A 10-key pessimistic transaction took about 13–25 ms in total, dominated by ten sequential `get_for_update` round trips of about 1 ms each **(spike; indicative only)**. Batching locks (`batch_get_for_update`) matters for `commit_wal`. `commit_wal` sits on the write path; M2's write-latency budget must include it for TiKV deployments.
 4. **Commit mode.** Async commit with 1PC was planned as the default here too (§5.1). As built, the metastore and Live commit with `two_pc` until the read-path lock resolution of item 2 is in the pinned `tikv-client` (R1 plan rows T6-5, T7-1); the `commit_mode` switch moves a component back to async commit then, by a ruling, once its linearizability histories and checkers pass with it.
 5. **Hot keys.** A busy partition head is written by every flush that touches it. Pessimistic locking bounds the damage; TiKV splits regions by load but cannot split one key.
 
 ### 11.5 Where it lands
 
-`operon-meta-tikv` passes the existing 49-case conformance suite with its linearizability histories, then its own fault matrix (§18 §4.2 columns, with TiKV rows: `BeforeSend` = TSO or prewrite refused; `AfterApply` = commit applied, response dropped; `Undetermined` = primary commit timed out; `Conflict` = `WriteConflict`; `Throttle` = `ServerIsBusy`; `Race`; `Delay`). It implements the trait as built when R1 starts; M2's contract amendment (§18 §3.4) then costs it little, because TiKV already meets the stronger contract.
+`operon-meta-tikv` passes the existing ~~49-case~~ **53-case** conformance suite with its linearizability histories (row R3: M1.3 added the hot cases and `leases_with_prefix_lists_only_that_prefix`), then its own fault matrix (§18 §4.2 columns, with TiKV rows: `BeforeSend` = TSO or prewrite refused; `AfterApply` = commit applied, response dropped; `Undetermined` = primary commit timed out; `Conflict` = `WriteConflict`; `Throttle` = `ServerIsBusy`; `Race`; `Delay`). It implements the trait as built when R1 starts; M2's contract amendment (§18 §3.4) then costs it little, because TiKV already meets the stronger contract.
+
+**As built (T5-9, T6-2–T6-4, T6-8, T7-2, T7-3).**
+- **The suite.** All 53 cases pass on TiKV, with `two_pc`.
+- **The fault matrix.** It has 12 groups × 6 faults × 2 attempts = 144 cells, blessed in `meta_fault_matrix.tikv.expected.md`. The faults are `Refuse`, `LoseAck`, `Undetermined`, `Conflict`, `Delay` and `Race`. The groups include a two-group `commit_wal` failing in either group, and a drop of 64 partitions and 1 024 entries. It has a fifth outcome, `Rejected`, for a `Race` whose competitor legitimately won. `TikvMeta::check_invariants` checks the log's state after every cell.
+- **The gates.** The kill -9 crash gate runs on TiKV nightly (`OPERON_GATE_META=tikv://…`). The object-store fault matrix and the simulation stay on openraft until M2.
+- **The build feature.** `operon` selects the backend with `--meta tikv://<pd>/<keyspace>[?root=<hex>]` on `dev` and `standalone`, behind the off-by-default feature `tikv`, so the default build does not depend on the git pin.
 
 ## 12. The collections bridge (D129)
 
@@ -536,15 +579,25 @@ The owner's item (e), and the reason Loam Live is more than a Convex clone.
 
 ## 14. Testing
 
-1. **Conformance.** `operon-meta-conformance` runs against `operon-meta-tikv` (all 49 cases, linearizability histories). A new `operon-live` conformance suite covers the data model, codec order, index maintenance, journal density and the sync protocol's version rules.
-2. **Fault matrix.** The in-process `FaultPlan` hook in `operon-tikv`'s transaction runner (`BeforeBegin`, `BeforePrewrite`, `BeforeCommit`, `AfterCommit`) drives a metastore fault matrix with a blessed `meta_fault_matrix.tikv.expected.md`, as §18 §4.2 does for the other backends, and a Live mutation fault matrix (every cell ends `Retried`, `SurfacedUnknown` or `NoEffect`; no acknowledged mutation lost; no idempotent mutation applied twice).
+1. **Conformance.** `operon-meta-conformance` runs against `operon-meta-tikv` (all 53 cases as built, linearizability histories). A new `operon-live` conformance suite covers the data model, codec order, index maintenance, journal density and the sync protocol's version rules.
+2. **Fault matrix.** The in-process `FaultPlan` hook in `operon-tikv`'s transaction runner (`BeforeBegin`, `BeforePrewrite`, `BeforeCommit`, `AfterCommit`) drives a metastore fault matrix with a blessed `meta_fault_matrix.tikv.expected.md`, as §18 §4.2 does for the other backends, and a Live mutation fault matrix (every cell ends `Retried`, `SurfacedUnknown` or `NoEffect`; no acknowledged mutation lost; no idempotent mutation applied twice). **As built:** Live has no blessed matrix of its own. Its fault coverage is `idempotent_mutate_applies_once_across_lost_ack` (Task 10), plus the random `FaultPlan`s both checkers inject into the server's handle (T16-5, T16-8).
 3. **Reactive correctness checker** (the R1 gate). A seeded workload of mutations and subscriptions over several sessions. For every Transition, the checker evaluates each updated query with a fresh snapshot read at the Transition's timestamp and requires equality; it also requires that versions strictly increase per session, that every committed mutation that touches a subscribed range is reflected by the first tick at or after its commit timestamp, and that a resumed session converges.
 4. **Transaction checker.** A list-append workload over Live documents, checked for snapshot isolation (and, once Q31 lands, serializability) with an Elle-style cycle search implemented in `operon-sim`'s checker module; point-read promotion is checked by a write-skew workload that must show no anomaly on `db.get` reads.
 5. **Jepsen-style nemesis** (nightly). On `tiup playground`: kill and restart TiKV stores and the PD leader, partition a Live node from TiKV with toxiproxy, pause processes; the workloads of items 3 and 4 run throughout and their checkers must pass.
+
+**As built (T16-4–T16-10, owner ruling T17-2):**
+- **The reactive checker** (`crates/operon-live/tests/reactive_checker.rs`) drives `LiveServer` through the generated connect-rust client. It uses HTTP/1.1 writers and HTTP/2 sessions, 4 sessions and 4 writers, with random faults in the server's handle. After **every** Transition, every held result must equal a fresh `Runner::query` at its `ts` on a second, fault-free handle, and the results must be exactly the version's query set. Sessions resume and modify their sets at random, and a resume must start at the last version. Run times: 60 s per PR and 30 min under the nemesis (`OPERON_CHECKER_*`). `checker_catches_injected_stale_result` shows it fails within 1.4 s once the server drops journal batches.
+- **The transaction checker** (`txn_checker.rs`) uses **`operon_live::testing::elle`**, not `operon-sim`, which would pull the M0 simulation graph. It checks G0, G1a–c, lost update, G-single and G2, plus lost appends, duplicates and incompatible orders. **No anomaly is allowed, G2 included**, because the workload reads by id and point reads lock. `point_read_write_skew_never_happens` and `checker_catches_injected_lost_update` go with it.
+- **The nemesis** (`scripts/tikv/nemesis.sh`) injects one fault every `--interval` seconds, round robin:
+  - `tikv-kill` and `pd-kill`: SIGKILL, then restart from the same command line and data;
+  - `pd-stall`: SIGSTOP of the PD leader for 15 s, past the client's 5 s timeout, which is the real TSO stream death (T2-17);
+  - `live-pause`: SIGSTOP of the test binary, which serves Live.
+
+  Toxiproxy partitions were not built. With `pd-stall`, the reactive checker fails unless the Live server's TSO supervisor rebuilt its client (it did, once per run). The nightly CI job `tikv-nemesis` runs **one TiKV store on the standard GitHub runner** (owner ruling T17-2). A 3-store nemesis on a larger runner is an R2 item.
 6. **Where it runs.**
    - `tiup playground v8.5.8` with `--kv.config` (API v2 and TTL), `--pd.config` (pre-allocated keyspaces) and `--db.config` (`keyspace-name`), verified in the spike. It is installed in CI by the tiup installer script, and the first run downloads about 500 MB. Every script uses `--tag` and `--port-offset`, because other playgrounds on the machine take the default ports.
    - Per PR: jobs touching `operon-tikv`, `operon-meta-tikv` or `operon-live*` start one playground (1 PD, 1 TiKV, 1 TiDB when SQL tests run) and run the suites. Tests skip unless `OPERON_TEST_PD` is set.
-   - Nightly: 3 TiKV stores, the nemesis, the M1.1 gates over the TiKV metastore.
+   - Nightly: 3 TiKV stores, the nemesis, the M1.1 gates over the TiKV metastore. **As built:** the jobs are `tikv` (per PR, path-filtered inside the job), `tikv-nightly` (the crash gate on the TiKV metastore, nightly-only tests such as physical version removal, and the checkers at 60 s), `tikv-nemesis` (one store, above), `sdk-live-typescript` (the TypeScript client, with `live.test.ts` against a spawned `operon dev --features live`) and `live-protos` (`buf lint` and a regeneration diff). The playground uses `--port-offset 17000` everywhere (PD `127.0.0.1:19379`).
    - **Sizing.** 1 PD + 1 TiKV + 1 TiDB peaked at about **3.2 GB RSS**: TiKV 2.62 GB, TiDB 428 MB, PD 114 MB, and the playground wrapper spiked to 1 GB at startup **(spike)**. TiKV sizes its memory from host RAM, and capping `storage.block-cache.capacity` at 1 GB still peaked at 2.56 GB. The dev and CI configs therefore also set `memory-usage-limit` explicitly, and CI runners need at least 8 GB. Locally the playground runs only when no cargo build is running (the build machine's limit); under memory pressure the kernel swapped out about 1.9 GB of TiKV.
 
 ## 15. Licensing
@@ -560,8 +613,8 @@ The owner's item (e), and the reason Loam Live is more than a Convex clone.
 | TiProxy | Apache-2.0 | Candidate MySQL proxy (R4) |
 | TiFlash | Apache-2.0 | Optional columnar and vector add-on for SQL tenants (R4, D131) |
 | BR (in the TiDB repo) and TiKV `backup-stream` | Apache-2.0 | Mandatory backup and PITR of Live and metastore keyspaces to object storage (D131) |
-| kvproto (`pdpb`, `cdcpb`, `keyspacepb`) | Apache-2.0 | Vendored protos for the GC-state client |
-| `tikv-client` (client-rust) 0.4.0 | Apache-2.0 | Dependency |
+| kvproto (`pdpb`, `cdcpb`, `keyspacepb`) | Apache-2.0 | Vendored protos for the GC-state client. As built: `pdpb.proto` and its 13 imports from `release-8.5` `07aa8c6`; two of the imports that kvproto ships are not Apache-2.0: `gogoproto/gogo.proto` (BSD-3-Clause) and `rustproto.proto` (MIT), both listed in `NOTICE` (T3-2) |
+| `tikv-client` (client-rust) 0.4.0 | Apache-2.0 | Dependency, as built at the git pin `ab4be1c` (row R4) |
 | `connectrpc` 0.9 (connect-rust) | Apache-2.0 | Dependency |
 | `buffa` 0.9 | Apache-2.0 | Dependency |
 | `rquickjs` 0.14, QuickJS-ng | MIT | Dependency |
@@ -581,8 +634,8 @@ Every dependency is compatible with D11. Running PD, TiKV and TiDB unmodified as
 | # | Question | Needed by |
 |---|---|---|
 | Q31 | Serializable range reads in mutations: guard keys per equality-prefix bucket, or validation against the journal after prewrite (§5.2) | R2 plan |
-| Q32 | MVCC GC for txn-API keyspaces: does TiKV honour keyspace-level safe points set through PD's GC-state API, or must a `unified` GC TiDB run per cluster; and will `client-rust` accept a patch exposing keyspace GC (§9.3) | R1 Task 0 |
-| Q33 | ~~Do released classic TiDB binaries (v8.5.x) support `keyspace-name`?~~ **Verified on playground v8.5.8**: yes, with the keyspace pre-allocated in PD and TiKV on API v2 (§10.1). Narrowed to whether tidb-operator v2 accepts `keyspace` for classic clusters (§10.2) | R4 plan |
+| Q32 | ~~MVCC GC for txn-API keyspaces: does TiKV honour keyspace-level safe points set through PD's GC-state API, or must a `unified` GC TiDB run per cluster; and will `client-rust` accept a patch exposing keyspace GC (§9.3)~~ **Answered by R1 Task 0: no.** v8.5.8 has one cluster safe point, and Loam's GC loop is the cluster's GC worker (§9.3 as built). Still open: tikv/client-rust#564, which would expose the GC RPCs | Answered; upstream PR open |
+| Q33 | ~~Do released classic TiDB binaries (v8.5.x) support `keyspace-name`?~~ **Verified on playground v8.5.8**: yes, with the keyspace pre-allocated in PD and TiKV on API v2 (§10.1). Narrowed to whether tidb-operator v2 accepts `keyspace` for classic clusters (§10.2). Re-confirmed on the pinned release in R1 Task 0 (row R8); R1 Task 15, which would run it beside Live, is parked | R4 plan |
 | Q34 | Can TiCDC capture a keyspace-mode TiDB's tables on a classic cluster into a Kafka or storage sink, for SQL → collections (§10.3) | R3 plan |
 | Q35 | The long-term function engine: QuickJS only, or V8 (`deno_core`) for CPU-bound functions and npm compatibility, or wasmtime for Rust and Go functions (§6.3) | R2 plan |
 | Q36 | Keyspaces per cluster before region overhead dominates, and whether TiKV request units can be attributed to a txn-API keyspace; these set the size-class thresholds and per-app quotas (§9.2) | R2 plan |
@@ -604,8 +657,8 @@ Every dependency is compatible with D11. Running PD, TiKV and TiDB unmodified as
 
 | Milestone | Scope | Exit gate |
 |---|---|---|
-| **R1** | `operon-tikv`; `operon-meta-tikv` passing conformance and its fault matrix; keyspace GC loop; one Live app in one keyspace: documents, tables, indexes, built-in and QuickJS queries and mutations, the commit journal, reactive subscriptions, the sync API (`Watch`, `ModifyQuerySet`, `Query`, `Mutate`, `Deploy`) over connect-rust; the generated TypeScript client with a reactive layer; TiDB SQL in a separate keyspace in the dev playground | The reactive correctness checker and the transaction checker pass, including under the fault matrix; the metastore conformance suite passes on TiKV; a TypeScript client sees a live query update after a mutation; a MySQL client and a Live client work against one playground without seeing each other's data |
-| **R2** | The namespace router: directory, shared keyspaces, app lifecycle, moves, quotas; the `ControlStore` on `_control` (D125); actions and scheduled functions; online index backfill; the Q31 decision; multi-node sessions; generated Python and Go clients; per-tenant TiDB pools; **BR log backup (PITR) to object storage for every Live and metastore keyspace, with a tested restore** (D131); a `gc_blocked_seconds` gauge per keyspace and an alert on repeated cluster-GC failures of one keyspace, which hold the cluster safe point back for all (R1 plan row T3-12); `drop_collection` of a collection with a large index in batches rather than one transaction (R1 plan row T5-15) | 10 000 apps on one cluster; the nemesis suite green for 24 h; a console page served from live queries; a point-in-time restore of a Live keyspace from object storage passes the reactive checker's state comparison |
+| **R1** (**done except Task 15, parked**, 2026-09-28; §20) | `operon-tikv`; `operon-meta-tikv` passing conformance and its fault matrix; ~~keyspace~~ cluster GC loop; one Live app in one keyspace: documents, tables, indexes, built-in and QuickJS queries and mutations, the commit journal, reactive subscriptions, the sync API (`Watch`, `ModifyQuerySet`, `Query`, `Mutate`, `Deploy`) over connect-rust; the generated TypeScript client with a reactive layer; TiDB SQL in a separate keyspace in the dev playground | The reactive correctness checker and the transaction checker pass, including under the fault matrix; the metastore conformance suite passes on TiKV; a TypeScript client sees a live query update after a mutation; a MySQL client and a Live client work against one playground without seeing each other's data |
+| **R2** | The namespace router: directory, shared keyspaces, app lifecycle, moves, quotas; the `ControlStore` on `_control` (D125); actions and scheduled functions; online index backfill; the Q31 decision; multi-node sessions; generated Python and Go clients; per-tenant TiDB pools; **BR log backup (PITR) to object storage for every Live and metastore keyspace, with a tested restore** (D131); a `gc_blocked_seconds` gauge per keyspace and an alert on repeated cluster-GC failures of one keyspace, which hold the cluster safe point back for all (R1 plan row T3-12); `drop_collection` of a collection with a large index in batches rather than one transaction (R1 plan row T5-15); from R1's exit: the tick-latency re-measurement at `tick_read_lag` 0 and the async-commit/1PC decision, once #80's `tikv-client` fork is in (owner ruling T17-1); a 3-store nemesis on a larger runner (T17-2); a quiet-machine commit-latency run; one shared QuickJS runtime per deployment (T14-1); the shared client conformance fixtures (T16-2) | 10 000 apps on one cluster; the nemesis suite green for 24 h; a console page served from live queries; a point-in-time restore of a Live keyspace from object storage passes the reactive checker's state comparison |
 | **R3** | The collections bridge and `ctx.search` (D129); auth on the Live API and TiDB users through the unified auth plan (D111, Q30); Swift and Kotlin clients; React hooks | A searchable table stays in step under a crash loop, exactly once; search after a mutation with `after_ts` sees it |
 | **R4** | Kubernetes: tidb-operator for PD, TiKV and TiDB, Loam's Helm chart for the Live role; TiDB pools that scale to zero behind a proxy; TiFlash as an optional SQL add-on (D131); backup operations in the operator; BYOC for Live; durable actions (Resonate) as an option | A cluster deployed from the chart passes the nightly suite; restore from backup passes |
 
@@ -625,3 +678,61 @@ R runs beside M1 and M2. The build machine builds one crate graph at a time (sha
 - connect-rust `fb5f5aa` (`connectrpc` 0.9.0): `README.md`, `docs/guide.md`; buffa 0.9.2: `README.md`
 - Resonate: `README.md`, `impl/sdk/rs`
 - Operon: §18 (the contract and backends), §19 on PR #39 (console and tenancy), `docs/plans/2026-09-25-m1.2a-metastore-trait.md`, `docs/plans/2026-09-24-m1.6-sdks-mcp.md`
+
+## 20. R1 as built
+
+R1 was built from 2026-09-27 to 2026-09-28, in the stacked PRs #54–#101 and the one for this section. **Every task is done except Task 15 (TiDB SQL beside Live), which is parked until the owner decides about TiDB.** The R1 plan's "Rulings made during execution" has one row per change (R1–R19, X1–X10, T1-1–T17-3). The [exit report](../plans/r1-exit-report.md) has the gate results and measurements. This section lists what differs from the design above; the sections it names carry the detail.
+
+### 20.1 Answers
+
+- **Q32** (keyspace-level GC): **no**, on PD and TiKV v8.5.8. Loam runs one cluster-wide GC loop that resolves locks in every keyspace, with barriers as PD service safe points (§9.3, rows R5–R7, X2). Per-keyspace GC returns when a pinned PD release ships the GC-state API. Still open upstream: tikv/client-rust#564.
+- **Q33** (keyspace-mode TiDB): re-confirmed on v8.5.8 (row R8). Its remaining part, tidb-operator v2 for classic clusters, stays with R4. Task 15, which would run TiDB beside Live in the dev playground, is parked.
+- **Q31** (serializable ranges): still R2's decision. R1 has the coarse opt-in `serializable_ranges`, off by default (§5.2, T11-2).
+
+### 20.2 What changed
+
+| Area | Design said | As built | Rows |
+|---|---|---|---|
+| `tikv-client` | 0.4.0 from crates.io | Git pin `ab4be1c`, `default-features = false`; crates on it are `publish = false` until the Loam rename | R4, X1, T8-1 |
+| Commit mode | Async commit with 1PC by default | **Two-phase commit** for the metastore and Live; `async_1pc` is a switch that comes back by a ruling after the read-path lock fix | T6-5, T7-1 |
+| MVCC GC | A loop per keyspace, keyspace-level safe points | One cluster loop; reads below the window refused | R5–R7, T3-* |
+| Metastore keys | `n/<org>/<name>`, `v/` counters, `o/` rows written by `commit_wal` | `n/<name>`, `H/<collection>`, no `v/` counters, `o/` rows read and locked only | R17, T5-4, T5-5 |
+| Metastore suite | 49 cases | 53 cases; clock cases relaxed to "not earlier" | R3, T4-17, T5-9 |
+| Unknown outcomes | Read the token at a fresh timestamp | The resolver fences an absent token before "not applied" | T2-5, T2-15 |
+| Mutation attempts | Up to 8 | 16 for Live, 8 for the metastore; backoff within half the deadline | T10-3, T11-1 |
+| Journal shards | 16, fixed at creation | 64 by default, stored per app, changed only while empty; a rerun draws another shard | T10-1, T10-2, T11-1 |
+| Idempotency record | `{commit_ts, result, expires_ms}` | No commit timestamp; bound to the function and the arguments' digest | T10-6, T11-13 |
+| Ticks | At a fresh TSO | 200 ms behind a fresh TSO (`tick_read_lag`), because in-flight 2PC locks on shard heads stalled lag-0 ticks | T11-3, T12-1, T13-1, T16-9 |
+| Read-set index | An interval tree per (table, index) | One tree per app | T11-4 |
+| QuickJS runtime | One per (node, app, deployment), 64 MiB per runtime | One per pooled context, on its own thread; 64 MiB per call; `--live-js-contexts` | T13-5, T14-1 |
+| Errors | Connect codes | Connect codes plus a `loam.live.v1.LiveError` error detail | T16-1 |
+| Session routing | Forward `ModifyQuerySet` between nodes | One node; an unknown session is `NOT_FOUND` | T12-14 |
+| Client fixtures | A shared conformance fixture set from R1 | Deferred to R2, when a second client exists | T16-2 |
+| Elle checker | In `operon-sim` | `operon_live::testing::elle` | T16-4 |
+| Nemesis | 3 stores, toxiproxy partitions | Kills, a PD stall and a pause, no partitions; nightly on one store on the standard runner | T16-10, T17-2 |
+| TiDB | A keyspace-mode TiDB in the dev playground | Parked (Task 15); the playground's `--with-tidb` exists | T16-3 |
+| `operon` build | Live and the TiKV metastore in the default build | Features `tikv` and `live`, both off by default (`live` implies `tikv`) | T7-3, T8-2 |
+
+### 20.3 Gates
+
+These are the results in the exit report, on the owner's loaded build machine with one TiKV store:
+- **The reactive checker** passed at 60 s per PR and at 180 s under the nemesis, with 0 missed invalidations. The TSO supervisor rebuilt its client once after the PD stall.
+- **The transaction checker** passed at 30 s and in three 180 s nemesis runs, with no anomaly.
+- **The broken-build tests** fail, as they must.
+- **The metastore conformance suite and the fault matrix** pass on TiKV (Tasks 5–6).
+- **Measurements.** The rerun rate at 64 shards was 0.25–0.28 per mutation. Live's commit p50 was 38–49 ms with `two_pc` and 27–32 ms with `async_1pc`. Tick p50 at the 200 ms lag was 9.5–14.7 ms.
+
+**Not yet shown:** the nightly `tikv-nemesis` job has not run in CI. The exit gate's "a MySQL client and a Live client against one playground" waits for Task 15.
+
+### 20.4 Carried to R2 and later
+
+- **After #80.** The `loam` fork of `tikv-client` (dina-kar/operon#80) merges into `main` after #76, and the R1 stack takes it then (owner ruling T17-1). Then R2 does three things: re-measure tick latency at lag 0; decide whether `tick_read_lag` can drop and whether `async_1pc` returns; and repeat the commit latencies on a quiet machine.
+- **A 3-store nemesis** on a larger runner (T17-2).
+- **In the R2 row of §18 and `docs/plans/README.md`:**
+  - the `gc_blocked_seconds` gauge and alert (T3-12);
+  - batched large drops (T5-15);
+  - a shared QuickJS runtime (T14-1);
+  - the sweep of orphaned bundles (T14-3);
+  - the client fixtures (T16-2);
+  - Q31's journal validation (T11-2).
+- **Upstream.** protobuf-es drops a map key named `__proto__` in `fromBinary` and `toJson` (T16-12).
