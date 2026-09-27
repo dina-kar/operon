@@ -631,6 +631,34 @@ fn gateway_scored_kinds_compile_to_their_plans() {
     let plan = compile(json!({"query": {"recommend": {"negative": [[1.0, 1.0]], "strategy": "best_score"}}, "using": "d"}))
         .expect("compiles");
     assert!(matches!(plan, QueryPlan::Scored { ref legs, .. } if legs.len() == 1));
+    // So does `sum_scores` with negatives only, which Qdrant accepts (owner
+    // ruling on row T8-7).
+    let plan = compile(json!({"query": {"recommend": {"negative": [[1.0, 1.0], [0.0, 1.0]], "strategy": "sum_scores"}}, "using": "d"}))
+        .expect("compiles");
+    assert!(
+        matches!(plan, QueryPlan::Scored { ref legs, scorer: Scorer::SumScores { ref pos, ref neg }, .. } if legs.len() == 2 && pos.is_empty() && neg.len() == 2)
+    );
+    // An empty context is accepted, as in Qdrant: one filter-only leg,
+    // every candidate scoring 0.
+    let plan = compile(json!({"query": {"context": []}, "using": "d", "limit": 4, "filter": {"must": [{"key": "a", "match": {"value": 1}}]}}))
+        .expect("compiles");
+    let QueryPlan::Scored {
+        legs, scorer, post, ..
+    } = plan
+    else {
+        panic!("{plan:?}")
+    };
+    assert!(matches!(scorer, Scorer::Context { ref pairs } if pairs.is_empty()));
+    assert_eq!(legs.len(), 1);
+    assert!(legs[0].retrievers.is_empty());
+    assert_eq!((legs[0].limit, post.kind), (100, ScoreKind::Custom));
+    assert_eq!(legs[0].select.vectors, vec!["d".to_string()]);
+    assert_eq!(
+        legs[0].filter,
+        Some(filter(
+            json!({"must": [{"key": "a", "match": {"value": 1}}]})
+        ))
+    );
     // Discover: the target and each pair's positive; context: the positives.
     let pair = json!({"positive": [1.0, 0.0], "negative": [0.0, 1.0]});
     let plan = compile(json!({"query": {"discover": {"target": [0.5, 0.5], "context": [pair, pair]}}, "using": "d"}))
@@ -675,16 +703,8 @@ fn gateway_scored_kinds_refuse_bad_inputs() {
         "No positive examples given"
     );
     assert_eq!(
-        bad(json!({"query": {"recommend": {"negative": [[1.0, 0.0]], "strategy": "sum_scores"}}})),
-        "No positive examples given"
-    );
-    assert_eq!(
         bad(json!({"query": {"recommend": {"strategy": "best_score"}}})),
         "No positive examples given"
-    );
-    assert_eq!(
-        bad(json!({"query": {"context": []}, "using": "d"})),
-        "Context query requires at least one pair"
     );
     assert_eq!(
         bad(json!({"query": {"nearest": [1.0, 0.0], "mmr": {"diversity": 1.5}}})),

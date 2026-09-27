@@ -11,6 +11,7 @@ use serde::de::{DeserializeOwned, Error as _};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
+use crate::error::GatewayError;
 use crate::model::common::{Record, ScoredPoint, VectorInput, WithPayload, WithVector};
 use crate::model::filter::{Filter, OneOrMany};
 
@@ -402,6 +403,9 @@ pub struct SearchRequest {
     pub with_vector: Option<WithVector>,
     #[serde(default)]
     pub score_threshold: Option<f32>,
+    /// Refused as over the universal query (501, Ruling 15).
+    #[serde(default)]
+    pub shard_key: Option<Value>,
 }
 
 /// The legacy search vector: a bare dense vector (the default vector
@@ -449,6 +453,9 @@ pub struct RecommendRequest {
     pub using: Option<String>,
     #[serde(default)]
     pub lookup_from: Option<LookupLocation>,
+    /// Refused as over the universal query (501, Ruling 15).
+    #[serde(default)]
+    pub shard_key: Option<Value>,
 }
 
 /// `POST /collections/{c}/points/discover` (legacy); without a `target`
@@ -475,6 +482,26 @@ pub struct DiscoverRequest {
     pub using: Option<String>,
     #[serde(default)]
     pub lookup_from: Option<LookupLocation>,
+    /// Refused as over the universal query (501, Ruling 15).
+    #[serde(default)]
+    pub shard_key: Option<Value>,
+}
+
+impl DiscoverRequest {
+    /// Qdrant's legacy discover needs a target or a context pair
+    /// (`qdrant:lib/collection/src/discovery.rs`), though the universal
+    /// query accepts an empty context (row T8-7).
+    pub fn check(&self) -> Result<(), GatewayError> {
+        if self.target.is_none() && self.context.as_ref().is_none_or(Vec::is_empty) {
+            return Err(no_discover_input());
+        }
+        Ok(())
+    }
+}
+
+/// The legacy discover without a target or a pair.
+pub(crate) fn no_discover_input() -> GatewayError {
+    GatewayError::BadRequest("target and/or context_pairs must be specified".to_string())
 }
 
 /// `{"searches": [...]}`, the legacy batches.
@@ -508,6 +535,7 @@ impl From<SearchRequest> for QueryRequest {
             offset: r.offset,
             with_payload: r.with_payload,
             with_vector: r.with_vector,
+            shard_key: r.shard_key,
             ..QueryRequest::default()
         }
     }
@@ -533,6 +561,7 @@ impl From<RecommendRequest> for QueryRequest {
             with_payload: r.with_payload,
             with_vector: r.with_vector,
             lookup_from: r.lookup_from,
+            shard_key: r.shard_key,
             ..QueryRequest::default()
         }
     }
@@ -564,6 +593,7 @@ impl From<DiscoverRequest> for QueryRequest {
             with_payload: r.with_payload,
             with_vector: r.with_vector,
             lookup_from: r.lookup_from,
+            shard_key: r.shard_key,
             ..QueryRequest::default()
         }
     }

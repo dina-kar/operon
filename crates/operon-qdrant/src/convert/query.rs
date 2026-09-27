@@ -17,6 +17,7 @@ use crate::model::query::{
     ContextPair, DiscoverInput, FusionName, GroupsResult, IdfParams, IdfScope, LookupLocation, Mmr,
     Prefetch, QuantizationSearchParams, QueryGroupsRequest, QueryInterface, QueryKind,
     QueryRequest, RecommendInput, RecommendStrategy, RrfParams, SearchParams, WithLookupInterface,
+    no_discover_input,
 };
 use crate::proto::qdrant as pb;
 
@@ -377,6 +378,7 @@ pub fn discover_from_grpc(r: &pb::DiscoverPoints) -> Result<QueryRequest, Gatewa
         })
         .collect::<Result<Vec<_>, GatewayError>>()?;
     let kind = match &r.target {
+        None if context.is_empty() => return Err(no_discover_input()),
         None => QueryKind::Context {
             context: OneOrMany::Many(context),
         },

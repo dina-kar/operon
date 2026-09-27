@@ -6,7 +6,7 @@
 //! whose union is rescored) and MMR (one candidate search, then Qdrant's
 //! greedy selection); `average_vector` stays one IR search.
 //!
-//! Example vectors given by id are read first ([`resolve_examples`]); the
+//! Example vectors given by id are read first (`resolve_examples`); the
 //! compiler ([`compile_query`]) is pure, so the crate tests pin its IR.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -794,10 +794,13 @@ impl Compiler<'_> {
                         Ok(scored(legs, Scorer::BestScore { pos, neg }, post))
                     }
                     RecommendStrategy::SumScores => {
-                        if pos.is_empty() {
+                        if pos.is_empty() && neg.is_empty() {
                             return Err(no_positive());
                         }
-                        let legs = pos.clone();
+                        // Negatives alone are accepted, as in Qdrant (owner
+                        // ruling on row T8-7); their neighbourhoods are the
+                        // candidates, as for `best_score`.
+                        let legs = if pos.is_empty() { &neg } else { &pos }.clone();
                         Ok(scored(legs, Scorer::SumScores { pos, neg }, post))
                     }
                 }
@@ -813,9 +816,18 @@ impl Compiler<'_> {
             QueryKind::Context { context } => {
                 let pairs = pairs(context.as_slice())?;
                 if pairs.is_empty() {
-                    return Err(GatewayError::BadRequest(
-                        "Context query requires at least one pair".to_string(),
-                    ));
+                    // Qdrant accepts an empty context and scores every point
+                    // 0 (owner ruling on row T8-7): one filter-only leg of
+                    // `candidate_k` points.
+                    let mut leg = search(Vec::new(), k);
+                    leg.retrievers.clear();
+                    post.kind = ScoreKind::Custom;
+                    return Ok(QueryPlan::Scored {
+                        legs: vec![leg],
+                        scorer: Scorer::Context { pairs },
+                        using: using.to_string(),
+                        post,
+                    });
                 }
                 let legs = pairs.iter().map(|(p, _)| p.clone()).collect();
                 Ok(scored(legs, Scorer::Context { pairs }, post))

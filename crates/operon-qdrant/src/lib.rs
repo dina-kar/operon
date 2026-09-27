@@ -37,8 +37,19 @@
 //! - `ServiceError::Timeout` carries no duration, so its message is
 //!   `Timeout: request timed out` (row T1-1).
 //! - Snapshots are manifest versions: create names the newest retained
-//!   version and writes nothing, and download, recover and delete are
-//!   unsupported (Rulings 15, 19).
+//!   version and writes nothing, list shows every retained version (not
+//!   only those created through the API), and download, recover and delete
+//!   are unsupported (Rulings 15, 19). Before its first commit a collection
+//!   is version 0, the empty collection; right after its first write,
+//!   create waits up to 30 s for the first manifest (row T10-3). A snapshot
+//!   taken just after a later write may name a version without it.
+//! - `wait` never delays a write past its durable append, which already
+//!   makes it visible to reads; it only turns the status `acknowledged`
+//!   into `completed`. `ordering` and read `consistency` are accepted and
+//!   ignored: reads are strong (Ruling 14).
+//! - `ScoredPoint.version` is always 0, `segments_count` is 1 and
+//!   `indexed_vectors_count` equals `points_count` (Ruling 20);
+//!   `count` with `exact: false` is exact.
 //! - Shard, replica, WAL, optimizer and strict-mode settings are accepted,
 //!   stored and echoed, but change nothing; `PATCH /collections/{c}` answers
 //!   `true` for them and changes nothing (Ruling 16). Cluster info is
@@ -93,27 +104,46 @@
 //!   the raw distances and so favours far points (Ruling 9).
 //! - `recommend` with `best_score` or `sum_scores`, `discover` and
 //!   `context` score the union of one candidate search per example (the
-//!   positives, or the target and each pair's positive; `best_score` without
-//!   positives reads the negatives'), each of `min(max(4 × (offset + limit),
-//!   100), max_candidates)` points, where Qdrant scores during its HNSW walk;
-//!   a point outside every neighbourhood is missed (Ruling 10). `sum_scores`
-//!   needs a positive, and a `context` query needs a pair, where Qdrant
-//!   accepts negatives alone and an empty context (row T8-7).
+//!   positives, or the target and each pair's positive; `best_score` and
+//!   `sum_scores` without positives read the negatives'), each of
+//!   `min(max(4 × (offset + limit), 100), max_candidates)` points, where
+//!   Qdrant scores during its HNSW walk; a point outside every neighbourhood
+//!   is missed (Ruling 10). With negatives only, the best points lie far
+//!   from the negatives, so their neighbourhoods rarely hold them: such a
+//!   query answers from a small candidate set (owner rulings on row T8-7).
+//!   An empty `context` scores `candidate_k` points of the filter 0 each, in
+//!   id order, where Qdrant returns the first points of its walk.
+//! - Refusal texts for example sets differ from Qdrant's: `No positive
+//!   examples given` for `average_vector` without a positive and for a
+//!   `recommend` without any example (row T8-7).
 //! - MMR's `candidates_limit` is capped at `max_candidates` (10,000), where
 //!   Qdrant refuses one over 16,384 (row T8-8).
 //! - Groups (Ruling 11, rows T9-2 and T9-3): a collect request leaves out
 //!   every point holding a key of a full group, where Qdrant's `except`
 //!   keeps a point with one key outside them; a fill request takes the
 //!   unsatisfied groups' integer or string keys, where Qdrant requires a
-//!   match in both lists at once; groups whose best hits tie are ordered by
-//!   key (integers first); an integer key above `i64::MAX` voids its point;
-//!   MMR's default `candidates_limit` under groups is `limit × group_size`,
-//!   where Qdrant takes `limit`.
+//!   match in both lists at once, which differs only for groups of mixed
+//!   key types (kept by the owner ruling on row T9-2); groups whose best
+//!   hits tie are ordered by key (integers first); an integer key above
+//!   `i64::MAX` voids its point; MMR's default `candidates_limit` under
+//!   groups is `limit × group_size`, where Qdrant takes `limit`.
+//! - Sparse IDF statistics count live points only, where Qdrant's server
+//!   also counts deleted points until its optimizer runs; every sparse
+//!   search is exact (`full_scan_threshold` is accepted and ignored), and a
+//!   sparse validation error reads `Wrong input: Sparse vector <name>: …`
+//!   rather than Qdrant's validator text (Ruling 21).
+//! - Filters on a collection that was not created through the Qdrant API
+//!   (it lacks the `payload` field) are unsupported (row T4-3).
+//! - `GET /collections/aliases` answers 405, not the info of a collection
+//!   named `aliases` (row T3-9).
 //! - Weighted RRF, a prefetch `score_threshold`, a leaf prefetch without a
 //!   query (Qdrant's scroll of `limit` points; row T8-1), `order_by`,
-//!   `formula`, `sample` and `relevance_feedback` queries, sparse rescoring
-//!   (a sparse root query over prefetches) and shard keys are unsupported
-//!   (Rulings 15, 21).
+//!   `formula`, `sample` and `relevance_feedback` queries, sparse
+//!   `recommend`, `discover`, `context` and MMR, sparse rescoring (a sparse
+//!   root query over prefetches), multivectors, a `datatype` other than
+//!   `float32`, inference objects, adding a sparse vector after creation,
+//!   `update_filter`, `update_mode` other than `upsert`, `facet`,
+//!   `search/matrix`, and shard keys are unsupported (Rulings 15, 21).
 
 // The write futures hold the collection service's futures, whose `Send`
 // check walks deep SQL types.
