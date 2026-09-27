@@ -24,8 +24,9 @@ use crate::model::points::{
     CountRequest, DeletePayload, DeleteVectors, PointInsert, PointRequest, PointsSelector,
     ScrollRequest, SetPayload, UpdateOperation, UpdateOperations, UpdateVectors,
 };
+use crate::model::query::{QueryRequest, QueryRequestBatch, QueryResponse};
 use crate::schema::NewVector;
-use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, reads, schema, snapshots, writes};
+use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, query, reads, schema, snapshots, writes};
 
 /// The 1.19 OpenAPI routes (and the legacy search routes of Ruling 1) that
 /// no task serves yet: each answers `Unsupported("<method> <path>")` (501).
@@ -96,8 +97,6 @@ const UNSUPPORTED: &[(&str, &str)] = &[
         "/collections/{collection_name}/shards/{shard_id}/snapshots/{snapshot_name}",
     ),
     ("POST", "/collections/{collection_name}/facet"),
-    ("POST", "/collections/{collection_name}/points/query"),
-    ("POST", "/collections/{collection_name}/points/query/batch"),
     ("POST", "/collections/{collection_name}/points/query/groups"),
     (
         "POST",
@@ -175,6 +174,14 @@ pub(crate) fn router(gw: QdrantGateway) -> Router {
         .route(
             "/collections/{collection_name}/points/batch",
             post(batch_update),
+        )
+        .route(
+            "/collections/{collection_name}/points/query",
+            post(query_points),
+        )
+        .route(
+            "/collections/{collection_name}/points/query/batch",
+            post(query_batch),
         )
         .route("/cluster", get(cluster_status))
         .route(
@@ -891,6 +898,37 @@ async fn scroll(
 ) -> Response {
     serve(&gw, &headers, params.timeout, |ctx| {
         reads::scroll(gw.clone(), ctx, collection, request)
+    })
+    .await
+}
+
+// ----- universal query (Task 7) -----
+
+async fn query_points(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<ReadParams>,
+    QdrantJson(request): QdrantJson<QueryRequest>,
+) -> Response {
+    let g = gw.clone();
+    serve(&gw, &headers, params.timeout, |ctx| async move {
+        let points = query::run_query(g, ctx, collection, request).await?;
+        Ok(QueryResponse { points })
+    })
+    .await
+}
+
+/// `[{points}]`, one per request, in order.
+async fn query_batch(
+    State(gw): State<QdrantGateway>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    QdrantQuery(params): QdrantQuery<ReadParams>,
+    QdrantJson(request): QdrantJson<QueryRequestBatch>,
+) -> Response {
+    serve(&gw, &headers, params.timeout, |ctx| {
+        query::run_batch(gw.clone(), ctx, collection, request.searches)
     })
     .await
 }

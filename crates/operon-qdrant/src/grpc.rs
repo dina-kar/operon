@@ -15,6 +15,7 @@ use crate::convert::collections as conv;
 use crate::convert::common::{with_payload_from_grpc, with_vector_from_grpc};
 use crate::convert::filter::{field_index_from_grpc, filter_from_grpc};
 use crate::convert::points as pconv;
+use crate::convert::query as qconv;
 use crate::ctx::RequestCtx;
 use crate::error::GatewayError;
 use crate::model::common::UpdateResult;
@@ -22,7 +23,7 @@ use crate::model::points::{CountRequest, PointRequest, ScrollRequest, UpdateOper
 use crate::proto::health as hpb;
 use crate::proto::qdrant as pb;
 use crate::schema::NewVector;
-use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, reads, schema, snapshots, writes};
+use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, query, reads, schema, snapshots, writes};
 
 /// Every gRPC service, gzip on both ways and messages of up to
 /// `max_request_bytes`, inside `HotLayer` and the gateway's own
@@ -615,6 +616,55 @@ service! {
                 usage: None,
             }))
         }
+
+        async fn query(
+            &self,
+            request: Request<pb::QueryPoints>,
+        ) -> Result<Response<pb::QueryResponse>, Status> {
+            let r = request.get_ref();
+            let parsed = qconv::query_request_from_grpc(r).map_err(|e| e.grpc_status())?;
+            let collection = r.collection_name.clone();
+            let (points, ctx) = self
+                .run(request.metadata(), r.timeout, |gw, ctx| {
+                    query::run_query(gw, ctx, collection, parsed)
+                })
+                .await?;
+            Ok(Response::new(pb::QueryResponse {
+                result: points.iter().map(qconv::scored_point_to_grpc).collect(),
+                time: ctx.elapsed_secs(),
+                usage: None,
+            }))
+        }
+
+        /// The batch's collection holds for every request (as Qdrant).
+        async fn query_batch(
+            &self,
+            request: Request<pb::QueryBatchPoints>,
+        ) -> Result<Response<pb::QueryBatchResponse>, Status> {
+            let r = request.get_ref();
+            let parsed = r
+                .query_points
+                .iter()
+                .map(qconv::query_request_from_grpc)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.grpc_status())?;
+            let collection = r.collection_name.clone();
+            let (results, ctx) = self
+                .run(request.metadata(), r.timeout, |gw, ctx| {
+                    query::run_batch(gw, ctx, collection, parsed)
+                })
+                .await?;
+            Ok(Response::new(pb::QueryBatchResponse {
+                result: results
+                    .iter()
+                    .map(|r| pb::BatchResult {
+                        result: r.points.iter().map(qconv::scored_point_to_grpc).collect(),
+                    })
+                    .collect(),
+                time: ctx.elapsed_secs(),
+                usage: None,
+            }))
+        }
     }
     unsupported {
         delete_field_index(DeleteFieldIndexCollection) -> PointsOperationResponse;
@@ -627,8 +677,6 @@ service! {
         recommend_groups(RecommendPointGroups) -> RecommendGroupsResponse;
         discover(DiscoverPoints) -> DiscoverResponse;
         discover_batch(DiscoverBatchPoints) -> DiscoverBatchResponse;
-        query(QueryPoints) -> QueryResponse;
-        query_batch(QueryBatchPoints) -> QueryBatchResponse;
         query_groups(QueryPointGroups) -> QueryGroupsResponse;
         facet(FacetCounts) -> FacetResponse;
         search_matrix_pairs(SearchMatrixPoints) -> SearchMatrixPairsResponse;

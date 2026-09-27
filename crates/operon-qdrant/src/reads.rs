@@ -21,7 +21,7 @@ use crate::model::points::{CountRequest, CountResult, PointRequest, ScrollReques
 
 /// What a read returns of each point, resolved against the schema.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Selectors {
+pub struct Selectors {
     pub payload: PayloadOut,
     /// Dense and sparse vector names.
     pub vectors: Vec<String>,
@@ -29,7 +29,7 @@ pub(crate) struct Selectors {
 
 /// Which part of the payload a read returns.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum PayloadOut {
+pub enum PayloadOut {
     None,
     All,
     Include(Vec<JsonPath>),
