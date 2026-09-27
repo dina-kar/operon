@@ -1,7 +1,8 @@
 //! The `loam.live.v1` protocol of Loam Live (design §20 §4.3, §5.3, §7;
 //! D121): values and stored documents (`value.proto`), the `LiveService`
-//! sync API (`live.proto`) and the commit journal (`journal.proto`,
-//! internal to the server).
+//! sync API (`live.proto`), and two files internal to the server: the
+//! commit journal (`journal.proto`) and the table and index catalog records
+//! (`catalog.proto`).
 //!
 //! Everything is generated at build time from `proto/loam/live/v1/` by
 //! `connectrpc-build`: buffa message types (with their borrowed views and

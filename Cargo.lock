@@ -5713,6 +5713,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "operon-live"
+version = "0.0.1"
+dependencies = [
+ "buffa",
+ "crc",
+ "data-encoding",
+ "operon-live-proto",
+ "operon-tikv",
+ "proptest",
+ "rand 0.9.5",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
 name = "operon-live-proto"
 version = "0.0.1"
 dependencies = [
