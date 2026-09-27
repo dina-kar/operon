@@ -71,7 +71,7 @@ qdrant = { rest = "0.0.0.0:6333", grpc = "0.0.0.0:6334" }
 elasticsearch = { listen = "0.0.0.0:9200" }
 otlp = { http = "0.0.0.0:4318", grpc = "0.0.0.0:4317" }   # logs only (M2, D73)
 kafka = { listen = "0.0.0.0:9092" }   # Kafka wire protocol (M5, D74)
-resonate = { listen = "0.0.0.0:8001" }   # durable execution (§14); Resonate SDK default port
+resonate = { listen = "127.0.0.1:8001" } # durable execution (§21, D138); Resonate SDK default port; loopback only until auth
 admin = { listen = "0.0.0.0:8090" }      # /metrics, /health, diagnostic dump (§5); not a data surface
 
 [tls]                                     # M2: applies to every listener

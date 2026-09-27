@@ -1,0 +1,368 @@
+//! `operon-es`: an Elasticsearch-compatible gateway over `CollectionService`
+//! (plan M1.5). It serves the Elasticsearch 8 REST API for design §06 §7
+//! Phase A as D48 defines it, and never touches storage or the metastore
+//! itself (overview §8).
+//!
+//! - [`http`]: media-type negotiation, `X-Elastic-Product`, `pretty`, the
+//!   body limit, query-parameter validation and the per-request namespace
+//!   and consistency.
+//! - [`error`]: ES's error envelope and the mapping of `ServiceError`.
+//! - [`names`]: index-name rules and index-expression resolution (comma
+//!   lists, `*`, `_all`, aliases with several members; Ruling 9).
+//! - `info`: `GET /`, `/_license`, `/_cluster/health` and the trained-model
+//!   routes.
+//! - [`mapping`]: ES mappings and settings ⇄ collection schemas.
+//! - `admin`: index, mapping and alias administration and `_refresh`.
+//!
+//! # Divergences from Elasticsearch 8.19
+//!
+//! - An unindexed `text` field and a `binary` field are unindexed keywords
+//!   with a fast column (M1.1 keeps a field only if it is indexed or fast;
+//!   row T2-2); a field ES neither indexes nor keeps doc values for is fast.
+//! - `PUT /{index}/_mapping` cannot change the root `dynamic` (row T3-3).
+//! - A comma-list `DELETE /{index}` deletes the indices in order and stops
+//!   at the first missing one, leaving the earlier ones deleted (row T3-2).
+//! - A write to a comma list or a wildcard is refused as an invalid index
+//!   name (row T1-5).
+//! - The routes of Phase A that no task serves yet answer 501
+//!   `unsupported_operation_exception` (row T1-2); a `GET` or `HEAD` of a
+//!   missing index among them is 404 first.
+
+// `EsError` carries ES's extra fields and wrapped cause by value (Task 1
+// Produces); errors are the cold path, so its size is accepted.
+#![allow(clippy::result_large_err)]
+
+use std::fmt;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use axum::Router;
+use axum::extract::State;
+use axum::http::{Method, Uri};
+use axum::middleware;
+use axum::response::Response;
+use axum::routing::{MethodFilter, get, head, on, post, put};
+use operon_query::CollectionService;
+use operon_query::hot::HotLayer;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
+mod admin;
+pub mod error;
+pub mod http;
+mod info;
+pub mod mapping;
+pub mod names;
+
+pub use error::{ErrorContext, EsError};
+pub use http::{Params, RequestCtx, ResponseFormat};
+
+/// The Elasticsearch version `GET /` reports (Ruling 11).
+pub const ES_VERSION: &str = "8.19.0";
+/// The header naming a request's namespace (overview §6.9).
+pub const NAMESPACE_HEADER: &str = "operon-namespace";
+/// The header carrying a consistency token.
+pub const TOKEN_HEADER: &str = "operon-consistency-token";
+
+/// How the gateway listens and bounds its requests.
+#[derive(Clone, Debug)]
+pub struct EsConfig {
+    /// 127.0.0.1:9200 (D111: no auth or TLS in M1).
+    pub listen: SocketAddr,
+    /// The namespace of a request without `Operon-Namespace` ("default").
+    pub namespace: String,
+    /// `http.max_content_length`: 100 MiB.
+    pub max_body_bytes: usize,
+    /// `_msearch` searches in flight per request (8).
+    pub msearch_concurrency: usize,
+    /// `GET /`'s `name` ("operon").
+    pub node_name: String,
+    /// `GET /`'s and `_cluster/health`'s `cluster_name` ("operon").
+    pub cluster_name: String,
+}
+
+impl Default for EsConfig {
+    fn default() -> Self {
+        Self {
+            listen: SocketAddr::from(([127, 0, 0, 1], 9200)),
+            namespace: "default".to_string(),
+            max_body_bytes: 104_857_600,
+            msearch_concurrency: 8,
+            node_name: "operon".to_string(),
+            cluster_name: "operon".to_string(),
+        }
+    }
+}
+
+/// The gateway: the collection service it calls, its config and the
+/// generator of auto ids (Ruling 5). Cheap to clone.
+#[derive(Clone)]
+pub struct EsGateway {
+    inner: Arc<Inner>,
+}
+
+struct Inner {
+    service: Arc<CollectionService>,
+    config: EsConfig,
+    #[allow(dead_code)] // Auto ids are Task 4's.
+    ids: Mutex<ulid::Generator>,
+}
+
+impl EsGateway {
+    pub fn new(service: Arc<CollectionService>, config: EsConfig) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                service,
+                config,
+                ids: Mutex::new(ulid::Generator::new()),
+            }),
+        }
+    }
+
+    pub fn config(&self) -> &EsConfig {
+        &self.inner.config
+    }
+
+    /// The collection service every operation calls.
+    pub fn service(&self) -> &Arc<CollectionService> {
+        &self.inner.service
+    }
+
+    /// Every route, inside the gateway's layers: `X-Elastic-Product` on
+    /// every answer, the `Operon-Hot` check and `HotLayer`, negotiation and
+    /// the body limit.
+    pub fn router(&self) -> Router {
+        let hot = HotLayer::new(self.service().config().hot_default);
+        let mut router = Router::new()
+            .route("/", get(info::root))
+            .route("/_license", get(info::license))
+            .route("/_cluster/health", get(info::health))
+            .route("/_cluster/health/{index}", get(info::health_index))
+            .route("/_ml/trained_models/{id}/_infer", post(info::infer))
+            .route(
+                "/_ml/trained_models/{id}/deployment/_infer",
+                post(info::infer),
+            )
+            // Task 3: index administration.
+            .route(
+                "/{index}",
+                get(admin::get_index)
+                    .merge(head(admin::head_index))
+                    .put(admin::create_index)
+                    .delete(admin::delete_index),
+            )
+            .route("/_mapping", get(admin::get_mapping_all))
+            .route(
+                "/{index}/_mapping",
+                get(admin::get_mapping)
+                    .put(admin::put_mapping)
+                    .post(admin::put_mapping),
+            )
+            .route(
+                "/_aliases",
+                get(admin::get_aliases_all).post(admin::update_aliases),
+            )
+            .route("/_alias", get(admin::get_aliases_all))
+            .route("/_alias/{name}", get(admin::get_aliases_named))
+            .route("/{index}/_alias", get(admin::get_aliases_of_index))
+            .route(
+                "/{index}/_alias/{name}",
+                get(admin::get_aliases_of_index_named)
+                    .put(admin::put_alias)
+                    .post(admin::put_alias)
+                    .delete(admin::delete_alias),
+            )
+            .route(
+                "/{index}/_aliases/{name}",
+                put(admin::put_alias)
+                    .post(admin::put_alias)
+                    .delete(admin::delete_alias),
+            )
+            .route(
+                "/_refresh",
+                get(admin::refresh_all).post(admin::refresh_all),
+            )
+            .route(
+                "/{index}/_refresh",
+                get(admin::refresh_index).post(admin::refresh_index),
+            );
+        for &(method, path, task) in PENDING {
+            let filter = match method {
+                "GET" => MethodFilter::GET,
+                "HEAD" => MethodFilter::HEAD,
+                "PUT" => MethodFilter::PUT,
+                "POST" => MethodFilter::POST,
+                _ => MethodFilter::DELETE,
+            };
+            router = router.route(
+                path,
+                on(
+                    filter,
+                    move |gw: State<EsGateway>, ctx: RequestCtx, method: Method, uri: Uri| {
+                        pending(gw, ctx, method, uri, path, task)
+                    },
+                ),
+            );
+        }
+        let routes = router.fallback(no_route).with_state(self.clone());
+        // The layers wrap the whole router, not each route (as
+        // `Router::layer` would), so the 405 rewrite sees the `Allow`
+        // header axum sets after a route's method fallback.
+        let service = tower::ServiceBuilder::new()
+            .layer(middleware::from_fn(http::product_header))
+            .layer(middleware::from_fn(http::check_hot_header))
+            .layer(hot)
+            .layer(middleware::from_fn_with_state(
+                self.config().max_body_bytes,
+                http::prepare,
+            ))
+            .layer(middleware::from_fn(http::method_not_allowed))
+            .service(routes);
+        Router::new().fallback_service(service)
+    }
+
+    /// Serves [`EsGateway::router`] on `listener` until `shutdown` is
+    /// cancelled.
+    pub fn serve(self, listener: tokio::net::TcpListener, shutdown: CancellationToken) -> EsHandle {
+        let addr = listener.local_addr().unwrap_or(self.config().listen);
+        let router = self.router();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(shutdown.cancelled_owned())
+                .await
+                .map_err(EsServerError::Io)
+        });
+        EsHandle { addr, task }
+    }
+}
+
+/// The Phase A routes no task serves yet, with the task that serves each
+/// (row T1-2). A task that serves a route removes it here; axum panics on
+/// a method routed twice, so a forgotten row fails at router build time.
+const PENDING: &[(&str, &str, &str)] = &[
+    ("POST", "/{index}/_doc", "4"),
+    ("PUT", "/{index}/_doc/{id}", "4"),
+    ("POST", "/{index}/_doc/{id}", "4"),
+    ("DELETE", "/{index}/_doc/{id}", "4"),
+    ("PUT", "/{index}/_create/{id}", "4"),
+    ("POST", "/{index}/_create/{id}", "4"),
+    ("POST", "/{index}/_update/{id}", "4"),
+    ("POST", "/_bulk", "5"),
+    ("PUT", "/_bulk", "5"),
+    ("POST", "/{index}/_bulk", "5"),
+    ("PUT", "/{index}/_bulk", "5"),
+    ("GET", "/{index}/_doc/{id}", "6"),
+    ("HEAD", "/{index}/_doc/{id}", "6"),
+    ("GET", "/{index}/_source/{id}", "6"),
+    ("HEAD", "/{index}/_source/{id}", "6"),
+    ("GET", "/_mget", "6"),
+    ("POST", "/_mget", "6"),
+    ("GET", "/{index}/_mget", "6"),
+    ("POST", "/{index}/_mget", "6"),
+    ("GET", "/_search", "9"),
+    ("POST", "/_search", "9"),
+    ("GET", "/{index}/_search", "9"),
+    ("POST", "/{index}/_search", "9"),
+    ("GET", "/_count", "9"),
+    ("POST", "/_count", "9"),
+    ("GET", "/{index}/_count", "9"),
+    ("POST", "/{index}/_count", "9"),
+    ("GET", "/_msearch", "9"),
+    ("POST", "/_msearch", "9"),
+    ("GET", "/{index}/_msearch", "9"),
+    ("POST", "/{index}/_msearch", "9"),
+    ("POST", "/{index}/_update_by_query", "9a"),
+    ("POST", "/{index}/_delete_by_query", "10"),
+];
+
+/// A route of [`PENDING`]: a `GET` or `HEAD` of a missing index is 404, as
+/// the finished route will answer; everything else is 501.
+async fn pending(
+    State(gw): State<EsGateway>,
+    ctx: RequestCtx,
+    method: Method,
+    uri: Uri,
+    path: &'static str,
+    task: &'static str,
+) -> Response {
+    if matches!(method, Method::GET | Method::HEAD)
+        && path.starts_with("/{index}")
+        && let Some(index) = uri.path().split('/').nth(1)
+    {
+        let expr = names::IndexExpr::parse(&http::percent_decode_path(index));
+        if let Err(err) = names::resolve(
+            gw.service(),
+            &ctx.namespace,
+            &expr,
+            names::ResolveOptions::default(),
+        )
+        .await
+        {
+            return http::fail(&ctx, &err);
+        }
+    }
+    let error = EsError::new(
+        501,
+        "unsupported_operation_exception",
+        format!("[{method} {path}] is not served yet (plan M1.5 Task {task})"),
+    );
+    http::fail(&ctx, &error)
+}
+
+/// 400 for a path no route knows (rule 7).
+async fn no_route(ctx: RequestCtx, method: Method, uri: Uri) -> Response {
+    let error = EsError::illegal_argument(format!(
+        "no handler found for uri [{uri}] and method [{method}]"
+    ));
+    http::fail(&ctx, &error)
+}
+
+/// The running gateway listener.
+#[derive(Debug)]
+pub struct EsHandle {
+    pub addr: SocketAddr,
+    task: JoinHandle<Result<(), EsServerError>>,
+}
+
+impl EsHandle {
+    /// Waits for the server (it stops once the shutdown token is
+    /// cancelled).
+    pub async fn join(self) -> Result<(), EsServerError> {
+        self.task
+            .await
+            .unwrap_or_else(|err| Err(EsServerError::Task(err.to_string())))
+    }
+
+    /// [`EsHandle::join`], for at most `grace`; then the server is aborted
+    /// (with the requests still in flight).
+    pub async fn stop_within(self, grace: Duration) -> Result<(), EsServerError> {
+        let abort = self.task.abort_handle();
+        match tokio::time::timeout(grace, self.join()).await {
+            Ok(joined) => joined,
+            Err(_) => {
+                tracing::warn!("in-flight Elasticsearch requests did not finish; aborting them");
+                abort.abort();
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Why the gateway listener stopped with an error.
+#[derive(Debug, thiserror::Error)]
+pub enum EsServerError {
+    #[error("elasticsearch server failed: {0}")]
+    Io(std::io::Error),
+    /// The server task panicked or was aborted.
+    #[error("elasticsearch server task failed: {0}")]
+    Task(String),
+}
+
+impl fmt::Debug for EsGateway {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EsGateway")
+            .field("config", &self.inner.config)
+            .finish_non_exhaustive()
+    }
+}

@@ -266,6 +266,52 @@ pub enum AliasAction {
     Delete { alias: String },
 }
 
+/// Most members one alias may name (M1.5 Task 0a).
+pub const MAX_ALIAS_TARGETS: usize = 100;
+
+/// One change of `Command::UpdateAliasTargets` (M1.5 Task 0a). Names, not
+/// ids, as in [`AliasAction`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AliasTargetAction {
+    /// Adds the collection named `collection` (a collection name, not an
+    /// alias) to `alias`, creating the alias, or replaces that member's
+    /// setting. `is_write_index`: `Some(true)`, `Some(false)` or unset.
+    Add {
+        alias: String,
+        collection: String,
+        is_write_index: Option<bool>,
+    },
+    /// Removes one member; the alias goes with its last member. A missing
+    /// alias, collection or member is a no-op.
+    Remove { alias: String, collection: String },
+    /// Removes the alias and all its members; a missing alias is a no-op.
+    RemoveAlias { alias: String },
+}
+
+/// The members of an alias and their `is_write_index` settings. Serialized
+/// only in snapshots that hold an alias with several members, or with one
+/// member whose setting is set (M1.5 Ruling 22).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AliasTargets {
+    pub members: BTreeMap<CollectionId, Option<bool>>,
+}
+
+impl AliasTargets {
+    /// The write target, as Elasticsearch decides it (M1.5 Ruling 9): the
+    /// member set to `Some(true)`; else the only member when there is
+    /// exactly one and it is unset; else `None`.
+    pub fn write_target(&self) -> Option<CollectionId> {
+        if let Some((id, _)) = self.members.iter().find(|(_, w)| **w == Some(true)) {
+            return Some(*id);
+        }
+        let mut members = self.members.iter();
+        match (members.next(), members.next()) {
+            (Some((id, None)), None) => Some(*id),
+            _ => None,
+        }
+    }
+}
+
 /// The name of a collection's implicit stream and link:
 /// `_collection.<name>.<id>`.
 pub fn implicit_name(collection: &str, id: CollectionId) -> String {

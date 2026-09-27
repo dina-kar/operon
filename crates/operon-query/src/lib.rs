@@ -64,8 +64,9 @@ pub use scan::{
 };
 pub use service::{CREATED_AT_ANNOTATION, CollectionService, ScrollPage, ServiceConfig, SqlConfig};
 pub use types::{
-    AliasAction, CollectionInfo, ManifestInfo, OpPosition, OpResult, PinnedRead, Projection,
-    SourceFilter, StoredDoc, WriteOptions, WriteResult,
+    AliasAction, AliasInfo, AliasMember, AliasTargetAction, CollectionInfo, ManifestInfo, NameInfo,
+    OpPosition, OpResult, PinnedRead, Projection, SourceFilter, StoredDoc, WriteOptions,
+    WriteResult,
 };
 pub use validate::{SearchLimits, validate_request};
 pub use write::rejected_op_index;
