@@ -1362,9 +1362,18 @@ impl<'c, 'a> Build<'c, 'a> {
         })
     }
 
-    /// `Should[i64 range (bounds rounded as for I64 fields), f64 range, u64
-    /// range when a bound exceeds i64::MAX]` over the JSON numbers at
-    /// `path` of `main`.
+    /// `Should[number range, u64 range when a bound exceeds i64::MAX]` over
+    /// the JSON numbers at `path` of `main`, comparing values as numbers.
+    ///
+    /// A JSON path has one numeric column per segment (`i64`, or `f64` once
+    /// a fractional float is among its values), and Tantivy's `RangeQuery`
+    /// coerces the bounds into that column. So the number range is one
+    /// range: `i64` bounds when no bound is a float (exact on either
+    /// column), else `f64` bounds. On an `i64` column Tantivy truncates a
+    /// fractional bound toward zero, which admits one integer too many for a
+    /// positive lower bound or a negative upper bound: that integer is
+    /// excluded (it lies outside the range, so an `f64` column loses
+    /// nothing).
     fn json_number_ranges(
         &mut self,
         name: &str,
@@ -1383,19 +1392,55 @@ impl<'c, 'a> Build<'c, 'a> {
             }
             term
         };
-        for kind in [FieldKind::I64, FieldKind::F64] {
-            let bound = |side: Option<(RangeOp, &FieldValue)>| match side {
-                Some((op, value)) => coerce_bound(&kind, name, op, value),
-                None => Ok(Bound::Unbounded),
+        let float = |side: Option<(RangeOp, &FieldValue)>| match side {
+            Some((_, FieldValue::F64(x))) => Some(*x),
+            _ => None,
+        };
+        let kind = if float(lower).is_some() || float(upper).is_some() {
+            FieldKind::F64
+        } else {
+            FieldKind::I64
+        };
+        let bound = |side: Option<(RangeOp, &FieldValue)>| match side {
+            Some((op, value)) => coerce_bound(&kind, name, op, value),
+            None => Ok(Bound::Unbounded),
+        };
+        let (lo, hi) = (bound(lower)?, bound(upper)?);
+        if !(is_never(&lo)
+            || is_never(&hi)
+            || matches!((&lo, &hi), (Bound::Unbounded, Bound::Unbounded)))
+        {
+            let range = self.range_raw(main, path, lo.map(json), hi.map(json));
+            // The integers Tantivy's truncation admits on an i64 column.
+            let extra = |x: Option<f64>, lower_side: bool| {
+                x.filter(|x| x.fract() != 0.0 && x.abs() < 9.0e18)
+                    .filter(|x| if lower_side { *x > 0.0 } else { *x < 0.0 })
+                    .map(|x| x.trunc() as i64)
             };
-            let (lo, hi) = (bound(lower)?, bound(upper)?);
-            if is_never(&lo)
-                || is_never(&hi)
-                || matches!((&lo, &hi), (Bound::Unbounded, Bound::Unbounded))
-            {
-                continue;
+            let extras: Vec<i64> = [extra(float(lower), true), extra(float(upper), false)]
+                .into_iter()
+                .flatten()
+                .collect();
+            if extras.is_empty() {
+                parts.push(range);
+            } else {
+                let mut clauses = vec![(Occur::Must, range)];
+                for n in extras {
+                    let point = |n: i64| {
+                        let mut term = json_term(main, path);
+                        term.append_type_and_fast_value(n);
+                        term
+                    };
+                    let excluded = self.range_raw(
+                        main,
+                        path,
+                        Bound::Included(point(n)),
+                        Bound::Included(point(n)),
+                    );
+                    clauses.push((Occur::MustNot, excluded));
+                }
+                parts.push(Box::new(BooleanQuery::new(clauses)));
             }
-            parts.push(self.range_raw(main, path, lo.map(json), hi.map(json)));
         }
         let huge = |side: Option<(RangeOp, &FieldValue)>| match side {
             Some((_, FieldValue::U64(n))) => i64::try_from(*n).is_err(),

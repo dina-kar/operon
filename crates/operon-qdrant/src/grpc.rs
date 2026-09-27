@@ -23,7 +23,9 @@ use crate::model::points::{CountRequest, PointRequest, ScrollRequest, UpdateOper
 use crate::proto::health as hpb;
 use crate::proto::qdrant as pb;
 use crate::schema::NewVector;
-use crate::{QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, query, reads, schema, snapshots, writes};
+use crate::{
+    QDRANT_TITLE, QdrantGateway, TOKEN_HEADER, groups, query, reads, schema, snapshots, writes,
+};
 
 /// Every gRPC service, gzip on both ways and messages of up to
 /// `max_request_bytes`, inside `HotLayer` and the gateway's own
@@ -136,6 +138,68 @@ impl GrpcService {
             }),
             &token,
         ))
+    }
+}
+
+impl GrpcService {
+    /// A legacy search method: one query's points and the time.
+    async fn legacy(
+        &self,
+        meta: &tonic::metadata::MetadataMap,
+        timeout: Option<u64>,
+        collection: &str,
+        request: crate::model::query::QueryRequest,
+    ) -> Result<(Vec<pb::ScoredPoint>, f64), Status> {
+        let collection = collection.to_string();
+        let (points, ctx) = self
+            .run(meta, timeout, |gw, ctx| {
+                query::run_query(gw, ctx, collection, request)
+            })
+            .await?;
+        Ok((
+            points.iter().map(qconv::scored_point_to_grpc).collect(),
+            ctx.elapsed_secs(),
+        ))
+    }
+
+    /// A groups method: the groups and the time.
+    async fn groups(
+        &self,
+        meta: &tonic::metadata::MetadataMap,
+        timeout: Option<u64>,
+        collection: &str,
+        request: crate::model::query::QueryGroupsRequest,
+    ) -> Result<(pb::GroupsResult, f64), Status> {
+        let collection = collection.to_string();
+        let (result, ctx) = self
+            .run(meta, timeout, |gw, ctx| {
+                groups::run_groups(gw, ctx, collection, request)
+            })
+            .await?;
+        Ok((qconv::groups_to_grpc(&result), ctx.elapsed_secs()))
+    }
+
+    /// A legacy batch method: one list per request, in order.
+    async fn legacy_batch(
+        &self,
+        meta: &tonic::metadata::MetadataMap,
+        timeout: Option<u64>,
+        collection: &str,
+        requests: Vec<crate::model::query::QueryRequest>,
+    ) -> Result<(Vec<pb::BatchResult>, f64), Status> {
+        let collection = collection.to_string();
+        let (results, ctx) = self
+            .run(meta, timeout, |gw, ctx| {
+                query::run_batch(gw, ctx, collection, requests)
+            })
+            .await?;
+        let result = results
+            .iter()
+            .map(|r| pb::BatchResult {
+                result: r.points.iter().map(qconv::scored_point_to_grpc).collect(),
+            })
+            .collect();
+        Ok((result, ctx.elapsed_secs()))
     }
 }
 
@@ -663,6 +727,174 @@ service! {
             }))
         }
 
+        /// `Points/Search` (legacy).
+        async fn search(
+            &self,
+            request: Request<pb::SearchPoints>,
+        ) -> Result<Response<pb::SearchResponse>, Status> {
+            let r = request.get_ref();
+            let parsed = qconv::search_from_grpc(r).map_err(|e| e.grpc_status())?;
+            let (result, time) = self
+                .legacy(request.metadata(), r.timeout, &r.collection_name, parsed)
+                .await?;
+            Ok(Response::new(pb::SearchResponse {
+                result,
+                time,
+                usage: None,
+            }))
+        }
+
+        /// `Points/SearchBatch` (legacy), on the batch's collection.
+        async fn search_batch(
+            &self,
+            request: Request<pb::SearchBatchPoints>,
+        ) -> Result<Response<pb::SearchBatchResponse>, Status> {
+            let r = request.get_ref();
+            let parsed = r
+                .search_points
+                .iter()
+                .map(qconv::search_from_grpc)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.grpc_status())?;
+            let (result, time) = self
+                .legacy_batch(request.metadata(), r.timeout, &r.collection_name, parsed)
+                .await?;
+            Ok(Response::new(pb::SearchBatchResponse {
+                result,
+                time,
+                usage: None,
+            }))
+        }
+
+        /// `Points/Recommend` (legacy).
+        async fn recommend(
+            &self,
+            request: Request<pb::RecommendPoints>,
+        ) -> Result<Response<pb::RecommendResponse>, Status> {
+            let r = request.get_ref();
+            let parsed = qconv::recommend_from_grpc(r).map_err(|e| e.grpc_status())?;
+            let (result, time) = self
+                .legacy(request.metadata(), r.timeout, &r.collection_name, parsed)
+                .await?;
+            Ok(Response::new(pb::RecommendResponse {
+                result,
+                time,
+                usage: None,
+            }))
+        }
+
+        /// `Points/RecommendBatch` (legacy), on the batch's collection.
+        async fn recommend_batch(
+            &self,
+            request: Request<pb::RecommendBatchPoints>,
+        ) -> Result<Response<pb::RecommendBatchResponse>, Status> {
+            let r = request.get_ref();
+            let parsed = r
+                .recommend_points
+                .iter()
+                .map(qconv::recommend_from_grpc)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.grpc_status())?;
+            let (result, time) = self
+                .legacy_batch(request.metadata(), r.timeout, &r.collection_name, parsed)
+                .await?;
+            Ok(Response::new(pb::RecommendBatchResponse {
+                result,
+                time,
+                usage: None,
+            }))
+        }
+
+        /// `Points/Discover` (legacy).
+        async fn discover(
+            &self,
+            request: Request<pb::DiscoverPoints>,
+        ) -> Result<Response<pb::DiscoverResponse>, Status> {
+            let r = request.get_ref();
+            let parsed = qconv::discover_from_grpc(r).map_err(|e| e.grpc_status())?;
+            let (result, time) = self
+                .legacy(request.metadata(), r.timeout, &r.collection_name, parsed)
+                .await?;
+            Ok(Response::new(pb::DiscoverResponse {
+                result,
+                time,
+                usage: None,
+            }))
+        }
+
+        /// `Points/DiscoverBatch` (legacy), on the batch's collection.
+        async fn discover_batch(
+            &self,
+            request: Request<pb::DiscoverBatchPoints>,
+        ) -> Result<Response<pb::DiscoverBatchResponse>, Status> {
+            let r = request.get_ref();
+            let parsed = r
+                .discover_points
+                .iter()
+                .map(qconv::discover_from_grpc)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.grpc_status())?;
+            let (result, time) = self
+                .legacy_batch(request.metadata(), r.timeout, &r.collection_name, parsed)
+                .await?;
+            Ok(Response::new(pb::DiscoverBatchResponse {
+                result,
+                time,
+                usage: None,
+            }))
+        }
+
+        /// `Points/QueryGroups`.
+        async fn query_groups(
+            &self,
+            request: Request<pb::QueryPointGroups>,
+        ) -> Result<Response<pb::QueryGroupsResponse>, Status> {
+            let r = request.get_ref();
+            let parsed = qconv::query_groups_from_grpc(r).map_err(|e| e.grpc_status())?;
+            let (result, time) = self
+                .groups(request.metadata(), r.timeout, &r.collection_name, parsed)
+                .await?;
+            Ok(Response::new(pb::QueryGroupsResponse {
+                result: Some(result),
+                time,
+                usage: None,
+            }))
+        }
+
+        /// `Points/SearchGroups` (legacy).
+        async fn search_groups(
+            &self,
+            request: Request<pb::SearchPointGroups>,
+        ) -> Result<Response<pb::SearchGroupsResponse>, Status> {
+            let r = request.get_ref();
+            let parsed = qconv::search_groups_from_grpc(r).map_err(|e| e.grpc_status())?;
+            let (result, time) = self
+                .groups(request.metadata(), r.timeout, &r.collection_name, parsed)
+                .await?;
+            Ok(Response::new(pb::SearchGroupsResponse {
+                result: Some(result),
+                time,
+                usage: None,
+            }))
+        }
+
+        /// `Points/RecommendGroups` (legacy).
+        async fn recommend_groups(
+            &self,
+            request: Request<pb::RecommendPointGroups>,
+        ) -> Result<Response<pb::RecommendGroupsResponse>, Status> {
+            let r = request.get_ref();
+            let parsed = qconv::recommend_groups_from_grpc(r).map_err(|e| e.grpc_status())?;
+            let (result, time) = self
+                .groups(request.metadata(), r.timeout, &r.collection_name, parsed)
+                .await?;
+            Ok(Response::new(pb::RecommendGroupsResponse {
+                result: Some(result),
+                time,
+                usage: None,
+            }))
+        }
+
         /// The batch's collection holds for every request (as Qdrant).
         async fn query_batch(
             &self,
@@ -696,15 +928,6 @@ service! {
     unsupported {
         delete_field_index(DeleteFieldIndexCollection) -> PointsOperationResponse;
         delete_vector_name(DeleteVectorNameRequest) -> PointsOperationResponse;
-        search(SearchPoints) -> SearchResponse;
-        search_batch(SearchBatchPoints) -> SearchBatchResponse;
-        search_groups(SearchPointGroups) -> SearchGroupsResponse;
-        recommend(RecommendPoints) -> RecommendResponse;
-        recommend_batch(RecommendBatchPoints) -> RecommendBatchResponse;
-        recommend_groups(RecommendPointGroups) -> RecommendGroupsResponse;
-        discover(DiscoverPoints) -> DiscoverResponse;
-        discover_batch(DiscoverBatchPoints) -> DiscoverBatchResponse;
-        query_groups(QueryPointGroups) -> QueryGroupsResponse;
         facet(FacetCounts) -> FacetResponse;
         search_matrix_pairs(SearchMatrixPoints) -> SearchMatrixPairsResponse;
         search_matrix_offsets(SearchMatrixPoints) -> SearchMatrixOffsetsResponse;

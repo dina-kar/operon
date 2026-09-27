@@ -11,7 +11,8 @@ use serde::de::{DeserializeOwned, Error as _};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
-use crate::model::common::{ScoredPoint, VectorInput, WithPayload, WithVector};
+use crate::error::GatewayError;
+use crate::model::common::{Record, ScoredPoint, VectorInput, WithPayload, WithVector};
 use crate::model::filter::{Filter, OneOrMany};
 
 /// `T` from a JSON value, with the value's own error text.
@@ -380,4 +381,311 @@ pub struct QueryRequestBatch {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct QueryResponse {
     pub points: Vec<ScoredPoint>,
+}
+
+// ----- legacy routes (Task 8 semantics 5; Ruling 1) -----
+
+/// `POST /collections/{c}/points/search` (legacy).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct SearchRequest {
+    pub vector: NamedVectorStruct,
+    #[serde(default)]
+    pub filter: Option<Filter>,
+    #[serde(default)]
+    pub params: Option<SearchParams>,
+    #[serde(alias = "top")]
+    pub limit: usize,
+    #[serde(default)]
+    pub offset: Option<usize>,
+    #[serde(default)]
+    pub with_payload: Option<WithPayload>,
+    #[serde(default, alias = "with_vectors")]
+    pub with_vector: Option<WithVector>,
+    #[serde(default)]
+    pub score_threshold: Option<f32>,
+    /// Refused as over the universal query (501, Ruling 15).
+    #[serde(default)]
+    pub shard_key: Option<Value>,
+}
+
+/// The legacy search vector: a bare dense vector (the default vector
+/// `""`), or a named dense or sparse one.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum NamedVectorStruct {
+    Plain(Vec<f32>),
+    Named { name: String, vector: Vec<f32> },
+    Sparse { name: String, vector: SparseInput },
+}
+
+/// A sparse query vector (`NamedSparseVector`'s `vector`,
+/// `qdrant:lib/api/src/rest/schema.rs:524`).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct SparseInput {
+    pub indices: Vec<u32>,
+    pub values: Vec<f32>,
+}
+
+/// `POST /collections/{c}/points/recommend` (legacy).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct RecommendRequest {
+    #[serde(default)]
+    pub positive: Vec<VectorInput>,
+    #[serde(default)]
+    pub negative: Vec<VectorInput>,
+    #[serde(default)]
+    pub strategy: Option<RecommendStrategy>,
+    #[serde(default)]
+    pub filter: Option<Filter>,
+    #[serde(default)]
+    pub params: Option<SearchParams>,
+    #[serde(alias = "top")]
+    pub limit: usize,
+    #[serde(default)]
+    pub offset: Option<usize>,
+    #[serde(default)]
+    pub with_payload: Option<WithPayload>,
+    #[serde(default, alias = "with_vectors")]
+    pub with_vector: Option<WithVector>,
+    #[serde(default)]
+    pub score_threshold: Option<f32>,
+    #[serde(default)]
+    pub using: Option<String>,
+    #[serde(default)]
+    pub lookup_from: Option<LookupLocation>,
+    /// Refused as over the universal query (501, Ruling 15).
+    #[serde(default)]
+    pub shard_key: Option<Value>,
+}
+
+/// `POST /collections/{c}/points/discover` (legacy); without a `target`
+/// it is a context query.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct DiscoverRequest {
+    #[serde(default)]
+    pub target: Option<VectorInput>,
+    #[serde(default)]
+    pub context: Option<Vec<ContextPair>>,
+    #[serde(default)]
+    pub filter: Option<Filter>,
+    #[serde(default)]
+    pub params: Option<SearchParams>,
+    #[serde(alias = "top")]
+    pub limit: usize,
+    #[serde(default)]
+    pub offset: Option<usize>,
+    #[serde(default)]
+    pub with_payload: Option<WithPayload>,
+    #[serde(default, alias = "with_vectors")]
+    pub with_vector: Option<WithVector>,
+    #[serde(default)]
+    pub using: Option<String>,
+    #[serde(default)]
+    pub lookup_from: Option<LookupLocation>,
+    /// Refused as over the universal query (501, Ruling 15).
+    #[serde(default)]
+    pub shard_key: Option<Value>,
+}
+
+impl DiscoverRequest {
+    /// Qdrant's legacy discover needs a target or a context pair
+    /// (`qdrant:lib/collection/src/discovery.rs`), though the universal
+    /// query accepts an empty context (row T8-7).
+    pub fn check(&self) -> Result<(), GatewayError> {
+        if self.target.is_none() && self.context.as_ref().is_none_or(Vec::is_empty) {
+            return Err(no_discover_input());
+        }
+        Ok(())
+    }
+}
+
+/// The legacy discover without a target or a pair.
+pub(crate) fn no_discover_input() -> GatewayError {
+    GatewayError::BadRequest("target and/or context_pairs must be specified".to_string())
+}
+
+/// `{"searches": [...]}`, the legacy batches.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Batch<T> {
+    pub searches: Vec<T>,
+}
+
+impl From<SearchRequest> for QueryRequest {
+    /// A plain vector searches `""`; a named one is `using`, a sparse one a
+    /// sparse nearest.
+    fn from(r: SearchRequest) -> Self {
+        let (using, input) = match r.vector {
+            NamedVectorStruct::Plain(v) => (None, VectorInput::Dense(v)),
+            NamedVectorStruct::Named { name, vector } => (Some(name), VectorInput::Dense(vector)),
+            NamedVectorStruct::Sparse { name, vector } => (
+                Some(name),
+                VectorInput::Sparse {
+                    indices: vector.indices,
+                    values: vector.values,
+                },
+            ),
+        };
+        QueryRequest {
+            query: Some(QueryInterface::Vector(input)),
+            using,
+            filter: r.filter,
+            params: r.params,
+            score_threshold: r.score_threshold,
+            limit: Some(r.limit),
+            offset: r.offset,
+            with_payload: r.with_payload,
+            with_vector: r.with_vector,
+            shard_key: r.shard_key,
+            ..QueryRequest::default()
+        }
+    }
+}
+
+impl From<RecommendRequest> for QueryRequest {
+    /// `query: {recommend: {positive, negative, strategy}}`.
+    fn from(r: RecommendRequest) -> Self {
+        QueryRequest {
+            query: Some(QueryInterface::Query(QueryKind::Recommend {
+                recommend: RecommendInput {
+                    positive: r.positive,
+                    negative: r.negative,
+                    strategy: r.strategy,
+                },
+            })),
+            using: r.using,
+            filter: r.filter,
+            params: r.params,
+            score_threshold: r.score_threshold,
+            limit: Some(r.limit),
+            offset: r.offset,
+            with_payload: r.with_payload,
+            with_vector: r.with_vector,
+            lookup_from: r.lookup_from,
+            shard_key: r.shard_key,
+            ..QueryRequest::default()
+        }
+    }
+}
+
+impl From<DiscoverRequest> for QueryRequest {
+    /// `query: {discover: {target, context}}`, or `query: {context}`
+    /// without a target.
+    fn from(r: DiscoverRequest) -> Self {
+        let context = r.context.unwrap_or_default();
+        let kind = match r.target {
+            Some(target) => QueryKind::Discover {
+                discover: DiscoverInput {
+                    target,
+                    context: Some(OneOrMany::Many(context)),
+                },
+            },
+            None => QueryKind::Context {
+                context: OneOrMany::Many(context),
+            },
+        };
+        QueryRequest {
+            query: Some(QueryInterface::Query(kind)),
+            using: r.using,
+            filter: r.filter,
+            params: r.params,
+            limit: Some(r.limit),
+            offset: r.offset,
+            with_payload: r.with_payload,
+            with_vector: r.with_vector,
+            lookup_from: r.lookup_from,
+            shard_key: r.shard_key,
+            ..QueryRequest::default()
+        }
+    }
+}
+
+// ----- groups (Task 9) -----
+
+/// `POST /collections/{c}/points/query/groups`: a query whose `limit` is
+/// the number of groups.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct QueryGroupsRequest {
+    #[serde(flatten)]
+    pub query: QueryRequest,
+    pub group_by: String,
+    #[serde(default)]
+    pub group_size: Option<usize>,
+    #[serde(default)]
+    pub with_lookup: Option<WithLookupInterface>,
+}
+
+/// Where each group's key is looked up as a point id: a collection name,
+/// or a collection with selectors (payload by default, no vectors).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum WithLookupInterface {
+    Collection(String),
+    Lookup {
+        collection: String,
+        #[serde(default)]
+        with_payload: Option<WithPayload>,
+        #[serde(default, alias = "with_vector")]
+        with_vectors: Option<WithVector>,
+    },
+}
+
+/// `POST /collections/{c}/points/search/groups` (legacy): `group_size` and
+/// `limit` (the number of groups) are required.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct SearchGroupsRequest {
+    #[serde(flatten)]
+    pub search: SearchRequest,
+    pub group_by: String,
+    pub group_size: usize,
+    #[serde(default)]
+    pub with_lookup: Option<WithLookupInterface>,
+}
+
+/// `POST /collections/{c}/points/recommend/groups` (legacy).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct RecommendGroupsRequest {
+    #[serde(flatten)]
+    pub recommend: RecommendRequest,
+    pub group_by: String,
+    pub group_size: usize,
+    #[serde(default)]
+    pub with_lookup: Option<WithLookupInterface>,
+}
+
+impl From<SearchGroupsRequest> for QueryGroupsRequest {
+    fn from(r: SearchGroupsRequest) -> Self {
+        QueryGroupsRequest {
+            query: r.search.into(),
+            group_by: r.group_by,
+            group_size: Some(r.group_size),
+            with_lookup: r.with_lookup,
+        }
+    }
+}
+
+impl From<RecommendGroupsRequest> for QueryGroupsRequest {
+    fn from(r: RecommendGroupsRequest) -> Self {
+        QueryGroupsRequest {
+            query: r.recommend.into(),
+            group_by: r.group_by,
+            group_size: Some(r.group_size),
+            with_lookup: r.with_lookup,
+        }
+    }
+}
+
+/// `{"groups": [...]}`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct GroupsResult {
+    pub groups: Vec<PointGroup>,
+}
+
+/// One group: its key (a JSON integer or string), its hits, and the
+/// looked-up point.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PointGroup {
+    pub id: Value,
+    pub hits: Vec<ScoredPoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lookup: Option<Record>,
 }

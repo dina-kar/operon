@@ -739,6 +739,63 @@ async fn llamaindex_type_strict_filters_match() {
     assert_eq!(rest_count(&qd, "li", &json!({"should": []})).await, 3);
 }
 
+/// A numeric `range` compares by value whatever the key's other values are:
+/// a key holding only integers is an integer column, and a fractional bound
+/// must not be truncated there (the Python client run of Task 10 found
+/// `gte: 30.5` matching `30`), nor may an integer-rounded bound widen a key
+/// that holds floats (`gt: 30.5` matched `30.25`). In the tail and after
+/// the link applied.
+#[tokio::test]
+async fn numeric_ranges_with_fractional_bounds_compare_by_value() {
+    let qd = Qd::start().await;
+    create(&qd, "fr").await;
+    // `i`: 28..=33; `m`: 30, 30.25, 30.5, 31, -30.25, -31.
+    let m = [30.0, 30.25, 30.5, 31.0, -30.25, -31.0];
+    let points: Vec<(u64, Value)> = (0..6_u64)
+        .map(|k| (k + 1, json!({"i": 28 + k, "m": m[k as usize]})))
+        .collect();
+    write(&qd, "fr", &points).await;
+    let value = |key: &str, id: u64| match key {
+        "i" => 27.0 + id as f64,
+        _ => m[id as usize - 1],
+    };
+    for phase in ["tail", "applied"] {
+        if phase == "applied" {
+            applied(&qd, "fr").await;
+        }
+        for key in ["i", "m"] {
+            for (op, b) in [
+                ("gte", 30.5),
+                ("gt", 30.5),
+                ("lt", 30.1),
+                ("lte", 30.5),
+                ("gt", -30.5),
+                ("lte", -30.1),
+                ("gte", 31.0),
+            ] {
+                let filter = json!({"must": [{"key": key, "range": {op: b}}]});
+                let want: BTreeSet<u64> = (1..=6)
+                    .filter(|&id| {
+                        let v = value(key, id);
+                        match op {
+                            "gt" => v > b,
+                            "gte" => v >= b,
+                            "lt" => v < b,
+                            _ => v <= b,
+                        }
+                    })
+                    .collect();
+                assert_eq!(
+                    scroll_ids(&qd, "fr", &filter).await,
+                    want,
+                    "{phase}: {key} {op} {b}"
+                );
+                assert_eq!(rest_count(&qd, "fr", &filter).await, want.len() as u64);
+            }
+        }
+    }
+}
+
 // ----- payload indexes -----
 
 #[tokio::test]

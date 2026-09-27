@@ -5,8 +5,8 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    # Nightly: the long simulation sweep (M0.4 plan Task 6) and the
-    # tail-merge property test (M1.2 plan Task 15).
+    # Nightly: the long simulation sweep (M0.4 plan Task 6), the tail-merge
+    # property test (M1.2 plan Task 15) and the TiKV suites (R1 plan Task 1).
     - cron: "17 2 * * *"
 
 permissions:
@@ -28,6 +28,12 @@ jobs:
         run: cargo fmt --all --check
       - name: clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The gateway's module doc holds its divergences from Qdrant (M1.4
+      # Task 11); its links must resolve.
+      - name: qdrant gateway docs
+        run: cargo doc -p operon-qdrant --no-deps --locked
+        env:
+          RUSTDOCFLAGS: "-D warnings"
       - name: metastore boundary
         run: |
           for c in operon-worker operon-log operon-link operon-collection operon-query operon-hnsw operon-hot; do
@@ -92,6 +98,41 @@ jobs:
       - name: cluster tests
         run: cargo test -p operon --features cluster-tests --test cluster --locked -- --test-threads=1
 
+  qdrant-client:
+    name: Python qdrant-client smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+      - name: build
+        run: cargo build -p operon --locked
+      - name: start operon dev
+        run: |
+          nohup target/debug/operon dev --data-dir "$RUNNER_TEMP/operon" \
+            --qdrant-listen 127.0.0.1:6333 --qdrant-grpc-listen 127.0.0.1:6334 \
+            > "$RUNNER_TEMP/operon.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:6333/ && exit 0
+            sleep 1
+          done
+          echo "operon dev did not answer on 6333 within 60 s"; exit 1
+      - uses: astral-sh/setup-uv@v6
+      # Each run prints `qdrant-client <version> <mode>: <n> checks passed`
+      # last; the step fails unless it does.
+      - name: qdrant-client 1.15.1 (legacy)
+        run: |
+          crates/operon-qdrant/tests/python/run.sh 1.15.1 legacy | tee "$RUNNER_TEMP/legacy.log"
+          grep -q '^qdrant-client 1.15.1 legacy: [0-9]* checks passed$' "$RUNNER_TEMP/legacy.log"
+      - name: qdrant-client 1.19.1 (modern)
+        run: |
+          crates/operon-qdrant/tests/python/run.sh 1.19.1 modern | tee "$RUNNER_TEMP/modern.log"
+          grep -q '^qdrant-client 1.19.1 modern: [0-9]* checks passed$' "$RUNNER_TEMP/modern.log"
+      - name: operon log
+        if: failure()
+        run: tail -n 200 "$RUNNER_TEMP/operon.log" || true
+
   sim:
     name: simulation seed sweep
     runs-on: ubuntu-latest
@@ -113,6 +154,144 @@ jobs:
         run: 'cargo test -p operon-query --release --locked --test it tail_vs_rebuild::'
         env:
           TAIL_PROP_CASES: "256"
+
+  # R1 plan Task 1: the TiKV-backed suites against a tiup playground (PD and
+  # TiKV v8.5.8 on API v2, port offset 17000). Pull requests run it only when
+  # they touch the TiKV crates, their cluster config or scripts, or the Live
+  # protos; the job still reports success otherwise.
+  tikv:
+    name: TiKV suites
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The pull request's merge commit and its base parent.
+          fetch-depth: 2
+      - name: paths
+        id: paths
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pattern='^(crates/operon-tikv/|crates/operon-meta-tikv/|crates/operon-live[^/]*/|deploy/tikv/|scripts/tikv/|proto/loam/|\.github/workflows/ci\.yml$)'
+          if git diff --name-only HEAD^1 HEAD | grep -qE "$pattern"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No TiKV paths changed; skipping the TiKV suites."
+          fi
+      - name: protoc
+        if: steps.paths.outputs.run == 'true'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+        if: steps.paths.outputs.run == 'true'
+      - name: packages
+        id: packages
+        if: steps.paths.outputs.run == 'true'
+        # The TiKV crates that exist so far (later R1 tasks add the rest).
+        run: |
+          args=
+          for c in operon-tikv operon-meta-tikv operon-live operon-live-js; do
+            if [ -d "crates/$c" ]; then args="$args -p $c"; fi
+          done
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+      - name: build the suites
+        if: steps.paths.outputs.run == 'true'
+        run: cargo test ${{ steps.packages.outputs.args }} --locked --no-run
+      - uses: actions/cache@v4
+        if: steps.paths.outputs.run == 'true'
+        with:
+          path: ~/.tiup/components
+          key: tiup-components-v8.5.8-${{ runner.os }}
+      - name: install tiup and the v8.5.8 components
+        if: steps.paths.outputs.run == 'true'
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
+          echo "$HOME/.tiup/bin" >> "$GITHUB_PATH"
+          "$HOME/.tiup/bin/tiup" install playground pd:v8.5.8 tikv:v8.5.8
+      - name: start the playground
+        if: steps.paths.outputs.run == 'true'
+        run: scripts/tikv/playground.sh start --tag loam-ci --timeout 120
+      - name: TiKV suites
+        if: steps.paths.outputs.run == 'true'
+        env:
+          OPERON_TEST_PD: 127.0.0.1:19379
+        run: cargo test ${{ steps.packages.outputs.args }} --locked
+      - name: playground logs
+        if: failure() && steps.paths.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tikv-playground-logs-${{ github.job }}
+          path: |
+            target/tikv-playground/*.log
+            ~/.tiup/data/loam-ci/**/*.log
+          if-no-files-found: ignore
+      - name: stop the playground
+        if: always() && steps.paths.outputs.run == 'true'
+        run: scripts/tikv/playground.sh stop --tag loam-ci
+
+  # The same suites every night, plus the nightly-only TiKV suites later R1
+  # tasks add.
+  tikv-nightly:
+    name: TiKV suites (nightly)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: paths
+        id: paths
+        run: echo "run=true" >> "$GITHUB_OUTPUT"
+      - name: protoc
+        if: steps.paths.outputs.run == 'true'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+        if: steps.paths.outputs.run == 'true'
+      - name: packages
+        id: packages
+        if: steps.paths.outputs.run == 'true'
+        # The TiKV crates that exist so far (later R1 tasks add the rest).
+        run: |
+          args=
+          for c in operon-tikv operon-meta-tikv operon-live operon-live-js; do
+            if [ -d "crates/$c" ]; then args="$args -p $c"; fi
+          done
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+      - name: build the suites
+        if: steps.paths.outputs.run == 'true'
+        run: cargo test ${{ steps.packages.outputs.args }} --locked --no-run
+      - uses: actions/cache@v4
+        if: steps.paths.outputs.run == 'true'
+        with:
+          path: ~/.tiup/components
+          key: tiup-components-v8.5.8-${{ runner.os }}
+      - name: install tiup and the v8.5.8 components
+        if: steps.paths.outputs.run == 'true'
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
+          echo "$HOME/.tiup/bin" >> "$GITHUB_PATH"
+          "$HOME/.tiup/bin/tiup" install playground pd:v8.5.8 tikv:v8.5.8
+      - name: start the playground
+        if: steps.paths.outputs.run == 'true'
+        run: scripts/tikv/playground.sh start --tag loam-ci --timeout 120
+      - name: TiKV suites
+        if: steps.paths.outputs.run == 'true'
+        env:
+          OPERON_TEST_PD: 127.0.0.1:19379
+        run: cargo test ${{ steps.packages.outputs.args }} --locked
+      - name: playground logs
+        if: failure() && steps.paths.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tikv-playground-logs-${{ github.job }}
+          path: |
+            target/tikv-playground/*.log
+            ~/.tiup/data/loam-ci/**/*.log
+          if-no-files-found: ignore
+      - name: stop the playground
+        if: always() && steps.paths.outputs.run == 'true'
+        run: scripts/tikv/playground.sh stop --tag loam-ci
 
   deny:
     name: licenses, advisories, sources
