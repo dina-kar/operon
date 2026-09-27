@@ -2,7 +2,6 @@
 //! M1.4 Task 3).
 
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
 
 use operon_collection::{
     CollectionSchema, DocOp, Document, DynamicMapping, PrimaryKey, Quantization, SparseModifier,
@@ -75,24 +74,6 @@ impl Qd {
             .expect("write");
         for op in &result.results {
             assert!(!matches!(op, OpResult::Rejected(_)), "{op:?}");
-        }
-    }
-
-    /// Waits until the link has applied every record of `name`.
-    async fn settled(&self, name: &str) {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        loop {
-            let info = self
-                .server
-                .collections()
-                .get_collection(NS, name)
-                .await
-                .expect("info");
-            if info.link_lag_records == 0 && info.manifest_version > 0 {
-                return;
-            }
-            assert!(Instant::now() < deadline, "{name} did not settle");
-            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 }
