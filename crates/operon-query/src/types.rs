@@ -11,6 +11,7 @@ use serde_json::{Map, Value};
 
 pub use operon_common::meta::AliasAction;
 
+use crate::backlog::{Backlog, BackpressureStatus, Override};
 use crate::error::ServiceError;
 use crate::hot::HotStatus;
 use crate::ir::{FieldValue, ReadConsistency, SparseVector};
@@ -70,6 +71,12 @@ pub struct CollectionInfo {
     /// Σ over partitions of (high watermark − applied).
     pub link_lag_records: u64,
     pub hot: HotStatus,
+    /// The bytes of the offset index entries past `applied` (Task 15).
+    #[serde(default)]
+    pub unapplied_bytes: u64,
+    /// The write budget and whether a plain write is refused now (Task 15).
+    #[serde(default)]
+    pub backpressure: BackpressureStatus,
 }
 
 /// Options of a collection write (Ruling 10).
@@ -81,6 +88,9 @@ pub struct WriteOptions {
     pub report_existence: bool,
     /// Validate every op first and write nothing if one fails (Ruling 16).
     pub atomic: bool,
+    /// `Bulk` admits the write up to `override_factor` × the budget
+    /// (`Operon-Backpressure: off`, Task 15).
+    pub backpressure: Override,
 }
 
 /// The answer to a collection write.
@@ -92,6 +102,10 @@ pub struct WriteResult {
     pub results: Vec<OpResult>,
     /// One per op: where it was appended, `None` when it was not.
     pub positions: Vec<Option<OpPosition>>,
+    /// The collection's backlog measured at admission, before this write's
+    /// records (Task 15).
+    #[serde(default)]
+    pub backlog: Backlog,
 }
 
 /// The outcome of one op (Ruling 10).

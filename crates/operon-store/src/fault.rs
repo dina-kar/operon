@@ -86,6 +86,8 @@ struct Rules {
     /// `None` entries let one call pass (see [`FaultyStore::inject_nth`]).
     queued: HashMap<Op, VecDeque<Option<Fault>>>,
     calls: HashMap<Op, u64>,
+    /// The `Get` calls that were HEADs (`GetOptions::head`).
+    heads: u64,
     rates: FaultRates,
     rng: ChaCha8Rng,
 }
@@ -115,6 +117,7 @@ impl FaultyStore {
             rules: Arc::new(Mutex::new(Rules {
                 queued: HashMap::new(),
                 calls: HashMap::new(),
+                heads: 0,
                 rates,
                 rng: ChaCha8Rng::seed_from_u64(seed),
             })),
@@ -165,6 +168,12 @@ impl FaultyStore {
     /// counts PUTs of every mode.
     pub fn calls(&self, op: Op) -> u64 {
         self.rules().calls.get(&op).copied().unwrap_or(0)
+    }
+
+    /// How many of the [`Op::Get`] calls were HEADs (metadata lookups, no
+    /// bytes read); `calls(Get) - heads()` counts the byte reads.
+    pub fn heads(&self) -> u64 {
+        self.rules().heads
     }
 
     /// The fault for this call of `ops` (most specific first): a queued one,
@@ -302,6 +311,9 @@ impl ObjectStore for FaultyStore {
         location: &Path,
         options: GetOptions,
     ) -> object_store::Result<GetResult> {
+        if options.head {
+            self.rules().heads += 1;
+        }
         match self.next_fault(&[Op::Get]) {
             None => self.inner.get_opts(location, options).await,
             Some(Fault::Delay(delay)) => {

@@ -5,7 +5,11 @@
 //!
 //! A split is downloaded to `<ulid>.split.tmp`, fsynced, checked against its
 //! manifest size and Quickwit trailer, then renamed to `<ulid>.split`: a path
-//! the tier hands out always names a whole, checked file. A split that leaves
+//! the tier hands out always names a whole, checked file. The crc32c of each
+//! 64 KiB block, computed during the download, is written first to
+//! `<ulid>.split.crc`, and the query engine checks every block it reads
+//! against it (row F3); a file that fails is quarantined: evicted, deleted
+//! after the linger, and downloaded again on a later pass. A split that leaves
 //! every live manifest stays served for `split_linger`, then is removed from
 //! the map and deleted; an evicted split leaves the map at once and its file
 //! is deleted after `split_linger`, so a query that already holds its path
@@ -18,6 +22,7 @@ use std::sync::{Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use operon_common::{CollectionId, NamespaceId};
+use operon_query::text::{SplitChecksums, SplitChecksumsBuilder, checksums_path};
 use operon_store::Store;
 use tokio::io::AsyncWriteExt;
 use ulid::Ulid;
@@ -67,21 +72,40 @@ pub(crate) async fn download_split_in(
         tokio::fs::create_dir_all(parent).await?;
     }
     let tmp = tmp_path(to);
+    let (crc_tmp, crc_to) = (checksums_path(&tmp), checksums_path(to));
     let written = write_split(store, path, size, footer_start, &tmp, piece.max(1)).await;
+    // The checksums land before the split: a path the tier serves always
+    // has them (row F3).
     let renamed = match written {
-        Ok(()) => tokio::fs::rename(&tmp, to).await.map_err(TierError::from),
+        Ok(checksums) => async {
+            write_synced(&crc_tmp, &checksums.encode()).await?;
+            tokio::fs::rename(&crc_tmp, &crc_to).await?;
+            tokio::fs::rename(&tmp, to).await
+        }
+        .await
+        .map_err(TierError::from),
         Err(err) => Err(err),
     };
     if renamed.is_err() {
-        match tokio::fs::remove_file(&tmp).await {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => {
-                tracing::warn!(tmp = %tmp.display(), %err, "removing a failed split download");
+        for leftover in [&tmp, &crc_tmp, &crc_to] {
+            match tokio::fs::remove_file(leftover).await {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    tracing::warn!(file = %leftover.display(), %err, "removing a failed split download");
+                }
             }
         }
     }
     renamed
+}
+
+/// Writes `bytes` to a new file `path` and fsyncs it.
+async fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = tokio::fs::File::create(path).await?;
+    file.write_all(bytes).await?;
+    file.flush().await?;
+    file.sync_all().await
 }
 
 async fn write_split(
@@ -91,12 +115,13 @@ async fn write_split(
     footer_start: u64,
     tmp: &Path,
     piece: u64,
-) -> Result<(), TierError> {
+) -> Result<SplitChecksums, TierError> {
     let corrupt = |message: String| TierError::Corrupt(format!("split {path}: {message}"));
     if size < TRAILER_LEN as u64 {
         return Err(corrupt(format!("{size} bytes cannot hold a footer")));
     }
     let mut file = tokio::fs::File::create(tmp).await?;
+    let mut checksums = SplitChecksumsBuilder::default();
     let mut tail: Vec<u8> = Vec::with_capacity(TRAILER_LEN);
     let mut offset = 0;
     while offset < size {
@@ -122,6 +147,7 @@ async fn write_split(
             )));
         }
         file.write_all(&bytes).await?;
+        checksums.update(&bytes);
         tail.extend_from_slice(&bytes[bytes.len().saturating_sub(TRAILER_LEN)..]);
         let extra = tail.len().saturating_sub(TRAILER_LEN);
         tail.drain(..extra);
@@ -146,7 +172,7 @@ async fn write_split(
             u64::from_le_bytes(start)
         )));
     }
-    Ok(())
+    Ok(checksums.finish())
 }
 
 /// A split key: namespace, collection and split ULID.
@@ -217,6 +243,12 @@ impl PinnedSplits {
     }
 
     pub(crate) fn insert(&self, key: SplitKey, path: PathBuf, size: u64, now: Instant) {
+        // A split pinned again at the path of an evicted one: that
+        // eviction's linger must not delete the new file.
+        self.lingering
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(lingering, _)| lingering != &path);
         self.map
             .write()
             .unwrap_or_else(PoisonError::into_inner)
@@ -278,6 +310,21 @@ impl PinnedSplits {
                 .unwrap_or_else(PoisonError::into_inner)
                 .push((pinned.path, now));
         }
+    }
+
+    /// Evicts `key` if its file is still `path` (row F3: the file failed a
+    /// read; a newer download of the split stays). Whether it was evicted.
+    pub(crate) fn quarantine(&self, key: &SplitKey, path: &Path, now: Instant) -> bool {
+        let current = self
+            .map
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(key)
+            .is_some_and(|pinned| pinned.path == path);
+        if current {
+            self.evict(key, now);
+        }
+        current
     }
 
     /// Removes the splits unreferenced for `linger` from the map and
@@ -347,7 +394,10 @@ pub(crate) async fn delete_files(files: Vec<PathBuf>) {
         return;
     }
     let deleted = tokio::task::spawn_blocking(move || {
-        for file in files {
+        for file in files
+            .iter()
+            .flat_map(|file| [checksums_path(file), file.clone()])
+        {
             match std::fs::remove_file(&file) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -360,5 +410,30 @@ pub(crate) async fn delete_files(files: Vec<PathBuf>) {
     .await;
     if let Err(err) = deleted {
         tracing::warn!(%err, "deleting pinned splits");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_split_pinned_again_is_not_deleted_by_its_eviction_linger() {
+        let pinned = PinnedSplits::new(PathBuf::from("/nonexistent/splits"));
+        let (ns, cid, ulid) = (NamespaceId(1), CollectionId(2), Ulid::from_parts(1, 2));
+        let key = (ns, cid, ulid);
+        let path = pinned.local_path(ns, cid, ulid);
+        let start = Instant::now();
+        pinned.insert(key, path.clone(), 10, start);
+        pinned.evict(&key, start);
+        // Pinned again within the linger, at the same path.
+        pinned.insert(key, path.clone(), 10, start);
+        let linger = Duration::from_secs(60);
+        let later = start + linger + Duration::from_secs(1);
+        pinned.touch(ns, cid, [ulid], later);
+        assert!(pinned.expire(linger, later).is_empty());
+        assert_eq!(pinned.path(ns, cid, ulid), None, "not served yet");
+        pinned.set_serving(ns, cid, true);
+        assert_eq!(pinned.path(ns, cid, ulid), Some(path));
     }
 }

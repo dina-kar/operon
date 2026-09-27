@@ -1,3 +1,4 @@
+mod backpressure;
 mod common;
 #[cfg(feature = "flight")]
 mod flight_ingest;

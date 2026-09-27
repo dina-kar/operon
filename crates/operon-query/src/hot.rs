@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
@@ -36,6 +36,17 @@ pub trait HotTier: Send + Sync + std::fmt::Debug {
     /// Addition (provided): the hot status reported by `GET …/collections/{c}`.
     fn status(&self, _ns: NamespaceId, _cid: CollectionId) -> HotStatus {
         HotStatus::default()
+    }
+    /// Addition (provided, row F3): the file `path` that `split_file` gave
+    /// for `split` opened but failed (checksums, footer or warm-up); the
+    /// read went to the object store, and the tier should stop serving it.
+    fn quarantine_split(
+        &self,
+        _ns: NamespaceId,
+        _cid: CollectionId,
+        _split: ulid::Ulid,
+        _path: &Path,
+    ) {
     }
 }
 
