@@ -238,6 +238,12 @@ impl fmt::Debug for DurableClient {
 }
 
 impl DurableClient {
+    /// Whether the server is still running: after `stop` it is gone, and so
+    /// is its store lock.
+    pub fn is_alive(&self) -> bool {
+        self.server.strong_count() > 0
+    }
+
     /// One protocol request, in process: `{"kind": …, "data": …}`, with an
     /// optional `head` (its `corrId` and `version` are filled in when absent).
     ///

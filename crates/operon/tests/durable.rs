@@ -262,3 +262,180 @@ async fn operations_routes_serve_with_durable_only() {
     );
     server.shutdown().await.expect("shutdown");
 }
+
+/// A POST of `body` with `headers`: the status, the headers and the body.
+async fn post_json(
+    url: String,
+    headers: &[(&str, &str)],
+    body: serde_json::Value,
+) -> (u16, reqwest::header::HeaderMap, serde_json::Value) {
+    let mut request = reqwest::Client::new()
+        .post(url)
+        .timeout(Duration::from_secs(10))
+        .json(&body);
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = request.send().await.expect("request");
+    let status = response.status().as_u16();
+    let headers = response.headers().clone();
+    (status, headers, response.json().await.unwrap_or_default())
+}
+
+/// D1 Task 8: `imports_parquet_and_ndjson` into a real collection through
+/// the route. The operation's token makes a read see every document, and
+/// the refusals before submit answer 400, 404 and 409.
+#[tokio::test(flavor = "multi_thread")]
+async fn imports_parquet_and_ndjson() {
+    use std::sync::Arc as StdArc;
+
+    use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("lake");
+    std::fs::create_dir_all(&source).unwrap();
+    // 10 Parquet rows in row groups of 4, with their own _id.
+    let ids: Vec<String> = (0..10).map(|n| format!("p{n}")).collect();
+    let columns: Vec<(&str, ArrayRef)> = vec![
+        ("_id", StdArc::new(StringArray::from(ids))),
+        (
+            "n",
+            StdArc::new(Int64Array::from((0..10).collect::<Vec<i64>>())),
+        ),
+    ];
+    let batch = RecordBatch::try_from_iter(columns).unwrap();
+    let mut bytes = Vec::new();
+    let props = parquet::file::properties::WriterProperties::builder()
+        .set_max_row_group_row_count(Some(4))
+        .build();
+    let mut writer =
+        parquet::arrow::ArrowWriter::try_new(&mut bytes, batch.schema(), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    std::fs::write(source.join("a.parquet"), bytes).unwrap();
+    // 5 NDJSON rows without _id: generated ids.
+    let lines: String = (0..5)
+        .map(|n| format!("{{\"n\": {}}}\n", 100 + n))
+        .collect();
+    std::fs::write(source.join("b.ndjson"), lines).unwrap();
+
+    let mut dev = config(&dir, free_addr());
+    dev.import_file_sources = true;
+    let server = Server::start(dev).await.expect("start");
+    let base = format!("http://{}", server.local_addr());
+    let (status, _, body) = post_json(
+        format!("{base}/v1/namespaces/default/collections"),
+        &[],
+        serde_json::json!({ "name": "docs",
+            "schema": { "fields": [], "vectors": [], "dynamic": "ignore" } }),
+    )
+    .await;
+    assert_eq!(status, 201, "{body}");
+    let url = format!("{base}/v1/namespaces/default/collections/docs/import");
+    let lake = format!("file://{}/", source.display());
+
+    let mut token = String::new();
+    for (format, pattern, rows) in [("parquet", "*.parquet", 10), ("ndjson", "*.ndjson", 5)] {
+        let request = serde_json::json!({ "source": lake, "format": format, "pattern": pattern });
+        let key = format!("load-{format}");
+        let (status, headers, body) =
+            post_json(url.clone(), &[("Idempotency-Key", &key)], request.clone()).await;
+        assert_eq!(status, 202, "{body}");
+        let location = headers["location"].to_str().unwrap().to_string();
+        assert_eq!(location, body["location"].as_str().unwrap());
+        // An idempotent repeat: 200, the same Location.
+        let (status, headers, _) =
+            post_json(url.clone(), &[("Idempotency-Key", &key)], request).await;
+        assert_eq!(status, 200);
+        assert_eq!(headers["location"].to_str().unwrap(), location);
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let op = loop {
+            let (status, op) = get_json(format!("{base}{location}")).await;
+            assert_eq!(status, 200, "{op}");
+            if op["state"] != "queued" && op["state"] != "running" {
+                break op;
+            }
+            assert!(std::time::Instant::now() < deadline, "{op}");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        assert_eq!(op["state"], "succeeded", "{op}");
+        assert_eq!(op["result"]["rows_written"], rows, "{op}");
+        assert_eq!(op["target"], serde_json::json!({ "collection": "docs" }));
+        token = op["result"]["token"].as_str().unwrap().to_string();
+        assert!(!token.is_empty(), "{op}");
+    }
+    // The last token covers the collection's writes: a read at it sees all
+    // 15 documents.
+    let (status, _, body) = post_json(
+        format!("{base}/v1/namespaces/default/collections/docs/documents/count"),
+        &[("Operon-Consistency-Token", &token)],
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["count"], 15, "{body}");
+    let (status, _, body) = post_json(
+        format!("{base}/v1/namespaces/default/collections/docs/documents/get"),
+        &[("Operon-Consistency-Token", &token)],
+        serde_json::json!({ "ids": ["p7"] }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["documents"][0]["source"]["n"], 7, "{body}");
+
+    // Refusals before submit.
+    let bad =
+        |source: &str, format: &str| serde_json::json!({ "source": source, "format": format });
+    let (status, _, body) = post_json(url.clone(), &[], bad("ftp://x/", "parquet")).await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (400, Some("invalid_argument")),
+        "{body}"
+    );
+    let (status, _, body) = post_json(url.clone(), &[], bad(&lake, "xml")).await;
+    assert_eq!(status, 400, "{body}");
+    let (status, _, body) = post_json(
+        format!("{base}/v1/namespaces/default/collections/missing/import"),
+        &[],
+        bad(&lake, "parquet"),
+    )
+    .await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (404, Some("not_found")),
+        "{body}"
+    );
+    let (status, _, body) = post_json(
+        url.clone(),
+        &[("Idempotency-Key", "load-parquet")],
+        bad(&lake, "ndjson"),
+    )
+    .await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (409, Some("idempotency_key_reused")),
+        "{body}"
+    );
+    server.shutdown().await.expect("shutdown");
+
+    // Without import_file_sources (every mode but dev), file:// is refused.
+    let dir = TempDir::new().unwrap();
+    let server = Server::start(config(&dir, free_addr()))
+        .await
+        .expect("start");
+    let (status, _, body) = post_json(
+        format!(
+            "http://{}/v1/namespaces/default/collections/docs/import",
+            server.local_addr()
+        ),
+        &[],
+        bad(&lake, "parquet"),
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    assert!(
+        body["message"].as_str().unwrap().contains("scheme"),
+        "{body}"
+    );
+    server.shutdown().await.expect("shutdown");
+}

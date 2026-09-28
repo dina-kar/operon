@@ -826,5 +826,11 @@ async fn a_stopped_server_is_unavailable() {
         ops.submit("default", "test.echo", json!({}), None).await,
         Err(OpsError::Unavailable(_))
     ));
+    // Retention does not touch a store whose server has stopped (and
+    // released its lock): #100 review.
+    assert!(matches!(
+        ops.prune_finished(now_ms() + 30 * DAY_MS).await,
+        Err(OpsError::Unavailable(_))
+    ));
     drop(_dir);
 }

@@ -5,11 +5,13 @@
 //! route (Task 14). The hot routes (plan M1.3 Task 8) are [`hot`], and the
 //! internal routes a node calls on a collection's owner are [`internal`].
 //! With the `durable` feature, `operations` serves the operations API (D1
-//! Task 7).
+//! Task 7) and `import` bulk import (Task 8).
 
 mod collections;
 mod errors;
 pub mod hot;
+#[cfg(feature = "durable")]
+pub mod import;
 pub mod internal;
 #[cfg(feature = "durable")]
 pub mod operations;

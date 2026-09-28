@@ -12,6 +12,8 @@ name = "operon"
 path = "src/main.rs"
 
 [dependencies]
+# The import's batches (D1 Task 8), with the durable feature only.
+arrow-array = { workspace = true, optional = true }
 async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true
@@ -58,7 +60,7 @@ hnsw = ["operon-hot/hnsw"]
 # on 127.0.0.1:8001 (--durable-*). Opt-in (owner ruling O1): toggling it
 # rebuilds about 480 crates. Release builds, CI's durable jobs and the Loam
 # cloud build turn it on; without it, a --durable-* flag only logs.
-durable = ["dep:operon-durable"]
+durable = ["dep:operon-durable", "dep:arrow-array"]
 # The TiDB durable store through Resonate's MySQL plugin (D1 Task 4).
 durable-mysql = ["durable", "operon-durable/mysql"]
 # Builds the multi-process cluster tests (`tests/cluster.rs`, M1.3 Task 11;
@@ -83,6 +85,8 @@ arrow-flight.workspace = true
 arrow-schema.workspace = true
 futures.workspace = true
 object_store.workspace = true
+# The import tests write Parquet sources (D1 Task 8).
+parquet.workspace = true
 # The reference evaluator of the Qdrant filter tests (plan M1.4 Task 4).
 operon-qdrant = { workspace = true, features = ["test-util"] }
 proptest.workspace = true

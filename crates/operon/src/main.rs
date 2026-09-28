@@ -712,6 +712,11 @@ fn config(command: Command) -> ServerConfig {
             }
             native.apply(&mut config, DEV_FLIGHT_SQL);
             tuning.apply(&mut config);
+            // Imports may read local files on dev only (D1 Task 8).
+            #[cfg(feature = "durable")]
+            {
+                config.import_file_sources = true;
+            }
             config
         }
         Command::Standalone {

@@ -7,7 +7,8 @@
 //!   `{operations, next}`;
 //! - `POST /v1/operations/{id}/cancel` → 202, or 409 `operation_finished`.
 //!
-//! A submit route answers with [`submitted`]: 202 and
+//! The import route (`super::import`, Task 8) submits operations; a submit
+//! route answers with [`submitted`]: 202 and
 //! `Location: /v1/operations/{id}`, or 200 with the same `Location` for an
 //! idempotent repeat (an `Idempotency-Key` header, [`idempotency_key`]).
 //!
@@ -16,6 +17,7 @@
 //! and after the durable server stops, they answer 503
 //! `durable_unavailable`.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -27,7 +29,8 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use operon_common::meta::MetaStore;
-use operon_durable::ops::RETENTION_TASK;
+use operon_durable::import::ImportEnv;
+use operon_durable::ops::{RETENTION_BATCH, RETENTION_TASK};
 use operon_durable::{OperationId, OperationState, Operations, OpsError};
 use operon_worker::{
     Candidate, Priority, Task, TaskContext, TaskError, TaskKey, TaskOutcome, TaskSource,
@@ -44,23 +47,37 @@ pub const IDEMPOTENCY_KEY: &str = "Idempotency-Key";
 /// this is only the cadence).
 pub const RETENTION_INTERVAL: Duration = Duration::from_secs(3600);
 
-/// The node's [`Operations`], set once Loam's durable runtime has started.
-/// The routes and the retention task hold it from assembly on.
+/// The node's [`Operations`] and the import's environment (D1 Task 8), set
+/// once Loam's durable runtime has started. The routes and the retention
+/// task hold it from assembly on.
 #[derive(Clone, Default, Debug)]
-pub struct OperationsSlot(Arc<OnceLock<Arc<Operations>>>);
+pub struct OperationsSlot {
+    ops: Arc<OnceLock<Arc<Operations>>>,
+    import: Arc<OnceLock<ImportEnv>>,
+}
 
 impl OperationsSlot {
     /// Serve `ops` from now on. A second call keeps the first.
     pub fn set(&self, ops: Arc<Operations>) {
-        let _ = self.0.set(ops);
+        let _ = self.ops.set(ops);
+    }
+
+    /// Serve imports with `env` from now on. A second call keeps the first.
+    pub fn set_import(&self, env: ImportEnv) {
+        let _ = self.import.set(env);
     }
 
     /// The operations, when the runtime has started.
     pub fn get(&self) -> Option<Arc<Operations>> {
-        self.0.get().cloned()
+        self.ops.get().cloned()
     }
 
-    fn serving(&self) -> Result<Arc<Operations>, ApiError> {
+    /// The import's environment, when the runtime has started.
+    pub fn import(&self) -> Option<ImportEnv> {
+        self.import.get().cloned()
+    }
+
+    pub(super) fn serving(&self) -> Result<Arc<Operations>, ApiError> {
         self.get().ok_or_else(|| {
             ApiError::new(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -77,7 +94,8 @@ pub fn routes(slot: OperationsSlot) -> Router {
         .route("/v1/operations/{id}", get(get_operation))
         .route("/v1/operations/{id}/cancel", post(cancel))
         .route("/v1/namespaces/{ns}/operations", get(list))
-        .with_state(slot)
+        .with_state(slot.clone())
+        .merge(super::import::routes(slot))
 }
 
 /// A submit's answer: 202 (created) or 200 (an idempotent repeat), with
@@ -187,12 +205,15 @@ async fn list(
 }
 
 /// Proposes `durable-op-retention` (priority `Maintenance`, Ruling 8) once
-/// per [`RETENTION_INTERVAL`], once the operations are served.
+/// per [`RETENTION_INTERVAL`], once the operations are served, and again at
+/// once after a sweep that pruned a full batch ([`RETENTION_BATCH`]).
 #[derive(Debug)]
 pub struct RetentionSource {
     slot: OperationsSlot,
     interval: Duration,
     last: Mutex<Option<Instant>>,
+    /// Set by a sweep that pruned a full batch: more may be due.
+    more: Arc<AtomicBool>,
 }
 
 impl RetentionSource {
@@ -202,6 +223,7 @@ impl RetentionSource {
             slot,
             interval: RETENTION_INTERVAL,
             last: Mutex::new(None),
+            more: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -220,11 +242,15 @@ impl TaskSource for RetentionSource {
             .last
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if last.is_some_and(|at| at.elapsed() < self.interval) {
+        let more = self.more.swap(false, Ordering::SeqCst);
+        if !more && last.is_some_and(|at| at.elapsed() < self.interval) {
             return Ok(Vec::new());
         }
         *last = Some(Instant::now());
-        let task: Arc<dyn Task> = Arc::new(Retention { ops });
+        let task: Arc<dyn Task> = Arc::new(Retention {
+            ops,
+            more: Arc::clone(&self.more),
+        });
         Ok(vec![(TaskKey::cluster(RETENTION_TASK), task)])
     }
 }
@@ -232,6 +258,7 @@ impl TaskSource for RetentionSource {
 /// One retention sweep.
 struct Retention {
     ops: Arc<Operations>,
+    more: Arc<AtomicBool>,
 }
 
 #[async_trait]
@@ -243,6 +270,11 @@ impl Task for Retention {
             .unwrap_or(0);
         match self.ops.prune_finished(now).await {
             Ok(0) => Ok(TaskOutcome::Idle),
+            // A full batch: sweep again without waiting for the interval.
+            Ok(pruned) if pruned >= RETENTION_BATCH => {
+                self.more.store(true, Ordering::SeqCst);
+                Ok(TaskOutcome::MoreWork)
+            }
             Ok(_) => Ok(TaskOutcome::Done),
             Err(e) => Err(TaskError::failed(e)),
         }

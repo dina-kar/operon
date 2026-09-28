@@ -42,6 +42,10 @@ use crate::inproc::{GROUP, SCHEME};
 /// The worker task that prunes finished operations (Ruling 8).
 pub const RETENTION_TASK: &str = "durable-op-retention";
 
+/// The most operations one retention sweep prunes; a sweep that prunes this
+/// many may have left more behind.
+pub const RETENTION_BATCH: usize = 1000;
+
 /// The tag every operation's root promise carries: its own id.
 pub const TAG_OP: &str = "loam:op";
 /// The root's kind (`collection.import`, …).
@@ -224,6 +228,9 @@ pub type ProgressFn = Arc<
 /// Registers one durable function on the SDK.
 type Register = Arc<dyn Fn(&Resonate) -> resonate_sdk::error::Result<()> + Send + Sync>;
 
+/// Adds one dependency to the SDK before it starts (`Resonate::with_dependency`).
+type Dependency = Arc<dyn Fn(Resonate) -> Resonate + Send + Sync>;
+
 /// Loam's operation kinds, the durable functions they run on, and their
 /// progress functions. [`register`](Self::register) is what
 /// `DurableRuntime::start_with` calls (T6-4).
@@ -232,6 +239,8 @@ pub struct OperationKinds {
     kinds: Vec<String>,
     progress: HashMap<String, ProgressFn>,
     registers: Vec<Register>,
+    dependencies: Vec<Dependency>,
+    resumable: Vec<String>,
 }
 
 impl fmt::Debug for OperationKinds {
@@ -288,6 +297,33 @@ impl OperationKinds {
         self
     }
 
+    /// A value the kinds' functions read with `ctx.get_dependency::<T>()`
+    /// (D1 Task 8: the import's sink and sources). It is added when the
+    /// runtime is built ([`crate::DurableRuntime::start_kinds`]).
+    pub fn dependency<T: Clone + Send + Sync + 'static>(mut self, value: T) -> Self {
+        self.dependencies.push(Arc::new(move |sdk: Resonate| {
+            sdk.with_dependency(value.clone())
+        }));
+        self
+    }
+
+    /// `kind` resumes when it failed and is resubmitted with the same
+    /// idempotency key and parameters (design §21 §7.2): its failed origin is
+    /// deleted and the root created again, while the work it keeps in other
+    /// origins tagged `loam:op` (an import's file roots) is reused. Other
+    /// kinds answer the failed operation.
+    pub fn resumable(mut self, kind: &str) -> Self {
+        self.resumable.push(kind.to_string());
+        self
+    }
+
+    /// `sdk` with every [`dependency`](Self::dependency).
+    pub fn with_dependencies(&self, sdk: Resonate) -> Resonate {
+        self.dependencies
+            .iter()
+            .fold(sdk, |sdk, dependency| dependency(sdk))
+    }
+
     /// Register every function on `sdk`.
     pub fn register(&self, sdk: &Resonate) -> resonate_sdk::error::Result<()> {
         self.registers.iter().try_for_each(|register| register(sdk))
@@ -300,10 +336,10 @@ impl OperationKinds {
 }
 
 /// Loam's own operation kinds, which `operon` registers on its runtime
-/// through `DurableRuntime::start_with` (T6-4). None yet: Task 8 adds
-/// `collection.import`.
-pub fn loam_kinds() -> OperationKinds {
-    OperationKinds::new()
+/// through [`crate::DurableRuntime::start_kinds`] (T6-4): `collection.import`
+/// (D1 Task 8), over `import`.
+pub fn loam_kinds(import: crate::import::ImportEnv) -> OperationKinds {
+    crate::import::kinds(OperationKinds::new(), import)
 }
 
 /// Settings of [`Operations`].
@@ -338,6 +374,8 @@ struct Progress {
     at: Instant,
     value: Value,
     activity: i64,
+    /// Computed once the operation was finished: it no longer changes.
+    finished: bool,
 }
 
 /// The operations of one durable server (D146).
@@ -345,6 +383,7 @@ pub struct Operations {
     client: DurableClient,
     store: DurableStore,
     kinds: HashMap<String, Option<ProgressFn>>,
+    resumable: Vec<String>,
     config: OpsConfig,
     progress: Mutex<HashMap<String, Progress>>,
 }
@@ -368,6 +407,7 @@ impl Operations {
         kinds: &OperationKinds,
         config: OpsConfig,
     ) -> Self {
+        let resumable = kinds.resumable.clone();
         let kinds = kinds
             .names()
             .iter()
@@ -376,6 +416,7 @@ impl Operations {
         Self {
             client,
             store,
+            resumable,
             kinds,
             config,
             progress: Mutex::new(HashMap::new()),
@@ -444,18 +485,72 @@ impl Operations {
                 "resonate:scope": "global",
             },
         });
-        let record = self.call("promise.create", data).await?;
+        let record = self.call("promise.create", data.clone()).await?;
         let record = record_of(&record, "promise")?;
         let Some(existing) = input_of(&record) else {
             // The id belongs to a promise that is not an operation.
             return Err(OpsError::IdempotencyKeyReused(id));
         };
         if existing.submission == submission {
-            Ok((id, true))
-        } else if existing.params_hash == params_hash {
-            Ok((id, false))
-        } else {
-            Err(OpsError::IdempotencyKeyReused(id))
+            return Ok((id, true));
+        }
+        if existing.params_hash != params_hash {
+            return Err(OpsError::IdempotencyKeyReused(id));
+        }
+        let failed = matches!(record.state.as_str(), "rejected" | "rejected_timedout");
+        if !(failed && self.resumable.iter().any(|k| k == kind)) {
+            return Ok((id, false));
+        }
+        // Resume (§21 §7.2): start the failed operation again under its id.
+        // Only a failed root is reset, so of two racing resubmits one resumes
+        // and the other finds the new root.
+        if retention::reset(&self.store, id.as_str()).await? {
+            tracing::info!(op = %id, "resuming a failed operation");
+        }
+        self.forget(&id);
+        let record = self.call("promise.create", data).await?;
+        let record = record_of(&record, "promise")?;
+        match input_of(&record) {
+            Some(existing) if existing.submission == submission => Ok((id, true)),
+            Some(existing) if existing.params_hash == params_hash => Ok((id, false)),
+            _ => Err(OpsError::IdempotencyKeyReused(id)),
+        }
+    }
+
+    /// How many operations of `kind` in namespace `ns` are not finished.
+    pub async fn pending_count(&self, ns: &str, kind: &str) -> Result<usize, OpsError> {
+        let mut count = 0;
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut data = json!({
+                "tags": { TAG_NS: ns, TAG_KIND: kind },
+                "state": "pending",
+                "limit": 500,
+            });
+            if let Some(cursor) = &cursor {
+                data["cursor"] = json!(cursor);
+            }
+            let page = self.call("promise.search", data).await?;
+            let records: Vec<Record> = serde_json::from_value(
+                page.get("promises")
+                    .cloned()
+                    .unwrap_or(Value::Array(vec![])),
+            )
+            .map_err(|e| OpsError::Internal(format!("an unreadable search answer: {e}")))?;
+            count += records.iter().filter(|r| is_operation(r)).count();
+            match page.get("cursor").and_then(Value::as_str) {
+                Some(next) if !records.is_empty() => cursor = Some(next.to_string()),
+                _ => return Ok(count),
+            }
+        }
+    }
+
+    /// Whether operation `id` exists.
+    pub async fn exists(&self, id: &OperationId) -> Result<bool, OpsError> {
+        match self.root(id).await {
+            Ok(_) => Ok(true),
+            Err(OpsError::NotFound(_)) => Ok(false),
+            Err(e) => Err(e),
         }
     }
 
@@ -545,6 +640,13 @@ impl Operations {
     /// cascades remove their callbacks and listeners (T0-12). Returns how
     /// many. `now_ms` is the clock, so tests can move it.
     pub async fn prune_finished(&self, now_ms: i64) -> Result<usize, OpsError> {
+        // The store is the server's: once it stopped and released its lock,
+        // retention must not touch it (T7-9).
+        if !self.client.is_alive() {
+            return Err(OpsError::Unavailable(
+                "the durable server has stopped".into(),
+            ));
+        }
         let retention = i64::try_from(self.config.retention.as_millis()).unwrap_or(i64::MAX);
         let cutoff = now_ms.saturating_sub(retention);
         let pruned = retention::prune(&self.store, cutoff).await?;
@@ -591,7 +693,9 @@ impl Operations {
             }
             OperationState::Queued | OperationState::Running => (None, None),
         };
-        let (progress, activity) = self.progress_of(&input.id, &input.kind).await?;
+        let (progress, activity) = self
+            .progress_of(&input.id, &input.kind, state.is_finished())
+            .await?;
         let updated_at = record
             .settled_at
             .unwrap_or_else(|| record.created_at.max(activity));
@@ -623,14 +727,20 @@ impl Operations {
     }
 
     /// The progress of `id` and the latest step activity (Unix ms), reused
-    /// for `progress_ttl`.
-    async fn progress_of(&self, id: &OperationId, kind: &str) -> Result<(Value, i64), OpsError> {
+    /// for `progress_ttl` while it runs. The first progress computed after it
+    /// finished is kept.
+    async fn progress_of(
+        &self,
+        id: &OperationId,
+        kind: &str,
+        finished: bool,
+    ) -> Result<(Value, i64), OpsError> {
         let cached = self
             .progress
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(id.as_str())
-            .filter(|p| p.at.elapsed() < self.config.progress_ttl)
+            .filter(|p| p.finished || (!finished && p.at.elapsed() < self.config.progress_ttl))
             .cloned();
         if let Some(cached) = cached {
             return Ok((cached.value, cached.activity));
@@ -649,6 +759,7 @@ impl Operations {
                     at: Instant::now(),
                     value: value.clone(),
                     activity,
+                    finished,
                 },
             );
         Ok((value, activity))
@@ -779,22 +890,22 @@ pub fn fail(code: &str, message: impl fmt::Display) -> resonate_sdk::error::Erro
 
 /// A promise record, as the protocol answers it.
 #[derive(Debug, Clone, Deserialize)]
-struct Record {
-    id: String,
-    state: String,
+pub(crate) struct Record {
+    pub(crate) id: String,
+    pub(crate) state: String,
     #[serde(default)]
-    param: Value,
+    pub(crate) param: Value,
     #[serde(default)]
-    value: Value,
+    pub(crate) value: Value,
     #[serde(default)]
-    tags: HashMap<String, String>,
+    pub(crate) tags: HashMap<String, String>,
     #[serde(rename = "createdAt", default)]
-    created_at: i64,
+    pub(crate) created_at: i64,
     #[serde(rename = "settledAt", default)]
-    settled_at: Option<i64>,
+    pub(crate) settled_at: Option<i64>,
 }
 
-fn record_of(answer: &Value, field: &str) -> Result<Record, OpsError> {
+pub(crate) fn record_of(answer: &Value, field: &str) -> Result<Record, OpsError> {
     serde_json::from_value(answer.get(field).cloned().unwrap_or(Value::Null))
         .map_err(|e| OpsError::Internal(format!("an unreadable {field}: {e}")))
 }
@@ -815,12 +926,12 @@ fn input_of(record: &Record) -> Option<OpInput> {
 }
 
 /// `value` in the SDK's wire form: `{"data": base64(JSON)}`.
-fn encode(value: &Value) -> Value {
+pub(crate) fn encode(value: &Value) -> Value {
     json!({ "data": BASE64.encode(value.to_string()) })
 }
 
 /// The JSON in a promise value, `None` when empty or unreadable.
-fn decode(value: &Value) -> Option<Value> {
+pub(crate) fn decode(value: &Value) -> Option<Value> {
     let data = value.get("data")?.as_str().filter(|d| !d.is_empty())?;
     let bytes = BASE64.decode(data).ok()?;
     serde_json::from_slice(&bytes).ok()
@@ -828,7 +939,7 @@ fn decode(value: &Value) -> Option<Value> {
 
 /// The error of a failed or canceled root: `code` when the state implies
 /// one, else the workflow's (`fail`), else `failed`.
-fn error_of(value: &Value, code: Option<&'static str>) -> OperationError {
+pub(crate) fn error_of(value: &Value, code: Option<&'static str>) -> OperationError {
     let message = decode(value)
         .and_then(|v| v.get("message").and_then(Value::as_str).map(str::to_string))
         .map(|m| {
@@ -889,7 +1000,7 @@ fn canonical(value: &Value) -> Value {
     }
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
@@ -903,23 +1014,25 @@ fn now_ms() -> i64 {
 /// retention setting is proposed upstream as PR 5 (resonatehq/resonate#1166);
 /// this goes away when it lands.
 mod retention {
-    use super::{OPERATION_PREFIX, OpsError, TAG_OP};
+    use super::{OPERATION_PREFIX, OpsError, RETENTION_BATCH, TAG_OP};
     use crate::config::DurableStore;
 
     /// At most this many operations per sweep.
-    const BATCH: i64 = 1000;
+    const BATCH: usize = RETENTION_BATCH;
 
-    /// Delete the finished operations settled before `cutoff`; their ids.
+    /// Delete the finished operations settled before `cutoff`, with the
+    /// origins they own outside their own (an import's file roots, tagged
+    /// `loam:op`); their ids.
     pub(super) async fn prune(store: &DurableStore, cutoff: i64) -> Result<Vec<String>, OpsError> {
         match store {
             DurableStore::Sqlite { path } => {
                 let path = path.clone();
-                tokio::task::spawn_blocking(move || sqlite(&path, cutoff))
+                tokio::task::spawn_blocking(move || sqlite::prune(&path, cutoff))
                     .await
                     .map_err(|e| OpsError::Internal(format!("the retention sweep: {e}")))?
             }
             #[cfg(feature = "mysql")]
-            DurableStore::Mysql { url, tls } => mysql(url, *tls, cutoff).await,
+            DurableStore::Mysql { url, tls } => mysql::prune(url, *tls, cutoff).await,
             #[cfg(not(feature = "mysql"))]
             DurableStore::Mysql { .. } => Err(OpsError::Internal(
                 "this build has no MySQL durable store".into(),
@@ -927,71 +1040,241 @@ mod retention {
         }
     }
 
-    fn sqlite(path: &std::path::Path, cutoff: i64) -> Result<Vec<String>, OpsError> {
-        let failed = |e: rusqlite::Error| OpsError::Internal(format!("the retention sweep: {e}"));
-        let mut conn = rusqlite::Connection::open(path).map_err(failed)?;
-        // The cascades need foreign keys on this connection too; Resonate
-        // holds the store, so wait for its writes.
-        conn.execute_batch("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;")
-            .map_err(failed)?;
-        let ids: Vec<String> = {
-            let mut select = conn
-                .prepare(&format!(
-                    "SELECT id FROM promises WHERE id = origin_id AND id LIKE '{OPERATION_PREFIX}%' \
-                     AND state <> 'pending' AND settled_at < ?1 \
-                     AND json_extract(tags, '$.\"{TAG_OP}\"') = id LIMIT {BATCH}"
-                ))
-                .map_err(failed)?;
+    /// Reset the failed operation `id` for a resume (§21 §7.2): delete its
+    /// own origin and every failed origin it owns (tagged `loam:op`), keeping
+    /// the resolved and pending ones. Only while the root is still failed
+    /// (`rejected` or `rejected_timedout`), in one transaction, so a racing
+    /// resubmit that already resumed it is left alone. Whether it reset.
+    pub(super) async fn reset(store: &DurableStore, id: &str) -> Result<bool, OpsError> {
+        match store {
+            DurableStore::Sqlite { path } => {
+                let (path, id) = (path.clone(), id.to_string());
+                tokio::task::spawn_blocking(move || sqlite::reset(&path, &id))
+                    .await
+                    .map_err(|e| OpsError::Internal(format!("resuming: {e}")))?
+            }
+            #[cfg(feature = "mysql")]
+            DurableStore::Mysql { url, tls } => mysql::reset(url, *tls, id).await,
+            #[cfg(not(feature = "mysql"))]
+            DurableStore::Mysql { .. } => Err(OpsError::Internal(
+                "this build has no MySQL durable store".into(),
+            )),
+        }
+    }
+
+    /// The states of an owned origin that a resume deletes.
+    const FAILED: &str = "'rejected', 'rejected_canceled', 'rejected_timedout'";
+
+    mod sqlite {
+        use rusqlite::{Connection, TransactionBehavior};
+
+        use super::{BATCH, FAILED, OPERATION_PREFIX, OpsError, TAG_OP};
+
+        fn open(path: &std::path::Path) -> Result<Connection, rusqlite::Error> {
+            let conn = Connection::open(path)?;
+            // The cascades need foreign keys on this connection too; Resonate
+            // holds the store, so wait for its writes.
+            conn.execute_batch("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;")?;
+            Ok(conn)
+        }
+
+        /// The roots of the other origins operation `id` owns; only the
+        /// failed ones with `failed_only`.
+        fn owned(
+            conn: &Connection,
+            id: &str,
+            failed_only: bool,
+        ) -> Result<Vec<String>, rusqlite::Error> {
+            let filter = if failed_only {
+                format!(" AND state IN ({FAILED})")
+            } else {
+                String::new()
+            };
+            let mut select = conn.prepare(&format!(
+                "SELECT id FROM promises WHERE id = origin_id AND id <> ?1 \
+                 AND json_extract(tags, '$.\"{TAG_OP}\"') = ?1{filter}"
+            ))?;
             select
-                .query_map([cutoff], |row| row.get(0))
-                .map_err(failed)?
+                .query_map([id], |row| row.get(0))?
                 .collect::<Result<_, _>>()
-                .map_err(failed)?
-        };
-        for id in &ids {
-            let tx = conn.transaction().map_err(failed)?;
+        }
+
+        pub(super) fn prune(path: &std::path::Path, cutoff: i64) -> Result<Vec<String>, OpsError> {
+            let failed =
+                |e: rusqlite::Error| OpsError::Internal(format!("the retention sweep: {e}"));
+            let mut conn = open(path).map_err(failed)?;
+            let ids: Vec<String> = {
+                let mut select = conn
+                    .prepare(&format!(
+                        "SELECT id FROM promises WHERE id = origin_id AND id LIKE '{OPERATION_PREFIX}%' \
+                         AND state <> 'pending' AND settled_at < ?1 \
+                         AND json_extract(tags, '$.\"{TAG_OP}\"') = id LIMIT {BATCH}"
+                    ))
+                    .map_err(failed)?;
+                select
+                    .query_map([cutoff], |row| row.get(0))
+                    .map_err(failed)?
+                    .collect::<Result<_, _>>()
+                    .map_err(failed)?
+            };
+            for id in &ids {
+                let tx = conn.transaction().map_err(failed)?;
+                for origin in owned(&tx, id, false).map_err(failed)? {
+                    tx.execute("DELETE FROM promises WHERE origin_id = ?1", [&origin])
+                        .map_err(failed)?;
+                }
+                tx.execute("DELETE FROM promises WHERE origin_id = ?1", [id])
+                    .map_err(failed)?;
+                tx.commit().map_err(failed)?;
+            }
+            Ok(ids)
+        }
+
+        pub(super) fn reset(path: &std::path::Path, id: &str) -> Result<bool, OpsError> {
+            let failed = |e: rusqlite::Error| OpsError::Internal(format!("resuming {id}: {e}"));
+            let mut conn = open(path).map_err(failed)?;
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(failed)?;
+            let state: Option<String> =
+                match tx.query_row("SELECT state FROM promises WHERE id = ?1", [id], |row| {
+                    row.get(0)
+                }) {
+                    Ok(state) => Some(state),
+                    Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                    Err(e) => return Err(failed(e)),
+                };
+            if !matches!(state.as_deref(), Some("rejected" | "rejected_timedout")) {
+                return Ok(false);
+            }
+            for origin in owned(&tx, id, true).map_err(failed)? {
+                tx.execute("DELETE FROM promises WHERE origin_id = ?1", [&origin])
+                    .map_err(failed)?;
+            }
             tx.execute("DELETE FROM promises WHERE origin_id = ?1", [id])
                 .map_err(failed)?;
             tx.commit().map_err(failed)?;
+            Ok(true)
         }
-        Ok(ids)
     }
 
     #[cfg(feature = "mysql")]
-    async fn mysql(
-        url: &str,
-        tls: crate::config::MysqlTls,
-        cutoff: i64,
-    ) -> Result<Vec<String>, OpsError> {
+    mod mysql {
         use sqlx::{Connection, MySqlConnection};
 
-        let failed = |e: sqlx::Error| {
-            OpsError::Unavailable(crate::config::scrub(
-                &format!("the retention sweep: {e}"),
-                url,
+        use super::{BATCH, FAILED, OPERATION_PREFIX, OpsError, TAG_OP};
+
+        async fn connect(
+            url: &str,
+            tls: crate::config::MysqlTls,
+            what: &str,
+        ) -> Result<MySqlConnection, OpsError> {
+            let target = crate::config::mysql_url(url, tls)
+                .map_err(|e| OpsError::Internal(e.to_string()))?;
+            MySqlConnection::connect(&target)
+                .await
+                .map_err(|e| unavailable(url, what, &e))
+        }
+
+        fn unavailable(url: &str, what: &str, e: &sqlx::Error) -> OpsError {
+            OpsError::Unavailable(crate::config::scrub(&format!("{what}: {e}"), url))
+        }
+
+        /// See the SQLite `owned`.
+        async fn owned(
+            conn: &mut MySqlConnection,
+            id: &str,
+            failed_only: bool,
+        ) -> Result<Vec<String>, sqlx::Error> {
+            let filter = if failed_only {
+                format!(" AND state IN ({FAILED})")
+            } else {
+                String::new()
+            };
+            sqlx::query_scalar(&format!(
+                "SELECT id FROM promises WHERE id = origin_id AND id <> ? \
+                 AND tags->>'$.\"{TAG_OP}\"' = ?{filter}"
             ))
-        };
-        let target =
-            crate::config::mysql_url(url, tls).map_err(|e| OpsError::Internal(e.to_string()))?;
-        let mut conn = MySqlConnection::connect(&target).await.map_err(failed)?;
-        let ids: Vec<String> = sqlx::query_scalar(&format!(
-            "SELECT id FROM promises WHERE id = origin_id AND id LIKE '{OPERATION_PREFIX}%' \
-             AND state <> 'pending' AND settled_at < ? \
-             AND tags->>'$.\"{TAG_OP}\"' = id LIMIT {BATCH}"
-        ))
-        .bind(cutoff)
-        .fetch_all(&mut conn)
-        .await
-        .map_err(failed)?;
-        for id in &ids {
+            .bind(id)
+            .bind(id)
+            .fetch_all(conn)
+            .await
+        }
+
+        pub(super) async fn prune(
+            url: &str,
+            tls: crate::config::MysqlTls,
+            cutoff: i64,
+        ) -> Result<Vec<String>, OpsError> {
+            const WHAT: &str = "the retention sweep";
+            let mut conn = connect(url, tls, WHAT).await?;
+            let failed = |e: sqlx::Error| unavailable(url, WHAT, &e);
+            let ids: Vec<String> = sqlx::query_scalar(&format!(
+                "SELECT id FROM promises WHERE id = origin_id AND id LIKE '{OPERATION_PREFIX}%' \
+                 AND state <> 'pending' AND settled_at < ? \
+                 AND tags->>'$.\"{TAG_OP}\"' = id LIMIT {BATCH}"
+            ))
+            .bind(cutoff)
+            .fetch_all(&mut conn)
+            .await
+            .map_err(failed)?;
+            for id in &ids {
+                for origin in owned(&mut conn, id, false).await.map_err(failed)? {
+                    sqlx::query("DELETE FROM promises WHERE origin_id = ?")
+                        .bind(&origin)
+                        .execute(&mut conn)
+                        .await
+                        .map_err(failed)?;
+                }
+                sqlx::query("DELETE FROM promises WHERE origin_id = ?")
+                    .bind(id)
+                    .execute(&mut conn)
+                    .await
+                    .map_err(failed)?;
+            }
+            let _ = conn.close().await;
+            Ok(ids)
+        }
+
+        pub(super) async fn reset(
+            url: &str,
+            tls: crate::config::MysqlTls,
+            id: &str,
+        ) -> Result<bool, OpsError> {
+            const WHAT: &str = "resuming an operation";
+            let mut conn = connect(url, tls, WHAT).await?;
+            let failed = |e: sqlx::Error| unavailable(url, WHAT, &e);
+            // TiDB locks `FOR UPDATE` rows only in a pessimistic transaction;
+            // MySQL has no such variable and always locks, so a failure here
+            // is ignored.
+            let _ = sqlx::query("SET SESSION tidb_txn_mode = 'pessimistic'")
+                .execute(&mut conn)
+                .await;
+            let mut tx = conn.begin().await.map_err(failed)?;
+            let state: Option<String> =
+                sqlx::query_scalar("SELECT state FROM promises WHERE id = ? FOR UPDATE")
+                    .bind(id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(failed)?;
+            if !matches!(state.as_deref(), Some("rejected" | "rejected_timedout")) {
+                return Ok(false);
+            }
+            for origin in owned(&mut tx, id, true).await.map_err(failed)? {
+                sqlx::query("DELETE FROM promises WHERE origin_id = ?")
+                    .bind(&origin)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(failed)?;
+            }
             sqlx::query("DELETE FROM promises WHERE origin_id = ?")
                 .bind(id)
-                .execute(&mut conn)
+                .execute(&mut *tx)
                 .await
                 .map_err(failed)?;
+            tx.commit().await.map_err(failed)?;
+            Ok(true)
         }
-        let _ = conn.close().await;
-        Ok(ids)
     }
 }
 
