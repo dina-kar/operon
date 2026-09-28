@@ -352,17 +352,12 @@ async fn delete(
     }
     let service = gw.service();
     let ns = ctx.namespace.as_str();
+    // Every name resolves before anything is deleted: a missing one fails
+    // the request with nothing deleted, as in ES (row T11-3; was T3-2).
+    let mut targets = Vec::new();
     for item in items {
         match service.resolve_name(ns, item).await {
-            Ok(NameInfo::Collection(name)) => {
-                let dropped = service
-                    .drop_collection(ns, &name)
-                    .await
-                    .map_err(admin_error)?;
-                if !dropped && !ignore_unavailable {
-                    return Err(EsError::index_not_found(item));
-                }
-            }
+            Ok(NameInfo::Collection(name)) => targets.push((item, name)),
             Ok(NameInfo::Alias(_)) => return Err(matches_alias(item)),
             Err(err) if is_missing(&err) => {
                 if !ignore_unavailable {
@@ -370,6 +365,15 @@ async fn delete(
                 }
             }
             Err(err) => return Err(admin_error(err)),
+        }
+    }
+    for (item, name) in targets {
+        let dropped = service
+            .drop_collection(ns, &name)
+            .await
+            .map_err(admin_error)?;
+        if !dropped && !ignore_unavailable {
+            return Err(EsError::index_not_found(item));
         }
     }
     Ok(ack())
@@ -575,7 +579,7 @@ async fn put_mapping_of(
     let opts = resolve_options(&params)?;
     let write_index_only = params.bool("write_index_only")?.unwrap_or(false);
     let Some(mapping) = json_body(body)? else {
-        return Err(validation("mapping source is required"));
+        return Err(EsError::body_required());
     };
     let service = gw.service();
     let ns = ctx.namespace.as_str();

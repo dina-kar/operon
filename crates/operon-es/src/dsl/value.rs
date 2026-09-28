@@ -62,17 +62,19 @@ pub fn shard_error(why: impl Into<String>) -> EsError {
 /// `index: false` and a `binary` are unindexed keywords in the schema, and
 /// ES refuses queries on them.
 pub fn check_searchable(view: &IndexView, name: &str, spec: &FieldSpec) -> Result<(), EsError> {
-    let refused = match es_type(view, name) {
-        "binary" => true,
-        "text" => !spec.indexed,
-        _ => false,
-    };
-    if refused {
-        return Err(shard_error(format!(
+    match es_type(view, name) {
+        // ES's `BinaryFieldMapper` text (row T11-3).
+        "binary" => Err(shard_error("Binary fields do not support searching")),
+        "text" if !spec.indexed => Err(shard_error(format!(
             "Cannot search on field [{name}] since it is not indexed."
-        )));
+        ))),
+        _ => Ok(()),
     }
-    Ok(())
+}
+
+/// Whether [`check_searchable`] accepts the field.
+pub fn is_searchable(view: &IndexView, name: &str, spec: &FieldSpec) -> bool {
+    check_searchable(view, name, spec).is_ok()
 }
 
 /// Whether a field can be searched as text: a `Text` or `Keyword` field

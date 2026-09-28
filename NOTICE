@@ -47,3 +47,11 @@ from the fork https://github.com/dina-kar/resonate, branch loam/0.10.1
 (upstream revision 28dfd016aa970332dc283e2431c406845e2ccc8f plus the
 patches listed in docs/plans/d1-dependency-spike.md), pinned by revision in
 Cargo.toml. Copyright 2026 Resonate HQ, Inc.
+
+TiKV Rust client (https://github.com/tikv/client-rust), Apache License 2.0.
+operon-tikv, operon-meta-tikv and operon-live link tikv-client from the fork
+https://github.com/dina-kar/client-rust, branch loam (upstream revision
+ab4be1c2cdd58d4e593202991fb520221c83bdfd plus the patches listed in
+docs/plans/r1-dependency-spike.md), pinned by revision in Cargo.toml. Its
+generated protobuf code comes from pingcap/kvproto (Apache License 2.0).
+Copyright TiKV Project Authors.

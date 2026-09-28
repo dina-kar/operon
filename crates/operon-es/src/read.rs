@@ -345,6 +345,11 @@ fn parse_mget(
         ));
     };
     let mut items = Vec::new();
+    // ES's `MultiGetRequest.validate`: every entry without an index or an
+    // id, numbered, fails the request (row T11-3).
+    let mut invalid: Vec<String> = Vec::new();
+    // Each entry's position in the request, as ES numbers them.
+    let mut position = 0usize;
     for (key, value) in &body {
         match (key.as_str(), value) {
             ("docs", Value::Array(docs)) => {
@@ -369,8 +374,14 @@ fn parse_mget(
                         Some(Value::String(s)) => Some(s.clone()),
                         Some(other) => Some(other.to_string()),
                     };
+                    let n = position;
+                    position += 1;
+                    if index.is_none() {
+                        invalid.push(format!("index is missing for doc {n}"));
+                    }
                     let Some(id) = doc.get("_id").filter(|v| !v.is_null()) else {
-                        return Err(validation("id is missing"));
+                        invalid.push(format!("id is missing for doc {n}"));
+                        continue;
                     };
                     let doc_stored_none = match doc.get("stored_fields") {
                         None => stored_none,
@@ -396,6 +407,10 @@ fn parse_mget(
             }
             ("ids", Value::Array(ids)) => {
                 for id in ids {
+                    if path_index.is_none() {
+                        invalid.push(format!("index is missing for doc {position}"));
+                    }
+                    position += 1;
                     items.push(MgetItem {
                         index: path_index.map(str::to_string),
                         id: mget_id(id)?,
@@ -409,13 +424,23 @@ fn parse_mget(
                     Value::Object(_) => "START_OBJECT",
                     _ => "VALUE",
                 };
-                return Err(EsError::new(
-                    400,
-                    "parse_exception",
-                    format!("unknown key [{key}] for a {token}, expected [docs] or [ids]"),
-                ));
+                return Err(EsError::parsing(format!(
+                    "unknown key [{key}] for a {token}, expected [docs] or [ids]"
+                )));
             }
         }
+    }
+    if !invalid.is_empty() {
+        let reasons: String = invalid
+            .iter()
+            .enumerate()
+            .map(|(i, e)| format!("{}: {e};", i + 1))
+            .collect();
+        return Err(EsError::new(
+            400,
+            "action_request_validation_exception",
+            format!("Validation Failed: {reasons}"),
+        ));
     }
     if items.is_empty() {
         return Err(validation("no documents to get"));

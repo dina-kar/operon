@@ -194,8 +194,13 @@ pub fn compile_update_script(script: &Value) -> Result<PatchSpec, EsError> {
     for (path, value) in assigned {
         insert(&mut out.source, &path, value);
     }
-    out.delete_keys = removed.iter().map(|path| path.join(".")).collect();
-    out.delete_keys.dedup();
+    // Every duplicate goes, adjacent or not, in first-appearance order.
+    let mut seen = std::collections::HashSet::new();
+    out.delete_keys = removed
+        .iter()
+        .map(|path| path.join("."))
+        .filter(|key| seen.insert(key.clone()))
+        .collect();
     Ok(out)
 }
 
@@ -216,7 +221,8 @@ pub async fn update_by_query(
     let max_docs = parsed.max_docs.unwrap_or(params.max_docs);
     let mut indices = indices.to_vec();
     indices.sort_by(|a, b| a.name.cmp(&b.name));
-    let queries = dbq::compile_queries(&indices, parsed.query, &params.search)?;
+    // Without a query every document matches, as in ES (row T11-3).
+    let queries = dbq::compile_queries(&indices, parsed.query, &params.search, true)?;
     let targets: Vec<(IndexView, _)> = indices.into_iter().zip(queries).collect();
     let totals = dbq::run(
         gw,
@@ -320,6 +326,12 @@ mod tests {
         )
         .expect("recognised");
         assert_eq!(Value::Object(patch.source), json!({"a": 2}));
+        // A key removed twice, not adjacently, is deleted once.
+        let patch = compile_update_script(&json!(
+            "ctx._source.remove('a'); ctx._source.remove('b'); ctx._source.remove('a')"
+        ))
+        .expect("recognised");
+        assert_eq!(patch.delete_keys, vec!["a", "b"]);
         // The short string form, without params.
         let patch = compile_update_script(&json!("ctx._source.remove('k')")).expect("recognised");
         assert_eq!(patch.delete_keys, vec!["k"]);

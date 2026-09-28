@@ -127,7 +127,7 @@ async fn a_dims_mismatch_fails_only_that_item() {
         error["reason"]
             .as_str()
             .expect("reason")
-            .contains("should be [5] but found [16]"),
+            .contains("has a different number of dimensions [16] than defined in the mapping [5]"),
         "{}",
         a.text
     );

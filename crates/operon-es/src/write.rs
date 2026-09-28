@@ -290,14 +290,11 @@ async fn resolve(call: &WriteCall<'_>, items: &[WriteItem]) -> Result<Target, Es
         }
         None if call.require_alias => return Err(require_alias_error(call.index)),
         None => {
-            let creates = items.iter().any(|item| match item {
-                WriteItem::Index { .. } => true,
-                WriteItem::Update { body, .. } => {
-                    body.get("upsert").is_some_and(|u| !u.is_null())
-                        || body.get("doc_as_upsert") == Some(&Value::Bool(true))
-                }
-                WriteItem::Delete { .. } => false,
-            });
+            // ES auto-creates the index for an index or an update item,
+            // even an update that then finds no document (row T11-3).
+            let creates = items
+                .iter()
+                .any(|item| !matches!(item, WriteItem::Delete { .. }));
             if !creates {
                 return Err(EsError::index_not_found(call.index));
             }
@@ -474,7 +471,7 @@ impl Engine<'_, '_> {
                 }
             };
             let prepared = prepared.and_then(|prepared| {
-                let (vectors, fields) = plan_additions(&view, &prepared)?;
+                let (vectors, fields) = plan_additions(&view, &id, &prepared)?;
                 if !vectors.is_empty() || !fields.is_empty() {
                     let mut info = view.info.clone();
                     for (spec, annotation) in vectors {
@@ -1049,7 +1046,7 @@ fn prepare_update(
         Some(Value::Object(doc)) => doc.clone(),
         Some(_) => return Err(not_an_object()),
     };
-    check_source(view, id, &source)?;
+    check_source(id, &source)?;
     let vectors = split_vectors(view, id, &mut source)?;
     let upsert = match body.get("upsert") {
         None | Some(Value::Null) => None,
@@ -1081,7 +1078,11 @@ type ItemParts<'p> = (Vec<&'p Map<String, Value>>, Vec<(&'p String, usize)>);
 
 /// The vectors and fields `prepared` adds to `view`'s schema: pending
 /// vectors get their `dims` from it, then dynamic mapping of its sources.
-fn plan_additions(view: &IndexView, prepared: &Prepared) -> Result<ItemAdditions, EsError> {
+fn plan_additions(
+    view: &IndexView,
+    id: &str,
+    prepared: &Prepared,
+) -> Result<ItemAdditions, EsError> {
     let (sources, vectors): ItemParts<'_> = match prepared {
         Prepared::Index { doc, .. } => (
             vec![&doc.source],
@@ -1113,10 +1114,7 @@ fn plan_additions(view: &IndexView, prepared: &Prepared) -> Result<ItemAdditions
         };
         match specs.iter().find(|(spec, _)| &spec.name == path) {
             Some((spec, _)) if spec.dim as usize != dim => {
-                return Err(crate::doc::parsing_error(format!(
-                    "The number of dimensions for field [{path}] should be [{}] but found [{dim}]",
-                    spec.dim
-                )));
+                return Err(crate::doc::dims_error(path, id, dim, spec.dim as usize));
             }
             Some(_) => {}
             None => specs.push(pending_vector_spec(path, declared, dim)?),
@@ -1151,7 +1149,25 @@ fn violation_error(
         .unwrap_or_else(|| "object".to_string());
     let path = spec.map_or(field, |s| s.source_path.as_str());
     let value = extract(source, path).into_iter().next();
-    let cause = json!({"type": "illegal_argument_exception", "reason": first.message});
+    // A string a numeric field cannot parse: Java's `NumberFormatException`
+    // text, as ES reports it (row T11-3).
+    let numeric = matches!(
+        es_type.as_str(),
+        "long"
+            | "integer"
+            | "short"
+            | "byte"
+            | "unsigned_long"
+            | "double"
+            | "float"
+            | "half_float"
+            | "scaled_float"
+    );
+    let reason = match value.as_deref() {
+        Some(Value::String(text)) if numeric => format!("For input string: \"{text}\""),
+        _ => first.message.clone(),
+    };
+    let cause = json!({"type": "illegal_argument_exception", "reason": reason});
     field_error(path, &es_type, id, value.as_deref()).with("caused_by", cause)
 }
 
@@ -1287,7 +1303,7 @@ async fn run_single(
 
 /// The source of an index request.
 fn index_source(body: Option<Value>) -> Result<Value, EsError> {
-    body.ok_or_else(|| validation("source is missing"))
+    body.ok_or_else(EsError::body_required)
 }
 
 /// `PUT|POST /{index}/_doc/{id}`.
@@ -1364,6 +1380,7 @@ pub(crate) async fn update_doc(
     let item = |_: &Params, body: Option<Value>| {
         Ok(WriteItem::Update {
             id,
+            // ES checks the update request itself first (row T11-3).
             body: body.ok_or_else(|| validation("script or doc is missing"))?,
         })
     };

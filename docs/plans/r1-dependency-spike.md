@@ -10,7 +10,7 @@ Method:
 
 **Result:**
 - Everything builds together with the workspace's pins.
-- `cargo deny check` passes **only with `tikv-client` pinned to `tikv/client-rust` master** (`ab4be1c`). The crates.io 0.4.0 release fails the advisories check (section (b)).
+- `cargo deny check` passes **only with `tikv-client` pinned to `tikv/client-rust` master** (`ab4be1c`). The crates.io 0.4.0 release fails the advisories check (section (b)). (Since row F1 the pin is Loam's fork of that revision; section (i).)
 - **Q32 is answered no.** PD v8.5.8 has no keyspace GC-state RPCs, and TiKV v8.5.8 ignores keyspace-level safe points. GC is cluster-wide, and Loam has to act as the cluster's GC worker (section (g) check 3).
 - Q33 holds on the pinned release.
 - `memory-usage-limit` lowers TiKV's steady-state RSS but not its startup peak of about 2.6 GB.
@@ -162,3 +162,28 @@ It was ready (all six pre-allocated keyspaces listed, and `select 1` answered th
 - **gRPC 4 MiB response limit.** A `scan` whose page exceeds 4 MiB fails with `GrpcAPI(OutOfRange: "decoded message length too large: found 10510000 bytes, the limit is: 4194304 bytes")`. That page was 10 000 keys of 1 KiB. `tikv-client` sets no larger decoding limit and does not page by bytes, and the same limit applies to `batch_get`. See plan row R10.
 - **Pre-allocated keyspaces carry no GC config.** PD v8.5.8 has no GC-state manager, so `gc_management_type` is irrelevant on the pinned release.
 - `TransactionClient::gc` needs a keyspace-scoped client on API v2 and resolves locks only in that keyspace's range. A cluster-wide GC therefore calls `cleanup_locks` once per keyspace.
+
+## (i) The client-rust fork
+
+Added 2026-09-27 (R1 plan rows F1–F5), on the owner's direction "for both tikv and resonate ... change and merge".
+
+**Where it lives.** The fork is `https://github.com/dina-kar/client-rust`. Its branch `loam` starts at upstream `ab4be1c` (upstream master on 2026-09-27) and merges one topic branch per fix, each with a merge commit. Operon pins `loam` by rev (`1f8962b00b33ebc6f34b72d6c52d08b8a8e1906e`). Every topic commit is signed off, because upstream's README asks for a DCO sign-off. Each fix is drafted as an upstream PR; none is posted yet.
+
+| Branch | Commit | Fix | Tests |
+|---|---|---|---|
+| `fix/tso-stream-reconnect` | `7acba21` | The TSO oracle reopens its stream in place, with backoff from 50 ms doubling to 1 s. Requests waiting on a failed stream fail with `TSO stream failed: …`. The request channel stays open while the oracle exists, so `TimestampRequest channel is closed` no longer follows a PD stall | 4 unit tests (in-memory PD). Live: PD SIGSTOPped for 5 s and 12 s under a 500 ms begin/commit loop. Before the fix, two begins failed with `TimestampRequest channel is closed` after PD resumed. After it, none failed |
+| `feat/public-proto` | `ddd1063` | `pub mod proto`, re-exporting the `tonic` 0.12 and `prost` 0.13 the generated clients use | `tests/proto_tests.rs`, which does not compile without the change; a doc test |
+| `fix/resolve-async-commit-locks` | `f037ebb` | `resolve_locks` resolves an expired async-commit primary through `CheckSecondaryLocks`, as client-go does. Also fixed: `cleanup_locks` committed a transaction that had a rolled-back secondary, and a forced `CheckTxnStatus` returned a cached result | 7 unit tests (4 fail without the change). `txn_read_resolves_expired_async_commit_locks`: 512 locks left by `after-prewrite`; on `ab4be1c` the read fails with `ResolveLockError`, on `loam` it takes 0.43 s and leaves no locks |
+| `fix/async-commit-max-commit-ts` | `6072d81` | Async-commit and 1PC prewrites carry `min_commit_ts` and `max_commit_ts` (start + elapsed + 2 s). TiKV's fallback to 2PC is committed through the primary instead of at a wrong timestamp, and a 1PC fallback commits instead of failing with `OnePcFailure` | 5 unit tests (3 fail without the change) |
+
+**Verification of `loam` (`1f8962b`)** on `tiup playground v8.5.8` (tag `loam-cr`, one TiKV on API v2):
+- client-rust: 118 unit tests, 2 proto tests, 9/9 failpoint tests, 27/27 integration tests and 28/28 sync tests pass. `cargo clippy --all-targets --features integration-tests -- -D clippy::all` and `cargo fmt --check` are clean.
+- Operon on the fork: operon-tikv passes 29 unit tests plus the codec 4, gc 8, keyspace 9 and runner 14 suites. operon-meta-tikv passes 17 unit tests, conformance (61 tests, the 53-case suite) and the fault matrix (3 tests; the 144-cell matrix matches the blessed table) with `TwoPc`, and did once with `Async1pc`. Reruns under load (load average 4–11 from other builds) failed the matrix's two-group `commit_wal` cells with 1 025 records, in both modes. The unchanged `origin/r1-t10` on the upstream pin failed the same cells under the same load (row F4). operon-live passes 5 unit tests plus the docs 9, journal 13, txn 18 and value 13 suites. `operon --features tikv --test meta_tikv` passes 2. `cargo deny check` reports `advisories ok, bans ok, licenses ok, sources ok`.
+
+**What it changed in Operon:**
+- The vendored kvproto protos and `operon-tikv/build.rs` are gone. `pd.rs` uses `tikv_client::proto` (row F2).
+- The TSO supervisor stays as defence in depth (row F3).
+- The metastore and Live keep `TwoPc`. Switching the metastore back to `Async1pc` is an owner question (row F4).
+- `PessimisticRetry` stays the runner's job (row F5).
+
+**Moving the pin.** To pick up upstream, merge upstream master into `loam` (or rebase the topic branches and re-merge them), rerun the client-rust suites and the operon-tikv, operon-meta-tikv and operon-live suites on the playground, and move the `rev` in `Cargo.toml` by a PR. Once a fix merges upstream, its topic branch is dropped from `loam` at the next move.

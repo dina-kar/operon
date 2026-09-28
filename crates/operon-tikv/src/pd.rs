@@ -1,66 +1,21 @@
 //! PD's GC RPCs over gRPC (R1 plan Task 3, rows R5–R6).
 //!
-//! `tikv-client` keeps its generated `pdpb` stubs private, so this module
-//! calls PD through stubs generated from the vendored kvproto protos
-//! (`proto/kvproto`, kvproto `release-8.5` at `07aa8c6`). It uses four RPCs,
-//! the ones PD v8.5.8 implements for cluster GC: `GetMembers` (to find the
-//! leader and the cluster id), `GetGCSafePoint`, `UpdateGCSafePoint` and
-//! `UpdateServiceGCSafePoint`. PD master's GC-state RPCs
-//! (`AdvanceTxnSafePoint`, `AdvanceGCSafePoint`, `SetGCBarrier`,
+//! This module calls PD through the generated `pdpb` client that Loam's
+//! `tikv-client` fork exposes (`tikv_client::proto`, R1 plan row F1), over the
+//! tonic version that client is generated for (`tikv_client::proto::tonic`).
+//! It uses four RPCs, the ones PD v8.5.8 implements for cluster GC:
+//! `GetMembers` (to find the leader and the cluster id), `GetGCSafePoint`,
+//! `UpdateGCSafePoint` and `UpdateServiceGCSafePoint`. PD master's GC-state
+//! RPCs (`AdvanceTxnSafePoint`, `AdvanceGCSafePoint`, `SetGCBarrier`,
 //! `GetGCState`) answer `Unimplemented` on v8.5.8 and are not used.
 
 use std::time::Duration;
 
-use tonic::transport::{Channel, Endpoint};
+use tikv_client::proto;
+use tikv_client::proto::tonic;
+use tikv_client::proto::tonic::transport::{Channel, Endpoint};
 
 use crate::TikvError;
-
-#[allow(
-    dead_code,
-    missing_debug_implementations,
-    missing_docs,
-    clippy::all,
-    clippy::pedantic,
-    unreachable_pub
-)]
-pub(crate) mod proto {
-    pub mod deadlock {
-        tonic::include_proto!("deadlock");
-    }
-    pub mod disk_usage {
-        tonic::include_proto!("disk_usage");
-    }
-    pub mod encryptionpb {
-        tonic::include_proto!("encryptionpb");
-    }
-    pub mod eraftpb {
-        tonic::include_proto!("eraftpb");
-    }
-    pub mod errorpb {
-        tonic::include_proto!("errorpb");
-    }
-    pub mod kvrpcpb {
-        tonic::include_proto!("kvrpcpb");
-    }
-    pub mod metapb {
-        tonic::include_proto!("metapb");
-    }
-    pub mod pdpb {
-        tonic::include_proto!("pdpb");
-    }
-    pub mod raft_serverpb {
-        tonic::include_proto!("raft_serverpb");
-    }
-    pub mod replication_modepb {
-        tonic::include_proto!("replication_modepb");
-    }
-    pub mod resource_manager {
-        tonic::include_proto!("resource_manager");
-    }
-    pub mod tracepb {
-        tonic::include_proto!("tracepb");
-    }
-}
 
 use proto::pdpb::{
     GetGcSafePointRequest, GetMembersRequest, RequestHeader, ResponseHeader,
@@ -263,7 +218,7 @@ impl Conn {
     fn header(&self) -> RequestHeader {
         RequestHeader {
             cluster_id: self.cluster_id,
-            sender_id: 0,
+            ..RequestHeader::default()
         }
     }
 }

@@ -65,13 +65,14 @@ const READ_ATTEMPTS: u32 = 4;
 
 /// How every metastore write commits: classic two-phase commit, not the
 /// handle's default async commit with 1PC (R1 Ruling 3's switch back, row
-/// T6-5). The pinned `tikv-client` resolves a reader's async-commit locks
-/// only through `CheckTxnStatus`, which never rolls back or commits an
-/// async-commit primary; so the locks of a write that failed after its
-/// prewrite (a crash, a lost connection) block every reader and writer of
-/// those keys until the cluster GC loop resolves them below the safe point,
-/// about ten minutes later. A two-phase commit's locks expire after their
-/// TTL (3 s for the metastore's sizes) and the next reader rolls them back.
+/// T6-5). Upstream `tikv-client` resolved a reader's async-commit locks only
+/// through `CheckTxnStatus`, which never rolls back or commits an
+/// async-commit primary, so the locks of a write that failed after its
+/// prewrite blocked every reader and writer of those keys until the cluster
+/// GC loop resolved them, about ten minutes later. Loam's fork resolves them
+/// on the read path (`CheckSecondaryLocks`, row F1), so that reason is gone;
+/// switching back to async commit waits for an owner ruling (row F4), because
+/// hot-head contention under load was not yet reliable with it.
 pub const COMMIT_MODE: CommitMode = CommitMode::TwoPc;
 
 /// How a [`TikvMeta`] reaches its cluster.
