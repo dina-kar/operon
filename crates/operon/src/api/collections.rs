@@ -9,10 +9,12 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use operon_collection::{DocOp, Document, PatchMode, PrimaryKey, SparseVector};
+use operon_query::filter_write::over_limit;
 use operon_query::json::{pk as json_pk, schema as json_schema};
 use operon_query::{
-    Backlog, OpResult, Override, Projection, Query, ReadConsistency, ScanAt, ServiceError,
-    StoredDoc, WriteOptions, alias_actions_from_json, rejected_op_index,
+    Backlog, FilterWriteCursor, FilterWriteOptions, FilterWriteResult, OpResult, Override,
+    PatchSpec, Projection, Query, ReadConsistency, ScanAt, ServiceError, StoredDoc, WriteOptions,
+    alias_actions_from_json, rejected_op_index,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -403,6 +405,124 @@ pub(super) async fn count(
     Ok(with_token(response, &token))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteByFilter {
+    filter: Query,
+    max_rows: Option<u64>,
+    #[serde(default)]
+    allow_partial: bool,
+    cursor: Option<FilterWriteCursor>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PatchByFilter {
+    filter: Query,
+    patch: Value,
+    max_rows: Option<u64>,
+    #[serde(default)]
+    allow_partial: bool,
+    cursor: Option<FilterWriteCursor>,
+}
+
+/// A filter write's options from its request and headers (M1.5 Task 9a
+/// rule 6): `Operon-Consistency-Token` makes the pin at least as new as the
+/// token, and `Operon-Backpressure: off` overrides each batch's budget.
+fn filter_write_options(
+    headers: &HeaderMap,
+    max_rows: Option<u64>,
+    allow_partial: bool,
+    cursor: Option<FilterWriteCursor>,
+) -> Result<FilterWriteOptions, ApiError> {
+    Ok(FilterWriteOptions {
+        consistency: read_consistency(headers, None)?,
+        max_rows,
+        allow_partial,
+        cursor,
+        deadline: None,
+        backpressure: backpressure_of(headers)?,
+    })
+}
+
+/// 200 with the [`FilterWriteResult`] and `Operon-Consistency-Token`; a
+/// call over its limit is 400 with `"matched"` and `"limit"`, and a refused
+/// one carries the backlog headers.
+async fn filter_write_answer(
+    state: &AppState,
+    ns: &str,
+    name: &str,
+    result: Result<FilterWriteResult, ServiceError>,
+) -> ApiResult {
+    match result {
+        Ok(result) => {
+            let response = axum::Json(&result).into_response();
+            Ok(with_token(response, &result.token))
+        }
+        Err(err @ ServiceError::ResourceExhausted { .. }) => {
+            let backlog = state
+                .collections
+                .collection_backlog(ns, name)
+                .await
+                .unwrap_or_default();
+            Ok(with_backlog(ApiError::from(err).into_response(), backlog))
+        }
+        Err(err) => Err(match over_limit(&err) {
+            Some((matched, limit)) => ApiError::from(err)
+                .with("matched", matched)
+                .with("limit", limit),
+            None => ApiError::from(err),
+        }),
+    }
+}
+
+/// `POST …/collections/{c}/documents/delete_by_filter` (M1.5 Task 9a,
+/// D87).
+pub(super) async fn delete_by_filter(
+    State(state): State<AppState>,
+    path: Result<Path<(String, String)>, PathRejection>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult {
+    let (Path((ns, name)), body) = (path?, body?);
+    let request: DeleteByFilter = parse_json(&body)?;
+    let opts = filter_write_options(
+        &headers,
+        request.max_rows,
+        request.allow_partial,
+        request.cursor,
+    )?;
+    let result = state
+        .collections
+        .delete_by_filter(&ns, &name, request.filter, opts)
+        .await;
+    filter_write_answer(&state, &ns, &name, result).await
+}
+
+/// `POST …/collections/{c}/documents/patch_by_filter` (M1.5 Task 9a,
+/// D87).
+pub(super) async fn patch_by_filter(
+    State(state): State<AppState>,
+    path: Result<Path<(String, String)>, PathRejection>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult {
+    let (Path((ns, name)), body) = (path?, body?);
+    let request: PatchByFilter = parse_json(&body)?;
+    let patch = patch_spec_from_json(&request.patch)?;
+    let opts = filter_write_options(
+        &headers,
+        request.max_rows,
+        request.allow_partial,
+        request.cursor,
+    )?;
+    let result = state
+        .collections
+        .patch_by_filter(&ns, &name, request.filter, patch, opts)
+        .await;
+    filter_write_answer(&state, &ns, &name, result).await
+}
+
 /// A stored document's native JSON: its serde form with the key under
 /// `"id"` (`{"id", "source", "vectors", "sparse_vectors"?, "fields",
 /// "seq_no", "partition"}`).
@@ -544,6 +664,50 @@ fn doc_from_json(
             sparse(i, name, v)
         })?,
     })
+}
+
+/// A filter write's `patch`: an op's `patch` object without `id` and
+/// `upsert`, with the same defaults (M1.6 W-table).
+fn patch_spec_from_json(value: &Value) -> Result<PatchSpec, ServiceError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| ServiceError::InvalidArgument("patch must be an object".to_string()))?;
+    if let Some(key) = object
+        .keys()
+        .find(|key| matches!(key.as_str(), "id" | "upsert"))
+    {
+        return Err(ServiceError::InvalidArgument(format!(
+            "unknown key {key} in patch: a filter write patches the matching documents and never creates one"
+        )));
+    }
+    let mut keyed = object.clone();
+    keyed.insert("id".to_string(), json!(0));
+    match patch_from_json(0, &Value::Object(keyed)) {
+        Ok(DocOp::Patch {
+            mode,
+            source,
+            delete_keys,
+            vectors,
+            sparse_vectors,
+            ..
+        }) => Ok(PatchSpec {
+            mode,
+            source,
+            delete_keys,
+            vectors,
+            sparse_vectors,
+        }),
+        Ok(_) => Err(ServiceError::Internal(
+            "a patch parsed as another op".to_string(),
+        )),
+        Err(ServiceError::InvalidArgument(message)) => Err(ServiceError::InvalidArgument(
+            message
+                .strip_prefix("op 0: ")
+                .unwrap_or(&message)
+                .to_string(),
+        )),
+        Err(err) => Err(err),
+    }
 }
 
 fn patch_from_json(i: usize, value: &Value) -> Result<DocOp, ServiceError> {

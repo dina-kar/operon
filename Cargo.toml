@@ -19,10 +19,19 @@ async-trait = "0.1"
 axum = "0.8"
 base64 = "0.22"
 bitpacking = "0.9.3"
+buffa = "0.9.2"
 bytes = "1"
 bytesize = "2.4"
 clap = { version = "4", features = ["derive"] }
+# The Loam Live sync API (R1 plan Task 7, row R12). Crates add `axum` (the
+# server, Task 12); operon-live-proto's `client` feature adds `client`.
+connectrpc = "0.9.1"
+connectrpc-build = "0.9"
+# CRC-16 of Loam Live document ids (R1 plan Task 8).
+crc = "3"
 crc32c = "0.6"
+# Crockford base32 of Loam Live document ids (R1 plan Task 8).
+data-encoding = "2"
 # Lance's feature set (no parquet or compression): adding operon-query does
 # not rebuild DataFusion for the workspace.
 datafusion = { version = "54.1", default-features = false, features = [
@@ -92,6 +101,9 @@ resonate-transport-http-push = { git = "https://github.com/dina-kar/resonate", r
 rmcp = { version = "3.4.1", features = ["server", "transport-streamable-http-server"] }
 roaring = "0.11"
 rustc-hash = "2"
+# The TLS library under sqlx (0.23, ring): operon-durable sets the process
+# default crypto provider when none is set (D1 Task 5, T5-4).
+rustls = { version = "0.23", default-features = false }
 serde = { version = "1", features = ["derive"] }
 # `preserve_order`: qdrant-edge needs it, and Cargo unifies features, so the
 # whole workspace uses one insertion-ordered map type (M1.3 row E58).
@@ -100,16 +112,23 @@ serde_json_borrow = "0.9"
 serde_with = "3"
 sha2 = "0.11"
 slatedb = { version = "0.16", default-features = false }
+# The MySQL driver resonate-server-mysql uses (0.8.6, rustls); operon-durable
+# checks a TiDB store's schema with it before serving (D1 Task 4).
+sqlx = { version = "0.8.6", default-features = false }
 tantivy = { version = "=0.26.2", default-features = false, features = ["quickwit", "mmap", "stopwords", "stemmer", "lz4-compression", "zstd-compression", "columnar-zstd-compression"] }
 tantivy-fst = "0.5"
 tempfile = "3"
 thiserror = "2"
-# A git pin, not crates.io 0.4.0: 0.4.0 fails cargo-deny's advisories through
-# tonic 0.10 and reports lost async-commit and 1PC acknowledgements as plain
-# errors (R1 plan row R4). Default features pull in openssl, procfs and
+# Loam's fork of tikv/client-rust, pinned by rev: branch `loam` of
+# dina-kar/client-rust, upstream ab4be1c plus the TSO stream reconnect, the
+# public generated protos, async-commit lock resolution on the read path and
+# async commit's max_commit_ts (docs/plans/r1-dependency-spike.md, "The
+# client-rust fork"). Not crates.io 0.4.0: it fails cargo-deny's advisories
+# through tonic 0.10 and reports lost async-commit and 1PC acknowledgements as
+# plain errors (R1 plan row R4). Default features pull in openssl, procfs and
 # protobuf 2 through prometheus. The pin moves only by a PR that reruns the
-# operon-tikv and operon-meta-tikv suites.
-tikv-client = { git = "https://github.com/tikv/client-rust", rev = "ab4be1c2cdd58d4e593202991fb520221c83bdfd", default-features = false }
+# operon-tikv, operon-meta-tikv and operon-live suites.
+tikv-client = { git = "https://github.com/dina-kar/client-rust", rev = "1f8962b00b33ebc6f34b72d6c52d08b8a8e1906e", default-features = false }
 time = { version = "0.3", features = ["std", "formatting", "parsing", "macros"] }
 time-fmt = "0.3.8"
 tokio = { version = "1", features = ["full"] }
@@ -129,10 +148,13 @@ zstd = "0.13"
 operon-cache = { path = "crates/operon-cache", version = "0.0.1" }
 operon-collection = { path = "crates/operon-collection", version = "0.0.1" }
 operon-common = { path = "crates/operon-common", version = "0.0.1" }
+operon-durable = { path = "crates/operon-durable", version = "0.0.1" }
 operon-es = { path = "crates/operon-es", version = "0.0.1" }
 operon-hnsw = { path = "crates/operon-hnsw", version = "0.0.1" }
 operon-hot = { path = "crates/operon-hot", version = "0.0.1" }
 operon-link = { path = "crates/operon-link", version = "0.0.1" }
+operon-live = { path = "crates/operon-live", version = "0.0.1" }
+operon-live-proto = { path = "crates/operon-live-proto", version = "0.0.1" }
 operon-log = { path = "crates/operon-log", version = "0.0.1" }
 operon-meta = { path = "crates/operon-meta", version = "0.0.1" }
 operon-meta-conformance = { path = "crates/operon-meta-conformance", version = "0.0.1" }

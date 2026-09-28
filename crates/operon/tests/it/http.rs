@@ -776,6 +776,7 @@ impl Dev {
                 "--flight-sql-listen",
                 "127.0.0.1:0",
                 "--no-qdrant",
+                "--no-durable",
                 "--no-es",
             ])
             .arg("--data-dir")
@@ -1081,6 +1082,7 @@ fn a_build_without_failpoints_refuses_to_arm_them() {
             "--flight-sql-listen",
             "127.0.0.1:0",
             "--no-qdrant",
+            "--no-durable",
             "--no-es",
         ])
         .arg("--data-dir")
@@ -1312,6 +1314,7 @@ fn the_dev_binary_prints_the_flight_sql_line() {
             "--flight-sql-listen",
             "127.0.0.1:0",
             "--no-qdrant",
+            "--no-durable",
             "--no-es",
         ])
         .arg("--data-dir")

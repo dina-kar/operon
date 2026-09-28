@@ -22,6 +22,8 @@ http.workspace = true
 operon-cache.workspace = true
 operon-collection.workspace = true
 operon-common.workspace = true
+# The embedded Resonate server (D1), with the durable feature only.
+operon-durable = { workspace = true, optional = true }
 operon-es = { workspace = true, optional = true }
 operon-hnsw.workspace = true
 operon-hot.workspace = true
@@ -47,12 +49,14 @@ ulid.workspace = true
 url.workspace = true
 
 [features]
-default = ["es", "flight", "hnsw", "meta-tikv", "qdrant"]
+default = ["es", "flight", "hnsw", "qdrant"]
 # Serve the Elasticsearch REST API (plan M1.5; `--es-listen`).
 es = ["dep:operon-es"]
 # The TiKV metastore (R1 plan Task 6; `--meta tikv://…` on `dev` and
-# `standalone`), with the cluster MVCC GC loop it runs.
-meta-tikv = ["dep:operon-meta-tikv", "dep:operon-tikv"]
+# `standalone`), with the cluster MVCC GC loop it runs. Off by default (owner
+# ruling T7-3): it pulls in the git-pinned tikv-client (row R4), which the
+# default build must not. CI's TiKV jobs build with `--features tikv`.
+tikv = ["dep:operon-meta-tikv", "dep:operon-tikv"]
 # Serve Arrow Flight SQL (Task 12; `--flight-sql-listen`).
 flight = []
 # Serve the Qdrant REST and gRPC APIs (plan M1.4; `--qdrant-listen`).
@@ -60,6 +64,13 @@ qdrant = ["dep:operon-qdrant"]
 # The qdrant-edge HNSW engine for hot artifacts (M1.3); without it the hot
 # tier builds only when `ServerConfig.hnsw_engine` is set.
 hnsw = ["operon-hot/hnsw"]
+# Durable execution (D1, design §21): the embedded Resonate server on SQLite,
+# on 127.0.0.1:8001 (--durable-*). Opt-in (owner ruling O1): toggling it
+# rebuilds about 480 crates. Release builds, CI's durable jobs and the Loam
+# cloud build turn it on; without it, a --durable-* flag only logs.
+durable = ["dep:operon-durable"]
+# The TiDB durable store through Resonate's MySQL plugin (D1 Task 4).
+durable-mysql = ["durable", "operon-durable/mysql"]
 # Builds the multi-process cluster tests (`tests/cluster.rs`, M1.3 Task 11;
 # E43); CI runs them in their own job.
 cluster-tests = []
@@ -82,14 +93,15 @@ arrow-flight.workspace = true
 arrow-schema.workspace = true
 futures.workspace = true
 object_store.workspace = true
+# The reference evaluator of the ES DSL tests (plan M1.5 Task 7).
+operon-es = { workspace = true, features = ["test-util"] }
 # The reference evaluator of the Qdrant filter tests (plan M1.4 Task 4).
 operon-qdrant = { workspace = true, features = ["test-util"] }
-# tests/meta_tikv.rs: the cluster harness (operon_tikv::testing).
-operon-tikv.workspace = true
 proptest.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 tempfile.workspace = true
+time.workspace = true
 tonic = { workspace = true, features = ["gzip"] }
 
 [lints]

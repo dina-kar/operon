@@ -48,11 +48,13 @@ async fn errors_and_head_carry_the_product_header() {
     );
     assert_eq!(a.body["error"]["index"], "missing");
     assert_eq!(a.header("x-elastic-product"), PRODUCT);
-    let a = es.get("/nope/_x/y/z").await;
-    a.assert_error(
-        400,
-        "illegal_argument_exception",
-        Some("no handler found for uri [/nope/_x/y/z] and method [GET]"),
+    // ES's shape for an unknown route: a string `error`, no `status`
+    // (checked against the 8.19 oracle, row T11-3).
+    let a = es.get("/nope/_x/y/z?p=1").await;
+    assert_eq!(a.status, StatusCode::BAD_REQUEST, "{}", a.text);
+    assert_eq!(
+        a.body,
+        json!({"error": "no handler found for uri [/nope/_x/y/z?p=1] and method [GET]"})
     );
     assert_eq!(a.header("x-elastic-product"), PRODUCT);
     es.server.shutdown().await.expect("shutdown");
@@ -66,11 +68,29 @@ async fn a_wrong_method_is_405_with_the_allowed_list() {
     assert_eq!(
         a.body,
         json!({
-            "error": "Incorrect HTTP method for uri [/_license] and method [DELETE], allowed: [GET, HEAD]",
+            "error": "Incorrect HTTP method for uri [/_license] and method [DELETE], allowed: [GET]",
             "status": 405,
         })
     );
     assert_eq!(a.header("x-elastic-product"), PRODUCT);
+    // ES's order, and `HEAD` only where ES registers it (row T11-3).
+    Es::ok(es.put("/i", None).await);
+    for (method, path, allowed) in [
+        (Method::PATCH, "/i", "GET, PUT, DELETE, HEAD"),
+        (Method::PATCH, "/i/_doc/1", "GET, POST, PUT, DELETE, HEAD"),
+        (Method::DELETE, "/i/_mapping", "GET, POST, PUT"),
+        (Method::DELETE, "/i/_search", "GET, POST"),
+    ] {
+        let a = es.send(method.clone(), path, None, &[]).await;
+        assert_eq!(
+            a.body["error"],
+            format!(
+                "Incorrect HTTP method for uri [{path}] and method [{method}], allowed: [{allowed}]"
+            ),
+            "{}",
+            a.text
+        );
+    }
     es.server.shutdown().await.expect("shutdown");
 }
 
@@ -174,8 +194,14 @@ async fn cluster_health_is_green() {
     assert_eq!(a.body["active_shards"], 5);
     let a = es.get("/_cluster/health/b").await;
     assert_eq!(a.body["active_primary_shards"], 3, "{}", a.text);
-    let a = es.get("/_cluster/health/missing").await;
-    a.assert_error(404, "index_not_found_exception", None);
+    // A missing index: 408 red, as ES answers when its wait times out
+    // (O-M15-7, row T11-3).
+    let a = es.get("/_cluster/health/missing?timeout=1s").await;
+    assert_eq!(a.status.as_u16(), 408, "{}", a.text);
+    assert_eq!(a.body["status"], "red");
+    assert_eq!(a.body["timed_out"], true);
+    assert_eq!(a.body["active_primary_shards"], 0);
+    assert_eq!(a.body["unassigned_primary_shards"], 0);
     es.server.shutdown().await.expect("shutdown");
 }
 
@@ -251,6 +277,20 @@ async fn the_hot_header_is_honoured() {
         Some("invalid Operon-Hot header [maybe] (expected on or off)"),
     );
     assert_eq!(a.header("x-elastic-product"), PRODUCT);
+    // `/i/_search` (Task 9): the search itself runs without hot structures.
+    let a = es
+        .send(Method::GET, "/i/_search", None, &[("operon-hot", "off")])
+        .await;
+    assert_eq!(a.status, StatusCode::OK, "{}", a.text);
+    assert_eq!(a.header("operon-hot-used"), "none");
+    let a = es
+        .send(Method::GET, "/i/_search", None, &[("operon-hot", "maybe")])
+        .await;
+    a.assert_error(
+        400,
+        "illegal_argument_exception",
+        Some("invalid Operon-Hot header [maybe] (expected on or off)"),
+    );
     es.server.shutdown().await.expect("shutdown");
 }
 
@@ -259,7 +299,7 @@ async fn the_namespace_header_selects_the_namespace() {
     let es = Es::start().await;
     es.create_raw("tenant1", "x", None).await;
     let a = es.get("/_cluster/health/x").await;
-    a.assert_error(404, "index_not_found_exception", None);
+    assert_eq!(a.status.as_u16(), 408, "{}", a.text);
     let a = es.head("/x").await;
     assert_eq!(a.status, StatusCode::NOT_FOUND);
     let tenant = [("operon-namespace", "tenant1")];

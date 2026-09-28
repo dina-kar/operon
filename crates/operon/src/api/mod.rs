@@ -158,6 +158,14 @@ pub fn router(state: AppState) -> Router {
             &format!("{collection}/documents/count"),
             post(collections::count),
         )
+        .route(
+            &format!("{collection}/documents/delete_by_filter"),
+            post(collections::delete_by_filter),
+        )
+        .route(
+            &format!("{collection}/documents/patch_by_filter"),
+            post(collections::patch_by_filter),
+        )
         .route("/v1/namespaces/{ns}/query", post(query::search))
         .route("/v1/namespaces/{ns}/sql", post(sql::sql))
         .merge(hot::routes())

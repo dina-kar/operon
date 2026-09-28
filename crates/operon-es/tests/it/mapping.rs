@@ -201,13 +201,28 @@ fn dense_vector_similarities_map_to_distances() {
     assert_eq!(e.kind, "mapper_parsing_exception");
     assert_eq!(
         e.reason,
+        "Failed to parse mapping: The number of dimensions should be in the range [1, 4096] but \
+         was [5000]"
+    );
+    // ES's wrapping: the inner error is the root cause and `caused_by`.
+    let body = e.to_body();
+    assert_eq!(
+        body["error"]["root_cause"][0]["reason"],
         "The number of dimensions should be in the range [1, 4096] but was [5000]"
+    );
+    assert_eq!(
+        body["error"]["caused_by"],
+        json!({"type": "mapper_parsing_exception", "reason": "The number of dimensions should be in the range [1, 4096] but was [5000]"})
     );
     let e = create_err(
         json!({"properties": {"v": {"type": "dense_vector", "dims": 3, "similarity": "hamming"}}}),
         None,
     );
-    assert_eq!(e.reason, "Unknown vector similarity [hamming]");
+    assert_eq!(
+        e.reason,
+        "Failed to parse mapping: Unknown value [hamming] for field [similarity] - accepted \
+         values are [l2_norm, cosine, dot_product, max_inner_product]"
+    );
 
     // Without dims the vector waits for its first document.
     let schema = create(json!({"properties": {"v": {"type": "dense_vector"}}}));
@@ -272,7 +287,7 @@ fn nested_and_unknown_types_are_refused() {
     let e = create_err(json!({"properties": {"x": {"type": "foo"}}}), None);
     assert!(
         e.reason
-            .ends_with("No handler for type [foo] declared on field [x]"),
+            .ends_with("The mapper type [foo] declared on field [x] does not exist. It might have been created within a future version or requires a plugin to be installed. Check the documentation."),
         "{}",
         e.reason
     );
@@ -290,7 +305,7 @@ fn nested_and_unknown_types_are_refused() {
     );
     assert_eq!(
         e.reason,
-        "unknown parameter [bogus] on mapper [x] of type [keyword]"
+        "Failed to parse mapping: unknown parameter [bogus] on mapper [x] of type [keyword]"
     );
     let e = create_err(
         json!({"properties": {"x": {"type": "text", "analyzer": "french"}}}),
@@ -305,8 +320,9 @@ fn nested_and_unknown_types_are_refused() {
     let e = create_err(json!({"properties": {}, "_meta": {"a": 1}}), None);
     assert_eq!(e.kind, "mapper_parsing_exception");
     assert!(
-        e.reason
-            .starts_with("Root mapping definition has unsupported parameters:"),
+        e.reason.starts_with(
+            "Failed to parse mapping: Root mapping definition has unsupported parameters:"
+        ),
         "{}",
         e.reason
     );
@@ -403,11 +419,13 @@ fn dynamic_fields_follow_es_rules() {
     .schema();
     let view = IndexView::new(info(limited));
     let e = dynamic_plan(&view, &obj(json!({"s": "text"}))).expect_err("over the limit");
-    assert_eq!(e.kind, "illegal_argument_exception");
+    assert_eq!(e.kind, "document_parsing_exception");
     assert_eq!(
         e.reason,
-        "Limit of total fields [2] has been exceeded while adding new fields [2]"
+        "[1:1] failed to parse: Limit of total fields [2] has been exceeded while adding new \
+         fields [2]"
     );
+    assert_eq!(e.extra["caused_by"]["type"], "illegal_argument_exception");
 }
 
 #[test]
@@ -477,12 +495,12 @@ fn strict_dynamic_is_reported_with_es_wording() {
     );
     assert_eq!(
         e.reason,
-        "[dynamic] set to [strict], dynamic introduction of [b] within [a] is not allowed"
+        "[1:1] mapping set to strict, dynamic introduction of [b] within [a] is not allowed"
     );
     let e = dynamic_plan(&view, &obj(json!({"z": {"y": 1}}))).expect_err("top level");
     assert_eq!(
         e.reason,
-        "[dynamic] set to [strict], dynamic introduction of [z] within [_doc] is not allowed"
+        "[1:1] mapping set to strict, dynamic introduction of [z] within [_doc] is not allowed"
     );
     assert!(
         dynamic_plan(&view, &obj(json!({"a": {"c": 5}})))

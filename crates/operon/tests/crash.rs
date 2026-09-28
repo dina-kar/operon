@@ -88,8 +88,8 @@ fn gate_meta(dir: &Path) -> Option<String> {
     let base = std::env::var(GATE_META_ENV)
         .ok()
         .filter(|v| !v.trim().is_empty())?;
-    if !cfg!(feature = "meta-tikv") {
-        panic!("{GATE_META_ENV} needs the meta-tikv feature");
+    if !cfg!(feature = "tikv") {
+        panic!("{GATE_META_ENV} needs the tikv feature (build with --features tikv)");
     }
     let url = format!(
         "{}?root={:032x}",
@@ -113,7 +113,7 @@ fn skipped_on_tikv(row: &str) -> bool {
 /// A metastore opened in this process while no server runs.
 enum OpenMeta {
     Raft(MetaNode),
-    #[cfg(feature = "meta-tikv")]
+    #[cfg(feature = "tikv")]
     Tikv,
 }
 
@@ -121,14 +121,14 @@ impl OpenMeta {
     async fn shutdown(self) {
         match self {
             OpenMeta::Raft(node) => node.shutdown().await.expect("shutdown"),
-            #[cfg(feature = "meta-tikv")]
+            #[cfg(feature = "tikv")]
             OpenMeta::Tikv => {}
         }
     }
 }
 
 /// The TiKV metastore named by `url`.
-#[cfg(feature = "meta-tikv")]
+#[cfg(feature = "tikv")]
 async fn open_tikv(url: &str) -> operon_meta_tikv::TikvMeta {
     match operon::MetaBackend::parse(url).expect("the gate's metastore URL") {
         operon::MetaBackend::Tikv(config) => operon_meta_tikv::TikvMeta::open(config)
@@ -173,6 +173,8 @@ impl Dev {
                 "127.0.0.1:0",
                 // Nor the Qdrant gateway's.
                 "--no-qdrant",
+                // Nor the durable listener's (feature durable).
+                "--no-durable",
                 "--no-es",
             ])
             .arg("--data-dir")
@@ -648,7 +650,7 @@ async fn check(api: &Api, model: &Model, what: &str) {
 /// Opens the stopped server's metastore in this process and checks its
 /// invariants.
 async fn check_meta(dir: &Path, what: &str) {
-    #[cfg(feature = "meta-tikv")]
+    #[cfg(feature = "tikv")]
     if let Some(url) = gate_meta(dir) {
         let violations = open_tikv(&url)
             .await
@@ -854,7 +856,7 @@ fn bucket_store(dir: &Path) -> Store {
 /// The stopped server's metastore, opened in this process: the embedded
 /// one, or the gate's TiKV root.
 async fn open_meta(dir: &Path, store: &Store) -> (OpenMeta, Arc<dyn MetaStore>) {
-    #[cfg(feature = "meta-tikv")]
+    #[cfg(feature = "tikv")]
     if let Some(url) = gate_meta(dir) {
         return (OpenMeta::Tikv, Arc::new(open_tikv(&url).await));
     }

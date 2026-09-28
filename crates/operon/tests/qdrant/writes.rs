@@ -733,6 +733,39 @@ async fn payload_ops_by_filter_touch_only_matches() {
     }
 }
 
+#[tokio::test]
+async fn set_payload_with_key_by_filter_keeps_qdrant_semantics() {
+    // A plain key with scalar values runs as a native MergeDeep patch; an
+    // object or a null value keeps the read-modify-write (M1.4 row E4 (a)),
+    // so the object replaces and the null removes, as Qdrant's value_set.
+    let qd = Qd::start().await;
+    with_payload(&qd, "sk", json!({"sub": {"k": {"a": 1, "b": 2}, "x": 1}})).await;
+    let both = json!({"must": [{"has_id": [1, 2]}]});
+    ok(
+        &qd,
+        "POST",
+        "sk",
+        "/payload",
+        json!({"payload": {"y": 2}, "filter": both, "key": "sub"}),
+    )
+    .await;
+    ok(
+        &qd,
+        "POST",
+        "sk",
+        "/payload",
+        json!({"payload": {"k": {"a": 9}, "x": null}, "filter": both, "key": "sub"}),
+    )
+    .await;
+    for id in [1, 2] {
+        assert_eq!(
+            payload_of(&qd, "sk", id).await,
+            json!({"sub": {"k": {"a": 9}, "y": 2}}),
+            "point {id}"
+        );
+    }
+}
+
 // ----- vectors -----
 
 async fn create_named(qd: &Qd, name: &str) {
@@ -1090,6 +1123,9 @@ async fn paused(records: u64, chunk: usize) -> Qd {
         config.link.batch_records = 1_000_000;
         config.query.backpressure.max_unapplied_records = records;
         config.query.backpressure.refresh_interval = Duration::ZERO;
+        // The native writes by filter batch by the service's size (D87);
+        // the read-modify-writes by filter by the gateway's chunk.
+        config.query.filter_write_batch = chunk;
         if let Some(qdrant) = config.qdrant.as_mut() {
             qdrant.filter_write_chunk = chunk;
         }
@@ -1157,25 +1193,31 @@ async fn a_refused_filter_write_chunk_is_429_after_the_written_chunks() {
     let qd = paused(5, 2).await;
     create_single(&qd, "fc", "Dot").await;
     seed(&qd, "fc", 4).await;
-    // Chunk 1 (2 deletes) is admitted at 4 unapplied records; chunk 2 is
-    // refused at 6 and retried until the 1 s timeout would pass.
+    // The native delete by filter (D87): batch 1 (2 deletes) is admitted
+    // at 4 unapplied records; batch 2 is refused at 6 and retried until the
+    // 1 s timeout would pass, then the answer is 429.
     let all_points = json!({"filter": {"must": [{"key": "n", "range": {"gte": 0}}]}});
-    let response = qd
-        .http
-        .post(format!(
-            "{}/collections/fc/points/delete?wait=true&timeout=1",
-            qd.rest
-        ))
-        .json(&all_points)
-        .send()
-        .await
-        .expect("send");
+    let delete = || async {
+        qd.http
+            .post(format!(
+                "{}/collections/fc/points/delete?wait=true&timeout=1",
+                qd.rest
+            ))
+            .json(&all_points)
+            .send()
+            .await
+            .expect("send")
+    };
+    let response = delete().await;
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     assert!(retry_after(&response) >= 1);
     assert_eq!(count(&qd, "fc").await, 2);
-    // Now the first chunk is refused: 429 at once, nothing written.
-    let (status, _) = write(&qd, "POST", "fc", "/delete", all_points).await;
-    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    // Now the first batch is refused too: it waits out the timeout (the
+    // native write retries every batch, M1.5 row T9a-9), and nothing is
+    // written.
+    let response = delete().await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(retry_after(&response) >= 1);
     assert_eq!(count(&qd, "fc").await, 2);
 }
 

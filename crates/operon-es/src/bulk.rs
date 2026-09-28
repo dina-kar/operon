@@ -11,11 +11,11 @@ use axum::response::Response;
 use operon_collection::ConsistencyToken;
 use serde_json::{Map, Value, json};
 
+use crate::doc::SourceFilter;
 use crate::error::EsError;
 use crate::http::{Params, RequestCtx, fail, respond};
 use crate::write::{
     ItemOutcome, WriteCall, WriteItem, check_occ, execute, occ_unsupported, refresh_param,
-    source_param,
 };
 use crate::{EsGateway, TOKEN_HEADER};
 
@@ -138,6 +138,7 @@ pub fn parse_ndjson(body: &[u8]) -> Result<Vec<BulkLine>, EsError> {
                 format!("expected START_OBJECT but found [{}]", token_name(&value)),
             ));
         };
+        // ES reads the first key and ignores any other (row T11-3).
         let mut entries = object.into_iter();
         let Some((name, meta)) = entries.next() else {
             return Err(malformed(
@@ -153,12 +154,6 @@ pub fn parse_ndjson(body: &[u8]) -> Result<Vec<BulkLine>, EsError> {
                 ),
             ));
         };
-        if entries.next().is_some() {
-            return Err(malformed(
-                line_no,
-                "expected END_OBJECT but found [FIELD_NAME]".to_string(),
-            ));
-        }
         let Value::Object(meta) = meta else {
             return Err(malformed(
                 line_no,
@@ -290,10 +285,18 @@ async fn run(
         check_occ(&params)?;
         let refresh = refresh_param(&params)?;
         let require_alias = params.bool("require_alias")?.unwrap_or(false);
-        let source_on_update = source_param(&params)?;
+        let source_on_update = SourceFilter::from_params(&params)?;
         let lines = parse_ndjson(body)?;
         if lines.iter().any(|l| l.index.is_none()) && path_index.is_none() {
             return Err(validation("index is missing"));
+        }
+        // An update or delete without `_id` fails the whole request, as
+        // ES's `BulkRequest.validate` does (row T11-3).
+        if lines
+            .iter()
+            .any(|l| matches!(l.action, BulkAction::Update | BulkAction::Delete) && l.id.is_none())
+        {
+            return Err(validation("id is missing"));
         }
         Ok::<_, EsError>((params, refresh, require_alias, source_on_update, lines))
     })();
@@ -341,15 +344,14 @@ async fn run(
                 source: source.unwrap_or(Value::Null),
                 create: line.action == BulkAction::Create,
             },
-            (BulkAction::Update, Some(id)) => WriteItem::Update {
-                id,
+            // Both have an `_id`: checked before the groups.
+            (BulkAction::Update, id) => WriteItem::Update {
+                id: id.unwrap_or_default(),
                 body: source.unwrap_or(Value::Null),
             },
-            (BulkAction::Delete, Some(id)) => WriteItem::Delete { id },
-            (BulkAction::Update | BulkAction::Delete, None) => {
-                outcomes[i] = Some(item_error(validation("id is missing")));
-                continue;
-            }
+            (BulkAction::Delete, id) => WriteItem::Delete {
+                id: id.unwrap_or_default(),
+            },
         };
         let key = GroupKey {
             index,

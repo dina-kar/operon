@@ -10,7 +10,7 @@
 //! in ES, and turns `OpResult`s and positions into ES results, `_version`
 //! and `_seq_no` (Ruling 4).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -20,15 +20,15 @@ use operon_collection::{
     CollectionSchema, ConsistencyToken, DocOp, DocRejection, Document, FieldSpec, MAX_WRITE_OPS,
     PatchMode, PrimaryKey, VectorSpec, Violation, check_document, check_patch, extract,
 };
-use operon_query::exec::filter_source;
 use operon_query::{
-    OpPosition, OpResult, Projection, ReadConsistency, ServiceError, SourceFilter, WriteOptions,
+    OpPosition, OpResult, Projection, ReadConsistency, ServiceError,
+    SourceFilter as IrSourceFilter, WriteOptions,
 };
 use serde_json::{Map, Value, json};
 
 use crate::doc::{
-    check_source, field_error, merge_deep, not_an_object, restore_vectors, split_vectors,
-    to_document, validate_id,
+    SourceFilter, check_source, field_error, merge_deep, not_an_object, restore_vectors,
+    split_vectors, to_document, validate_id,
 };
 use crate::error::{ErrorContext, EsError};
 use crate::http::{Params, RequestCtx, fail, json_body, respond};
@@ -290,14 +290,11 @@ async fn resolve(call: &WriteCall<'_>, items: &[WriteItem]) -> Result<Target, Es
         }
         None if call.require_alias => return Err(require_alias_error(call.index)),
         None => {
-            let creates = items.iter().any(|item| match item {
-                WriteItem::Index { .. } => true,
-                WriteItem::Update { body, .. } => {
-                    body.get("upsert").is_some_and(|u| !u.is_null())
-                        || body.get("doc_as_upsert") == Some(&Value::Bool(true))
-                }
-                WriteItem::Delete { .. } => false,
-            });
+            // ES auto-creates the index for an index or an update item,
+            // even an update that then finds no document (row T11-3).
+            let creates = items
+                .iter()
+                .any(|item| !matches!(item, WriteItem::Delete { .. }));
             if !creates {
                 return Err(EsError::index_not_found(call.index));
             }
@@ -474,7 +471,7 @@ impl Engine<'_, '_> {
                 }
             };
             let prepared = prepared.and_then(|prepared| {
-                let (vectors, fields) = plan_additions(&view, &prepared)?;
+                let (vectors, fields) = plan_additions(&view, &id, &prepared)?;
                 if !vectors.is_empty() || !fields.is_empty() {
                     let mut info = view.info.clone();
                     for (spec, annotation) in vectors {
@@ -552,14 +549,17 @@ impl Engine<'_, '_> {
 
     /// Step 7: one strong batch `get` of the keys updates and creates need.
     async fn pre_read(&self) -> Result<HashMap<PrimaryKey, Option<Current>>, ServiceError> {
+        // First-appearance order; `seen` keeps the scan linear (a `_bulk`
+        // group can hold hundreds of thousands of items).
         let mut pks: Vec<PrimaryKey> = Vec::new();
+        let mut seen: HashSet<PrimaryKey> = HashSet::new();
         for (i, slot) in self.slots.iter().enumerate() {
             let needs = matches!(
                 slot,
                 Slot::Ready(Prepared::Update { .. } | Prepared::Index { create: true, .. })
             );
             let pk = PrimaryKey::Str(self.ids[i].0.clone());
-            if needs && !pks.contains(&pk) {
+            if needs && seen.insert(pk.clone()) {
                 pks.push(pk);
             }
         }
@@ -569,7 +569,7 @@ impl Engine<'_, '_> {
         }
         let service = self.call.gateway.service();
         let select = Projection {
-            source: SourceFilter::All,
+            source: IrSourceFilter::All,
             vectors: self.target.view.es.vectors.keys().cloned().collect(),
             fields: Vec::new(),
         };
@@ -799,7 +799,7 @@ impl Engine<'_, '_> {
         }
         let service = self.call.gateway.service();
         let select = Projection {
-            source: SourceFilter::All,
+            source: IrSourceFilter::All,
             vectors: self.target.view.es.vectors.keys().cloned().collect(),
             fields: Vec::new(),
         };
@@ -982,8 +982,8 @@ fn add_get(body: &mut Map<String, Value>, seq_no: u64, get: Option<(SourceFilter
     get.insert("_seq_no".to_string(), json!(seq_no));
     get.insert("_primary_term".to_string(), json!(1));
     get.insert("found".to_string(), json!(true));
-    if let Some(filtered) = filter_source(&source, &filter) {
-        get.insert("_source".to_string(), Value::Object(filtered));
+    if filter.enabled {
+        get.insert("_source".to_string(), Value::Object(filter.apply(source)));
     }
     body.insert("get".to_string(), Value::Object(get));
 }
@@ -1046,7 +1046,7 @@ fn prepare_update(
         Some(Value::Object(doc)) => doc.clone(),
         Some(_) => return Err(not_an_object()),
     };
-    check_source(view, id, &source)?;
+    check_source(id, &source)?;
     let vectors = split_vectors(view, id, &mut source)?;
     let upsert = match body.get("upsert") {
         None | Some(Value::Null) => None,
@@ -1055,9 +1055,10 @@ fn prepare_update(
     };
     let get = match body.get("_source") {
         None => param_filter.cloned(),
-        Some(value) => source_filter_of_body(value)?,
+        Some(Value::Null) => None,
+        Some(value) => Some(SourceFilter::from_body(value)?),
     }
-    .filter(|filter| *filter != SourceFilter::None);
+    .filter(|filter| filter.enabled);
     Ok(Prepared::Update {
         source,
         vectors,
@@ -1065,39 +1066,6 @@ fn prepare_update(
         doc_as_upsert,
         detect_noop,
         get,
-    })
-}
-
-/// The `_source` of an `_update` body: a bool, a pattern, a list, or
-/// `{"includes", "excludes"}`.
-fn source_filter_of_body(value: &Value) -> Result<Option<SourceFilter>, EsError> {
-    let list = |value: Option<&Value>| -> Vec<String> {
-        match value {
-            Some(Value::String(s)) => vec![s.clone()],
-            Some(Value::Array(items)) => items
-                .iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect(),
-            _ => Vec::new(),
-        }
-    };
-    Ok(match value {
-        Value::Null => None,
-        Value::Bool(true) => Some(SourceFilter::All),
-        Value::Bool(false) => Some(SourceFilter::None),
-        Value::String(_) | Value::Array(_) => Some(SourceFilter::Paths {
-            include: list(Some(value)),
-            exclude: Vec::new(),
-        }),
-        Value::Object(map) => Some(SourceFilter::Paths {
-            include: list(map.get("includes").or_else(|| map.get("include"))),
-            exclude: list(map.get("excludes").or_else(|| map.get("exclude"))),
-        }),
-        Value::Number(_) => {
-            return Err(EsError::parsing(
-                "[_source] must be a boolean, a string, an array or an object",
-            ));
-        }
     })
 }
 
@@ -1110,7 +1078,11 @@ type ItemParts<'p> = (Vec<&'p Map<String, Value>>, Vec<(&'p String, usize)>);
 
 /// The vectors and fields `prepared` adds to `view`'s schema: pending
 /// vectors get their `dims` from it, then dynamic mapping of its sources.
-fn plan_additions(view: &IndexView, prepared: &Prepared) -> Result<ItemAdditions, EsError> {
+fn plan_additions(
+    view: &IndexView,
+    id: &str,
+    prepared: &Prepared,
+) -> Result<ItemAdditions, EsError> {
     let (sources, vectors): ItemParts<'_> = match prepared {
         Prepared::Index { doc, .. } => (
             vec![&doc.source],
@@ -1142,10 +1114,7 @@ fn plan_additions(view: &IndexView, prepared: &Prepared) -> Result<ItemAdditions
         };
         match specs.iter().find(|(spec, _)| &spec.name == path) {
             Some((spec, _)) if spec.dim as usize != dim => {
-                return Err(crate::doc::parsing_error(format!(
-                    "The number of dimensions for field [{path}] should be [{}] but found [{dim}]",
-                    spec.dim
-                )));
+                return Err(crate::doc::dims_error(path, id, dim, spec.dim as usize));
             }
             Some(_) => {}
             None => specs.push(pending_vector_spec(path, declared, dim)?),
@@ -1180,7 +1149,25 @@ fn violation_error(
         .unwrap_or_else(|| "object".to_string());
     let path = spec.map_or(field, |s| s.source_path.as_str());
     let value = extract(source, path).into_iter().next();
-    let cause = json!({"type": "illegal_argument_exception", "reason": first.message});
+    // A string a numeric field cannot parse: Java's `NumberFormatException`
+    // text, as ES reports it (row T11-3).
+    let numeric = matches!(
+        es_type.as_str(),
+        "long"
+            | "integer"
+            | "short"
+            | "byte"
+            | "unsigned_long"
+            | "double"
+            | "float"
+            | "half_float"
+            | "scaled_float"
+    );
+    let reason = match value.as_deref() {
+        Some(Value::String(text)) if numeric => format!("For input string: \"{text}\""),
+        _ => first.message.clone(),
+    };
+    let cause = json!({"type": "illegal_argument_exception", "reason": reason});
     field_error(path, &es_type, id, value.as_deref()).with("caused_by", cause)
 }
 
@@ -1259,36 +1246,6 @@ pub(crate) fn check_occ(params: &Params) -> Result<(), EsError> {
     Ok(())
 }
 
-/// `_source`, `_source_includes` and `_source_excludes` of a request, as
-/// `_update`'s `get` filter.
-pub(crate) fn source_param(params: &Params) -> Result<Option<SourceFilter>, EsError> {
-    let includes = params.list("_source_includes");
-    let excludes = params.list("_source_excludes");
-    let filter = match params.str("_source") {
-        Some("true") => Some(SourceFilter::All),
-        Some("false") => Some(SourceFilter::None),
-        Some(_) => Some(SourceFilter::Paths {
-            include: params.list("_source").unwrap_or_default(),
-            exclude: excludes.clone().unwrap_or_default(),
-        }),
-        None => None,
-    };
-    Ok(match filter {
-        Some(SourceFilter::All) if includes.is_some() || excludes.is_some() => {
-            Some(SourceFilter::Paths {
-                include: includes.unwrap_or_default(),
-                exclude: excludes.unwrap_or_default(),
-            })
-        }
-        Some(filter) => Some(filter),
-        None if includes.is_some() || excludes.is_some() => Some(SourceFilter::Paths {
-            include: includes.unwrap_or_default(),
-            exclude: excludes.unwrap_or_default(),
-        }),
-        None => None,
-    })
-}
-
 /// The answer of a single-document write: the item's status and body (the
 /// envelope for an error), with the consistency token.
 fn single(ctx: &RequestCtx, outcome: ItemOutcome, token: Option<ConsistencyToken>) -> Response {
@@ -1319,7 +1276,7 @@ async fn run_single(
         check_occ(&params)?;
         let refresh = refresh_param(&params)?;
         let require_alias = params.bool("require_alias")?.unwrap_or(false);
-        let source_on_update = source_param(&params)?;
+        let source_on_update = SourceFilter::from_params(&params)?;
         let body = json_body(body)?;
         let item = item(&params, body)?;
         Ok::<_, EsError>((params, refresh, require_alias, source_on_update, item))
@@ -1346,7 +1303,7 @@ async fn run_single(
 
 /// The source of an index request.
 fn index_source(body: Option<Value>) -> Result<Value, EsError> {
-    body.ok_or_else(|| validation("source is missing"))
+    body.ok_or_else(EsError::body_required)
 }
 
 /// `PUT|POST /{index}/_doc/{id}`.
@@ -1423,6 +1380,7 @@ pub(crate) async fn update_doc(
     let item = |_: &Params, body: Option<Value>| {
         Ok(WriteItem::Update {
             id,
+            // ES checks the update request itself first (row T11-3).
             body: body.ok_or_else(|| validation("script or doc is missing"))?,
         })
     };

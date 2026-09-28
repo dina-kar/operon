@@ -21,7 +21,7 @@ Design references: [01 Architecture](../design/01-architecture.md), [02 Stream e
 
 Design references: [03 Storage formats](../design/03-storage-formats.md) §3, [04 Hot tier](../design/04-hot-tier.md), [05 Query engine](../design/05-query-engine.md), [06 Search & vector](../design/06-search-and-vector.md), [09 Links & workers](../design/09-links-and-workers.md), [12 Roadmap](../design/12-roadmap-testing-risks.md), [15 Agent workspaces](../design/15-agent-workspaces.md) §10.1.
 
-Start with the **[M1 overview](m1-overview.md)**. It fixes the contracts every M1 plan shares: crates, the collection catalog, the record format, the manifest, consistency tokens, the search IR and `CollectionService`, along with rulings R1–R22 and amendments A1–A32 (A26–A32 record the owner decisions of 2026-09-25: Qdrant sparse vectors in M1, the elasticsearch-py wipe endpoints, and the Loam rename after M1). Where a plan and the overview disagree, the overview wins. The [M1 dependency spike](m1-dependency-spike.md) records the dependency set that was verified to build together, including the fact that Lance 12 pins DataFusion 54 and arrow 58.
+Start with the **[M1 overview](m1-overview.md)**. It fixes the contracts every M1 plan shares: crates, the collection catalog, the record format, the manifest, consistency tokens, the search IR and `CollectionService`, along with rulings R1–R22 and amendments A1–A32 (A26–A32 record the owner decisions of 2026-09-25: Qdrant sparse vectors in M1, the elasticsearch-py wipe endpoints, and the Loam rename after M1). Where a plan and the overview disagree, the overview wins. **The rename and the first publish:** the rename PR (A32, D33) is also the first crates.io publish, as `loamdb`. The `operon` crate has optional dependencies on the TiKV crates (features `tikv`, and `live` from R1 Task 12, both off by default), and `cargo publish` needs every optional dependency on crates.io too, while those crates depend on the git-pinned `tikv-client` (R1 rows R4, T7-3). So at the rename, either publish the TiKV crates as well, if `tikv-client` has released the fixes the pin carries, or strip the `tikv` and `live` features from the published manifest; nothing is needed before then (owner ruling, R1 row T8-1). The [M1 dependency spike](m1-dependency-spike.md) records the dependency set that was verified to build together, including the fact that Lance 12 pins DataFusion 54 and arrow 58.
 
 Only M1.1 and M1.2a were written against code that existed. Each later plan starts with a Task 0 that reconciles it with the as-built code of the plans it depends on; the rulings M1.1 made during execution (its plan's "Rulings made during execution") are the as-built reference for M1.2's Task 0.
 
@@ -37,6 +37,14 @@ Only M1.1 and M1.2a were written against code that existed. Each later plan star
 | [M1.7: M1 exit gates](2026-09-24-m1.7-exit-gates.md) | LangChain/LlamaIndex suites, ADBC Flight SQL drivers (D49), Spice's Flight SQL connector (D56), BEIR vs ES BM25, Recall@10 vs Qdrant, hot on/off identity at scale, the M1 exit report; the recall endpoint and the published limits page (Tasks 10–11, added 2026-09-26, D92, D88) | M1.3–M1.6 | Planned |
 
 M1.4, M1.5 and M1.6 can run in parallel once M1.2 is merged.
+
+## PG: Postgres wire access (after M1)
+
+Spike and decision: [Postgres wire spike](pgwire-spike.md) (D-PG-1, numbered at merge). Serves collections over the Postgres protocol through `datafusion-postgres`: read-only first, then writes behind `--pg-allow-writes`. It is analytical and ingest access; OLTP clients use Loam Live / TiDB.
+
+| Plan | Scope | Depends on | Status |
+|---|---|---|---|
+| [PG1: Postgres wire access over collections](2026-09-28-pg1-postgres-wire.md) | Tasks 0–5, read-only: upstream `arrow-pg`/DataFusion-feature fixes, the loopback listener in `Server`, per-connection sessions (database = namespace, consistency tokens), catalog polish, `COPY TO`, a psql/psycopg/node-postgres CI job. Tasks 6–10, writes behind `--pg-allow-writes`: one-write autocommit transactions, `INSERT`/`ON CONFLICT`, `UPDATE`/`DELETE` through filter writes (D87), `COPY FROM STDIN` through the bulk path, a differential against REST writes | M1.2 (read-only half); M1.5 Task 9a (Task 8); slot: after M1.7, before M2 | Planned |
 
 ## Track R: Loam Live, TiDB SQL and the TiKV metastore (parallel to M1)
 
@@ -84,6 +92,7 @@ Future plans, in their expected order (the split into plans is fixed when each m
 | M2 | `operon-meta-postgres` on Lakekeeper's patterns, with its fault matrix (D58, D60) | §18 §2.2, §18 §4 |
 | M2 | `operon-meta-dynamodb`, with the floci and Alternator CI jobs, its fault matrix and the nightly AWS deployment job (D58, D60, D62) | §18 §2.3, §18 §4 |
 | M2 | RustFS as the default self-hosted store; the `Store` provider suite and the S3 fault matrix over RustFS (D61) | §18 §4.4 |
+| M2 | The object-store fault matrix and the simulation on the TiKV metastore: a backend switch for both, which build openraft `MetaNode`s in process today (R1 plan rows T6-8, T7-2) | §18 §4, §20 §11 |
 | M2 | Tenancy: orgs and the `ControlStore`, API keys, the `Authorizer` trait with RBAC, quotas (D65, D66), including the unapplied-data budget as a quota (D86) and cost-weighted per-collection concurrency (D98); audit events (D100); usage counters in logical bytes (D103) | §18 §6–§7, §10 §3–§5 |
 | M2 | The GDPR erasure path (D68, D69) | §18 §9, §10 §4.1 |
 | M2 | The native stream API core: gRPC, idempotent producers, streaming subscribe, named consumers, stream admin, the plain-JSON produce body (D72); OTLP logs ingest (D73) | §02 §7, §02 §7.1, §02 §7.3 |
@@ -93,6 +102,8 @@ Future plans, in their expected order (the split into plans is fixed when each m
 | M2 | Ranking, text and vectors: the ranking-expression IR for the native API, ES `function_score` and Qdrant `formula` (D91); language analyzers, folding, pre-tokenized text and per-field BM25 parameters (D93); f16, i8 and u8 vectors (D94); sampled continuous recall (D92) | §05 §4, §06 §3, §06 §5, §06 §9 |
 | M2 | Customer-managed keys by envelope encryption, which also gives crypto-shredding (D96) | §02 §3, §10 §3, §18 §9 |
 | M2 | A Go SDK over the native API, and the native gRPC protos (D101) | — |
+| M2 | Elasticsearch API: partial results for a multi-index search, with per-shard failures, `_shards.failed` and `allow_partial_search_results` (M1.5 owner ruling O-M15-10, row T9-6); field sort tiebreaks after `_score`, which needs field sort values in operon-query's score mode (O-M15-11, rows T9-9 and T9-10) | §06 §7 |
+| M2 | Collection schema format change: stored-only fields (neither indexed nor fast) and unmapped subtrees, so an ES unindexed `text` or `binary` keeps no fast column and an ES `enabled: false` object is neither mapped nor checked (M1.5 owner rulings O-M15-8 and O-M15-9, rows T2-2 and T4-6) | §06 §1 |
 | M2.x | `operon-meta-remote`, the hosted `operon-control` and `ControlStore`, owned-namespace caches, both BYOC modes (D63, D64) | §18 §5.7, §18 §8 |
 | M2.x | OpenFGA authorization (D67, default); per-chunk envelope encryption moved to M2 (D96) | §18 §7 |
 | M2.x | Single-collection sharding, 1–256 shards fixed at creation (D95) | §05 §6, §18 §5.3 |
