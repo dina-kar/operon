@@ -11,11 +11,13 @@ import operon
 PAIRS = [
     (operon.Client, operon.AsyncClient),
     (operon.Namespace, operon.AsyncNamespace),
+    (operon.Collection, operon.AsyncCollection),
+    (operon.SearchBuilder, operon.AsyncSearchBuilder),
 ]
 
 
 def _public(cls: type) -> list[str]:
-    return sorted(name for name in vars(cls) if not name.startswith("_"))
+    return sorted(name for name in dir(cls) if not name.startswith("_"))
 
 
 def _params(func: object) -> list[tuple[str, object, object]]:
@@ -39,8 +41,26 @@ def test_async_methods_that_make_requests_are_coroutines() -> None:
     assert inspect.iscoroutinefunction(operon.AsyncClient.create_namespace)
     assert inspect.iscoroutinefunction(operon.AsyncClient.close)
     assert not inspect.iscoroutinefunction(operon.AsyncClient.namespace)
-    for name in ["create_stream", "get_stream", "produce", "fetch"]:
+    for name in [
+        "create_stream",
+        "get_stream",
+        "produce",
+        "fetch",
+        "create_collection",
+        "get_collection",
+        "list_collections",
+        "drop_collection",
+        "query",
+        "sql",
+    ]:
         assert inspect.iscoroutinefunction(getattr(operon.AsyncNamespace, name)), name
+    assert not inspect.iscoroutinefunction(operon.AsyncNamespace.collection)
+    assert not inspect.iscoroutinefunction(operon.AsyncNamespace.search)
+    for name in ["upsert", "patch", "delete", "write", "get", "scan_plan"]:
+        assert inspect.iscoroutinefunction(getattr(operon.AsyncCollection, name)), name
+    assert not inspect.iscoroutinefunction(operon.AsyncCollection.search)
+    assert inspect.iscoroutinefunction(operon.AsyncSearchBuilder.execute)
+    assert not inspect.iscoroutinefunction(operon.AsyncSearchBuilder.limit)
 
 
 def test_importing_operon_imports_no_extra() -> None:

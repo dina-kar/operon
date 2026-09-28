@@ -1,7 +1,12 @@
-"""Operon's Python client for the native REST API (sync `Client` and async `AsyncClient`)."""
+"""Operon's Python client for the native REST API (sync `Client` and async `AsyncClient`).
 
-from ._async import AsyncClient, AsyncNamespace
-from ._sync import Client, Namespace
+`operon.q` holds the query builder's constructors and `operon.schema` the schema's.
+"""
+
+from . import query as q
+from . import schema
+from ._async import AsyncClient, AsyncCollection, AsyncNamespace, AsyncSearchBuilder
+from ._sync import Client, Collection, Namespace, SearchBuilder
 from ._version import __version__
 from .errors import (
     AlreadyExistsError,
@@ -17,43 +22,97 @@ from .errors import (
     TransportError,
     UnavailableError,
 )
+from .query import Projection, SearchRequest, SourcePaths
+from .schema import Schema
 from .token import ConsistencyToken
 from .types import (
+    CollectionInfo,
+    Column,
     Consistency,
+    Delete,
+    Document,
     FetchedRecord,
     FetchResult,
+    Hit,
     Id,
+    LanceVersion,
+    Op,
     PartitionInfo,
+    Patch,
+    Pin,
     ProduceResult,
     Record,
+    ScanAt,
+    ScanColumn,
+    ScanFragment,
+    ScanPlan,
+    SearchResponse,
+    SparseVector,
+    SqlResult,
+    StoredDoc,
     StreamInfo,
+    TotalHits,
+    Upsert,
+    VectorLike,
+    WriteResult,
 )
 
 __all__ = [
     "AlreadyExistsError",
     "AsyncClient",
+    "AsyncCollection",
     "AsyncNamespace",
+    "AsyncSearchBuilder",
     "Client",
+    "Collection",
+    "CollectionInfo",
+    "Column",
     "ConflictError",
     "Consistency",
     "ConsistencyToken",
+    "Delete",
+    "Document",
     "FetchResult",
     "FetchedRecord",
+    "Hit",
     "Id",
     "InternalError",
     "InvalidArgumentError",
+    "LanceVersion",
     "Namespace",
     "NotFoundError",
     "OffsetOutOfRangeError",
+    "Op",
     "OperonError",
     "OperonTimeoutError",
     "PartitionInfo",
+    "Patch",
+    "Pin",
     "ProduceResult",
+    "Projection",
     "Record",
     "ResourceExhaustedError",
+    "ScanAt",
+    "ScanColumn",
+    "ScanFragment",
+    "ScanPlan",
+    "Schema",
     "SchemaViolationError",
+    "SearchBuilder",
+    "SearchRequest",
+    "SearchResponse",
+    "SourcePaths",
+    "SparseVector",
+    "SqlResult",
+    "StoredDoc",
     "StreamInfo",
+    "TotalHits",
     "TransportError",
     "UnavailableError",
+    "Upsert",
+    "VectorLike",
+    "WriteResult",
     "__version__",
+    "q",
+    "schema",
 ]
