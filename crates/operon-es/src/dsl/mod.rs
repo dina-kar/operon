@@ -111,6 +111,15 @@ pub enum ScriptFunction {
     SigmoidDot,
 }
 
+/// `x` as Java prints a `float`: an integral value keeps `.0`.
+pub(crate) fn java_float(x: f32) -> String {
+    if x.fract() == 0.0 && x.abs() < 1e7 {
+        format!("{x:.1}")
+    } else {
+        x.to_string()
+    }
+}
+
 /// A `query_vector` checked against `vector` (item 5): finite numbers, the
 /// vector's dimension, no zero vector on cosine and, for knn (`knn ==
 /// true`), unit length on dot_product.
@@ -147,9 +156,13 @@ pub(crate) fn check_query_vector(
             "The [cosine] similarity does not support vectors with zero magnitude.",
         )),
         EsSimilarity::DotProduct if knn && (norm2 - 1.0).abs() > 1e-4 => {
-            Err(EsError::illegal_argument(
-                "The [dot_product] similarity can only be used with unit-length vectors.",
-            ))
+            // ES's `createKnnQuery` text, a shard failure (row T11-3).
+            let preview: Vec<String> = out.iter().map(|x| java_float(*x)).collect();
+            Err(value::shard_error(format!(
+                "The [dot_product] similarity can only be used with unit-length vectors. \
+                 Preview of invalid vector: [{}]",
+                preview.join(", ")
+            )))
         }
         _ => Ok(out),
     }

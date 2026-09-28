@@ -24,7 +24,8 @@
 //! - [`search`]: search bodies and URL parameters → a [`search::SearchPlan`],
 //!   and `_search`, `_count` and `_msearch` with ES scores.
 //! - [`ubq`] serves `_update_by_query` over the native `patch_by_filter`,
-//!   and [`dbq`] holds what it shares with `_delete_by_query` (D87).
+//!   and [`dbq`] serves `_delete_by_query` over `delete_by_filter` with the
+//!   loop both share (D87).
 //!
 //! # Divergences from Elasticsearch 8.19
 //!
@@ -32,17 +33,23 @@
 //!   with a fast column (M1.1 keeps a field only if it is indexed or fast;
 //!   row T2-2); a field ES neither indexes nor keeps doc values for is fast.
 //! - `PUT /{index}/_mapping` cannot change the root `dynamic` (row T3-3).
-//! - A comma-list `DELETE /{index}` deletes the indices in order and stops
-//!   at the first missing one, leaving the earlier ones deleted (row T3-2).
-//! - A write to a comma list or a wildcard is refused as an invalid index
-//!   name (row T1-5).
 //! - `_seq_no` is the partition offset of a write's record and `_version`
 //!   is `_seq_no + 1`, so versions increase but are not dense (Ruling 4).
 //! - A `null` `dense_vector` value stays in `_source` as `null` (row T4-3).
 //! - The contents of an `enabled: false` object are mapped dynamically by
 //!   the collection service, and refused under `dynamic: strict` (row T4-6).
 //! - The error texts of document parsing carry `[1:1]` rather than the
-//!   value's line and column (row T4-5).
+//!   value's line and column, and JSON syntax errors carry serde_json's text
+//!   rather than Jackson's (rows T4-5, T11-5).
+//! - Texts ES builds from its own internals differ: a negative `boost`
+//!   names the query without ES's rendering of it, a query nested past 30
+//!   levels is one `illegal_argument_exception` rather than one
+//!   `x_content_parse_exception` per level, a `dense_vector` value that is
+//!   not an array is a field parse error, and the field-limit error counts
+//!   the new fields of the whole document (row T11-5).
+//! - `_delete_by_query` and `_update_by_query` count `batches` per index,
+//!   so a request over an alias with two members reports at least two
+//!   (row T11-5).
 //! - A `range` with numeric bounds on a `flattened` path compares numbers
 //!   numerically; ES compares flattened values as keywords (row E11,
 //!   O-M15-2).
@@ -64,9 +71,6 @@
 //!   and not applied: the batches are the collection service's, and a
 //!   batch refused for backpressure past the deadline is 429 with what was
 //!   written kept (rows T9a-6, T9a-7).
-//! - The routes of Phase A that no task serves yet answer 501
-//!   `unsupported_operation_exception` (row T1-2); a `GET` or `HEAD` of a
-//!   missing index among them is 404 first.
 
 // `EsError` carries ES's extra fields and wrapped cause by value (Task 1
 // Produces); errors are the cold path, so its size is accepted.
@@ -78,11 +82,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::State;
 use axum::http::{Method, Uri};
 use axum::middleware;
 use axum::response::Response;
-use axum::routing::{MethodFilter, get, head, on, post, put};
+use axum::routing::{get, head, post, put};
 use operon_query::CollectionService;
 use operon_query::hot::HotLayer;
 use tokio::task::JoinHandle;
@@ -195,7 +198,7 @@ impl EsGateway {
     /// the body limit.
     pub fn router(&self) -> Router {
         let hot = HotLayer::new(self.service().config().hot_default);
-        let mut router = Router::new()
+        let router = Router::new()
             .route("/", get(info::root))
             .route("/_license", get(info::license))
             .route("/_cluster/health", get(info::health))
@@ -299,30 +302,17 @@ impl EsGateway {
                 "/{index}/_update_by_query",
                 post(ubq::update_by_query_index),
             )
+            // Task 10: _delete_by_query.
+            .route(
+                "/{index}/_delete_by_query",
+                post(dbq::delete_by_query_index),
+            )
             // Task 5: _bulk.
             .route("/_bulk", post(bulk::bulk).put(bulk::bulk))
             .route(
                 "/{index}/_bulk",
                 post(bulk::bulk_index).put(bulk::bulk_index),
             );
-        for &(method, path, task) in PENDING {
-            let filter = match method {
-                "GET" => MethodFilter::GET,
-                "HEAD" => MethodFilter::HEAD,
-                "PUT" => MethodFilter::PUT,
-                "POST" => MethodFilter::POST,
-                _ => MethodFilter::DELETE,
-            };
-            router = router.route(
-                path,
-                on(
-                    filter,
-                    move |gw: State<EsGateway>, ctx: RequestCtx, method: Method, uri: Uri| {
-                        pending(gw, ctx, method, uri, path, task)
-                    },
-                ),
-            );
-        }
         let routes = router.fallback(no_route).with_state(self.clone());
         // The layers wrap the whole router, not each route (as
         // `Router::layer` would), so the 405 rewrite sees the `Allow`
@@ -355,51 +345,13 @@ impl EsGateway {
     }
 }
 
-/// The Phase A routes no task serves yet, with the task that serves each
-/// (row T1-2). A task that serves a route removes it here; axum panics on
-/// a method routed twice, so a forgotten row fails at router build time.
-const PENDING: &[(&str, &str, &str)] = &[("POST", "/{index}/_delete_by_query", "10")];
-
-/// A route of [`PENDING`]: a `GET` or `HEAD` of a missing index is 404, as
-/// the finished route will answer; everything else is 501.
-async fn pending(
-    State(gw): State<EsGateway>,
-    ctx: RequestCtx,
-    method: Method,
-    uri: Uri,
-    path: &'static str,
-    task: &'static str,
-) -> Response {
-    if matches!(method, Method::GET | Method::HEAD)
-        && path.starts_with("/{index}")
-        && let Some(index) = uri.path().split('/').nth(1)
-    {
-        let expr = names::IndexExpr::parse(&http::percent_decode_path(index));
-        if let Err(err) = names::resolve(
-            gw.service(),
-            &ctx.namespace,
-            &expr,
-            names::ResolveOptions::default(),
-        )
-        .await
-        {
-            return http::fail(&ctx, &err);
-        }
-    }
-    let error = EsError::new(
-        501,
-        "unsupported_operation_exception",
-        format!("[{method} {path}] is not served yet (plan M1.5 Task {task})"),
-    );
-    http::fail(&ctx, &error)
-}
-
-/// 400 for a path no route knows (rule 7).
+/// 400 for a path no route knows (rule 7), in ES's shape: a string
+/// `error` and no `status`.
 async fn no_route(ctx: RequestCtx, method: Method, uri: Uri) -> Response {
-    let error = EsError::illegal_argument(format!(
-        "no handler found for uri [{uri}] and method [{method}]"
-    ));
-    http::fail(&ctx, &error)
+    let body = serde_json::json!({
+        "error": format!("no handler found for uri [{uri}] and method [{method}]")
+    });
+    http::respond(&ctx, 400, &body)
 }
 
 /// The running gateway listener.

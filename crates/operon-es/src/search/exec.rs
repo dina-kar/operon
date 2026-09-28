@@ -778,13 +778,11 @@ pub async fn count(
     let query_body = match body {
         None | Some(Value::Null) => None,
         Some(Value::Object(map)) => {
-            for (key, value) in map {
-                if key != "query" {
-                    return Err(EsError::parsing(format!(
-                        "Unknown key for a {} in [{key}].",
-                        token_name(value)
-                    )));
-                }
+            // ES's `_count` text (row T11-3).
+            if let Some(key) = map.keys().find(|key| *key != "query") {
+                return Err(EsError::parsing(format!(
+                    "request does not support [{key}]"
+                )));
             }
             map.get("query").filter(|v| !v.is_null())
         }
@@ -799,10 +797,11 @@ pub async fn count(
     let mut sum = 0u64;
     for view in indices {
         let qctx = QueryContext::new(view, now);
+        let at_shard = |e: EsError| e.at_shard(&view.name, &gw.config().node_name);
         let query = match (&params.q, query_body) {
-            (Some(q), _) => Some(url_query(q, params, &qctx)?),
+            (Some(q), _) => Some(url_query(q, params, &qctx).map_err(at_shard)?),
             (None, Some(v)) => {
-                let parsed = parse_query(v, &qctx)?;
+                let parsed = parse_query(v, &qctx).map_err(at_shard)?;
                 if !parsed.knn.is_empty() {
                     return Err(EsError::illegal_argument(
                         "[knn] is not supported by the count API",
@@ -1033,10 +1032,12 @@ fn header_list(header: &Map<String, Value>, key: &str) -> Result<Option<String>,
     }
 }
 
-/// One header/body pair of an `_msearch` body (item 7).
+/// One header/body pair of an `_msearch` body (item 7). ES parses the
+/// whole body before searching, so an error here fails the request (row
+/// T11-3).
 fn msearch_item(
     header: &str,
-    body: Option<&str>,
+    body: &str,
     path_index: Option<&str>,
     defaults: ResolveOptions,
 ) -> Result<MsearchItem, EsError> {
@@ -1083,11 +1084,6 @@ fn msearch_item(
             Some(values) => !values.split(',').all(|v| v == "none"),
             None => defaults.allow_wildcards,
         },
-    };
-    let Some(body) = body else {
-        return Err(EsError::parsing(
-            "the msearch request has a header without a body",
-        ));
     };
     let body = json_body(body.as_bytes())?.unwrap_or(Value::Null);
     Ok(MsearchItem { expr, opts, body })
@@ -1152,7 +1148,12 @@ async fn msearch_request(
         Some((last, rest)) if last.trim().is_empty() => rest,
         _ => &lines[..],
     };
-    if lines.iter().all(|line| line.trim().is_empty()) {
+    // A last header without a body line is dropped, as ES drops it.
+    let pairs: Vec<(&str, &str)> = lines
+        .chunks(2)
+        .filter_map(|pair| Some((pair[0], *pair.get(1)?)))
+        .collect();
+    if pairs.is_empty() {
         return Err(EsError::new(
             400,
             "action_request_validation_exception",
@@ -1160,14 +1161,15 @@ async fn msearch_request(
         ));
     }
     if body.last() != Some(&b'\n') {
+        // ES's text holds a real newline between the brackets.
         return Err(EsError::illegal_argument(
-            "The msearch request must be terminated by a newline [\\n]",
+            "The msearch request must be terminated by a newline [\n]",
         ));
     }
-    let items: Vec<Result<MsearchItem, EsError>> = lines
-        .chunks(2)
-        .map(|pair| msearch_item(pair[0], pair.get(1).copied(), path_index, defaults))
-        .collect();
+    let items: Vec<Result<MsearchItem, EsError>> = pairs
+        .into_iter()
+        .map(|(header, body)| msearch_item(header, body, path_index, defaults).map(Ok))
+        .collect::<Result<_, _>>()?;
     let search = &search;
     let responses: Vec<Value> = futures::stream::iter(items)
         .map(|item| async move {

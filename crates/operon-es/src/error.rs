@@ -75,6 +75,12 @@ impl EsError {
         Self::new(400, "parsing_exception", reason)
     }
 
+    /// 400 `parse_exception` "request body is required": ES's answer to a
+    /// request that needs a body and has none (row T11-3).
+    pub fn body_required() -> Self {
+        Self::new(400, "parse_exception", "request body is required")
+    }
+
     /// 404 `index_not_found_exception`, with ES's resource fields.
     pub fn index_not_found(index: &str) -> Self {
         Self::new(
@@ -121,7 +127,11 @@ impl EsError {
     }
 
     /// 400 `search_phase_execution_exception` wrapping `inner`, as ES
-    /// reports a query that failed on its (one) shard.
+    /// reports a query that failed on its (one) shard. When `inner` is a
+    /// Java exception (`illegal_argument_exception`) rather than an ES one,
+    /// ES also reports it as the wrapper's `caused_by`, twice nested (the
+    /// shard's exception around it), with its own cause below (checked
+    /// against the 8.19 oracle, row T11-3).
     pub fn search_phase(inner: EsError, index: &str, node: &str) -> Self {
         let shard = json!({
             "shard": 0,
@@ -133,8 +143,33 @@ impl EsError {
             .with("phase", "query")
             .with("grouped", true)
             .with("failed_shards", json!([shard]));
+        if inner.kind == "illegal_argument_exception" {
+            let brief = |e: &EsError| json!({"type": e.kind, "reason": e.reason});
+            let mut deepest = brief(&inner);
+            if let Some(cause) = inner.extra.get("caused_by") {
+                deepest["caused_by"] = cause.clone();
+            }
+            let mut first = brief(&inner);
+            first["caused_by"] = deepest;
+            outer = outer.with("caused_by", first);
+        }
         outer.root_cause = Some(Box::new(inner));
         outer
+    }
+
+    /// `self` as a shard failure of `index` when it is one: the errors ES
+    /// raises while building the query on the shard (`query_shard_exception`
+    /// and date-math `parse_exception`) come wrapped in
+    /// `search_phase_execution_exception` (row T11-3).
+    pub fn at_shard(self, index: &str, node: &str) -> Self {
+        if matches!(
+            self.kind.as_str(),
+            "query_shard_exception" | "parse_exception"
+        ) {
+            Self::search_phase(self, index, node)
+        } else {
+            self
+        }
     }
 
     /// The ES error for a collection service error. Exhaustive on purpose:

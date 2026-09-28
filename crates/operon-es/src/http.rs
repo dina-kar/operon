@@ -515,6 +515,31 @@ fn pretty_fallback(request: &Request) -> RequestCtx {
 
 /// Rewrites axum's 405 into ES's string-shaped answer, listing the path's
 /// methods from the `Allow` header axum sets (rule 7).
+/// The path part of `uri`.
+fn request_path(uri: &str) -> &str {
+    uri.split('?').next().unwrap_or(uri)
+}
+
+/// ES's list of the methods a path allows, from axum's `Allow` header: in
+/// ES's order (GET, POST, PUT, DELETE, HEAD), with `HEAD` only on the paths
+/// ES registers it for (`/`, an index, a document, a source and the alias
+/// routes); axum answers `HEAD` on every `GET` route.
+fn es_allowed(allow: &str, path: &str) -> String {
+    let given: Vec<&str> = allow.split(',').map(str::trim).collect();
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let head_route = match segments.as_slice() {
+        [] => true,
+        [index] => !index.starts_with('_'),
+        [_, "_doc" | "_source", _] => true,
+        _ => segments.contains(&"_alias"),
+    };
+    ["GET", "POST", "PUT", "DELETE", "HEAD"]
+        .into_iter()
+        .filter(|m| given.contains(m) && (*m != "HEAD" || head_route))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub(crate) async fn method_not_allowed(request: Request, next: Next) -> Response {
     let method = request.method().clone();
     let uri = request.uri().to_string();
@@ -528,12 +553,7 @@ pub(crate) async fn method_not_allowed(request: Request, next: Next) -> Response
         .get(header::ALLOW)
         .map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned())
         .unwrap_or_default();
-    let allowed = allowed
-        .split(',')
-        .map(str::trim)
-        .filter(|m| !m.is_empty())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let allowed = es_allowed(&allowed, request_path(&uri));
     let error = EsError::plain(
         405,
         format!(

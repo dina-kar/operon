@@ -152,16 +152,46 @@ impl SchemaPlan {
     }
 }
 
-/// 400 `mapper_parsing_exception`.
+/// 400 `mapper_parsing_exception`, wrapped as ES wraps every mapping parse
+/// error: the reason `Failed to parse mapping: <why>`, with `<why>` as its
+/// root cause and `caused_by` (checked against the 8.19 oracle, row T11-3).
 fn mapper(reason: impl Into<String>) -> EsError {
-    EsError::new(400, "mapper_parsing_exception", reason)
+    let reason = reason.into();
+    let why = reason
+        .strip_prefix("Failed to parse mapping: ")
+        .unwrap_or(&reason)
+        .to_string();
+    let mut error = EsError::new(
+        400,
+        "mapper_parsing_exception",
+        format!("Failed to parse mapping: {why}"),
+    )
+    .with(
+        "caused_by",
+        json!({"type": "mapper_parsing_exception", "reason": why}),
+    );
+    error.root_cause = Some(Box::new(EsError::new(400, "mapper_parsing_exception", why)));
+    error
+}
+
+/// A field type ES does not know.
+fn no_handler(ty: &str, path: &str) -> EsError {
+    mapper(format!(
+        "The mapper type [{ty}] declared on field [{path}] does not exist. It might have been \
+         created within a future version or requires a plugin to be installed. Check the \
+         documentation."
+    ))
 }
 
 fn phase_a_type(ty: &str, path: &str) -> EsError {
-    mapper(format!(
-        "Operon does not support field type [{ty}] (declared on field [{path}]) in \
+    EsError::new(
+        400,
+        "mapper_parsing_exception",
+        format!(
+            "Operon does not support field type [{ty}] (declared on field [{path}]) in \
          Elasticsearch API Phase A"
-    ))
+        ),
+    )
 }
 
 fn unknown_parameter(param: &str, path: &str, ty: &str) -> EsError {
@@ -355,6 +385,8 @@ fn check_settings(flat: BTreeMap<String, String>) -> Result<Settings, EsError> {
     let mut partitions = None;
     let mut max_fields = DEFAULT_MAX_FIELDS;
     let mut similarities: BTreeMap<String, bool> = BTreeMap::new();
+    // ES reports a similarity without a type before its parameters.
+    let mut bm25_refused = false;
     for (key, value) in &flat {
         match key.as_str() {
             "index.number_of_shards" => {
@@ -387,7 +419,7 @@ fn check_settings(flat: BTreeMap<String, String>) -> Result<Settings, EsError> {
                     "k1" if value.parse::<f64>().ok() == Some(1.2) => {}
                     "b" if value.parse::<f64>().ok() == Some(0.75) => {}
                     "discount_overlaps" if value == "true" => {}
-                    "k1" | "b" | "discount_overlaps" => return Err(bm25_only()),
+                    "k1" | "b" | "discount_overlaps" => bm25_refused = true,
                     _ => return Err(unknown_setting(key)),
                 }
             }
@@ -397,6 +429,9 @@ fn check_settings(flat: BTreeMap<String, String>) -> Result<Settings, EsError> {
         return Err(EsError::illegal_argument(format!(
             "Similarity [{name}] must have an associated type"
         )));
+    }
+    if bm25_refused {
+        return Err(bm25_only());
     }
     let mut stored = flat;
     stored.remove("index.number_of_shards");
@@ -485,11 +520,7 @@ impl Walk<'_> {
                 None => "object",
                 Some(Value::String(ty)) => ty.as_str(),
                 Some(other) => {
-                    return Err(mapper(format!(
-                        "Failed to parse mapping: No handler for type [{}] declared on field \
-                         [{path}]",
-                        bare(other)
-                    )));
+                    return Err(no_handler(&bare(other), &path));
                 }
             };
             match ty {
@@ -563,9 +594,7 @@ impl Walk<'_> {
                 | "binary"
         );
         if !known {
-            return Err(mapper(format!(
-                "Failed to parse mapping: No handler for type [{ty}] declared on field [{path}]"
-            )));
+            return Err(no_handler(ty, path));
         }
         let numeric = matches!(
             ty,
@@ -788,10 +817,12 @@ impl Walk<'_> {
                 "index" => index = as_bool(value, p, path)?,
                 "similarity" => {
                     let name = as_str(value, p, path)?;
-                    similarity =
-                        Some(EsSimilarity::parse(name).ok_or_else(|| {
-                            mapper(format!("Unknown vector similarity [{name}]"))
-                        })?);
+                    similarity = Some(EsSimilarity::parse(name).ok_or_else(|| {
+                        mapper(format!(
+                            "Unknown value [{name}] for field [similarity] - accepted values \
+                                 are [l2_norm, cosine, dot_product, max_inner_product]"
+                        ))
+                    })?);
                 }
                 "index_options" => match value {
                     Value::Object(map) => options = Some(map),
@@ -1045,10 +1076,32 @@ fn type_change(path: &str, old: &str, new: &str) -> EsError {
     ))
 }
 
-fn conflict(path: &str) -> EsError {
-    EsError::illegal_argument(format!(
-        "Mapper for [{path}] conflicts with existing mapper"
-    ))
+/// ES's conflict, with a `Cannot update parameter` line for each parameter
+/// both declarations set to different values (row T11-3).
+fn conflict(path: &str, old: Option<&String>, new: &str) -> EsError {
+    let parse = |text: &str| serde_json::from_str::<Map<String, Value>>(text).unwrap_or_default();
+    let mut reason = format!("Mapper for [{path}] conflicts with existing mapper");
+    if let Some(old) = old {
+        let (old, new) = (parse(old), parse(new));
+        let mut first = true;
+        for (key, before) in &old {
+            if key == "type" {
+                continue;
+            }
+            if let Some(after) = new.get(key)
+                && after != before
+            {
+                reason.push_str(if first { ":" } else { "" });
+                first = false;
+                reason.push_str(&format!(
+                    "\n\tCannot update parameter [{key}] from [{}] to [{}]",
+                    bare(before),
+                    bare(after)
+                ));
+            }
+        }
+    }
+    EsError::illegal_argument(reason)
 }
 
 /// The `VectorSpec` of the pending `dense_vector` at `path` (declared
@@ -1130,7 +1183,7 @@ pub fn plan_put_mapping(
                         return Err(type_change(path, &old, es_type));
                     }
                     if existing != spec || stored.is_some() {
-                        return Err(conflict(path));
+                        return Err(conflict(path, stored, &declared.annotation));
                     }
                 } else {
                     if let Some(old) = declared_type(current, path) {
@@ -1149,7 +1202,7 @@ pub fn plan_put_mapping(
                 }
                 match (existing_vector, spec) {
                     (Some(existing), Some(spec)) if existing == spec && stored.is_none() => {}
-                    (Some(_), _) => return Err(conflict(path)),
+                    (Some(_), _) => return Err(conflict(path, stored, &declared.annotation)),
                     (None, spec) => {
                         match declared_type(current, path).as_deref() {
                             None | Some("dense_vector") => {}
@@ -1178,7 +1231,7 @@ pub fn plan_put_mapping(
                         Some(t) => return Err(type_change(path, t, "object")),
                     }
                     if was_enabled != *enabled {
-                        return Err(conflict(path));
+                        return Err(conflict(path, stored, &declared.annotation));
                     }
                     // Only `type: object` differs: keep what is stored.
                     continue;
@@ -1611,7 +1664,7 @@ fn strict_error(schema: &CollectionSchema, path: &str) -> EsError {
         400,
         "strict_dynamic_mapping_exception",
         format!(
-            "[dynamic] set to [strict], dynamic introduction of [{}] within [{within}] is not \
+            "[1:1] mapping set to strict, dynamic introduction of [{}] within [{within}] is not \
              allowed",
             segments[depth]
         ),
@@ -1650,10 +1703,19 @@ pub fn dynamic_plan(
                 let n = propose_dynamic_fields(&unlimited, &[&source])
                     .map(|fields| fields.len())
                     .unwrap_or_default();
-                Err(EsError::illegal_argument(format!(
+                let why = format!(
                     "Limit of total fields [{limit}] has been exceeded while adding new fields \
                      [{n}]"
-                )))
+                );
+                Err(EsError::new(
+                    400,
+                    "document_parsing_exception",
+                    format!("[1:1] failed to parse: {why}"),
+                )
+                .with(
+                    "caused_by",
+                    json!({"type": "illegal_argument_exception", "reason": why}),
+                ))
             }
         },
     }

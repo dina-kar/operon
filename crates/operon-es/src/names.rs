@@ -14,7 +14,7 @@ use crate::error::{ErrorContext, EsError};
 /// `Strings.INVALID_FILENAME_CHARS`, in ES's order).
 const INVALID_CHARS: [char; 10] = [' ', ',', '"', '*', '\\', '<', '|', ',', '>', '/'];
 /// ES's rendering of [`INVALID_CHARS`] (`?` included).
-const INVALID_CHARS_TEXT: &str = "[ , \", *, \\, <, |, ,, >, /, ?]";
+const INVALID_CHARS_TEXT: &str = r#"[' ','"','*',',','/','<','>','?','\','|']"#;
 
 /// ES's index-name rules; each violation is 400 `invalid_index_name_exception`.
 pub fn validate_index_name(name: &str) -> Result<(), EsError> {
@@ -314,7 +314,7 @@ mod tests {
         for bad in ["a b", "a*b", "a,b", "a/b", "a?b", "a\"b", "a<b", "a|b"] {
             assert!(
                 why(bad).contains(
-                    "must not contain the following characters [ , \", *, \\, <, |, ,, >, /, ?]"
+                    r#"must not contain the following characters [' ','"','*',',','/','<','>','?','\','|']"#
                 ),
                 "{bad}: {}",
                 why(bad)

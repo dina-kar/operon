@@ -1,14 +1,14 @@
 //! ES documents ⇄ collection documents (plan M1.5 Task 4 steps 2, 4 and 9,
 //! Task 6): id rules, `dense_vector` values moved out of `_source` into
-//! `Document.vectors` and put back on read (Ruling 2, overview A9), `binary`
-//! values, ES's partial-document merge, and `_source` filtering.
+//! `Document.vectors` and put back on read (Ruling 2, overview A9), ES's
+//! partial-document merge, and `_source` filtering.
 
 use std::collections::BTreeMap;
 
-use base64::Engine;
-use operon_collection::{Document, PrimaryKey, extract};
+use operon_collection::{Document, PrimaryKey};
 use serde_json::{Map, Number, Value, json};
 
+use crate::dsl::java_float;
 use crate::error::EsError;
 use crate::http::Params;
 use crate::mapping::{EsSimilarity, IndexView};
@@ -45,11 +45,16 @@ pub fn validate_id(id: &str) -> Result<(), EsError> {
         ));
     }
     if id.len() > MAX_ID_BYTES {
-        let head: String = id.chars().take(MAX_ID_BYTES / 4).collect();
-        return Err(EsError::illegal_argument(format!(
-            "id [{head}...] is too long, must be no longer than {MAX_ID_BYTES} bytes but was: {}",
-            id.len()
-        )));
+        // ES's `IndexRequest.validate` names the whole id (row T11-3).
+        return Err(EsError::new(
+            400,
+            "action_request_validation_exception",
+            format!(
+                "Validation Failed: 1: id [{id}] is too long, must be no longer than \
+                 {MAX_ID_BYTES} bytes but was: {};",
+                id.len()
+            ),
+        ));
     }
     Ok(())
 }
@@ -221,6 +226,18 @@ fn vector_paths(view: &IndexView) -> Vec<(String, Option<u32>, Option<EsSimilari
     paths
 }
 
+/// ES's error for a vector of the wrong length (row T11-3).
+pub(crate) fn dims_error(path: &str, id: &str, found: usize, dims: usize) -> EsError {
+    let why = format!(
+        "The [dense_vector] field [{path}] in doc [document with id '{id}'] has a different \
+         number of dimensions [{found}] than defined in the mapping [{dims}]"
+    );
+    parsing_error(format!("[1:1] failed to parse: {why}")).with(
+        "caused_by",
+        json!({"type": "illegal_argument_exception", "reason": why}),
+    )
+}
+
 /// Checks one `dense_vector` value (step 4) and returns it as `f32`s.
 fn parse_vector(
     path: &str,
@@ -244,17 +261,24 @@ fn parse_vector(
     if let Some(dim) = dim
         && vector.len() != dim as usize
     {
-        return Err(parsing_error(format!(
-            "The number of dimensions for field [{path}] should be [{dim}] but found [{}]",
-            vector.len()
-        )));
+        return Err(dims_error(path, id, vector.len(), dim as usize));
     }
     let norm2: f64 = vector.iter().map(|&x| f64::from(x) * f64::from(x)).sum();
+    // ES's texts (row T11-3): the reason with a preview of the vector, as
+    // the `caused_by` of a "failed to parse".
+    let refused = |why: &str| {
+        let preview: Vec<String> = vector.iter().map(|x| java_float(*x)).collect();
+        let why = format!("{why} Preview of invalid vector: [{}]", preview.join(", "));
+        parsing_error(format!("[1:1] failed to parse: {why}")).with(
+            "caused_by",
+            json!({"type": "illegal_argument_exception", "reason": why}),
+        )
+    };
     match similarity {
-        Some(EsSimilarity::DotProduct) if (norm2 - 1.0).abs() > 1e-4 => Err(parsing_error(
+        Some(EsSimilarity::DotProduct) if (norm2 - 1.0).abs() > 1e-4 => Err(refused(
             "The [dot_product] similarity can only be used with unit-length vectors.",
         )),
-        Some(EsSimilarity::Cosine) if norm2 == 0.0 => Err(parsing_error(
+        Some(EsSimilarity::Cosine) if norm2 == 0.0 => Err(refused(
             "The [cosine] similarity does not support vectors with zero magnitude.",
         )),
         _ => Ok(vector),
@@ -285,51 +309,37 @@ pub(crate) fn split_vectors(
     Ok(vectors)
 }
 
-/// Checks a source's top level for metadata fields, and its `binary`
-/// values (step 4).
-pub(crate) fn check_source(
-    view: &IndexView,
-    id: &str,
-    source: &Map<String, Value>,
-) -> Result<(), EsError> {
+/// Checks a source's top level for metadata fields (step 4).
+pub(crate) fn check_source(id: &str, source: &Map<String, Value>) -> Result<(), EsError> {
     if let Some((key, value)) = source
         .iter()
         .find(|(key, _)| METADATA_FIELDS.contains(&key.as_str()))
     {
-        let cause = json!({
-            "type": "document_parsing_exception",
-            "reason": format!(
-                "[1:1] Field [{key}] is a metadata field and cannot be added inside a document. \
-                 Use the index API request parameters."
-            ),
-        });
-        return Err(field_error(key, key, id, Some(value)).with("caused_by", cause));
+        let inner = parsing_error(format!(
+            "[1:1] Field [{key}] is a metadata field and cannot be added inside a document. Use \
+             the index API request parameters."
+        ));
+        // The inner error is ES's root cause (row T11-3).
+        let mut error =
+            field_error(key, key, id, Some(value)).with("caused_by", inner.cause_value());
+        error.root_cause = Some(Box::new(inner));
+        return Err(error);
     }
-    let engine = base64::engine::general_purpose::STANDARD;
-    for (path, _) in view.es.es_types.iter().filter(|(_, t)| *t == "binary") {
-        for value in extract(source, path) {
-            let valid = match value.as_ref() {
-                Value::String(s) => engine.decode(s).is_ok(),
-                _ => false,
-            };
-            if !valid {
-                return Err(field_error(path, "binary", id, Some(value.as_ref())));
-            }
-        }
-    }
+    // A `binary` value is not checked: ES 8.19 indexes any value into a
+    // `binary` field without doc values (row T11-3).
     Ok(())
 }
 
 /// The document of an ES `_source` (step 4): the source must be an object
 /// without metadata fields, its vector values are moved into
-/// `Document.vectors`, and its `binary` values must be base64.
+/// `Document.vectors`.
 pub fn to_document(
     view: &IndexView,
     id: &str,
     source: Map<String, Value>,
 ) -> Result<Document, EsError> {
     let mut source = source;
-    check_source(view, id, &source)?;
+    check_source(id, &source)?;
     let vectors = split_vectors(view, id, &mut source)?
         .into_iter()
         .filter_map(|(path, vector)| vector.map(|v| (path, v)))
@@ -460,7 +470,9 @@ impl SourceFilter {
             && !accepts(&self.excludes, path)
     }
 
-    /// `source` filtered as ES's `XContentMapValues.filter` does (rule 1).
+    /// `source` filtered as ES 8.19 filters it (rule 1): an object or array
+    /// the filter empties is dropped, one that was empty already is kept
+    /// when its path is included (checked against the oracle, row T11-3).
     /// The caller leaves `_source` out when `enabled` is false.
     pub fn apply(&self, source: Map<String, Value>) -> Map<String, Value> {
         if self.includes.is_empty() && self.excludes.is_empty() {
@@ -574,13 +586,13 @@ fn filter_map(
                     continue;
                 }
                 let kept = filter_map(object, &inner, sub_include, excludes);
-                if included || !kept.is_empty() {
+                if !kept.is_empty() || (included && object.is_empty()) {
                     out.insert(key.clone(), Value::Object(kept));
                 }
             }
             Value::Array(items) => {
                 let kept = filter_array(items, &path, sub_include, excludes, included);
-                if !kept.is_empty() {
+                if !kept.is_empty() || (included && items.is_empty()) {
                     out.insert(key.clone(), Value::Array(kept));
                 }
             }
@@ -637,12 +649,14 @@ mod tests {
         );
         assert!(validate_id(&"a".repeat(512)).is_ok());
         let e = validate_id(&"a".repeat(513)).expect_err("long");
-        assert_eq!(e.kind, "illegal_argument_exception");
-        assert!(
-            e.reason
-                .ends_with("is too long, must be no longer than 512 bytes but was: 513"),
-            "{}",
-            e.reason
+        assert_eq!(e.kind, "action_request_validation_exception");
+        assert_eq!(
+            e.reason,
+            format!(
+                "Validation Failed: 1: id [{}] is too long, must be no longer than 512 bytes but \
+                 was: 513;",
+                "a".repeat(513)
+            )
         );
     }
 

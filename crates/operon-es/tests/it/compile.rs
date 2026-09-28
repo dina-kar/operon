@@ -625,17 +625,23 @@ fn search_after_prefix_builds_a_lexicographic_filter() {
             ])
         ]))
     );
+    // A shard failure in ES (row T11-3).
+    let e = plan_err(json!({"sort": ["created_at"], "search_after": [1, 2]}));
     assert_error(
-        &plan_err(json!({"sort": ["created_at"], "search_after": [1, 2]})),
+        &e,
         400,
-        "illegal_argument_exception",
-        "search_after has 2 value(s) but sort has 1.",
+        "search_phase_execution_exception",
+        "all shards failed",
+    );
+    assert_eq!(
+        e.to_body()["error"]["root_cause"][0]["reason"],
+        "search_after has 2 value(s) but sort has 1."
     );
     assert_error(
         &plan_err(json!({"sort": ["created_at"], "search_after": [1], "from": 3})),
         400,
-        "illegal_argument_exception",
-        "[from] parameter must be set to 0 when [search_after] is used",
+        "action_request_validation_exception",
+        "Validation Failed: 1: [from] parameter must be set to 0 when [search_after] is used;",
     );
 }
 

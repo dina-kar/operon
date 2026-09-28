@@ -184,10 +184,11 @@ fn parse_iso(text: &str, round: Rounding) -> Option<i64> {
         return Some(start_us);
     }
     let local = PrimitiveDateTime::new(date, time);
+    // ES's round-up parser fills only the time of day: a missing month or
+    // day stays 1, so `2026-10` rounds up to `2026-10-01T23:59:59.999`
+    // (checked against the 8.19 oracle, row T11-3).
     let next = match precision {
-        Precision::Year => add_months(local, 12)?,
-        Precision::Month => add_months(local, 1)?,
-        Precision::Day => local.checked_add(Duration::DAY)?,
+        Precision::Year | Precision::Month | Precision::Day => local.checked_add(Duration::DAY)?,
         Precision::Hour => local.checked_add(Duration::HOUR)?,
         Precision::Minute => local.checked_add(Duration::MINUTE)?,
         Precision::Second | Precision::Fraction => local.checked_add(Duration::SECOND)?,

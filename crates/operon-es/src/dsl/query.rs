@@ -6,8 +6,8 @@ use serde_json::{Map, Value};
 
 use super::datemath::Rounding;
 use super::value::{
-    FieldRef, check_searchable, coerce_rounded, es_type, is_text_like, json_class, resolve,
-    scalar_text, shard_error,
+    FieldRef, check_searchable, coerce_rounded, es_type, is_searchable, is_text_like, json_class,
+    resolve, scalar_text, shard_error,
 };
 use super::{
     KnnSpec, MAX_DEPTH, MAX_NUM_CANDIDATES, MAX_TERMS, ParsedQuery, QueryContext,
@@ -853,24 +853,23 @@ impl<'a> Parser<'a> {
                 "[range] query malformed, no start_object after field name [{field}]"
             )));
         };
-        let mut gt = None;
-        let mut gte = None;
-        let mut lt = None;
-        let mut lte = None;
-        let mut from = None;
-        let mut to = None;
+        // As ES's `RangeQueryBuilder`: `gt`/`gte`/`from` set the lower bound
+        // and `lt`/`lte`/`to` the upper one, the last key winning (row
+        // T11-3); `gt` and `lt` make the bound exclusive.
+        let mut lower: Option<&Value> = None;
+        let mut upper: Option<&Value> = None;
         let mut include_lower = true;
         let mut include_upper = true;
         let mut boost = 1.0;
         for (key, value) in params {
             let bound = (!value.is_null()).then_some(value);
             match key.as_str() {
-                "gt" => gt = Some(bound),
-                "gte" => gte = Some(bound),
-                "lt" => lt = Some(bound),
-                "lte" => lte = Some(bound),
-                "from" => from = Some(bound),
-                "to" => to = Some(bound),
+                "gt" => (lower, include_lower) = (bound, false),
+                "gte" => (lower, include_lower) = (bound, true),
+                "lt" => (upper, include_upper) = (bound, false),
+                "lte" => (upper, include_upper) = (bound, true),
+                "from" => lower = bound,
+                "to" => upper = bound,
                 "include_lower" => include_lower = boolean("range", key, value)?,
                 "include_upper" => include_upper = boolean("range", key, value)?,
                 "boost" => boost = self.boost_value("range", value)?,
@@ -896,39 +895,16 @@ impl<'a> Parser<'a> {
                 _ => return Err(self.does_not_support("range", key)),
             }
         }
-        let both = |a: &str, b: &str| {
-            EsError::parsing(format!(
-                "[range] query does not accept both [{a}] and [{b}]"
-            ))
+        let (gt, gte) = if include_lower {
+            (None, lower)
+        } else {
+            (lower, None)
         };
-        if gt.is_some() && gte.is_some() {
-            return Err(both("gt", "gte"));
-        }
-        if lt.is_some() && lte.is_some() {
-            return Err(both("lt", "lte"));
-        }
-        if from.is_some() && (gt.is_some() || gte.is_some()) {
-            return Err(both("from", if gt.is_some() { "gt" } else { "gte" }));
-        }
-        if to.is_some() && (lt.is_some() || lte.is_some()) {
-            return Err(both("to", if lt.is_some() { "lt" } else { "lte" }));
-        }
-        // Legacy `from`/`to` (Quickwit `range_query.rs`).
-        if let Some(from) = from {
-            if include_lower {
-                gte = Some(from);
-            } else {
-                gt = Some(from);
-            }
-        }
-        if let Some(to) = to {
-            if include_upper {
-                lte = Some(to);
-            } else {
-                lt = Some(to);
-            }
-        }
-        let (gt, gte, lt, lte) = (gt.flatten(), gte.flatten(), lt.flatten(), lte.flatten());
+        let (lt, lte) = if include_upper {
+            (None, upper)
+        } else {
+            (upper, None)
+        };
         let query = match resolve(self.view(), field) {
             FieldRef::Unmapped => Query::MatchNone,
             FieldRef::Id => return Err(EsError::unsupported("range on [_id]")),
@@ -988,6 +964,9 @@ impl<'a> Parser<'a> {
         };
         let query = match resolve(self.view(), field) {
             FieldRef::Id => Query::MatchAll,
+            // ES keeps neither norms nor doc values for an unindexed `text`
+            // or a `binary`, so `exists` finds nothing there (row T11-3).
+            FieldRef::Field(spec) if !is_searchable(self.view(), field, spec) => Query::MatchNone,
             FieldRef::Field(_) | FieldRef::Json { .. } => Query::Exists {
                 field: field.to_string(),
             },
@@ -1331,7 +1310,7 @@ impl<'a> Parser<'a> {
         }
         let Some(query_vector) = query_vector else {
             return Err(EsError::illegal_argument(
-                "either [query_vector] or [query_vector_builder] must be provided",
+                "either [query_vector_builder] or [query_vector] must be provided",
             ));
         };
         Ok(KnnSpec {

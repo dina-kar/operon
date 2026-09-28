@@ -9,18 +9,22 @@
 
 use std::time::Duration;
 
+use axum::body::Bytes;
+use axum::extract::{Path, State};
+use axum::http::Uri;
+use axum::response::Response;
 use operon_query::{FilterWriteOptions, FilterWriteResult, PatchSpec, Query, ServiceError};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::EsGateway;
 use crate::dsl::QueryContext;
 use crate::dsl::query::{parse_leaf, token_name};
 use crate::error::{ErrorContext, EsError};
-use crate::http::{Params, RequestCtx};
+use crate::http::{Params, RequestCtx, fail, json_body, respond};
 use crate::mapping::IndexView;
 use crate::search::SearchParams;
 use crate::search::compile::url_query;
-use crate::search::exec::now_ms;
+use crate::search::exec::{expr_of, now_ms, resolve_options, views};
 
 /// The URL parameters of `_delete_by_query` and `_update_by_query` (Task 10
 /// routes).
@@ -86,11 +90,7 @@ impl DbqParams {
             check_conflicts(conflicts)?;
         }
         let scroll_size = p.usize("scroll_size")?.unwrap_or(1_000);
-        if !(1..=10_000).contains(&scroll_size) {
-            return Err(EsError::illegal_argument(format!(
-                "[scroll_size] must be between 1 and 10000, got [{scroll_size}]"
-            )));
-        }
+        check_scroll_size(scroll_size)?;
         let max_docs = match p.str("max_docs") {
             None => None,
             Some(text) => max_docs(&parse_i64("max_docs", text)?)?,
@@ -108,6 +108,30 @@ impl DbqParams {
             search: crate::search::parse_params(p)?,
         })
     }
+}
+
+/// ES's answers to a `scroll_size` of 0 and to one past the result window
+/// (the scroll search's own checks; row T11-3).
+fn check_scroll_size(scroll_size: usize) -> Result<(), EsError> {
+    if scroll_size == 0 {
+        return Err(EsError::new(
+            400,
+            "action_request_validation_exception",
+            "Validation Failed: 1: [size] cannot be [0] in a scroll context;",
+        ));
+    }
+    if scroll_size > 10_000 {
+        return Err(EsError::search_phase(
+            EsError::illegal_argument(format!(
+                "Batch size is too large, size must be less than or equal to: [10000] but was \
+                 [{scroll_size}]. Scroll batch sizes cost as much memory as result windows so \
+                 they are controlled by the [index.max_result_window] index level setting."
+            )),
+            "",
+            crate::search::body::SEARCH_NODE,
+        ));
+    }
+    Ok(())
 }
 
 fn parse_i64(name: &str, text: &str) -> Result<Value, EsError> {
@@ -129,12 +153,20 @@ fn check_conflicts(value: &str) -> Result<(), EsError> {
     }
 }
 
-/// `max_docs`: a positive integer, or `-1` for every match.
+/// `max_docs`: a positive integer, or `-1` for every match. ES's texts
+/// (row T11-3): 0 is below the one slice, another negative is refused as
+/// negative.
 fn max_docs(value: &Value) -> Result<Option<u64>, EsError> {
     match value.as_i64() {
         Some(-1) => Ok(None),
         Some(n) if n > 0 => Ok(Some(n as u64)),
-        _ => Err(EsError::new(
+        Some(0) => Err(EsError::illegal_argument(
+            "[max_docs] should be >= [slices]",
+        )),
+        Some(n) => Err(EsError::illegal_argument(format!(
+            "[max_docs] parameter cannot be negative, found [{n}]"
+        ))),
+        None => Err(EsError::new(
             400,
             "action_request_validation_exception",
             format!(
@@ -201,12 +233,23 @@ pub(crate) fn parse_body(body: &Value, with_script: bool) -> Result<ByQueryBody<
         match key.as_str() {
             "query" => out.query = Some(value).filter(|v| !v.is_null()),
             "max_docs" => out.max_docs = Some(max_docs(value)?),
-            "conflicts" => check_conflicts(value.as_str().unwrap_or_default())?,
+            // ES fails a non-string with a 500 class cast; a 400 names it.
+            "conflicts" => match value.as_str() {
+                Some(text) => check_conflicts(text)?,
+                None => {
+                    return Err(EsError::parsing(format!(
+                        "[conflicts] must be a string, found [{}]",
+                        token_name(value)
+                    )));
+                }
+            },
             "script" if with_script => out.script = Some(value).filter(|v| !v.is_null()),
             "slice" | "sort" => return Err(EsError::unsupported(key)),
+            // ES's `AbstractBulkByQueryRequest` parser text (row T11-3).
             other => {
                 return Err(EsError::parsing(format!(
-                    "request does not support [{other}]"
+                    "Unknown key for a {} in [{other}].",
+                    token_name(value)
                 )));
             }
         }
@@ -215,11 +258,13 @@ pub(crate) fn parse_body(body: &Value, with_script: bool) -> Result<ByQueryBody<
 }
 
 /// The query of each index: `q` when given, else the body's `query`, which
-/// one of them must give (knn and `script_score` are refused).
+/// one of them must give unless `match_all` stands in (knn and
+/// `script_score` are refused).
 pub(crate) fn compile_queries(
     indices: &[IndexView],
     body_query: Option<&Value>,
     search: &SearchParams,
+    match_all: bool,
 ) -> Result<Vec<Query>, EsError> {
     let now = now_ms();
     indices
@@ -229,6 +274,7 @@ pub(crate) fn compile_queries(
             match (&search.q, body_query) {
                 (Some(q), _) => url_query(q, search, &qctx),
                 (None, Some(query)) => parse_leaf(query, &qctx),
+                (None, None) if match_all => Ok(Query::MatchAll),
                 (None, None) => Err(EsError::new(
                     400,
                     "action_request_validation_exception",
@@ -242,9 +288,9 @@ pub(crate) fn compile_queries(
 /// What a by-query request writes to each match.
 #[derive(Clone, Debug)]
 pub(crate) enum ByFilter {
-    /// `_delete_by_query`, which Task 10 routes.
-    #[allow(dead_code)]
+    /// `_delete_by_query`.
     Delete,
+    /// `_update_by_query`.
     Patch(PatchSpec),
 }
 
@@ -338,6 +384,98 @@ async fn call(
     result.map_err(|err| EsError::from_service(err, ErrorContext::Write))
 }
 
+/// `_delete_by_query` over `indices` (Task 10 rule 1, Ruling 6): the
+/// body's `query` (or `q`) and `max_docs`, executed per index in name order
+/// by `delete_by_filter` at one pin per index (D87).
+pub async fn delete_by_query(
+    gw: &EsGateway,
+    ctx: &RequestCtx,
+    indices: &[IndexView],
+    body: &Value,
+    params: &DbqParams,
+) -> Result<Value, EsError> {
+    let parsed = parse_body(body, false)?;
+    let max_docs = parsed.max_docs.unwrap_or(params.max_docs);
+    let mut indices = indices.to_vec();
+    indices.sort_by(|a, b| a.name.cmp(&b.name));
+    let queries = compile_queries(&indices, parsed.query, &params.search, false)?;
+    let targets: Vec<(IndexView, Query)> = indices.into_iter().zip(queries).collect();
+    let totals = run(
+        gw,
+        ctx,
+        &targets,
+        &ByFilter::Delete,
+        max_docs,
+        params.timeout,
+        "_delete_by_query",
+    )
+    .await?;
+    let fields = [
+        ("took", json!(ctx.started.elapsed().as_millis() as u64)),
+        ("timed_out", json!(false)),
+        ("total", json!(totals.total)),
+        ("deleted", json!(totals.affected)),
+        ("batches", json!(totals.batches)),
+        ("version_conflicts", json!(0)),
+        ("noops", json!(0)),
+        ("retries", json!({"bulk": 0, "search": 0})),
+        ("throttled_millis", json!(0)),
+        ("requests_per_second", json!(-1.0)),
+        ("throttled_until_millis", json!(0)),
+        ("failures", json!([])),
+    ];
+    Ok(Value::Object(
+        fields
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect(),
+    ))
+}
+
+async fn delete_by_query_request(
+    gw: &EsGateway,
+    ctx: &RequestCtx,
+    uri: &Uri,
+    index: &str,
+    body: &[u8],
+) -> Result<Value, EsError> {
+    let params = Params::parse(uri.query(), uri.path(), BY_QUERY_PARAMS)?;
+    let dbq_params = DbqParams::parse(&params)?;
+    let body = json_body(body)?.unwrap_or(Value::Null);
+    // The body is read before resolution, so a bad key or a missing query
+    // names itself before a missing index does (as `_update_by_query`).
+    let parsed = parse_body(&body, false)?;
+    if parsed.query.is_none() && dbq_params.search.q.is_none() {
+        return Err(EsError::new(
+            400,
+            "action_request_validation_exception",
+            "Validation Failed: 1: query is missing;",
+        ));
+    }
+    let indices = views(
+        gw,
+        ctx,
+        &expr_of(Some(index)),
+        resolve_options(&params, &dbq_params.search),
+    )
+    .await?;
+    delete_by_query(gw, ctx, &indices, &body, &dbq_params).await
+}
+
+/// `POST /{index}/_delete_by_query`.
+pub(crate) async fn delete_by_query_index(
+    State(gw): State<EsGateway>,
+    ctx: RequestCtx,
+    uri: Uri,
+    Path(index): Path<String>,
+    body: Bytes,
+) -> Response {
+    match delete_by_query_request(&gw, &ctx, &uri, &index, &body).await {
+        Ok(body) => respond(&ctx, 200, &body),
+        Err(err) => fail(&ctx, &err),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,6 +498,19 @@ mod tests {
         for bad in ["1", "s", "1x", "-2s"] {
             assert!(time_value("timeout", bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_non_string_conflicts_is_a_parse_error() {
+        let body = serde_json::json!({"query": {"match_all": {}}, "conflicts": 1});
+        let err = parse_body(&body, false).err().expect("refused");
+        assert_eq!(err.kind, "parsing_exception");
+        assert_eq!(
+            err.reason,
+            "[conflicts] must be a string, found [VALUE_NUMBER]"
+        );
+        let body = serde_json::json!({"query": {"match_all": {}}, "conflicts": "proceed"});
+        assert!(parse_body(&body, false).is_ok());
     }
 
     #[test]
