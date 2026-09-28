@@ -142,8 +142,8 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Phases {
     }
 }
 
-/// Semantics 4 (T0-6, X8): the durable server stops after Flight SQL and
-/// before the collection service, the writer flush, the worker and the
+/// Semantics 4 (T0-6, X8): the durable runtime and then the durable server
+/// stop after Flight SQL and before the collection service, the writer flush, the worker and the
 /// metastore, and leaves its port and its store free.
 #[tokio::test(flavor = "multi_thread")]
 async fn stop_order_drains_durable_before_meta() {
@@ -166,7 +166,9 @@ async fn stop_order_drains_durable_before_meta() {
             .position(|p| p == name)
             .unwrap_or_else(|| panic!("no {name} phase in {phases:?}"))
     };
-    assert!(at("flight") < at("durable"), "{phases:?}");
+    // Task 6: the runtime (the SDK) stops first, then the server under it.
+    assert!(at("flight") < at("durable_runtime"), "{phases:?}");
+    assert!(at("durable_runtime") < at("durable"), "{phases:?}");
     for later in ["collections", "writer", "worker", "hot", "metastore"] {
         assert!(
             at("durable") < at(later),

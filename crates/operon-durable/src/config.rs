@@ -365,6 +365,10 @@ pub const PROTECTED: &[(&str, &str)] = &[
         "workers.transport_http_push.enabled",
         "push delivery is --durable-push",
     ),
+    (
+        "workers.worker_inproc",
+        "the in-process worker is Loam's own runtime's (D1 Task 6)",
+    ),
 ];
 
 /// The sections the embed reads. Resonate's process section (`level`,
@@ -445,10 +449,14 @@ pub(crate) enum Mode {
     Migrate,
 }
 
+///
+/// `inproc` is the instance number `worker_inproc` parks its worker under
+/// (`None`: the worker is off).
 pub(crate) fn configuration(
     config: &DurableConfig,
     carried: &[String],
     mode: Mode,
+    inproc: Option<u64>,
 ) -> Result<Configuration, DurableError> {
     let bad = |e: resonate_plugin::ConfigError| DurableError::Config(e.to_string());
     let listen = config.listen.to_string();
@@ -496,6 +504,11 @@ pub(crate) fn configuration(
                 )
                 .map_err(bad)?;
         }
+    }
+    if let Some(instance) = inproc {
+        loader = loader
+            .set("workers.worker_inproc.instance", &instance.to_string())
+            .map_err(bad)?;
     }
     if mode == Mode::Migrate {
         loader = loader
@@ -549,6 +562,8 @@ mod tests {
             "debug",
             "shutdown_timeout",
             "workers.worker_kafka.enabled",
+            "workers.worker_inproc",
+            "workers.worker_inproc.instance",
             "a..b",
         ] {
             assert!(check_override(key, &carried()).is_err(), "{key}");
