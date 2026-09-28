@@ -2,9 +2,9 @@
 
 Date: 2026-09-28. Branch `r1-t16`, stacked on `r1-t14` (PR #97). R1 plan: [`2026-09-27-r1-reactive-core.md`](2026-09-27-r1-reactive-core.md), Task 16; its rows T16-1 to T16-14 record the rulings made here.
 
-**Status: R1's gates pass on the as-built tree, with two gaps.** The reactive checker, the transaction checker and the nemesis passed. The metastore conformance suite and fault matrix on TiKV passed as of Tasks 5–6. The gaps are:
+**Status: R1's local gates pass on the as-built tree; the nightly gate is pending, and there are two gaps.** The reactive checker, the transaction checker and the nemesis passed in local runs: 60 s and 30 s per PR, and 180 s under the nemesis on one TiKV store. The metastore conformance suite and fault matrix on TiKV passed as of Tasks 5–6. **Pending:** the nightly `tikv-nemesis` job (30-minute checkers, one store on the standard runner per owner ruling T17-2) has not run yet, so the nightly gate is not shown. The gaps are:
 - **Task 15** (TiDB SQL beside Live) is **not done: it is parked** until the owner decides about TiDB. The question is open.
-- **PR #80** (the `loam` fork of `tikv-client`) **is not in this branch.** So the re-measurement "with the fork's read-path lock resolution" (Task 16 semantics 5) measured the upstream pin `ab4be1c` again. It must be repeated once #80 lands.
+- **PR #80** (the `loam` fork of `tikv-client`) **is not in this branch.** So the re-measurement "with the fork's read-path lock resolution" (Task 16 semantics 5) measured the upstream pin `ab4be1c` again. It must be repeated once #80 lands. **Owner ruling T17-1 (Task 17):** #80 is not rebased into R1; it merges into `main` through the merge train right after #76, and the re-measurement and the async-commit/1PC decision are R2 items after it.
 
 All measurements below ran on the owner's build machine. It is not quiet: other agents' builds and a second TiKV playground (`loam-rtd`, port offset 20000) ran at the same time, with a load average of 8–10. The Loam playground `loam-t16` was dedicated: one PD and one TiKV at port offset 17000, and nothing else used it. Treat absolute times as indicative.
 
@@ -50,7 +50,7 @@ The command gets `OPERON_CHECKER_NEMESIS=1`. It also gets `OPERON_NEMESIS_EXPECT
 
 Local run (one store; 3 GB of RAM free with another playground up): three runs of 180 s, each with 5–6 faults (two TiKV kills, one PD kill, one PD stall, one pause). **The PD stall killed the real TSO stream, and the supervisor rebuilt the server's client once (`client_rebuilds: 1`).** Later runs and the final sync succeeded. The checker's own handle needed no rebuild; its requests recovered on the old stream.
 
-The nightly CI job `tikv-nemesis` runs on 3 stores, with 30-minute checkers and a 60 s interval. It has not run yet. Carry: a GitHub runner with 7 GB of RAM may not fit three TiKV stores; if so, drop to `--stores 1` or use a larger runner.
+The nightly CI job `tikv-nemesis` runs 30-minute checkers with a 60 s interval. It has not run yet. **Owner ruling T17-2 (Task 17):** it runs on the standard GitHub runner with **one TiKV store**, as the local runs did; a 3-store nemesis on a larger runner is an R2 item.
 
 ## Measurements
 
@@ -123,8 +123,8 @@ TiDB SQL beside Live in the dev playground waits for the owner's decision about 
 
 ## Carries
 
-- Repeat the tick-latency (lag 0 against 200 ms) and commit-latency measurements once #80 is in the stack, and on a quiet machine. Then decide whether `tick_read_lag` can drop and whether `Async1pc` can come back.
+- R2 (T17-1): repeat the tick-latency (lag 0 against 200 ms) and commit-latency measurements once #80 is in through `main`, and on a quiet machine. Then decide whether `tick_read_lag` can drop and whether `Async1pc` can come back.
 - Capture the error of the lag-0 contention run that failed one mutation (row T16-9).
-- The first `tikv-nemesis` CI run: check the runner's RAM with 3 stores.
+- The first `tikv-nemesis` CI run (one store, T17-2). A 3-store nemesis on a larger runner is R2's.
 - protobuf-es's `fromBinary` and `toJson` drop a map key named `__proto__`. `@operon/live` now keeps the key as an own property on its own side (review of #97), but a round trip through protobuf-es still loses it. This is upstream (bufbuild/protobuf-es).
 - R2: design §7.2's shared conformance fixture set, seeded from `session.test.ts`'s Transition scripts, once a second client exists (owner ruling T14-13).

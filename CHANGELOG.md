@@ -48,8 +48,36 @@ All notable changes to this project are documented here. The format follows [Kee
 - `operon` (M1.3): `PUT …/collections/{c}/hot`, `POST …/collections/{c}/warm` and the hot status in `GET …/collections/{c}`; `--hot-pin-all`, `--hot-dir`, `--hot-nvme-bytes`, `--hot-ram-bytes`, `--maintenance` and hidden hot tuning flags; `operon warm <ns>/<collection>`; `operon cluster --roles meta,log,query,worker,gateway` with `--node-id`, `--listen`, `--advertise`, `--peers`, `--bucket`, `--data-dir`, `--zone` and `--replication`; the internal routes (`/internal/v1/{raft,meta,reads,hot,node}/…`); read forwarding to the owner with local fallback; the `meta-membership` task that evicts stale learners; multi-process cluster tests (feature `cluster-tests`).
 - `operon-meta` (M1.3): the metastore over the network: openraft RPCs over HTTP (postcard), a networked `MetaClient` over a local replica on every node (voters on `meta` nodes, learners elsewhere), `join` and `leave`; `SetCollectionHot` and the `MetaStore` operations `set_collection_hot`, `collection_hot` and `leases_with_prefix`, with conformance cases; the conformance suite runs over HTTP on the leader and on a learner.
 - Gates (M1.3): crash-gate rows for the merge, compaction and hot-build failpoints; fault-matrix rows for `SplitMerge`, `LanceCompaction`, `HotBuild` and `HotLoad` (`FAULT_MATRIX_COMPONENTS` runs a subset and refuses unknown names); the simulation runs merges and compactions and admits writes against the backlog budget.
+- `operon-tikv` (R1): the TiKV client layer over `tikv-client`, pinned to git `ab4be1c`. It has:
+  - keyspace bootstrap through PD's HTTP API, refusing a cluster that is not on API v2;
+  - a transaction runner with error classification, jittered retries and a `FaultPlan` hook;
+  - commit tokens with fence-based resolution of unknown outcomes, and a TSO supervisor that rebuilds a dead client;
+  - reads that page under the gRPC limit and refuse timestamps below the GC window;
+  - the order-preserving tuple codec;
+  - the cluster-wide MVCC GC loop, with PD service safe points as barriers, from vendored kvproto `pdpb` protos;
+  - the test harness (`OPERON_TEST_PD`).
+- `operon-meta-tikv` (R1): `impl MetaStore` over TiKV. It passes all 53 conformance cases with their linearizability histories, and a blessed 144-cell fault matrix (`meta_fault_matrix.tikv.expected.md`). It commits with two-phase commit, and `check_invariants` checks its state.
+- `operon-live-proto` (R1): the `loam.live.v1` protos (`value`, `live`, and the internal `journal`, `catalog` and `idempotency`), generated with buffa and connect-rust. `buf.yaml` and `buf.gen.yaml` generate the TypeScript.
+- `operon-live` (R1): Loam Live, a reactive document database on TiKV. It has:
+  - tables, documents and indexes;
+  - a sharded commit journal (64 shards per app by default) with a tailer, a janitor and checkpoints;
+  - `LiveTxn`, the mutation runner (16 attempts, idempotency keys, opt-in `serializable_ranges`) and the `_system:*` functions;
+  - the subscription manager: one read-set interval index per app, ticks 200 ms behind a fresh TSO timestamp, and a safety rerun;
+  - sessions with versioned Transitions, backpressure and resume;
+  - the connect-rust sync service (`Watch`, `ModifyQuerySet`, `Query`, `Mutate`, `Deploy`), bound to loopback, whose errors carry a `loam.live.v1.LiveError` detail;
+  - `Deploy`, with bundles in the object store;
+  - the Elle-style history checker (`testing::elle`);
+  - the reactive and transaction checkers.
+- `operon-live-js` (R1): QuickJS server functions (`rquickjs` 0.14). Each pooled context has its own runtime, with a 64 MiB per-call memory limit and a CPU limit. `Date.now()` and `Math.random()` are deterministic, crypto randomness throws, built-ins are frozen, and functions import `loam:server`.
+- `@operon/live` (R1, `sdks/live-typescript`, private): the generated protobuf-es and Connect client with a reactive layer. `LiveClient` has `watch`, `query`, `mutate` with optimistic updates and idempotency keys, and `deploy`. Sessions resume, and 64-bit values are `bigint`.
+- `operon` (R1): feature `tikv` (off by default) for `--meta tikv://<pd>/<keyspace>[?root=<hex>]` on `dev` and `standalone`, with the GC loop. Feature `live` (off by default; it enables `tikv`) for the Live listener and `--live-listen`, `--live-pd`, `--live-app`, `--live-keyspace`, `--live-root`, `--live-tick-read-lag-ms`, `--live-js-contexts` and `--no-live`.
+- The TiKV dev playground (R1): `scripts/tikv/playground.sh` and `wait-ready.sh`, and the configs in `deploy/tikv/` (API v2, pre-allocated keyspaces). `scripts/tikv/nemesis.sh` kills and restarts TiKV and PD, stalls PD and pauses the test process.
+- CI (R1): the jobs `tikv` (per PR, path-filtered), `tikv-nightly` (the crash gate on the TiKV metastore), `tikv-nemesis` (nightly, one store), `sdk-live-typescript` and `live-protos`.
+- Docs (R1): the dependency spike (`docs/plans/r1-dependency-spike.md`), the exit report (`docs/plans/r1-exit-report.md`), the as-built notes in design §20 §20, and `crates/operon-live/README.md`.
 
 ### Changed
+- `operon-meta-conformance` (R1): a `metastore_conformance!(backend; cases = [..])` arm and `Backend::unavailable` (a case skips when its backend is unavailable). `collection_head_reads_pointer_bounds_and_clock` and `collection_roots_lists_prefixes_under_a_path` accept a clock that is not earlier, rather than equal, because a TSO clock advances with time.
+- `operon` (R1): `ServerConfig.meta: MetaBackend` (`Raft` by default), and `Server::meta()` returns `Option<&MetaClient>`.
 - `operon-meta` (M1.3): a new snapshot format version (the version-5 body followed by the hot configuration), written only while some collection has a hot configuration, so every earlier state still snapshots as version 5; `MetaClientConfig.apply_wait`; a 4xx answer to a metastore POST is a definite failure, and a membership request tries the remaining seeds after one rejects it.
 - `operon-collection` (M1.3): `LanceEnv::with_cache`, which the server now uses; `CollectionGcRoots` keeps the hot artifacts of retained and lingering manifests; `PointerCas` and `put_manifest` are public.
 - `operon-query` (M1.3): `RemoteReads::{get, count, scroll}` return the owner's read token; `HotTier::quarantine_split`.

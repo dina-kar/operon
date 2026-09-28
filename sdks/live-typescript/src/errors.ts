@@ -73,9 +73,11 @@ const CONNECT: Partial<Record<Code, LiveErrorCode>> = {
 export function toLiveError(e: unknown): LiveError {
   if (e instanceof LiveError) return e;
   const c = ConnectError.from(e);
-  const detail = c.findDetails(LiveErrorSchema)[0];
-  if (detail !== undefined && detail.code !== ErrorCode.UNSPECIFIED && WIRE[detail.code]) {
-    return new LiveError(WIRE[detail.code], c.rawMessage, { cause: e });
+  // The first detail with a code this client knows; an unusable one before it
+  // must not hide it.
+  for (const detail of c.findDetails(LiveErrorSchema)) {
+    const code = detail.code === ErrorCode.UNSPECIFIED ? undefined : WIRE[detail.code];
+    if (code !== undefined) return new LiveError(code, c.rawMessage, { cause: e });
   }
   let code = CONNECT[c.code] ?? "INTERNAL";
   if (code === "RESOURCE_EXHAUSTED" && /out of memory/i.test(c.rawMessage)) {

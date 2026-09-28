@@ -290,8 +290,10 @@ jobs:
         if: always() && steps.paths.outputs.run == 'true'
         run: scripts/tikv/playground.sh stop --tag loam-ci
 
-  # R1 plan Task 16 semantics 3: the nemesis. Three TiKV stores; the reactive
-  # and transaction checkers run for 30 minutes at once while
+  # R1 plan Task 16 semantics 3: the nemesis. One TiKV store on the standard
+  # runner (owner ruling T17-2; three stores may not fit its RAM, and a 3-store
+  # nemesis on a larger runner is an R2 item). The reactive and transaction
+  # checkers run for 30 minutes at once while
   # scripts/tikv/nemesis.sh kills and restarts a store and the PD leader,
   # stalls PD past the client's request timeout (the real TSO stream death,
   # owner ruling T2-17) and pauses the test process that serves Live. Both
@@ -326,8 +328,8 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
           echo "$HOME/.tiup/bin" >> "$GITHUB_PATH"
           "$HOME/.tiup/bin/tiup" install playground pd:v8.5.8 tikv:v8.5.8
-      - name: start the playground (3 stores)
-        run: scripts/tikv/playground.sh start --tag loam-nemesis --stores 3 --timeout 180
+      - name: start the playground (1 store)
+        run: scripts/tikv/playground.sh start --tag loam-nemesis --stores 1 --timeout 180
       - name: checkers under the nemesis
         env:
           OPERON_TEST_PD: 127.0.0.1:19379
