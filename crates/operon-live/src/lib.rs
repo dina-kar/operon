@@ -12,7 +12,9 @@
 //! [`Tailer`] and its [`Janitor`] are in [`journal`]. [`LiveTxn`], its
 //! [`ReadSet`], the [`Function`] trait and the mutation and query
 //! [`Runner`] (Task 10) are in [`txn`]; the built-in `_system:*` functions
-//! are in [`system`], their argument shapes in [`query`].
+//! are in [`system`], their argument shapes in [`query`]. The subscription
+//! manager (Task 11), [`Subscriptions`], and its read-set index,
+//! [`ReadSetIndex`], are in [`subs`] and [`readset`].
 
 pub mod catalog;
 mod config;
@@ -23,6 +25,8 @@ pub mod journal;
 pub mod keys;
 mod limits;
 pub mod query;
+pub mod readset;
+pub mod subs;
 pub mod system;
 pub mod txn;
 mod value;
@@ -38,5 +42,7 @@ pub use ids::{DocId, IndexId, TableId};
 pub use journal::{Batch, Checkpoint, Janitor, JanitorReport, Journal, Tailer};
 pub use keys::{AppKeys, KeyRange};
 pub use limits::Limits;
+pub use readset::{ReadSetIndex, SubId};
+pub use subs::{SubKey, SubResult, SubsConfig, SubsStats, Subscriptions, Tick};
 pub use txn::{FnKind, Function, LiveTxn, Mutated, Queried, ReadSet, Runner, RunnerOptions, Usage};
 pub use value::{LiveValue, fields_from_proto, fields_to_proto};

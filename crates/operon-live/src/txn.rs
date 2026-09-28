@@ -537,6 +537,9 @@ struct Inner {
     /// Mutations hold it shared for their whole run; [`Runner::try_quiesce`]
     /// takes it exclusively.
     gate: Arc<tokio::sync::RwLock<()>>,
+    /// Counts this runner's commits that wrote a journal entry; the
+    /// subscription manager ticks when it moves (§20 §8.2 step 1).
+    commits: tokio::sync::watch::Sender<u64>,
 }
 
 /// Exclusive admission to an app's mutations, from [`Runner::try_quiesce`]:
@@ -617,6 +620,7 @@ impl Runner {
                 limits: config.limits.clone(),
                 options,
                 gate: Arc::default(),
+                commits: tokio::sync::watch::Sender::new(0),
             }),
         })
     }
@@ -650,6 +654,13 @@ impl Runner {
             .try_write_owned()
             .ok()
             .map(|guard| Quiesced { _guard: guard })
+    }
+
+    /// A receiver that changes after every mutation of this runner that
+    /// committed a journal entry, so a subscription manager on this node can
+    /// tick right after a local commit (§20 §8.2 step 1).
+    pub fn commits(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.commits.subscribe()
     }
 
     /// The app's journal, with its stored shard count (read now).
@@ -707,7 +718,12 @@ impl Runner {
         }
         let hash = idempotency_key
             .as_deref()
-            .map(idempotency_hash)
+            .map(|key| {
+                Ok::<_, LiveError>(IdemKey {
+                    hash: idempotency_hash(key)?,
+                    args: args.digest(),
+                })
+            })
             .transpose()?;
         let _admitted = self.inner.gate.read().await;
         let request_id = idempotency_key.unwrap_or_default();
@@ -752,6 +768,15 @@ impl Runner {
                 return Err(LiveError::Txn(e));
             }
         };
+        if matches!(
+            committed.value,
+            Outcome::Ran {
+                journal: Some(_),
+                ..
+            }
+        ) {
+            self.inner.commits.send_modify(|n| *n = n.wrapping_add(1));
+        }
         Ok(match committed.value {
             Outcome::Ran {
                 result,
@@ -806,28 +831,35 @@ impl Runner {
     }
 }
 
+/// An idempotent call's key hash and the digest of its arguments.
+#[derive(Debug, Clone, Copy)]
+struct IdemKey {
+    hash: [u8; IDEMPOTENCY_HASH_BYTES],
+    args: [u8; 32],
+}
+
 /// One attempt of a mutation, inside its transaction.
 async fn mutation_attempt(
     txn: &mut Txn,
     inner: &Inner,
     f: &dyn Function,
     args: LiveValue,
-    hash: Option<[u8; IDEMPOTENCY_HASH_BYTES]>,
+    idem: Option<IdemKey>,
     request_id: String,
     state: &Mutex<Attempts>,
 ) -> Result<Outcome, LiveError> {
     let app = &inner.app;
     let now_ms = Tikv::physical_ms(&txn.start_ts());
     let mut keys = vec![app.app_def()];
-    if let Some(hash) = &hash {
-        keys.push(app.idempotency(hash));
+    if let Some(idem) = &idem {
+        keys.push(app.idempotency(&idem.hash));
     }
     let found: HashMap<Vec<u8>, Vec<u8>> = txn.batch_get(keys).await?.into_iter().collect();
     let shards = catalog::load_journal_shards(&mut Found(&found), app)
         .await?
         .ok_or_else(no_app_record)?;
-    if let Some(hash) = &hash
-        && let Some(bytes) = found.get(&app.idempotency(hash))
+    if let Some(idem) = &idem
+        && let Some(bytes) = found.get(&app.idempotency(&idem.hash))
     {
         let record = decode_idempotency(bytes)?;
         if record.expires_ms > now_ms {
@@ -835,6 +867,14 @@ async fn mutation_attempt(
                 return Err(LiveError::invalid(format!(
                     "the idempotency key was used for {}, not {}",
                     record.function,
+                    f.name()
+                )));
+            }
+            // Review of #76: a replay is right only for the same call. A
+            // record without the digest predates it and replays as before.
+            if !record.args_hash.is_empty() && record.args_hash.as_slice() != idem.args {
+                return Err(LiveError::invalid(format!(
+                    "the idempotency key was used for {} with other arguments",
                     f.name()
                 )));
             }
@@ -863,7 +903,7 @@ async fn mutation_attempt(
         });
     }
 
-    if let Some(hash) = &hash {
+    if let Some(idem) = &idem {
         let record = pb::IdempotencyRecord {
             format: 1,
             result: result.to_proto().into(),
@@ -871,6 +911,7 @@ async fn mutation_attempt(
                 .saturating_add(u64::try_from(IDEMPOTENCY_TTL.as_millis()).unwrap_or(u64::MAX)),
             function: f.name().to_string(),
             start_ts: txn.start_ts().version(),
+            args_hash: idem.args.to_vec(),
             ..Default::default()
         };
         let bytes = record.encode_to_vec();
@@ -882,7 +923,7 @@ async fn mutation_attempt(
                 ),
             ));
         }
-        txn.put(&app.idempotency(hash), bytes).await?;
+        txn.put(&app.idempotency(&idem.hash), bytes).await?;
     }
 
     let journal = Journal::new(app.clone(), shards)?;
