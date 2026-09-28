@@ -391,6 +391,7 @@ async fn operon_warm_posts_the_warm_request() {
             "--no-flight-sql",
             "--no-qdrant",
             "--no-es",
+            "--no-mcp",
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

@@ -129,7 +129,8 @@ if (plan.tail) {
   console.log(plan.tailRecords, "records not yet in Lance");
 }
 const rows = await ns.sql("SELECT count(*) FROM kb", { consistency: plan.pin }); // the same state
-const timeLeftMs = (plan.expiresAtMs ?? 0) - plan.plannedAtMs; // how long the plan is retained
+// How long the plan is retained; null when it has no expiry yet.
+const timeLeftMs = plan.expiresAtMs === null ? null : plan.expiresAtMs - plan.plannedAtMs;
 ```
 
 `tail` says the requested state holds writes the Lance version does not yet

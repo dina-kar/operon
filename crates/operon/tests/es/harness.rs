@@ -174,6 +174,7 @@ impl Es {
         } else {
             command.arg("--no-es");
         }
+        command.arg("--no-mcp");
         let mut child = command
             .arg("--data-dir")
             .arg(dir.path())

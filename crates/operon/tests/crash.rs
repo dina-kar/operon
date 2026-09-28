@@ -103,6 +103,7 @@ impl Dev {
                 // Nor the Qdrant gateway's.
                 "--no-qdrant",
                 "--no-es",
+                "--no-mcp",
             ])
             .arg("--data-dir")
             .arg(dir)

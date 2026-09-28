@@ -116,7 +116,7 @@ jobs:
       - name: start operon dev
         run: |
           nohup target/debug/operon dev --data-dir "$RUNNER_TEMP/operon" \
-            --qdrant-listen 127.0.0.1:6333 --qdrant-grpc-listen 127.0.0.1:6334 --no-es \
+            --qdrant-listen 127.0.0.1:6333 --qdrant-grpc-listen 127.0.0.1:6334 --no-es --no-mcp \
             > "$RUNNER_TEMP/operon.log" 2>&1 &
           for _ in $(seq 1 60); do
             curl -sf http://127.0.0.1:6333/ && exit 0

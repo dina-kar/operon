@@ -4,6 +4,9 @@
 
 pub mod api;
 pub mod cluster;
+pub mod exposure;
 mod server;
 
+#[cfg(feature = "mcp")]
+pub use server::McpServerConfig;
 pub use server::{ClusterConfig, Server, ServerConfig, ServerError};
