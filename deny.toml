@@ -44,5 +44,11 @@ ignore = [
 unknown-registry = "deny"
 unknown-git = "deny"
 # tikv-client is pinned to an upstream revision (R1 plan row R4). Resonate is
-# pinned by rev to the fork's loam/0.10.1 (D1 plan Task 1, D140).
-allow-git = ["https://github.com/tikv/client-rust", "https://github.com/dina-kar/resonate"]
+# pinned by rev to the fork's loam/0.10.1 (D1 plan Task 1, D140). sqlx-core is
+# patched by rev to the fork's loam/0.8.6, v0.8.6 plus the verify_ca fix of
+# launchbadge/sqlx#3861 (D1 plan row T7-SQLX).
+allow-git = [
+    "https://github.com/tikv/client-rust",
+    "https://github.com/dina-kar/resonate",
+    "https://github.com/dina-kar/sqlx",
+]

@@ -35,3 +35,10 @@ from the fork https://github.com/dina-kar/resonate, branch loam/0.10.1
 (upstream revision 28dfd016aa970332dc283e2431c406845e2ccc8f plus the
 patches listed in docs/plans/d1-dependency-spike.md), pinned by revision in
 Cargo.toml. Copyright 2026 Resonate HQ, Inc.
+
+SQLx (https://github.com/launchbadge/sqlx), MIT OR Apache License 2.0.
+sqlx-core is patched (Cargo.toml [patch.crates-io]) to the fork
+https://github.com/dina-kar/sqlx, branch loam/0.8.6, pinned by revision:
+upstream v0.8.6 plus a backport of launchbadge/sqlx#3861 (verify_ca skips
+the host name check with rustls 0.23.24 and later) and its regression test.
+Copyright (c) 2020 LaunchBadge, LLC.

@@ -408,6 +408,9 @@ pub enum ServerError {
 struct Durable {
     server: Option<operon_durable::DurableServer>,
     runtime: Option<operon_durable::DurableRuntime>,
+    /// The operations API's handle (D1 Task 7): handed to the routes and the
+    /// retention task at assembly, filled once the runtime has started.
+    operations: Option<api::operations::OperationsSlot>,
 }
 
 /// The embedded durable server: none in a build without `durable`.
@@ -422,6 +425,7 @@ impl Durable {
         Self {
             server: None,
             runtime: None,
+            operations: None,
         }
     }
 
@@ -441,6 +445,7 @@ impl Durable {
                         .await?,
                 ),
                 runtime: None,
+                operations: Some(api::operations::OperationsSlot::default()),
             }),
             None => Ok(Self::none()),
         }
@@ -451,17 +456,35 @@ impl Durable {
         Ok(Self)
     }
 
-    /// Starts Loam's durable runtime on the server, if there is one: after
-    /// [`Server::assemble`], before the routes serve (row T0-6, X8). A
-    /// failure stops the server too.
+    /// Starts Loam's durable runtime on the server, if there is one, with
+    /// Loam's operation kinds registered before it subscribes (T6-4); then
+    /// the operations API serves (D1 Task 7). After [`Server::assemble`],
+    /// before the routes serve (row T0-6, X8). A failure stops the server
+    /// too.
     #[cfg(feature = "durable")]
     async fn start_runtime(&mut self, node_id: u64) -> Result<(), ServerError> {
         let Some(server) = &self.server else {
             return Ok(());
         };
-        match operon_durable::DurableRuntime::start(server, &node_id.to_string()).await {
+        let kinds = operon_durable::ops::loam_kinds();
+        match operon_durable::DurableRuntime::start_with(
+            server,
+            &node_id.to_string(),
+            operon_durable::RuntimeOptions::default(),
+            |sdk| kinds.register(sdk),
+        )
+        .await
+        {
             Ok(runtime) => {
                 self.runtime = Some(runtime);
+                if let Some(slot) = &self.operations {
+                    slot.set(Arc::new(operon_durable::Operations::new(
+                        server.client(),
+                        server.store().clone(),
+                        &kinds,
+                        operon_durable::OpsConfig::default(),
+                    )));
+                }
                 Ok(())
             }
             Err(err) => {
@@ -498,6 +521,13 @@ impl Durable {
     #[cfg(feature = "durable")]
     fn addr(&self) -> Option<SocketAddr> {
         self.server.as_ref().map(|server| server.listen())
+    }
+
+    /// What [`Server::assemble`] wires the operations routes and the
+    /// retention task to: `None` without a durable server.
+    #[cfg(feature = "durable")]
+    fn operations(&self) -> Option<api::operations::OperationsSlot> {
+        self.operations.clone()
     }
 
     #[cfg(not(feature = "durable"))]
@@ -563,6 +593,10 @@ struct NodeSetup {
     forward_stats: Arc<ForwardStats>,
     extra_sources: Vec<Arc<dyn TaskSource>>,
     node_info: Option<Arc<dyn NodeInfo>>,
+    /// The operations API (D1 Task 7), when the node serves durable
+    /// execution: its routes and its retention task.
+    #[cfg(feature = "durable")]
+    operations: Option<api::operations::OperationsSlot>,
 }
 
 /// Everything [`Server::assemble`] started, and the node's router.
@@ -614,11 +648,15 @@ struct Flight {
     stop: CancellationToken,
     /// The `DoPut` tasks, which outlive an aborted `task`.
     puts: PutTasks,
+    /// Serving starts once this is sent ([`Flight::open`]): after the
+    /// durable runtime has started, as for the HTTP listener (T0-6, X8).
+    open: Option<oneshot::Sender<()>>,
 }
 
 impl Flight {
     /// Serves Flight SQL over `collections` on `listener` until stopped
-    /// (Task 12), with stream ingest through `streams` (Task 13).
+    /// (Task 12), with stream ingest through `streams` (Task 13), from the
+    /// moment [`open`](Self::open) is called. The listener is bound now.
     fn start(
         listener: tokio::net::TcpListener,
         addr: SocketAddr,
@@ -628,19 +666,33 @@ impl Flight {
     ) -> Self {
         let stop = CancellationToken::new();
         let puts = PutTasks::new();
-        let task = tokio::spawn(serve(
-            listener,
-            collections,
-            streams,
-            config,
-            stop.clone(),
-            puts.clone(),
-        ));
+        let (open, opened) = oneshot::channel::<()>();
+        let task = {
+            let stop = stop.clone();
+            let puts = puts.clone();
+            tokio::spawn(async move {
+                // A dropped gate (a failed start, or a stop first) serves
+                // nothing.
+                tokio::select! {
+                    opened = opened => if opened.is_err() { return },
+                    () = stop.cancelled() => return,
+                }
+                serve(listener, collections, streams, config, stop, puts).await;
+            })
+        };
         Self {
             addr,
             task,
             stop,
             puts,
+            open: Some(open),
+        }
+    }
+
+    /// Start serving (once).
+    fn open(&mut self) {
+        if let Some(open) = self.open.take() {
+            let _ = open.send(());
         }
     }
 
@@ -775,6 +827,8 @@ impl Server {
             forward_stats: Arc::new(ForwardStats::default()),
             extra_sources: Vec::new(),
             node_info: None,
+            #[cfg(feature = "durable")]
+            operations: durable.operations(),
         };
         let parts = match Self::assemble(&mut config, store, setup).await {
             Ok(parts) => parts,
@@ -829,6 +883,9 @@ impl Server {
             return Err(err);
         }
         let _ = serve_now.send(());
+        if let Some(flight) = &mut server.flight {
+            flight.open();
+        }
         tracing::info!(%local_addr, "operon is serving");
         Ok(server)
     }
@@ -917,6 +974,9 @@ impl Server {
                     return Err(err);
                 }
                 serve.set(app);
+                if let Some(flight) = &mut server.flight {
+                    flight.open();
+                }
                 tracing::info!(%local_addr, node_id, %roles, "operon cluster node is serving");
                 Ok(server)
             }
@@ -1052,6 +1112,14 @@ impl Server {
                 cluster.membership_interval,
             )));
         }
+        // After the leader, before the collection service (row T0-6).
+        let durable = match Durable::start(config, node_id).await {
+            Ok(durable) => durable,
+            Err(err) => {
+                registry.deregister().await;
+                return Err(err);
+            }
+        };
         let setup = NodeSetup {
             node_id,
             roles,
@@ -1064,14 +1132,8 @@ impl Server {
                 node: node.clone(),
                 join_changed,
             })),
-        };
-        // After the leader, before the collection service (row T0-6).
-        let durable = match Durable::start(config, node_id).await {
-            Ok(durable) => durable,
-            Err(err) => {
-                registry.deregister().await;
-                return Err(err);
-            }
+            #[cfg(feature = "durable")]
+            operations: durable.operations(),
         };
         let mut parts = match Self::assemble(config, store, setup).await {
             Ok(parts) => parts,
@@ -1104,6 +1166,8 @@ impl Server {
             forward_stats,
             extra_sources,
             node_info,
+            #[cfg(feature = "durable")]
+            operations,
         } = setup;
         // Scan plans name the Lance datasets under the bucket (Task 14 rule 8).
         config.query.lance_base_url = Some(bucket_url(config)?);
@@ -1236,6 +1300,13 @@ impl Server {
                 Arc::new(PkGcRoots),
             ],
         )));
+        // Finished durable operations are pruned after 7 days (D1 Ruling 8).
+        #[cfg(feature = "durable")]
+        if let Some(slot) = &operations {
+            worker.add_source(Arc::new(api::operations::RetentionSource::new(
+                slot.clone(),
+            )));
+        }
         for source in extra_sources {
             worker.add_source(source);
         }
@@ -1311,6 +1382,13 @@ impl Server {
         let app = match roles.gateway {
             true => api::router(state),
             false => api::internal_router(state),
+        };
+        // The operations API on gateways that serve durable execution (D1
+        // Task 7).
+        #[cfg(feature = "durable")]
+        let app = match operations.filter(|_| roles.gateway) {
+            Some(slot) => app.merge(api::operations::routes(slot)),
+            None => app,
         };
         let flight = flight_listener.map(|(listener, addr)| {
             let streams: Arc<dyn StreamProducer> = Arc::new(NativeStreamProducer {

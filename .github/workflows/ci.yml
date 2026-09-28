@@ -400,7 +400,7 @@ jobs:
       - name: start TiDB
         run: |
           scripts/durable/tidb.sh up --tag loam-ci-durable --port-offset 27000 --timeout 180 | tee "$RUNNER_TEMP/tidb.out"
-          sed -n 's/^export \(OPERON_TEST_TIDB=.*\)$/\1/p' "$RUNNER_TEMP/tidb.out" >> "$GITHUB_ENV"
+          sed -n 's/^export \(OPERON_TEST_TIDB[A-Z_]*=.*\)$/\1/p' "$RUNNER_TEMP/tidb.out" >> "$GITHUB_ENV"
       - name: TiDB suite
         run: cargo test -p operon-durable --features mysql --test tidb --locked
       - name: linearizability on TiDB (8 clients x 600 ops)

@@ -87,10 +87,10 @@ impl DurableStore {
     /// (D1 Task 4). `ssl-mode` (or `sslmode`) is `required`, `disabled`,
     /// `verify_ca` or `verify_identity` (owner ruling Q8); without it TLS is
     /// required unless the host is `localhost` or a loopback address.
-    /// `ssl-ca=<path>` names the CA file the verifying modes check the
-    /// server's certificate against (without it, the driver's built-in
-    /// roots); it must be a file, and it needs a verifying mode. The URL is
-    /// kept as given.
+    /// `ssl-ca=<path>` (or sqlx's `sslca`, owner ruling Q9) names the CA
+    /// file the verifying modes check the server's certificate against
+    /// (without it, the driver's built-in roots); it must be a file, it needs
+    /// a verifying mode, and it is given once. The URL is kept as given.
     pub fn mysql(url: &str) -> Result<Self, DurableError> {
         let parsed = parse_mysql(url)?;
         let bad = |why: String| {
@@ -112,20 +112,26 @@ impl DurableStore {
                         )));
                     }
                 });
-            } else if key == "ssl-ca" {
-                ca = Some(PathBuf::from(value.into_owned()));
+            } else if key == "ssl-ca" || key == "sslca" {
+                // `sslca` is sqlx's other spelling (owner ruling Q9).
+                if let Some((first, _)) = &ca {
+                    return Err(bad(format!(
+                        "{first} and {key} both name a CA file; give ssl-ca once"
+                    )));
+                }
+                ca = Some((key.into_owned(), PathBuf::from(value.into_owned())));
             }
         }
-        if let Some(ca) = &ca {
+        if let Some((key, ca)) = &ca {
             if !tls.is_some_and(MysqlTls::verifies) {
                 return Err(bad(format!(
-                    "ssl-ca={} needs ssl-mode=verify_ca or ssl-mode=verify_identity",
+                    "{key}={} needs ssl-mode=verify_ca or ssl-mode=verify_identity",
                     ca.display()
                 )));
             }
             if !ca.is_file() {
                 return Err(bad(format!(
-                    "ssl-ca={} is not a readable file",
+                    "{key}={} is not a readable file",
                     ca.display()
                 )));
             }
@@ -301,8 +307,12 @@ pub enum MysqlTls {
     Required,
     /// Plain text: loopback hosts by default, or `ssl-mode=disabled`.
     Disabled,
-    /// Encrypted, the certificate checked against the CA (`ssl-ca`, else the
-    /// driver's built-in roots), the host name not (owner ruling Q8).
+    /// Encrypted, the certificate chain checked against the CA (`ssl-ca`,
+    /// else the driver's built-in roots), the host name not (owner ruling
+    /// Q8). sqlx 0.8.6 on rustls 0.23.24 and later checked the host name too
+    /// (T5-10); the workspace patches sqlx-core with the fix of
+    /// launchbadge/sqlx#3861 (T7-13), so this mode skips it, as sqlx means.
+    /// The Task 11 docs carry this.
     VerifyCa,
     /// As `VerifyCa`, and the certificate must name the host: managed TiDB
     /// such as TiDB Cloud (owner ruling Q8).
@@ -742,6 +752,55 @@ mod tests {
             );
             assert!(!err.contains("hunter22"), "{err}");
         }
+    }
+
+    /// Owner ruling Q9: `sslca`, sqlx's other spelling, is an alias of
+    /// `ssl-ca`, checked the same way, and passed through to sqlx (which
+    /// reads both). Both at once is refused: sqlx would silently take one.
+    #[test]
+    fn sslca_is_an_alias_of_ssl_ca() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ca = dir.path().join("ca.pem");
+        std::fs::write(&ca, "not parsed here").expect("write ca");
+        let ca = ca.display().to_string();
+        let url = format!("mysql://u:pw@tidb:4000/d?sslmode=verify_identity&sslca={ca}");
+        match DurableStore::mysql(&url) {
+            Ok(DurableStore::Mysql { tls, url: kept }) => {
+                assert_eq!(tls, MysqlTls::VerifyIdentity);
+                assert_eq!(kept, url);
+            }
+            other => panic!("{url}: {other:?}"),
+        }
+        let resonate = mysql_url(&url, MysqlTls::VerifyIdentity).expect("url");
+        assert!(resonate.contains("sslca="), "{resonate}");
+
+        let missing = dir.path().join("absent.pem").display().to_string();
+        let err = DurableStore::mysql(&format!(
+            "mysql://u:hunter22@tidb:4000/d?ssl-mode=verify_ca&sslca={missing}"
+        ))
+        .expect_err("a CA file that is not there")
+        .to_string();
+        assert!(err.contains(&missing) && err.contains("sslca"), "{err}");
+        assert!(!err.contains("hunter22"), "{err}");
+
+        let err = DurableStore::mysql(&format!(
+            "mysql://u:hunter22@tidb:4000/d?sslca={ca}&ssl-mode=required"
+        ))
+        .expect_err("sslca without a verifying mode")
+        .to_string();
+        assert!(
+            err.contains("sslca=")
+                && err.contains("ssl-mode=verify_ca or ssl-mode=verify_identity"),
+            "{err}"
+        );
+
+        let err = DurableStore::mysql(&format!(
+            "mysql://u:hunter22@tidb:4000/d?ssl-mode=verify_ca&ssl-ca={ca}&sslca={ca}"
+        ))
+        .expect_err("both spellings")
+        .to_string();
+        assert!(err.contains("ssl-ca") && err.contains("sslca"), "{err}");
+        assert!(!err.contains("hunter22"), "{err}");
     }
 
     /// The verifying modes reach Resonate (and the schema check) as sqlx

@@ -91,6 +91,9 @@ resonate-transport-http-poll = { git = "https://github.com/dina-kar/resonate", r
 resonate-transport-http-push = { git = "https://github.com/dina-kar/resonate", rev = "e3606698e6e3f2502bb018bba1e618deb63f907a", default-features = false }
 rmcp = { version = "3.4.1", features = ["server", "transport-streamable-http-server"] }
 roaring = "0.11"
+# The SQLite driver resonate-server-sqlite uses (0.32, bundled there):
+# operon-durable prunes finished operations with it (D1 Task 7).
+rusqlite = { version = "0.32", default-features = false }
 rustc-hash = "2"
 # The TLS library under sqlx (0.23, ring): operon-durable sets the process
 # default crypto provider when none is set (D1 Task 5, T5-4).
@@ -150,6 +153,13 @@ operon-store = { path = "crates/operon-store", version = "0.0.1" }
 operon-text = { path = "crates/operon-text", version = "0.0.1" }
 operon-tikv = { path = "crates/operon-tikv", version = "0.0.1" }
 operon-worker = { path = "crates/operon-worker", version = "0.0.1" }
+
+# sqlx-core v0.8.6 plus the backport of launchbadge/sqlx#3861: ssl-mode
+# verify_ca skips the host name check with rustls 0.23.24 and later (D1 plan
+# row T7-13). sqlx-mysql 0.8.6 pins sqlx-core =0.8.6, so only sqlx-core is
+# patched. Drop this once a sqlx release with the fix is pinned.
+[patch.crates-io]
+sqlx-core = { git = "https://github.com/dina-kar/sqlx", rev = "88300b33a1df088443fb42c6a359aa6b9e27f352" }
 
 [profile.dev]
 debug = "line-tables-only"

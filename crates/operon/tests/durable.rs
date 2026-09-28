@@ -204,3 +204,61 @@ async fn durable_start_failure_is_fatal() {
         .expect("the metastore was released");
     server.shutdown().await.expect("shutdown");
 }
+
+async fn get_json(url: String) -> (u16, serde_json::Value) {
+    let response = reqwest::Client::new()
+        .get(url)
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .expect("request");
+    let status = response.status().as_u16();
+    (status, response.json().await.unwrap_or_default())
+}
+
+/// D1 Task 7: the operations API is on the native listener once the node
+/// serves (the runtime has started), and absent without durable execution.
+#[tokio::test(flavor = "multi_thread")]
+async fn operations_routes_serve_with_durable_only() {
+    let dir = TempDir::new().unwrap();
+    let server = Server::start(config(&dir, free_addr()))
+        .await
+        .expect("start");
+    let base = format!("http://{}", server.local_addr());
+    let (status, body) = get_json(format!(
+        "{base}/v1/operations/op-00000000000000000000000000"
+    ))
+    .await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (404, Some("not_found")),
+        "{body}"
+    );
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("no operation")),
+        "the operations route answered, not the fallback: {body}"
+    );
+    let (status, body) = get_json(format!("{base}/v1/namespaces/default/operations")).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body, serde_json::json!({ "operations": [], "next": null }));
+    server.shutdown().await.expect("shutdown");
+
+    // --no-durable: no operations API.
+    let dir = TempDir::new().unwrap();
+    let mut plain = config(&dir, free_addr());
+    plain.durable = None;
+    let server = Server::start(plain).await.expect("start");
+    let (status, body) = get_json(format!(
+        "http://{}/v1/namespaces/default/operations",
+        server.local_addr()
+    ))
+    .await;
+    assert_eq!(
+        (status, body["message"].as_str()),
+        (404, Some("no such route")),
+        "{body}"
+    );
+    server.shutdown().await.expect("shutdown");
+}

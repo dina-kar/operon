@@ -4,11 +4,15 @@
 //! Task 11): [`collections`], [`query`] and [`sql`]; so does the scan plan
 //! route (Task 14). The hot routes (plan M1.3 Task 8) are [`hot`], and the
 //! internal routes a node calls on a collection's owner are [`internal`].
+//! With the `durable` feature, `operations` serves the operations API (D1
+//! Task 7).
 
 mod collections;
 mod errors;
 pub mod hot;
 pub mod internal;
+#[cfg(feature = "durable")]
+pub mod operations;
 mod query;
 mod sql;
 pub mod streams;
