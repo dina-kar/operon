@@ -32,7 +32,7 @@ async fn list_collections_describes_fields_and_vectors() {
             ],
             "vectors": [{"name": "embedding", "dim": 3, "distance": "cosine"}],
             "live_doc_count": 6
-        }]})
+        }], "truncated": false})
     );
     // The same JSON as text (Ruling 8).
     let text = result["content"][0]["text"].as_str().expect("text");
@@ -50,7 +50,10 @@ async fn list_collections_on_an_empty_namespace_is_empty() {
         .call(Some("nobody"), "list_collections", json!({}))
         .await;
     assert_eq!(result["isError"], false, "{result}");
-    assert_eq!(result["structuredContent"], json!({"collections": []}));
+    assert_eq!(
+        result["structuredContent"],
+        json!({"collections": [], "truncated": false})
+    );
     mcp.server.shutdown().await.unwrap();
 }
 
@@ -193,5 +196,92 @@ async fn bad_arguments_are_refused() {
         )
         .await;
     assert_eq!(bad_uuid["structuredContent"]["error"], "invalid_argument");
+    mcp.server.shutdown().await.unwrap();
+}
+
+/// The whole tool result, as the JSON-RPC answer carries it (the text
+/// content and `structuredContent`), is at most `max_output_bytes`
+/// (Ruling 13; PR #98 review).
+fn assert_result_fits(result: &Value, max: usize) {
+    let size = result.to_string().len();
+    assert!(size <= max, "result is {size} bytes, over {max}: {result}");
+    let text = result["content"][0]["text"].as_str().expect("text");
+    assert_eq!(
+        serde_json::from_str::<Value>(text).expect("the text is JSON"),
+        result["structuredContent"]
+    );
+}
+
+#[tokio::test]
+async fn list_collections_output_is_capped() {
+    let mcp = Mcp::start(McpConfig {
+        max_output_bytes: 1024,
+        ..McpConfig::default()
+    })
+    .await;
+    for i in 0..10 {
+        let body = json!({
+            "name": format!("c{i:02}"),
+            "schema": {
+                "fields": [{"name": "body", "kind": "keyword"}],
+                "vectors": [], "sparse_vectors": [], "dynamic": "ignore", "max_fields": 1000
+            }
+        });
+        let (status, answer) = mcp
+            .native(
+                reqwest::Method::POST,
+                "/v1/namespaces/default/collections",
+                Some(body),
+            )
+            .await;
+        assert_eq!(status, reqwest::StatusCode::CREATED, "{answer}");
+    }
+    let result = mcp.call(None, "list_collections", json!({})).await;
+    assert_eq!(result["isError"], false, "{result}");
+    let out = &result["structuredContent"];
+    assert_eq!(out["truncated"], true, "{out}");
+    let kept = out["collections"].as_array().unwrap();
+    assert!(!kept.is_empty() && kept.len() < 10, "{out}");
+    assert_eq!(kept[0]["name"], "c00");
+    assert_result_fits(&result, 1024);
+    mcp.server.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn get_documents_output_is_capped_with_its_text() {
+    let mcp = Mcp::start(McpConfig {
+        max_output_bytes: 2048,
+        ..McpConfig::default()
+    })
+    .await;
+    mcp.kb("default").await;
+    let body = "x".repeat(300);
+    let ops: Vec<Value> = (100..110)
+        .map(|id| {
+            json!({"upsert": {"id": id, "source": {"body": body}, "vectors": {}, "sparse_vectors": {}}})
+        })
+        .collect();
+    let (status, answer) = mcp
+        .native(
+            reqwest::Method::POST,
+            "/v1/namespaces/default/collections/kb/documents",
+            Some(json!({"ops": ops, "report_existence": false})),
+        )
+        .await;
+    assert_eq!(status, reqwest::StatusCode::OK, "{answer}");
+    let ids: Vec<u64> = (100..110).collect();
+    let result = mcp
+        .call(
+            None,
+            "get_documents",
+            json!({"collection": "kb", "ids": ids}),
+        )
+        .await;
+    assert_eq!(result["isError"], false, "{result}");
+    let out = &result["structuredContent"];
+    assert_eq!(out["truncated"], true, "{out}");
+    let kept = out["documents"].as_array().unwrap().len();
+    assert!(kept > 0 && kept < 10, "{kept}");
+    assert_result_fits(&result, 2048);
     mcp.server.shutdown().await.unwrap();
 }

@@ -12,8 +12,14 @@ use serde_json::{Value, json};
 
 use crate::harness::Mcp;
 
-/// The tools Task 7 serves; Task 8 adds `memory_write`, `search` and `sql`.
-const TOOLS: [&str; 2] = ["get_documents", "list_collections"];
+/// Every tool, sorted (Ruling 8).
+const TOOLS: [&str; 5] = [
+    "get_documents",
+    "list_collections",
+    "memory_write",
+    "search",
+    "sql",
+];
 
 fn tool_names(result: &Value) -> Vec<String> {
     let mut names: Vec<String> = result["tools"]
@@ -148,8 +154,29 @@ async fn strict_stateless_refuses_requests_without_metadata() {
     mcp.server.shutdown().await.unwrap();
 }
 
+/// Calls `tool` with `args` through `client` and returns its structured
+/// content, asserting the call succeeded.
+async fn client_call(
+    client: &rmcp::Peer<rmcp::RoleClient>,
+    tool: &'static str,
+    args: Value,
+) -> Value {
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new(tool)
+                .with_arguments(args.as_object().expect("object").clone()),
+        )
+        .await
+        .unwrap_or_else(|err| panic!("{tool}: {err}"));
+    let content = result.structured_content.expect("structured");
+    assert_eq!(result.is_error, Some(false), "{tool}: {content}");
+    content
+}
+
+/// Task 8: the Discover-mode client (`server/discover`, never
+/// `initialize`; Review Focus 5) lists and calls all five tools.
 #[tokio::test]
-async fn rmcp_client_calls_list_collections_without_initialize() {
+async fn rmcp_client_calls_every_tool_over_streamable_http() {
     let mcp = Mcp::start(McpConfig::default()).await;
     mcp.kb("default").await;
     let transport = StreamableHttpClientTransport::from_config(
@@ -169,25 +196,42 @@ async fn rmcp_client_calls_list_collections_without_initialize() {
     names.sort();
     assert_eq!(names, TOOLS);
 
-    let listed = client
-        .call_tool(CallToolRequestParams::new("list_collections"))
-        .await
-        .expect("list_collections");
-    assert_eq!(listed.is_error, Some(false));
-    let listed = listed.structured_content.expect("structured");
+    let listed = client_call(&client, "list_collections", json!({})).await;
     assert_eq!(listed["collections"][0]["name"], "kb");
 
-    let args = json!({"collection": "kb", "ids": [1]});
-    let got = client
-        .call_tool(
-            CallToolRequestParams::new("get_documents")
-                .with_arguments(args.as_object().unwrap().clone()),
-        )
-        .await
-        .expect("get_documents");
-    let got = got.structured_content.expect("structured");
+    let got = client_call(
+        &client,
+        "get_documents",
+        json!({"collection": "kb", "ids": [1]}),
+    )
+    .await;
     assert_eq!(got["documents"][0]["found"], true, "{got}");
     assert_eq!(got["documents"][0]["source"]["body"], "refund policy");
+
+    let found = client_call(
+        &client,
+        "search",
+        json!({"collection": "kb", "query": "refund"}),
+    )
+    .await;
+    assert_eq!(found["hits"][0]["id"], 1, "{found}");
+
+    let rows = client_call(
+        &client,
+        "sql",
+        json!({"query": "SELECT count(*) AS n FROM kb"}),
+    )
+    .await;
+    assert_eq!(rows["rows"], json!([{"n": 6}]), "{rows}");
+
+    let written = client_call(
+        &client,
+        "memory_write",
+        json!({"text": "the client wrote this"}),
+    )
+    .await;
+    assert_eq!(written["collection"], "memories", "{written}");
+    assert_eq!(written["created_collection"], true, "{written}");
     client.cancel().await.expect("cancel");
     mcp.server.shutdown().await.unwrap();
 }
@@ -230,6 +274,9 @@ async fn tool_annotations_are_advertised() {
     let (_, _, body) = mcp.rpc(None, "tools/list", json!({})).await;
     let tools = body["result"]["tools"].as_array().expect("tools");
     let titles = [
+        ("search", "Search a collection"),
+        ("sql", "Read-only SQL"),
+        ("memory_write", "Write a memory"),
         ("list_collections", "List collections"),
         ("get_documents", "Get documents"),
     ];
@@ -240,8 +287,14 @@ async fn tool_annotations_are_advertised() {
             .unwrap_or_else(|| panic!("{name} listed"));
         let annotations = &tool["annotations"];
         assert_eq!(annotations["title"], title, "{tool}");
-        assert_eq!(annotations["readOnlyHint"], true, "{tool}");
         assert_eq!(annotations["openWorldHint"], false, "{tool}");
+        if name == "memory_write" {
+            assert_eq!(annotations["readOnlyHint"], false, "{tool}");
+            assert_eq!(annotations["destructiveHint"], true, "{tool}");
+            assert_eq!(annotations["idempotentHint"], false, "{tool}");
+        } else {
+            assert_eq!(annotations["readOnlyHint"], true, "{tool}");
+        }
         assert!(tool.get("outputSchema").is_none(), "{tool}");
         assert_eq!(tool["inputSchema"]["additionalProperties"], false, "{tool}");
     }

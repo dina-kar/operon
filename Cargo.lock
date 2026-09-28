@@ -5554,7 +5554,9 @@ dependencies = [
 name = "operon-mcp"
 version = "0.0.1"
 dependencies = [
+ "datafusion",
  "http",
+ "humantime",
  "operon-collection",
  "operon-query",
  "rmcp",
@@ -5565,6 +5567,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "ulid 3.0.0",
 ]
 
 [[package]]

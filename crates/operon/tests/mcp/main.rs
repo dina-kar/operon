@@ -4,6 +4,12 @@
 #[cfg(feature = "mcp")]
 mod harness;
 #[cfg(feature = "mcp")]
+mod memory;
+#[cfg(feature = "mcp")]
 mod protocol;
+#[cfg(feature = "mcp")]
+mod search;
+#[cfg(feature = "mcp")]
+mod sql;
 #[cfg(feature = "mcp")]
 mod tools;
