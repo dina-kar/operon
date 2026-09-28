@@ -23,6 +23,7 @@ use roaring::{RoaringBitmap, RoaringTreemap};
 use tantivy::schema::Schema;
 use tantivy::{Index, ReloadPolicy, Searcher};
 
+use super::checksums::SplitChecksums;
 use crate::error::ServiceError;
 use crate::exec::mask::SplitMask;
 use crate::hot::HotKind;
@@ -188,35 +189,42 @@ async fn open_one(
     split: SplitRef,
     shadowed: RoaringBitmap,
 ) -> Result<OpenSplit, ServiceError> {
-    let mut from_hot_file = false;
-    let mut index = None;
+    let mut hot = None;
     if let Some(path) = view.hot.split_file(view.ns, view.collection.id, split.ulid) {
-        match open_local(&path, &split).await {
-            Ok(opened) => {
-                from_hot_file = true;
-                index = Some(opened);
-            }
-            Err(err) => {
+        match open_hot(&path, &split, warmups).await {
+            Ok(searcher) => hot = Some(searcher),
+            Err(HotFileError::Gone(err)) => {
                 // Demoted and deleted after the lookup: read it remotely.
-                tracing::info!(split = %split.ulid, %err, "the hot split file did not open; reading the split remotely");
+                tracing::info!(split = %split.ulid, %err, "the hot split file is gone; reading the split remotely");
+            }
+            Err(HotFileError::Request(err)) => {
+                // The request's own warm-up failed (it names an unknown
+                // field, say): the file is not at fault, so keep it and let
+                // the remote path answer.
+                tracing::debug!(split = %split.ulid, %err, "the request's warm-up failed on the hot split file; reading the split remotely");
+            }
+            Err(HotFileError::Bad(err)) => {
+                // Corrupt, or not this split (row F3): never trust it again.
+                tracing::warn!(split = %split.ulid, path = %path.display(), %err, "the hot split file failed; quarantining it and reading the split remotely");
+                view.hot
+                    .quarantine_split(view.ns, view.collection.id, split.ulid, &path);
             }
         }
     }
-    let index = match index {
-        Some(index) => index,
-        None => view
-            .snapshot
-            .open_split(&split)
-            .await
-            .map_err(collection_error)?,
+    let from_hot_file = hot.is_some();
+    let searcher = match hot {
+        Some(searcher) => searcher,
+        None => {
+            let index = view
+                .snapshot
+                .open_split(&split)
+                .await
+                .map_err(collection_error)?;
+            let searcher = searcher_of(&index)?;
+            warm(&searcher, &split, warmups).await?;
+            searcher
+        }
     };
-    let searcher = searcher_of(&index)?;
-    let info = warmups(searcher.schema())?;
-    operon_quickwit::search::warmup(&searcher, &info)
-        .await
-        .map_err(|err| {
-            ServiceError::Unavailable(format!("warming split {}: {err:#}", split.ulid))
-        })?;
     let deleted = view.bitmaps.deleted_docs(&view.snapshot, &split).await?;
     if from_hot_file {
         view.hot_used.record(HotKind::Splits);
@@ -233,8 +241,66 @@ async fn open_one(
     })
 }
 
+/// Why a hot split file was not used.
+enum HotFileError {
+    /// The file is no longer there (demoted after the lookup).
+    Gone(ServiceError),
+    /// It opened but failed: checksums, footer or warm-up.
+    Bad(ServiceError),
+    /// The request's warm-up could not be compiled against the file's
+    /// schema: a fault of the request, not of the file.
+    Request(ServiceError),
+}
+
+/// Opens and warms the hot file `path` of `split`.
+async fn open_hot(
+    path: &Path,
+    split: &SplitRef,
+    warmups: &Warmups<'_>,
+) -> Result<Searcher, HotFileError> {
+    if !path.exists() {
+        return Err(HotFileError::Gone(ServiceError::Unavailable(format!(
+            "{} does not exist",
+            path.display()
+        ))));
+    }
+    let index = open_local(path, split).await.map_err(HotFileError::Bad)?;
+    let searcher = searcher_of(&index).map_err(HotFileError::Bad)?;
+    let info = warmups(searcher.schema()).map_err(HotFileError::Request)?;
+    warm_with(&searcher, split, &info)
+        .await
+        .map_err(HotFileError::Bad)?;
+    Ok(searcher)
+}
+
+/// Warms `searcher` for what the request reads of it.
+async fn warm(
+    searcher: &Searcher,
+    split: &SplitRef,
+    warmups: &Warmups<'_>,
+) -> Result<(), ServiceError> {
+    let info = warmups(searcher.schema())?;
+    warm_with(searcher, split, &info).await
+}
+
+/// Warms `searcher` with `info`.
+async fn warm_with(
+    searcher: &Searcher,
+    split: &SplitRef,
+    info: &WarmupInfo,
+) -> Result<(), ServiceError> {
+    operon_quickwit::search::warmup(searcher, info)
+        .await
+        .map(|_| ())
+        .map_err(|err| ServiceError::Unavailable(format!("warming split {}: {err:#}", split.ulid)))
+}
+
 /// A Quickwit [`Storage`] over one local file (a split the hot tier pins):
 /// reads only.
+///
+/// Every read covers whole checksum blocks and checks them against the
+/// file's `<path>.crc` (row F3), so a corrupt byte fails the read instead of
+/// reaching Tantivy.
 ///
 /// The file is opened once, in [`LocalSplitStorage::new`], and read with
 /// positional reads: an open handle stays readable after the hot tier
@@ -244,51 +310,70 @@ async fn open_one(
 pub struct LocalSplitStorage {
     pub path: PathBuf,
     file: Arc<std::fs::File>,
+    checksums: Arc<SplitChecksums>,
     uri: Uri,
 }
 
 impl LocalSplitStorage {
-    /// Opens `path`; a file that is gone is `Unavailable`.
+    /// Opens `path` and its block checksums (`<path>.crc`, row F3); a file
+    /// that is gone, or whose checksums are missing, unreadable or for
+    /// another size, is `Unavailable`.
     pub fn new(path: PathBuf) -> Result<Self, ServiceError> {
         let uri = Uri::from_str(&format!("file://{}", path.display()))
             .map_err(|err| ServiceError::Internal(format!("{}: {err}", path.display())))?;
         let file = std::fs::File::open(&path)
             .map_err(|err| ServiceError::Unavailable(format!("{}: {err}", path.display())))?;
+        let checksums = SplitChecksums::read_for(&path).map_err(|err| {
+            ServiceError::Unavailable(format!("{}: its checksums: {err}", path.display()))
+        })?;
+        let len = file
+            .metadata()
+            .map_err(|err| ServiceError::Unavailable(format!("{}: {err}", path.display())))?
+            .len();
+        if len != checksums.size() {
+            return Err(ServiceError::Unavailable(format!(
+                "{} is {len} bytes, its checksums cover {}",
+                path.display(),
+                checksums.size()
+            )));
+        }
         Ok(Self {
             path,
             file: Arc::new(file),
+            checksums: Arc::new(checksums),
             uri,
         })
     }
 
+    /// Bytes `range` of the file (all of it for `None`), read in whole
+    /// checked blocks: a block that fails its checksum fails the read.
     async fn read(&self, range: Option<Range<usize>>) -> StorageResult<OwnedBytes> {
-        let file = self.file.clone();
-        let bytes = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<u8>> {
-            match range {
-                Some(range) => {
-                    let mut out = vec![0; range.len()];
-                    file.read_exact_at(&mut out, range.start as u64)?;
-                    Ok(out)
-                }
-                None => {
-                    let mut out = Vec::new();
-                    let mut offset = 0u64;
-                    let mut chunk = vec![0; 1 << 16];
-                    loop {
-                        let n = file.read_at(&mut chunk, offset)?;
-                        if n == 0 {
-                            break;
-                        }
-                        out.extend_from_slice(&chunk[..n]);
-                        offset += n as u64;
-                    }
-                    Ok(out)
-                }
-            }
+        let size = self.checksums.size();
+        let (start, end) = match range {
+            Some(range) => (range.start as u64, range.end as u64),
+            None => (0, size),
+        };
+        if start > end || end > size {
+            return Err(StorageErrorKind::Io.with_error(anyhow::anyhow!(
+                "{}: bytes {start}..{end} of a {size}-byte file",
+                self.path.display()
+            )));
+        }
+        let (from, to) = self.checksums.aligned(start, end);
+        let (file, checksums, path) =
+            (self.file.clone(), self.checksums.clone(), self.path.clone());
+        let bytes = tokio::task::spawn_blocking(move || -> StorageResult<Vec<u8>> {
+            let mut out = vec![0; (to - from) as usize];
+            file.read_exact_at(&mut out, from).map_err(io_error)?;
+            checksums.verify(from, &out).map_err(|err| {
+                StorageErrorKind::Io.with_error(anyhow::anyhow!("{}: {err}", path.display()))
+            })?;
+            out.truncate((end - from) as usize);
+            out.drain(..(start - from) as usize);
+            Ok(out)
         })
         .await
-        .map_err(|err| StorageErrorKind::Internal.with_error(err))?
-        .map_err(io_error)?;
+        .map_err(|err| StorageErrorKind::Internal.with_error(err))??;
         Ok(OwnedBytes::new(bytes))
     }
 }

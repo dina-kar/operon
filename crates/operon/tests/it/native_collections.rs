@@ -16,8 +16,9 @@ fn keys(value: &Value) -> Vec<&str> {
     keys
 }
 
-const INFO_KEYS: [&str; 13] = [
+const INFO_KEYS: [&str; 15] = [
     "aliases",
+    "backpressure",
     "created_at_ms",
     "hot",
     "id",
@@ -30,6 +31,16 @@ const INFO_KEYS: [&str; 13] = [
     "schema",
     "size_bytes",
     "stream",
+    "unapplied_bytes",
+];
+
+/// `CollectionInfo.backpressure` (M1.3 Task 15, D86).
+const BACKPRESSURE_KEYS: [&str; 5] = [
+    "max_unapplied_bytes",
+    "max_unapplied_records",
+    "state",
+    "unapplied_bytes",
+    "unapplied_records",
 ];
 
 #[tokio::test]
@@ -41,6 +52,9 @@ async fn collection_routes_speak_the_documented_json() {
         .await
         .expect(StatusCode::CREATED);
     assert_eq!(keys(&first), INFO_KEYS);
+    assert_eq!(keys(&first["backpressure"]), BACKPRESSURE_KEYS);
+    assert_eq!(first["backpressure"]["state"], "open");
+    assert_eq!(first["unapplied_bytes"], 0);
     assert_eq!(first["name"], "kb");
     assert_eq!(first["namespace"], "w");
     assert_eq!(first["partitions"], 2);

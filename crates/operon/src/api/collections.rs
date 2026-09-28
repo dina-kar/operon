@@ -5,19 +5,24 @@ use std::collections::BTreeMap;
 
 use axum::extract::rejection::{BytesRejection, PathRejection};
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use operon_collection::{DocOp, Document, PatchMode, PrimaryKey, SparseVector};
+use operon_query::filter_write::over_limit;
 use operon_query::json::{pk as json_pk, schema as json_schema};
 use operon_query::{
-    OpResult, Projection, Query, ReadConsistency, ScanAt, ServiceError, StoredDoc, WriteOptions,
+    Backlog, FilterWriteCursor, FilterWriteOptions, FilterWriteResult, OpResult, Override,
+    PatchSpec, Projection, Query, ReadConsistency, ScanAt, ServiceError, StoredDoc, WriteOptions,
     alias_actions_from_json, rejected_op_index,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use super::{ApiError, ApiResult, AppState, parse_json, read_consistency, with_token};
+use super::{
+    ApiError, ApiResult, AppState, BACKPRESSURE_HEADER, UNAPPLIED_BYTES_HEADER,
+    UNAPPLIED_RECORDS_HEADER, parse_json, read_consistency, with_token,
+};
 
 /// The default page of a scroll.
 const DEFAULT_SCROLL_LIMIT: usize = 100;
@@ -64,7 +69,14 @@ pub(super) async fn describe(
 ) -> ApiResult {
     let Path((ns, name)) = path?;
     let info = state.collections.get_collection(&ns, &name).await?;
-    Ok(axum::Json(info).into_response())
+    // B6: the owner's full hot status replaces the local summary.
+    let mut value = serde_json::to_value(&info)
+        .map_err(|err| super::errors::internal(format!("encoding a collection: {err}")))?;
+    let (ns_id, cid) = super::hot::resolve(&state, &ns, &name).await?;
+    if cid == info.id {
+        value["hot"] = super::hot::hot_status_value(&state, ns_id, cid).await;
+    }
+    Ok(axum::Json(value).into_response())
 }
 
 /// `DELETE …/collections/{c}` (a name, not an alias).
@@ -188,13 +200,38 @@ fn op_error(i: usize, err: ServiceError) -> ApiError {
     ApiError::from(err).with("index", i)
 }
 
-/// `POST …/collections/{c}/documents`: an atomic write (Ruling 16).
+/// The write's override from [`BACKPRESSURE_HEADER`]: `off` is `Bulk`,
+/// absent is `None`, anything else is 400 (Task 15 rule 5).
+fn backpressure_of(headers: &HeaderMap) -> Result<Override, ApiError> {
+    match headers.get(BACKPRESSURE_HEADER) {
+        None => Ok(Override::None),
+        Some(value) if value.as_bytes() == b"off" => Ok(Override::Bulk),
+        Some(value) => Err(ApiError::invalid(format!(
+            "{BACKPRESSURE_HEADER} must be \"off\", got {value:?}"
+        ))),
+    }
+}
+
+/// `response` with the backlog headers (Task 15 rule 5).
+fn with_backlog(mut response: Response, backlog: Backlog) -> Response {
+    let headers = response.headers_mut();
+    headers.insert(UNAPPLIED_RECORDS_HEADER, HeaderValue::from(backlog.records));
+    headers.insert(UNAPPLIED_BYTES_HEADER, HeaderValue::from(backlog.bytes));
+    response
+}
+
+/// `POST …/collections/{c}/documents`: an atomic write (Ruling 16). A
+/// write over the collection's unapplied-data budget is 429 with
+/// `Retry-After`; every answer to an admitted or throttled write carries
+/// the backlog headers (Task 15).
 pub(super) async fn write(
     State(state): State<AppState>,
     path: Result<Path<(String, String)>, PathRejection>,
+    headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> ApiResult {
     let (Path((ns, name)), body) = (path?, body?);
+    let backpressure = backpressure_of(&headers)?;
     let request: Write = parse_json(&body)?;
     let ops = request
         .ops
@@ -205,15 +242,27 @@ pub(super) async fn write(
     let opts = WriteOptions {
         report_existence: request.report_existence,
         atomic: true,
+        backpressure,
     };
-    let result = state
-        .collections
-        .write(&ns, &name, ops, opts)
-        .await
-        .map_err(|err| match rejected_op_index(&err) {
-            Some(i) => op_error(i, err),
-            None => ApiError::from(err),
-        })?;
+    let result = match state.collections.write(&ns, &name, ops, opts).await {
+        Ok(result) => result,
+        Err(err @ ServiceError::ResourceExhausted { .. }) => {
+            // The measurement the refusal used (cached for the refresh
+            // interval).
+            let backlog = state
+                .collections
+                .collection_backlog(&ns, &name)
+                .await
+                .unwrap_or_default();
+            return Ok(with_backlog(ApiError::from(err).into_response(), backlog));
+        }
+        Err(err) => {
+            return Err(match rejected_op_index(&err) {
+                Some(i) => op_error(i, err),
+                None => ApiError::from(err),
+            });
+        }
+    };
     let mut results = Vec::with_capacity(result.results.len());
     for (i, op) in result.results.iter().enumerate() {
         results.push(match op {
@@ -225,7 +274,12 @@ pub(super) async fn write(
             OpResult::Accepted => "accepted",
             // The writer refused an op the validation passed: the schema
             // changed in between. The request fails with that op's error.
-            OpResult::Rejected(err) => return Err(op_error(i, err.clone())),
+            OpResult::Rejected(err) => {
+                return Ok(with_backlog(
+                    op_error(i, err.clone()).into_response(),
+                    result.backlog,
+                ));
+            }
         });
     }
     let response = axum::Json(json!({
@@ -234,7 +288,10 @@ pub(super) async fn write(
         "positions": result.positions,
     }))
     .into_response();
-    Ok(with_token(response, &result.token))
+    Ok(with_backlog(
+        with_token(response, &result.token),
+        result.backlog,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -346,6 +403,124 @@ pub(super) async fn count(
     }))
     .into_response();
     Ok(with_token(response, &token))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteByFilter {
+    filter: Query,
+    max_rows: Option<u64>,
+    #[serde(default)]
+    allow_partial: bool,
+    cursor: Option<FilterWriteCursor>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PatchByFilter {
+    filter: Query,
+    patch: Value,
+    max_rows: Option<u64>,
+    #[serde(default)]
+    allow_partial: bool,
+    cursor: Option<FilterWriteCursor>,
+}
+
+/// A filter write's options from its request and headers (M1.5 Task 9a
+/// rule 6): `Operon-Consistency-Token` makes the pin at least as new as the
+/// token, and `Operon-Backpressure: off` overrides each batch's budget.
+fn filter_write_options(
+    headers: &HeaderMap,
+    max_rows: Option<u64>,
+    allow_partial: bool,
+    cursor: Option<FilterWriteCursor>,
+) -> Result<FilterWriteOptions, ApiError> {
+    Ok(FilterWriteOptions {
+        consistency: read_consistency(headers, None)?,
+        max_rows,
+        allow_partial,
+        cursor,
+        deadline: None,
+        backpressure: backpressure_of(headers)?,
+    })
+}
+
+/// 200 with the [`FilterWriteResult`] and `Operon-Consistency-Token`; a
+/// call over its limit is 400 with `"matched"` and `"limit"`, and a refused
+/// one carries the backlog headers.
+async fn filter_write_answer(
+    state: &AppState,
+    ns: &str,
+    name: &str,
+    result: Result<FilterWriteResult, ServiceError>,
+) -> ApiResult {
+    match result {
+        Ok(result) => {
+            let response = axum::Json(&result).into_response();
+            Ok(with_token(response, &result.token))
+        }
+        Err(err @ ServiceError::ResourceExhausted { .. }) => {
+            let backlog = state
+                .collections
+                .collection_backlog(ns, name)
+                .await
+                .unwrap_or_default();
+            Ok(with_backlog(ApiError::from(err).into_response(), backlog))
+        }
+        Err(err) => Err(match over_limit(&err) {
+            Some((matched, limit)) => ApiError::from(err)
+                .with("matched", matched)
+                .with("limit", limit),
+            None => ApiError::from(err),
+        }),
+    }
+}
+
+/// `POST …/collections/{c}/documents/delete_by_filter` (M1.5 Task 9a,
+/// D87).
+pub(super) async fn delete_by_filter(
+    State(state): State<AppState>,
+    path: Result<Path<(String, String)>, PathRejection>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult {
+    let (Path((ns, name)), body) = (path?, body?);
+    let request: DeleteByFilter = parse_json(&body)?;
+    let opts = filter_write_options(
+        &headers,
+        request.max_rows,
+        request.allow_partial,
+        request.cursor,
+    )?;
+    let result = state
+        .collections
+        .delete_by_filter(&ns, &name, request.filter, opts)
+        .await;
+    filter_write_answer(&state, &ns, &name, result).await
+}
+
+/// `POST …/collections/{c}/documents/patch_by_filter` (M1.5 Task 9a,
+/// D87).
+pub(super) async fn patch_by_filter(
+    State(state): State<AppState>,
+    path: Result<Path<(String, String)>, PathRejection>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult {
+    let (Path((ns, name)), body) = (path?, body?);
+    let request: PatchByFilter = parse_json(&body)?;
+    let patch = patch_spec_from_json(&request.patch)?;
+    let opts = filter_write_options(
+        &headers,
+        request.max_rows,
+        request.allow_partial,
+        request.cursor,
+    )?;
+    let result = state
+        .collections
+        .patch_by_filter(&ns, &name, request.filter, patch, opts)
+        .await;
+    filter_write_answer(&state, &ns, &name, result).await
 }
 
 /// A stored document's native JSON: its serde form with the key under
@@ -489,6 +664,50 @@ fn doc_from_json(
             sparse(i, name, v)
         })?,
     })
+}
+
+/// A filter write's `patch`: an op's `patch` object without `id` and
+/// `upsert`, with the same defaults (M1.6 W-table).
+fn patch_spec_from_json(value: &Value) -> Result<PatchSpec, ServiceError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| ServiceError::InvalidArgument("patch must be an object".to_string()))?;
+    if let Some(key) = object
+        .keys()
+        .find(|key| matches!(key.as_str(), "id" | "upsert"))
+    {
+        return Err(ServiceError::InvalidArgument(format!(
+            "unknown key {key} in patch: a filter write patches the matching documents and never creates one"
+        )));
+    }
+    let mut keyed = object.clone();
+    keyed.insert("id".to_string(), json!(0));
+    match patch_from_json(0, &Value::Object(keyed)) {
+        Ok(DocOp::Patch {
+            mode,
+            source,
+            delete_keys,
+            vectors,
+            sparse_vectors,
+            ..
+        }) => Ok(PatchSpec {
+            mode,
+            source,
+            delete_keys,
+            vectors,
+            sparse_vectors,
+        }),
+        Ok(_) => Err(ServiceError::Internal(
+            "a patch parsed as another op".to_string(),
+        )),
+        Err(ServiceError::InvalidArgument(message)) => Err(ServiceError::InvalidArgument(
+            message
+                .strip_prefix("op 0: ")
+                .unwrap_or(&message)
+                .to_string(),
+        )),
+        Err(err) => Err(err),
+    }
 }
 
 fn patch_from_json(i: usize, value: &Value) -> Result<DocOp, ServiceError> {

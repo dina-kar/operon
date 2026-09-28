@@ -336,6 +336,7 @@ async fn out_of_range_offsets_get_416_with_both_bounds() {
 
     let stream = server
         .meta()
+        .expect("the openraft metastore")
         .read(Consistency::Local, |s| {
             let ns = s.namespace_by_name("acme").unwrap().id;
             s.stream_by_name(ns, "events").unwrap().id
@@ -344,6 +345,7 @@ async fn out_of_range_offsets_get_416_with_both_bounds() {
         .unwrap();
     server
         .meta()
+        .expect("the openraft metastore")
         .trim_partition(stream, 0, 2, None)
         .await
         .unwrap();
@@ -359,6 +361,7 @@ async fn out_of_range_offsets_get_416_with_both_bounds() {
 async fn segment_count(server: &Server) -> usize {
     server
         .meta()
+        .expect("the openraft metastore")
         .read(Consistency::Local, |s| {
             s.all_streams()
                 .flat_map(|st| (0..st.partitions).map(move |p| (st.id, p)))
@@ -412,6 +415,7 @@ async fn acknowledged_records_survive_a_restart() {
     loop {
         let wal_left = server
             .meta()
+            .expect("the openraft metastore")
             .read(Consistency::Local, |s| {
                 s.all_streams()
                     .flat_map(|st| (0..st.partitions).map(move |p| (st.id, p)))
@@ -606,7 +610,59 @@ async fn a_config_with_index_commit_delay_at_grace_is_refused() {
     good.segmenter.swap_deadline = Duration::from_secs(1);
     good.link.max_commit_delay = Duration::from_secs(1);
     good.collection.index_commit_delay = Duration::from_secs(1);
+    good.maintenance.commit_delay = Duration::from_secs(1);
+    good.hot_build.artifact_commit_delay = Duration::from_secs(1);
     Server::start(good).await.unwrap().shutdown().await.unwrap();
+}
+
+/// A config whose deadlines are all below a 2 s grace but `field`'s.
+fn deadlines_below_grace(dir: &TempDir) -> operon::ServerConfig {
+    let mut config = config(dir, lazy_segmenter());
+    config.gc.grace = Duration::from_secs(2);
+    config.segmenter.swap_deadline = Duration::from_secs(1);
+    config.link.max_commit_delay = Duration::from_secs(1);
+    config.collection.index_commit_delay = Duration::from_secs(1);
+    config.maintenance.commit_delay = Duration::from_secs(1);
+    config.hot_build.artifact_commit_delay = Duration::from_secs(1);
+    config
+}
+
+async fn refused_naming(config: operon::ServerConfig, field: &str) {
+    let err = Server::start(config)
+        .await
+        .expect_err("the config is refused");
+    let operon::ServerError::Config(message) = &err else {
+        panic!("expected a config error, got {err:?}");
+    };
+    assert!(message.contains(field), "{message}");
+    for other in [
+        "segmenter.swap_deadline",
+        "link.max_commit_delay",
+        "collection.index_commit_delay",
+        "maintenance.commit_delay",
+        "hot_build.artifact_commit_delay",
+    ] {
+        assert!(other == field || !message.contains(other), "{message}");
+    }
+}
+
+/// M1.3 Task 13: a merge's or compaction's commit delay is a freshness
+/// deadline too.
+#[tokio::test]
+async fn a_config_with_maintenance_commit_delay_at_grace_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let mut bad = deadlines_below_grace(&dir);
+    bad.maintenance.commit_delay = Duration::from_secs(2);
+    refused_naming(bad, "maintenance.commit_delay").await;
+}
+
+/// M1.3 Task 13: a hot artifact commit's delay is a freshness deadline too.
+#[tokio::test]
+async fn a_config_with_artifact_commit_delay_at_grace_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let mut bad = deadlines_below_grace(&dir);
+    bad.hot_build.artifact_commit_delay = Duration::from_secs(2);
+    refused_naming(bad, "hot_build.artifact_commit_delay").await;
 }
 
 /// M1.1 Task 13: the server runs collection link apply. A write through a
@@ -624,7 +680,7 @@ async fn the_server_applies_collection_links() {
     cfg.link.batch_interval = Duration::ZERO;
     let server = Server::start(cfg).await.unwrap();
     let api = Api::new(&server);
-    let meta = server.meta();
+    let meta = server.meta().expect("the openraft metastore");
     let ns = meta.create_namespace("acme").await.unwrap();
     let schema = CollectionSchema::new(vec![], vec![], DynamicMapping::Ignore);
     let (cid, stream, _) = meta.create_collection(ns, "docs", schema, 2).await.unwrap();
@@ -719,6 +775,9 @@ impl Dev {
                 // Parallel servers must not share Flight SQL's fixed port.
                 "--flight-sql-listen",
                 "127.0.0.1:0",
+                "--no-qdrant",
+                "--no-durable",
+                "--no-es",
             ])
             .arg("--data-dir")
             .arg(dir.path())
@@ -928,6 +987,15 @@ async fn the_link_endpoint_shows_version_and_applied_for_collections() {
             reader.clone(),
             operon_query::ServiceConfig::default(),
         ),
+        hot: None,
+        placement: Arc::new(operon_hot::AlwaysLocal),
+        node_id: 1,
+        internal: reqwest::Client::new(),
+        hot_pin_all: false,
+        roles: operon_hot::Roles::all(),
+        forwarded: None,
+        forward_stats: Arc::default(),
+        node_info: None,
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -1013,6 +1081,9 @@ fn a_build_without_failpoints_refuses_to_arm_them() {
             "127.0.0.1:0",
             "--flight-sql-listen",
             "127.0.0.1:0",
+            "--no-qdrant",
+            "--no-durable",
+            "--no-es",
         ])
         .arg("--data-dir")
         .arg(dir.path())
@@ -1242,6 +1313,9 @@ fn the_dev_binary_prints_the_flight_sql_line() {
             "127.0.0.1:0",
             "--flight-sql-listen",
             "127.0.0.1:0",
+            "--no-qdrant",
+            "--no-durable",
+            "--no-es",
         ])
         .arg("--data-dir")
         .arg(dir.path())

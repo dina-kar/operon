@@ -1,5 +1,11 @@
 mod artifact;
+mod budget;
 mod build;
 mod common;
+mod differential;
+mod placement;
+mod registry;
+mod remote;
+mod splits;
 mod tier;
 mod view;

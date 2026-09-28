@@ -10,6 +10,9 @@
 *.wal
 *.seg
 
+# Python
+__pycache__/
+
 # Editors / OS
 .idea/
 .vscode/
@@ -19,3 +22,6 @@
 # Env
 .env
 .env.*
+
+# Node
+node_modules/

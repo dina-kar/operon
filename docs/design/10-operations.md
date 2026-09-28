@@ -1,6 +1,6 @@
 # 10 — Operations
 
-Status: **Approved** · 2026-09-22 · revised 2026-09-25 (architecture review: surfaces D42–D45, M2 hardening D46, metastore backends D47) · revised 2026-09-26 (backends, RustFS, BYOC, tenancy, authorization, erasure: D58–D70, §18) · amended 2026-09-26 (turbopuffer gap analysis: backpressure and weighted concurrency quotas, customer-managed keys, audit events, SSO and private networking, performance and usage metrics, branches; D86, D90, D92, D96, D98, D100, D102, D103)
+Status: **Approved** · 2026-09-22 · revised 2026-09-25 (architecture review: surfaces D42–D45, M2 hardening D46, metastore backends D47) · revised 2026-09-26 (backends, RustFS, BYOC, tenancy, authorization, erasure: D58–D70, §18) · amended 2026-09-26 (turbopuffer gap analysis: backpressure and weighted concurrency quotas, customer-managed keys, audit events, SSO and private networking, performance and usage metrics, branches; D86, D90, D92, D96, D98, D100, D102, D103) · amended 2026-09-27 (M1.3 as built: `operon cluster` and its flags)
 
 ---
 
@@ -10,10 +10,12 @@ Status: **Approved** · 2026-09-22 · revised 2026-09-25 (architecture review: s
 |---|---|---|---|---|
 | Dev | `operon dev` | Local filesystem (`object_store` LocalFileSystem), or RustFS started next to it by the compose file (D61) | Single-node Raft | Laptop, CI |
 | Standalone | `operon standalone --bucket s3://…` | S3/GCS/Azure, or RustFS self-hosted | Single-node Raft (snapshots to bucket) | Small prod, edge |
-| Cluster | `operon --roles gateway,query,…` | Cloud object storage, or RustFS on premises | 3 or 5 `meta` nodes across AZs, or Postgres or DynamoDB (M2) | Production |
+| Cluster | `operon cluster --roles meta,log,query,worker,gateway …` | Cloud object storage, or RustFS on premises | 3 or 5 `meta` nodes across AZs, or Postgres or DynamoDB (M2) | Production |
 | Kubernetes | Helm chart + `operon-operator` (M2) | Cloud object storage, or RustFS | StatefulSet (openraft `meta` only), or external Postgres or DynamoDB | Production |
 | BYOC-managed-meta (M2.x) | Data plane in the customer's VPC | The customer's bucket | Hosted, through `operon-meta-remote` to `operon-control` | Managed service; the control plane is on the write path (§18 §8) |
 | BYOC-local-meta (M2.x) | Data plane and metastore in the customer's VPC | The customer's bucket | openraft, or the customer's Postgres or DynamoDB | Managed service; a pull-based ops agent only (§18 §8) |
+
+**Cluster mode as built (M1.3).** Every node runs a metastore replica: voters on `meta` nodes, non-voting learners elsewhere (§01 §3.2). The lowest-id peer in `--peers` initializes the cluster, and every node joins through the peers; a learner leaves on graceful shutdown, and one whose `node/<id>` lease has been expired for 10 minutes is removed by the `meta-membership` task. Adding or removing voters is M2. The internal routes (`/internal/v1/raft/*`, `/internal/v1/meta/*`, `/internal/v1/reads/*`, `/internal/v1/hot/*`, `/internal/v1/node/*`) share `--listen` with the API, are unauthenticated in M1 like every other listener, and **must be on a private network**.
 
 Lakekeeper is deployed next to Operon, not inside it (bundled in the Helm chart and the `docker-compose` examples from M4). RustFS (`rustfs/rustfs:1.0.x`, Apache-2.0) is the default self-hosted object store in the docs, the docker-compose dev stack, the Helm chart and the agent-fleet demo; it replaces MinIO, whose community edition is archived (D61).
 
@@ -63,12 +65,13 @@ lakekeeper_url = "http://lakekeeper:8181/catalog"
 warehouse = "prod"
 
 [gateways]
-native = { rest = "0.0.0.0:8080", grpc = "0.0.0.0:8081", flight_sql = "0.0.0.0:8082" }   # MCP at /mcp on rest
+native = { rest = "0.0.0.0:8080", grpc = "0.0.0.0:8081", flight_sql = "0.0.0.0:8082" }   # never serves /mcp
+mcp = { listen = "127.0.0.1:8083" }   # MCP at /mcp on its own listener, loopback by default (§15, D111)
 qdrant = { rest = "0.0.0.0:6333", grpc = "0.0.0.0:6334" }
 elasticsearch = { listen = "0.0.0.0:9200" }
 otlp = { http = "0.0.0.0:4318", grpc = "0.0.0.0:4317" }   # logs only (M2, D73)
 kafka = { listen = "0.0.0.0:9092" }   # Kafka wire protocol (M5, D74)
-resonate = { listen = "0.0.0.0:8001" }   # durable execution (§14); Resonate SDK default port
+resonate = { listen = "127.0.0.1:8001" } # durable execution (§21, D138); Resonate SDK default port; loopback only until auth
 admin = { listen = "0.0.0.0:8090" }      # /metrics, /health, diagnostic dump (§5); not a data surface
 
 [tls]                                     # M2: applies to every listener
@@ -76,6 +79,18 @@ cert = "/etc/operon/tls/tls.crt"
 key = "/etc/operon/tls/tls.key"
 client_ca = "/etc/operon/tls/ca.crt"      # set to require client certificates (mTLS)
 ```
+
+**M1 flags.** M1 has no configuration file: `operon cluster` takes flags (M1.3 Ruling 15), and a configuration file is M2. The keys of the sketch above that M1 implements map to flags as follows:
+
+| TOML key | M1 flag |
+|---|---|
+| `[cluster] bucket` | `--bucket` |
+| `[cluster] zones` | `--zone`, per node |
+| `[meta] peers` | `--peers id=host:port,…` |
+| `[cache] nvme_path` / `nvme` | `--hot-dir` / `--hot-nvme-bytes` |
+| `[cache] ram` | `--hot-ram-bytes` |
+
+Each node also takes `--node-id`, `--roles`, `--listen`, `--advertise`, `--data-dir` and `--replication`, plus the hot flags (`--hot`, `--hot-pin-all`) and the backpressure flags (`--backpressure`, `--max-unapplied-records`, `--max-unapplied-bytes`).
 
 Each gateway is individually enabled; disabled gateways load no code paths (feature-gated at build time as well). The surfaces and their scope are listed in §01 §3.3.
 
@@ -144,7 +159,8 @@ The M2 baseline, on every node:
 - **Data** is already in object storage: enable bucket versioning + lifecycle; cross-region replication (S3 CRR / GCS dual-region / Azure GRS) for DR. **With versioning on, an erasure deletes the noncurrent versions of the objects it retires by version id, in the replica bucket too, and verifies they are gone before it completes** (§4.1). A lifecycle rule that expires noncurrent versions within the erasure deadline is the backstop; S3 applies it asynchronously.
 - **Metadata (openraft):** meta snapshots to the bucket every N minutes + Raft log shipping; restore = new meta cluster from latest snapshot + log.
 - **Metadata (Postgres, DynamoDB, TiDB):** the backend's own backups and point-in-time recovery. Metadata holds no documents; erasure requests hold keyed key hashes only.
-- A metadata restore to a point older than GC's grace period (§03 §7) references objects GC may have deleted since; bucket versioning recovers them, except objects a completed erasure retired: their versions are deleted on purpose (§4.1, §18 §9). Whether such a restore replays the completed erasures from the erasure log or rebuilds the affected manifests without the erased objects is open (Q27).
+- **Erasure log (M2, D115):** every metadata and `ControlStore` backup includes the erasure log, and each record is also written once, by conditional put, under `_erasure/<org_id>/` in the cluster bucket (§01 §6, §18 §9). That copy is outside every snapshot and backup, so a restore of the metastore or the `ControlStore` never rolls it back; with cross-region replication it reaches the DR bucket like any other object.
+- A metadata restore to a point older than GC's grace period (§03 §7) references objects GC may have deleted since; bucket versioning recovers them, except objects a completed erasure retired: their versions are deleted on purpose (§4.1, §18 §9). The log is never rolled back, and each record is kept while any snapshot, backup or time-travel version older than the erasure exists, plus 30 days (D115). **Every metadata restore runs in this order:** (1) load the union of the erasure records in the restored `ControlStore` and the `_erasure/` objects; (2) replay every erasure newer than the restore point's data, completed or still pending, through the erasure path (§4.1); (3) only then serve traffic (`/health/ready` stays false until the replay is done); (4) if either source cannot be read, refuse to serve rather than risk returning erased data.
 - **Restore from bucket** is an M2 drill: a new cluster is brought up from the bucket alone (openraft snapshots live in it), or from the bucket and the backend's backup.
 - **Point-in-time restore:** collections/graphs via retained manifests; tables via Iceberg snapshots; streams via retention.
 - **Branches and copies (D90):** a branch (M2) is a constant-time, isolated copy of a retained manifest, useful before a risky change; a copy (M2.x) writes a collection into another namespace, bucket, region or org under the target's key, as an asynchronous operation, and serves as a logical backup.

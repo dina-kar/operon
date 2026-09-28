@@ -1,10 +1,13 @@
+mod alias_targets;
 mod catalog;
 mod client;
 mod cluster;
 mod collections;
 mod conformance;
+mod conformance_http;
 mod encoding;
 mod hot;
+mod http;
 mod leases;
 mod links;
 mod node;

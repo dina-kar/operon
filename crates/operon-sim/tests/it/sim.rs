@@ -128,3 +128,36 @@ fn a_seed_with_collection_writes_is_reproducible_in_schedule() {
         first.stats
     );
 }
+
+/// Plan M1.3 Task 15: doc writes are admitted against a budget of 50
+/// unapplied records; a long enough seed refuses some, and a refused write
+/// (not acknowledged, nothing written) keeps the collection model valid.
+#[test]
+fn a_seed_with_backpressure_refuses_some_writes() {
+    let report = run(SimConfig {
+        steps: 600,
+        ..SimConfig::new(7)
+    });
+    assert!(report.is_ok(), "{}", report.describe());
+    assert!(
+        report.stats.throttled_writes > 0,
+        "no write was refused: {:?}",
+        report.stats
+    );
+}
+
+/// Plan M1.3 Task 13 rule 3: the worker runs split merges and Lance
+/// compaction, and a long enough seed commits both.
+#[test]
+fn a_seed_with_maintenance_has_merges_and_compactions() {
+    let report = run(SimConfig {
+        steps: 600,
+        ..SimConfig::new(7)
+    });
+    assert!(report.is_ok(), "{}", report.describe());
+    assert!(
+        report.stats.merges > 0 && report.stats.compactions > 0,
+        "no merge or no compaction: {:?}",
+        report.stats
+    );
+}

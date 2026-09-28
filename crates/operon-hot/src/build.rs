@@ -331,6 +331,11 @@ impl HotBuildSource {
         })
     }
 
+    /// The source's configuration.
+    pub fn config(&self) -> &HotBuildConfig {
+        &self.shared.config
+    }
+
     /// Test hook: every build awaits `hook` at each [`HotBuildStep`]. Only
     /// with the `test-util` feature.
     #[cfg(feature = "test-util")]
@@ -754,6 +759,16 @@ impl BuildTask {
             .await
             .map_err(failed)?
             else {
+                let exists = ctx
+                    .meta
+                    .collection(Consistency::Linearizable, cid)
+                    .await
+                    .map_err(failed)?
+                    .is_some_and(|c| c.namespace == ns);
+                if !exists {
+                    // Dropped while the build ran (row 5.5).
+                    return Ok((TaskOutcome::Idle, 0));
+                }
                 return Err(failed(CollectionError::Corrupt(format!(
                     "collection {cid} lost its manifest pointer"
                 ))));

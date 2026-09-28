@@ -1,6 +1,6 @@
 # 01 — Architecture: Data Model and System Shape
 
-Status: **Approved** · 2026-09-22 (including amendments: Tantivy for text, Lance + hot HNSW for vectors, hot tier for Iceberg) · revised 2026-09-25 (architecture review: protocol surfaces D42–D45, `MetaStore` trait D47) · amended 2026-09-26 (turbopuffer gap analysis: write backpressure, filter and conditional writes, branches, sharding, customer-managed keys; D86–D96)
+Status: **Approved** · 2026-09-22 (including amendments: Tantivy for text, Lance + hot HNSW for vectors, hot tier for Iceberg) · revised 2026-09-25 (architecture review: protocol surfaces D42–D45, `MetaStore` trait D47) · amended 2026-09-26 (turbopuffer gap analysis: write backpressure, filter and conditional writes, branches, sharding, customer-managed keys; D86–D96) · amended 2026-09-27 (M1.3 as built: cluster mode, the networked metastore, the artifact layout; D104–D110)
 
 ---
 
@@ -98,6 +98,8 @@ One binary, `operon`, runs any combination of five roles. All roles except `meta
 
 Small deployments run everything in one process (`operon dev` / `operon standalone`); large ones split roles into separately autoscaled pools.
 
+As built (M1.3): `operon cluster --roles meta,log,query,worker,gateway …` runs any subset of the roles in one process (`gateway` implies `log`). Every node runs a metastore replica: voters on `meta` nodes, non-voting learners elsewhere (§3.2). A node registers under the lease `node/<id>`, and collections are owned by rendezvous hashing over the live `query` nodes (§04 §5).
+
 ### 3.2 Metastore: a semantic trait, Raft by default
 
 Streams generate high-rate metadata: offset assignment per flush, consumer offset commits, partition and task leases. S3 conditional PUT (tens to hundreds of ms, contended per key) cannot sustain that, so metadata lives in a metastore. Durable object data never flows through it: manifest *bodies* stay immutable objects on S3; only *pointers* live in meta.
@@ -105,6 +107,8 @@ Streams generate high-rate metadata: offset assignment per flush, consumer offse
 Every crate reaches the metastore through **`trait MetaStore`** in `operon-common` (D47), as `Arc<dyn MetaStore>` from M1.2a. The trait is semantic, not raw KV: it exposes the domain operations Operon needs — WAL commit and segment swap, trims and retention, catalog operations and schema evolution (namespaces, streams, collections, aliases, links), manifest-pointer CAS, leases and fencing, and retired-object tracking for GC. Each backend implements the sequencer, fencing and CAS natively instead of rebuilding them over bytes (the Lakekeeper model: one catalog trait, several database backends).
 
 As built (M1.2a): the trait and its records live in `operon_common::meta`; the openraft `MetaClient` implements it in `operon-meta/src/store.rs`. Only the composition roots (`operon`, `operon-sim`) depend on `operon-meta`; the CI step `metastore boundary` enforces it. Reads are named domain queries that each return one consistent state; `commit_wal`, `swap_segment` and `cas_pointer` report whether an earlier attempt had an unknown outcome; `watch_changes` is the long-poll wake-up. Raft administration (node start, membership, snapshots, status) stays on the openraft types.
+
+As built (M1.3): the openraft backend runs over the network. Every node holds a local replica (a voter on `meta` nodes, a learner elsewhere), so `Local` reads stay local; writes go to the leader (`POST /internal/v1/meta/write`) and linearizable reads ask it for a read index, and the client then waits until its own replica has applied that index (M1.3 Ruling 10, D107). Raft RPCs travel as postcard over HTTP on the node's `--listen` address. The routes are private to the openraft backend, not a remote `MetaStore` protocol (that is M2.x, D64). It is the same `MetaClient`, and it passes the `MetaStore` conformance suite over HTTP on the leader and on a learner.
 
 | Backend | Crate | Milestone | Use |
 |---|---|---|---|
@@ -119,21 +123,22 @@ Every backend serves the same relaxed contract (D59): `commit_wal` is atomic per
 
 | Surface | Default port | Objects | Scope | Milestone |
 |---|---|---|---|---|
-| Native REST | 8080 | All | Collections, the hybrid query (§05 §4), SQL; the MCP server (§15) is mounted at `/mcp`; the native streaming API (M0.3 routes, completed in M2, D72) | M1 |
+| Native REST | 8080 | All | Collections, the hybrid query (§05 §4), SQL; the native streaming API (M0.3 routes, completed in M2, D72). Never serves `/mcp` (D111) | M1 |
+| MCP (Streamable HTTP) | 8083 | Collections | The MCP server (§15) at `/mcp` on its own listener, bound to 127.0.0.1 by default (D111) | M1 |
 | Native gRPC | 8081 | All | The native API over gRPC, including streaming subscribe | M2 |
 | OTLP (HTTP / gRPC) | 4318 / 4317 | Streams (collections through links) | Logs only: OTLP/HTTP (protobuf, JSON) and OTLP/gRPC (D73, §02 §7.1) | M2 |
 | Kafka | 9092 | Streams | Produce, Fetch, ListOffsets, Metadata, ApiVersions; idempotent producers; consumer groups; no transactions (D74, §02 §7.2) | M5 |
 | Arrow Flight SQL | 8082 | Collections, tables, streams | SQL queries; Flight `DoPut` bulk ingest into collections and streams (D49), `DoGet` replay of streams (M5); used by the ADBC Flight SQL drivers | M1 |
 | Qdrant REST / gRPC | 6333 / 6334 | Collections | Qdrant API Phase A with sparse vectors (§06) | M1 |
 | Elasticsearch REST | 9200 | Collections | What the LangChain and LlamaIndex ES suites and BEIR send (D48, §06) | M1 |
-| Resonate HTTP | 8001 | Durable promises | The Resonate protocol (§14) | M3 |
+| Resonate HTTP | 8001 | Durable promises | The Resonate protocol (§14, §21), embedded in the binary behind the `durable` feature, bound to 127.0.0.1 and refusing other addresses until auth exists (D138) | D1 |
 
 Each surface is enabled individually (§10 §2). The Kafka wire protocol follows in M5 (D74); there is no Bolt/Cypher (D44) or ClickHouse (D45) surface.
 
 ## 4. Data flow
 
 ### 4.1 Write (any protocol)
-1. Gateway authenticates and translates the request into a logical write against a stream (explicit or implicit). A collection write is admitted only while the collection's unapplied backlog (records past `applied` and their bytes) is under its budget; otherwise it is refused with HTTP 429 or gRPC `RESOURCE_EXHAUSTED` and `Retry-After` (D86).
+1. Gateway authenticates and translates the request into a logical write against a stream (explicit or implicit). A collection write is admitted only while the collection's unapplied backlog (records past `applied` and their bytes) is under its budget; otherwise it is refused with HTTP 429 or gRPC `RESOURCE_EXHAUSTED` and `Retry-After` (D86). A bulk load may send `Operon-Backpressure: off`, which admits writes up to 4× the budget; while the backlog is above the budget, strong reads may fall back to range tails or answer `Unavailable`, and `Eventual` keeps serving.
 2. A `log` node appends to the WAL per the stream's class and obtains dense offsets from meta (or from its journal for `quorum`).
 3. The client is acknowledged with a **consistency token** `{(stream, partition, offset)…}`.
 4. Workers asynchronously apply links: build Lance fragments + Tantivy splits, append Iceberg data files, update adjacency — each commit atomically records its applied offset.
@@ -167,6 +172,7 @@ Each surface is enabled individually (§10 §2). The Kafka wire protocol follows
 ```
 s3://<bucket>/<cluster_prefix>/
   meta/snapshots/<node_id>/<raft_term>-<index>.snap # metastore snapshots, one set per meta node (D17; openraft backend)
+  _erasure/<org_id>/<erasure_id>/{request,completion}.rec # write-once erasure-log records (conditional put), kept outside every snapshot (M2, D115)
   wal/<class>/<node_id>/<ulid>.wal                  # standard/express WAL objects: multi-partition, multi-namespace (D25); CMEK namespaces' chunks are envelope-encrypted (M2, D96)
   ns/<namespace_id>/
     keys/<ulid>.key                                  # a CMEK namespace's wrapped key-encryption keys (M2, D96)
@@ -178,7 +184,7 @@ s3://<bucket>/<cluster_prefix>/
       manifests/<version:020>-<ulid>.pb              # immutable collection manifests (OPCM)
       pkdelta/<version:020>-<ulid>.pkd               # the keys one commit changed, for PK-index repair (OPPD)
       deadletters/<version:020>-<ulid>.dlq           # records one commit dead-lettered (OPDL)
-      hot/hnsw/<column>/<source_version:020>-<ulid>/… # optional derived hot-tier artifacts (HNSW, M1.3)
+      hot/hnsw/<column>/<source_version:020>-<ulid>/{descriptor.bin,covered.bin,files/…} # derived HNSW artifacts (M1.3 Ruling 6): descriptor (OPHD, written last), covered row set (OPHC), engine files in 256 MiB zstd chunks
       shards/<shard>/…                               # a sharded collection (M2.x, D95): each shard's lance/, text/, manifests/, pkdelta/, deadletters/ and hot/
     graphs/<graph_id>/
       idmap/…                                        # SlateDB instance: external key → dense id

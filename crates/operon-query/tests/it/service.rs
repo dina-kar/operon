@@ -18,8 +18,8 @@ use operon_query::hot::{self, HotAnn, HotStatus, HotTier, HotUsed, RequestHot};
 use operon_query::placement::{Owner, Placement, RemoteReads};
 use operon_query::{
     CREATED_AT_ANNOTATION, CollectionInfo, CollectionService, FieldValue, Fusion, OpResult,
-    Projection, Query, ReadConsistency, Retriever, SearchRequest, SearchResponse, ServiceConfig,
-    ServiceError, SourceFilter, StoredDoc, TotalHits, TotalRelation, WriteOptions,
+    Projection, Query, ReadConsistency, Retriever, ScrollPage, SearchRequest, SearchResponse,
+    ServiceConfig, ServiceError, SourceFilter, StoredDoc, TotalHits, TotalRelation, WriteOptions,
 };
 use serde_json::json;
 
@@ -40,14 +40,14 @@ fn not_found(name: &str) -> ServiceError {
 fn reported() -> WriteOptions {
     WriteOptions {
         report_existence: true,
-        atomic: false,
+        ..WriteOptions::default()
     }
 }
 
 fn atomic() -> WriteOptions {
     WriteOptions {
-        report_existence: false,
         atomic: true,
+        ..WriteOptions::default()
     }
 }
 
@@ -293,6 +293,23 @@ async fn create_is_retry_safe_and_a_different_schema_is_already_exists() {
         .await
         .expect("the same partition count succeeds");
     assert_eq!(same_partitions.id, first.id);
+    // Only the first create owns the collection (M1.5 PR #64 review).
+    let (existing, created) = service
+        .create_collection_owned(NS, DOCS, tail_schema(), None)
+        .await
+        .expect("an identical create succeeds");
+    assert_eq!((existing.id, created), (first.id, false));
+    let (fresh, created) = service
+        .create_collection_owned(NS, "owned", tail_schema(), None)
+        .await
+        .expect("a new create succeeds");
+    assert!(created);
+    assert!(
+        service
+            .drop_collection(NS, &fresh.name)
+            .await
+            .expect("drop")
+    );
 
     assert_eq!(
         service
@@ -1009,6 +1026,11 @@ struct Recording {
 
 const CANNED: u64 = 424_242;
 
+/// The read token `Recording` answers, as the owner's.
+fn owner_token() -> ConsistencyToken {
+    ConsistencyToken(vec![(operon_common::StreamId(9), 0, CANNED)])
+}
+
 impl Recording {
     fn record(&self, method: &'static str, name: &str) -> Result<(), ServiceError> {
         let hot = hot::current().map(|hot| hot.enabled);
@@ -1062,9 +1084,9 @@ impl RemoteReads for Recording {
         pks: Vec<PrimaryKey>,
         _: Projection,
         _: ReadConsistency,
-    ) -> Result<Vec<Option<StoredDoc>>, ServiceError> {
+    ) -> Result<(Vec<Option<StoredDoc>>, ConsistencyToken), ServiceError> {
         self.record("get", name)?;
-        Ok(vec![None; pks.len()])
+        Ok((vec![None; pks.len()], owner_token()))
     }
 
     async fn count(
@@ -1074,9 +1096,9 @@ impl RemoteReads for Recording {
         name: &str,
         _: Option<Query>,
         _: ReadConsistency,
-    ) -> Result<u64, ServiceError> {
+    ) -> Result<(u64, ConsistencyToken), ServiceError> {
         self.record("count", name)?;
-        Ok(CANNED)
+        Ok((CANNED, owner_token()))
     }
 
     async fn scroll(
@@ -1089,9 +1111,9 @@ impl RemoteReads for Recording {
         _: usize,
         _: Projection,
         _: ReadConsistency,
-    ) -> Result<(Vec<StoredDoc>, Option<PrimaryKey>), ServiceError> {
+    ) -> Result<ScrollPage, ServiceError> {
         self.record("scroll", name)?;
-        Ok((Vec::new(), Some(u(CANNED))))
+        Ok(((Vec::new(), Some(u(CANNED))), owner_token()))
     }
 }
 
@@ -1218,6 +1240,28 @@ async fn a_remote_owner_forwards_every_read() {
         Err(ServiceError::InvalidArgument(_))
     ));
     assert_eq!(recording.methods().len(), calls);
+    f.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_forwarded_read_answers_the_owners_token() {
+    let (f, service, _, _) = remotely_owned().await;
+    let strong = ReadConsistency::Strong;
+    let (_, token) = service
+        .get_with_token(NS, "a", &[u(1)], &Projection::default(), strong.clone())
+        .await
+        .expect("get");
+    assert_eq!(token, owner_token());
+    let (_, token) = service
+        .count_with_token(NS, "a", None, strong.clone())
+        .await
+        .expect("count");
+    assert_eq!(token, owner_token());
+    let (_, token) = service
+        .scroll_with_token(NS, "a", None, None, 10, &Projection::default(), strong)
+        .await
+        .expect("scroll");
+    assert_eq!(token, owner_token());
     f.shutdown().await;
 }
 

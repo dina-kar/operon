@@ -3,6 +3,9 @@
 //! (design §10 §1: `operon dev` and `operon standalone`).
 
 pub mod api;
+pub mod cluster;
+mod meta_backend;
 mod server;
 
-pub use server::{Server, ServerConfig, ServerError};
+pub use meta_backend::{MetaBackend, NO_TIKV_FEATURE, TIKV_SCHEME};
+pub use server::{ClusterConfig, Server, ServerConfig, ServerError};

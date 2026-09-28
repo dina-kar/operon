@@ -173,11 +173,44 @@ impl ColumnView {
     pub fn delta(&self) -> &Arc<DeltaIndex> {
         &self.inner.delta
     }
+
+    /// The serialized size of the view's own row sets (Task 7's RAM
+    /// accounting).
+    pub fn ram_bytes(&self) -> u64 {
+        let inner = &self.inner;
+        (inner.excluded.serialized_size()
+            + inner.covered.serialized_size()
+            + inner.delta_excluded.serialized_size()) as u64
+    }
 }
 
 /// Score descending, then id ascending (`operon-hnsw` rule 3).
 fn hit_order(a: &(u64, f32), b: &(u64, f32)) -> Ordering {
     b.1.total_cmp(&a.1).then(a.0.cmp(&b.0))
+}
+
+/// Runs `search` with a count of the points it may see, and runs it again
+/// while the count changed across it (PR #38 review). `inserted` counts a
+/// batch before the index makes it searchable, so a count read before and
+/// unchanged after a search bounds every point that search saw; a batch
+/// counted in between may already have been searchable, and would push
+/// covered hits out of an over-fetch sized from the older count.
+fn search_counted<T>(
+    inserted: impl Fn() -> u64,
+    mut search: impl FnMut(u64) -> Result<Vec<T>, HnswError>,
+) -> Result<Vec<T>, HnswError> {
+    let mut before = inserted();
+    loop {
+        if before == 0 {
+            return Ok(Vec::new());
+        }
+        let hits = search(before)?;
+        let after = inserted();
+        if after == before {
+            return Ok(hits);
+        }
+        before = after;
+    }
 }
 
 impl ViewInner {
@@ -215,19 +248,21 @@ impl ViewInner {
             None => {
                 let mut hits =
                     artifact.search(query, k, IdFilter::Except(&self.excluded), params)?;
-                let appended = self.delta.appended();
-                if appended > 0 {
-                    // Points appended for later manifests are not covered
-                    // and are dropped below; ask for enough extra.
-                    let later = appended.saturating_sub(self.delta_len_at_creation);
-                    let wanted = k.saturating_add(usize::try_from(later).unwrap_or(usize::MAX));
-                    hits.extend(delta.search(
-                        query,
-                        wanted,
-                        IdFilter::Except(&self.delta_excluded),
-                        params,
-                    )?);
-                }
+                // Points appended for later manifests are not covered and
+                // are dropped below; ask for enough extra.
+                hits.extend(search_counted(
+                    || self.delta.inserted(),
+                    |inserted| {
+                        let later = inserted.saturating_sub(self.delta_len_at_creation);
+                        let wanted = k.saturating_add(usize::try_from(later).unwrap_or(usize::MAX));
+                        delta.search(
+                            query,
+                            wanted,
+                            IdFilter::Except(&self.delta_excluded),
+                            params,
+                        )
+                    },
+                )?);
                 hits
             }
         };
@@ -262,5 +297,49 @@ impl HotAnn for ColumnView {
             .await
             .map_err(|err| HotError::Failed(format!("a hot search task: {err}")))?
             .map_err(|err| HotError::Failed(err.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    #[test]
+    fn a_count_that_changes_across_the_search_searches_again() {
+        // A batch is counted (and made searchable) while the first search
+        // runs: the search is repeated with the new count.
+        let count = Cell::new(5u64);
+        let mut asked = Vec::new();
+        let hits = search_counted(
+            || count.get(),
+            |inserted| {
+                asked.push(inserted);
+                if asked.len() == 1 {
+                    count.set(9);
+                }
+                Ok(vec![inserted])
+            },
+        )
+        .unwrap();
+        assert_eq!(asked, vec![5, 9]);
+        assert_eq!(hits, vec![9]);
+    }
+
+    #[test]
+    fn a_stable_count_searches_once_and_an_empty_delta_not_at_all() {
+        let mut calls = 0;
+        let hits = search_counted(
+            || 3,
+            |inserted| {
+                calls += 1;
+                Ok(vec![inserted])
+            },
+        )
+        .unwrap();
+        assert_eq!((calls, hits), (1, vec![3]));
+        let none: Vec<u64> = search_counted(|| 0, |_| panic!("not searched")).unwrap();
+        assert!(none.is_empty());
     }
 }

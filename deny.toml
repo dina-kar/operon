@@ -40,7 +40,17 @@ allow-wildcard-paths = true
 yanked = "deny"
 # Only fail on unmaintained crates we depend on directly; transitive ones are tracked upstream.
 unmaintained = "workspace"
+ignore = [
+    # No fixed rsa release exists (the Marvin timing attack). It is reached
+    # only through sqlx-mysql, which uses it for the RSA password exchange of
+    # caching_sha2_password/sha256_password on a non-TLS connection.
+    { id = "RUSTSEC-2023-0071", reason = "rsa via sqlx-mysql: used only for RSA password exchange on non-TLS MySQL connections; Loam connects to TiDB over TLS or the cluster network with mysql_native_password (§21 §11.2)" },
+]
 
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# tikv-client is pinned by rev to Loam's fork, branch `loam` (R1 plan rows R4
+# and F1). Resonate is pinned by rev to the fork's loam/0.10.1 (D1 plan Task
+# 1, D140).
+allow-git = ["https://github.com/dina-kar/client-rust", "https://github.com/dina-kar/resonate"]

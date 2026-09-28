@@ -15,11 +15,13 @@ use operon_collection::{
     VectorSpec, live_manifest, retained_chain,
 };
 use operon_common::meta::{
-    AliasAction, ApplyError, Collection, CollectionHead, Consistency, MetaError,
+    AliasAction, AliasTargetAction, ApplyError, Collection, CollectionHead, Consistency, MetaError,
+    NameTarget,
 };
 use operon_common::{CollectionId, NamespaceId};
 use operon_log::LogReader;
 
+use crate::backlog::{Backlog, BacklogMonitor, BackpressureConfig};
 use crate::catalog_cache::CatalogCache;
 use crate::error::ServiceError;
 use crate::exec::planner::{SearchConfig, SearchPlanner};
@@ -29,7 +31,10 @@ use crate::placement::{LocalOnly, NoRemoteReads, Owner, Placement, RemoteReads};
 use crate::read::{ReadConfig, Reads};
 use crate::scan::{ScanAt, ScanPlan};
 use crate::tail::TailConfig;
-use crate::types::{CollectionInfo, ManifestInfo, PinnedRead, Projection, StoredDoc};
+use crate::types::{
+    AliasInfo, AliasMember, CollectionInfo, ManifestInfo, NameInfo, PinnedRead, Projection,
+    StoredDoc,
+};
 use crate::validate::validate_request;
 use crate::vector::AnnConfig;
 
@@ -81,6 +86,13 @@ pub struct ServiceConfig {
     /// scan plan's `lance.uri` is it plus `lance_prefix`, Task 14 rule 4);
     /// `None` by default, and the server sets its bucket URL.
     pub lance_base_url: Option<String>,
+    /// The unapplied-data budget of collection writes (Task 15, D86).
+    pub backpressure: BackpressureConfig,
+    /// 60 s: a filter write's default deadline (M1.5 Task 9a).
+    pub filter_write_timeout: Duration,
+    /// 1 000 keys per atomic batch of a filter write
+    /// ([`FILTER_WRITE_BATCH`](crate::filter_write::FILTER_WRITE_BATCH)).
+    pub filter_write_batch: usize,
 }
 
 impl Default for ServiceConfig {
@@ -97,6 +109,9 @@ impl Default for ServiceConfig {
             max_scroll_limit: 10_000,
             schema_retries: 5,
             lance_base_url: None,
+            backpressure: BackpressureConfig::default(),
+            filter_write_timeout: Duration::from_secs(60),
+            filter_write_batch: crate::filter_write::FILTER_WRITE_BATCH,
         }
     }
 }
@@ -111,6 +126,7 @@ pub struct CollectionService {
     pub(crate) hot: RwLock<Arc<dyn HotTier>>,
     pub(crate) placement: RwLock<(Arc<dyn Placement>, Arc<dyn RemoteReads>)>,
     pub(crate) catalog: CatalogCache,
+    pub(crate) backlog: BacklogMonitor,
     pub(crate) config: ServiceConfig,
     /// The service itself, for the SQL catalog of Task 10.
     pub(crate) this: Weak<CollectionService>,
@@ -149,20 +165,36 @@ async fn forwarded<T>(
 /// read token of its view.
 pub type ScrollPage = ((Vec<StoredDoc>, Option<PrimaryKey>), ConsistencyToken);
 
-/// The read token of a read a remote owner served: the `RemoteReads`
-/// contract returns none for get, count and scroll, so the request's own
-/// token stands in (the token of `AtLeast` or `Pinned`, else empty).
-pub fn forwarded_token(consistency: &ReadConsistency) -> ConsistencyToken {
-    match consistency {
-        ReadConsistency::AtLeast(token) | ReadConsistency::Pinned { token, .. } => token.clone(),
-        ReadConsistency::Strong | ReadConsistency::Eventual => ConsistencyToken::default(),
-    }
-}
-
 fn collection_not_found(name: &str) -> ServiceError {
     ServiceError::NotFound {
         kind: "collection",
         name: name.to_string(),
+    }
+}
+
+/// An alias's info from its member records, members by collection name.
+fn alias_info(
+    alias: &str,
+    members: &[(Collection, Option<bool>)],
+    write_target: Option<CollectionId>,
+) -> AliasInfo {
+    let mut listed: Vec<AliasMember> = members
+        .iter()
+        .map(|(collection, is_write_index)| AliasMember {
+            collection: collection.name.clone(),
+            is_write_index: *is_write_index,
+        })
+        .collect();
+    listed.sort_by(|a, b| a.collection.cmp(&b.collection));
+    AliasInfo {
+        alias: alias.to_string(),
+        members: listed,
+        write_target: write_target.and_then(|id| {
+            members
+                .iter()
+                .find(|(collection, _)| collection.id == id)
+                .map(|(collection, _)| collection.name.clone())
+        }),
     }
 }
 
@@ -205,6 +237,7 @@ impl CollectionService {
             ),
             planner: SearchPlanner::new(config.search.clone(), config.ann.clone()),
             catalog: CatalogCache::start(ctx.meta.clone()),
+            backlog: BacklogMonitor::new(ctx.clone(), config.backpressure.clone()),
             hot: RwLock::new(Arc::new(NoHotTier)),
             placement: RwLock::new((Arc::new(LocalOnly), Arc::new(NoRemoteReads))),
             ctx,
@@ -227,6 +260,19 @@ impl CollectionService {
 
     pub fn config(&self) -> &ServiceConfig {
         &self.config
+    }
+
+    /// The backlog measurements and write admission (Task 15).
+    pub fn backlog_monitor(&self) -> &BacklogMonitor {
+        &self.backlog
+    }
+
+    /// The backlog of collection (or alias) `name` as admission last
+    /// measured it (at most `refresh_interval` ago): the backlog headers of
+    /// a refused write (Task 15 rule 5).
+    pub async fn collection_backlog(&self, ns: &str, name: &str) -> Result<Backlog, ServiceError> {
+        let (ns_id, collection) = self.resolve(ns, name).await?;
+        self.backlog.backlog(ns_id, &collection).await
     }
 
     /// The names of the collections and aliases of every namespace (Task 10).
@@ -253,7 +299,9 @@ impl CollectionService {
     }
 
     /// The collection named (or aliased) `name_or_alias` in namespace `ns`;
-    /// an absent namespace behaves like an empty one (S7).
+    /// an absent namespace behaves like an empty one (S7). An alias with
+    /// several members is `InvalidArgument`: this operation needs one
+    /// collection (M1.5 Task 0a rule 8).
     pub(crate) async fn resolve(
         &self,
         ns: &str,
@@ -267,9 +315,37 @@ impl CollectionService {
             .meta
             .resolve_collection(Consistency::Local, ns_id, name_or_alias)
             .await?
-            .filter(|collection| collection.namespace == ns_id)
-            .ok_or_else(|| collection_not_found(name_or_alias))?;
-        Ok((ns_id, collection))
+            .filter(|collection| collection.namespace == ns_id);
+        match collection {
+            Some(collection) => Ok((ns_id, collection)),
+            None => Err(self.unresolved(ns_id, name_or_alias).await?),
+        }
+    }
+
+    /// Why `name` did not resolve to one collection: an alias with several
+    /// members, or nothing.
+    async fn unresolved(
+        &self,
+        ns_id: NamespaceId,
+        name: &str,
+    ) -> Result<ServiceError, ServiceError> {
+        let target = self
+            .ctx
+            .meta
+            .resolve_name(Consistency::Local, ns_id, name)
+            .await?;
+        Ok(match target {
+            Some(NameTarget::Alias { members, .. }) if members.len() > 1 => {
+                let mut names: Vec<&str> = members.iter().map(|(c, _)| c.name.as_str()).collect();
+                names.sort_unstable();
+                ServiceError::InvalidArgument(format!(
+                    "alias [{name}] names {} collections [{}]; this operation needs one collection",
+                    names.len(),
+                    names.join(", ")
+                ))
+            }
+            _ => collection_not_found(name),
+        })
     }
 
     /// The request's hot scope, or the server default outside one (Ruling
@@ -353,6 +429,22 @@ impl CollectionService {
         schema: CollectionSchema,
         partitions: Option<u32>,
     ) -> Result<CollectionInfo, ServiceError> {
+        self.create_collection_owned(ns, name, schema, partitions)
+            .await
+            .map(|(info, _)| info)
+    }
+
+    /// [`CollectionService::create_collection`], and whether this call
+    /// created the collection: `false` when an identical collection existed
+    /// (a concurrent or earlier create), so a caller that undoes a failed
+    /// follow-up step drops only what it created (M1.5 PR #64 review).
+    pub async fn create_collection_owned(
+        &self,
+        ns: &str,
+        name: &str,
+        schema: CollectionSchema,
+        partitions: Option<u32>,
+    ) -> Result<(CollectionInfo, bool), ServiceError> {
         self.ensure_namespace(ns).await?;
         let ns_id = self.namespace_id(ns).await?.ok_or_else(|| {
             ServiceError::Unavailable(format!("namespace {ns} is not visible yet"))
@@ -365,13 +457,16 @@ impl CollectionService {
             self.ctx.meta.now_ms().to_string(),
         );
         let count = partitions.unwrap_or(self.config.default_partitions);
-        let cid = match self
+        let (cid, created) = match self
             .ctx
             .meta
             .create_collection(ns_id, name, schema, count)
             .await
         {
-            Ok((cid, _, _)) | Err(MetaError::Rejected(ApplyError::CollectionExists(cid))) => cid,
+            // `CollectionExists` answers a retry of this same command.
+            Ok((cid, _, _)) | Err(MetaError::Rejected(ApplyError::CollectionExists(cid))) => {
+                (cid, true)
+            }
             Err(MetaError::Rejected(ApplyError::NameTaken(_))) => {
                 let existing = self
                     .ctx
@@ -384,7 +479,7 @@ impl CollectionService {
                         if requested_shape(&existing.schema).same_ignoring_version(&requested)
                             && partitions.is_none_or(|p| p == existing.partitions) =>
                     {
-                        existing.id
+                        (existing.id, false)
                     }
                     _ => return Err(ServiceError::AlreadyExists(name.to_string())),
                 }
@@ -394,7 +489,7 @@ impl CollectionService {
             }
             Err(err) => return Err(err.into()),
         };
-        self.info(ns, ns_id, cid, name).await
+        Ok((self.info(ns, ns_id, cid, name).await?, created))
     }
 
     /// Drops collection `name` (not an alias) and stops its tail; `false`
@@ -568,6 +663,10 @@ impl CollectionService {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
             .status(collection.namespace, collection.id);
+        let backlog = self
+            .backlog
+            .backlog(collection.namespace, collection)
+            .await?;
         Ok(CollectionInfo {
             id: collection.id,
             name: collection.name.clone(),
@@ -582,6 +681,8 @@ impl CollectionService {
             created_at_ms,
             link_lag_records: link_lag(&head, &applied),
             hot,
+            unapplied_bytes: backlog.bytes,
+            backpressure: self.backlog.status(backlog),
         })
     }
 
@@ -696,6 +797,102 @@ impl CollectionService {
         }
     }
 
+    /// Applies alias-target actions atomically (M1.5 Task 0a rule 8): an
+    /// alias may name several collections, at most one of them its write
+    /// target. Errors map as for [`Self::update_aliases`].
+    pub async fn update_alias_targets(
+        &self,
+        ns: &str,
+        actions: Vec<AliasTargetAction>,
+    ) -> Result<(), ServiceError> {
+        // An absent namespace holds no collection an alias could name.
+        let absent =
+            |actions: &[AliasTargetAction]| match actions.iter().find_map(|action| match action {
+                AliasTargetAction::Add { collection, .. } => Some(collection),
+                AliasTargetAction::Remove { .. } | AliasTargetAction::RemoveAlias { .. } => None,
+            }) {
+                Some(collection) => Err(collection_not_found(collection)),
+                None => Ok(()),
+            };
+        let Some(ns_id) = self.namespace_id(ns).await? else {
+            return absent(&actions);
+        };
+        match self
+            .ctx
+            .meta
+            .update_alias_targets(ns_id, actions.clone())
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(MetaError::Rejected(ApplyError::NameTaken(name))) => {
+                Err(ServiceError::AlreadyExists(name))
+            }
+            Err(MetaError::Rejected(ApplyError::UnknownCollection(name))) => {
+                Err(collection_not_found(&name))
+            }
+            Err(MetaError::Rejected(ApplyError::InvalidArgument(message))) => {
+                Err(ServiceError::InvalidArgument(message))
+            }
+            Err(MetaError::Rejected(ApplyError::NamespaceNotFound(_))) => absent(&actions),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    /// What `name` names in `ns`: a collection or an alias with its members
+    /// (`Local`); `NotFound { kind: "collection" }` when neither.
+    pub async fn resolve_name(&self, ns: &str, name: &str) -> Result<NameInfo, ServiceError> {
+        let Some(ns_id) = self.namespace_id(ns).await? else {
+            return Err(collection_not_found(name));
+        };
+        match self
+            .ctx
+            .meta
+            .resolve_name(Consistency::Local, ns_id, name)
+            .await?
+        {
+            Some(NameTarget::Collection(collection)) => Ok(NameInfo::Collection(collection.name)),
+            Some(NameTarget::Alias {
+                members,
+                write_target,
+            }) => Ok(NameInfo::Alias(alias_info(name, &members, write_target))),
+            None => Err(collection_not_found(name)),
+        }
+    }
+
+    /// Every alias of `ns` with its members, by alias name (`Local`); `[]`
+    /// for an absent namespace.
+    pub async fn list_aliases(&self, ns: &str) -> Result<Vec<AliasInfo>, ServiceError> {
+        let Some(ns_id) = self.namespace_id(ns).await? else {
+            return Ok(Vec::new());
+        };
+        let aliases = self
+            .ctx
+            .meta
+            .alias_targets(Consistency::Local, ns_id)
+            .await?;
+        let collections: BTreeMap<CollectionId, Collection> = self
+            .ctx
+            .meta
+            .collections(Consistency::Local, Some(ns_id))
+            .await?
+            .into_iter()
+            .map(|collection| (collection.id, collection))
+            .collect();
+        Ok(aliases
+            .into_iter()
+            .map(|(alias, targets)| {
+                // Two reads: a member dropped in between is left out.
+                let members: Vec<(Collection, Option<bool>)> = targets
+                    .members
+                    .iter()
+                    .filter_map(|(id, w)| collections.get(id).map(|c| (c.clone(), *w)))
+                    .collect();
+                alias_info(&alias, &members, targets.write_target())
+            })
+            .filter(|info| !info.members.is_empty())
+            .collect())
+    }
+
     // ----- Reads -----
 
     /// Rule 1: resolve, forward to a remote owner (falling back to the local
@@ -768,8 +965,7 @@ impl CollectionService {
 
     /// [`CollectionService::get`], with the read token of the view the
     /// documents come from (the native API's `read_token`, Task 11). A read
-    /// served by a remote owner carries the request's own token
-    /// ([`forwarded_token`]).
+    /// served by a remote owner carries the owner's token (M1.3 E55).
     pub async fn get_with_token(
         &self,
         ns: &str,
@@ -791,7 +987,7 @@ impl CollectionService {
                 consistency.clone(),
             );
             if let Some(result) = forwarded(&hot, "get", call).await {
-                return result.map(|docs| (docs, forwarded_token(&consistency)));
+                return result;
             }
         }
         self.get_in(ns_id, &collection, pks, select, &consistency, &hot)
@@ -807,12 +1003,26 @@ impl CollectionService {
         select: &Projection,
         consistency: ReadConsistency,
     ) -> Result<Vec<Option<StoredDoc>>, ServiceError> {
+        self.get_local_with_token(ns, name, pks, select, consistency)
+            .await
+            .map(|(docs, _)| docs)
+    }
+
+    /// [`CollectionService::get_local`], with the read token of its view
+    /// (what a forwarded get answers, M1.3 E55).
+    pub async fn get_local_with_token(
+        &self,
+        ns: &str,
+        name: &str,
+        pks: &[PrimaryKey],
+        select: &Projection,
+        consistency: ReadConsistency,
+    ) -> Result<(Vec<Option<StoredDoc>>, ConsistencyToken), ServiceError> {
         let hot = self.request_hot();
         self.check_get(pks)?;
         let (ns_id, collection) = self.resolve(ns, name).await?;
         self.get_in(ns_id, &collection, pks, select, &consistency, &hot)
             .await
-            .map(|(docs, _)| docs)
     }
 
     pub(crate) async fn get_in(
@@ -865,7 +1075,7 @@ impl CollectionService {
                 consistency.clone(),
             );
             if let Some(result) = forwarded(&hot, "count", call).await {
-                return result.map(|count| (count, forwarded_token(&consistency)));
+                return result;
             }
         }
         self.count_in(ns_id, &collection, filter, &consistency, &hot)
@@ -880,11 +1090,23 @@ impl CollectionService {
         filter: Option<Query>,
         consistency: ReadConsistency,
     ) -> Result<u64, ServiceError> {
+        self.count_local_with_token(ns, name, filter, consistency)
+            .await
+            .map(|(count, _)| count)
+    }
+
+    /// [`CollectionService::count_local`], with the read token of its view.
+    pub async fn count_local_with_token(
+        &self,
+        ns: &str,
+        name: &str,
+        filter: Option<Query>,
+        consistency: ReadConsistency,
+    ) -> Result<(u64, ConsistencyToken), ServiceError> {
         let hot = self.request_hot();
         let (ns_id, collection) = self.resolve(ns, name).await?;
         self.count_in(ns_id, &collection, filter, &consistency, &hot)
             .await
-            .map(|(count, _)| count)
     }
 
     async fn count_in(
@@ -951,7 +1173,7 @@ impl CollectionService {
                 consistency.clone(),
             );
             if let Some(result) = forwarded(&hot, "scroll", call).await {
-                return result.map(|page| (page, forwarded_token(&consistency)));
+                return result;
             }
         }
         let scroll = Scroll {
@@ -976,6 +1198,23 @@ impl CollectionService {
         select: &Projection,
         consistency: ReadConsistency,
     ) -> Result<(Vec<StoredDoc>, Option<PrimaryKey>), ServiceError> {
+        self.scroll_local_with_token(ns, name, filter, after, limit, select, consistency)
+            .await
+            .map(|(page, _)| page)
+    }
+
+    /// [`CollectionService::scroll_local`], with the read token of its view.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn scroll_local_with_token(
+        &self,
+        ns: &str,
+        name: &str,
+        filter: Option<Query>,
+        after: Option<PrimaryKey>,
+        limit: usize,
+        select: &Projection,
+        consistency: ReadConsistency,
+    ) -> Result<ScrollPage, ServiceError> {
         let hot = self.request_hot();
         self.check_scroll(limit)?;
         let (ns_id, collection) = self.resolve(ns, name).await?;
@@ -986,9 +1225,7 @@ impl CollectionService {
             select,
             consistency: &consistency,
         };
-        self.scroll_in(ns_id, &collection, scroll, &hot)
-            .await
-            .map(|(page, _)| page)
+        self.scroll_in(ns_id, &collection, scroll, &hot).await
     }
 
     async fn scroll_in(

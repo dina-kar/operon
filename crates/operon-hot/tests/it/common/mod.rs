@@ -114,7 +114,7 @@ pub struct Meta {
 }
 
 impl Meta {
-    async fn start(clock: Arc<dyn Clock>) -> Self {
+    pub async fn start(clock: Arc<dyn Clock>) -> Self {
         let dir = TempDir::new().expect("temp dir");
         let mut config = MetaConfig::new(1, dir.path(), Store::in_memory());
         config.clock = clock.clone();
@@ -164,6 +164,16 @@ impl Fixture {
     }
 
     pub async fn start_with(schema: CollectionSchema, config: CollectionConfig) -> Self {
+        Self::start_inner(schema, config, false).await
+    }
+
+    /// A fixture whose Lance reads go through the range cache
+    /// (`LanceEnv::with_cache`, Ruling 9).
+    pub async fn start_cached() -> Self {
+        Self::start_inner(hot_schema(), CollectionConfig::default(), true).await
+    }
+
+    async fn start_inner(schema: CollectionSchema, config: CollectionConfig, cached: bool) -> Self {
         let clock = Arc::new(ManualClock::new(SystemClock.now_ms()));
         let meta = Meta::start(clock.clone()).await;
         let faulty = Arc::new(FaultyStore::new(Store::in_memory().inner().clone()));
@@ -193,14 +203,22 @@ impl Fixture {
         .await
         .expect("range cache");
         let reader = LogReader::new(meta.client.clone(), cache.clone());
+        let lance = match cached {
+            true => operon_collection::LanceEnv::with_cache(
+                store.clone(),
+                cache.clone(),
+                operon_collection::LanceConfig::default(),
+            ),
+            false => operon_collection::LanceEnv::new(
+                store.clone(),
+                operon_collection::LanceConfig::default(),
+            ),
+        };
         let ctx = CollectionContext {
             meta: meta.client.clone().into(),
             store: store.clone(),
             cache,
-            lance: operon_collection::LanceEnv::new(
-                store.clone(),
-                operon_collection::LanceConfig::default(),
-            ),
+            lance,
             manifests: operon_collection::ManifestCache::new(config.manifest_cache_entries),
             config,
         };
@@ -541,4 +559,113 @@ pub async fn live_rows(f: &Fixture) -> roaring::RoaringTreemap {
 
 pub fn tier(err: TierError) -> String {
     err.to_string()
+}
+
+/// The manual clock as the differential harness moves it.
+#[derive(Debug)]
+pub struct DiffManualClock(pub Arc<ManualClock>);
+
+impl operon_hot::differential::DiffClock for DiffManualClock {
+    fn advance(&self, by: Duration) {
+        self.0.advance(by);
+    }
+}
+
+/// The differential harness's rebuild staleness (rule 2 `rebuilt`).
+pub const DIFF_STALENESS: Duration = Duration::from_secs(60);
+
+impl Fixture {
+    /// A fixture for the differential harness (plan M1.3 Task 12): Lance
+    /// reads through the range cache, and vector indexes from 256 rows
+    /// (E32: the hot ANN is consulted only on the Lance-index path).
+    pub async fn start_diff() -> Self {
+        Self::start_inner(
+            hot_schema(),
+            CollectionConfig {
+                index_min_rows: 256,
+                ..CollectionConfig::default()
+            },
+            true,
+        )
+        .await
+    }
+
+    /// A service over the fixture whose brute-force threshold is 16 rows,
+    /// so filtered approximate queries reach the ANN path (row 12.2).
+    pub fn diff_service(&self) -> Arc<operon_query::CollectionService> {
+        self.diff_service_with(|_| {})
+    }
+
+    /// [`Fixture::diff_service`] with `adjust` applied to its configuration.
+    pub fn diff_service_with(
+        &self,
+        adjust: impl FnOnce(&mut operon_query::ServiceConfig),
+    ) -> Arc<operon_query::CollectionService> {
+        let mut config = operon_query::ServiceConfig {
+            ann: operon_query::vector::AnnConfig {
+                brute_force_min_rows: 16,
+                ..operon_query::vector::AnnConfig::default()
+            },
+            ..operon_query::ServiceConfig::default()
+        };
+        adjust(&mut config);
+        operon_query::CollectionService::new(
+            self.ctx.clone(),
+            CollectionWriter::new(self.meta.client.clone(), self.writer.clone()),
+            self.reader.clone(),
+            config,
+        )
+    }
+
+    /// The differential fixture over collection `name`, with `engine` for
+    /// builds and the tier; the hot service reads through `wrap(tier)`.
+    pub async fn diff_fixture(
+        &self,
+        name: &str,
+        engine: Arc<dyn HnswEngine>,
+        wrap: impl FnOnce(HotTierImpl) -> Arc<dyn operon_query::hot::HotTier>,
+    ) -> operon_hot::differential::DiffFixture {
+        let tier = self
+            .tier_with(self.tier_config(), Arc::new(LocalOnly), engine.clone())
+            .await;
+        let hot = self.diff_service();
+        hot.set_hot_tier(wrap(tier.clone()));
+        let maintenance = operon_collection::MaintenanceConfig {
+            merge_policy: operon_quickwit::merge_policy::StableLogMergePolicyConfig {
+                min_level_num_docs: 100,
+                merge_factor: 2,
+                max_merge_factor: 4,
+                maturation_period: Duration::from_hours(48),
+            },
+            split_num_docs_target: 10_000,
+            compaction_target_rows: 400,
+            compaction_min_small_fragments: 3,
+            poll_interval: Duration::ZERO,
+            ..operon_collection::MaintenanceConfig::default()
+        };
+        operon_hot::differential::DiffFixture {
+            meta: self.ctx.meta.clone(),
+            clock: Arc::new(DiffManualClock(self.clock.clone())),
+            ctx: self.ctx.clone(),
+            ns: "acme".to_string(),
+            collection: name.to_string(),
+            hot,
+            cold: self.diff_service(),
+            tier,
+            link: self.link_source(),
+            index: operon_collection::IndexBuildSource::new(self.ctx.clone()),
+            merge: operon_collection::SplitMergeSource::new(self.ctx.clone(), maintenance.clone()),
+            compaction: operon_collection::LanceCompactionSource::new(
+                self.ctx.clone(),
+                maintenance,
+            ),
+            build: self.source_over(
+                HotBuildConfig {
+                    rebuild_max_staleness: DIFF_STALENESS,
+                    ..self.config()
+                },
+                engine,
+            ),
+        }
+    }
 }

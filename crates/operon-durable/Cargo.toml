@@ -1,0 +1,38 @@
+[package]
+name = "operon-durable"
+description = "Durable execution for Operon: the Resonate server embedded in process (D1, design §21)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+# The Resonate crates are git dependencies (D140), which crates.io refuses.
+publish = false
+
+[features]
+default = []
+# The TiDB backend through Resonate's MySQL plugin (operon's durable-mysql).
+mysql = ["dep:resonate-server-mysql", "dep:rustls", "dep:sqlx"]
+
+[dependencies]
+resonate-base.workspace = true
+resonate-gateway-http.workspace = true
+resonate-plugin.workspace = true
+resonate-server-mysql = { workspace = true, optional = true }
+resonate-server-sqlite.workspace = true
+resonate-transport-http-poll.workspace = true
+resonate-transport-http-push.workspace = true
+rustls = { workspace = true, optional = true, features = ["ring", "std"] }
+serde_json.workspace = true
+sqlx = { workspace = true, optional = true, features = ["mysql", "runtime-tokio", "tls-rustls"] }
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+sqlx = { workspace = true, features = ["mysql", "runtime-tokio", "tls-rustls"] }
+tempfile.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

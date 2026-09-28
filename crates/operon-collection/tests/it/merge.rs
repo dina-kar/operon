@@ -967,6 +967,31 @@ fn a_merge_plan_is_bounded() {
     }
 }
 
+/// A split too big in bytes is skipped, not the end of the scan: the inputs
+/// are ordered by live docs, so a later split may still fit (PR #34 review).
+#[test]
+fn a_split_over_the_byte_bound_does_not_block_smaller_ones() {
+    let mut manifest = CollectionManifest::empty(operon_common::CollectionId(1));
+    manifest.splits = vec![
+        sized_split(0, 1, 900),
+        sized_split(1, 2, 100),
+        sized_split(2, 3, 100),
+    ];
+    let bytes = MaintenanceConfig {
+        max_merge_bytes: 250,
+        ..config()
+    };
+    let mut inputs = vec![manifest.splits[1].ulid, manifest.splits[2].ulid];
+    inputs.sort_unstable();
+    assert_eq!(
+        plan_merges(&manifest, &bytes, 0),
+        vec![MergePlan {
+            inputs,
+            purge: false
+        }]
+    );
+}
+
 /// The metastore clock passes `commit_delay` while the merged split is being
 /// built: the commit's clock starts after the build, so the merge still
 /// commits, and the split and manifest carry the post-build time (PR #32

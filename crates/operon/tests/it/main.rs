@@ -1,8 +1,11 @@
+mod backpressure;
 mod common;
+mod filter_write_http;
 #[cfg(feature = "flight")]
 mod flight_ingest;
 #[cfg(feature = "flight")]
 mod flight_sql;
+mod hot_http;
 mod http;
 mod native_collections;
 mod native_query;
