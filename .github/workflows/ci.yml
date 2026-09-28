@@ -172,6 +172,56 @@ jobs:
           ES_ORACLE_URL: http://127.0.0.1:9250
         run: conformance/es-client/run.sh
 
+  # Built once for the SDK jobs (plan M1.6 Ruling 15).
+  operon-binary:
+    name: operon debug binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+      - name: build
+        run: cargo build -p operon --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: operon-debug
+          path: target/debug/operon
+          retention-days: 1
+
+  # The Python SDK (plan M1.6 Task 2): lint, types and tests against a
+  # spawned `operon dev` (tests/conftest.py), on the oldest and newest Python.
+  sdk-python:
+    name: Python SDK
+    needs: operon-binary
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.14"]
+    defaults:
+      run:
+        working-directory: sdks/python
+    env:
+      OPERON_BIN: ${{ github.workspace }}/target/debug/operon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: operon-debug
+          path: target/debug
+      - name: make the binary executable
+        run: chmod +x "$OPERON_BIN"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.x"
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked --all-extras
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy src tests
+      - run: uv run pytest -q
+
   sim:
     name: simulation seed sweep
     runs-on: ubuntu-latest
