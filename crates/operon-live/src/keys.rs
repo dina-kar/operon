@@ -145,6 +145,11 @@ impl AppKeys {
         self.catalog(KIND_SCHEMA, b"")
     }
 
+    /// The current deployment record (Task 13).
+    pub fn deployment(&self) -> Vec<u8> {
+        self.catalog(KIND_DEPLOYMENT, b"")
+    }
+
     /// The app's settings record (its journal shard count).
     pub fn app_def(&self) -> Vec<u8> {
         self.catalog(KIND_APP, b"")

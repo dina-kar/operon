@@ -1,0 +1,37 @@
+[package]
+name = "operon-live-js"
+description = "Loam Live's server functions in QuickJS: bundles, the host db API, determinism, and CPU and memory limits (design §20 §6)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+# operon-live depends on tikv-client by git (R1 plan row R4), which crates.io
+# refuses.
+publish = false
+
+[dependencies]
+futures.workspace = true
+operon-live.workspace = true
+operon-tikv.workspace = true
+# The seeded `Math.random` (design §20 §6.2).
+rand.workspace = true
+rand_chacha.workspace = true
+rquickjs.workspace = true
+# The random seed from the start timestamp and the request id.
+sha2.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+buffa.workspace = true
+# Deploy through the sync API (connect-rust's client, as operon-live's
+# service tests).
+connectrpc = { workspace = true, features = ["client"] }
+operon-live-proto = { workspace = true, features = ["client"] }
+operon-store.workspace = true
+operon-tikv = { workspace = true, features = ["faults"] }
+tokio-util.workspace = true
+
+[lints]
+workspace = true

@@ -78,6 +78,10 @@ regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 rmcp = { version = "3.4.1", features = ["server", "transport-streamable-http-server"] }
 roaring = "0.11"
+# QuickJS for Loam Live's server functions (R1 plan Task 13, rows R13/X9;
+# MIT). `futures` and `macro` are the planned feature set; the engine drives
+# promises itself on its own threads.
+rquickjs = { version = "0.14.0", default-features = false, features = ["std", "futures", "loader", "macro", "array-buffer"] }
 rustc-hash = "2"
 serde = { version = "1", features = ["derive"] }
 # `preserve_order`: qdrant-edge needs it, and Cargo unifies features, so the
@@ -120,6 +124,7 @@ operon-hnsw = { path = "crates/operon-hnsw", version = "0.0.1" }
 operon-hot = { path = "crates/operon-hot", version = "0.0.1" }
 operon-link = { path = "crates/operon-link", version = "0.0.1" }
 operon-live = { path = "crates/operon-live", version = "0.0.1" }
+operon-live-js = { path = "crates/operon-live-js", version = "0.0.1" }
 operon-live-proto = { path = "crates/operon-live-proto", version = "0.0.1" }
 operon-log = { path = "crates/operon-log", version = "0.0.1" }
 operon-meta = { path = "crates/operon-meta", version = "0.0.1" }

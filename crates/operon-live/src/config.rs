@@ -3,8 +3,12 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
+use std::sync::Arc;
+
+use operon_store::Store;
 use operon_tikv::TikvConfig;
 
+use crate::deploy::Engine;
 use crate::session::SessionConfig;
 use crate::subs::SubsConfig;
 use crate::{Limits, LiveError, catalog};
@@ -46,6 +50,14 @@ pub struct LiveConfig {
     pub session: SessionConfig,
     /// How often the journal janitor runs.
     pub janitor_interval: Duration,
+    /// Where `Deploy` stores function bundles, at
+    /// `live/<app>/deployments/<id>.js` (R1 plan Ruling 10). In memory by
+    /// default; `operon` passes its bucket.
+    pub store: Store,
+    /// The function engine that loads bundles (`operon-live-js`'s
+    /// QuickJS engine in `operon`); without one, `Deploy` is refused and
+    /// the app serves the system functions only.
+    pub engine: Option<Arc<dyn Engine>>,
 }
 
 impl LiveConfig {
@@ -74,6 +86,8 @@ impl LiveConfig {
             subs: SubsConfig::default(),
             session: SessionConfig::default(),
             janitor_interval: DEFAULT_JANITOR_INTERVAL,
+            store: Store::in_memory(),
+            engine: None,
         }
     }
 }

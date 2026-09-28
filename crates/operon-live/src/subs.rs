@@ -59,11 +59,12 @@ pub const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(10);
 /// (a crashed node's lapses, §20 §13).
 pub const CHECKPOINT_TTL: Duration = Duration::from_secs(120);
 
-/// How far in the past each tick reads by default (owner ruling on row
-/// T11-3, row T12-1): commits still in flight at `now` hold locks on the
-/// journal heads, and a read at `now` waits for them; a read 50 ms back
-/// finds almost all of them finished.
-pub const DEFAULT_TICK_READ_LAG: Duration = Duration::from_millis(50);
+/// How far in the past each tick reads by default (owner rulings on rows
+/// T11-3 and T12-1, row T13-1): commits still in flight at `now` hold locks
+/// on the journal heads, and a read at `now` waits for them; a read 200 ms
+/// back finds almost all of them finished under the 32-writer load (50 ms
+/// did not). Task 16 re-measures once `tikv-client` is the fork.
+pub const DEFAULT_TICK_READ_LAG: Duration = Duration::from_millis(200);
 
 /// Attempts per query evaluation when the storage fails (a region error,
 /// a lost TSO stream); the last failure becomes the result.
@@ -946,7 +947,7 @@ mod tests {
         assert_eq!(c.min_rerun_interval, Duration::from_millis(50));
         assert_eq!(c.safety_rerun, Duration::from_secs(300));
         assert_eq!(c.consumer, None);
-        assert_eq!(c.tick_read_lag, Duration::from_millis(50));
+        assert_eq!(c.tick_read_lag, Duration::from_millis(200));
     }
 
     #[test]

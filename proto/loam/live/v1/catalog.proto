@@ -5,6 +5,8 @@ syntax = "proto3";
 
 package loam.live.v1;
 
+import "loam/live/v1/live.proto";
+
 // A table: the value of its catalog record `0x01 ‖ 0x02 ‖ id:u32 BE`. The
 // built-in indexes `by_id` (id 0, the document key itself) and
 // `by_creation_time` (id 1) are implicit and not listed.
@@ -40,4 +42,41 @@ message AppDef {
   // while the journal is empty (no head, entry or checkpoint); R2 migrates
   // a non-empty journal.
   uint32 journal_shards = 2;
+}
+
+// The app's current deployment: the value of its catalog record
+// `0x01 ‖ 0x03` (R1 plan Task 13). `Deploy` stores the bundle in object
+// storage first, then swaps this record in the transaction that applies the
+// schema.
+message DeploymentRecord {
+  // The encoding version; 1 in R1.
+  uint32 format = 1;
+  // The deployment id (32 lowercase hex digits).
+  string id = 2;
+  // The bundle's object path: `live/<app>/deployments/<id>.js`.
+  string object = 3;
+  // The SHA-256 of the bundle, checked when it is loaded again.
+  bytes sha256 = 4;
+  // The TSO physical time of the deploying transaction's start, in ms.
+  uint64 deployed_ms = 5;
+  // The bundle's functions, for diagnostics.
+  repeated DeployedFunction functions = 6;
+}
+
+// One function of a deployment.
+message DeployedFunction {
+  // "module:export".
+  string path = 1;
+  // A mutation; otherwise a query.
+  bool mutation = 2;
+}
+
+// The deployed schema: the value of the catalog record `0x01 ‖ 0x04`. While
+// it exists, inserts do not create tables (design §20 §4.1).
+message SchemaRecord {
+  // The encoding version; 1 in R1.
+  uint32 format = 1;
+  // The deployment that applied it.
+  string deployment_id = 2;
+  Schema schema = 3;
 }

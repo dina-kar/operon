@@ -15,12 +15,18 @@ publish = false
 # HTTP/1.1.
 axum = { workspace = true, features = ["http2"] }
 buffa.workspace = true
+# Bundle bytes for operon-store (Task 13).
+bytes.workspace = true
 # The connect-rust server of the sync API, mounted on axum (Task 12).
 connectrpc = { workspace = true, features = ["axum"] }
 crc.workspace = true
 data-encoding.workspace = true
 futures.workspace = true
+# Deployment ids (Task 13).
+hex.workspace = true
 operon-live-proto.workspace = true
+# Function bundles in object storage (R1 plan Ruling 10, Task 13).
+operon-store.workspace = true
 operon-tikv.workspace = true
 # The OS random source for document ids (rand's OsRng).
 rand.workspace = true

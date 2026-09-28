@@ -275,7 +275,7 @@ async fn resume_sends_full_results_at_or_after_last_ts() {
         .await
         .expect("an insert");
     // The client last saw query set 3 at a timestamp newer than any tick
-    // yet (the manager reads 50 ms back).
+    // yet (the manager reads `tick_read_lag` back).
     let last = Version {
         query_set: 3,
         identity: 0,

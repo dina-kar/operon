@@ -334,9 +334,10 @@ struct LiveArgs {
     /// localhost), since the Live API has no authentication in R1 (D111).
     #[arg(long, default_value = "127.0.0.1:7710", value_parser = parse_live_listen)]
     live_listen: SocketAddr,
-    /// PD endpoints of the Live cluster, comma-separated [default: the dev
-    /// playground's 127.0.0.1:19379].
-    #[arg(long, value_delimiter = ',', default_value = "127.0.0.1:19379")]
+    /// PD endpoints of the Live cluster, comma-separated [dev default: the
+    /// playground's 127.0.0.1:19379; standalone: required unless
+    /// --no-live].
+    #[arg(long, value_delimiter = ',')]
     live_pd: Vec<String>,
     /// The Live app's keyspace [default: loam_live_<app>].
     #[arg(long)]
@@ -345,17 +346,28 @@ struct LiveArgs {
     #[arg(long, default_value = "dev", value_parser = parse_live_app)]
     live_app: String,
     /// How far behind a fresh TSO timestamp each subscription tick reads,
-    /// in milliseconds (R1 plan row T12-1).
-    #[arg(long, default_value_t = 50)]
+    /// in milliseconds (R1 plan rows T12-1, T13-1).
+    #[arg(long, default_value_t = 200)]
     live_tick_read_lag_ms: u64,
     /// Serve no Loam Live API.
-    #[arg(long, conflicts_with_all = ["live_listen", "live_keyspace", "live_app"])]
+    #[arg(
+        long,
+        conflicts_with_all = ["live_listen", "live_pd", "live_keyspace", "live_app", "live_tick_read_lag_ms"]
+    )]
     no_live: bool,
 }
 
+/// `operon dev`'s Live PD when `--live-pd` is absent: the dev playground's
+/// (owner ruling, R1 plan row T13-2). `operon standalone` has none.
+#[cfg(feature = "live")]
+const DEV_LIVE_PD: &str = "127.0.0.1:19379";
+
 #[cfg(feature = "live")]
 impl LiveArgs {
-    fn apply(&self, config: &mut ServerConfig) {
+    /// Sets `config.live`; `default_pd` is used when `--live-pd` is absent
+    /// (dev), and without either the PD list stays empty, which
+    /// `ServerConfig::validate` refuses (standalone).
+    fn apply(&self, config: &mut ServerConfig, default_pd: Option<&str>) {
         if self.no_live {
             config.live = None;
             return;
@@ -364,12 +376,18 @@ impl LiveArgs {
             .live_keyspace
             .clone()
             .unwrap_or_else(|| operon_live::keyspace_of(&self.live_app));
+        let pd = if self.live_pd.is_empty() {
+            default_pd.map(str::to_string).into_iter().collect()
+        } else {
+            self.live_pd.clone()
+        };
         let mut live = operon_live::LiveConfig::with_tikv(
             &self.live_app,
-            operon_tikv::TikvConfig::new(self.live_pd.clone(), keyspace),
+            operon_tikv::TikvConfig::new(pd, keyspace),
         );
         live.listen = self.live_listen;
         live.subs.tick_read_lag = Duration::from_millis(self.live_tick_read_lag_ms);
+        live.engine = Some(std::sync::Arc::new(operon_live_js::JsEngine::default()));
         config.live = Some(live);
     }
 }
@@ -579,7 +597,7 @@ fn config(command: Command) -> ServerConfig {
             config.listen = listen;
             config.meta = meta.unwrap_or_default();
             #[cfg(feature = "live")]
-            live.apply(&mut config);
+            live.apply(&mut config, Some(DEV_LIVE_PD));
             if let Some(ms) = flush_interval_ms {
                 config.log.flush_interval = Duration::from_millis(ms);
             }
@@ -600,7 +618,7 @@ fn config(command: Command) -> ServerConfig {
             config.listen = listen;
             config.meta = meta.unwrap_or_default();
             #[cfg(feature = "live")]
-            live.apply(&mut config);
+            live.apply(&mut config, None);
             config.bucket = Some(bucket);
             native.apply(&mut config, STANDALONE_FLIGHT_SQL);
             config
@@ -1075,7 +1093,8 @@ mod tests {
         assert_eq!(live.tikv.pd, ["127.0.0.1:19379"]);
         assert_eq!(live.tikv.keyspace, "loam_live_dev");
         assert_eq!(live.app, "dev");
-        assert_eq!(live.subs.tick_read_lag, Duration::from_millis(50));
+        assert_eq!(live.subs.tick_read_lag, Duration::from_millis(200));
+        assert!(live.engine.is_some(), "Deploy has the QuickJS engine");
         let live = dev_config(&[
             "--live-listen",
             "localhost:7711",
@@ -1105,8 +1124,35 @@ mod tests {
         .map(config_of)
         .expect("parse");
         assert!(standalone.live.is_none());
+        // Owner ruling (row T13-2): standalone has no default PD; Live
+        // without --live-pd refuses to start, with --live-pd it is set.
+        let standalone = |extra: &[&str]| {
+            let mut args = vec!["operon", "standalone", "--bucket", "file:///tmp/b"];
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args).map(config_of).expect("parse")
+        };
+        let missing = standalone(&[]);
+        assert!(missing.live.as_ref().is_some_and(|l| l.tikv.pd.is_empty()));
+        let err = missing.validate().expect_err("no --live-pd");
+        assert!(matches!(err, operon::ServerError::LivePdMissing), "{err}");
+        assert!(err.to_string().contains("--live-pd"), "{err}");
+        let given = standalone(&["--live-pd", "10.0.0.1:2379"]);
+        assert_eq!(
+            given.live.as_ref().map(|l| l.tikv.pd.clone()),
+            Some(vec!["10.0.0.1:2379".to_string()])
+        );
+        given.validate().expect("--live-pd given");
         assert!(Cli::try_parse_from(["operon", "dev", "--live-app", "no spaces"]).is_err());
         assert!(Cli::try_parse_from(["operon", "dev", "--no-live", "--live-app", "x"]).is_err());
+        // Review of #88: every Live flag conflicts with `--no-live`.
+        for flag in [
+            ["--live-pd", "10.0.0.1:2379"],
+            ["--live-tick-read-lag-ms", "0"],
+        ] {
+            let mut args = vec!["operon", "dev", "--no-live"];
+            args.extend(flag);
+            assert!(Cli::try_parse_from(args).is_err(), "{flag:?}");
+        }
     }
 
     /// R1 plan Task 12 semantics 7 and the loopback rule (D111): a

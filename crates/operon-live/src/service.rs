@@ -5,7 +5,7 @@
 //!
 //! `Watch` opens a session and streams its Transitions; `ModifyQuerySet`
 //! changes a session's query set; `Query` and `Mutate` run through the
-//! app's [`Runner`]; `Deploy` answers `UNIMPLEMENTED` until Task 13. Connect,
+//! app's [`Runner`]; `Deploy` goes through [`Deployments`] (Task 13). Connect,
 //! gRPC and gRPC-Web, JSON and binary, over HTTP/1.1 and HTTP/2 (cleartext,
 //! loopback only).
 
@@ -22,10 +22,11 @@ use operon_tikv::{Tikv, TimestampExt};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::deploy::Deployments;
 use crate::pb::{self, LiveService, LiveServiceServer};
 use crate::session::{Outbox, SESSION_HEADER, Sessions, Start, args_of, chunks, ts_of};
 use crate::subs::{SubsConfig, SubsStats, Subscriptions};
-use crate::{Janitor, LiveConfig, LiveError, Runner, check_listen, deploy};
+use crate::{Janitor, LiveConfig, LiveError, Runner, check_listen};
 
 /// How long stopping waits for in-flight requests before aborting them.
 const STOP_GRACE: Duration = Duration::from_secs(10);
@@ -65,6 +66,26 @@ impl LiveServer {
             ))
         })?;
         let runner = Runner::open(tikv.clone(), &config).await?;
+        let deployments = Deployments::new(
+            &config.app,
+            runner.clone(),
+            config.store.clone(),
+            config.engine.clone(),
+        );
+        if config.engine.is_some() {
+            match deployments.load_current().await {
+                Ok(Some(id)) => {
+                    tracing::info!(app = %config.app, deployment = %id, "loaded the current deployment")
+                }
+                Ok(None) => {}
+                // The app still serves its system functions; the next
+                // Deploy replaces the missing deployment (an in-memory
+                // bucket loses bundles on restart).
+                Err(e) => {
+                    tracing::error!(app = %config.app, error = %e, "the current deployment could not be loaded; serving the system functions only")
+                }
+            }
+        }
         let listener = tokio::net::TcpListener::bind(config.listen)
             .await
             .map_err(|e| LiveError::Internal(format!("live listen on {}: {e}", config.listen)))?;
@@ -87,7 +108,7 @@ impl LiveServer {
         ));
         let sessions = Sessions::new(
             subs.clone(),
-            Arc::new(deploy::resolve),
+            deployments.resolver(),
             config.session.clone(),
             config.node.clone(),
             stop.clone(),
@@ -99,6 +120,7 @@ impl LiveServer {
         ));
         let service = Live {
             runner,
+            deployments,
             subs: subs.clone(),
             sessions: sessions.clone(),
             max_transition_bytes: config.session.max_transition_bytes,
@@ -158,7 +180,16 @@ impl LiveHandle {
             tracing::warn!("Live requests did not finish; aborting them");
             serve.abort();
         }
-        let _ = self.janitor.await;
+        // Review of #88: a janitor pass already running may retry against a
+        // slow cluster; it gets the same grace as the requests.
+        let mut janitor = self.janitor;
+        if tokio::time::timeout(STOP_GRACE, &mut janitor)
+            .await
+            .is_err()
+        {
+            tracing::warn!("the Live journal janitor did not stop; aborting it");
+            janitor.abort();
+        }
     }
 }
 
@@ -188,6 +219,7 @@ async fn janitor_loop(runner: Runner, interval: Duration, stop: CancellationToke
 /// The `LiveService` implementation.
 struct Live {
     runner: Runner,
+    deployments: Deployments,
     subs: Arc<Subscriptions>,
     sessions: Sessions,
     max_transition_bytes: usize,
@@ -202,6 +234,11 @@ pub fn connect_error(e: &LiveError) -> ConnectError {
         pb::ErrorCode::ERROR_CODE_FAILED_PRECONDITION => ConnectError::failed_precondition(message),
         pb::ErrorCode::ERROR_CODE_RESOURCE_EXHAUSTED => ConnectError::resource_exhausted(message),
         pb::ErrorCode::ERROR_CODE_UNAVAILABLE => ConnectError::unavailable(message),
+        pb::ErrorCode::ERROR_CODE_FUNCTION_ERROR => ConnectError::unknown(message),
+        pb::ErrorCode::ERROR_CODE_FUNCTION_TIMEOUT => ConnectError::deadline_exceeded(message),
+        pb::ErrorCode::ERROR_CODE_FUNCTION_OUT_OF_MEMORY => {
+            ConnectError::resource_exhausted(message)
+        }
         _ => ConnectError::internal(message),
     }
 }
@@ -280,7 +317,7 @@ impl LiveService for Live {
     ) -> ServiceResult<pb::QueryResponse> {
         let req = request.to_owned_message();
         let run = async {
-            let f = deploy::resolve(&req.function)?;
+            let f = self.deployments.resolve(&req.function)?;
             let args = args_of(req.args.into_option())?;
             let at = match req.ts {
                 Some(ts) => ts_of(ts),
@@ -311,7 +348,7 @@ impl LiveService for Live {
     ) -> ServiceResult<pb::MutateResponse> {
         let req = request.to_owned_message();
         let run = async {
-            let f = deploy::resolve(&req.function)?;
+            let f = self.deployments.resolve(&req.function)?;
             let args = args_of(req.args.into_option())?;
             self.runner.mutate(f, args, req.idempotency_key).await
         };
@@ -330,8 +367,19 @@ impl LiveService for Live {
     async fn deploy(
         &self,
         _ctx: RequestContext,
-        _request: ServiceRequest<'_, pb::DeployRequest>,
+        request: ServiceRequest<'_, pb::DeployRequest>,
     ) -> ServiceResult<pb::DeployResponse> {
-        Err(ConnectError::unimplemented(deploy::DEPLOY_UNIMPLEMENTED))
+        let req = request.to_owned_message();
+        let id = self
+            .deployments
+            .deploy(&req.bundle, req.schema.into_option())
+            .await
+            .map_err(|e| connect_error(&e))?;
+        // Row T12-10: the catalog commit wrote no journal entry.
+        self.subs.wake();
+        Ok(Response::new(pb::DeployResponse {
+            deployment_id: id,
+            ..Default::default()
+        }))
     }
 }

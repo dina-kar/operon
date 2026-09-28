@@ -44,6 +44,21 @@ pub enum LiveError {
          until the unified auth plan (D111)"
     )]
     NotLoopback(std::net::SocketAddr),
+    /// A deployed function threw (its message and stack), or returned a
+    /// value that is not a Live value.
+    #[error("function error: {0}")]
+    FunctionError(String),
+    /// A deployed function ran past its CPU limit (R1 plan Task 13).
+    #[error("function timeout: {0}")]
+    FunctionTimeout(String),
+    /// A deployed function ran past its memory limit (R1 plan Task 13).
+    #[error("function out of memory: {0}")]
+    FunctionOutOfMemory(String),
+    /// The app cannot take the request now, and a retry may succeed: an
+    /// index-changing `Deploy` while mutations are in flight (R1 plan row
+    /// T9-1). `UNAVAILABLE`, like retryable storage errors.
+    #[error("busy: {0}")]
+    Busy(String),
     /// A stored record could not be decoded.
     #[error("corrupt record: {0}")]
     Corrupt(String),
@@ -71,6 +86,10 @@ impl LiveError {
                 pb::ErrorCode::ERROR_CODE_FAILED_PRECONDITION
             }
             LiveError::LimitExceeded { .. } => pb::ErrorCode::ERROR_CODE_RESOURCE_EXHAUSTED,
+            LiveError::FunctionError(_) => pb::ErrorCode::ERROR_CODE_FUNCTION_ERROR,
+            LiveError::FunctionTimeout(_) => pb::ErrorCode::ERROR_CODE_FUNCTION_TIMEOUT,
+            LiveError::FunctionOutOfMemory(_) => pb::ErrorCode::ERROR_CODE_FUNCTION_OUT_OF_MEMORY,
+            LiveError::Busy(_) => pb::ErrorCode::ERROR_CODE_UNAVAILABLE,
             LiveError::Corrupt(_) | LiveError::Internal(_) => pb::ErrorCode::ERROR_CODE_INTERNAL,
             LiveError::Txn(e) => match e {
                 TxnError::Conflict
