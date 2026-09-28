@@ -513,37 +513,50 @@ fn pretty_fallback(request: &Request) -> RequestCtx {
     ctx
 }
 
-/// Rewrites axum's 405 into ES's string-shaped answer, listing the path's
-/// methods from the `Allow` header axum sets (rule 7).
 /// The path part of `uri`.
 fn request_path(uri: &str) -> &str {
     uri.split('?').next().unwrap_or(uri)
 }
 
-/// ES's list of the methods a path allows, from axum's `Allow` header: in
-/// ES's order (GET, POST, PUT, DELETE, HEAD), with `HEAD` only on the paths
-/// ES registers it for (`/`, an index, a document, a source and the alias
-/// routes); axum answers `HEAD` on every `GET` route.
-fn es_allowed(allow: &str, path: &str) -> String {
-    let given: Vec<&str> = allow.split(',').map(str::trim).collect();
+/// Whether ES registers `HEAD` on `path`: `/`, an index, a document, a
+/// source and the alias routes. axum answers `HEAD` on every `GET` route,
+/// so the other paths refuse it with 405, as ES does (PR #82 review).
+fn es_head_route(path: &str) -> bool {
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    let head_route = match segments.as_slice() {
+    match segments.as_slice() {
         [] => true,
         [index] => !index.starts_with('_'),
         [_, "_doc" | "_source", _] => true,
         _ => segments.contains(&"_alias"),
-    };
+    }
+}
+
+/// ES's list of the methods a path allows, from axum's `Allow` header: in
+/// ES's order (GET, POST, PUT, DELETE, HEAD), with `HEAD` only where
+/// [`es_head_route`] says ES registers it.
+fn es_allowed(allow: &str, path: &str) -> Vec<&'static str> {
+    let given: Vec<&str> = allow.split(',').map(str::trim).collect();
+    let head_route = es_head_route(path);
     ["GET", "POST", "PUT", "DELETE", "HEAD"]
         .into_iter()
         .filter(|m| given.contains(m) && (*m != "HEAD" || head_route))
-        .collect::<Vec<_>>()
-        .join(", ")
+        .collect()
 }
 
-pub(crate) async fn method_not_allowed(request: Request, next: Next) -> Response {
+/// Rewrites axum's 405 into ES's string-shaped answer (rule 7). The error
+/// text and the `Allow` header list the same methods, in ES's order and
+/// format. A `HEAD` on a path where ES does not register it is refused
+/// before any handler runs: the request is routed with a method no route
+/// has, which gives axum's 405 and its `Allow` header.
+pub(crate) async fn method_not_allowed(mut request: Request, next: Next) -> Response {
     let method = request.method().clone();
     let uri = request.uri().to_string();
+    let path = request_path(&uri).to_string();
     let ctx = pretty_fallback(&request);
+    if method == Method::HEAD && !es_head_route(&path) {
+        *request.method_mut() =
+            Method::from_bytes(b"OPERON-HEAD-PROBE").expect("a valid method token");
+    }
     let response = next.run(request).await;
     if response.status() != StatusCode::METHOD_NOT_ALLOWED {
         return response;
@@ -553,16 +566,17 @@ pub(crate) async fn method_not_allowed(request: Request, next: Next) -> Response
         .get(header::ALLOW)
         .map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned())
         .unwrap_or_default();
-    let allowed = es_allowed(&allowed, request_path(&uri));
+    let allowed = es_allowed(&allowed, &path);
     let error = EsError::plain(
         405,
         format!(
-            "Incorrect HTTP method for uri [{uri}] and method [{method}], allowed: [{allowed}]"
+            "Incorrect HTTP method for uri [{uri}] and method [{method}], allowed: [{}]",
+            allowed.join(", ")
         ),
     );
     let mut answer = fail(&ctx, &error);
-    if let Some(allow) = response.headers().get(header::ALLOW) {
-        answer.headers_mut().insert(header::ALLOW, allow.clone());
+    if let Ok(allow) = HeaderValue::from_str(&allowed.join(",")) {
+        answer.headers_mut().insert(header::ALLOW, allow);
     }
     answer
 }

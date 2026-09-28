@@ -73,6 +73,15 @@ async fn a_wrong_method_is_405_with_the_allowed_list() {
         })
     );
     assert_eq!(a.header("x-elastic-product"), PRODUCT);
+    assert_eq!(a.header("allow"), "GET");
+    // A `HEAD` where ES registers none is 405 before any handler runs, its
+    // `Allow` header listing what the text lists (PR #82 review).
+    for path in ["/_license", "/_cluster/health", "/_search"] {
+        let a = es.head(path).await;
+        assert_eq!(a.status, StatusCode::METHOD_NOT_ALLOWED, "HEAD {path}");
+        assert!(!a.header("allow").contains("HEAD"), "HEAD {path}");
+    }
+    assert_eq!(es.head("/").await.status, StatusCode::OK);
     // ES's order, and `HEAD` only where ES registers it (row T11-3).
     Es::ok(es.put("/i", None).await);
     for (method, path, allowed) in [
@@ -89,6 +98,11 @@ async fn a_wrong_method_is_405_with_the_allowed_list() {
             ),
             "{}",
             a.text
+        );
+        assert_eq!(
+            a.header("allow"),
+            allowed.replace(", ", ","),
+            "{method} {path}"
         );
     }
     es.server.shutdown().await.expect("shutdown");

@@ -44,6 +44,11 @@ jobs:
         run: cargo doc -p operon-qdrant --no-deps --locked
         env:
           RUSTDOCFLAGS: "-D warnings"
+      # The same for the Elasticsearch gateway's divergences (M1.5 Task 12).
+      - name: elasticsearch gateway docs
+        run: cargo doc -p operon-es --no-deps --locked
+        env:
+          RUSTDOCFLAGS: "-D warnings"
       - name: metastore boundary
         run: |
           for c in operon-worker operon-log operon-link operon-collection operon-query operon-hnsw operon-hot; do
