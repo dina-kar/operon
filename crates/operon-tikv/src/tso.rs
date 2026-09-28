@@ -1,12 +1,15 @@
 //! The TSO clock and the client supervisor.
 //!
-//! `tikv-client` keeps one TSO stream per `TransactionClient`. When that
-//! stream dies, every later timestamp request fails with `TimestampRequest
-//! channel is closed` and the client never recovers (the feasibility spike's
-//! gotcha). The [`Supervisor`] holds the client behind a `RwLock<Arc<_>>` and
-//! rebuilds it on that error, or after three consecutive TSO failures, one
-//! rebuild at a time and with backoff between failed rebuilds (R1 plan Task 2
-//! semantics 5).
+//! `tikv-client` keeps one TSO stream per `TransactionClient`. Upstream, when
+//! that stream died (a PD stall), the stream was not reopened and timestamp
+//! requests failed with `TimestampRequest channel is closed` until the PD
+//! client reconnected (the feasibility spike saw the client never recover).
+//! Loam's fork reopens the stream in place (R1 plan row F1), so that error
+//! should no longer occur. The [`Supervisor`] stays as defence in depth: it
+//! holds the client behind a `RwLock<Arc<_>>` and rebuilds it on that error,
+//! or after three consecutive TSO failures (which now also covers the fork's
+//! `TSO stream failed` errors), one rebuild at a time and with backoff between
+//! failed rebuilds (R1 plan Task 2 semantics 5).
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};

@@ -6296,7 +6296,6 @@ dependencies = [
  "futures",
  "operon-tikv",
  "proptest",
- "prost 0.14.4",
  "rand 0.9.5",
  "reqwest 0.12.28",
  "serde",
@@ -6305,9 +6304,6 @@ dependencies = [
  "tikv-client",
  "tokio",
  "tokio-util",
- "tonic 0.14.6",
- "tonic-prost",
- "tonic-prost-build",
  "tracing",
 ]
 
@@ -9392,7 +9388,7 @@ dependencies = [
 [[package]]
 name = "tikv-client"
 version = "0.4.0"
-source = "git+https://github.com/tikv/client-rust?rev=ab4be1c2cdd58d4e593202991fb520221c83bdfd#ab4be1c2cdd58d4e593202991fb520221c83bdfd"
+source = "git+https://github.com/dina-kar/client-rust?rev=1f8962b00b33ebc6f34b72d6c52d08b8a8e1906e#1f8962b00b33ebc6f34b72d6c52d08b8a8e1906e"
 dependencies = [
  "async-recursion 0.3.2",
  "async-trait",

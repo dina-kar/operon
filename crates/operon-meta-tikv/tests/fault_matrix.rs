@@ -1071,9 +1071,11 @@ async fn a_large_drop_failing_after_its_prewrite_applies_all_or_nothing() {
     fail::remove("after-prewrite");
     fail::remove("before-rollback");
     match dropped {
-        // The retry met the first attempt's locks, rolled them back once
-        // their TTL passed (a two-phase commit's, row T6-5), and dropped the
-        // collection; or it found it dropped.
+        // The retry met the first attempt's locks and resolved them once
+        // their TTL passed: with two-phase commit it rolled them back and
+        // dropped the collection itself (row T6-5); with async commit (row
+        // F4) every key was prewritten, so the first attempt is committed
+        // and the retry finds the collection dropped.
         Ok(Some(id)) => assert_eq!(id, cid),
         Ok(None) => {}
         Err(e) => panic!("the drop failed: {e:?}"),
