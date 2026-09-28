@@ -1,0 +1,19 @@
+# TypeScript for @operon/live (R1 plan Task 7): protoc-gen-es writes the
+# messages and the LiveService descriptor that @connectrpc/connect v2 uses.
+# Run `pnpm run generate` in sdks/live-typescript (it pins buf and the
+# plugin); CI regenerates and fails on a diff. journal.proto and
+# catalog.proto are internal to the server and not generated.
+version: v2
+inputs:
+  - directory: proto
+    exclude_paths:
+      - proto/loam/live/v1/journal.proto
+      - proto/loam/live/v1/catalog.proto
+plugins:
+  - local: sdks/live-typescript/node_modules/.bin/protoc-gen-es
+    out: sdks/live-typescript/src/gen
+    include_imports: false
+    opt:
+      - target=ts
+      - import_extension=js
+clean: true

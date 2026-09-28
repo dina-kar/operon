@@ -202,13 +202,21 @@ async fn get_collection_reports_hot_status_per_structure() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn source_version_catches_up_after_writes_and_a_rebuild() {
-    // A wider staleness window than the preamble's, so the stale state is
-    // observable before the rebuild lands.
+    // No rebuild by staleness during the test, so the stale state stays
+    // observable however slow the runner; 100 inserted rows trigger the
+    // rebuild explicitly (CI fix C3).
     let api = start(|config| {
-        config.hot_build.rebuild_max_staleness = Duration::from_secs(3);
+        config.hot_build.rebuild_max_staleness = Duration::from_secs(24 * 60 * 60);
+        config.hot_build.rebuild_min_inserted = 100;
     })
     .await;
     docs(&api, 50).await;
+    // Pinned once applied: an artifact of an earlier manifest would stay
+    // stale, with fewer than 100 rows inserted since.
+    until(&api, "the documents are applied", |b| {
+        b["live_doc_count"] == 50
+    })
+    .await;
     put_hot(&api, DOCS, json!({"vectors": true}))
         .await
         .expect(StatusCode::OK);
@@ -219,16 +227,20 @@ async fn source_version_catches_up_after_writes_and_a_rebuild() {
     .await;
     let before = ready["manifest_version"].as_u64().expect("version");
     write(&api, 50..100).await;
-    let stale = until(&api, "the view is stale", |b| {
+    // The stale state lasts until the explicit trigger below, so the poll
+    // waits for the delta to catch up too.
+    until(&api, "the view is stale and serves the delta", |b| {
         state(b, "vectors") == "ready"
             && b["manifest_version"].as_u64() > Some(before)
             && b["hot"]["vectors"]["source_version"].as_u64() < b["manifest_version"].as_u64()
+            && b["hot"]["vectors"]["columns"]["embedding"]["delta_rows"].as_u64() > Some(0)
     })
     .await;
-    assert!(stale["hot"]["vectors"]["columns"]["embedding"]["delta_rows"].as_u64() > Some(0));
+    // 50 inserted rows are under the threshold: 100 more make it due.
+    write(&api, 100..200).await;
     until(&api, "the rebuilt artifact is current", |b| {
         state(b, "vectors") == "ready"
-            && b["live_doc_count"] == 100
+            && b["live_doc_count"] == 200
             && b["hot"]["vectors"]["source_version"] == b["manifest_version"]
     })
     .await;
@@ -343,9 +355,9 @@ async fn hot_pin_all_pins_every_collection() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn warm_prefetches_an_unpinned_collection() {
-    // Warm heat (64) lasts five windows: at 1 s the pinned text stays
-    // visible for seconds even on a starved runner (CI fix C1).
-    let api = start(|config| config.hot.heat_window = Duration::from_secs(1)).await;
+    // A heat window that never passes during the test: the test cools the
+    // collection with `decay_heat_windows` once the text is ready (CI fix C3).
+    let api = start(|config| config.hot.heat_window = Duration::from_secs(24 * 60 * 60)).await;
     docs(&api, 40).await;
     let body = api
         .post(&format!("{DOCS}/warm"), json!({}))
@@ -360,6 +372,11 @@ async fn warm_prefetches_an_unpinned_collection() {
         assert!(Instant::now() < deadline, "the warm never pinned the text");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    // Eight windows empty the warm heat (64): the next pass demotes it.
+    api.server
+        .hot_tier()
+        .expect("the hot tier")
+        .decay_heat_windows(8);
     until(&api, "the warm cools off", |b| state(b, "text") == "off").await;
     // An empty body is fine too; a body with fields is not.
     let reply = api
@@ -390,6 +407,7 @@ async fn operon_warm_posts_the_warm_request() {
             &format!("127.0.0.1:{port}"),
             "--no-flight-sql",
             "--no-qdrant",
+            "--no-durable",
             "--no-es",
         ])
         .stdout(std::process::Stdio::null())

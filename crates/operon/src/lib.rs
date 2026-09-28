@@ -4,6 +4,8 @@
 
 pub mod api;
 pub mod cluster;
+mod meta_backend;
 mod server;
 
+pub use meta_backend::{MetaBackend, NO_TIKV_FEATURE, TIKV_SCHEME};
 pub use server::{ClusterConfig, Server, ServerConfig, ServerError};
