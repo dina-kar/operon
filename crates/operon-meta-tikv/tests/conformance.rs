@@ -610,3 +610,54 @@ async fn drop_deletes_the_implicit_links_pointer() {
     meta.drop_collection(ns, "docs").await.expect("drop");
     assert_eq!(meta.pointer(L, ns, &key).await.expect("read"), None);
 }
+
+// ---- commit latency (R1 plan Task 16 semantics 4) ----
+
+/// `commit_wal` latency on one writer: one chunk, one partition, a new
+/// object per commit (two-phase commit, row T6-5). Runs only with
+/// `OPERON_TEST_LATENCY=1` (`OPERON_TEST_LATENCY_N` commits, default 300);
+/// the R1 exit report records its output.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn commit_wal_latency() {
+    if std::env::var("OPERON_TEST_LATENCY").map_or(true, |v| v != "1") {
+        eprintln!("skipped: commit_wal_latency needs OPERON_TEST_LATENCY=1");
+        return;
+    }
+    let Some(cluster) = testing::cluster().await else {
+        return;
+    };
+    let n: usize = std::env::var("OPERON_TEST_LATENCY_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+    let meta = open_with(
+        &cluster.config(TEST_META),
+        Arc::new(Script(|_: &str, _, _| None)),
+    )
+    .await;
+    let streams = setup(&meta, "latency", &[("s", 1)]).await;
+    let mut samples = Vec::with_capacity(n);
+    for i in 0..n + 20 {
+        let started = std::time::Instant::now();
+        meta.commit_wal(wal(
+            &meta,
+            &format!("latency/wal-{i}"),
+            vec![one_record(streams[0], 0)],
+        ))
+        .await
+        .result
+        .expect("a commit");
+        // The first 20 warm the handle.
+        if i >= 20 {
+            samples.push(started.elapsed());
+        }
+    }
+    samples.sort();
+    let at = |p: usize| samples[(samples.len() - 1) * p / 100];
+    eprintln!(
+        "metastore commit_wal (TwoPc), {n} sequential: p50 {:?} p99 {:?} max {:?}",
+        at(50),
+        at(99),
+        at(100)
+    );
+}

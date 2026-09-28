@@ -14,8 +14,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use connectrpc::{
-    ConnectError, ConnectRpcService, RequestContext, Response, ServiceRequest, ServiceResult,
-    ServiceStream,
+    ConnectError, ConnectRpcService, ErrorDetail, RequestContext, Response, ServiceRequest,
+    ServiceResult, ServiceStream,
 };
 use futures::StreamExt;
 use operon_tikv::{Tikv, TimestampExt};
@@ -65,6 +65,18 @@ impl LiveServer {
                 config.tikv.keyspace
             ))
         })?;
+        LiveServer::start_on(tikv, config, shutdown).await
+    }
+
+    /// Like [`start`](Self::start), on a handle the caller connected with
+    /// `config.tikv`'s keyspace and root: the R1 checkers pass one with a
+    /// fault plan (R1 plan Task 16).
+    pub async fn start_on(
+        tikv: Tikv,
+        config: LiveConfig,
+        shutdown: CancellationToken,
+    ) -> Result<LiveHandle, LiveError> {
+        check_listen(config.listen)?;
         let runner = Runner::open(tikv.clone(), &config).await?;
         let deployments = Deployments::new(
             &config.app,
@@ -171,6 +183,13 @@ impl LiveHandle {
         self.sessions.len()
     }
 
+    /// The subscription manager, for the checkers' broken-build hooks
+    /// ([`Subscriptions::drop_next_batch`]; R1 plan Task 16).
+    #[doc(hidden)]
+    pub fn subscriptions(&self) -> &Subscriptions {
+        &self.subs
+    }
+
     /// Stops serving: ends every session's stream, stops the manager and the
     /// janitor, and waits up to 10 s for in-flight requests.
     pub async fn stop(self) {
@@ -225,8 +244,36 @@ struct Live {
     max_transition_bytes: usize,
 }
 
-/// The Connect error of `e` (the codes of §20 §7.1).
+/// The type name of the error detail every Live call error carries: the
+/// [`pb::LiveError`] with the exact wire code (owner ruling on row T14-12).
+pub const ERROR_DETAIL_TYPE: &str = "loam.live.v1.LiveError";
+
+/// The Connect error of `e` (the codes of §20 §7.1), with `e` as a
+/// [`pb::LiveError`] detail ([`ERROR_DETAIL_TYPE`]), so a client reads the
+/// exact code instead of the message: Connect's `resource_exhausted` is both
+/// a limit and `FUNCTION_OUT_OF_MEMORY` (row T14-12).
 pub fn connect_error(e: &LiveError) -> ConnectError {
+    connect_code(e).with_detail(ErrorDetail::from_message(ERROR_DETAIL_TYPE, &e.to_proto()))
+}
+
+/// The [`pb::LiveError`] detail of a Live call's error ([`connect_error`]),
+/// if it carries one: the exact wire code for Rust clients (row T14-12).
+pub fn error_detail(e: &ConnectError) -> Option<pb::LiveError> {
+    use buffa::Message;
+    e.details
+        .iter()
+        .filter(|d| d.type_url.trim_start_matches("type.googleapis.com/") == ERROR_DETAIL_TYPE)
+        .find_map(|d| {
+            let value = d.value.as_deref()?;
+            let bytes = data_encoding::BASE64_NOPAD
+                .decode(value.trim_end_matches('=').as_bytes())
+                .ok()?;
+            pb::LiveError::decode_from_slice(&bytes).ok()
+        })
+}
+
+/// The Connect code and message of `e`.
+fn connect_code(e: &LiveError) -> ConnectError {
     let message = e.to_string();
     match e.code() {
         pb::ErrorCode::ERROR_CODE_INVALID_ARGUMENT => ConnectError::invalid_argument(message),

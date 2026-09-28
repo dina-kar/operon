@@ -3,7 +3,14 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test } from "node:test";
 
-import { type LiveValue, QuerySetState, SessionState, VersionGap, ZERO } from "../dist/index.js";
+import {
+  type LiveValue,
+  pb,
+  QuerySetState,
+  SessionState,
+  VersionGap,
+  ZERO,
+} from "../dist/index.js";
 import { closeClients, FakeServer, transition, until, v } from "./fake.ts";
 
 describe("SessionState", () => {
@@ -251,6 +258,23 @@ describe("LiveClient over a fake server", { timeout: 5000 }, () => {
     ];
     await assert.rejects(client.deploy("nope"), (e: { code?: string }) => {
       assert.equal(e.code, "INVALID_ARGUMENT");
+      return true;
+    });
+
+    // Row T14-12: the typed detail crosses the transport and wins over the
+    // Connect code's mapping.
+    server.deployAnswers = [
+      () => {
+        throw new ConnectError("a bundle too slow to load", Code.ResourceExhausted, undefined, [
+          {
+            desc: pb.LiveErrorSchema,
+            value: { code: pb.ErrorCode.FUNCTION_OUT_OF_MEMORY, message: "64 MiB" },
+          },
+        ]);
+      },
+    ];
+    await assert.rejects(client.deploy("big"), (e: { code?: string }) => {
+      assert.equal(e.code, "FUNCTION_OUT_OF_MEMORY");
       return true;
     });
     client.close();

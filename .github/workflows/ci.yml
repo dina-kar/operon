@@ -8,6 +8,9 @@ on:
     # Nightly: the long simulation sweep (M0.4 plan Task 6), the tail-merge
     # property test (M1.2 plan Task 15) and the TiKV suites (R1 plan Task 1).
     - cron: "17 2 * * *"
+    # The R1 nemesis (R1 plan Task 16) also runs on schedule; this lets a
+    # maintainer run it by hand.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -258,6 +261,9 @@ jobs:
           # Nightly-only cases (operon_tikv::testing::nightly), such as
           # old_versions_dropped_after_gc.
           OPERON_TEST_NIGHTLY: "1"
+          # The R1 checkers keep their per-PR length here; their 30-minute
+          # runs are the tikv-nemesis job's (R1 plan Task 16).
+          OPERON_CHECKER_SECS: "60"
         run: |
           cargo test ${{ steps.packages.outputs.args }} --locked
           cargo test -p operon --features tikv --test meta_tikv --locked
@@ -283,6 +289,75 @@ jobs:
       - name: stop the playground
         if: always() && steps.paths.outputs.run == 'true'
         run: scripts/tikv/playground.sh stop --tag loam-ci
+
+  # R1 plan Task 16 semantics 3: the nemesis. One TiKV store on the standard
+  # runner (owner ruling T17-2; three stores may not fit its RAM, and a 3-store
+  # nemesis on a larger runner is an R2 item). The reactive and transaction
+  # checkers run for 30 minutes at once while
+  # scripts/tikv/nemesis.sh kills and restarts a store and the PD leader,
+  # stalls PD past the client's request timeout (the real TSO stream death,
+  # owner ruling T2-17) and pauses the test process that serves Live. Both
+  # checkers must pass, and the reactive checker asserts that the Live
+  # server's TSO supervisor rebuilt its client.
+  tikv-nemesis:
+    name: R1 nemesis (nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+      - name: build the checkers
+        id: build
+        run: |
+          cargo test -p operon-live --test reactive_checker --test txn_checker --locked --no-run
+          exe() {
+            cargo test -p operon-live --test "$1" --locked --no-run --message-format=json |
+              jq -r "select(.profile.test == true and .target.name == \"$1\") | .executable"
+          }
+          echo "reactive=$(exe reactive_checker)" >> "$GITHUB_OUTPUT"
+          echo "txn=$(exe txn_checker)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.tiup/components
+          key: tiup-components-v8.5.8-${{ runner.os }}
+      - name: install tiup and the v8.5.8 components
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
+          echo "$HOME/.tiup/bin" >> "$GITHUB_PATH"
+          "$HOME/.tiup/bin/tiup" install playground pd:v8.5.8 tikv:v8.5.8
+      - name: start the playground (1 store)
+        run: scripts/tikv/playground.sh start --tag loam-nemesis --stores 1 --timeout 180
+      - name: checkers under the nemesis
+        env:
+          OPERON_TEST_PD: 127.0.0.1:19379
+          OPERON_CHECKER_SECS: "1800"
+          REACTIVE: ${{ steps.build.outputs.reactive }}
+          TXN: ${{ steps.build.outputs.txn }}
+        run: |
+          mkdir -p target/tikv-playground
+          scripts/tikv/nemesis.sh --tag loam-nemesis --interval 60 \
+            --log target/tikv-playground/nemesis.log -- bash -c '
+              "$REACTIVE" reactive_checker --exact --nocapture > target/tikv-playground/reactive.out 2>&1 & a=$!
+              "$TXN" txn_checker --exact --nocapture > target/tikv-playground/txn.out 2>&1 & b=$!
+              wait $a; ra=$?; wait $b; rb=$?
+              tail -n 60 target/tikv-playground/reactive.out target/tikv-playground/txn.out
+              exit $((ra | rb))'
+      - name: playground and checker logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tikv-nemesis-logs
+          path: |
+            target/tikv-playground/*.log
+            target/tikv-playground/*.out
+            ~/.tiup/data/loam-nemesis/**/*.log
+          if-no-files-found: ignore
+      - name: stop the playground
+        if: always()
+        run: scripts/tikv/playground.sh stop --tag loam-nemesis
 
   # R1 plan Task 7: the loam.live.v1 protos pass `buf lint` (STANDARD), and
   # the checked-in TypeScript in sdks/live-typescript/src/gen is what

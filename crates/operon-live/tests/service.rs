@@ -12,6 +12,7 @@ use connectrpc::{ConnectError, ErrorCode};
 use operon_live::pb::__buffa::oneof::query_set_change::Change;
 use operon_live::pb::__buffa::oneof::query_update::Update;
 use operon_live::pb::__buffa::oneof::watch_request::Start;
+use operon_live::service::{ERROR_DETAIL_TYPE, connect_error, error_detail};
 use operon_live::session::{ClientState, QueryResult, SESSION_HEADER, SessionConfig, Version};
 use operon_live::system::{INSERT, QUERY};
 use operon_live::{LiveConfig, LiveError, LiveHandle, LiveServer, LiveValue, check_listen, pb};
@@ -57,6 +58,50 @@ fn only_loopback_addresses_pass_the_listen_check() {
             "{err}"
         );
     }
+}
+
+/// Owner ruling on row T14-12: every call error carries the `LiveError` as
+/// a typed Connect detail with the exact wire code, so a client never
+/// parses the message (`resource_exhausted` is both a limit and
+/// `FUNCTION_OUT_OF_MEMORY`).
+#[test]
+fn every_call_error_carries_its_live_error_detail() {
+    let cases = [
+        (
+            LiveError::FunctionOutOfMemory("64 MiB".into()),
+            ErrorCode::ResourceExhausted,
+        ),
+        (
+            LiveError::LimitExceeded {
+                limit: "max_written_docs",
+                message: "too many".into(),
+            },
+            ErrorCode::ResourceExhausted,
+        ),
+        (
+            LiveError::FunctionTimeout("1 s".into()),
+            ErrorCode::DeadlineExceeded,
+        ),
+        (LiveError::FunctionError("boom".into()), ErrorCode::Unknown),
+        (LiveError::Busy("deploy".into()), ErrorCode::Unavailable),
+        (
+            LiveError::InvalidArgument("bad".into()),
+            ErrorCode::InvalidArgument,
+        ),
+        (LiveError::NotFound("gone".into()), ErrorCode::NotFound),
+        (LiveError::Internal("bug".into()), ErrorCode::Internal),
+    ];
+    for (e, code) in cases {
+        let c = connect_error(&e);
+        assert_eq!(c.code, code, "{e}");
+        assert_eq!(c.details.len(), 1, "{e}");
+        assert_eq!(c.details[0].type_url, ERROR_DETAIL_TYPE);
+        let detail = error_detail(&c).unwrap_or_else(|| panic!("{e}: a decodable detail"));
+        assert_eq!(detail.code.as_known(), Some(e.code()), "{e}");
+        assert_eq!(detail.message, e.to_string());
+    }
+    // An error without the detail (another server) has none.
+    assert!(error_detail(&ConnectError::internal("x")).is_none());
 }
 
 /// Semantics 7: `0.0.0.0:0` and a LAN address fail startup before anything
@@ -461,6 +506,12 @@ async fn errors_map_to_connect_codes() {
         .await
         .expect_err("a query is not a mutation");
     assert_eq!(e.code, ErrorCode::InvalidArgument);
+    // Row T14-12: the detail survives the wire.
+    assert_eq!(
+        error_detail(&e).map(|d| d.code.as_known()),
+        Some(Some(pb::ErrorCode::ERROR_CODE_INVALID_ARGUMENT)),
+        "{e:?}"
+    );
     let e = c
         .deploy(pb::DeployRequest::default())
         .await

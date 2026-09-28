@@ -129,8 +129,12 @@ fn a_bad_top_level_is_refused_at_load() {
 /// the CPU limit, so the call times out instead of hanging a worker.
 #[tokio::test]
 async fn describing_a_thrown_value_is_under_the_cpu_limit() {
+    // Review of #97: the recovery check calls the same bundle, whose one
+    // worker ran the timed-out call.
     let bundle = load(
-        &query_bundle("throw { toString() { for (;;) {} } };"),
+        "import { query } from \"loam:server\";\n\
+         export const t = { q: query({ handler: async () => { throw { toString() { for (;;) {} } }; } }),\n\
+         ok: query({ handler: async () => 1n }) };\n",
         small(Duration::from_millis(200), 64 << 20),
     );
     let run_once = async {
@@ -143,11 +147,52 @@ async fn describing_a_thrown_value_is_under_the_cpu_limit() {
         .await
         .expect("the call ends");
     // The one worker is free again.
-    let ok = load(
-        &query_bundle("return 1n;"),
+    assert!(matches!(run(&bundle, "t:ok").await, Ok(LiveValue::I64(1))));
+}
+
+/// Review of #97: converting a result runs its getters; one that loops
+/// stops at the CPU limit and is reported as a timeout.
+#[tokio::test]
+async fn a_looping_getter_in_the_result_times_out() {
+    let bundle = load(
+        &query_bundle("return { get x() { for (;;) {} } };"),
         small(Duration::from_millis(200), 64 << 20),
     );
-    assert!(matches!(run(&ok, "t:q").await, Ok(LiveValue::I64(1))));
+    let result = tokio::time::timeout(Duration::from_secs(10), run(&bundle, "t:q"))
+        .await
+        .expect("the call ends");
+    match result {
+        Err(LiveError::FunctionTimeout(m)) => assert!(m.contains("CPU limit"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Review of #97: a result that repeats one large string is small in
+/// QuickJS but large once copied out; the copy stops at its byte budget.
+#[tokio::test]
+async fn a_result_of_shared_large_strings_is_refused() {
+    let bundle = load(
+        &query_bundle("const s = \"x\".repeat(1 << 22); return Array(64).fill(s);"),
+        small(Duration::from_secs(5), 64 << 20),
+    );
+    match run(&bundle, "t:q").await {
+        Err(LiveError::FunctionError(m)) => assert!(m.contains("bytes"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Review of #97: a sparse array's length does not reserve Rust memory
+/// beyond the part budget.
+#[tokio::test]
+async fn a_huge_sparse_array_is_refused_by_its_parts() {
+    let bundle = load(
+        &query_bundle("const a = []; a.length = 1 << 26; return a;"),
+        small(Duration::from_secs(5), 64 << 20),
+    );
+    match run(&bundle, "t:q").await {
+        Err(LiveError::FunctionError(m)) => assert!(m.contains("parts"), "{m}"),
+        other => panic!("{other:?}"),
+    }
 }
 
 /// Review of #93: a value that shares its parts (`a = [a, a]`, 40 times) is
