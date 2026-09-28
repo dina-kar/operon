@@ -326,6 +326,77 @@ impl Native {
     }
 }
 
+/// Loam Live (R1 plan Task 12, feature `live`), on `dev` and `standalone`.
+#[cfg(feature = "live")]
+#[derive(Debug, clap::Args)]
+struct LiveArgs {
+    /// Address of the Loam Live sync API; loopback only (127.0.0.0/8, ::1,
+    /// localhost), since the Live API has no authentication in R1 (D111).
+    #[arg(long, default_value = "127.0.0.1:7710", value_parser = parse_live_listen)]
+    live_listen: SocketAddr,
+    /// PD endpoints of the Live cluster, comma-separated [default: the dev
+    /// playground's 127.0.0.1:19379].
+    #[arg(long, value_delimiter = ',', default_value = "127.0.0.1:19379")]
+    live_pd: Vec<String>,
+    /// The Live app's keyspace [default: loam_live_<app>].
+    #[arg(long)]
+    live_keyspace: Option<String>,
+    /// The Live app.
+    #[arg(long, default_value = "dev", value_parser = parse_live_app)]
+    live_app: String,
+    /// How far behind a fresh TSO timestamp each subscription tick reads,
+    /// in milliseconds (R1 plan row T12-1).
+    #[arg(long, default_value_t = 50)]
+    live_tick_read_lag_ms: u64,
+    /// Serve no Loam Live API.
+    #[arg(long, conflicts_with_all = ["live_listen", "live_keyspace", "live_app"])]
+    no_live: bool,
+}
+
+#[cfg(feature = "live")]
+impl LiveArgs {
+    fn apply(&self, config: &mut ServerConfig) {
+        if self.no_live {
+            config.live = None;
+            return;
+        }
+        let keyspace = self
+            .live_keyspace
+            .clone()
+            .unwrap_or_else(|| operon_live::keyspace_of(&self.live_app));
+        let mut live = operon_live::LiveConfig::with_tikv(
+            &self.live_app,
+            operon_tikv::TikvConfig::new(self.live_pd.clone(), keyspace),
+        );
+        live.listen = self.live_listen;
+        live.subs.tick_read_lag = Duration::from_millis(self.live_tick_read_lag_ms);
+        config.live = Some(live);
+    }
+}
+
+/// `--live-app`: a Live app name (the catalog's name rules).
+#[cfg(feature = "live")]
+fn parse_live_app(value: &str) -> Result<String, String> {
+    operon_live::catalog::check_name("app", value)
+        .map(|()| value.to_string())
+        .map_err(|err| format!("--live-app {value:?}: {err}"))
+}
+
+/// `--live-listen`: an `ip:port`, or `localhost:<port>` (127.0.0.1). The
+/// loopback check runs at startup, with the error of design §20 §7.1.
+#[cfg(feature = "live")]
+fn parse_live_listen(value: &str) -> Result<SocketAddr, String> {
+    if let Some(port) = value.strip_prefix("localhost:") {
+        let port: u16 = port
+            .parse()
+            .map_err(|_| format!("--live-listen {value:?}: the port is not a number"))?;
+        return Ok(SocketAddr::from(([127, 0, 0, 1], port)));
+    }
+    value
+        .parse()
+        .map_err(|_| format!("--live-listen {value:?}: expected ip:port or localhost:port"))
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Run everything in one process, with data in a local directory.
@@ -345,6 +416,9 @@ enum Command {
         meta: Option<MetaBackend>,
         #[command(flatten)]
         native: Native,
+        #[cfg(feature = "live")]
+        #[command(flatten)]
+        live: LiveArgs,
         #[command(flatten)]
         tuning: Box<Tuning>,
     },
@@ -365,6 +439,9 @@ enum Command {
         meta: Option<MetaBackend>,
         #[command(flatten)]
         native: Native,
+        #[cfg(feature = "live")]
+        #[command(flatten)]
+        live: LiveArgs,
     },
     /// Run one node of a cluster: the roles given, a metastore replica over
     /// HTTP, and data in an object-store bucket. `--listen` must be on a
@@ -494,11 +571,15 @@ fn config(command: Command) -> ServerConfig {
             flush_interval_ms,
             meta,
             native,
+            #[cfg(feature = "live")]
+            live,
             tuning,
         } => {
             let mut config = ServerConfig::new(data_dir);
             config.listen = listen;
             config.meta = meta.unwrap_or_default();
+            #[cfg(feature = "live")]
+            live.apply(&mut config);
             if let Some(ms) = flush_interval_ms {
                 config.log.flush_interval = Duration::from_millis(ms);
             }
@@ -512,10 +593,14 @@ fn config(command: Command) -> ServerConfig {
             listen,
             meta,
             native,
+            #[cfg(feature = "live")]
+            live,
         } => {
             let mut config = ServerConfig::new(data_dir);
             config.listen = listen;
             config.meta = meta.unwrap_or_default();
+            #[cfg(feature = "live")]
+            live.apply(&mut config);
             config.bucket = Some(bucket);
             native.apply(&mut config, STANDALONE_FLIGHT_SQL);
             config
@@ -656,6 +741,11 @@ async fn main() -> ExitCode {
     if let (Some(rest), Some(grpc)) = (server.qdrant_rest_addr(), server.qdrant_grpc_addr()) {
         println!("operon qdrant REST listening on http://{rest}");
         println!("operon qdrant gRPC listening on grpc://{grpc}");
+    }
+    // R1 plan Task 12 semantics 7: before the HTTP line.
+    #[cfg(feature = "live")]
+    if let Some(addr) = server.live_addr() {
+        println!("operon live listening on http://{addr}");
     }
     println!("operon listening on http://{}", server.local_addr());
     // M1.6 W14, M1.7 A4: printed once the listener is bound.
@@ -972,6 +1062,87 @@ mod tests {
         config.meta = MetaBackend::parse(url).expect("url");
         let err = config.validate().expect_err("refused").to_string();
         assert!(err.contains("dev and standalone only"), "{err}");
+    }
+
+    /// R1 plan Task 12: `--live-*` on `dev` and `standalone` configure Loam
+    /// Live (on by default with the `live` feature; `--no-live` turns it
+    /// off); the tick read lag is a Live config key (row T12-1).
+    #[cfg(feature = "live")]
+    #[test]
+    fn live_flags_set_the_live_config() {
+        let live = dev_config(&[]).live.expect("on by default");
+        assert_eq!(live.listen, SocketAddr::from(([127, 0, 0, 1], 7710)));
+        assert_eq!(live.tikv.pd, ["127.0.0.1:19379"]);
+        assert_eq!(live.tikv.keyspace, "loam_live_dev");
+        assert_eq!(live.app, "dev");
+        assert_eq!(live.subs.tick_read_lag, Duration::from_millis(50));
+        let live = dev_config(&[
+            "--live-listen",
+            "localhost:7711",
+            "--live-pd",
+            "10.0.0.1:2379,10.0.0.2:2379",
+            "--live-app",
+            "chat",
+            "--live-tick-read-lag-ms",
+            "0",
+        ])
+        .live
+        .expect("configured");
+        assert_eq!(live.listen, SocketAddr::from(([127, 0, 0, 1], 7711)));
+        assert_eq!(live.tikv.pd, ["10.0.0.1:2379", "10.0.0.2:2379"]);
+        assert_eq!(live.tikv.keyspace, "loam_live_chat");
+        assert_eq!(live.subs.tick_read_lag, Duration::ZERO);
+        let live = dev_config(&["--live-keyspace", "other"]).live.expect("on");
+        assert_eq!(live.tikv.keyspace, "other");
+        assert!(dev_config(&["--no-live"]).live.is_none());
+        let standalone = Cli::try_parse_from([
+            "operon",
+            "standalone",
+            "--bucket",
+            "file:///tmp/b",
+            "--no-live",
+        ])
+        .map(config_of)
+        .expect("parse");
+        assert!(standalone.live.is_none());
+        assert!(Cli::try_parse_from(["operon", "dev", "--live-app", "no spaces"]).is_err());
+        assert!(Cli::try_parse_from(["operon", "dev", "--no-live", "--live-app", "x"]).is_err());
+    }
+
+    /// R1 plan Task 12 semantics 7 and the loopback rule (D111): a
+    /// non-loopback `--live-listen` fails startup with the error of design
+    /// §20 §7.1; loopback addresses pass.
+    #[cfg(feature = "live")]
+    #[test]
+    fn a_non_loopback_live_listen_fails_startup() {
+        for bad in ["0.0.0.0:7710", "192.168.1.10:7710", "[::]:7710"] {
+            let err = dev_config(&["--live-listen", bad])
+                .validate()
+                .expect_err(bad);
+            assert!(
+                matches!(err, operon::ServerError::LiveListenNotLoopback { .. }),
+                "{bad}: {err}"
+            );
+            assert_eq!(
+                format!("operon: {err}"),
+                format!(
+                    "operon: --live-listen {} is not a loopback address; the Live API has no \
+                     authentication until the unified auth plan (D111)",
+                    bad.parse::<SocketAddr>().expect("an address")
+                )
+            );
+        }
+        for ok in [
+            "127.0.0.1:7710",
+            "localhost:7710",
+            "[::1]:7710",
+            "127.0.0.2:1",
+        ] {
+            dev_config(&["--live-listen", ok])
+                .validate()
+                .unwrap_or_else(|e| panic!("{ok}: {e}"));
+        }
+        assert!(Cli::try_parse_from(["operon", "dev", "--live-listen", "nohost:1"]).is_err());
     }
 
     /// Owner ruling T7-3: a build without the `tikv` feature refuses

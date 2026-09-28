@@ -158,12 +158,7 @@ fn sys(name: &str) -> Arc<dyn Function> {
 }
 
 fn config(cluster: &testing::TestCluster) -> LiveConfig {
-    LiveConfig {
-        app: "t11".to_string(),
-        tikv: cluster.config(TEST_LIVE),
-        limits: Limits::default(),
-        journal_shards: operon_live::DEFAULT_JOURNAL_SHARDS,
-    }
+    LiveConfig::with_tikv("t11", cluster.config(TEST_LIVE))
 }
 
 async fn open() -> Option<Runner> {
@@ -176,10 +171,13 @@ async fn open() -> Option<Runner> {
     )
 }
 
-/// The test settings: the plan's, with no safety rerun unless asked.
+/// The test settings: the plan's, with no safety rerun unless asked, and
+/// ticks at `now` (these tests count evaluations right after writes; the
+/// read lag of row T12-1 has its own tests).
 fn subs_config() -> SubsConfig {
     SubsConfig {
         safety_rerun: Duration::from_secs(3600),
+        tick_read_lag: Duration::ZERO,
         ..SubsConfig::default()
     }
 }
@@ -542,7 +540,7 @@ async fn safety_rerun_detects_injected_miss() {
         &r,
         SubsConfig {
             safety_rerun: Duration::from_millis(400),
-            ..SubsConfig::default()
+            ..subs_config()
         },
     );
     let (id, first) = subscribe(&subs, sys(QUERY), table_query("safe")).await;
@@ -633,13 +631,33 @@ async fn subscription_to_a_missing_table_sees_its_first_insert() {
 /// held result equals a fresh evaluation at the tick's timestamp.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn no_update_is_missed_under_concurrent_writes() {
+    no_update_is_missed(Duration::ZERO).await;
+}
+
+/// The same check with the default tick read lag (row T12-1): ticks read
+/// 50 ms back, and every result still equals a fresh evaluation at its tick.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_update_is_missed_with_the_tick_read_lag() {
+    no_update_is_missed(operon_live::subs::DEFAULT_TICK_READ_LAG).await;
+}
+
+async fn no_update_is_missed(tick_read_lag: Duration) {
     let Some(r) = open().await else { return };
     define(&r, "items", &[("by_n", &["n"])]).await;
     let mut seeded = Vec::new();
     for i in 0..12 {
         seeded.push(insert(&r, "items", &[("n", int(i))]).await.0);
     }
-    let subs = spawn(&r, subs_config());
+    let subs = spawn(
+        &r,
+        SubsConfig {
+            tick_read_lag,
+            ..subs_config()
+        },
+    );
+    // Held from before the first subscription: every tick up to a reply's
+    // evaluation is in it (row T12-3).
+    let mut rx = subs.updates();
     let mut queries: Vec<LiveValue> = vec![
         table_query("items"),
         n_range("items", 3, 9),
@@ -670,7 +688,16 @@ async fn no_update_is_missed_under_concurrent_writes() {
         let (id, result) = subscribe(&subs, sys(GET), args.clone()).await;
         held.insert(id, (sys(GET), args, result));
     }
-    let mut rx = subs.updates();
+    // Ticks published while subscribing: take the newer results.
+    while let Ok(tick) = rx.try_recv() {
+        for (id, result) in &tick.changed {
+            if let Some(h) = held.get_mut(id)
+                && result.ts.version() >= h.2.ts.version()
+            {
+                h.2 = result.clone();
+            }
+        }
+    }
     let newest = Arc::new(AtomicU64::new(0));
     let mut writers = Vec::new();
     for w in 0..4u64 {
@@ -784,4 +811,66 @@ async fn a_mutation_cannot_be_subscribed() {
         .subscribe(SubKey::new(INSERT, &args), sys(INSERT), args)
         .await;
     assert!(matches!(e, Err(LiveError::InvalidArgument(_))), "{e:?}");
+}
+
+/// Review of #81: a key subscribed again while its first request still
+/// waits for the manager's first tick joins the waiting entry, so both
+/// callers share one subscription and one evaluation. The second request
+/// lands in a later command batch only sometimes (the manager's select is
+/// unbiased), so the scenario repeats.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_key_subscribed_again_while_waiting_shares_one_entry() {
+    let Some(r) = open().await else { return };
+    insert(&r, "wait", &[("m", s("hi"))]).await;
+    for round in 0..30 {
+        let subs = Arc::new(spawn(&r, subs_config()));
+        let (f, calls) = Counting::wrap(sys(QUERY));
+        let args = table_query("wait");
+        let first = {
+            let (subs, f, args) = (subs.clone(), f.clone(), args.clone());
+            tokio::spawn(async move { subscribe(&subs, f, args).await })
+        };
+        tokio::time::sleep(Duration::from_micros(200 * (round % 5))).await;
+        let (b, rb) = subscribe(&subs, f.clone(), args.clone()).await;
+        let (a, ra) = first.await.expect("the first subscriber");
+        assert_eq!(a, b, "round {round}: one subscription");
+        assert!(Arc::ptr_eq(&ra, &rb), "round {round}: one result");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "round {round}");
+        assert_eq!(subs.stats().subscriptions, 1, "round {round}");
+        subs.unsubscribe(a);
+        let (c, _) = subscribe(&subs, f, args).await;
+        assert_eq!(c, a, "round {round}: still held by the second reference");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "round {round}");
+    }
+}
+
+/// Row T12-1: with the default tick read lag, a commit reaches its
+/// subscribers by a tick at or after its commit timestamp, about one lag
+/// after it (the manager ticks one lag after a local commit).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_commit_reaches_subscribers_one_tick_read_lag_later() {
+    let Some(r) = open().await else { return };
+    insert(&r, "lagged", &[("n", int(1))]).await;
+    let subs = spawn(
+        &r,
+        SubsConfig {
+            tick_read_lag: operon_live::subs::DEFAULT_TICK_READ_LAG,
+            ..subs_config()
+        },
+    );
+    let mut rx = subs.updates();
+    let (id, _) = subscribe(&subs, sys(QUERY), table_query("lagged")).await;
+    let mut worst = Duration::ZERO;
+    for n in 2..=6 {
+        let started = std::time::Instant::now();
+        let (_, ts) = insert(&r, "lagged", &[("n", int(n))]).await;
+        let ticks = until(&mut rx, &ts).await;
+        worst = worst.max(started.elapsed());
+        let at = ticks.last().expect("a tick").at.version();
+        assert!(at >= ts.version());
+        let result = latest(&ticks, id).expect("the subscription changed");
+        assert_eq!(docs(&result).len(), usize::try_from(n).expect("small"));
+    }
+    eprintln!("a commit reached its subscriber within {worst:?} at most");
+    assert!(worst < Duration::from_secs(2), "{worst:?}");
 }

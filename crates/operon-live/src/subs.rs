@@ -59,6 +59,12 @@ pub const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(10);
 /// (a crashed node's lapses, §20 §13).
 pub const CHECKPOINT_TTL: Duration = Duration::from_secs(120);
 
+/// How far in the past each tick reads by default (owner ruling on row
+/// T11-3, row T12-1): commits still in flight at `now` hold locks on the
+/// journal heads, and a read at `now` waits for them; a read 50 ms back
+/// finds almost all of them finished.
+pub const DEFAULT_TICK_READ_LAG: Duration = Duration::from_millis(50);
+
 /// Attempts per query evaluation when the storage fails (a region error,
 /// a lost TSO stream); the last failure becomes the result.
 const EVAL_ATTEMPTS: u32 = 3;
@@ -80,6 +86,10 @@ pub struct SubsConfig {
     /// [`CHECKPOINT_TTL`], every [`CHECKPOINT_INTERVAL`]; `None` writes no
     /// checkpoint (entries are then kept only by the janitor's retention).
     pub consumer: Option<String>,
+    /// How far behind a fresh TSO timestamp each tick reads
+    /// ([`DEFAULT_TICK_READ_LAG`]); a local commit is seen by the tick this
+    /// long after it. Zero reads at `now`.
+    pub tick_read_lag: Duration,
 }
 
 impl Default for SubsConfig {
@@ -91,6 +101,7 @@ impl Default for SubsConfig {
             min_rerun_interval: Duration::from_millis(50),
             safety_rerun: Duration::from_secs(300),
             consumer: None,
+            tick_read_lag: DEFAULT_TICK_READ_LAG,
         }
     }
 }
@@ -316,6 +327,20 @@ impl Subscriptions {
     }
 }
 
+/// The timestamp `lag` before `ts` (its physical part moved back, the
+/// logical part zero); `ts` itself when `lag` is zero.
+pub fn lagged(ts: &Timestamp, lag: Duration) -> Timestamp {
+    if lag.is_zero() {
+        return ts.clone();
+    }
+    let back = i64::try_from(lag.as_millis()).unwrap_or(i64::MAX);
+    Timestamp {
+        physical: ts.physical.saturating_sub(back).max(0),
+        logical: 0,
+        suffix_bits: ts.suffix_bits,
+    }
+}
+
 fn stopped() -> LiveError {
     LiveError::Internal("the subscription manager has stopped".into())
 }
@@ -391,8 +416,18 @@ impl Manager {
                         continue;
                     }
                     poll = self.config.poll_min;
+                    if let Some(at) = self.woken() {
+                        next_tick = next_tick.min(at);
+                        continue;
+                    }
                 }
-                () = self.shared.wake.notified() => poll = self.config.poll_min,
+                () = self.shared.wake.notified() => {
+                    poll = self.config.poll_min;
+                    if let Some(at) = self.woken() {
+                        next_tick = next_tick.min(at);
+                        continue;
+                    }
+                }
                 () = tokio::time::sleep_until(next_tick) => {}
             }
             let moved = match self.tick().await {
@@ -416,6 +451,15 @@ impl Manager {
         tracing::debug!("the subscription manager stopped");
     }
 
+    /// When to tick after a wake-up: `tick_read_lag` from now, since a tick
+    /// reads that far back and would not see the commit sooner (however many
+    /// commits follow, the tick is not pushed later); `None` (tick now)
+    /// without a lag.
+    fn woken(&self) -> Option<tokio::time::Instant> {
+        let lag = self.config.tick_read_lag;
+        (!lag.is_zero()).then(|| tokio::time::Instant::now() + lag)
+    }
+
     /// Handles `first` and every command already queued behind it; new
     /// keys are evaluated together at the current tick.
     async fn commands(&mut self, first: Cmd) {
@@ -434,7 +478,13 @@ impl Manager {
                     {
                         sub.refs += 1;
                         let _ = reply.send(Ok((id, sub.result.clone())));
-                    } else if let Some(n) = fresh.iter_mut().find(|n| n.key == key) {
+                    } else if let Some(n) = fresh
+                        .iter_mut()
+                        .chain(self.waiting.iter_mut())
+                        .find(|n| n.key == key)
+                    {
+                        // A key already asked for (in this batch, or waiting
+                        // for a valid tick) gets no second entry.
                         n.replies.push(reply);
                     } else {
                         fresh.push(NewSub {
@@ -467,7 +517,9 @@ impl Manager {
         };
         sub.refs = sub.refs.saturating_sub(1);
         if sub.refs == 0 {
-            if let Some(sub) = self.subs.remove(&id) {
+            if let Some(sub) = self.subs.remove(&id)
+                && self.by_key.get(&sub.key) == Some(&id)
+            {
                 self.by_key.remove(&sub.key);
             }
             self.index.remove(id);
@@ -545,12 +597,20 @@ impl Manager {
             .boxed()
     }
 
+    /// The next tick's timestamp: a fresh TSO timestamp `tick_read_lag`
+    /// back, and never before the current tick.
     async fn now(&self) -> Result<Timestamp, LiveError> {
-        self.runner
+        let now = self
+            .runner
             .tikv()
             .now()
             .await
-            .map_err(|e| LiveError::Internal(format!("a tick timestamp: {e}")))
+            .map_err(|e| LiveError::Internal(format!("a tick timestamp: {e}")))?;
+        let at = lagged(&now, self.config.tick_read_lag);
+        Ok(match &self.at {
+            Some(current) if current.version() > at.version() => current.clone(),
+            _ => at,
+        })
     }
 
     /// One tick; returns whether the journal moved.
@@ -670,17 +730,21 @@ impl Manager {
     ) {
         self.at = Some(at.clone());
         self.valid = true;
+        self.shared.counters.ticks.fetch_add(1, Ordering::Relaxed);
+        // The tick is published before `current` moves and before anyone
+        // waiting hears back: whoever reads `current() == t`, or is answered
+        // at `t`, finds every tick up to `t` in a receiver it held before
+        // (sessions rely on this, row T12-3).
+        let _ = self.updates.send(Tick {
+            at: at.clone(),
+            changed,
+            resynced,
+        });
+        self.current.send_replace(Some(at.clone()));
         if !self.waiting.is_empty() {
             let waiting = std::mem::take(&mut self.waiting);
             self.evaluate_new(waiting, &at).await;
         }
-        self.shared.counters.ticks.fetch_add(1, Ordering::Relaxed);
-        self.current.send_replace(Some(at.clone()));
-        let _ = self.updates.send(Tick {
-            at,
-            changed,
-            resynced,
-        });
         self.checkpoint().await;
     }
 
@@ -882,5 +946,19 @@ mod tests {
         assert_eq!(c.min_rerun_interval, Duration::from_millis(50));
         assert_eq!(c.safety_rerun, Duration::from_secs(300));
         assert_eq!(c.consumer, None);
+        assert_eq!(c.tick_read_lag, Duration::from_millis(50));
+    }
+
+    #[test]
+    fn lagged_moves_the_physical_part_back() {
+        let ts = Timestamp {
+            physical: 10_000,
+            logical: 7,
+            suffix_bits: 0,
+        };
+        let back = lagged(&ts, Duration::from_millis(50));
+        assert_eq!((back.physical, back.logical), (9_950, 0));
+        assert_eq!(lagged(&ts, Duration::ZERO), ts);
+        assert!(back.version() < ts.version());
     }
 }

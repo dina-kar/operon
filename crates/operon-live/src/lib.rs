@@ -14,10 +14,14 @@
 //! [`Runner`] (Task 10) are in [`txn`]; the built-in `_system:*` functions
 //! are in [`system`], their argument shapes in [`query`]. The subscription
 //! manager (Task 11), [`Subscriptions`], and its read-set index,
-//! [`ReadSetIndex`], are in [`subs`] and [`readset`].
+//! [`ReadSetIndex`], are in [`subs`] and [`readset`]. Sessions and their
+//! versioned Transitions (Task 12) are in [`session`], and the connect-rust
+//! sync service, [`LiveServer`], in [`service`]; [`deploy`] resolves the
+//! functions an app serves.
 
 pub mod catalog;
 mod config;
+pub mod deploy;
 pub mod docs;
 mod error;
 pub mod ids;
@@ -26,6 +30,8 @@ pub mod keys;
 mod limits;
 pub mod query;
 pub mod readset;
+pub mod service;
+pub mod session;
 pub mod subs;
 pub mod system;
 pub mod txn;
@@ -35,7 +41,10 @@ mod value;
 pub use operon_live_proto::loam::live::v1 as pb;
 
 pub use catalog::{IndexDef, IndexSpec, TableDef};
-pub use config::{DEFAULT_JOURNAL_SHARDS, KEYSPACE_PREFIX, LiveConfig, keyspace_of};
+pub use config::{
+    DEFAULT_JANITOR_INTERVAL, DEFAULT_JOURNAL_SHARDS, DEFAULT_LISTEN, KEYSPACE_PREFIX, LiveConfig,
+    check_listen, keyspace_of,
+};
 pub use docs::{Doc, IndexRange, Order, Reads, WriteRecord};
 pub use error::LiveError;
 pub use ids::{DocId, IndexId, TableId};
@@ -43,6 +52,8 @@ pub use journal::{Batch, Checkpoint, Janitor, JanitorReport, Journal, Tailer};
 pub use keys::{AppKeys, KeyRange};
 pub use limits::Limits;
 pub use readset::{ReadSetIndex, SubId};
+pub use service::{LiveHandle, LiveServer};
+pub use session::{ClientState, SessionConfig, Sessions, Version};
 pub use subs::{SubKey, SubResult, SubsConfig, SubsStats, Subscriptions, Tick};
 pub use txn::{FnKind, Function, LiveTxn, Mutated, Queried, ReadSet, Runner, RunnerOptions, Usage};
 pub use value::{LiveValue, fields_from_proto, fields_to_proto};

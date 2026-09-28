@@ -236,6 +236,12 @@ pub struct ServerConfig {
     /// (the default) or TiKV (`--meta tikv://…`, on `dev` and `standalone`
     /// only; `operon cluster` refuses it).
     pub meta: MetaBackend,
+    /// Loam Live (R1 plan Task 12, feature `live`): the `loam.live.v1` sync
+    /// API on its own loopback listener, on `dev` and `standalone`. `None`
+    /// (the default here) serves no Live API; the CLI sets it unless
+    /// `--no-live`.
+    #[cfg(feature = "live")]
+    pub live: Option<operon_live::LiveConfig>,
 }
 
 impl ServerConfig {
@@ -268,6 +274,8 @@ impl ServerConfig {
             #[cfg(feature = "qdrant")]
             qdrant: None,
             meta: MetaBackend::Raft,
+            #[cfg(feature = "live")]
+            live: None,
         }
     }
 
@@ -292,6 +300,17 @@ impl ServerConfig {
                      standalone only"
                         .to_string(),
                 ));
+            }
+        }
+        #[cfg(feature = "live")]
+        if let Some(live) = &self.live {
+            if self.cluster.is_some() {
+                return Err(ServerError::Config(
+                    "Loam Live runs on dev and standalone only in R1; pass --no-live".to_string(),
+                ));
+            }
+            if operon_live::check_listen(live.listen).is_err() {
+                return Err(ServerError::LiveListenNotLoopback { addr: live.listen });
             }
         }
         self.flight.validate().map_err(ServerError::Config)?;
@@ -364,6 +383,18 @@ pub enum ServerError {
     #[cfg(feature = "tikv")]
     #[error("TiKV: {0}")]
     Tikv(#[from] operon_tikv::TikvError),
+    /// `--live-listen` is not a loopback address (D111, design §20 §7.1):
+    /// the Live API has no authentication in R1.
+    #[cfg(feature = "live")]
+    #[error(
+        "--live-listen {addr} is not a loopback address; the Live API has no authentication \
+         until the unified auth plan (D111)"
+    )]
+    LiveListenNotLoopback { addr: SocketAddr },
+    /// Loam Live could not start (R1 plan Task 12).
+    #[cfg(feature = "live")]
+    #[error("Loam Live: {0}")]
+    Live(operon_live::LiveError),
     #[error("cache: {0}")]
     Cache(#[from] operon_cache::CacheError),
     #[error("log: {0}")]
@@ -395,6 +426,9 @@ pub struct Server {
     /// The cluster MVCC GC loop the TiKV metastore runs.
     #[cfg(feature = "tikv")]
     tikv_gc: Option<TikvGc>,
+    /// Loam Live, when configured.
+    #[cfg(feature = "live")]
+    live: Option<LiveRuntime>,
     /// The metastore as the trait object every component holds.
     meta_store: Arc<dyn MetaStore>,
     writer: LogWriter,
@@ -427,13 +461,22 @@ struct TikvGc {
 #[cfg(feature = "tikv")]
 impl TikvGc {
     /// Starts the GC loop on the metastore's handle. The loop sweeps its own
-    /// handle's commit tokens; Loam Live's handles join `sweep` when Live
-    /// runs in the process (R1 plan Task 12).
-    fn start(meta: &operon_meta_tikv::TikvMeta) -> Result<Self, ServerError> {
+    /// handle's commit tokens and those of `sweep`: Loam Live's handle when
+    /// Live runs in the process on the same cluster (R1 plan Task 12).
+    fn start(meta: &operon_meta_tikv::TikvMeta, sweep: Sweep) -> Result<Self, ServerError> {
+        Self::spawn(meta.tikv().clone(), sweep)
+    }
+
+    /// Starts the GC loop on `tikv` (its lease lives under that handle's
+    /// root), sweeping `sweep` too.
+    fn spawn(tikv: operon_tikv::Tikv, sweep: Sweep) -> Result<Self, ServerError> {
         let stop = CancellationToken::new();
         let handle = operon_tikv::GcLoop::spawn(
-            meta.tikv().clone(),
-            operon_tikv::GcConfig::default(),
+            tikv,
+            operon_tikv::GcConfig {
+                sweep,
+                ..operon_tikv::GcConfig::default()
+            },
             stop.clone(),
         )?;
         Ok(TikvGc { handle, stop })
@@ -443,6 +486,84 @@ impl TikvGc {
         self.stop.cancel();
         self.handle.stopped().await;
     }
+}
+
+/// Further TiKV handles the metastore's GC loop sweeps (Loam Live's).
+#[cfg(feature = "tikv")]
+type Sweep = Vec<operon_tikv::Tikv>;
+/// Without TiKV there is nothing to sweep.
+#[cfg(not(feature = "tikv"))]
+#[derive(Debug)]
+struct Sweep;
+
+/// Nothing beside the metastore's own handle to sweep.
+#[cfg(not(feature = "live"))]
+fn no_sweep() -> Sweep {
+    #[cfg(feature = "tikv")]
+    let sweep = Vec::new();
+    #[cfg(not(feature = "tikv"))]
+    let sweep = Sweep;
+    sweep
+}
+
+/// A running Loam Live server and, when no metastore GC loop covers its
+/// cluster, its own cluster GC loop (R1 plan Task 12).
+#[cfg(feature = "live")]
+#[derive(Debug)]
+struct LiveRuntime {
+    handle: operon_live::LiveHandle,
+    gc: Option<TikvGc>,
+}
+
+#[cfg(feature = "live")]
+impl LiveRuntime {
+    /// Starts Live; with `own_gc`, a cluster GC loop on Live's handle too
+    /// (the openraft metastore, or a TiKV metastore on another cluster).
+    async fn start(config: operon_live::LiveConfig, own_gc: bool) -> Result<Self, ServerError> {
+        let handle = operon_live::LiveServer::start(config, CancellationToken::new())
+            .await
+            .map_err(|err| match err {
+                operon_live::LiveError::NotLoopback(addr) => {
+                    ServerError::LiveListenNotLoopback { addr }
+                }
+                err => ServerError::Live(err),
+            })?;
+        let gc = if own_gc {
+            match TikvGc::spawn(handle.tikv().clone(), Vec::new()) {
+                Ok(gc) => Some(gc),
+                Err(err) => {
+                    handle.stop().await;
+                    return Err(err);
+                }
+            }
+        } else {
+            None
+        };
+        Ok(LiveRuntime { handle, gc })
+    }
+
+    async fn stop(self) {
+        self.handle.stop().await;
+        if let Some(gc) = self.gc {
+            gc.stop().await;
+        }
+    }
+}
+
+/// Whether two PD endpoint lists name one cluster (the same endpoints, in
+/// any order, with or without `http://`).
+#[cfg(feature = "live")]
+fn same_cluster(a: &[String], b: &[String]) -> bool {
+    let norm = |pd: &[String]| {
+        pd.iter()
+            .map(|p| {
+                p.trim_start_matches("http://")
+                    .trim_end_matches('/')
+                    .to_string()
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    norm(a) == norm(b)
 }
 
 /// What a cluster node keeps for its shutdown.
@@ -634,11 +755,58 @@ impl Server {
         if config.cluster.is_some() {
             return Self::start_cluster(config).await;
         }
+        #[cfg(feature = "live")]
+        let started = Self::start_with_live(config).await;
+        #[cfg(not(feature = "live"))]
+        let started = Self::start_single(config, no_sweep()).await;
+        started
+    }
+
+    /// `dev` or `standalone` with Loam Live: Live starts first, so the
+    /// metastore's GC loop can sweep its handle when both are on one cluster
+    /// (R1 plan Task 12).
+    #[cfg(feature = "live")]
+    async fn start_with_live(config: ServerConfig) -> Result<Self, ServerError> {
+        {
+            let live = match config.live.clone() {
+                Some(live) => {
+                    let covered = matches!(
+                        &config.meta,
+                        MetaBackend::Tikv(meta) if same_cluster(&meta.tikv.pd, &live.tikv.pd)
+                    );
+                    Some(LiveRuntime::start(live, !covered).await?)
+                }
+                None => None,
+            };
+            let sweep: Sweep = live
+                .iter()
+                .filter(|l| l.gc.is_none())
+                .map(|l| l.handle.tikv().clone())
+                .collect();
+            match Self::start_single(config, sweep).await {
+                Ok(mut server) => {
+                    server.live = live;
+                    Ok(server)
+                }
+                Err(err) => {
+                    if let Some(live) = live {
+                        live.stop().await;
+                    }
+                    Err(err)
+                }
+            }
+        }
+    }
+
+    /// `dev` or `standalone`: the metastore, then every role.
+    async fn start_single(config: ServerConfig, sweep: Sweep) -> Result<Self, ServerError> {
         let store = Store::from_url(&bucket_url(&config)?, Vec::<(String, String)>::new())?;
         #[cfg(feature = "tikv")]
         if let MetaBackend::Tikv(tikv) = &config.meta {
-            return Self::start_on_tikv(tikv.clone(), store, config).await;
+            return Self::start_on_tikv(tikv.clone(), store, config, sweep).await;
         }
+        #[cfg(not(feature = "tikv"))]
+        let Sweep = sweep;
         let mut meta_config = MetaConfig::new(NODE_ID, config.data_dir.join("meta"), store.clone());
         meta_config.snapshot_every = config.snapshot_every;
         let node = MetaNode::start(meta_config, &Router::new()).await?;
@@ -683,9 +851,10 @@ impl Server {
         tikv: operon_meta_tikv::TikvMetaConfig,
         store: Store,
         config: ServerConfig,
+        sweep: Sweep,
     ) -> Result<Self, ServerError> {
         let meta = operon_meta_tikv::TikvMeta::open(tikv).await?;
-        let gc = TikvGc::start(&meta)?;
+        let gc = TikvGc::start(&meta, sweep)?;
         let meta_store: Arc<dyn MetaStore> = Arc::new(meta);
         match Self::serve_single(meta_store, store, config).await {
             Ok(mut server) => {
@@ -735,6 +904,8 @@ impl Server {
             meta: None,
             #[cfg(feature = "tikv")]
             tikv_gc: None,
+            #[cfg(feature = "live")]
+            live: None,
             meta_store,
             writer: parts.writer,
             cache: parts.cache,
@@ -806,6 +977,8 @@ impl Server {
                     meta: Some(meta),
                     #[cfg(feature = "tikv")]
                     tikv_gc: None,
+                    #[cfg(feature = "live")]
+                    live: None,
                     meta_store,
                     writer: parts.writer,
                     cache: parts.cache,
@@ -1275,6 +1448,26 @@ impl Server {
         self.collections.clone()
     }
 
+    /// The address the Loam Live sync API listens on, when it runs.
+    #[cfg(feature = "live")]
+    pub fn live_addr(&self) -> Option<SocketAddr> {
+        self.live.as_ref().map(|live| live.handle.addr)
+    }
+
+    /// Loam Live's subscription counters, when it runs; `missed_invalidations`
+    /// is `live_missed_invalidation_total` (R1 plan row T12-8).
+    #[cfg(feature = "live")]
+    pub fn live_stats(&self) -> Option<operon_live::subs::SubsStats> {
+        self.live.as_ref().map(|live| live.handle.stats())
+    }
+
+    /// Whether Loam Live's handle is swept by the metastore's GC loop
+    /// (`true`), runs its own GC loop (`false`), or Live is off (`None`).
+    #[cfg(feature = "live")]
+    pub fn live_swept_by_metastore_gc(&self) -> Option<bool> {
+        self.live.as_ref().map(|live| live.gc.is_none())
+    }
+
     /// The address Flight SQL listens on, when it does.
     pub fn flight_sql_addr(&self) -> Option<SocketAddr> {
         self.flight.as_ref().map(|flight| flight.addr)
@@ -1297,7 +1490,8 @@ impl Server {
         &self.writer
     }
 
-    /// Stops the Qdrant gateway (waiting up to 10 s for its requests), stops
+    /// Stops Loam Live (ending its sessions), then the Qdrant gateway
+    /// (waiting up to 10 s for its requests), stops
     /// accepting requests, stops Flight SQL, stops the collection
     /// service's tails, flushes the writer (buffered appends are
     /// acknowledged), stops the worker (releasing its task leases), stops
@@ -1310,7 +1504,12 @@ impl Server {
     /// metastore routes keep serving until the replica stops (Task 11
     /// rule 4).
     pub async fn shutdown(self) -> Result<(), ServerError> {
-        // The Qdrant gateway stops first, within the HTTP grace period
+        // Loam Live's sessions end first; its own GC loop, if any, with it.
+        #[cfg(feature = "live")]
+        if let Some(live) = self.live {
+            live.stop().await;
+        }
+        // Then the Qdrant gateway, within the HTTP grace period
         // (plan M1.4 Task 2 rule 3).
         #[cfg(feature = "qdrant")]
         if let Some(qdrant) = self.qdrant {

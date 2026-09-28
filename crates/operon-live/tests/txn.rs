@@ -52,10 +52,9 @@ fn sys(name: &str) -> Arc<dyn Function> {
 
 fn config(cluster: &testing::TestCluster, shards: u16, limits: Limits) -> LiveConfig {
     LiveConfig {
-        app: "t10".to_string(),
-        tikv: cluster.config(TEST_LIVE),
         limits,
         journal_shards: shards,
+        ..LiveConfig::with_tikv("t10", cluster.config(TEST_LIVE))
     }
 }
 
@@ -1216,7 +1215,16 @@ async fn mutations_under_contention_complete_within_the_default_budget() {
     const MUTATIONS: usize = 2000;
     let journal = r.journal().await.expect("the journal");
     assert_eq!(journal.shards(), DEFAULT_JOURNAL_SHARDS);
-    let at = r.tikv().now().await.expect("now");
+    // Ticks read `tick_read_lag` back, as the subscription manager's do
+    // (row T12-1); OPERON_TEST_TICK_READ_LAG_MS overrides it for comparison.
+    let lag = std::env::var("OPERON_TEST_TICK_READ_LAG_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(
+            operon_live::subs::DEFAULT_TICK_READ_LAG,
+            std::time::Duration::from_millis,
+        );
+    let at = operon_live::subs::lagged(&r.tikv().now().await.expect("now"), lag);
     let mut tailer = Tailer::start(r.tikv().clone(), journal, at)
         .await
         .expect("a tailer");
@@ -1229,7 +1237,7 @@ async fn mutations_under_contention_complete_within_the_default_budget() {
             let mut moved = 0usize;
             while !stop.load(Ordering::Relaxed) {
                 let started = std::time::Instant::now();
-                let at = r.tikv().now().await.expect("now");
+                let at = operon_live::subs::lagged(&r.tikv().now().await.expect("now"), lag);
                 let batch = tailer.tick(at).await.expect("a tick");
                 tailer.ack(&batch).expect("ack");
                 latencies.push(started.elapsed());
@@ -1287,11 +1295,17 @@ async fn mutations_under_contention_complete_within_the_default_budget() {
     let reruns: u32 = attempts.iter().map(|a| a - 1).sum();
     let max = attempts.iter().max().copied().unwrap_or(0);
     latencies.sort();
-    let pct = |p: usize| latencies[(latencies.len() - 1) * p / 100];
+    let pct = |p: usize| {
+        latencies
+            .get(latencies.len().saturating_sub(1) * p / 100)
+            .copied()
+            .unwrap_or_default()
+    };
     eprintln!(
         "{MUTATIONS} mutations by {WRITERS} writers on {DEFAULT_JOURNAL_SHARDS} shards in {elapsed:?}: \
          {reruns} reruns ({:.3} per mutation), at most {max} attempts; tailer: {} ticks, \
-         {entries} entries, {:.1} shards moved per tick, tick latency p50 {:?} p99 {:?} max {:?}",
+         {entries} entries, {:.1} shards moved per tick, tick read lag {lag:?}, tick latency p50 {:?} \
+         p99 {:?} max {:?}",
         f64::from(reruns) / MUTATIONS as f64,
         latencies.len(),
         moved as f64 / latencies.len().max(1) as f64,

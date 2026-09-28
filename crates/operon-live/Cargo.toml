@@ -11,7 +11,12 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+# The sync API's listener (Task 12); `http2` serves HTTP/2 cleartext beside
+# HTTP/1.1.
+axum = { workspace = true, features = ["http2"] }
 buffa.workspace = true
+# The connect-rust server of the sync API, mounted on axum (Task 12).
+connectrpc = { workspace = true, features = ["axum"] }
 crc.workspace = true
 data-encoding.workspace = true
 futures.workspace = true
@@ -28,6 +33,10 @@ tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# The generated LiveServiceClient over connect-rust's HTTP client (Task 12's
+# service tests).
+connectrpc = { workspace = true, features = ["axum", "client"] }
+operon-live-proto = { workspace = true, features = ["client"] }
 # The lost-acknowledgement tests put a FaultPlan on the handle.
 operon-tikv = { workspace = true, features = ["faults"] }
 proptest.workspace = true
