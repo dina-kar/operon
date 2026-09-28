@@ -14,8 +14,9 @@ use operon_live::keys::{IDEMPOTENCY, KIND_APP};
 use operon_live::system::{self, DELETE, GET, INSERT, PATCH, QUERY, REPLACE};
 use operon_live::txn::{MUTATION_OP, idempotency_hash};
 use operon_live::{
-    AppKeys, DocId, FnKind, Function, IndexId, IndexRange, Janitor, Journal, Limits, LiveConfig,
-    LiveError, LiveTxn, LiveValue, Mutated, Runner, RunnerOptions, TableId, pb,
+    AppKeys, DEFAULT_JOURNAL_SHARDS, DocId, FnKind, Function, IndexId, IndexRange, Janitor,
+    Journal, Limits, LiveConfig, LiveError, LiveTxn, LiveValue, Mutated, Runner, RunnerOptions,
+    TableId, Tailer, pb,
 };
 use operon_tikv::testing::{self, TEST_LIVE};
 use operon_tikv::{Fault, FaultPlan, FaultPoint, TimestampExt, TxnOptions};
@@ -69,7 +70,12 @@ async fn open_with(shards: u16, limits: Limits, options: RunnerOptions) -> Optio
 }
 
 async fn open() -> Option<Runner> {
-    open_with(16, Limits::default(), RunnerOptions::default()).await
+    open_with(
+        DEFAULT_JOURNAL_SHARDS,
+        Limits::default(),
+        RunnerOptions::default(),
+    )
+    .await
 }
 
 async fn mutate(r: &Runner, f: Arc<dyn Function>, args: LiveValue) -> Mutated {
@@ -1126,15 +1132,120 @@ async fn janitor_sweeps_expired_idempotency_records() {
     assert_eq!(all(&r, "t").await.len(), 2);
 }
 
-/// Owner ruling on T9-7 (rows T10-2, T10-3): 32 writers and 2 000
-/// mutations on the default 16 shards all commit within the default budget
-/// of 16 attempts, with no `Conflict` failure. Prints the rerun rate.
+/// Review of #76: a record the sweep cannot decode (corrupt, or a newer
+/// format) is kept, since deleting it would free its key for a second run,
+/// and the sweep goes on to the records after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn janitor_keeps_an_undecodable_idempotency_record_and_sweeps_on() {
+    let Some(r) = open().await else { return };
+    let app = r.app().clone();
+    // The first possible record key, so the sweep meets it first.
+    let garbage = app.idempotency(&[0; operon_live::keys::IDEMPOTENCY_HASH_BYTES]);
+    let expired = app.idempotency(&idempotency_hash("expired").expect("a key"));
+    let record = pb::IdempotencyRecord {
+        format: 1,
+        result: LiveValue::Null.to_proto().into(),
+        expires_ms: 1,
+        function: INSERT.to_string(),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let (g, e) = (garbage.clone(), expired.clone());
+    r.tikv()
+        .run(TxnOptions::new("test.put"), move |txn| {
+            let (g, e, record) = (g.clone(), e.clone(), record.clone());
+            Box::pin(async move {
+                txn.put(&g, vec![0xff, 0xff, 0xff]).await?;
+                txn.put(&e, record).await
+            })
+        })
+        .await
+        .expect("written");
+    let journal = r.journal().await.expect("journal");
+    let report = Janitor::new(r.tikv().clone(), journal)
+        .run_once()
+        .await
+        .expect("the pass does not stop at the undecodable record");
+    assert_eq!(report.expired_idempotency, 1);
+    let at = r.tikv().now().await.expect("now");
+    let mut snap = r.tikv().snapshot(at).await.expect("snap");
+    assert_eq!(snap.get(&expired).await.expect("read"), None);
+    assert!(snap.get(&garbage).await.expect("read").is_some(), "kept");
+}
+
+/// Review of #76: a live idempotency key reused with other arguments is
+/// refused, not replayed; the same call still replays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idempotency_key_reused_with_other_arguments_is_refused() {
+    let Some(r) = open().await else { return };
+    let call = |cents: i64| {
+        obj(&[
+            ("table", s("payments")),
+            ("fields", obj(&[("cents", LiveValue::I64(cents))])),
+        ])
+    };
+    let key = Some("pay-1".to_string());
+    let first = r
+        .mutate(sys(INSERT), call(500), key.clone())
+        .await
+        .expect("commits");
+    let other = r.mutate(sys(INSERT), call(900), key.clone()).await;
+    assert!(
+        matches!(&other, Err(LiveError::InvalidArgument(m)) if m.contains("other arguments")),
+        "{other:?}"
+    );
+    let again = r
+        .mutate(sys(INSERT), call(500), key)
+        .await
+        .expect("replays");
+    assert!(again.replayed);
+    assert_eq!(again.result, first.result);
+    assert_eq!(all(&r, "payments").await.len(), 1);
+}
+
+/// Owner rulings on T9-7 and T10-3 (rows T10-2, T10-3, T11-1): 32 writers
+/// and 2 000 mutations on the default 64 shards all commit within the
+/// default budget of 16 attempts, with no `Conflict` failure, while a
+/// tailer ticks continuously beside them (the tailer's cost at 64 shards).
+/// Prints the rerun rate and the tick counts and latencies.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mutations_under_contention_complete_within_the_default_budget() {
     let Some(r) = open().await else { return };
     insert(&r, "load", &[]).await;
     const WRITERS: usize = 32;
     const MUTATIONS: usize = 2000;
+    let journal = r.journal().await.expect("the journal");
+    assert_eq!(journal.shards(), DEFAULT_JOURNAL_SHARDS);
+    let at = r.tikv().now().await.expect("now");
+    let mut tailer = Tailer::start(r.tikv().clone(), journal, at)
+        .await
+        .expect("a tailer");
+    let stop = Arc::new(AtomicBool::new(false));
+    let tailing = {
+        let (r, stop) = (r.clone(), stop.clone());
+        tokio::spawn(async move {
+            let mut latencies = Vec::new();
+            let mut entries = 0usize;
+            let mut moved = 0usize;
+            while !stop.load(Ordering::Relaxed) {
+                let started = std::time::Instant::now();
+                let at = r.tikv().now().await.expect("now");
+                let batch = tailer.tick(at).await.expect("a tick");
+                tailer.ack(&batch).expect("ack");
+                latencies.push(started.elapsed());
+                entries += batch.entries.len();
+                moved += batch
+                    .from
+                    .iter()
+                    .zip(&batch.heads)
+                    .filter(|(f, h)| f != h)
+                    .count();
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            (latencies, entries, moved)
+        })
+    };
+    let started = std::time::Instant::now();
     let next = Arc::new(AtomicUsize::new(0));
     let mut tasks = Vec::new();
     for _ in 0..WRITERS {
@@ -1164,6 +1275,9 @@ async fn mutations_under_contention_complete_within_the_default_budget() {
     for t in tasks {
         results.extend(t.await.expect("a writer"));
     }
+    let elapsed = started.elapsed();
+    stop.store(true, Ordering::Relaxed);
+    let (mut latencies, entries, moved) = tailing.await.expect("the tailer");
     let failures: Vec<&LiveError> = results.iter().filter_map(|m| m.as_ref().err()).collect();
     assert!(failures.is_empty(), "failures: {failures:?}");
     let attempts: Vec<u32> = results
@@ -1172,10 +1286,18 @@ async fn mutations_under_contention_complete_within_the_default_budget() {
         .collect();
     let reruns: u32 = attempts.iter().map(|a| a - 1).sum();
     let max = attempts.iter().max().copied().unwrap_or(0);
+    latencies.sort();
+    let pct = |p: usize| latencies[(latencies.len() - 1) * p / 100];
     eprintln!(
-        "{MUTATIONS} mutations by {WRITERS} writers: {reruns} reruns ({:.3} per mutation), \
-         at most {max} attempts",
-        f64::from(reruns) / MUTATIONS as f64
+        "{MUTATIONS} mutations by {WRITERS} writers on {DEFAULT_JOURNAL_SHARDS} shards in {elapsed:?}: \
+         {reruns} reruns ({:.3} per mutation), at most {max} attempts; tailer: {} ticks, \
+         {entries} entries, {:.1} shards moved per tick, tick latency p50 {:?} p99 {:?} max {:?}",
+        f64::from(reruns) / MUTATIONS as f64,
+        latencies.len(),
+        moved as f64 / latencies.len().max(1) as f64,
+        pct(50),
+        pct(99),
+        pct(100),
     );
     assert!(max <= 16);
     assert_eq!(heads(&r).await.iter().sum::<u64>(), MUTATIONS as u64 + 1);

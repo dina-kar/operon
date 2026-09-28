@@ -440,7 +440,8 @@ pub async fn set_journal_shards(
     let (lo, hi) = journal.bounds();
     if !txn.scan(lo, hi, 1).await?.is_empty() {
         return Err(LiveError::FailedPrecondition(format!(
-            "the journal shard count can change only while the journal is empty in R1:              it has {} shards and entries",
+            "the journal shard count can change only while the journal is empty in R1: \
+             it has {} shards and entries",
             current.unwrap_or(0)
         )));
     }

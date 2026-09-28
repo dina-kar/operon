@@ -181,12 +181,40 @@ enum Attempt<T> {
 /// each pause is drawn from its upper half.
 const BACKOFF_BASE: Duration = Duration::from_millis(10);
 const BACKOFF_MAX: Duration = Duration::from_secs(1);
+/// The pauses of one run may take at most `deadline / BACKOFF_SHARE` in
+/// all, so the last attempts of a large budget still fit the deadline (R1
+/// plan row T11-1).
+const BACKOFF_SHARE: u32 = 2;
+/// The shortest pause ceiling (a pause is drawn from its upper half).
+const BACKOFF_FLOOR: Duration = Duration::from_millis(2);
 
-fn backoff(attempt: u32) -> Duration {
+/// The pause ceiling before `attempt` (from 2), before the deadline cap.
+fn backoff_ceiling(attempt: u32) -> Duration {
     let exp = attempt.saturating_sub(2).min(10);
-    let ceiling = BACKOFF_BASE.saturating_mul(1 << exp).min(BACKOFF_MAX);
-    let ms = u64::try_from(ceiling.as_millis()).unwrap_or(1000).max(2);
-    Duration::from_millis(rand::random_range(ms / 2..=ms))
+    BACKOFF_BASE.saturating_mul(1 << exp).min(BACKOFF_MAX)
+}
+
+/// The pause ceiling before `attempt` of a run of `max_attempts` within
+/// `deadline`: the exponential ceiling, scaled down when the ceilings of
+/// every pause of the run add up to more than `deadline / BACKOFF_SHARE`.
+/// The metastore's 8 attempts in 10 s are unchanged (1.27 s in all); Live's
+/// 16 are scaled from 9.27 s to 5 s.
+fn capped_ceiling(attempt: u32, max_attempts: u32, deadline: Duration) -> Duration {
+    let ceiling = backoff_ceiling(attempt);
+    let total: Duration = (2..=max_attempts.max(2)).map(backoff_ceiling).sum();
+    let budget = deadline / BACKOFF_SHARE;
+    let ceiling = if total > budget {
+        ceiling.mul_f64(budget.as_secs_f64() / total.as_secs_f64())
+    } else {
+        ceiling
+    };
+    ceiling.max(BACKOFF_FLOOR)
+}
+
+fn backoff(attempt: u32, max_attempts: u32, deadline: Duration) -> Duration {
+    let ceiling = capped_ceiling(attempt, max_attempts, deadline);
+    let us = u64::try_from(ceiling.as_micros()).unwrap_or(u64::MAX);
+    Duration::from_micros(rand::random_range(us / 2..=us))
 }
 
 impl Tikv {
@@ -210,7 +238,7 @@ impl Tikv {
         for attempt in 1..=opts.max_attempts.max(1) {
             if attempt > 1 {
                 self.counters.restarts.fetch_add(1, Ordering::Relaxed);
-                let pause = backoff(attempt);
+                let pause = backoff(attempt, opts.max_attempts, opts.deadline);
                 if Instant::now() + pause >= deadline {
                     return Err(TxnError::Deadline);
                 }
@@ -623,12 +651,40 @@ mod tests {
 
     #[test]
     fn backoff_grows_and_stays_bounded() {
+        let deadline = Duration::from_secs(10);
         for attempt in 2..40 {
-            let pause = backoff(attempt);
+            let pause = backoff(attempt, 40, deadline);
             assert!(pause >= Duration::from_millis(1), "{pause:?}");
             assert!(pause <= BACKOFF_MAX, "{pause:?}");
         }
-        assert!(backoff(2) <= Duration::from_millis(10));
+        assert!(backoff(2, 8, deadline) <= Duration::from_millis(10));
+    }
+
+    /// Row T11-1: the pauses of a whole run take at most half its deadline
+    /// (plus the 2 ms floor per pause), whatever the attempt budget; the
+    /// metastore's 8 attempts keep their uncapped ceilings.
+    #[test]
+    fn backoff_of_a_whole_run_fits_half_the_deadline() {
+        let deadline = Duration::from_secs(10);
+        for max_attempts in [2, 8, 16, 32, 64, 1000] {
+            let total: Duration = (2..=max_attempts)
+                .map(|a| capped_ceiling(a, max_attempts, deadline))
+                .sum();
+            let slack = BACKOFF_FLOOR * max_attempts;
+            assert!(
+                total <= deadline / 2 + slack,
+                "{max_attempts} attempts: {total:?} of pauses"
+            );
+        }
+        for attempt in 2..=8 {
+            assert_eq!(
+                capped_ceiling(attempt, 8, deadline),
+                backoff_ceiling(attempt)
+            );
+        }
+        let sixteen: Duration = (2..=16).map(|a| capped_ceiling(a, 16, deadline)).sum();
+        assert!(sixteen >= Duration::from_millis(4900), "{sixteen:?}");
+        assert!(capped_ceiling(16, 16, deadline) < Duration::from_millis(600));
     }
 
     #[test]
