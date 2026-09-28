@@ -222,6 +222,41 @@ jobs:
       - run: uv run mypy src tests
       - run: uv run pytest -q
 
+  sdk-typescript:
+    name: TypeScript SDK
+    needs: operon-binary
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "26"]
+    defaults:
+      run:
+        working-directory: sdks/typescript
+    env:
+      OPERON_BIN: ${{ github.workspace }}/target/debug/operon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: operon-debug
+          path: target/debug
+      - name: make the binary executable
+        run: chmod +x "$OPERON_BIN"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+          cache-dependency-path: sdks/typescript/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint
+      - run: pnpm run build
+      - run: pnpm run typecheck
+      - run: pnpm test
+
   sim:
     name: simulation seed sweep
     runs-on: ubuntu-latest

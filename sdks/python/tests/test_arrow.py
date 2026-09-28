@@ -99,6 +99,14 @@ def test_source_columns_mode() -> None:
         response.to_arrow(source="rows")  # type: ignore[arg-type]
 
 
+def test_an_unconvertible_source_key_names_the_key() -> None:
+    response = _search([_hit(1, 1.0, source={"a": 1}), _hit(2, 0.5, source={"a": "x"})])
+    with pytest.raises(ValueError, match=r"source key 'a'.*source='json'") as info:
+        response.to_arrow(source="columns")
+    assert isinstance(info.value.__cause__, pa.ArrowInvalid)
+    assert response.to_arrow().column("_source").to_pylist() == ['{"a":1}', '{"a":"x"}']
+
+
 def test_vectors_of_mixed_length_become_lists() -> None:
     response = _search(
         [_hit(1, 1.0, vectors={"e": [1.0, 2.0]}), _hit(2, 0.5, vectors={"e": [1.0, 2.0, 3.0]})]

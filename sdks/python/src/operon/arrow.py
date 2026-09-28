@@ -55,7 +55,15 @@ def _source_columns(hits: list[Hit]) -> tuple[list[str], list[pa.Array]]:
         for key in hit.source or {}:
             keys.setdefault(key, None)
     names = list(keys)
-    arrays = [pa.array([(hit.source or {}).get(key) for hit in hits]) for key in names]
+    arrays: list[pa.Array] = []
+    for key in names:
+        try:
+            arrays.append(pa.array([(hit.source or {}).get(key) for hit in hits]))
+        except (pa.ArrowInvalid, pa.ArrowTypeError) as err:
+            raise ValueError(
+                f"cannot convert source key {key!r} to an Arrow column; "
+                "use source='json' for heterogeneous JSON values"
+            ) from err
     return names, arrays
 
 

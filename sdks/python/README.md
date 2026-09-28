@@ -193,8 +193,10 @@ decimal, a string id as is, a UUID hyphenated), `_score` (float32), `_source`
 `list<float32>`) and one per sparse vector name (`struct<indices, values>`), each
 sorted by name. The schema metadata `operon.read_token` holds the read token.
 `to_arrow(source="columns")` spreads the source's top-level keys into columns
-instead. The default table has the shape Flight SQL ingest takes, so it loads
-back into a collection (`_score` is ignored).
+instead; a key whose values Arrow cannot put in one column (say `1` in one hit
+and `"x"` in another) raises `ValueError` naming the key, and the default
+`source="json"` takes any values. The default table has the shape Flight SQL
+ingest takes, so it loads back into a collection (`_score` is ignored).
 
 A SQL table is typed from each column's Arrow type name: integers, floats,
 booleans, strings, binaries, dates, timestamps (with their unit and zone) and
