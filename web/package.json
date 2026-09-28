@@ -1,0 +1,22 @@
+{
+  "name": "loam-web",
+  "private": true,
+  "description": "The Loam console and the @loam/ui design system (design §19).",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@11.13.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @loam/console dev",
+    "build": "pnpm --filter @loam/ui build && pnpm --filter @loam/console build",
+    "gen:api": "pnpm --filter @loam/console gen:api",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "biome check",
+    "format": "biome format --write"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.14",
+    "typescript": "5.9.3"
+  }
+}
