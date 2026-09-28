@@ -11,12 +11,12 @@
 //! in one transaction.
 //!
 //! **The deploy gate** (rows T9-1, T10-12): a deploy that changes an
-//! existing table's indexes takes [`Runner::try_quiesce`] before it applies
-//! the schema and holds it through the commit. While a mutation is in
+//! existing table's indexes takes [`Runner::try_quiesce`] before it stores
+//! the bundle and holds it through the commit. While a mutation is in
 //! flight that is refused with [`LiveError::Busy`] (`UNAVAILABLE`; the
-//! client retries), and while the gate is held new mutations wait at
-//! admission, so none can race the index change. Inserts do not lock the
-//! table record.
+//! client retries) and nothing is stored (owner ruling T14-3); while the
+//! gate is held new mutations wait at admission, so none can race the
+//! index change. Inserts do not lock the table record.
 //!
 //! A resolved deployed function is a proxy that looks the name up in the
 //! current deployment on every call, so a subscription moves to a new
@@ -266,10 +266,12 @@ impl Deployments {
     }
 
     /// Deploys `bundle` with `schema` (semantics 4): validates and loads
-    /// the bundle, stores it, and in one transaction applies the schema and
-    /// swaps the deployment record; then new calls resolve to it. Without a
-    /// schema, the schema record is removed (inserts create tables again);
-    /// tables are never dropped. Returns the deployment id.
+    /// the bundle, takes the gate when the schema changes an index (busy
+    /// while mutations run), stores the bundle, and in one transaction
+    /// applies the schema and swaps the deployment record; then new calls
+    /// resolve to it. Without a schema, the schema record is removed
+    /// (inserts create tables again); tables are never dropped. Returns the
+    /// deployment id.
     pub async fn deploy(
         &self,
         bundle: &[u8],
@@ -292,14 +294,8 @@ impl Deployments {
         let deployment = load_blocking(engine, source).await?;
         let _one = self.inner.deploying.lock().await;
 
-        let id = new_id()?;
-        let object = bundle_path(&self.inner.app, &id);
-        self.inner
-            .store
-            .put(&object, bytes::Bytes::copy_from_slice(bundle))
-            .await
-            .map_err(|e| store_error("storing the bundle", &e))?;
-
+        // The busy check comes before the bundle is stored (owner ruling
+        // T14-3 on row T13-10), so a refused deploy leaves nothing behind.
         let changes = self.index_changes(&tables).await?;
         let _gate = if changes {
             let gate = self.inner.runner.try_quiesce().ok_or_else(|| {
@@ -322,6 +318,14 @@ impl Deployments {
             None
         };
 
+        let id = new_id()?;
+        let object = bundle_path(&self.inner.app, &id);
+        self.inner
+            .store
+            .put(&object, bytes::Bytes::copy_from_slice(bundle))
+            .await
+            .map_err(|e| store_error("storing the bundle", &e))?;
+
         let functions = deployment
             .functions()
             .into_iter()
@@ -334,7 +338,7 @@ impl Deployments {
         let record = pb::DeploymentRecord {
             format: 1,
             id: id.clone(),
-            object,
+            object: object.clone(),
             sha256: Sha256::digest(bundle).to_vec(),
             functions,
             ..Default::default()
@@ -345,7 +349,19 @@ impl Deployments {
             schema: schema.into(),
             ..Default::default()
         });
-        self.commit(record, schema_record, tables, changes).await?;
+        if let Err(e) = self.commit(record, schema_record, tables, changes).await {
+            // A commit that certainly did not apply names no bundle: remove
+            // it. One that may have applied keeps it, since the record may
+            // point at it (R2 sweeps what stays).
+            if !matches!(
+                e,
+                LiveError::Txn(TxnError::Undetermined { .. } | TxnError::Deadline)
+            ) && let Err(err) = self.inner.store.delete(&object).await
+            {
+                tracing::warn!(app = %self.inner.app, object, error = %err, "removing the bundle of a failed deploy");
+            }
+            return Err(e);
+        }
         self.swap(id.clone(), deployment);
         tracing::info!(app = %self.inner.app, deployment = %id, "deployed a function bundle");
         Ok(id)

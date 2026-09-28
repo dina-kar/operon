@@ -255,7 +255,8 @@ function LoamDate(...args) {
   if (new.target === undefined) {
     return new RealDate(now()).toString();
   }
-  return args.length === 0 ? new RealDate(now()) : new RealDate(...args);
+  // `new.target`, so `class Stamp extends Date` builds a Stamp (review of #93).
+  return Reflect.construct(RealDate, args.length === 0 ? [now()] : args, new.target);
 }
 Object.defineProperty(LoamDate, "prototype", { value: RealDate.prototype });
 Object.defineProperty(LoamDate, "now", { value: now });

@@ -674,6 +674,71 @@ async fn index_deploy_is_refused_while_a_mutation_is_in_flight() {
     assert_eq!(docs.len(), 1, "the new index has the arriving document");
 }
 
+/// Owner ruling T14-3 (on row T13-10): the deploy takes its busy check
+/// before it stores the bundle, so a refused deploy leaves no object behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_deploy_stores_no_bundle() {
+    let Some(a) = app("t14r").await else {
+        return;
+    };
+    let plain = pb::Schema {
+        tables: vec![pb::TableSchema {
+            name: "messages".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    a.deployments
+        .deploy(CHAT.as_bytes(), Some(plain))
+        .await
+        .expect("the first deploy");
+    let prefix = "live/t14r/deployments/";
+    let stored = |store: Store| async move {
+        store
+            .list(prefix)
+            .await
+            .expect("the bundles")
+            .into_iter()
+            .map(|o| o.path)
+            .collect::<Vec<_>>()
+    };
+    let before = stored(a.store.clone()).await;
+    assert_eq!(before.len(), 1, "{before:?}");
+
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let blocking: Arc<dyn Function> = Arc::new(Blocking {
+        entered: entered.clone(),
+        release: release.clone(),
+    });
+    let runner = a.runner.clone();
+    let in_flight =
+        tokio::spawn(async move { runner.mutate(blocking, LiveValue::Null, None).await });
+    entered.notified().await;
+    let busy = a
+        .deployments
+        .deploy(CHAT.as_bytes(), Some(chat_schema()))
+        .await
+        .expect_err("busy");
+    assert!(matches!(busy, LiveError::Busy(_)), "{busy}");
+    assert_eq!(
+        stored(a.store.clone()).await,
+        before,
+        "a refused deploy stores nothing"
+    );
+    release.notify_one();
+    in_flight
+        .await
+        .expect("the task")
+        .expect("the blocking mutation");
+
+    a.deployments
+        .deploy(CHAT.as_bytes(), Some(chat_schema()))
+        .await
+        .expect("the retried deploy");
+    assert_eq!(stored(a.store.clone()).await.len(), 2);
+}
+
 /// `Bundle` is the engine's deployment.
 #[test]
 fn the_engine_loads_bundles() {

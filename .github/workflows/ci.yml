@@ -317,6 +317,84 @@ jobs:
             echo "sdks/live-typescript/src/gen is stale: run 'pnpm run generate' in sdks/live-typescript and commit the result"; exit 1;
           }
 
+  sdk-live-typescript:
+    name: Live TypeScript client
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/live-typescript
+    env:
+      OPERON_BIN: ${{ github.workspace }}/target/debug/operon
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: sdks/live-typescript/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint
+      - run: pnpm run build
+      - name: tsc --strict over the tests
+        run: pnpm run typecheck
+      - name: unit tests (a fake transport)
+        run: pnpm test
+      # The end-to-end tests need `operon --features live` and the playground;
+      # on pull requests they run only when the client or the server changed.
+      - name: paths
+        id: paths
+        working-directory: .
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pattern='^(sdks/live-typescript/|crates/operon-tikv/|crates/operon-live[^/]*/|crates/operon/|proto/loam/|scripts/tikv/|deploy/tikv/|\.github/workflows/ci\.yml$)'
+          if git diff --name-only HEAD^1 HEAD | grep -qE "$pattern"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: protoc
+        if: steps.paths.outputs.run == 'true'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+        if: steps.paths.outputs.run == 'true'
+      - name: build operon with Loam Live
+        if: steps.paths.outputs.run == 'true'
+        working-directory: .
+        run: cargo build -p operon --features live --locked
+      - uses: actions/cache@v4
+        if: steps.paths.outputs.run == 'true'
+        with:
+          path: ~/.tiup/components
+          key: tiup-components-v8.5.8-${{ runner.os }}
+      - name: install tiup and the v8.5.8 components
+        if: steps.paths.outputs.run == 'true'
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
+          echo "$HOME/.tiup/bin" >> "$GITHUB_PATH"
+          "$HOME/.tiup/bin/tiup" install playground pd:v8.5.8 tikv:v8.5.8
+      - name: start the playground
+        if: steps.paths.outputs.run == 'true'
+        working-directory: .
+        run: scripts/tikv/playground.sh start --tag loam-ts --timeout 120
+      - name: end-to-end against operon dev
+        if: steps.paths.outputs.run == 'true'
+        env:
+          OPERON_TEST_PD: 127.0.0.1:19379
+        run: pnpm run test:live
+      - name: stop the playground
+        if: always() && steps.paths.outputs.run == 'true'
+        working-directory: .
+        run: scripts/tikv/playground.sh stop --tag loam-ts
+
   deny:
     name: licenses, advisories, sources
     runs-on: ubuntu-latest

@@ -349,10 +349,19 @@ struct LiveArgs {
     /// in milliseconds (R1 plan rows T12-1, T13-1).
     #[arg(long, default_value_t = 200)]
     live_tick_read_lag_ms: u64,
+    /// A key prefix inside the Live keyspace, in hex [default: none]. Tests
+    /// isolate by it (R1 Ruling 1), as `--meta tikv://…?root=<hex>` does.
+    #[arg(long, value_parser = parse_live_root)]
+    live_root: Option<LiveRoot>,
+    /// QuickJS contexts per deployment, each with its own runtime and
+    /// worker thread, so up to this many × 64 MiB per deployment (R1 plan
+    /// rows T13-5, T14-1).
+    #[arg(long, default_value_t = operon_live_js::DEFAULT_CONTEXTS, value_parser = parse_live_js_contexts)]
+    live_js_contexts: usize,
     /// Serve no Loam Live API.
     #[arg(
         long,
-        conflicts_with_all = ["live_listen", "live_pd", "live_keyspace", "live_app", "live_tick_read_lag_ms"]
+        conflicts_with_all = ["live_listen", "live_pd", "live_keyspace", "live_app", "live_tick_read_lag_ms", "live_root", "live_js_contexts"]
     )]
     no_live: bool,
 }
@@ -381,15 +390,56 @@ impl LiveArgs {
         } else {
             self.live_pd.clone()
         };
-        let mut live = operon_live::LiveConfig::with_tikv(
-            &self.live_app,
-            operon_tikv::TikvConfig::new(pd, keyspace),
-        );
+        let mut tikv = operon_tikv::TikvConfig::new(pd, keyspace);
+        if let Some(LiveRoot(root)) = &self.live_root {
+            tikv.root.clone_from(root);
+        }
+        let mut live = operon_live::LiveConfig::with_tikv(&self.live_app, tikv);
         live.listen = self.live_listen;
         live.subs.tick_read_lag = Duration::from_millis(self.live_tick_read_lag_ms);
-        live.engine = Some(std::sync::Arc::new(operon_live_js::JsEngine::default()));
+        live.engine = Some(std::sync::Arc::new(operon_live_js::JsEngine::new(
+            operon_live_js::JsConfig {
+                contexts: self.live_js_contexts,
+                ..operon_live_js::JsConfig::default()
+            },
+        )));
         config.live = Some(live);
     }
+}
+
+/// `--live-js-contexts`: 1 to 256.
+#[cfg(feature = "live")]
+fn parse_live_js_contexts(value: &str) -> Result<usize, String> {
+    match value.parse::<usize>() {
+        Ok(n @ 1..=256) => Ok(n),
+        _ => Err(format!(
+            "--live-js-contexts {value:?}: a number from 1 to 256"
+        )),
+    }
+}
+
+/// `--live-root`'s bytes (a newtype, so clap takes one value, not a list).
+#[cfg(feature = "live")]
+#[derive(Debug, Clone)]
+struct LiveRoot(Vec<u8>);
+
+/// `--live-root`: an even number of hex digits.
+#[cfg(feature = "live")]
+fn parse_live_root(value: &str) -> Result<LiveRoot, String> {
+    let bad = || format!("--live-root {value:?}: not an even number of hex digits");
+    if value.is_empty() || !value.len().is_multiple_of(2) {
+        return Err(bad());
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|i| {
+            value
+                .get(i..i + 2)
+                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+                .ok_or_else(bad)
+        })
+        .collect::<Result<_, _>>()
+        .map(LiveRoot)
 }
 
 /// `--live-app`: a Live app name (the catalog's name rules).
@@ -1113,6 +1163,27 @@ mod tests {
         assert_eq!(live.subs.tick_read_lag, Duration::ZERO);
         let live = dev_config(&["--live-keyspace", "other"]).live.expect("on");
         assert_eq!(live.tikv.keyspace, "other");
+        assert!(live.tikv.root.is_empty(), "no root by default");
+        let live = dev_config(&["--live-root", "00ff1A"]).live.expect("on");
+        assert_eq!(live.tikv.root, [0x00, 0xff, 0x1a]);
+        for bad in ["", "abc", "zz"] {
+            assert!(
+                Cli::try_parse_from(["operon", "dev", "--live-root", bad]).is_err(),
+                "{bad:?}"
+            );
+        }
+        assert!(Cli::try_parse_from(["operon", "dev", "--no-live", "--live-root", "00"]).is_err());
+        // Owner ruling T14-1: the QuickJS pool size per deployment.
+        assert!(dev_config(&["--live-js-contexts", "2"]).live.is_some());
+        for bad in ["0", "257", "x"] {
+            assert!(
+                Cli::try_parse_from(["operon", "dev", "--live-js-contexts", bad]).is_err(),
+                "{bad:?}"
+            );
+        }
+        assert!(
+            Cli::try_parse_from(["operon", "dev", "--no-live", "--live-js-contexts", "2"]).is_err()
+        );
         assert!(dev_config(&["--no-live"]).live.is_none());
         let standalone = Cli::try_parse_from([
             "operon",
