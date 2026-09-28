@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import math
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol, TypeAlias, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, runtime_checkable
 
 from .schema import Schema
 from .token import ConsistencyToken
+
+if TYPE_CHECKING:
+    import polars
+    import pyarrow
 
 __all__ = [
     "CollectionInfo",
@@ -121,6 +125,15 @@ VectorLike: TypeAlias = Sequence[float] | _HasToList
 _U32_LIMIT = 2**32
 
 
+def _plain(items: object) -> tuple[object, ...]:
+    """A sequence as a tuple of Python scalars: `.tolist()` first when it has one (numpy)."""
+    if isinstance(items, _HasToList) and not isinstance(items, list | tuple):
+        items = items.tolist()
+    if not isinstance(items, Iterable):
+        raise ValueError(f"a sparse vector takes sequences, got {items!r}")
+    return tuple(items)
+
+
 @dataclass(frozen=True, slots=True)
 class SparseVector:
     """A sparse vector (overview A27), checked on construction.
@@ -133,8 +146,8 @@ class SparseVector:
     values: Sequence[float]
 
     def __post_init__(self) -> None:
-        indices = tuple(self.indices)
-        values = tuple(self.values)
+        indices = _plain(self.indices)
+        values = _plain(self.values)
         if len(indices) != len(values):
             raise ValueError(f"a sparse vector has {len(indices)} indices but {len(values)} values")
         for index in indices:
@@ -144,13 +157,15 @@ class SparseVector:
                 raise ValueError(f"a sparse vector index must be in 0..2**32, got {index}")
         if len(set(indices)) != len(indices):
             raise ValueError(f"a sparse vector's indices must be unique: {list(indices)}")
+        floats: list[float] = []
         for value in values:
             if isinstance(value, bool) or not isinstance(value, int | float):
                 raise ValueError(f"a sparse vector value is a number, got {value!r}")
             if not math.isfinite(value):
                 raise ValueError(f"a sparse vector value must be finite, got {value!r}")
+            floats.append(float(value))
         object.__setattr__(self, "indices", indices)
-        object.__setattr__(self, "values", tuple(float(v) for v in values))
+        object.__setattr__(self, "values", tuple(floats))
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,11 +262,33 @@ class Hit:
 
 @dataclass(frozen=True, slots=True)
 class SearchResponse:
+    """A search answer. `to_arrow()`/`to_polars()` need the `arrow`/`polars` extras.
+
+    Any Arrow PyCapsule consumer takes it directly: `pyarrow.table(response)`,
+    `polars.DataFrame(response)`.
+    """
+
     hits: list[Hit]
     total: TotalHits | None
     aggregations: dict[str, Any] | None
     groups: list[dict[str, Any]] | None
     read_token: ConsistencyToken
+
+    def to_arrow(self, *, source: Literal["json", "columns"] = "json") -> pyarrow.Table:
+        """The hits as a table: `_id`, `_score`, the source, then vectors (`operon.arrow`)."""
+        from .arrow import search_response_to_arrow
+
+        return search_response_to_arrow(self, source=source)
+
+    def to_polars(self) -> polars.DataFrame:
+        """`to_arrow()` as a Polars DataFrame, through the Arrow C stream."""
+        from .arrow import to_polars
+
+        return to_polars(self.to_arrow())
+
+    def __arrow_c_stream__(self, requested_schema: object | None = None) -> object:
+        """The Arrow PyCapsule stream of `to_arrow()`."""
+        return self.to_arrow().__arrow_c_stream__(requested_schema)
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,6 +311,22 @@ class SqlResult:
         """Each row as a dict keyed by column name."""
         names = [c.name for c in self.columns]
         return [dict(zip(names, row, strict=True)) for row in self.rows]
+
+    def to_arrow(self) -> pyarrow.Table:
+        """The rows as a table, typed from each column's Arrow type name (`operon.arrow`)."""
+        from .arrow import sql_result_to_arrow
+
+        return sql_result_to_arrow(self)
+
+    def to_polars(self) -> polars.DataFrame:
+        """`to_arrow()` as a Polars DataFrame, through the Arrow C stream."""
+        from .arrow import to_polars
+
+        return to_polars(self.to_arrow())
+
+    def __arrow_c_stream__(self, requested_schema: object | None = None) -> object:
+        """The Arrow PyCapsule stream of `to_arrow()`."""
+        return self.to_arrow().__arrow_c_stream__(requested_schema)
 
 
 @dataclass(frozen=True, slots=True)

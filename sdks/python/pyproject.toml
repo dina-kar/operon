@@ -44,7 +44,7 @@ strict = true
 python_version = "3.10"
 
 [[tool.mypy.overrides]]
-module = ["adbc_driver_flightsql.*", "adbc_driver_manager.*", "lance.*"]
+module = ["adbc_driver_flightsql.*", "adbc_driver_manager.*", "lance.*", "pyarrow.*"]
 ignore_missing_imports = true
 
 # pytest imports numpy for type checking only; numpy >= 2.5 stubs use 3.12 syntax (pylance pulls it).

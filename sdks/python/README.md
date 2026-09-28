@@ -160,9 +160,88 @@ With pylance (the release matching the server's Lance, 12.0.x):
 ```python
 import lance
 
-dataset = lance.dataset(plan.lance.uri, version=plan.lance.version)
-print(dataset.count_rows())  # == plan.live_rows
+if plan.lance is not None and not plan.tail:
+    dataset = lance.dataset(plan.lance.uri, version=plan.lance.version)
+    print(dataset.count_rows())  # == plan.live_rows
+else:
+    # No Lance version yet, or writes it lacks: read the state through plan.pin.
+    rows = ns.sql("SELECT count(*) FROM kb", consistency=plan.pin)
 ```
 
 The SDK does not open Lance itself. Ray, Polars and torch readers built on scan
 plans arrive in M2.
+
+## Arrow and Polars results
+
+`SearchResponse` and `SqlResult` convert to Arrow and Polars (extras `arrow` and
+`polars`):
+
+```python
+table = kb.search().retrieve(q.text("refund", k=10)).execute().to_arrow()  # pyarrow.Table
+frame = ns.sql("SELECT tenant, count(*) AS n FROM kb GROUP BY tenant").to_polars()
+```
+
+Both results implement the Arrow PyCapsule interface (`__arrow_c_stream__`), so
+any consumer takes them directly: `pyarrow.table(result)`,
+`polars.DataFrame(result)`, DuckDB. Polars shares the buffers where its layout
+matches (numbers, booleans, fixed-size lists).
+
+A search table has one row per hit, in rank order: `_id` (a string: a u64 id in
+decimal, a string id as is, a UUID hyphenated), `_score` (float32), `_source`
+(the source as a JSON string), then one column per dense vector name
+(`fixed_size_list<float32>` when every hit has the same length, else
+`list<float32>`) and one per sparse vector name (`struct<indices, values>`), each
+sorted by name. The schema metadata `operon.read_token` holds the read token.
+`to_arrow(source="columns")` spreads the source's top-level keys into columns
+instead. The default table has the shape Flight SQL ingest takes, so it loads
+back into a collection (`_score` is ignored).
+
+A SQL table is typed from each column's Arrow type name: integers, floats,
+booleans, strings, binaries, dates, timestamps (with their unit and zone) and
+fixed-size lists get their exact type; decimals stay the strings the server sent,
+and anything else is inferred by pyarrow.
+
+REST results arrive as JSON and are converted on each call. For exact types and
+large results, use Flight SQL, which is Arrow end to end.
+
+## Arrow results over Flight SQL
+
+With the `flight` extra, `operon.flight.FlightSqlClient` runs read-only SQL over
+Arrow Flight SQL (`operon dev` listens on `grpc://127.0.0.1:8082`):
+
+```python
+import polars
+from operon.flight import FlightSqlClient
+
+with FlightSqlClient("grpc://127.0.0.1:8082", namespace="docs") as flight:
+    table = flight.sql("SELECT * FROM kb WHERE n > 1")  # pyarrow.Table
+    df = table.to_pandas()  # pandas
+    frame = polars.DataFrame(table)  # Polars, zero-copy through the C stream
+    for batch in flight.sql_batches("SELECT * FROM kb"):  # streamed record batches
+        ...
+```
+
+`consistency=` takes `"strong"` (the default), a token (at least that token) or
+a scan plan's `Pin`. Flight SQL has no eventual reads: `"eventual"` raises
+`ValueError`. Errors map to the same `OperonError` subclasses as REST, with the
+ADBC error as `__cause__`; an error with no REST equivalent has code `"flight"`.
+
+## Bulk loading Arrow data
+
+`FlightSqlClient.ingest` appends an Arrow table or record batch reader to an
+existing collection, `ingest_stream` to a stream; each returns the row count:
+
+```python
+flight.ingest("kb", table)  # columns: _id, _source or fields, vectors by name
+flight.ingest("kb", table, id_type="u64")  # string _id values are u64 ids
+flight.ingest_stream("events", records)  # columns: key, value, headers, timestamp, partition
+```
+
+The server maps the columns: `_id` is the document id (integers are u64 ids;
+strings are string ids unless `id_type` is `"u64"` or `"uuid"`), `_source` a JSON
+string (or one column per schema field instead), vectors by field name
+(fixed-size or variable lists of floats), sparse vectors as
+`struct<indices, values>`; `_score`, `_seq_no` and `_partition` are ignored. Rows
+are upserts (`mode="append"`), so loading the same ids again replaces them. Ingest
+returns no consistency token (a strong read sees the rows) and is never retried,
+because a stream ingest is not idempotent.

@@ -213,7 +213,19 @@ fn pin_metadata_selects_a_pinned_read() {
         (PIN_MANIFEST_METADATA, "18446744073709551616"),
         (TOKEN, &text),
     ]);
-    refused(&[(PIN_MANIFEST_METADATA, "3"), (TOKEN, "garbage")]);
+    // A token that does not parse is refused on its own terms (O-M16-2).
+    match metadata_consistency(&metadata(&[
+        (PIN_MANIFEST_METADATA, "3"),
+        (TOKEN, "garbage"),
+    ])) {
+        Err(ServiceError::InvalidArgument(got)) => {
+            assert!(
+                got.starts_with("invalid operon-consistency-token: "),
+                "{got}"
+            )
+        }
+        other => panic!("expected InvalidArgument, got {other:?}"),
+    }
 
     // The ticket carries the pin, so DoGet reads the same state.
     let ticket = StatementTicket {
@@ -232,6 +244,40 @@ fn pin_metadata_selects_a_pinned_read() {
         ticket_consistency(&unpinned),
         Err(ServiceError::InvalidArgument(_))
     ));
+}
+
+#[test]
+fn metadata_consistency_refuses_an_unparsable_token() {
+    const TOKEN: &str = "operon-consistency-token";
+    let refused = |map: &MetadataMap, detail: &str| match metadata_consistency(map) {
+        Err(ServiceError::InvalidArgument(got)) => assert!(
+            got.starts_with("invalid operon-consistency-token: ") && got.contains(detail),
+            "{got}"
+        ),
+        other => panic!("{map:?}: expected InvalidArgument, got {other:?}"),
+    };
+    // A token that does not parse names the header and the parse error.
+    refused(&metadata(&[(TOKEN, "v1:x")]), "\"v1:x\"");
+    refused(&metadata(&[(TOKEN, "c1:nope")]), "\"c1:nope\"");
+    refused(&metadata(&[(TOKEN, "")]), "\"\"");
+    // A value that is not visible ASCII.
+    let mut non_ascii = MetadataMap::new();
+    non_ascii.insert(
+        TOKEN,
+        tonic::metadata::AsciiMetadataValue::try_from("v1:s1/p0@\u{e9}".as_bytes())
+            .expect("obs-text is a valid metadata value"),
+    );
+    refused(&non_ascii, "not visible ASCII");
+    // Absent reads strong; a valid token reads at least it.
+    assert_eq!(
+        metadata_consistency(&MetadataMap::new()).expect("strong"),
+        ReadConsistency::Strong
+    );
+    let token = ConsistencyToken(vec![(StreamId(2), 0, 7)]);
+    assert_eq!(
+        metadata_consistency(&metadata(&[(TOKEN, &token.to_string())])).expect("at least"),
+        ReadConsistency::AtLeast(token)
+    );
 }
 
 #[tokio::test]

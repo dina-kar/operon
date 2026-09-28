@@ -4,8 +4,10 @@
 //!
 //! - The namespace of a request is its `operon-namespace` metadata
 //!   ([`NAMESPACE_METADATA`], `default` when absent).
-//! - Its consistency is `AtLeast(token)` when `operon-consistency-token`
-//!   parses as a token, else `Strong`.
+//! - Its consistency is `AtLeast(token)` with an `operon-consistency-token`,
+//!   `Strong` without one; a token that does not parse is
+//!   `InvalidArgument`, as REST answers 400 for the same header (owner
+//!   ruling O-M16-2).
 //! - `operon-hot` goes through [`HotLayer`] on the tonic server.
 //! - Statements plan through [`plan_read_only`], which refreshes the
 //!   namespace's catalog first, so a collection created just before a
@@ -107,8 +109,9 @@ pub fn ticket_consistency(ticket: &StatementTicket) -> Result<ReadConsistency, S
 /// The read a statement's request metadata asks for (rule 2, Task 14 rule
 /// 6): `operon-pin-manifest` with `operon-consistency-token` reads
 /// `Pinned`, the token alone `AtLeast` and neither `Strong`. A token that
-/// does not parse reads `Strong`; a pinned manifest without a (parsable)
-/// token, or one that is not a canonical decimal u64, is `InvalidArgument`.
+/// is not visible ASCII or does not parse is `InvalidArgument` (owner
+/// ruling O-M16-2), and so is a pinned manifest without a token or one that
+/// is not a canonical decimal u64.
 pub fn metadata_consistency(
     metadata: &tonic::metadata::MetadataMap,
 ) -> Result<ReadConsistency, ServiceError> {
@@ -134,10 +137,19 @@ fn canonical_u64(text: &str) -> Option<u64> {
 fn statement_read(
     metadata: &tonic::metadata::MetadataMap,
 ) -> Result<(Option<ConsistencyToken>, Option<u64>), ServiceError> {
-    let token = metadata
-        .get(CONSISTENCY_METADATA)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|text| ConsistencyToken::from_str(text).ok());
+    let token = match metadata.get(CONSISTENCY_METADATA) {
+        None => None,
+        Some(value) => {
+            let text = value.to_str().map_err(|_| {
+                ServiceError::InvalidArgument(format!(
+                    "invalid {CONSISTENCY_METADATA}: not visible ASCII"
+                ))
+            })?;
+            Some(ConsistencyToken::from_str(text).map_err(|err| {
+                ServiceError::InvalidArgument(format!("invalid {CONSISTENCY_METADATA}: {err}"))
+            })?)
+        }
+    };
     let Some(pin) = metadata.get(PIN_MANIFEST_METADATA) else {
         return Ok((token, None));
     };
