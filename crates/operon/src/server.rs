@@ -432,11 +432,15 @@ pub enum ServerError {
     Durable(#[from] operon_durable::DurableError),
 }
 
-/// The embedded durable server (D1 Task 3), when the build has the `durable`
-/// feature and the config asks for it.
+/// The embedded durable server (D1 Task 3) and Loam's durable runtime on it
+/// (Task 6), when the build has the `durable` feature and the config asks
+/// for it.
 #[cfg(feature = "durable")]
 #[derive(Debug)]
-struct Durable(Option<operon_durable::DurableServer>);
+struct Durable {
+    server: Option<operon_durable::DurableServer>,
+    runtime: Option<operon_durable::DurableRuntime>,
+}
 
 /// The embedded durable server: none in a build without `durable`.
 #[cfg(not(feature = "durable"))]
@@ -447,7 +451,10 @@ impl Durable {
     /// No durable server (a placeholder until the caller hands one over).
     #[cfg(feature = "durable")]
     fn none() -> Self {
-        Self(None)
+        Self {
+            server: None,
+            runtime: None,
+        }
     }
 
     #[cfg(not(feature = "durable"))]
@@ -460,10 +467,14 @@ impl Durable {
     #[cfg(feature = "durable")]
     async fn start(config: &ServerConfig, node_id: u64) -> Result<Self, ServerError> {
         match &config.durable {
-            Some(durable) => Ok(Self(Some(
-                operon_durable::DurableServer::start(durable.clone(), &node_id.to_string()).await?,
-            ))),
-            None => Ok(Self(None)),
+            Some(durable) => Ok(Self {
+                server: Some(
+                    operon_durable::DurableServer::start(durable.clone(), &node_id.to_string())
+                        .await?,
+                ),
+                runtime: None,
+            }),
+            None => Ok(Self::none()),
         }
     }
 
@@ -472,17 +483,53 @@ impl Durable {
         Ok(Self)
     }
 
-    /// Drains and stops the server; its port and store are free afterwards.
+    /// Starts Loam's durable runtime on the server, if there is one: after
+    /// [`Server::assemble`], before the routes serve (row T0-6, X8). A
+    /// failure stops the server too.
+    #[cfg(feature = "durable")]
+    async fn start_runtime(&mut self, node_id: u64) -> Result<(), ServerError> {
+        let Some(server) = &self.server else {
+            return Ok(());
+        };
+        match operon_durable::DurableRuntime::start(server, &node_id.to_string()).await {
+            Ok(runtime) => {
+                self.runtime = Some(runtime);
+                Ok(())
+            }
+            Err(err) => {
+                if let Some(server) = self.server.take() {
+                    server.stop().await;
+                }
+                Err(err.into())
+            }
+        }
+    }
+
+    #[cfg(not(feature = "durable"))]
+    #[allow(clippy::unused_async)]
+    async fn start_runtime(&mut self, _node_id: u64) -> Result<(), ServerError> {
+        Ok(())
+    }
+
+    /// Stops the runtime (it takes no more tasks), then drains and stops the
+    /// server; its port and store are free afterwards. Each is a shutdown
+    /// phase: `durable_runtime`, then `durable`.
     async fn stop(self) {
+        shutdown_phase("durable_runtime");
         #[cfg(feature = "durable")]
-        if let Some(server) = self.0 {
+        if let Some(runtime) = self.runtime {
+            runtime.stop().await;
+        }
+        shutdown_phase("durable");
+        #[cfg(feature = "durable")]
+        if let Some(server) = self.server {
             server.stop().await;
         }
     }
 
     #[cfg(feature = "durable")]
     fn addr(&self) -> Option<SocketAddr> {
-        self.0.as_ref().map(|server| server.listen())
+        self.server.as_ref().map(|server| server.listen())
     }
 
     #[cfg(not(feature = "durable"))]
@@ -856,10 +903,15 @@ impl Server {
                 return Err(err);
             }
         };
-        // Task 6 starts the DurableRuntime here, before the listener serves.
         let (stop_http, stopped) = oneshot::channel::<()>();
+        // The listener serves once the durable runtime has started (T0-6,
+        // X8); a dropped gate means the start failed.
+        let (serve_now, serve_gate) = oneshot::channel::<()>();
         let app = parts.app;
         let http = tokio::spawn(async move {
+            if serve_gate.await.is_err() {
+                return;
+            }
             let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
                 let _ = stopped.await;
             });
@@ -867,8 +919,7 @@ impl Server {
                 tracing::error!(%err, "HTTP server failed");
             }
         });
-        tracing::info!(%local_addr, "operon is serving");
-        Ok(Self {
+        let mut server = Self {
             local_addr,
             node: None,
             meta: None,
@@ -891,7 +942,19 @@ impl Server {
             #[cfg(feature = "es")]
             es: parts.es,
             cluster: None,
-        })
+        };
+        // The runtime after the collection service, before the listener
+        // serves (T0-6, X8). A failure shuts everything down again.
+        if let Err(err) = server.durable.start_runtime(NODE_ID).await {
+            drop(serve_now);
+            if let Err(shutdown) = server.shutdown().await {
+                tracing::warn!(%shutdown, "stopping after a failed start");
+            }
+            return Err(err);
+        }
+        let _ = serve_now.send(());
+        tracing::info!(%local_addr, "operon is serving");
+        Ok(server)
     }
 
     /// Rule 3: one cluster node. The metastore routes are served (with
@@ -936,13 +999,13 @@ impl Server {
             node.clone(),
             store,
             transport.clone(),
-            late.clone(),
         )
         .await;
         match started {
             Ok((meta, meta_store, registry, parts)) => {
-                tracing::info!(%local_addr, node_id, %roles, "operon cluster node is serving");
-                Ok(Self {
+                let app = parts.app.clone();
+                let serve = late.clone();
+                let mut server = Self {
                     local_addr,
                     node: Some(node),
                     meta: Some(meta),
@@ -972,7 +1035,18 @@ impl Server {
                         seeds: cluster.peers.values().cloned().collect(),
                         late,
                     }),
-                })
+                };
+                // The runtime after the collection service, before the
+                // routes serve (T0-6, X8). A failure shuts the node down.
+                if let Err(err) = server.durable.start_runtime(node_id).await {
+                    if let Err(shutdown) = server.shutdown().await {
+                        tracing::warn!(%shutdown, "stopping the node after a failed start");
+                    }
+                    return Err(err);
+                }
+                serve.set(app);
+                tracing::info!(%local_addr, node_id, %roles, "operon cluster node is serving");
+                Ok(server)
             }
             Err(err) => {
                 if let Err(shutdown) = node.shutdown().await {
@@ -994,7 +1068,6 @@ impl Server {
         node: MetaNode,
         store: Store,
         transport: HttpTransport,
-        late: LateRouter,
     ) -> Result<(MetaClient, Arc<dyn MetaStore>, Arc<NodeRegistry>, Assembled), ServerError> {
         let node_id = cluster.node_id;
         let lowest = cluster.peers.keys().next().copied();
@@ -1046,7 +1119,6 @@ impl Server {
             node,
             store,
             transport.clone(),
-            late,
             addr,
             join_changed,
         )
@@ -1066,7 +1138,6 @@ impl Server {
         node: MetaNode,
         store: Store,
         transport: HttpTransport,
-        late: LateRouter,
         addr: SocketAddr,
         join_changed: bool,
     ) -> Result<(MetaClient, Arc<dyn MetaStore>, Arc<NodeRegistry>, Assembled), ServerError> {
@@ -1139,8 +1210,8 @@ impl Server {
             }
         };
         parts.durable = durable;
-        // Task 6 starts the DurableRuntime here, before the routes serve.
-        late.set(parts.app.clone());
+        // The caller starts the durable runtime, then serves the routes
+        // (`late.set`), once the node is whole enough to shut down.
         Ok((meta, meta_store, registry, parts))
     }
 
@@ -1563,9 +1634,8 @@ impl Server {
             flight.stop().await;
         }
         // D1 (T0-6, X8): after Flight (and, in cluster mode, after
-        // `late.close()`), before the collection service. Task 6 stops the
-        // DurableRuntime first, then the server.
-        shutdown_phase("durable");
+        // `late.close()`), before the collection service: the runtime first,
+        // then the server (phases `durable_runtime`, `durable`).
         self.durable.stop().await;
         shutdown_phase("collections");
         self.collections.shutdown().await;
