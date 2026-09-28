@@ -1,5 +1,5 @@
 /** `@operon/client`: a zero-dependency client for the Operon native REST API. */
-export { Namespace, OperonClient } from "./client.js";
+export { Collection, Namespace, OperonClient, SearchBuilder } from "./client.js";
 export {
   AlreadyExistsError,
   ConflictError,
@@ -14,18 +14,70 @@ export {
   TransportError,
   UnavailableError,
 } from "./errors.js";
+export {
+  type AnnParams,
+  type BoolSpec,
+  type Bounds,
+  type FieldValue,
+  type Fusion,
+  type Fuzziness,
+  type MatchOptions,
+  type MultiMatchKind,
+  type MultiMatchOptions,
+  type Operator,
+  type Order,
+  type Projection,
+  type Query,
+  q,
+  type Retriever,
+  type SearchRequestInput,
+  type SortKey,
+  type TrackTotalHits,
+} from "./query.js";
+export {
+  type Distance,
+  type Dynamic,
+  type FieldInput,
+  type Kind,
+  type SchemaInput,
+  type SparseModifier,
+  type SparseVectorFieldInput,
+  s,
+  type VectorInput,
+} from "./schema.js";
 export { ConsistencyToken, type TokenItem } from "./token.js";
 export type {
   ClientOptions,
+  CollectionInfo,
+  Column,
   Consistency,
+  DocumentInput,
   FetchedRecord,
   FetchResult,
+  Hit,
   Id,
+  LanceVersion,
+  Op,
   PartitionInfo,
+  PatchInput,
+  PatchMode,
+  Pin,
   ProduceRecord,
   ProduceResult,
+  ReadOptions,
   RequestOptions,
+  ScanAt,
+  ScanColumn,
+  ScanFragment,
+  ScanPlan,
+  SearchResponse,
+  SparseVector,
+  SqlResult,
+  StoredDoc,
   StreamInfo,
+  TotalHits,
+  VectorLike,
+  WriteResult,
 } from "./types.js";
 
 export const VERSION = "0.0.1";
