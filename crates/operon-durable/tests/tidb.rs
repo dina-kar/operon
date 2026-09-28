@@ -150,6 +150,35 @@ async fn migrate_then_serve() {
     db.drop().await;
 }
 
+/// Owner ruling Q8: a verifying `ssl-mode` really verifies. The playground's
+/// TiDB serves a self-signed certificate: `required` connects (TLS works),
+/// while `verify_identity` against the driver's roots is refused before any
+/// schema is made.
+#[tokio::test(flavor = "multi_thread")]
+async fn verify_identity_refuses_an_untrusted_certificate() {
+    let Some(admin_url) = admin_url("verify_identity_refuses_an_untrusted_certificate") else {
+        return;
+    };
+    let db = Db::fresh(&admin_url, "vid").await;
+    let with_mode = |mode: &str| {
+        DurableStore::mysql(&format!("{}?ssl-mode={mode}", db.url)).expect("a mysql store")
+    };
+    let err = DurableServer::migrate(with_mode("verify_identity"))
+        .await
+        .expect_err("a self-signed certificate is not trusted");
+    let message = err.to_string();
+    assert!(
+        message.to_ascii_lowercase().contains("certificate"),
+        "{message}"
+    );
+    assert_eq!(db.tables().await, 0, "nothing was migrated");
+    DurableServer::migrate(with_mode("required"))
+        .await
+        .expect("TLS without verification connects");
+    assert!(db.tables().await > 0);
+    db.drop().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn unmigrated_schema_names_the_command() {
     let Some(admin_url) = admin_url("unmigrated_schema_names_the_command") else {

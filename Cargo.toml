@@ -101,6 +101,9 @@ resonate-transport-http-push = { git = "https://github.com/dina-kar/resonate", r
 rmcp = { version = "3.4.1", features = ["server", "transport-streamable-http-server"] }
 roaring = "0.11"
 rustc-hash = "2"
+# The TLS library under sqlx (0.23, ring): operon-durable sets the process
+# default crypto provider when none is set (D1 Task 5, T5-4).
+rustls = { version = "0.23", default-features = false }
 serde = { version = "1", features = ["derive"] }
 # `preserve_order`: qdrant-edge needs it, and Cargo unifies features, so the
 # whole workspace uses one insertion-ordered map type (M1.3 row E58).

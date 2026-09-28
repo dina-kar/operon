@@ -5863,6 +5863,7 @@ dependencies = [
  "resonate-server-sqlite",
  "resonate-transport-http-poll",
  "resonate-transport-http-push",
+ "rustls",
  "serde_json",
  "sqlx",
  "tempfile",

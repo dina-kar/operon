@@ -84,25 +84,50 @@ pub enum DurableStore {
 
 impl DurableStore {
     /// A MySQL store from `mysql://user:pass@host:port/db?ssl-mode=…`
-    /// (D1 Task 4). `ssl-mode` (or `sslmode`) is `required` or `disabled`;
-    /// without it TLS is required unless the host is `localhost` or a
-    /// loopback address. The URL is kept as given.
+    /// (D1 Task 4). `ssl-mode` (or `sslmode`) is `required`, `disabled`,
+    /// `verify_ca` or `verify_identity` (owner ruling Q8); without it TLS is
+    /// required unless the host is `localhost` or a loopback address.
+    /// `ssl-ca=<path>` names the CA file the verifying modes check the
+    /// server's certificate against (without it, the driver's built-in
+    /// roots); it must be a file, and it needs a verifying mode. The URL is
+    /// kept as given.
     pub fn mysql(url: &str) -> Result<Self, DurableError> {
         let parsed = parse_mysql(url)?;
+        let bad = |why: String| {
+            DurableError::Config(format!("--durable-store {}: {why}", redact_url(url)))
+        };
         let mut tls = None;
+        let mut ca = None;
         for (key, value) in parsed.query_pairs() {
             if key == "ssl-mode" || key == "sslmode" {
                 tls = Some(match value.to_ascii_lowercase().as_str() {
                     "required" => MysqlTls::Required,
                     "disabled" => MysqlTls::Disabled,
+                    "verify_ca" => MysqlTls::VerifyCa,
+                    "verify_identity" => MysqlTls::VerifyIdentity,
                     _ => {
-                        return Err(DurableError::Config(format!(
-                            "--durable-store {}: {key}={value} is not supported; use \
-                             ssl-mode=required or ssl-mode=disabled",
-                            redact_url(url)
+                        return Err(bad(format!(
+                            "{key}={value} is not supported; use ssl-mode=required, \
+                             disabled, verify_ca or verify_identity"
                         )));
                     }
                 });
+            } else if key == "ssl-ca" {
+                ca = Some(PathBuf::from(value.into_owned()));
+            }
+        }
+        if let Some(ca) = &ca {
+            if !tls.is_some_and(MysqlTls::verifies) {
+                return Err(bad(format!(
+                    "ssl-ca={} needs ssl-mode=verify_ca or ssl-mode=verify_identity",
+                    ca.display()
+                )));
+            }
+            if !ca.is_file() {
+                return Err(bad(format!(
+                    "ssl-ca={} is not a readable file",
+                    ca.display()
+                )));
             }
         }
         let tls = tls.unwrap_or_else(|| {
@@ -185,7 +210,7 @@ pub(crate) fn scrub(message: &str, url: &str) -> String {
     };
     // The URL as given, as the url crate writes it, and as Resonate got it.
     let mut urls = vec![url.to_string(), parsed.to_string()];
-    for tls in [MysqlTls::Required, MysqlTls::Disabled] {
+    for tls in MysqlTls::ALL {
         urls.extend(mysql_url(url, tls));
     }
     for form in urls {
@@ -228,7 +253,8 @@ fn percent_decode(text: &str) -> String {
 
 /// The URL Resonate is handed for `url`: `tls` as `ssl-mode` (replacing any
 /// `ssl-mode` or `sslmode` the URL has), and the database
-/// `loam_durable_default` (Ruling 2) when the URL names none.
+/// `loam_durable_default` (Ruling 2) when the URL names none. Every other
+/// parameter, `ssl-ca` among them, is passed through to sqlx.
 pub(crate) fn mysql_url(url: &str, tls: MysqlTls) -> Result<String, DurableError> {
     let mut parsed = parse_mysql(url)?;
     let kept: Vec<(String, String)> = parsed
@@ -236,10 +262,7 @@ pub(crate) fn mysql_url(url: &str, tls: MysqlTls) -> Result<String, DurableError
         .filter(|(key, _)| key != "ssl-mode" && key != "sslmode")
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect();
-    let mode = match tls {
-        MysqlTls::Required => "REQUIRED",
-        MysqlTls::Disabled => "DISABLED",
-    };
+    let mode = tls.ssl_mode();
     parsed
         .query_pairs_mut()
         .clear()
@@ -269,12 +292,46 @@ fn parse_mysql(url: &str) -> Result<Url, DurableError> {
     Ok(parsed)
 }
 
-/// TLS towards the MySQL store (D1 Task 4 maps it onto the URL).
+/// TLS towards the MySQL store (D1 Task 4 maps it onto the URL's
+/// `ssl-mode`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MysqlTls {
+    /// Encrypted, the certificate unchecked.
     #[default]
     Required,
+    /// Plain text: loopback hosts by default, or `ssl-mode=disabled`.
     Disabled,
+    /// Encrypted, the certificate checked against the CA (`ssl-ca`, else the
+    /// driver's built-in roots), the host name not (owner ruling Q8).
+    VerifyCa,
+    /// As `VerifyCa`, and the certificate must name the host: managed TiDB
+    /// such as TiDB Cloud (owner ruling Q8).
+    VerifyIdentity,
+}
+
+impl MysqlTls {
+    /// Every mode, for scrubbing each URL form Resonate may have quoted.
+    pub(crate) const ALL: [Self; 4] = [
+        Self::Required,
+        Self::Disabled,
+        Self::VerifyCa,
+        Self::VerifyIdentity,
+    ];
+
+    /// Whether the server's certificate is checked.
+    pub fn verifies(self) -> bool {
+        matches!(self, Self::VerifyCa | Self::VerifyIdentity)
+    }
+
+    /// The `ssl-mode` value sqlx reads.
+    pub(crate) fn ssl_mode(self) -> &'static str {
+        match self {
+            Self::Required => "REQUIRED",
+            Self::Disabled => "DISABLED",
+            Self::VerifyCa => "VERIFY_CA",
+            Self::VerifyIdentity => "VERIFY_IDENTITY",
+        }
+    }
 }
 
 /// Keys Loam sets itself and `--durable-set` may not change, with the flag
@@ -581,7 +638,6 @@ mod tests {
         );
         for bad in [
             "mysql://u:hunter22@tidb:4000/d?ssl-mode=preferred",
-            "mysql://u:hunter22@tidb:4000/d?ssl-mode=verify_identity",
             "mysql://u:hunter22@tidb:4000/d?ssl-mode=nonsense",
             "mysql://u:hunter22@/d",
             "postgres://u:hunter22@tidb/d",
@@ -611,6 +667,83 @@ mod tests {
         assert_eq!(
             mysql_url("mysql://u@127.0.0.1:4000/", MysqlTls::Disabled).expect("url"),
             "mysql://u@127.0.0.1:4000/loam_durable_default?ssl-mode=DISABLED"
+        );
+    }
+
+    /// Owner ruling Q8: `verify_ca` and `verify_identity` verify the server's
+    /// certificate, against `ssl-ca=<path>` when the URL names one (else the
+    /// driver's built-in roots, which is what a managed TiDB with a public
+    /// certificate needs). `ssl-ca` without a verifying mode is refused: it
+    /// would look like verification and be none.
+    #[test]
+    fn verifying_tls_modes_take_a_ca_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ca = dir.path().join("ca.pem");
+        std::fs::write(&ca, "not parsed here").expect("write ca");
+        let ca = ca.display().to_string();
+        let tls = |url: &str| match DurableStore::mysql(url) {
+            Ok(DurableStore::Mysql { tls, url: kept }) => {
+                assert_eq!(kept, url, "the URL is kept as given");
+                tls
+            }
+            other => panic!("{url}: {other:?}"),
+        };
+        assert_eq!(
+            tls("mysql://u:pw@gateway.tidbcloud.com:4000/d?ssl-mode=verify_identity"),
+            MysqlTls::VerifyIdentity
+        );
+        assert_eq!(
+            tls("mysql://u:pw@tidb:4000/d?sslmode=VERIFY_CA"),
+            MysqlTls::VerifyCa
+        );
+        assert_eq!(
+            tls(&format!(
+                "mysql://u:pw@tidb:4000/d?ssl-mode=verify_ca&ssl-ca={ca}"
+            )),
+            MysqlTls::VerifyCa
+        );
+        assert_eq!(
+            tls(&format!(
+                "mysql://u:pw@127.0.0.1:4000/d?ssl-ca={ca}&ssl-mode=verify_identity"
+            )),
+            MysqlTls::VerifyIdentity
+        );
+
+        let missing = dir.path().join("absent.pem").display().to_string();
+        let err = DurableStore::mysql(&format!(
+            "mysql://u:hunter22@tidb:4000/d?ssl-mode=verify_ca&ssl-ca={missing}"
+        ))
+        .expect_err("a CA file that is not there")
+        .to_string();
+        assert!(err.contains(&missing) && err.contains("ssl-ca"), "{err}");
+        assert!(!err.contains("hunter22"), "{err}");
+
+        for mode in ["", "&ssl-mode=required", "&ssl-mode=disabled"] {
+            let url = format!("mysql://u:hunter22@tidb:4000/d?ssl-ca={ca}{mode}");
+            let err = DurableStore::mysql(&url).expect_err(&url).to_string();
+            assert!(
+                err.contains("ssl-mode=verify_ca or ssl-mode=verify_identity"),
+                "{err}"
+            );
+            assert!(!err.contains("hunter22"), "{err}");
+        }
+    }
+
+    /// The verifying modes reach Resonate (and the schema check) as sqlx
+    /// spells them, with `ssl-ca` passed through.
+    #[test]
+    fn the_resonate_url_carries_the_verifying_modes() {
+        assert_eq!(
+            mysql_url(
+                "mysql://u:p@tidb:4000/db?ssl-ca=%2Fetc%2Fca.pem&ssl-mode=verify_ca",
+                MysqlTls::VerifyCa
+            )
+            .expect("url"),
+            "mysql://u:p@tidb:4000/db?ssl-ca=%2Fetc%2Fca.pem&ssl-mode=VERIFY_CA"
+        );
+        assert_eq!(
+            mysql_url("mysql://u:p@tidb:4000/db", MysqlTls::VerifyIdentity).expect("url"),
+            "mysql://u:p@tidb:4000/db?ssl-mode=VERIFY_IDENTITY"
         );
     }
 
