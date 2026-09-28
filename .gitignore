@@ -10,6 +10,15 @@
 *.wal
 *.seg
 
+# Local run artifacts (dev/CLI scratch output, never committed)
+/run.history
+/run.ndjson
+/tidb-slow.log
+/tidb*.log
+
+# Product/marketing docs live in the private dina-kar/loam-cloud repo
+/docs/product/
+
 # Python
 __pycache__/
 
