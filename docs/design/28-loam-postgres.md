@@ -13,7 +13,7 @@ The owner then chose the WAL design:
 - **A Loam crate speaks Neon's safekeeper protocol**, so walproposer and the pageserver stay unmodified.
 - **A pgbench merge gate** gates the switch-over.
 
-These are decisions **D230–D236**, all owner-approved on 2026-09-29. The WAL replacement (D233) is approved *direction*: it becomes the default only if the benchmark gate passes. The concrete WAL design is **D237–D241**. They are Loam's proposals within the owner's decisions and are marked as such. Open questions are **Q110–Q119**.
+These are decisions **D230–D236**, all owner-approved on 2026-09-29. The WAL replacement (D233) is approved *direction*: it becomes the default only if the benchmark gate passes. The concrete WAL design is **D237–D241**. They are Loam's proposals within the owner's decisions and are marked as such. Open questions are **Q110–Q119**. Arm A of the WAL (§7.2, 2026-09-30) adds D263–D270 (D263, compio for the data path, is the owner's) and Q261–Q264.
 
 This document **supersedes §23's D149** (Neon for the showcase apps) and **D151** (fork only when needed). It **amends D150** (the control plane grows from a client into the primary control plane) and **D153** (PgDog, not Loam's pg listener, splices Postgres connections to computes). D148, D152, D154 and D155 stand. D156 and D157's WeSQL row are not affected.
 
@@ -580,6 +580,131 @@ rf 1 compares one safekeeper with one TiKV store; rf 3 compares three safekeeper
 2. **No PD round trip per append.** Reuse the previous commit timestamp as the next `start_ts`. This is safe here: a stale `start_ts` only causes extra write conflicts. It needs a `begin_at(ts)` in the `client-rust` fork.
 3. **The in-process interpreted sender (Q112).** It removes the feeder's second stream.
 4. **Re-run on the §7 topology.** Server NVMe with PLP (fsync in µs, not ms), three nodes and real or `netem` AZ delays (Q114). The owner's < 5 ms p99 target is a server-hardware number. Both variants on this laptop are far above it.
+
+### 7.2 Arm A: a native leaderless WAL on local NVMe (D263–D270, 2026-09-30)
+
+On 2026-09-30 the owner decided that the Loam WAL targets **native leaderless-WAL performance** instead of tuning the TiKV hot tier. Two arms are measured against the same gate:
+
+- **Arm A**, this section, takes TiKV off the commit path.
+- **Arm B** keeps TiKV and removes its per-append overheads.
+
+The owner also asked for Arm A's store to be a tiered, low-level I/O layer, with runtime detection and fallback (D266), and chose compio as its runtime (D263). The decisions below are Loam's proposals within that direction. They supersede D239 (one logical acceptor per timeline) for Arm A only, and leave D237–D238 in force for Arm B.
+
+**The causes in §7.1, and how Arm A removes each one:**
+
+| §7.1 cause | Arm A |
+|---|---|
+| TiKV's Raft hop and apply on every append | No TiKV on the commit path. Each acceptor writes to its own local NVMe |
+| Three client round trips per append (TSO, fenced head read, prewrite) | None. The term fence is an in-memory check on the acceptor, made durable by the vote |
+| One append in flight per timeline | Many in flight. Writes are issued while earlier ones are still syncing, and acks follow the durable position (Q115 answered) |
+| The feeder shares the disk | The feeder stays until Q112 is solved, but its safekeeper moves to another filesystem (D270) |
+
+#### The design
+
+- **D263. compio is the runtime of the Arm A data path** (owner decision, 2026-09-30; final).
+  - **Shards.** Each shard is one thread running a compio runtime, and **owns a set of timelines** (by hash of the timeline id, over a shard count fixed at first start). A shard also owns its own journal (D265), so group commit is per shard and needs no locks across cores.
+  - **What runs on the owning shard:** the timeline's `START_WAL_PUSH` connection, its journal writes, and its durable writes. An accept thread reads the startup packet, which names the timeline, then hands the socket to the owning shard.
+  - **The driver is io_uring.** compio's own opcodes cover sockets. Custom `OpCode`s cover what compio does not expose: `WRITE`/`WRITE_FIXED` with `RWF_DSYNC`, and registered buffers. The raw `io-uring` crate and `io_uring_register` on the ring's fd are used only where compio cannot help: buffer registration and file-table updates.
+  - **Linked writes.** compio 0.19 does not expose `IO_LINK` to callers. So the linked `WRITE` → `FSYNC` pair for FUA-less devices is issued as two back-to-back operations on the shard.
+  - **Where io_uring is blocked,** compio falls back to its epoll driver, and durable writes go to the `pwritev2` pool.
+  - **tokio stays for the control plane:** the TiKV metadata client, S3 offload, the admin HTTP API (axum) and the feeder. It is bridged to the shards by bounded channels, off the commit path. The existing tokio WAL service stays as the fallback front end (`--runtime tokio`), and is benchmarked as tier (a).
+
+  | Crate | License | Latest release (crates.io, 2026-09-30) | Model | Role |
+  |---|---|---|---|---|
+  | `compio` | MIT | 0.19.2 stable, 2026-08-18 (0.20.0-beta.1, 2026-09-29) | Thread-per-core, completion-based (io_uring, epoll fallback) | **The data path** (D263). Apache Iggy moved to it (verify) |
+  | `io-uring` (tokio-rs) | MIT OR Apache-2.0 | 0.7.15, 2026-09-07; already in `Cargo.lock` through qdrant-edge and compio | Raw rings | Only where compio does not reach |
+  | `monoio` (ByteDance) | MIT OR Apache-2.0 | 0.2.4, 2024-08-20 | Thread-per-core | Not used. No release for over two years; dropped from the benchmark (owner) |
+  | `glommio` (Datadog) | Apache-2.0 OR MIT | 0.9.0, 2024-03-25 | Thread-per-core | Not used. No release for over two years |
+  | `tokio-uring` | MIT | 0.5.0, 2024-05-27 | io_uring under tokio | Not used. No release for over two years |
+
+- **D264. walproposer is the only sequencer.**
+  - The compute's `neon.safekeepers` names **three `loam-wal` acceptors**, and walproposer runs its own Paxos over them, exactly as over safekeepers: terms, votes, `ProposerElected`, and `commitLsn` as the quorum of `flush_lsn`.
+  - **Commit is 1 round trip and 1 durable write:** a majority of acceptors has the WAL on local disk.
+  - An acceptor's term check is in memory. It is raised only after the vote is durable (D268), which is the Paxos acceptor's promise.
+  - The vote handler first waits until the timeline's written WAL is durable. So `VoteResponse.flush_lsn` is what the disk holds, as in Neon's `handle_vote_request`.
+  - After the vote, appends of a lower term are refused, and any later response carries the higher term, so a deposed proposer steps down.
+  - Losing one of the three acceptors stalls nothing, which removes §12 row 10's TiKV leader-election stall for Arm A.
+- **D265. One shared journal per shard, for every timeline the shard owns.**
+  - **Precedent:** TiKV's `raft-engine`, which puts all regions in one log.
+  - **Segments.** The journal is a directory of fixed-size segment files, 64 MiB by default. A background thread prepares the next two:
+    - it `fallocate`s each one, then **pre-zeroes** it with large direct writes and one `fdatasync`, so the first append never converts an unwritten extent (a metadata journal commit);
+    - after that, segments are **recycled** instead of created.
+    - On btrfs the directory gets `NOCOW` (`FS_NOCOW_FL`, as systemd-journald does), so overwrites stay in place.
+  - **Records** are framed: kind, timeline, term, LSN, length, and a CRC32C seeded with the segment's sequence number, so a recycled segment's old records never validate. The kinds are:
+    - *Append*: WAL bytes, plus the proposer's `commit_lsn`.
+    - *Truncate*: a logical truncation of one timeline, on election.
+    - *Progress*: `commit_lsn`, `backup_lsn` and `remote_consistent_lsn` learned off the append path.
+  - **Flush units.** Records are written in **flush units aligned to 4 KiB**, zero-padded to the block size. This is what `O_DIRECT` needs. It also lets several units be in flight at once without two writes ever touching the same block. The cost is space: at most one block per unit, on WAL that is offloaded and recycled.
+  - **Group commit.** One writer coalesces every pending record, from every timeline and every connection on the shard, into the next unit (up to 1 MiB), and keeps up to `--io-depth` units in flight. The shard's durable position is the end of the longest prefix of completed units. By contrast, a safekeeper fsyncs each timeline's segment file separately, and writes nothing while its fsync runs.
+  - **Recovery** replays segments in order and stops at the first record that fails its CRC (the torn tail). Units complete out of order, but an ack only covers a prefix of completed units, so nothing acknowledged is behind a torn unit. Each timeline keeps only the WAL contiguous from its trimmed point, and its `flush_lsn` is where that WAL ends.
+  - **Reads.** An in-memory index maps each timeline's LSNs to records. Reads are `pread`s.
+- **D266. A tiered I/O layer, chosen at startup.** `loam-wal` probes the journal directory and its block device, logs the tier it picked, and takes `--io auto|uring|pwritev2|buffered` as an override.
+
+  | Tier | Durable write | Used when |
+  |---|---|---|
+  | **`uring`** | io_uring on the owning compio shard (D263), with **registered files** (segment slots updated on rollover) and **registered, aligned buffers** (`WRITE_FIXED`) on `O_DIRECT` segments. The write carries **`RWF_DSYNC`**: on pre-zeroed blocks the kernel sends one **FUA** write when the device has FUA, and write + flush when it does not. The alternative is a **linked `WRITE` → `FSYNC(DATASYNC)`** pair (`--uring-sync linked`, chosen automatically when `queue/fua` is 0). Optionally **SQPOLL** (`--uring-sqpoll`). **IOPOLL** is used only when the device has NVMe poll queues (`queue/io_poll` = 1) | io_uring is allowed (`io_uring_setup` succeeds and the opcodes probe) and the filesystem takes `O_DIRECT` |
+  | **`pwritev2`** | `O_DIRECT` + `pwritev2(RWF_DSYNC)` from a small thread pool (one thread per in-flight unit) | io_uring is blocked, as by Docker's default seccomp profile and GKE's COS |
+  | **`buffered`** | `pwrite` into the page cache; a sync thread runs `fdatasync` back to back while unsynced data exists | No `O_DIRECT` (tmpfs, some overlay filesystems), or chosen by `--io buffered` |
+  | *Future:* NVMe passthrough | `uring_cmd` on `/dev/ng*`: NVMe write commands with FUA, no filesystem | A raw namespace per node. Documented only; no SPDK |
+
+  - **This drive.** The laptop's drive reports `fua = 1`, `write_cache = write back`, `io_poll = 0` (no poll queues), and 512-byte logical blocks.
+  - **Network.** Every connection sets `TCP_NODELAY`. `SO_BUSY_POLL` can be set with `--busy-poll-us`, and is logged and ignored when the kernel refuses it.
+  - **io_uring networking.** The shard's sockets go through compio's io_uring driver. Multishot `recv` with provided buffer rings (compio's buffer pool) is the next step (Q264).
+  - **kTLS** is the cheap route for issue #148: a rustls handshake, then `TLS_TX`/`TLS_RX` offload, so the data path keeps plain writes. That is a note only, not built.
+- **D267. Pipelined appends.**
+  - The service writes each group of queued `AppendRequest`s as soon as it arrives, and keeps reading.
+  - An `AppendResponse` goes out whenever the durable position passes some of the timeline's writes. It carries the highest durable `flush_lsn`.
+  - Heartbeats are answered at once with the durable position.
+  - Stores that are durable per call (memory, TiKV) keep the old behaviour through the trait's default method.
+- **D268. TiKV holds only metadata.**
+  - **What:** per `(node, timeline)`, the acceptor record: term, term history, membership, server info, the start LSNs and `trimmed_lsn`.
+  - **When:** it is written on timeline creation, vote, `ProposerElected` and trim.
+  - **How:** these are 2PC transactions, which is fine at one or two writes per election, off the commit path.
+  - **Order on election:** a *Truncate* record is made durable first, then the metadata. A crash between the two leaves a shorter WAL under the old history, which the next election repairs.
+  - **Development:** a local control-file backend (write, fsync, rename, fsync the directory) serves single-node setups and tests.
+- **D269. Offload and trim.**
+  - **Offloader:** one acceptor per timeline, chosen by a lease in TiKV (`B/<tl>`: owner, expiry, `backup_lsn`). It uploads committed WAL to the bucket every 250 ms (or at 16 MiB).
+  - **Objects:** `pgwal/<tenant>/<timeline>/<begin>-<end>.lwal`. The format follows `operon-log`'s segment conventions: a magic and version header, a CRC32C trailer, and a zstd body. The Kafka `RecordBatch` framing is not used, because WAL is one byte stream per timeline.
+  - **`backup_lsn`** is advanced in the lease record, and the other acceptors read it from there.
+  - **Trim.** A segment is recycled once every timeline in it has passed `min(backup_lsn, remote_consistent_lsn, commit_lsn)`.
+  - **Pinning.** An idle timeline whose pageserver lags pins old segments. Rewriting its live records forward, as `raft-engine` purges, is left for later (Q262).
+- **D270. The pageserver feed stays the feeder for now (Q112).**
+  - **Why not in-process decoding yet:** it needs Neon's `wal_decoder`, `postgres_ffi` (bindgen against the fork's Postgres server headers), `utils` and `pageserver_api`, which bring Neon's workspace dependency pins into Operon's. That is not feasible within this arm.
+  - **Instead:**
+    - exactly one designated acceptor runs the feeder;
+    - it feeds up to `min(commit_lsn, its durable flush_lsn)`;
+    - its stock `--no-sync` safekeeper keeps its data on a **different filesystem** from the acceptors' journals.
+  - **On the laptop** that filesystem is on the same physical drive, so the feeder's writeback still competes for the device.
+
+#### 1PC, 2PC or raw: where each write goes
+
+The commit path is the only place where latency is gated. TiKV's modes are measured in §6.4 (single store, spike). The local-disk figures are from 2026-09-30 on the same laptop: 400 writes to a 64 MiB pre-zeroed file, with another session's build running.
+
+| Write mode | Work per commit | Client round trips | Fence | p50 / p99 on the laptop | Arm A uses it for |
+|---|---|---|---|---|---|
+| TiKV TxnKV **1PC** (P4a) | TSO, fenced head read, prewrite, Raft append + apply | 3 | Write-write conflict on the head | 6.5–7.1 / 25–26 ms | Nothing |
+| TiKV TxnKV **2PC** | TSO, read, prewrite, commit, two Raft appends | 4 | Same | 19–26 / 57–74 ms | **Metadata**: create, vote, elected, trim (one or two writes per election) |
+| TiKV **RawKV** put, or CAS + put | One (or two) Raft appends | 1–2 | None, or a CAS on the head | 6.4–14.9 / 33–51 ms; fenced 13.8–29.8 / 85–595 ms | Nothing. Unfenced writes can lose acknowledged commits with one acceptor (§6.4) |
+| **Local, buffered** `pwrite` + shared `fdatasync` | One `pwrite` and a share of one sync, on 2 of 3 acceptors in parallel | 1 (compute ↔ acceptor) | In memory, behind a durable vote | btrfs 2.4 / 3.0 ms per sync, `NOCOW` 2.1 / 2.8; ext4 0.9 / 1.3 | **The commit path**, tier `buffered` |
+| **Local, direct** `O_DIRECT` + `RWF_DSYNC` (FUA), 4 KiB | One write, FUA or write + flush | 1 | Same | btrfs 2.2–2.7 / 3.6–4.4 ms at queue depth 1; ext4 0.9 / 1.5 | **The commit path**, tiers `uring` and `pwritev2` |
+| Same, 16 writes in flight | — | — | — | btrfs 4.0–17.6 / 10.7–27.7 ms; ext4 2.4 / 49.6 ms | Not as a default. `--io-depth` stays small, and one unit carries many commits |
+
+**What the table says.**
+- **On this drive a FUA write costs about as much as a cache flush.** So on equal filesystems, the direct tiers and `fdatasync` land close together.
+- **btrfs adds its log-tree commit** to every durable write: 2.1–2.7 ms here against about 0.9 ms on ext4, on the same drive.
+- **A power-loss-protected drive matters more than any tier.** Its durable write is microseconds (§6.6), and that cannot be shown on the laptop.
+- **What the tiers remove is everything else:** allocation, `fsync`s and renames on the commit path, a sync that waits for earlier writes, and one sync per timeline. The gate runs measures each tier separately (§7.3), and also on an ext4 partition, to separate the btrfs cost.
+
+#### Open questions (Q261–Q264)
+
+| # | Question | Needed by |
+|---|---|---|
+| Q261 | Membership changes for Arm A: reuse Neon's generations and `pull_timeline`, or have the control plane write a new member set in TiKV and re-sync the new member from the bucket plus a peer? | P4c |
+| Q262 | Rewrite (purge) the live records of idle timelines forward, so they stop pinning old journal segments? | Before multi-tenant production |
+| Q263 | Tune the defaults on PLP NVMe, where the durable write is microseconds and per-syscall overhead dominates: `--io-depth`, SQPOLL, and IOPOLL with poll queues | The three-node gate run |
+| Q264 | Multishot `recv` with provided buffer rings on the shards' sockets, and `SO_BUSY_POLL` by default? | After Q263, if network or scheduling shows in the p99 |
+
+The results of the Arm A gate runs are in §7.3.
 
 ## 8. PgDog routing (D236)
 
