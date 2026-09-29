@@ -129,9 +129,7 @@ The area is a crate name without the `operon-` prefix (`log`, `meta`, `query`, `
 
 ## Developer Certificate of Origin (DCO)
 
-<!-- TODO(owner): confirm DCO over a CLA before the repository is promoted. If a CLA is chosen, replace this section and add a CLA bot. -->
-
-For now, Loam uses the [Developer Certificate of Origin](https://developercertificate.org/) and no contributor license agreement. This is the current requirement, and the maintainers may revisit it before the first release; any change will be announced here and will not apply retroactively. Sign off every commit:
+Loam uses the [Developer Certificate of Origin](https://developercertificate.org/) (DCO). There is no contributor license agreement (CLA) and none will be added. A CI check on every pull request fails if a commit lacks a matching sign-off. Sign off every commit:
 
 ```sh
 git commit -s -m "log: add a WAL object encoder"
