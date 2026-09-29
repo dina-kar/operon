@@ -39,6 +39,9 @@ use tokio_util::task::TaskTracker;
 /// PostgreSQL's read-only transaction SQLSTATE.
 pub const READ_ONLY_SQLSTATE: &str = "25006";
 
+/// How long the accept loop waits after a failed `accept` before retrying.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+
 #[derive(Clone, Debug)]
 pub struct PgConfig {
     pub listen: SocketAddr,
@@ -153,6 +156,11 @@ pub async fn start(
                     Ok((socket, _)) => socket,
                     Err(error) => {
                         tracing::warn!(%error, "PostgreSQL accept failed");
+                        // A persistent failure (e.g. EMFILE) must not spin.
+                        tokio::select! {
+                            _ = stop.cancelled() => break,
+                            _ = tokio::time::sleep(ACCEPT_BACKOFF) => {}
+                        }
                         continue;
                     }
                 },
@@ -261,6 +269,35 @@ fn is_session_statement(statement: &Statement) -> bool {
     )
 }
 
+fn is_cursor_statement(statement: &Statement) -> bool {
+    matches!(
+        statement,
+        Statement::Declare { .. } | Statement::Fetch { .. } | Statement::Close { .. }
+    )
+}
+
+/// `CursorStatementHook` runs after this hook and plans a `DECLARE`'s query
+/// with `SessionContext::sql`, then encodes the result directly. So a
+/// `DECLARE` passes only once each `FOR` query plans read-only and its schema
+/// is encodable. `FETCH` and `CLOSE` only read cursors that passed this check.
+async fn check_cursor_statement(
+    statement: &Statement,
+    context: &SessionContext,
+) -> PgWireResult<()> {
+    if let Statement::Declare { stmts } = statement {
+        for declare in stmts {
+            // A DECLARE without a FOR query is refused by the cursor hook.
+            if let Some(query) = &declare.for_query {
+                let frame = operon_query::sql::plan_read_only(context, &query.to_string())
+                    .await
+                    .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+                ensure_encodable(frame.schema().as_arrow())?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl QueryHook for ReadOnlyHook {
     async fn handle_simple_query(
@@ -271,6 +308,12 @@ impl QueryHook for ReadOnlyHook {
     ) -> Option<PgWireResult<Response>> {
         if is_session_statement(statement) {
             return None;
+        }
+        if is_cursor_statement(statement) {
+            return check_cursor_statement(statement, context)
+                .await
+                .err()
+                .map(Err);
         }
         if !is_query(statement) {
             return Some(Err(read_only_error()));
@@ -289,6 +332,12 @@ impl QueryHook for ReadOnlyHook {
     ) -> Option<PgWireResult<LogicalPlan>> {
         if is_session_statement(statement) {
             return None;
+        }
+        if is_cursor_statement(statement) {
+            return check_cursor_statement(statement, context)
+                .await
+                .err()
+                .map(Err);
         }
         if !is_query(statement) {
             return Some(Err(read_only_error()));
@@ -309,9 +358,15 @@ impl QueryHook for ReadOnlyHook {
         statement: &Statement,
         _plan: &LogicalPlan,
         _params: &ParamValues,
-        _context: &SessionContext,
+        context: &SessionContext,
         _client: &mut dyn HookClient,
     ) -> Option<PgWireResult<Response>> {
+        if is_cursor_statement(statement) {
+            return check_cursor_statement(statement, context)
+                .await
+                .err()
+                .map(Err);
+        }
         (!is_query(statement) && !is_session_statement(statement)).then(|| Err(read_only_error()))
     }
 }
@@ -327,6 +382,66 @@ mod tests {
         assert_eq!(
             bind(addr).await.unwrap_err().kind(),
             io::ErrorKind::PermissionDenied
+        );
+    }
+
+    fn parse(sql: &str) -> Statement {
+        use datafusion::sql::sqlparser::{dialect::PostgreSqlDialect, parser::Parser};
+        Parser::parse_sql(&PostgreSqlDialect {}, sql)
+            .unwrap()
+            .remove(0)
+    }
+
+    fn context_with_vectors() -> SessionContext {
+        use datafusion::arrow::array::{FixedSizeListArray, Float32Array, Int64Array};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::datasource::MemTable;
+
+        let item = Arc::new(Field::new("item", DataType::Float32, false));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("embedding", DataType::FixedSizeList(item.clone(), 2), false),
+        ]));
+        let embedding =
+            FixedSizeListArray::new(item, 2, Arc::new(Float32Array::from(vec![0.0, 1.0])), None);
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int64Array::from(vec![1])), Arc::new(embedding)],
+        )
+        .unwrap();
+        let context = SessionContext::new();
+        context
+            .register_table(
+                "t",
+                Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap()),
+            )
+            .unwrap();
+        context
+    }
+
+    #[test]
+    fn cursor_statements_are_told_apart() {
+        assert!(is_cursor_statement(&parse("DECLARE c CURSOR FOR SELECT 1")));
+        assert!(is_cursor_statement(&parse("FETCH NEXT FROM c")));
+        assert!(is_cursor_statement(&parse("CLOSE c")));
+        assert!(!is_cursor_statement(&parse("SELECT 1")));
+        assert!(!is_cursor_statement(&parse("DELETE FROM t")));
+    }
+
+    #[tokio::test]
+    async fn a_declare_passes_only_with_a_read_only_encodable_query() {
+        let context = context_with_vectors();
+        let ok = parse("DECLARE c CURSOR FOR SELECT id FROM t");
+        assert!(check_cursor_statement(&ok, &context).await.is_ok());
+        let vectors = parse("DECLARE c CURSOR FOR SELECT embedding FROM t");
+        assert!(check_cursor_statement(&vectors, &context).await.is_err());
+        let missing = parse("DECLARE c CURSOR FOR SELECT id FROM missing");
+        assert!(check_cursor_statement(&missing, &context).await.is_err());
+        // FETCH and CLOSE only read cursors a checked DECLARE opened.
+        assert!(
+            check_cursor_statement(&parse("CLOSE c"), &context)
+                .await
+                .is_ok()
         );
     }
 
