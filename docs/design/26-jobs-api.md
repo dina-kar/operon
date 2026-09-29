@@ -1,6 +1,6 @@
 # 26 — Loam Jobs: Celery, BullMQ, PySpark and Flink Jobs on Loam
 
-Status: **Proposed** · 2026-09-29. The direction is the owner's, from 2026-09-29: "The goal is to deploy PySpark, Flink, BullMQ, Celery jobs on Loam and run it, with some modification like adding Resonate decorators ... I want to expose clean Rust API for this." The owner then approved the per-workload direction in §1 ("yes", 2026-09-29). This document turns that direction into decisions **D204–D216** and open questions **Q95–Q104**. The choices it makes on top of the approved direction (the semantics, the state layout, the API details, the phasing) are **proposals** until the owner confirms them. **No code is written by this document**; `operon-jobs` is a design.
+Status: **Proposed** · 2026-09-29. The direction is the owner's, from 2026-09-29: "The goal is to deploy PySpark, Flink, BullMQ, Celery jobs on Loam and run it, with some modification like adding Resonate decorators ... I want to expose clean Rust API for this." The owner then approved the per-workload direction in §1 ("yes", 2026-09-29). This document turns that direction into decisions **D204–D216** and open questions **Q95–Q104**. The owner decided Q97 and Q100 on 2026-09-29: jobs require TiKV on every deployment except `operon dev`, and `@loam/bullmq` ships for BullMQ v6 only. The choices it makes on top of the approved direction (the semantics, the state layout, the API details, the phasing) are **proposals** until the owner confirms them. **No code is written by this document**; `operon-jobs` is a design.
 
 **Numbering.** On `main` the highest decision is D147 and the highest question Q44. The showcase suite's D-SC-1…16 and Q-SC-1…10 and the Postgres-wire D-PG-1 get numbers at merge, so they may take D148–D164 and Q45–Q54. Docs 23 (Neon/WeSQL) and 24/25 (CPU-time runtime, Clever Cloud stack) are being written on unpushed branches and pick numbers too, so this document leaves a gap of 20 for each: it starts at **D204** (164 + 20 + 20) and **Q95** (54 + 20 + 20). Renumber at merge if the gap was too small or too large.
 
@@ -87,7 +87,7 @@ Decorators come from **Resonate's own SDKs** (Python `@resonate.register`, TypeS
 
 | State | Store | Why |
 |---|---|---|
-| Job records, ready and delayed indexes, leases, dedup keys, rate-limit buckets, chord counters | **TiKV** keyspace `loam_jobs` in cloud; a **redb** file per node in `operon dev` and `standalone` (§6.8) | Every state change is a small multi-key transaction (dequeue = read the ready index, lock the job, write the lease). TiKV gives that with Percolator transactions; redb gives it in one process |
+| Job records, ready and delayed indexes, leases, dedup keys, rate-limit buckets, chord counters | **TiKV** keyspace `loam_jobs` in cloud; a **redb** file in `operon dev` only (§6.8); every other deployment, self-hosted included, uses TiKV (Q97, owner-decided) | Every state change is a small multi-key transaction (dequeue = read the ready index, lock the job, write the lease). TiKV gives that with Percolator transactions; redb gives it in one process |
 | Payloads and results larger than 16 KiB **(estimate)** | **Object store** (RustFS in cloud and self-hosted, any S3 elsewhere), `ns/<ns>/jobs/<queue>/<job>/{payload,result}` | TiKV prefers small values (§21 Q42); payloads can be megabytes |
 | The queue's event log | A **Loam stream** per queue, `_jobs/<queue>`, written by an outbox relay with an idempotent producer (D72) | QueueEvents and `watch`, replay, audit, and analytics through a stream → Iceberg link (M4), with exactly-once events |
 | Schedules, flows, durable-mode tasks | **Resonate** (the embedded server, §21) | Cron with a promise template, parent/child promises, replay |
@@ -360,16 +360,16 @@ The record layout follows Live's `IdempotencyRecord`: a hash of the key, the res
 - Results follow the same rule. Celery's result backend reads results through `query`/`Get`; large results come back as a presigned URL that the client fetches.
 - Payloads are opaque to Loam. The docs repeat §21 §8's rule: pass references, not personal data, or encrypt payloads client-side; erasure (D68) cannot look inside a payload.
 
-### 6.8 Stores: TiKV in cloud, redb in dev
+### 6.8 Stores: TiKV everywhere, redb in dev
 
 `operon-jobs` defines a `JobStore` trait (the transactions above) with two implementations:
 
 | Store | Where | Notes |
 |---|---|---|
-| `TikvJobStore` | Loam cloud and any cluster with TiKV; keyspace `loam_jobs` on the Live cluster, tenant = key prefix `t/<ns>/` (large tenants get their own keyspace, like §21 §5.1) | Uses `operon-tikv`'s runner (classification, retries, commit tokens, fault plan). Optimistic for `enqueue`, pessimistic for `lease` (the ready-index head is contended) |
-| `LocalJobStore` | `operon dev`, `operon standalone` | One redb file (`<data>/jobs.redb`), one writer; same key layout. `operon cluster` refuses it, as it refuses the SQLite durable store |
+| `TikvJobStore` | Loam cloud, self-hosted clusters and `operon standalone`: every deployment except `operon dev`; keyspace `loam_jobs` on the Live cluster, tenant = key prefix `t/<ns>/` (large tenants get their own keyspace, like §21 §5.1) | Uses `operon-tikv`'s runner (classification, retries, commit tokens, fault plan). Optimistic for `enqueue`, pessimistic for `lease` (the ready-index head is contended) |
+| `LocalJobStore` | `operon dev` only | One redb file (`<data>/jobs.redb`), one writer; same key layout. `operon standalone` and `operon cluster` refuse it and ask for `--jobs-store tikv://…` |
 
-Self-hosted clusters without TiKV are an open question (Q97): the options are the relaxed `MetaStore` backends (Postgres, DynamoDB) behind a `JobStore` adapter, or requiring TiKV for jobs.
+**Owner decision (Q97, 2026-09-29): jobs require TiKV.** Self-hosted clusters run TiKV for jobs; there is no Postgres or DynamoDB jobs backend, and redb stays a development store for `operon dev` only.
 
 ### 6.9 Rate limits and concurrency
 
@@ -562,7 +562,7 @@ The owner's direction already rejected Redis emulation; the source confirms it, 
 
 #### 7.2.5 Versions, Pro features and Python
 
-- **v6 only.** BullMQ v5 has no backend interface. v6 removed legacy repeatable jobs, `Job#discard`, `debounce` and the public `paused` state (`docs/gitbook/changelog.md:193-218`); v5 apps upgrade to v6 first. Whether to support v5 through an adapter is Q100.
+- **v6 only.** BullMQ v5 has no backend interface. v6 removed legacy repeatable jobs, `Job#discard`, `debounce` and the public `paused` state (`docs/gitbook/changelog.md:193-218`); v5 apps upgrade to v6 first. **Owner decision (Q100, 2026-09-29): ship for BullMQ v6 only; no v5 shim.**
 - **BullMQ Pro is out of scope.** Pro is commercial and closed (`@taskforcesh/bullmq-pro`); its features (groups and their rate limits and concurrency, batches, observables and cancellation) are not implemented and not imitated.
 - **Python.** BullMQ's Python package (3.2.7, MIT) has pluggable backends too (`python/bullmq/backends`). A Python `loam` backend is a small follow-up once the TypeScript one passes (J2.x).
 
@@ -838,10 +838,10 @@ The first PRs of J1, in order, each small: (1) the protos and generated crate; (
 |---|---|---|
 | Q95 | Arroyo: documented alternative only (proposed), or a managed engine beside RisingWave; revisit if Arroyo resumes releases | J4 plan |
 | Q96 | Engine tenancy: Sail per namespace with scale-to-zero (proposed); RisingWave per namespace, or a shared cluster with a database per small namespace | J3 plan |
-| Q97 | Jobs on self-hosted clusters without TiKV: require TiKV, or a `JobStore` over the Postgres or DynamoDB `MetaStore` backends | J1 plan |
+| Q97 | ~~Jobs on self-hosted clusters without TiKV~~ **Decided by the owner, 2026-09-29:** jobs require TiKV; redb for `operon dev` only; no Postgres or DynamoDB jobs backend (§6.8, D214) | Resolved |
 | Q98 | A server-streamed `LeaseStream` for low-latency workers, beside the long-polled unary `Lease` | J2 plan |
 | Q99 | Strict per-key ordering (FIFO groups, like SQS FIFO): out of scope (proposed), or a later queue kind | After J2 |
-| Q100 | BullMQ v5 apps: require the v6 upgrade (proposed), or ship a v5 shim | J2 plan |
+| Q100 | ~~BullMQ v5 apps~~ **Decided by the owner, 2026-09-29:** ship for BullMQ v6 only; no v5 shim (§7.2.5, D209) | Resolved |
 | Q101 | Celery beat's `solar` schedules and custom schedule classes: refuse and keep the standard scheduler for them (proposed), or support them in Loam | J1 plan |
 | Q102 | Loam-hosted workers: Celery and BullMQ workers are user processes in J1–J2; whether Loam hosts them (with the CPU-time runtime of doc 24) is decided there | Doc 24 |
 | Q103 | The jobs listener on its own port (`7720`, proposed, like Live's 7710) or mounted on the native API listener as a connect-rust service | J1 plan |
