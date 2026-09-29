@@ -127,3 +127,5 @@ We welcome design feedback and contributions. See [CONTRIBUTING.md](CONTRIBUTING
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Everything needed to self-host Loam as a single organisation is open source in this repository; what is needed only to run Loam as a multi-tenant paid cloud lives in the managed Loam Cloud platform (proprietary, separate repository). See [docs/open-core.md](docs/open-core.md).

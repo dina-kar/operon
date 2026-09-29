@@ -10,8 +10,8 @@ Status: **Approved** · 2026-09-22 · revised 2026-09-25 (architecture review: s
 |---|---|---|---|---|
 | Dev | `operon dev` | Local filesystem (`object_store` LocalFileSystem), or RustFS started next to it by the compose file (D61) | Single-node Raft | Laptop, CI |
 | Standalone | `operon standalone --bucket s3://…` | S3/GCS/Azure, or RustFS self-hosted | Single-node Raft (snapshots to bucket) | Small prod, edge |
-| Cluster | `operon cluster --roles meta,log,query,worker,gateway …` | Cloud object storage, or RustFS on premises | 3 or 5 `meta` nodes across AZs, or Postgres or DynamoDB (M2) | Production |
-| Kubernetes | Helm chart + `operon-operator` (M2) | Cloud object storage, or RustFS | StatefulSet (openraft `meta` only), or external Postgres or DynamoDB | Production |
+| Cluster | `operon cluster --roles meta,log,query,worker,gateway …` | Cloud object storage, or RustFS on premises | 3 or 5 `meta` nodes across AZs, or Postgres or DynamoDB (M2), or TiKV (R1, D124) | Production |
+| Kubernetes | Helm chart + `operon-operator` (M2) | Cloud object storage, or RustFS | StatefulSet (openraft `meta` only), or external Postgres or DynamoDB, or TiKV (PD + TiKV via TiDB Operator v2, D179) | Production |
 | BYOC-managed-meta (M2.x) | Data plane in the customer's VPC | The customer's bucket | Hosted, through `operon-meta-remote` to `operon-control` | Managed service; the control plane is on the write path (§18 §8) |
 | BYOC-local-meta (M2.x) | Data plane and metastore in the customer's VPC | The customer's bucket | openraft, or the customer's Postgres or DynamoDB | Managed service; a pull-based ops agent only (§18 §8) |
 
@@ -30,7 +30,7 @@ The metastore is chosen per cluster behind `trait MetaStore` (§01 §3.2, D47):
 | `raft` (embedded openraft) | Default | The `meta` role: 1 node (dev, standalone) or 3/5 nodes across AZs | Raft majority | Snapshots to the bucket + Raft log (§6) |
 | `postgres` | M2 | An existing managed Postgres; no `meta` role | The provider's (Multi-AZ, Aurora, Cloud SQL HA) | The provider's backups and point-in-time recovery |
 | `dynamodb` | M2 | One DynamoDB table (on demand or provisioned); no `meta` role | DynamoDB's multi-AZ replication | Point-in-time recovery, on-demand backups |
-| `tidb` | M6 | A TiDB cluster or TiDB Cloud, over the MySQL protocol | TiKV's Raft replication | TiDB's BR backups and point-in-time recovery |
+| ~~`tidb`~~ `tikv` | ~~M6~~ R1 | A PD + TiKV cluster (API v2 keyspace), over `tikv-client`; `--meta tikv://<pd-hosts>/<keyspace>`, cargo feature `tikv`. Replaces the TiDB backend (D124, D260: no TiDB) | TiKV's Raft replication | Planned: BR full and log backups with PITR, pending tested API v2 keyspace restore coverage (D131, Q37) |
 | `remote` | M2.x | `operon-meta-remote` to the hosted control plane (BYOC-managed-meta) | The control plane's | The control plane's |
 
 Every backend serves the same relaxed contract (D59, §18 §3).
@@ -46,7 +46,7 @@ bucket = "s3://acme-operon/prod"
 zones = ["use1-az1", "use1-az2", "use1-az4"]
 
 [meta]
-backend = "raft"            # raft | postgres (M2) | dynamodb (M2) | tidb (M6) | remote (M2.x)
+backend = "raft"            # raft | postgres (M2) | dynamodb (M2) | tikv (R1; D260: no tidb) | remote (M2.x)
 peers = ["meta-0:7400", "meta-1:7400", "meta-2:7400"]   # raft only
 # postgres = { url = "postgres://operon@pg.internal:5432/operon", read_pool = 10, write_pool = 5 }
 # dynamodb = { table = "loam-meta", region = "us-east-1" }
