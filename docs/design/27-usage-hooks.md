@@ -31,6 +31,8 @@ A self-hosting organisation needs to *see* usage (dashboards, capacity, per-name
 |---|---|---|
 | Engine, per namespace (D103's units) | `loam_namespace_logical_bytes_written_total`, `…_logical_bytes_stored`, `…_bytes_queried_total`, `…_queries_total`, `…_hot_gb_hours_total` | `org`, `namespace` |
 | Runtime supervisor, per function | `loam_function_invocations_total`, `loam_function_cpu_seconds_total` (host-measured), `loam_function_wall_seconds_total`, `loam_function_resident_bytes` | `org`, `namespace`, `function`, `tier` |
+| `loam-dapr`, per Dapr API call (D200) | `loam_dapr_calls_total`, `loam_dapr_call_duration_seconds` (histogram), `loam_dapr_secret_cache_hits_total`, `loam_dapr_secret_cache_misses_total` | `org`, `namespace`, `api` (`secrets`, `state`, `pubsub`, `invoke`, …), `code` (calls only) |
+| `loam-gateway`, per request (§3.4) | `loam_gateway_requests_total`, `loam_gateway_request_bytes_total`, `loam_gateway_response_bytes_total`, `loam_gateway_request_duration_seconds` (histogram) | `org`, `namespace`, `route`, `code` (requests only) |
 | Durable (Resonate, §21) | `loam_durable_promises_created_total`, `loam_durable_timers_scheduled_total` (where the count is a counter on the create path, not a scan) | `org`, `namespace` |
 
 Millions of namespaces make per-namespace labels expensive in a Prometheus scrape. Each node therefore exports only the namespaces active on it, and the per-namespace families can be turned off on the Prometheus endpoint and sent instead as **OTLP metrics with delta temporality**, which a collector can aggregate without holding every series (Q-UH-1).
@@ -45,7 +47,7 @@ The runtime places every tenant workload in a cgroup whose path and labels are d
 | T1 wasmtime host | `loam.slice/wasm-host.scope` (shared) | per-invocation reports (§3.3), not the cgroup |
 | T2 gVisor sandbox (a pod, `RuntimeClass: gvisor`) | the pod's cgroup (`kubepods-…-pod<uid>.slice` or `pod<uid>`) | pod labels `loam.dev/org`, `loam.dev/namespace`, `loam.dev/function`, `loam.dev/tier`, set by the operator |
 
-This refines §24 §7's `loam.slice/tenant-<org>.slice/fn-<id>.scope`: T0 has one process per tenant, not per function, and T2 sandboxes are pods whose cgroups the kubelet creates. With these, a node agent can read `cpu.stat`, `memory.current`, `memory.peak` and `cgroup.events` for every sandbox and attribute them without any engine API. The runtime keeps a finished sandbox's cgroup until `cgroup.events` reports `populated 0`, so that a final reading is possible.
+This refines §24 §7's `loam.slice/tenant-<org>.slice/fn-<id>.scope`: T0 has one process per tenant, not per function, and T2 sandboxes are pods whose cgroups the kubelet creates. With these, a node agent can read `cpu.stat`, `memory.current`, `memory.peak` and `cgroup.events` for every sandbox and attribute them without any engine API. `populated 0` in `cgroup.events` means the sandbox has finished; it does not by itself allow cleanup. For T0 and T1, whose cgroups the supervisor owns, the supervisor then sends a `SandboxFinished` notice with the cgroup path on the host-report socket (§3.3) and **removes the cgroup only after the consumer acknowledges that it has read `cpu.stat` and `memory.peak`**. With no consumer connected, the cgroup is kept for a retention window (default 10 minutes, configurable) and then removed, since nobody is reading. T2 pod cgroups belong to the kubelet, which removes them when it cleans up the terminated pod; how the final reading is taken before that is open (Q-UH-3).
 
 ### 3.3 Per-invocation reports from runtime hosts
 
@@ -67,17 +69,20 @@ message Invocation {
   string function = 3;
   string version = 4;
   string invocation_id = 5;
-  uint64 cpu_usec = 6;         // thread CPU time measured by the host
+  uint64 cpu_usec = 6;         // see "CPU accuracy" below; exact only when cpu_estimated is false
   uint64 fuel = 7;             // 0 when fuel is off
   uint64 epochs = 8;           // epoch ticks consumed
   int64 start_unix_ms = 9;
   int64 end_unix_ms = 10;
+  bool cpu_estimated = 11;     // true when cpu_usec was apportioned (T0), not measured
 }
 
-message HostReportAck { uint64 seq = 1; }
+message HostReportAck { uint64 seq = 1; }   // cumulative: every report with seq <= this one
 ```
 
-The same records are available as OTLP logs (D73) for consumers that prefer a collector.
+**Delivery.** An ack for `seq` means the consumer has durably recorded every report of that `host_id` up to and including `seq`. The host keeps unacknowledged reports in a bounded in-memory buffer (default 64 MiB) and, after a socket disconnect, resends them from the oldest unacknowledged `seq` when a consumer reconnects; consumers dedupe on `(host_id, seq)`. When the buffer is full the host drops the oldest reports and counts them in `loam_meter_reports_dropped_total`. A host restart loses its buffer and starts a new `host_id`, so sequence numbers never collide. CPU in lost or dropped reports is not lost from the totals: it is still in the cgroup's `cpu.stat` (§3.2), which is authoritative for totals, and a consumer reconciles the sum of host-reported CPU against it per window.
+
+**CPU accuracy.** On T1 `cpu_usec` is measured: the host reads the thread CPU clock (`CLOCK_THREAD_CPUTIME_ID`) around each poll of the invocation, and `cpu_estimated` is false. On T0 one workerd process serves all of a tenant's invocations, so the per-invocation value is **an estimate**: the tenant's cgroup CPU for each interval is apportioned across the invocations that were running in it (the rule is Q-RT-6), and `cpu_estimated` is true. Per-invocation accuracy on T0 is not bounded by this contract. The 2% check in §5 compares aggregate totals only, not individual invocations.
 
 ### 3.4 Envoy access logs
 
@@ -97,7 +102,7 @@ The node agent that reads these hooks, the aggregation of usage per tenant, pric
 
 - §24 §5: "emits the metering hooks of §7" means `loam-dapr`'s own call metrics (§3.1); it records no meter events (D200).
 - §24 §7: the hook table stands as a summary; §3 here is the contract, and the cgroup row is refined as in §3.2.
-- §24 §11: F1's exit gate "billed only for its CPU" is checked through the hooks: the host-reported CPU for the test function matches its cgroup's `cpu.stat` within 2%.
+- §24 §11: F1's exit gate "billed only for its CPU" is checked through the hooks: the host-reported CPU for the test function, summed, matches its cgroup's `cpu.stat` within 2% (an aggregate check, not a per-invocation one).
 
 ## 6. Open questions
 
@@ -105,6 +110,7 @@ The node agent that reads these hooks, the aggregation of usage per tenant, pric
 |---|---|---|---|
 | Q-UH-1 | Per-namespace metric cardinality: OTLP delta metrics only, or a Prometheus endpoint limited to the namespaces active on a node | Eng | F1 plan |
 | Q-UH-2 | How the hooks contract is versioned (the metric names, the cgroup layout, the labels and `loam.meter.v1`), and where its conformance tests live | Eng | F1 plan |
+| Q-UH-3 | The final cgroup reading for T2 pods, whose cgroups the kubelet removes: a delay on pod cleanup, or the sandbox's own accounting sent as a final report | Eng | F2 plan |
 
 ## 7. Sources
 
