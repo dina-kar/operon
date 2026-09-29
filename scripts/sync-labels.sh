@@ -31,11 +31,16 @@ PY
   fi
 }
 
+if ! records=$(labels); then
+  echo "could not read $file (needs yq, or python3 with PyYAML)" >&2
+  exit 1
+fi
+
 count=0
 while IFS=$'\t' read -r name color description; do
   [ -n "$name" ] || continue
   if [ "${#description}" -gt 100 ]; then echo "label $name: description over 100 characters" >&2; exit 1; fi
   gh label create "$name" --color "$color" --description "$description" --force ${repo_args[@]+"${repo_args[@]}"}
   count=$((count + 1))
-done < <(labels)
+done <<< "$records"
 echo "Synced $count labels from .github/labels.yml."

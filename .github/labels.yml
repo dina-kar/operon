@@ -1,7 +1,9 @@
 # The repository's labels. Apply them with scripts/sync-labels.sh, which
 # creates missing labels and updates existing ones (it never deletes).
 #
-# Every issue gets one kind/* label and at least one area/* label.
+# Every issue gets one kind/* label and at least one area/* label. Issue forms
+# set the kind (or good first issue) and status/needs-triage; the area is added
+# at triage, since the reporter often cannot tell which crate is involved.
 
 # Contributor entry points
 - name: good first issue

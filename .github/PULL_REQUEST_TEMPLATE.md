@@ -13,5 +13,5 @@
 - [ ] `cargo fmt --all --check` and `cargo clippy` (scoped to the changed crates) pass
 - [ ] Docs updated if behavior, flags or formats changed
 - [ ] New dependencies are license-compatible (no AGPL, GPL, LGPL, BSL, SSPL, ELv2 or proprietary code; see CONTRIBUTING.md)
-- [ ] Derived code is attributed in its file header and in NOTICE
+- [ ] Derived code is attributed in its file header and in NOTICE, and called out in this description
 - [ ] Commits are signed off (`git commit -s`, DCO)
