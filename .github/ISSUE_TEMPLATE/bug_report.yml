@@ -1,0 +1,82 @@
+name: Bug report
+description: Something is broken or behaves incorrectly.
+title: "bug: "
+labels: ["kind/bug", "status/needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. **Security issues** go through private reporting instead; see SECURITY.md.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, and what went wrong? Include the exact request or command if you can.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence of commands or requests that shows the problem.
+      placeholder: |
+        1. cargo run --release -p operon -- dev
+        2. curl -s localhost:8080/v1/namespaces/demo/collections ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Output of `operon --version`, or the commit you built from.
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Deployment mode
+      options:
+        - operon dev
+        - operon standalone
+        - operon cluster
+        - Kubernetes
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: API surface
+      multiple: true
+      options:
+        - Native REST API
+        - Arrow Flight SQL
+        - Qdrant REST or gRPC
+        - Elasticsearch API
+        - Resonate (durable execution)
+        - Loam Live
+        - Web console
+        - Not API related
+  - type: input
+    id: client
+    attributes:
+      label: Client library and version
+      description: For example `qdrant-client 1.19.1`, `elasticsearch-py 8.19.3` or `adbc-driver-flightsql 1.6.0`.
+  - type: input
+    id: store
+    attributes:
+      label: Object store and metastore
+      description: For example a local directory, RustFS, S3, GCS or Azure; the embedded metastore or TiKV.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant server output (run with `RUST_LOG=debug` for more). This is rendered as code.
+      render: text
