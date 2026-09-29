@@ -6161,7 +6161,7 @@ name = "operon-meta-tikv"
 version = "0.0.1"
 dependencies = [
  "async-trait",
- "fail 0.4.0",
+ "fail 0.5.1",
  "futures",
  "operon-common",
  "operon-meta-conformance",
@@ -6371,7 +6371,7 @@ name = "operon-tikv"
 version = "0.0.1"
 dependencies = [
  "axum 0.8.9",
- "fail 0.4.0",
+ "fail 0.5.1",
  "futures",
  "operon-tikv",
  "proptest",

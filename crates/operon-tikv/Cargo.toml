@@ -30,7 +30,7 @@ tracing.workspace = true
 axum.workspace = true
 # tikv-client's failpoints ("after-prewrite"): tests/gc.rs leaves prewrite
 # locks behind with them. Only test builds turn the feature on.
-fail = { version = "0.4", features = ["failpoints"] }
+fail = { version = "0.5", features = ["failpoints"] }
 # The integration tests use the fault hooks.
 operon-tikv = { path = ".", features = ["faults"] }
 proptest.workspace = true
