@@ -11,12 +11,24 @@
 //! - [`store`]: the [`WalStore`] trait (the fenced, durable head and WAL
 //!   chunks), the shared state-transition rules, and an in-memory store.
 //! - `tikv` (feature `tikv`): the TiKV store, one 1PC transaction per call.
+//! - [`pgwire`]: the slice of the Postgres protocol a safekeeper speaks.
+//! - `service`, `http` (feature `server`): the listener walproposer connects
+//!   to, the control plane's HTTP API, and the `loam-wal` binary; `feeder`,
+//!   the interim path that hands committed WAL to a stock safekeeper for the
+//!   pageserver (until the interpreted sender lands, Q112).
 //!
 //! Neon's code is Apache-2.0; the ported parts keep its structure and name
 //! their sources.
 
 pub mod acceptor;
+#[cfg(feature = "server")]
+pub mod feeder;
+#[cfg(feature = "server")]
+pub mod http;
+pub mod pgwire;
 pub mod proto;
+#[cfg(feature = "server")]
+pub mod service;
 pub mod store;
 #[cfg(feature = "tikv")]
 pub mod tikv;
@@ -42,4 +54,7 @@ pub enum Error {
     /// The store failed; the operation may be retried.
     #[error("store: {0}")]
     Store(String),
+    /// A connection failed.
+    #[error("io: {0}")]
+    Io(String),
 }
