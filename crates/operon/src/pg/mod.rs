@@ -92,8 +92,17 @@ impl PgHandle {
     }
 }
 
-/// Start a read-only PostgreSQL wire listener for one namespace.
-pub async fn start(service: Arc<CollectionService>, config: PgConfig) -> io::Result<PgHandle> {
+/// A bound PostgreSQL listener, not yet serving: [`listen`] runs before the
+/// server starts any task, and [`start`] serves it once the collection
+/// service exists.
+#[derive(Debug)]
+pub struct PgListener {
+    listener: TcpListener,
+    addr: SocketAddr,
+}
+
+/// Validates `config` and binds its (loopback) address.
+pub async fn listen(config: &PgConfig) -> io::Result<PgListener> {
     if config.max_connections == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -102,6 +111,17 @@ pub async fn start(service: Arc<CollectionService>, config: PgConfig) -> io::Res
     }
     let listener = bind(config.listen).await?;
     let addr = listener.local_addr()?;
+    Ok(PgListener { listener, addr })
+}
+
+/// Serves a read-only PostgreSQL wire listener for one namespace. Only the
+/// `pg_catalog` setup can fail here.
+pub async fn start(
+    service: Arc<CollectionService>,
+    bound: PgListener,
+    config: PgConfig,
+) -> io::Result<PgHandle> {
+    let PgListener { listener, addr } = bound;
 
     let context = Arc::new(service.sql_context(&config.namespace));
     setup_pg_catalog(&context, &config.namespace, EmptyContextProvider)

@@ -1268,6 +1268,24 @@ impl Server {
             },
             None => None,
         };
+        // The PostgreSQL wire listener, on gateways only: bound here, before
+        // any task is spawned, and served once the collection service exists.
+        #[cfg(feature = "pgwire")]
+        let pg_listener = match config.pg.clone().filter(|_| roles.gateway) {
+            Some(pg_config) => match crate::pg::listen(&pg_config).await {
+                Ok(bound) => Some((bound, pg_config)),
+                Err(source) => {
+                    if let Err(err) = cache.close().await {
+                        tracing::warn!(%err, "closing the cache after a failed start");
+                    }
+                    return Err(ServerError::PgListen {
+                        addr: pg_config.listen,
+                        source,
+                    });
+                }
+            },
+            None => None,
+        };
         // The Qdrant gateway's listeners, on gateways only (plan M1.4 Task
         // 2): bound here, before any task is spawned, and served once the
         // collection service exists (row T2-2).
@@ -1439,26 +1457,27 @@ impl Server {
             collections.set_placement(placement, remote);
         }
         #[cfg(feature = "pgwire")]
-        let pg = match config.pg.clone().filter(|_| roles.gateway) {
-            Some(pg_config) => match crate::pg::start(collections.clone(), pg_config.clone()).await
-            {
-                Ok(handle) => Some(handle),
-                Err(source) => {
-                    collections.shutdown().await;
-                    if let Some(worker) = worker {
-                        worker.stop().await;
+        let pg = match pg_listener {
+            Some((bound, pg_config)) => {
+                match crate::pg::start(collections.clone(), bound, pg_config.clone()).await {
+                    Ok(handle) => Some(handle),
+                    Err(source) => {
+                        collections.shutdown().await;
+                        if let Some(worker) = worker {
+                            worker.stop().await;
+                        }
+                        if let Some(tier) = &hot {
+                            tier.shutdown().await;
+                        }
+                        collection_factory.close().await;
+                        stop_early(writer, cache).await;
+                        return Err(ServerError::PgListen {
+                            addr: pg_config.listen,
+                            source,
+                        });
                     }
-                    if let Some(tier) = &hot {
-                        tier.shutdown().await;
-                    }
-                    collection_factory.close().await;
-                    stop_early(writer, cache).await;
-                    return Err(ServerError::PgListen {
-                        addr: pg_config.listen,
-                        source,
-                    });
                 }
-            },
+            }
             None => None,
         };
         #[cfg(feature = "qdrant")]
