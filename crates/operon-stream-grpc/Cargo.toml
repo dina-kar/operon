@@ -1,0 +1,29 @@
+[package]
+name = "operon-stream-grpc"
+description = "Native gRPC stream ingest surface for Operon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+bytes.workspace = true
+operon-log.workspace = true
+operon-query.workspace = true
+prost.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
+tonic.workspace = true
+tonic-prost.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+operon-common.workspace = true
+
+[build-dependencies]
+tonic-prost-build.workspace = true
+
+[lints]
+workspace = true

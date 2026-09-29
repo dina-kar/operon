@@ -208,6 +208,9 @@ pub struct ServerConfig {
     /// default here) serves no Flight SQL. `operon dev` and `standalone`
     /// set it.
     pub flight_sql: Option<SocketAddr>,
+    /// Native stream gRPC listener for Dapr protocol adapters.
+    #[cfg(feature = "stream-grpc")]
+    pub stream_grpc: Option<SocketAddr>,
     /// How Flight SQL bounds its statements and its ingest.
     pub flight: FlightConfig,
     /// PostgreSQL wire listener over collections, when the pgwire feature is on.
@@ -276,6 +279,8 @@ impl ServerConfig {
             worker_lease_ttl: Duration::from_secs(30),
             query: ServiceConfig::default(),
             flight_sql: None,
+            #[cfg(feature = "stream-grpc")]
+            stream_grpc: None,
             flight: FlightConfig::default(),
             #[cfg(feature = "pgwire")]
             pg: None,
@@ -419,6 +424,12 @@ pub enum ServerError {
     #[cfg(feature = "pgwire")]
     #[error("postgres listen on {addr}: {source}")]
     PgListen {
+        addr: SocketAddr,
+        source: std::io::Error,
+    },
+    #[cfg(feature = "stream-grpc")]
+    #[error("stream gRPC listen on {addr}: {source}")]
+    StreamGrpcListen {
         addr: SocketAddr,
         source: std::io::Error,
     },
@@ -582,6 +593,8 @@ pub struct Server {
     flight: Option<Flight>,
     #[cfg(feature = "pgwire")]
     pg: Option<crate::pg::PgHandle>,
+    #[cfg(feature = "stream-grpc")]
+    stream_grpc: Option<StreamGrpc>,
     #[cfg(feature = "qdrant")]
     qdrant: Option<Qdrant>,
     /// The embedded durable server (D1).
@@ -660,6 +673,8 @@ struct Assembled {
     flight: Option<Flight>,
     #[cfg(feature = "pgwire")]
     pg: Option<crate::pg::PgHandle>,
+    #[cfg(feature = "stream-grpc")]
+    stream_grpc: Option<StreamGrpc>,
     #[cfg(feature = "qdrant")]
     qdrant: Option<Qdrant>,
     /// Started by the caller before `assemble` and handed over here (a
@@ -708,6 +723,41 @@ struct Flight {
     stop: CancellationToken,
     /// The `DoPut` tasks, which outlive an aborted `task`.
     puts: PutTasks,
+}
+
+#[cfg(feature = "stream-grpc")]
+#[derive(Debug)]
+struct StreamGrpc {
+    addr: SocketAddr,
+    task: JoinHandle<()>,
+    stop: CancellationToken,
+}
+
+#[cfg(feature = "stream-grpc")]
+impl StreamGrpc {
+    fn start(
+        listener: tokio::net::TcpListener,
+        addr: SocketAddr,
+        streams: Arc<dyn StreamProducer>,
+    ) -> Self {
+        let stop = CancellationToken::new();
+        let task_stop = stop.clone();
+        let task = tokio::spawn(async move {
+            if let Err(err) = operon_stream_grpc::serve(listener, streams, task_stop).await {
+                tracing::error!(%err, "native stream gRPC server failed");
+            }
+        });
+        Self { addr, task, stop }
+    }
+
+    async fn stop(self) {
+        self.stop.cancel();
+        let mut task = self.task;
+        if tokio::time::timeout(HTTP_GRACE, &mut task).await.is_err() {
+            tracing::warn!("in-flight stream gRPC calls did not finish; aborting them");
+            task.abort();
+        }
+    }
 }
 
 impl Flight {
@@ -953,6 +1003,8 @@ impl Server {
             flight: parts.flight,
             #[cfg(feature = "pgwire")]
             pg: parts.pg,
+            #[cfg(feature = "stream-grpc")]
+            stream_grpc: parts.stream_grpc,
             #[cfg(feature = "qdrant")]
             qdrant: parts.qdrant,
             durable,
@@ -1041,6 +1093,8 @@ impl Server {
                     flight: parts.flight,
                     #[cfg(feature = "pgwire")]
                     pg: parts.pg,
+                    #[cfg(feature = "stream-grpc")]
+                    stream_grpc: parts.stream_grpc,
                     #[cfg(feature = "qdrant")]
                     qdrant: parts.qdrant,
                     durable: parts.durable,
@@ -1282,6 +1336,22 @@ impl Server {
                         addr: pg_config.listen,
                         source,
                     });
+                }
+            },
+            None => None,
+        };
+        #[cfg(feature = "stream-grpc")]
+        let stream_grpc_listener = match config.stream_grpc.filter(|_| roles.gateway) {
+            Some(addr) => match operon_stream_grpc::bind(addr)
+                .await
+                .and_then(|listener| listener.local_addr().map(|bound| (listener, bound)))
+            {
+                Ok(bound) => Some(bound),
+                Err(source) => {
+                    if let Err(err) = cache.close().await {
+                        tracing::warn!(%err, "closing the cache after a failed start");
+                    }
+                    return Err(ServerError::StreamGrpcListen { addr, source });
                 }
             },
             None => None,
@@ -1540,6 +1610,14 @@ impl Server {
                 config.flight.clone(),
             )
         });
+        #[cfg(feature = "stream-grpc")]
+        let stream_grpc = stream_grpc_listener.map(|(listener, addr)| {
+            let streams: Arc<dyn StreamProducer> = Arc::new(NativeStreamProducer {
+                meta: meta_store.clone(),
+                writer: writer.clone(),
+            });
+            StreamGrpc::start(listener, addr, streams)
+        });
         Ok(Assembled {
             writer,
             cache,
@@ -1552,6 +1630,8 @@ impl Server {
             flight,
             #[cfg(feature = "pgwire")]
             pg,
+            #[cfg(feature = "stream-grpc")]
+            stream_grpc,
             #[cfg(feature = "qdrant")]
             qdrant,
             durable: Durable::none(),
@@ -1603,6 +1683,12 @@ impl Server {
     #[cfg(feature = "pgwire")]
     pub fn pg_addr(&self) -> Option<SocketAddr> {
         self.pg.as_ref().map(|pg| pg.addr)
+    }
+
+    /// The native stream gRPC listener, when configured.
+    #[cfg(feature = "stream-grpc")]
+    pub fn stream_grpc_addr(&self) -> Option<SocketAddr> {
+        self.stream_grpc.as_ref().map(|stream| stream.addr)
     }
 
     /// The address the durable execution API listens on, when it does (D1,
@@ -1705,6 +1791,10 @@ impl Server {
         #[cfg(feature = "pgwire")]
         if let Some(pg) = self.pg {
             pg.stop_within(HTTP_GRACE).await;
+        }
+        #[cfg(feature = "stream-grpc")]
+        if let Some(stream_grpc) = self.stream_grpc {
+            stream_grpc.stop().await;
         }
         // D1 (T0-6, X8): after Flight (and, in cluster mode, after
         // `late.close()`), before the collection service: the runtime first,
