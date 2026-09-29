@@ -171,6 +171,18 @@ pub trait Jobs: Send + Sync {
     async fn job_admin(&self, cx: &Ctx, queue: &QueueId, job: JobRef, op: JobOp)
         -> Result<JobOpResult, JobsError>;
     async fn query(&self, cx: &Ctx, q: JobQuery) -> Result<Page<JobView>, JobsError>;
+
+    // Result store (§7.1.4): Celery's key-value result backend, TTL'd, one TiKV txn each
+    async fn result_get(&self, cx: &Ctx, key: &ResultKey) -> Result<Option<Payload>, JobsError>;
+    async fn result_mget(&self, cx: &Ctx, keys: Vec<ResultKey>)
+        -> Result<Vec<Option<Payload>>, JobsError>;
+    async fn result_set(&self, cx: &Ctx, key: &ResultKey, value: Payload, ttl: Option<Duration>)
+        -> Result<(), JobsError>;
+    async fn result_delete(&self, cx: &Ctx, key: &ResultKey) -> Result<(), JobsError>;
+    async fn result_incr(&self, cx: &Ctx, key: &ResultKey, member: &str, ttl: Option<Duration>)
+        -> Result<Counted, JobsError>;          // atomic; a member counts once (§7.1.4)
+    async fn result_expire(&self, cx: &Ctx, key: &ResultKey, ttl: Duration)
+        -> Result<(), JobsError>;
 }
 ```
 
@@ -271,7 +283,7 @@ These cover BullMQ's `IQueueBackend` getters and admin methods (§7.2) and Celer
 ### 5.5 The protobuf surface (D206)
 
 - **Package** `loam.jobs.v1`, files under `proto/loam/jobs/v1/` at the workspace root (like `proto/loam/live/v1/`): `jobs.proto` (the service), `types.proto`, `engines.proto`, `events.proto`.
-- **Service** `JobsService`: unary `Enqueue`, `EnqueueBulk`, `Lease` (long-poll), `Extend`, `Complete`, `Report`, `Schedule`, `Unschedule`, `Flow`, `SubmitEngineJob`, `ControlEngineJob`, `QueueAdmin`, `JobAdmin`, `Query`; server-streaming `Watch`. `Lease` is unary with a wait, not a stream: a worker's prefetch is explicit, and connection loss cannot strand jobs in a push buffer. A server-streamed `LeaseStream` is a later optimization (Q98).
+- **Service** `JobsService`: unary `Enqueue`, `EnqueueBulk`, `Lease` (long-poll), `Extend`, `Complete`, `Report`, `Schedule`, `Unschedule`, `Flow`, `SubmitEngineJob`, `ControlEngineJob`, `QueueAdmin`, `JobAdmin`, `Query`, and the result store `ResultGet`, `ResultMGet`, `ResultSet`, `ResultDelete`, `ResultIncr`, `ResultExpire` (§7.1.4); server-streaming `Watch`. `Lease` is unary with a wait, not a stream: a worker's prefetch is explicit, and connection loss cannot strand jobs in a push buffer. A server-streamed `LeaseStream` is a later optimization (Q98).
 - **Server** `operon-jobs-proto`: buffa messages and the connect-rust `JobsService` trait, generated in `build.rs` with `connectrpc-build` and the system `protoc` (D128, as `operon-live-proto` does). It speaks Connect, gRPC and gRPC-Web on one listener.
 - **Clients**: `buf generate` with protobuf-es and `@connectrpc/connect` for TypeScript, and connect-python (`connectrpc` on PyPI) for Python (§12.1). The Celery and BullMQ adapters wrap these clients; they do not hand-write HTTP.
 - **Versioning**: additive changes only within `v1`; `buf breaking` runs in CI against the last release.
@@ -350,7 +362,7 @@ The record layout follows Live's `IdempotencyRecord`: a hash of the key, the res
 
 - Every state change writes an **outbox row** in the same transaction: `outbox/<shard>/<seq>`.
 - A **relay** per queue shard (the same owner as the stalled sweep) reads the outbox in order and appends the events to the stream `_jobs/<queue>` in the namespace, partition = shard, with an **idempotent producer** (D72): producer id `jobs-relay/<queue>/<shard>`, epoch = the relay's lease epoch, sequence = the outbox sequence. A relay that crashed after appending and before deleting its outbox rows re-appends them, and the sequencer returns the original offsets without appending (§02 §7). So each event appears in the log exactly once, in order per shard.
-- `watch` reads the current state from TiKV, then subscribes to the stream from the returned cursor (the offset per partition). A client that reconnects passes its cursor and misses nothing within the stream's retention (default 7 days for `_jobs/*`, **estimate**). QueueEvents (BullMQ) and `celery events`-style monitors read this.
+- `watch` reads the current state from TiKV and, **in the same snapshot** (one TiKV read at one `start_ts`), each shard's highest outbox sequence. Because every state change writes its outbox row in the same transaction, that sequence is exactly the set of changes the snapshot already reflects. `watch` then subscribes to each partition and skips records whose outbox sequence (every record carries it) is at or below the snapshot's; the returned cursor is the stream offset per partition of the first record it delivers. No change can fall between the snapshot and the subscription: a change committed after the snapshot has a higher outbox sequence and is delivered, even if the relay appends it later. A client that reconnects passes its cursor and misses nothing within the stream's retention (default 7 days for `_jobs/*`, **estimate**). QueueEvents (BullMQ) and `celery events`-style monitors read this.
 - The event stream can be linked to an Iceberg table (M4) for job analytics: durations, failure rates, per-task cost.
 - **Until D72's idempotent producers land (M2)**, the relay writes events with at-least-once delivery and includes the outbox sequence in each record so consumers can drop duplicates. In `operon dev` without a stream engine, `watch` tails the outbox directly (§6.8).
 
@@ -402,11 +414,17 @@ Celery 5.6.3 and kombu 5.6.2 are the current releases, both BSD-3-Clause **(sour
 ```python
 # celeryconfig.py: the only change for a queue-mode app
 import loam_celery                      # registers the kombu alias "loam" (§7.1.1)
-broker_url = "loam://jobs.loam.example:7720/my-namespace"
-result_backend = "loam://jobs.loam.example:7720/my-namespace"
+# Same host only until the unified auth plan (D111): the jobs listener binds
+# 127.0.0.1:7720 (§3.1, §11). After D111 the URL is the authenticated endpoint,
+# jobs.<cloud-domain>:443 with TLS, and nothing else changes.
+broker_url = "loam://127.0.0.1:7720/my-namespace"
+result_backend = "loam://127.0.0.1:7720/my-namespace"
 beat_scheduler = "loam"                 # optional: schedules live in Loam (§7.1.6)
 broker_transport_options = {"visibility_timeout": 3600, "token_env": "LOAM_TOKEN"}
+result_backend_transport_options = {"token_env": "LOAM_TOKEN"}
 ```
+
+**Credentials.** The transport and the result backend are separate Celery objects, so each reads its own options: the transport from `broker_transport_options`, `LoamBackend` from Celery's `result_backend_transport_options`. Both take `token_env` (the environment variable holding the Loam token) and default to `LOAM_TOKEN` when it is absent, so the two lines above are optional. `LoamBackend` builds one `loam.jobs.v1` client per process with that token; `AsyncResult`, `GroupResult.save/restore` and the chord counter all go through the backend and therefore that client. A token is never taken from the URL.
 
 #### 7.1.1 Registration
 
@@ -444,7 +462,7 @@ kombu's virtual transport (`kombu/transport/virtual/base.py`) keeps unacked mess
 
 #### 7.1.4 The result backend
 
-`LoamBackend` subclasses Celery's `BaseKeyValueStoreBackend` (`backends/base.py:1095`) and implements its six primitives, `get`, `mget`, `set`, `delete`, `incr` and `expire`, over a small **result store** in `loam.jobs.v1` (`ResultGet`, `ResultMGet`, `ResultSet { ttl }`, `ResultDelete`, `ResultIncr`, `ResultExpire`), kept in the job store under `results/<ns>/…` with a TTL (`result_expires`, default 1 day). Because it sets `implements_incr = True`, Celery uses the **native chord counter** (`_apply_chord_incr`, `on_chord_part_return` with `incr`, `base.py:1100-1365`): each header task's completion increments a TiKV counter in one transaction, and the body is sent once when the count reaches the chord size. Without `incr`, Celery falls back to the `celery.chord_unlock` task, which polls and retries forever (`app/builtins.py:37-79`); Loam avoids that. `AsyncResult.get` polls through `wait_for_pending` in J1; J1.x adds push waiting over `watch` (as the Redis backend does with `AsyncBackendMixin`). `GroupResult.save/restore` are plain `set`/`get`.
+`LoamBackend` subclasses Celery's `BaseKeyValueStoreBackend` (`backends/base.py:1095`) and implements its six primitives, `get`, `mget`, `set`, `delete`, `incr` and `expire`, over a small **result store** in `loam.jobs.v1` (`ResultGet`, `ResultMGet`, `ResultSet { ttl }`, `ResultDelete`, `ResultIncr`, `ResultExpire`), kept in the job store under `results/<ns>/…` with a TTL (`result_expires`, default 1 day). Because it sets `implements_incr = True`, Celery uses the **native chord counter** (`_apply_chord_incr`, `on_chord_part_return` with `incr`, `base.py:1100-1365`): each header task's completion calls `ResultIncr { key: chord counter, member: task id }`. The counter is stored as the set of members that counted, and `ResultIncr` adds the member and returns the new size in one TiKV transaction, so **each `(group_id, task_id)` counts at most once**: a redelivered or re-run header task (a crash after `incr` and before the ack, or a stalled lease) adds nothing, and only the call that moves the size to the chord size gets `reached: true` and sends the body, so the body is sent once. A count is never skipped by a crash either: `on_chord_part_return` runs before the task is acked under `acks_late` (the setting the docs recommend for chords), so a worker that dies before `incr` leaves the job to be redelivered, and the re-run counts. With early acks a crash between the ack and `incr` loses the count, as it does on Redis; the docs say so. Without `incr`, Celery falls back to the `celery.chord_unlock` task, which polls and retries forever (`app/builtins.py:37-79`); Loam avoids that. `AsyncResult.get` polls through `wait_for_pending` in J1; J1.x adds push waiting over `watch` (as the Redis backend does with `AsyncBackendMixin`). `GroupResult.save/restore` are plain `set`/`get`.
 
 #### 7.1.5 What depends on the broker type, and what does not work
 
@@ -482,8 +500,12 @@ resonate = loam.resonate(group="billing")    # = Resonate(url=…, token=…, gr
 @resonate.register(name="charge", version=1)
 async def charge(ctx, order_id: str):
     hold = await ctx.options(retry_policy=Exponential(delay=1, max_retries=5)).run(reserve, order_id)
-    receipt = await ctx.run(capture, hold)   # checkpointed: never captured twice
-    await ctx.run(send_receipt, receipt)
+    # ctx.run checkpoints the result, but a crash after capture and before the
+    # checkpoint runs the step again: side effects are at least once. Each
+    # external call therefore gets an idempotency key made from the promise id
+    # and the step, which the payment and mail APIs deduplicate on.
+    receipt = await ctx.run(capture, hold, idempotency_key=f"{ctx.id}:capture")
+    await ctx.run(send_receipt, receipt, idempotency_key=f"{ctx.id}:send_receipt")
     return receipt
 
 @app.task(bind=True, acks_late=True)         # stays a Celery task: routing, priority, rate limits
@@ -498,7 +520,7 @@ The Celery message still carries admission (queue, priority, rate limit, ETA). T
 
 **Finding: BullMQ v6 already has a pluggable backend, so Loam implements it instead of imitating the API.** BullMQ 6.3.9 (MIT, 2026-09-28) defines `IQueueBackend`, "a database-agnostic contract describing every high-level operation that the Queue, Worker and Job classes need" (`src/interfaces/queue-backend.ts:26-61`), with about 81 methods, and ships a Redis backend and a PostgreSQL backend (`src/postgres/`, 81 SQL command files, LISTEN/NOTIFY for wake-ups) that claims full parity: flows, schedulers, rate limiting, priorities, delays, deduplication, metrics and events (`docs/gitbook/guide/postgresql.md:349-363`) **(source)**. A backend is injected as the last constructor argument (`queue-base.ts:38-82`, `flow-producer.ts:121-151`) or process-wide with `setDefaultBackendFactory` (`src/utils/create-backend.ts:120`); custom backends are documented (`docs/gitbook/guide/connections.md:205-267`).
 
-So `@loam/bullmq` is **a `BackendFactory` for the unmodified `bullmq` package** (a peer dependency, `^6.3`), plus a module that re-exports BullMQ's classes already bound to it with `withBackend` (`src/utils/with-backend.ts`):
+So `@loam/bullmq` is **a `BackendFactory` for the unmodified `bullmq` package** (a peer dependency bounded to the BullMQ minors whose backend-neutral suite passed against Loam: `>=6.3.9 <6.4` at J2; each later minor is added to the range only after the suite passes on it, J-R1), plus a module that re-exports BullMQ's classes already bound to it with `withBackend` (`src/utils/with-backend.ts`):
 
 ```ts
 // Option A: change the import (the owner's "drop-in")
@@ -525,7 +547,7 @@ The `Queue`, `Worker`, `Job`, `FlowProducer` and `QueueEvents` code users run is
 | `setRateLimit`, global rate limit and concurrency | `complete(RateLimited)`, `queue_admin(SetRateLimit / SetConcurrency)` |
 | `getCounts`, `getRanges`, job getters, logs, metrics, workers | `query`, `job_admin`, `queue_admin` |
 | Job scheduler operations | `schedule`, `unschedule` and their listing (§8.1) |
-| `publishEvent`, `readEvents(id, blockTimeout)` (`queue-backend.ts:752`) | `watch` on the queue's event stream; BullMQ's event id is the stream cursor |
+| `publishEvent`, `readEvents(id, blockTimeout)` (`queue-backend.ts:752`) | `watch` on the queue's event stream; BullMQ's event id is the stream cursor. With `S = 1` it is the partition's offset. With `S > 1` it is an opaque vector cursor (every partition's offset, encoded in one string): the backend merges the partitions by each record's commit timestamp (the TSO of the transaction that wrote its outbox row, ties broken by shard), which keeps per-shard order, and `readEvents(id)` resumes every partition after its own offset, so no event is skipped or repeated. J2 verifies that `QueueEvents` passes `lastEventId` back unparsed; if it does not, queues with `S > 1` keep their BullMQ events on one partition |
 | pause, resume, drain, clean, obliterate, promote, retry-all | `queue_admin` |
 
 #### 7.2.2 Semantics to preserve, and how
@@ -575,7 +597,10 @@ const resonate = loamResonate({ group: "emails" });
 
 function* sendCampaign(ctx, campaignId: string) {
   const list = yield* ctx.run(loadRecipients, campaignId);
-  for (const batch of chunk(list, 500)) yield* ctx.run(sendBatch, campaignId, batch); // each batch once
+  // At least once: a crash after sendBatch and before its checkpoint resends the
+  // batch, so the mail API deduplicates on a key made from the promise id and step.
+  for (const [i, batch] of chunk(list, 500).entries())
+    yield* ctx.run(sendBatch, campaignId, batch, `${ctx.id}:batch:${i}`);
   return list.length;
 }
 const campaign = resonate.register("sendCampaign", sendCampaign);
@@ -658,7 +683,7 @@ Sail 0.7.1 (2026-08-24, Apache-2.0) is a Spark Connect server in Rust on DataFus
 
 - **Never linked.** Sail's crates are not on crates.io, are on DataFusion 55.1 / arrow 59.2 against Loam's 54 / 58 (§11), and `sail-spark-connect` pulls an embedded CPython through pyo3. D51 holds: Sail is a separate process.
 - **One Sail per namespace.** Sail runs tenants' Python UDFs inside its own process, so a shared server would run one tenant's Python beside another's data. Each namespace that uses Spark gets its own Sail server (a Deployment in `kubernetes-cluster` mode in cloud; a child process in `operon dev`), scaled to zero after an idle period and started on the first connection (Q96).
-- **The endpoint.** Clients connect to `sc://<ns>.spark.<cloud-domain>:443/;use_ssl=true;token=<loam token>`. A Spark Connect proxy in Loam's gateway role authenticates the token (Spark Connect sends it as bearer metadata; verify for each PySpark version), finds the namespace's Sail Service, starts it if needed, and forwards the gRPC stream, keeping a session on one Sail server (sticky by Spark Connect's `session_id`). Loam does not implement Spark Connect; it routes to Sail.
+- **The endpoint.** Clients connect to `sc://<ns>.spark.<cloud-domain>:443/;use_ssl=true`; the URI carries connection settings only, never the token, so it cannot leak through diagnostics or proxy logs. The token travels as `authorization: Bearer <loam token>` gRPC metadata: `loam.spark_session()` builds the session with a PySpark `ChannelBuilder` subclass that adds that header from `LOAM_TOKEN` (PySpark's own `token=` URI parameter produces the same header, but the docs do not show it; verify the metadata path for each PySpark version). A Spark Connect proxy in Loam's gateway role authenticates the token, finds the namespace's Sail Service, starts it if needed, and forwards the gRPC stream, keeping a session on one Sail server (sticky by Spark Connect's `session_id`). Loam does not implement Spark Connect; it routes to Sail.
 - **Data.** Sail's Iceberg REST catalog points at Lakekeeper with credential vending (§10 §4), so tables live on RustFS as standard Iceberg (M4). Loam collections are read and written with the `format("loam")` Python data source (D54, M2), which runs on Sail unchanged (§17 §5.6).
 - **Batch jobs.** `submit_engine_job(EngineJob::SparkBatch { entrypoint, args, conf, python_deps })` runs a PySpark script (uploaded to the object store) in a short-lived driver container against the namespace's Sail endpoint. The run is a Loam durable workflow: start the container, stream its logs into the run's events, record the exit status, retry by policy. `schedule` can target it, so "run this Spark job nightly" needs no Airflow.
 
