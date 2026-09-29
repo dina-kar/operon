@@ -2,22 +2,39 @@
 
 ## Supported versions
 
-Operon has no stable release yet. Security fixes are applied to the `main` branch.
+Loam has no stable release yet. Security fixes land on the `main` branch only. Once releases start, this section will list the supported release lines.
 
 ## Reporting a vulnerability
 
-**Do not open a public issue for security vulnerabilities.**
+**Please do not report security vulnerabilities in public issues, pull requests or discussions.**
 
-Report privately through GitHub's **"Report a vulnerability"** button (Security Advisories) on the repository, or contact the maintainers listed in [MAINTAINERS.md](MAINTAINERS.md).
+Report them privately through GitHub's private vulnerability reporting:
+
+1. Open the repository's **Security** tab and choose **Report a vulnerability** ([direct link](../../security/advisories/new)).
+2. Fill in the advisory form. Only you and the maintainers can see it.
+
+If you cannot use GitHub, contact one of the maintainers listed in [MAINTAINERS.md](MAINTAINERS.md) and ask for a private channel.
 
 Please include:
 
-- affected component (gateway, log, meta, query, worker) and version or commit;
+- the affected component (for example a gateway, the log, the metastore, the query engine, Loam Live or Loam Durable) and the version or commit;
 - steps to reproduce, or a proof of concept;
-- impact assessment (for example data exposure across namespaces, auth bypass, durability loss).
+- your assessment of the impact, for example data exposure across namespaces, an authentication bypass, or loss of acknowledged writes.
 
-We aim to acknowledge reports within 3 business days and to agree on a disclosure timeline with the reporter.
+## What to expect
 
-## Scope notes
+- We acknowledge a report within **3 business days**.
+- We keep you updated while we investigate, and agree on a disclosure timeline with you. The default is to publish an advisory once a fix is on `main`, within **90 days** of the report.
+- We credit reporters in the advisory unless you ask us not to.
 
-Of particular interest: tenant (namespace) isolation, authentication and authorization in any protocol gateway, credential handling for object storage, and any path that could lose or corrupt acknowledged data.
+## Scope
+
+Of particular interest:
+
+- isolation between tenants and namespaces;
+- authentication and authorization in any protocol gateway (native, Flight SQL, Qdrant, Elasticsearch, Postgres, Resonate);
+- handling of object-storage and TiKV credentials;
+- server-side request forgery, for example through durable task delivery targets;
+- any path that could lose or corrupt acknowledged data.
+
+Out of scope: findings that need a compromised host or bucket, denial of service through unbounded requests on an unauthenticated development server (`operon dev` binds to loopback by default), and issues in third-party dependencies that are already public (please report those upstream; we track advisories with `cargo-deny`).
