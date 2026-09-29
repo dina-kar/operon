@@ -25,16 +25,19 @@ With Docker, or Podman plus `DOCKER_HOST=unix:///run/user/$UID/podman/podman.soc
 ```sh
 docker compose up -d rustfs create-bucket storage_broker pageserver safekeeper1
 
-# Create a tenant and its first timeline through the pageserver API.
+# Create a tenant and its first timeline through the pageserver API. The timeline's
+# Postgres version must match the compute image (compute-node-v${PG_VERSION:-16}).
 export TENANT_ID=$(openssl rand -hex 16) TIMELINE_ID=$(openssl rand -hex 16)
 curl -X PUT -H 'Content-Type: application/json' \
   -d '{"mode":"AttachedSingle","generation":1,"tenant_conf":{}}' \
   localhost:9898/v1/tenant/$TENANT_ID/location_config
 curl -X POST -H 'Content-Type: application/json' \
-  -d "{\"new_timeline_id\":\"$TIMELINE_ID\",\"pg_version\":16}" \
+  -d "{\"new_timeline_id\":\"$TIMELINE_ID\",\"pg_version\":${PG_VERSION:-16}}" \
   localhost:9898/v1/tenant/$TENANT_ID/timeline/
 
 docker compose up -d compute1
+# The compute takes a few seconds to accept connections.
+until pg_isready -q -h 127.0.0.1 -p 55433; do sleep 1; done
 PGPASSWORD=cloud_admin psql -h 127.0.0.1 -p 55433 -U cloud_admin postgres
 ```
 
@@ -49,12 +52,19 @@ curl -X POST -H 'Content-Type: application/json' \
   -d "{\"new_timeline_id\":\"$BRANCH_TIMELINE_ID\",\"ancestor_timeline_id\":\"$TIMELINE_ID\"}" \
   localhost:9898/v1/tenant/$TENANT_ID/timeline/
 docker compose --profile branch up -d compute2
+until pg_isready -q -h 127.0.0.1 -p 55434; do sleep 1; done
 PGPASSWORD=cloud_admin psql -h 127.0.0.1 -p 55434 -U cloud_admin postgres
 ```
 
 Add `"ancestor_start_lsn": "<lsn>"` to branch from a point in the past.
 
 ## Stop
+
+```sh
+docker compose --profile branch down
+```
+
+To delete the data as well (destructive: removes the RustFS bucket and every tenant):
 
 ```sh
 docker compose --profile branch down -v

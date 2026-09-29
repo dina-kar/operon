@@ -31,5 +31,11 @@ docker compose up -d
 # Ready after about 75 s on first start; the server accepts connections a few seconds before
 # it can write ("Consensus Not Leader"), so retry the first write.
 mysql -h 127.0.0.1 -P 13306 -uroot -ploam-dev
+docker compose down
+```
+
+To delete the data as well (destructive: removes the `wesql-data` and `rustfs-data` volumes):
+
+```sh
 docker compose down -v
 ```
