@@ -170,7 +170,7 @@
 <line class="arrow" x1="780" y1="640" x2="780" y2="659" marker-end="url(#ah)"/>
 <rect class="band s" x="20" y="664" width="1000" height="80" rx="12"/>
 <text class="t lbl sl" x="40" y="690">OBJECT STORAGE</text>
-<text class="t sub" x="162" y="690">RustFS · S3 · GCS · Azure Blob · local disk: the only source of truth</text>
+<text class="t sub" x="162" y="690">RustFS · S3 · GCS · Azure Blob · local disk: the source of truth for data</text>
 <rect class="chip s" x="40.0" y="702" width="147.5" height="30" rx="7"/>
 <text class="t chipt" x="113.7" y="722" text-anchor="middle">log segments + WAL</text>
 <rect class="chip s" x="195.5" y="702" width="59.7" height="30" rx="7"/>

@@ -1,8 +1,8 @@
 # Loam
 
-**One bucket, every index: hybrid retrieval, reactive data and durable agent runs on object storage.**
+**One bucket, every index: hybrid retrieval on object storage, with reactive data and durable agent runs beside it.**
 
-Loam is an open-source, AI-native data platform built in Rust. It stores everything in *your* object-storage bucket (RustFS, S3, GCS, Azure Blob or a local directory) in open formats: Lance, Tantivy and Apache Iceberg. Compute is stateless and holds only caches, so it scales independently and can be replaced at any time.
+Loam is an open-source, AI-native data platform built in Rust. It stores retrieval data in *your* object-storage bucket (RustFS, S3, GCS, Azure Blob or a local directory) in open formats: Lance and Tantivy today, Apache Iceberg next. Metadata lives in an embedded Raft metastore or in TiKV, and durable-execution state in SQLite (TiKV support is in progress). Retrieval compute is stateless and holds only caches, so it scales independently and can be replaced at any time.
 
 > **Early and moving fast.** Loam has no stable release yet, and APIs, formats and flags change without notice. The code still uses the working name **Operon**: the crates are `operon-*` and the binary is `operon`. They will be renamed to `loamdb` in one pass. The design is public in [`docs/design`](docs/design/README.md).
 
@@ -12,7 +12,7 @@ A typical production AI application runs Elasticsearch for keyword search, Qdran
 
 Loam replaces that stack with one engine on one bucket:
 
-- **Object storage is the only source of truth.** Data at rest lives in open formats in your bucket. You pay object-storage prices, with no 3× block-storage replication, and losing a node loses no data.
+- **Object storage is the source of truth for data.** Documents, vectors, text indexes and the log live in open formats in your bucket. You pay object-storage prices, with no 3× block-storage replication, and losing a query node loses no data. Only the small metadata and transaction state lives elsewhere: in the embedded metastore or in TiKV.
 - **The log is the spine.** Every write, whether native, Qdrant, Elasticsearch or Flight SQL, lands in a log first. Collections are materializations of that log, maintained by declarative *links*, so there is no connector zoo. Every write returns a **consistency token** that any later read can use to see it.
 - **Hybrid retrieval as one planned query.** Dense vectors, BM25 full text and filters, fused with reciprocal rank fusion in one DataFusion plan. Graph expansion for GraphRAG is next.
 - **Hot tiers where it matters.** Node-local, rebuildable acceleration in RAM and NVMe: HNSW graphs for vectors and pinned Tantivy splits for text, over a cheap durable tier on the bucket.
