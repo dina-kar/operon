@@ -1511,7 +1511,6 @@ impl Server {
             },
             false => None,
         };
-        let worker = roles.worker.then(|| worker.start());
         // Rule 5.1: after the collection context, before the router, on the
         // reader built above (the server keeps none, row 0.52).
         let collections = CollectionService::new(
@@ -1526,16 +1525,15 @@ impl Server {
         if let Some((placement, remote)) = routing {
             collections.set_placement(placement, remote);
         }
+        // Every fallible PostgreSQL step (the `pg_catalog` setup) runs here,
+        // before the worker starts; the accept loop is spawned only after.
         #[cfg(feature = "pgwire")]
         let pg = match pg_listener {
             Some((bound, pg_config)) => {
-                match crate::pg::start(collections.clone(), bound, pg_config.clone()).await {
-                    Ok(handle) => Some(handle),
+                match crate::pg::prepare(collections.clone(), bound, pg_config.clone()).await {
+                    Ok(prepared) => Some(prepared),
                     Err(source) => {
                         collections.shutdown().await;
-                        if let Some(worker) = worker {
-                            worker.stop().await;
-                        }
                         if let Some(tier) = &hot {
                             tier.shutdown().await;
                         }
@@ -1550,6 +1548,9 @@ impl Server {
             }
             None => None,
         };
+        let worker = roles.worker.then(|| worker.start());
+        #[cfg(feature = "pgwire")]
+        let pg = pg.map(crate::pg::serve);
         #[cfg(feature = "qdrant")]
         let qdrant = match qdrant_listeners {
             Some((qdrant, (rest, grpc))) => {

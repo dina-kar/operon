@@ -117,15 +117,32 @@ pub async fn listen(config: &PgConfig) -> io::Result<PgListener> {
     Ok(PgListener { listener, addr })
 }
 
-/// Serves a read-only PostgreSQL wire listener for one namespace. Only the
-/// `pg_catalog` setup can fail here.
-pub async fn start(
+/// A bound listener whose `pg_catalog` is set up: [`prepare`] runs every
+/// fallible step before the server starts its worker, and [`serve`] only
+/// spawns the accept loop.
+pub struct PgPrepared {
+    listener: TcpListener,
+    addr: SocketAddr,
+    handlers: Arc<Handlers>,
+    max_connections: usize,
+}
+
+impl std::fmt::Debug for PgPrepared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PgPrepared")
+            .field("addr", &self.addr)
+            .finish()
+    }
+}
+
+/// Builds the namespace's SQL context and its `pg_catalog`; the only step
+/// after [`listen`] that can fail.
+pub async fn prepare(
     service: Arc<CollectionService>,
     bound: PgListener,
     config: PgConfig,
-) -> io::Result<PgHandle> {
+) -> io::Result<PgPrepared> {
     let PgListener { listener, addr } = bound;
-
     let context = Arc::new(service.sql_context(&config.namespace));
     setup_pg_catalog(&context, &config.namespace, EmptyContextProvider)
         .map_err(io::Error::other)?;
@@ -140,6 +157,22 @@ pub async fn start(
             ],
         )),
     });
+    Ok(PgPrepared {
+        listener,
+        addr,
+        handlers,
+        max_connections: config.max_connections,
+    })
+}
+
+/// Serves a prepared read-only PostgreSQL wire listener. It cannot fail.
+pub fn serve(prepared: PgPrepared) -> PgHandle {
+    let PgPrepared {
+        listener,
+        addr,
+        handlers,
+        max_connections,
+    } = prepared;
 
     let shutdown = CancellationToken::new();
     let disconnect_clients = CancellationToken::new();
@@ -147,7 +180,7 @@ pub async fn start(
     let stop = shutdown.clone();
     let force_disconnect = disconnect_clients.clone();
     let active = clients.clone();
-    let limit = Arc::new(tokio::sync::Semaphore::new(config.max_connections));
+    let limit = Arc::new(tokio::sync::Semaphore::new(max_connections));
     let accept_task = tokio::spawn(async move {
         loop {
             let socket = tokio::select! {
@@ -187,13 +220,13 @@ pub async fn start(
         }
     });
 
-    Ok(PgHandle {
+    PgHandle {
         addr,
         shutdown,
         disconnect_clients,
         accept_task,
         clients,
-    })
+    }
 }
 
 struct Handlers {
