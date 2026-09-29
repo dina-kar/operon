@@ -1,0 +1,9 @@
+# The benchmark's pageserver: deploy/neon/pageserver.toml on host networking.
+broker_endpoint='http://127.0.0.1:50051'
+pg_distrib_dir='/usr/local/'
+listen_pg_addr='127.0.0.1:6400'
+listen_http_addr='127.0.0.1:9898'
+remote_storage={ endpoint='http://127.0.0.1:9000', bucket_name='neon', bucket_region='us-east-1', prefix_in_bucket='/pageserver' }
+control_plane_api='http://127.0.0.1:6666' # no storage controller; a junk address
+control_plane_emergency_mode=true
+virtual_file_io_mode="buffered"

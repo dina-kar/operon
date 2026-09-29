@@ -279,7 +279,9 @@ pub fn apply_append(
 }
 
 /// The heartbeat commit rule: fenced by `term`, clamped to the WAL end,
-/// never lowered. Returns whether the head changed inside `Ok(Ok(_))`.
+/// never lowered. `Ok(Ok(()))` when `term` is the stored one (the head's
+/// `commit_lsn` may or may not have moved; callers compare it themselves),
+/// `Ok(Err(Deposed))` when the stored term is higher.
 pub fn apply_commit_lsn(
     st: &mut AcceptorState,
     term: Term,

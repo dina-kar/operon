@@ -52,6 +52,9 @@ pub struct WalServiceConfig {
     pub keepalive_interval: Duration,
     /// How often a reader polls the store when no local proposer wakes it.
     pub poll_interval: Duration,
+    /// When set, clients must send this token as their password (walproposer:
+    /// `NEON_AUTH_TOKEN`), and the HTTP API requires it as a bearer token.
+    pub auth_token: Option<String>,
     /// Feed committed WAL to this stock safekeeper, which serves the
     /// pageserver (the interim path of [`crate::feeder`]).
     pub feeder: Option<crate::feeder::FeederConfig>,
@@ -65,6 +68,7 @@ impl Default for WalServiceConfig {
             keepalive_interval: Duration::from_secs(1),
             poll_interval: Duration::from_millis(20),
             feeder: None,
+            auth_token: None,
         }
     }
 }
@@ -225,6 +229,14 @@ impl Registry {
             *n = n.saturating_add_signed(delta);
             *n
         };
+        if n == 0 {
+            // No local proposer: the tail can go stale, so drop it (this also
+            // bounds memory to the timelines being written here).
+            self.tails
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&tl);
+        }
         self.sender(tl).send_if_modified(|cur| {
             let active = n > 0;
             let changed = cur.active != active;
@@ -277,7 +289,14 @@ impl<S: WalStore> WalService<S> {
         from: Lsn,
         max: usize,
     ) -> Result<Vec<(Lsn, bytes::Bytes)>, Error> {
-        if let Some(out) = self.registry.tail(tl, |t| t.read(from, max)) {
+        // The tail is only current while a proposer streams to this
+        // instance: another instance's proposer may have truncated and
+        // rewritten what it holds. An empty answer (at the tail's end) goes
+        // to the store too, which may hold more.
+        if self.progress(tl).active
+            && let Some(out) = self.registry.tail(tl, |t| t.read(from, max))
+            && !out.is_empty()
+        {
             return Ok(out);
         }
         self.store.read(&tl, from, max).await
@@ -346,6 +365,24 @@ impl<S: WalStore> WalService<S> {
         };
         let tl = timeline_of(&startup)?;
         let mut buf = BytesMut::new();
+        if let Some(token) = &self.config.auth_token {
+            // walproposer and the pageserver send their token as the password
+            // (NEON_AUTH_TOKEN), which libpq answers a cleartext request with.
+            pgwire::put_message(&mut buf, b'R', &3u32.to_be_bytes());
+            send(&mut wr, &mut buf).await?;
+            let ok = match pgwire::read_message(&mut rd).await? {
+                Some((b'p', body)) => {
+                    let got = body.strip_suffix(b"\0").unwrap_or(&body);
+                    constant_time_eq(got, token.as_bytes())
+                }
+                _ => false,
+            };
+            if !ok {
+                pgwire::put_error(&mut buf, "28P01", "authentication failed");
+                let _ = send(&mut wr, &mut buf).await;
+                return Err(Error::Protocol("authentication failed".into()));
+            }
+        }
         pgwire::put_login_ok(&mut buf);
         send(&mut wr, &mut buf).await?;
 
@@ -726,6 +763,11 @@ impl PushStats {
     }
 }
 
+/// Compare secrets without an early exit on the first differing byte.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 async fn send<W: AsyncWrite + Unpin>(wr: &mut W, buf: &mut BytesMut) -> Result<(), Error> {
     wr.write_all(buf)
         .await
@@ -865,5 +907,24 @@ mod tests {
         assert_eq!(*r.sender(tl).borrow(), p(2, 8, 3));
         r.session(tl, -1);
         assert!(!r.sender(tl).borrow().active);
+    }
+
+    #[test]
+    fn the_tail_is_dropped_when_the_last_local_session_ends() {
+        let r = Registry::default();
+        let tl = TimelineId::default();
+        r.session(tl, 1);
+        r.session(tl, 1);
+        r.tail(tl, |t| t.push(Lsn(10), b(b"abc")));
+        r.session(tl, -1);
+        assert!(
+            r.tail(tl, |t| t.read(Lsn(10), 10)).is_some(),
+            "one session left"
+        );
+        r.session(tl, -1);
+        assert!(
+            r.tail(tl, |t| t.read(Lsn(10), 10)).is_none(),
+            "stale after the last one"
+        );
     }
 }

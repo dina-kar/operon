@@ -1,0 +1,66 @@
+# The P4b merge gate for the Loam WAL (docs/design/28-loam-postgres.md §7):
+# pgbench against stock safekeepers vs the Loam WAL service on TiKV, on a
+# dedicated runner. Manual only: shared runners are too noisy for p99s.
+name: Loam WAL benchmark (P4b)
+
+on:
+  workflow_dispatch:
+    inputs:
+      replicas:
+        description: "Safekeepers / TiKV stores"
+        type: choice
+        options: ["3", "1"]
+        default: "3"
+      repeats:
+        description: "Interleaved repeats of each variant"
+        default: "3"
+      duration:
+        description: "Seconds per workload"
+        default: "300"
+      workloads:
+        description: "Workloads (scripts/loam-pg-bench/workload.sh)"
+        default: "commit-1 commit-16 tpcb-16 tpcb-64 bulk"
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: [self-hosted, loam-bench]
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v7
+      - name: build loam-wal
+        run: cargo build --release --locked -p operon-safekeeper --features server,tikv --bin loam-wal
+      - name: tiup components
+        run: |
+          command -v tiup || curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
+          echo "$HOME/.tiup/bin" >> "$GITHUB_PATH"
+          "$HOME/.tiup/bin/tiup" install playground pd:v8.5.8 tikv:v8.5.8
+      - name: gate
+        env:
+          REPLICAS: ${{ inputs.replicas }}
+          REPEATS: ${{ inputs.repeats }}
+          DURATION: ${{ inputs.duration }}
+          WORKLOADS: ${{ inputs.workloads }}
+        run: |
+          case "$REPEATS$DURATION" in *[!0-9]*) echo "repeats and duration must be numbers" >&2; exit 2 ;; esac
+          scripts/loam-pg-bench/gate.sh --replicas "$REPLICAS" --repeats "$REPEATS" \
+            --duration "$DURATION" --warmup 60 --scale 50 --workloads "$WORKLOADS" --force
+      - name: results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: loam-pg-bench-rf${{ inputs.replicas }}
+          path: bench/results/
+      - name: stop
+        if: always()
+        run: |
+          scripts/tikv/playground.sh stop --tag loam-bench || true
+          # The same endpoint and compose binary run.sh uses.
+          if [ -z "${DOCKER_HOST:-}" ] && [ -S "/run/user/$(id -u)/podman/podman.sock" ]; then
+            export DOCKER_HOST=unix:///run/user/$(id -u)/podman/podman.sock
+          fi
+          compose=(docker-compose); command -v docker-compose >/dev/null || compose=(docker compose)
+          "${compose[@]}" -f deploy/loam-pg-bench/compose.yaml \
+            --profile sk --profile sk3 --profile loam down -v || true

@@ -1,0 +1,62 @@
+{
+  "variant": "loam",
+  "replicas": 3,
+  "label": "r3",
+  "git_sha": "b15e4b7",
+  "date": "2026-09-29T11:18:55Z",
+  "host": {
+    "kernel": "7.2.4-3-cachyos",
+    "cpus": 14,
+    "disk": "BM9C1a Samsung 512GB"
+  },
+  "versions": {
+    "neon_image": "sha256:ead56a7b33925ca4df9f1ee0d29f55fa25e165a3fee6a4f19055050c68e8cad0",
+    "tikv": "v8.5.8"
+  },
+  "settings": {
+    "duration_s": 60,
+    "warmup_s": 10,
+    "scale": 10,
+    "shared_buffers": "2GB",
+    "compute_fsync": "off",
+    "wal": "127.0.0.1:5460"
+  },
+  "workloads": [
+    {
+      "workload": "commit-1",
+      "n": 1909,
+      "tps": 31.8,
+      "p50_ms": 20.355,
+      "p90_ms": 50.073,
+      "p99_ms": 187.569,
+      "p999_ms": 659.693,
+      "max_ms": 729.1
+    },
+    {
+      "workload": "commit-16",
+      "n": 14671,
+      "tps": 244.4,
+      "p50_ms": 55.643,
+      "p90_ms": 104.576,
+      "p99_ms": 220.354,
+      "p999_ms": 620.893,
+      "max_ms": 665.361
+    },
+    {
+      "workload": "tpcb-16",
+      "n": 7990,
+      "tps": 132.3,
+      "p50_ms": 84.741,
+      "p90_ms": 240.125,
+      "p99_ms": 622.478,
+      "p999_ms": 1026.243,
+      "max_ms": 1636.958
+    },
+    {
+      "workload": "bulk",
+      "wal_bytes": 268863032,
+      "seconds": 30.903,
+      "wal_mb_per_s": 8.7
+    }
+  ]
+}

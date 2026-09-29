@@ -30,11 +30,19 @@ async fn start() -> (SocketAddr, SocketAddr, Arc<WalService<MemWalStore>>) {
 async fn start_with(
     feeder: Option<FeederConfig>,
 ) -> (SocketAddr, SocketAddr, Arc<WalService<MemWalStore>>) {
+    start_cfg(feeder, None).await
+}
+
+async fn start_cfg(
+    feeder: Option<FeederConfig>,
+    auth_token: Option<String>,
+) -> (SocketAddr, SocketAddr, Arc<WalService<MemWalStore>>) {
     let svc = WalService::new(
         Arc::new(MemWalStore::new()),
         WalServiceConfig {
             poll_interval: Duration::from_millis(5),
             feeder,
+            auth_token,
             ..Default::default()
         },
     );
@@ -333,4 +341,35 @@ async fn feeder_copies_committed_wal_to_a_safekeeper() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(got, payload);
+}
+
+#[tokio::test]
+async fn auth_token_is_required_on_both_listeners() {
+    let (pg, web, _svc) = start_cfg(None, Some("s3cret".into())).await;
+    let options = format!("-c timeline_id={TIMELINE} tenant_id={TENANT}");
+    let mut s = TcpStream::connect(pg).await.unwrap();
+    let bad = client::startup(
+        &mut s,
+        &[("user", "u"), ("options", &options), ("password", "nope")],
+    )
+    .await;
+    assert!(bad.is_err());
+    let mut s = TcpStream::connect(pg).await.unwrap();
+    client::startup(
+        &mut s,
+        &[("user", "u"), ("options", &options), ("password", "s3cret")],
+    )
+    .await
+    .unwrap();
+    assert!(
+        http_get(web, "/v1/status")
+            .await
+            .starts_with("HTTP/1.1 401")
+    );
+    let ok = http(
+        web,
+        "GET /v1/status HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer s3cret\r\nConnection: close\r\n\r\n".into(),
+    )
+    .await;
+    assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
 }
