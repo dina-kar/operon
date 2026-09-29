@@ -163,7 +163,7 @@ Cloudflare publishes Workers guides for Astro, React Router, Next.js (OpenNext),
 1. an **mTLS client certificate** with a SPIFFE ID (`spiffe://<trust-domain>/tenant/<org>/ns/<ns>/fn/<fn>`), for T2 and system components; or
 2. a **sandbox token**, a Biscuit minted by the node supervisor for the invocation. Its authority block names the org, namespace, function, version and invocation id and carries a short expiry. The supervisor attenuates it with each call's allowed operations before passing it into the isolate or component (§25 §4).
 
-`loam-dapr` derives the namespace from the credential, never from a request field, which is the rule §21 §5.2 already sets for the durable dispatcher. It then asks the `Authorizer` (OpenFGA, D66/D67) and emits the metering hooks of §7. **The long tail (D183)** is one shared `daprd` per cluster, running its components with Dapr's own scoping. `loam-dapr` forwards binding calls to it after the tenant check, so no Go sidecar runs per function.
+`loam-dapr` derives the namespace from the credential, never from a request field, which is the rule §21 §5.2 already sets for the durable dispatcher. It then asks the `Authorizer` (OpenFGA, D66/D67) and emits the metering hooks of §7 (its own call metrics; it records no meter events, D200). **The long tail (D183)** is one shared `daprd` per cluster, running its components with Dapr's own scoping. `loam-dapr` forwards binding calls to it after the tenant check, so no Go sidecar runs per function.
 
 ### 5.1 Secrets from every cloud (D189)
 
@@ -225,7 +225,7 @@ Only SDK code is evicted, because only SDK code is replayable. The Resonate SDKs
 | **Envoy access logs** | the edge | request count, bytes and status per tenant (`x-loam-tenant` set by the gateway) |
 | **OTLP spans** | supervisor and `loam-dapr` | invocation spans with CPU time as an attribute (D73) |
 
-The CPU sources behind those hooks are unchanged (D175): wasmtime fuel or epochs for T1; the per-tenant cgroup's `cpu.stat` for T0 (workerd, cross-checked with `getrusage`); the sandbox cgroup's `cpu.stat` for T2. eBPF (aya, `sched_switch`) comes last, as a cross-check, because a per-switch BPF map update taxes every tenant's hot path. Inside one workerd process, CPU is exact per tenant but only estimated per invocation (Q-RT-6).
+The exact contract (metric families and labels, the cgroup layout and pod labels, the host-report socket and the tenant header) is [§27](27-usage-hooks.md) (D200–D202). The CPU sources behind those hooks are unchanged (D175): wasmtime fuel or epochs for T1; the per-tenant cgroup's `cpu.stat` for T0 (workerd, cross-checked with `getrusage`); the sandbox cgroup's `cpu.stat` for T2. eBPF (aya, `sched_switch`) comes last, as a cross-check, because a per-switch BPF map update taxes every tenant's hot path. Inside one workerd process, CPU is exact per tenant but only estimated per invocation (Q-RT-6).
 
 ## 8. Storage and the data plane
 
