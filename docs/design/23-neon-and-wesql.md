@@ -1,6 +1,8 @@
 # 23 — Neon and WeSQL: Postgres and MySQL on the Bucket, Beside Loam
 
-Status: **Proposed** · 2026-09-29. This document comes from a conversation with the owner about running **Neon** (serverless Postgres whose storage lives on object storage) and **WeSQL** (MySQL whose storage lives on object storage) next to Loam. Two points were settled in that conversation: neither engine is linked into the Loam binary, and both run unmodified as sidecar services on the same RustFS store while Loam integrates with them from the outside. Everything else here is a **proposal**, decisions **D148–D157** and open questions **Q45–Q51**. D149 in particular **amends D-SC-12 and D-SC-16** and needs the owner's confirmation. It is not decided.
+Status: **Proposed** · 2026-09-29; **amended the same day by [§28 Loam Postgres](28-loam-postgres.md)** (owner decisions D230–D236). D149 (Neon for the showcase apps) and D151 (fork only when needed) are **superseded**: the showcase apps run plain Postgres 17 on CloudNativePG (D230), and Neon is forked now as `dina-kar/neon`, with Loam's control plane as its primary control plane (D231, D232). D150 and D153 are **amended**: Loam serves the control-plane API, and PgDog, not Loam's pg listener, routes Postgres OLTP connections (D236). Q45–Q48 are answered and Q49's syntax is settled there. The rest of this document stands; where the two disagree, §28 wins.
+
+This document comes from a conversation with the owner about running **Neon** (serverless Postgres whose storage lives on object storage) and **WeSQL** (MySQL whose storage lives on object storage) next to Loam. Two points were settled in that conversation: neither engine is linked into the Loam binary, and both run unmodified as sidecar services on the same RustFS store while Loam integrates with them from the outside. Everything else here is a **proposal**, decisions **D148–D157** and open questions **Q45–Q51**. D149 in particular **amends D-SC-12 and D-SC-16** and needs the owner's confirmation. It is not decided.
 
 The spike of 2026-09-29 (§9) ran both engines on RustFS. Neon worked: psql, a branch created through the pageserver API, isolation between branches, pgoutput logical replication, OpenFGA and GlitchTip migrations, and recovery after the pageserver's disk was wiped. WeSQL ran basic SQL, but Forgejo's migrations failed on foreign keys, and commits made after the last snapshot were lost when the container was replaced without its local volume. The spike also found that **Neon's public repository has been nearly dormant since August 2025** (§4.1). That fact shapes D151.
 
@@ -13,11 +15,11 @@ Markers: **(spike)** means measured in the spike (notes: `.superpowers/research/
 | # | Proposal | Status |
 |---|---|---|
 | D148 | **Neon and WeSQL run as separate, unmodified services** on Loam's RustFS store (their own buckets or prefixes). Loam never links either one; it talks to them over their HTTP admin APIs and wire protocols | Proposed (the sidecar model is the owner's direction) |
-| D149 | **Neon backs the showcase apps' Postgres OLTP** (Plane, Zulip, GlitchTip, Keycloak, OpenFGA; §22 §6.4). The Postgres front end over TiKV (D-SC-12) narrows to **Loam Live's reactive, Convex-style API** and is not built as a general Postgres. **Amends D-SC-12 and D-SC-16** | Proposed; **needs the owner's confirmation** (Q45) |
-| D150 | **Loam is Neon's control plane.** A new crate, `operon-neon` (feature `neon`), drives the pageserver and storage-controller management APIs, writes compute specs and starts computes through a `ComputeRuntime` trait. One Neon tenant per (namespace, database); branches are timelines of that tenant | Proposed |
-| D151 | **Neon is pinned and owned, with plain Postgres as the exit.** Images are pinned by digest to the last public build (2025-08-26). A fork (`dina-kar/neon`) is opened only when a fix is needed. Everything Loam builds addresses "a Postgres backend", so vanilla Postgres (without branching) can replace Neon without changing any Loam code path except branching | Proposed |
+| D149 | **Superseded by D230 (§28 §4): CloudNativePG, not Neon.** Was: **Neon backs the showcase apps' Postgres OLTP** (Plane, Zulip, GlitchTip, Keycloak, OpenFGA; §22 §6.4). The Postgres front end over TiKV (D-SC-12) narrows to **Loam Live's reactive, Convex-style API** and is not built as a general Postgres. **Amends D-SC-12 and D-SC-16** | Proposed; **needs the owner's confirmation** (Q45) |
+| D150 | **Amended by D232 (§28 §5): Loam also serves the control-plane API.** **Loam is Neon's control plane.** A new crate, `operon-neon` (feature `neon`), drives the pageserver and storage-controller management APIs, writes compute specs and starts computes through a `ComputeRuntime` trait. One Neon tenant per (namespace, database); branches are timelines of that tenant | Proposed |
+| D151 | **Superseded by D231 (§28 §10): the fork is owned now.** Was: **Neon is pinned and owned, with plain Postgres as the exit.** Images are pinned by digest to the last public build (2025-08-26). A fork (`dina-kar/neon`) is opened only when a fix is needed. Everything Loam builds addresses "a Postgres backend", so vanilla Postgres (without branching) can replace Neon without changing any Loam code path except branching | Proposed |
 | D152 | **Mapping records in the TiKV metastore** (`operon-meta-tikv`): namespace database → engine, Neon tenant and default timeline (or WeSQL instance); branch → timeline, parent, ancestor LSN, compute endpoint and owner; bridge checkpoints | Proposed |
-| D153 | **Routing by database name in Loam's wire listeners.** The pg listener reads the `database` startup parameter. A mapped name is spliced byte for byte to the branch's compute, and any other name goes to Loam's analytics (PG1). The MySQL listener must terminate the handshake to see the database, so WeSQL routing authenticates in Loam and reconnects with a stored credential | Proposed |
+| D153 | **Amended by D236 (§28 §8): PgDog routes Postgres OLTP.** **Routing by database name in Loam's wire listeners.** The pg listener reads the `database` startup parameter. A mapped name is spliced byte for byte to the branch's compute, and any other name goes to Loam's analytics (PG1). The MySQL listener must terminate the handshake to see the database, so WeSQL routing authenticates in Loam and reconnects with a stored credential | Proposed |
 | D154 | **Change bridges into Loam collections**: pgoutput logical replication from Neon, and the row-based binlog from WeSQL. They append `DocOp`s to a collection's implicit stream with idempotent producer sequences (D72), next to the TiKV bridge (D129), and give exactly-once delivery end to end | Proposed |
 | D155 | **A Neon branch per agent workspace** (§15 §9), created and removed as Resonate saga steps (§21 §6.3) with deterministic ids and compensation. Branches are never merged: a workspace's result reaches `main` as code (migrations), not as data | Proposed |
 | D156 | **WeSQL is gated and lower priority.** Not for Forgejo (it fails on foreign keys, §9.2). It is a candidate for Matomo only after Q50 and Q51 are answered. Until then MariaDB stays (D-SC-14), and WeSQL ships only as a dev compose | Proposed |
@@ -126,6 +128,8 @@ One WeSQL instance per (namespace, database), each with its own bucket prefix (`
 
 ## 5. Why Neon for the showcase apps, and what it changes (D149)
 
+> **Superseded 2026-09-29** by D230 ([§28](28-loam-postgres.md) §4). The owner declined D149: the showcase apps run plain Postgres 17 on CloudNativePG with PITR to RustFS. This section is kept as the record of the proposal. The last paragraph ("If the owner declines D149") describes the path taken.
+
 §22 wants the suite's apps on Loam end to end. D-SC-12 asks for Postgres write compatibility, and D-SC-16 points it at a Postgres front end over TiKV. That front end would have to be a Postgres-compatible OLTP engine: multi-statement transactions, `FOR UPDATE`, sequences, JSONB, arrays, `pg_trgm`, PGroonga and a catalog good enough for Django, Rails-like ORMs and Keycloak's Hibernate. That is years of work, and each app would still move only when its own test suite passed (§22 §13a).
 
 Neon gives that compatibility today because it *is* Postgres, and it keeps D1's spirit: its durable state is in the bucket (layers and offloaded WAL), and its disks are caches, except for the safekeepers' WAL window. The spike ran OpenFGA's and GlitchTip's migrations on Neon unchanged (§9.1).
@@ -170,6 +174,8 @@ In `operon-meta-tikv`'s keyspace. The prefixes `x/`, `X/` and `b/` were checked 
 Writes are compare-and-set on the version, like pointers (§20 §11.2). Secrets live in the credential store of the unified auth plan (Q30), not in the metastore.
 
 ### 6.3 Routing by database name (D153, N3 and N6)
+
+> **Amended 2026-09-29** by D236 ([§28](28-loam-postgres.md) §8): for Postgres OLTP, PgDog (unmodified, AGPL-3.0, a separate service) routes by database name (`<db>`, `<db>__<branch>`), with config rendered by Loam's control plane. The pg listener keeps analytics (PG1). The MySQL half below is unchanged.
 
 **Postgres.** The client sends the `StartupMessage` (or `SSLRequest` first) before the server says anything, and its `database` parameter names the target. The pg listener (PG1, `crates/operon/src/pg/`) peeks at it before handing the socket to `pgwire`:
 
@@ -276,6 +282,8 @@ Rootless Podman 5 with docker-compose v5.2.0, RustFS 1.0.0, `neon:latest` and `c
 
 ## 11. Roadmap: track N (D157)
 
+> **Amended 2026-09-29** ([§28](28-loam-postgres.md) §11): N1 and N2 become inputs to §28's P2b (the Loam control plane), and N3's Postgres routing becomes P3 (PgDog). N4 and N5 run on Loam Postgres; N4 also runs against CloudNativePG. N6 is unchanged.
+
 Each PR is small, stacked and behind the `neon` feature, and changes no default code path. Track N starts after PG1's read-only half (Tasks 0–5), which provides the listener that N3 extends. N1 and N2 can land earlier.
 
 | PR | Scope | Depends on | Done when |
@@ -306,11 +314,11 @@ Production deployment (the storage controller, three safekeepers, the Kubernetes
 
 | # | Question | Needed by |
 |---|---|---|
-| Q45 | **Owner confirmation of D149**: Neon for the showcase apps' Postgres OLTP, with D-SC-12's TiKV front end narrowed to Loam Live's API and D-SC-16 amended | Founder, before the N3 plan |
-| Q46 | Given §4.1, does Loam accept owning a Neon fork (Postgres minor rebases, security fixes), or should the suite default to plain Postgres 17 and keep Neon for workspace branching only? | Founder, before the N1 plan |
-| Q47 | Scale-to-zero and SNI: implement the proxy's control-plane API in Loam (`get_endpoint_access_control`, `wake_compute`, JWKS) and run Neon's proxy, or keep Loam's listener as the only router and start computes on first connect | Eng, production plan |
-| Q48 | The storage controller's own database: plain Postgres beside it, or a Neon tenant bootstrapped without the controller? Is it needed for a single-pageserver install? | Eng, production plan |
-| Q49 | Branch selection on the wire (`options=-c loam.branch=…` or `<db>@<branch>`), and whether bridges run on branches (an inherited slot must be dropped or kept) | Eng, N3 plan |
+| Q45 | **Answered 2026-09-29: no (D230, §28).** **Owner confirmation of D149**: Neon for the showcase apps' Postgres OLTP, with D-SC-12's TiKV front end narrowed to Loam Live's API and D-SC-16 amended | Founder, before the N3 plan |
+| Q46 | **Answered 2026-09-29: yes (D231, §28 §10).** Given §4.1, does Loam accept owning a Neon fork (Postgres minor rebases, security fixes), or should the suite default to plain Postgres 17 and keep Neon for workspace branching only? | Founder, before the N1 plan |
+| Q47 | **Superseded by Q113 (§28 §8).** Scale-to-zero and SNI: implement the proxy's control-plane API in Loam (`get_endpoint_access_control`, `wake_compute`, JWKS) and run Neon's proxy, or keep Loam's listener as the only router and start computes on first connect | Eng, production plan |
+| Q48 | **Answered 2026-09-29: a small CNPG Cluster; TiKV later (§28 §5.2, §9).** The storage controller's own database: plain Postgres beside it, or a Neon tenant bootstrapped without the controller? Is it needed for a single-pageserver install? | Eng, production plan |
+| Q49 | **Syntax answered 2026-09-29: `<db>__<branch>` in PgDog (D236).** Branch selection on the wire (`options=-c loam.branch=…` or `<db>@<branch>`), and whether bridges run on branches (an inherited slot must be dropped or kept) | Eng, N3 plan |
 | Q50 | WeSQL durability: does archive recovery replay binlog slices from the bucket when configured (`raft_replication_archive_recovery`, or a newer build), so that losing the local volume loses nothing committed? | Eng, before N6 |
 | Q51 | Matomo on WeSQL: does its installer and schema (no foreign keys, verify) run on SmartEngine, and does its archiver's load fit a single node? | Eng, before N6 |
 
