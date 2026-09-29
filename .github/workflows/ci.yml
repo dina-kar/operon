@@ -1,9 +1,24 @@
 name: CI
 
+# Docs-only changes run no CI at all. The nightly schedule is unfiltered.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "deploy/**/*.md"
+      - ".superpowers/**"
+      - "LICENSE*"
+      - ".coderabbit*"
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "deploy/**/*.md"
+      - ".superpowers/**"
+      - "LICENSE*"
+      - ".coderabbit*"
   schedule:
     # Nightly: the long simulation sweep (M0.4 plan Task 6), the tail-merge
     # property test (M1.2 plan Task 15), the TiKV suites (R1 plan Task 1) and
@@ -17,8 +32,137 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Which parts of the tree a pull request touches. The jobs below run on a
+  # pull request only when their filter matches; on a push to main and on the
+  # nightly schedule every job runs as before (this job is skipped there).
+  # dorny/paths-filter is MIT-licensed; pinned to v4.0.3.
+  changes:
+    name: changed paths
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      engine: ${{ steps.filter.outputs.engine }}
+      es: ${{ steps.filter.outputs.es }}
+      sim: ${{ steps.filter.outputs.sim }}
+      tikv: ${{ steps.filter.outputs.tikv }}
+      durable: ${{ steps.filter.outputs.durable }}
+      deny: ${{ steps.filter.outputs.deny }}
+      protos: ${{ steps.filter.outputs.protos }}
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            # Every Rust filter includes these.
+            toolchain: &toolchain
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - "rust-toolchain*"
+              - ".cargo/**"
+              - ".github/workflows/**"
+            # Any Rust change: fmt, clippy, the workspace tests.
+            # operon-console-mock embeds api/console/openapi.json.
+            rust:
+              - *toolchain
+              - "crates/**"
+              - "proto/**"
+              - "api/**"
+              - "clippy.toml"
+              - "rustfmt.toml"
+            # The crates in operon's default build (no tikv, no durable):
+            # the crash gate, the cluster tests and the client suites.
+            # A new crate the binary depends on must be added here.
+            engine: &engine
+              - *toolchain
+              - "crates/operon/**"
+              - "crates/operon-cache/**"
+              - "crates/operon-collection/**"
+              - "crates/operon-common/**"
+              - "crates/operon-es/**"
+              - "crates/operon-hnsw/**"
+              - "crates/operon-hot/**"
+              - "crates/operon-link/**"
+              - "crates/operon-log/**"
+              - "crates/operon-meta/**"
+              - "crates/operon-meta-conformance/**"
+              - "crates/operon-pk/**"
+              - "crates/operon-qdrant/**"
+              - "crates/operon-query/**"
+              - "crates/operon-quickwit/**"
+              - "crates/operon-store/**"
+              - "crates/operon-text/**"
+              - "crates/operon-worker/**"
+            es:
+              - *engine
+              - "conformance/es-client/**"
+            # operon-sim and the crates it depends on.
+            sim:
+              - *toolchain
+              - "crates/operon-sim/**"
+              - "crates/operon-cache/**"
+              - "crates/operon-collection/**"
+              - "crates/operon-common/**"
+              - "crates/operon-link/**"
+              - "crates/operon-log/**"
+              - "crates/operon-meta/**"
+              - "crates/operon-meta-conformance/**"
+              - "crates/operon-pk/**"
+              - "crates/operon-query/**"
+              - "crates/operon-quickwit/**"
+              - "crates/operon-store/**"
+              - "crates/operon-text/**"
+              - "crates/operon-worker/**"
+            tikv:
+              - *toolchain
+              - "crates/operon-tikv/**"
+              - "crates/operon-meta-tikv/**"
+              - "crates/operon-meta/**"
+              - "crates/operon-meta-conformance/**"
+              - "crates/operon-common/**"
+              - "crates/operon-live*/**"
+              - "crates/operon-durable/**"
+              - "crates/operon/Cargo.toml"
+              - "crates/operon/src/server.rs"
+              - "crates/operon/src/meta_backend.rs"
+              - "crates/operon/src/main.rs"
+              - "crates/operon/tests/meta_tikv.rs"
+              - "deploy/tikv/**"
+              - "scripts/tikv/**"
+              - "proto/loam/**"
+            durable:
+              - *toolchain
+              - "crates/operon-durable/**"
+              - "crates/operon/src/api/operations.rs"
+              - "crates/operon/src/api/import.rs"
+              - "crates/operon/src/main.rs"
+              - "crates/operon/src/server.rs"
+              - "crates/operon/Cargo.toml"
+              - "crates/operon/tests/durable.rs"
+              - "scripts/durable/**"
+            deny:
+              - *toolchain
+              - "crates/*/Cargo.toml"
+              - "deny.toml"
+            protos:
+              - ".github/workflows/**"
+              - "proto/**"
+              - "buf.yaml"
+              - "buf.gen.yaml"
+              - "sdks/live-typescript/**"
+            web:
+              - ".github/workflows/**"
+              - "web/**"
+              - "api/**"
+
   check:
     name: fmt, clippy, test
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -84,6 +228,8 @@ jobs:
 
   crash-gate:
     name: kill -9 crash gate
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.engine == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -97,6 +243,8 @@ jobs:
 
   cluster:
     name: multi-process cluster
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.engine == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -113,6 +261,8 @@ jobs:
 
   qdrant-client:
     name: Python qdrant-client smoke
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.engine == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -148,6 +298,8 @@ jobs:
 
   es-client:
     name: Elasticsearch client suite
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.es == 'true') }}
     runs-on: ubuntu-latest
     # The Elasticsearch 8.19 oracle (plan M1.5 Task 11, owner ruling
     # O-M15-6): a CI-only test oracle, never vendored or shipped (R14).
@@ -182,6 +334,8 @@ jobs:
 
   sim:
     name: simulation seed sweep
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.sim == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -205,38 +359,19 @@ jobs:
   # R1 plan Task 1: the TiKV-backed suites against a tiup playground (PD and
   # TiKV v8.5.8 on API v2, port offset 17000). Pull requests run it only when
   # they touch the TiKV crates, their cluster config or scripts, or the Live
-  # protos; the job still reports success otherwise.
+  # protos (the `tikv` filter in the changes job).
   tikv:
     name: TiKV suites
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && (github.event_name != 'pull_request' || needs.changes.outputs.tikv == 'true')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          # The pull request's merge commit and its base parent.
-          fetch-depth: 2
-      - name: paths
-        id: paths
-        run: |
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          pattern='^(crates/operon-tikv/|crates/operon-meta-tikv/|crates/operon-durable/|crates/operon-live[^/]*/|crates/operon/Cargo\.toml$|crates/operon/src/(server|meta_backend|main)\.rs$|crates/operon/tests/meta_tikv\.rs$|deploy/tikv/|scripts/tikv/|proto/loam/|\.github/workflows/ci\.yml$)'
-          if git diff --name-only HEAD^1 HEAD | grep -qE "$pattern"; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "No TiKV paths changed; skipping the TiKV suites."
-          fi
       - name: protoc
-        if: steps.paths.outputs.run == 'true'
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
-        if: steps.paths.outputs.run == 'true'
       - name: packages
         id: packages
-        if: steps.paths.outputs.run == 'true'
         # The TiKV crates that exist so far (later R1 tasks add the rest).
         run: |
           args=
@@ -245,27 +380,22 @@ jobs:
           done
           echo "args=$args" >> "$GITHUB_OUTPUT"
       - name: build the suites
-        if: steps.paths.outputs.run == 'true'
         run: |
           cargo test ${{ steps.packages.outputs.args }} --locked --no-run
           cargo test -p operon --features tikv --test meta_tikv --locked --no-run
           cargo test -p operon-durable --features tikv --lib --test tikv --locked --no-run
       - uses: actions/cache@v4
-        if: steps.paths.outputs.run == 'true'
         with:
           path: ~/.tiup/components
           key: tiup-components-v8.5.8-${{ runner.os }}
       - name: install tiup and the v8.5.8 components
-        if: steps.paths.outputs.run == 'true'
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
           echo "$HOME/.tiup/bin" >> "$GITHUB_PATH"
           "$HOME/.tiup/bin/tiup" install playground pd:v8.5.8 tikv:v8.5.8
       - name: start the playground
-        if: steps.paths.outputs.run == 'true'
         run: scripts/tikv/playground.sh start --tag loam-ci --timeout 120
       - name: TiKV suites
-        if: steps.paths.outputs.run == 'true'
         env:
           OPERON_TEST_PD: 127.0.0.1:19379
         run: |
@@ -273,7 +403,7 @@ jobs:
           cargo test -p operon --features tikv --test meta_tikv --locked
           cargo test -p operon-durable --features tikv --lib --test tikv --locked
       - name: playground logs
-        if: failure() && steps.paths.outputs.run == 'true'
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: tikv-playground-logs-${{ github.job }}
@@ -282,7 +412,7 @@ jobs:
             ~/.tiup/data/loam-ci/**/*.log
           if-no-files-found: ignore
       - name: stop the playground
-        if: always() && steps.paths.outputs.run == 'true'
+        if: always()
         run: scripts/tikv/playground.sh stop --tag loam-ci
 
   # The same suites every night, plus the nightly-only TiKV suites later R1
@@ -367,63 +497,37 @@ jobs:
   # D1 plan Task 5: the embedded durable server's tests and Resonate's
   # linearizability check (porcupine) against `operon dev` on SQLite. Pull
   # requests run it only when they touch the durable crate, its routes or
-  # scripts, this workflow, or the Resonate pin in Cargo.toml; the job still
-  # reports success otherwise. `durable` is an opt-in feature (O1).
+  # scripts, the workflows, or the workspace manifests (the `durable` filter
+  # in the changes job). `durable` is an opt-in feature (O1).
   durable:
     name: durable execution (SQLite linearizability)
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && (github.event_name != 'pull_request' || needs.changes.outputs.durable == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
       DURABLE_FORK_TARGET_DIR: ${{ github.workspace }}/target/durable-fork-build
     steps:
       - uses: actions/checkout@v4
-        with:
-          # The pull request's merge commit and its base parent.
-          fetch-depth: 2
-      - name: paths
-        id: paths
-        run: |
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          pattern='^(crates/operon-durable/|crates/operon/src/api/(operations|import)\.rs$|crates/operon/src/(main|server)\.rs$|crates/operon/Cargo\.toml$|Cargo\.lock$|crates/operon/tests/durable\.rs$|scripts/durable/|\.github/workflows/ci\.yml$)'
-          if git diff --name-only HEAD^1 HEAD | grep -qE "$pattern"; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          elif git diff HEAD^1 HEAD -- Cargo.toml | grep -q '^[-+].*dina-kar/resonate'; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            echo "The Resonate pin changed."
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "No durable paths changed; skipping the durable job."
-          fi
       - name: protoc
-        if: steps.paths.outputs.run == 'true'
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
-        if: steps.paths.outputs.run == 'true'
         with:
           key: durable
       - uses: actions/setup-go@v5
-        if: steps.paths.outputs.run == 'true'
         with:
           go-version: "1.24"
           cache: false
       - name: operon-durable tests
-        if: steps.paths.outputs.run == 'true'
         run: cargo test -p operon-durable --locked
       - name: operon durable tests
-        if: steps.paths.outputs.run == 'true'
         run: cargo test -p operon --features durable --test durable --bin operon --locked
       - name: checker self-test
-        if: steps.paths.outputs.run == 'true'
         run: scripts/durable/conformance.sh --self-test
       - name: linearizability on SQLite (8 clients x 600 ops)
-        if: steps.paths.outputs.run == 'true'
         run: scripts/durable/conformance.sh --store sqlite --clients 8 --ops 600
       - name: conformance output
-        if: failure() && steps.paths.outputs.run == 'true'
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: durable-conformance-sqlite
@@ -502,6 +606,8 @@ jobs:
   # time (operon-live-proto's build.rs), so the check job covers it.
   live-protos:
     name: loam.live.v1 protos and generated TypeScript
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.protos == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -530,6 +636,8 @@ jobs:
 
   deny:
     name: licenses, advisories, sources
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.deny == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -537,6 +645,8 @@ jobs:
 
   web:
     name: console and @loam/ui
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.web == 'true') }}
     runs-on: ubuntu-latest
     defaults:
       run:
