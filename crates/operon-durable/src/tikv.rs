@@ -25,6 +25,8 @@ const PREFIX: &[u8] = b"resonate/blob/";
 const REVISION_BYTES: usize = 16;
 const TOKEN_SWEEP_PAGE: usize = 256;
 const TOKEN_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+/// How long `stop` waits for each background task before aborting it.
+const STOP_GRACE: Duration = Duration::from_secs(10);
 
 /// The Resonate server plugin backed by native TiKV transactions.
 pub static PLUGIN: ServerPlugin = ServerPlugin::new("resonate-server-tikv", configure);
@@ -136,7 +138,7 @@ impl ResonateServer for TikvServer {
         let _ = self.shutdown.send(true);
         let timer = self.timer.lock().expect("TiKV timer mutex").take();
         if let Some(timer) = timer {
-            let _ = timer.await;
+            join_within(timer, "timer").await;
         }
         let token_sweeper = self
             .token_sweeper
@@ -144,7 +146,7 @@ impl ResonateServer for TikvServer {
             .expect("TiKV sweeper mutex")
             .take();
         if let Some(token_sweeper) = token_sweeper {
-            let _ = token_sweeper.await;
+            join_within(token_sweeper, "token sweeper").await;
         }
         Ok(())
     }
@@ -162,6 +164,19 @@ impl ResonateServer for TikvServer {
             Some(server) => server.ready().await,
             None => false,
         }
+    }
+}
+
+/// Waits up to [`STOP_GRACE`] for a background task that was told to stop,
+/// then aborts it, so a stalled TiKV call cannot hold up shutdown.
+async fn join_within(task: tokio::task::JoinHandle<()>, name: &str) {
+    let abort = task.abort_handle();
+    if tokio::time::timeout(STOP_GRACE, task).await.is_err() {
+        tracing::warn!(
+            task = name,
+            "the durable TiKV task did not stop in time; aborting it"
+        );
+        abort.abort();
     }
 }
 
