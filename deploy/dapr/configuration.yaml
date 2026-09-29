@@ -5,6 +5,81 @@ metadata:
 spec:
   tracing:
     samplingRate: "1"
+  # No app may invoke a sidecar with this Configuration. A service that other
+  # apps call needs its own Configuration naming its callers (operon-stream).
+  accessControl:
+    defaultAction: deny
+    trustDomain: public
+  api:
+    denied:
+      # Every Workflow API version: stable (Dapr 1.15+), and the beta and
+      # alpha names older runtimes serve. The edge's guard requires all five.
+      - name: workflows
+        version: v1.0
+        protocol: http
+      - name: workflows
+        version: v1.0-beta1
+        protocol: http
+      - name: workflows
+        version: v1.0-alpha1
+        protocol: http
+      - name: workflows
+        version: v1
+        protocol: grpc
+      - name: workflows
+        version: v1alpha1
+        protocol: grpc
+
+---
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: operon-trigger-edge
+spec:
+  tracing:
+    samplingRate: "1"
+  # The edge takes events only from pub/sub and its webhook Service; service
+  # invocation of its routes (e.g. /events/kafka) is refused by the sidecar.
+  accessControl:
+    defaultAction: deny
+    trustDomain: public
+  api:
+    denied:
+      # Every Workflow API version: stable (Dapr 1.15+), and the beta and
+      # alpha names older runtimes serve. The edge's guard requires all five.
+      - name: workflows
+        version: v1.0
+        protocol: http
+      - name: workflows
+        version: v1.0-beta1
+        protocol: http
+      - name: workflows
+        version: v1.0-alpha1
+        protocol: http
+      - name: workflows
+        version: v1
+        protocol: grpc
+      - name: workflows
+        version: v1alpha1
+        protocol: grpc
+
+---
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: operon-stream
+spec:
+  tracing:
+    samplingRate: "1"
+  # Only the trigger edge may invoke StreamService through the gRPC proxy.
+  accessControl:
+    defaultAction: deny
+    trustDomain: public
+    policies:
+      - appId: operon-trigger-edge
+        defaultAction: allow
+        trustDomain: public
+        namespace: operon
   api:
     denied:
       # Every Workflow API version: stable (Dapr 1.15+), and the beta and

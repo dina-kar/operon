@@ -45,7 +45,7 @@ spec:
         dapr.io/app-id: operon-trigger-edge
         dapr.io/app-port: "8080"
         dapr.io/app-protocol: http
-        dapr.io/config: operon-no-workflow
+        dapr.io/config: operon-trigger-edge
     spec:
       serviceAccountName: operon-trigger-edge
       securityContext:
@@ -62,7 +62,7 @@ spec:
                 fieldRef:
                   fieldPath: metadata.namespace
             - name: DAPR_CONFIG_NAME
-              value: operon-no-workflow
+              value: operon-trigger-edge
       containers:
         - name: edge
           image: operon-trigger-edge:dev
@@ -75,7 +75,7 @@ spec:
                 fieldRef:
                   fieldPath: metadata.namespace
             - name: DAPR_CONFIG_NAME
-              value: operon-no-workflow
+              value: operon-trigger-edge
             - name: DAPR_GRPC_ENDPOINT
               value: http://127.0.0.1:50001
             - name: DAPR_GRPC_PROXY_ENDPOINT

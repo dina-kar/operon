@@ -93,6 +93,12 @@ async fn guard_workflow() -> Result<(), Box<dyn std::error::Error>> {
     if config["spec"].get("workflow").is_some() {
         return Err("Dapr Workflow settings are configured".into());
     }
+    // Service invocation must be deny-by-default: the sidecar forwards an
+    // invocation over loopback, so the app alone cannot tell it apart from a
+    // pub/sub delivery.
+    if config["spec"]["accessControl"]["defaultAction"] != "deny" {
+        return Err("Dapr Configuration must deny service invocation by default".into());
+    }
     let denied = config["spec"]["api"]["denied"]
         .as_array()
         .ok_or("Dapr Configuration has no API denylist")?;

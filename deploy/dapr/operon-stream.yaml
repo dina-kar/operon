@@ -30,7 +30,7 @@ spec:
         dapr.io/app-id: operon-stream
         dapr.io/app-port: "8091"
         dapr.io/app-protocol: grpc
-        dapr.io/config: operon-no-workflow
+        dapr.io/config: operon-stream
     spec:
       serviceAccountName: operon-trigger-edge
       initContainers:
@@ -43,7 +43,7 @@ spec:
                 fieldRef:
                   fieldPath: metadata.namespace
             - name: DAPR_CONFIG_NAME
-              value: operon-no-workflow
+              value: operon-stream
       containers:
         - name: operon
           image: operon:tikv-stream-grpc-durable-tikv

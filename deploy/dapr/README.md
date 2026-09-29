@@ -18,7 +18,12 @@ webhook endpoint is `POST /events/webhook` on the edge Service. It answers
 the caller sends `Authorization: Bearer <token>`. The pub/sub routes
 (`/events/kafka`, `/events/agent`) accept only the pod's own Dapr sidecar,
 over loopback; add a NetworkPolicy if other workloads must not reach the
-edge Service at all. Use Dapr 1.15 or later: the Configuration denies every
+edge Service at all. The sidecar also forwards service invocations over
+loopback, so each app gets its own Configuration with a deny-by-default
+`accessControl` policy: nothing may invoke `operon-trigger-edge`, and only
+`operon-trigger-edge` may invoke `operon-stream`. The guard refuses to start
+unless the Configuration denies invocation by default. These policies rely
+on Dapr mTLS identities (see below). Use Dapr 1.15 or later: the Configuration denies every
 Workflow API version (stable, beta and alpha), and the guard checks all of
 them. Dapr's
 HTTP binding is output-only, so inbound webhooks enter this app's HTTP
@@ -52,6 +57,7 @@ The Operon stream service must run with a Dapr sidecar carrying app ID
 `dapr.io/app-port`. The stream gRPC listener has no authentication, so
 Operon serves it on loopback only (`--stream-grpc-listen 127.0.0.1:8091`);
 the sidecar in the same pod reaches it there. The Resonate service and each workflow worker likewise
-need their own sidecars and the `operon-no-workflow` configuration. Those
+need their own sidecars and the `operon-no-workflow` configuration (or,
+for a service other apps invoke, its own Configuration naming its callers). Those
 deployments depend on the separate TiKV-backed Resonate server and worker
 entrypoints and are not defined by this trigger edge package.
