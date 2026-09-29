@@ -6329,7 +6329,7 @@ dependencies = [
  "postcard",
  "proptest",
  "serde",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
 ]
