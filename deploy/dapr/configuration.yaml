@@ -1,0 +1,15 @@
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: operon-no-workflow
+spec:
+  tracing:
+    samplingRate: "1"
+  api:
+    denied:
+      - name: workflows
+        version: v1.0
+        protocol: http
+      - name: workflows
+        version: v1
+        protocol: grpc
