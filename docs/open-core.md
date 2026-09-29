@@ -17,7 +17,7 @@ This repository must never depend on `loam-platform`: no crate, package, build s
 | Durable and jobs | The embedded Resonate server, the durable patterns, `operon-jobs`, the Celery transport and result backend, and `@loam/bullmq` |
 | Runtime | The Rust Dapr API server, workerd and wasmtime hosting, gVisor sandboxing, Dapr secrets and state wiring, and the gateway |
 | Tenancy and access | Namespaces, OIDC and API-key auth, plain OIDC SSO (self-hosters can broker SAML through Keycloak), OpenFGA checks, and **enforcing** quotas and limits |
-| Audit | Audit events for every admin, auth and data-access action, emitted as OTel logs to a Loam stream (the same pattern as the usage hooks); an audit query API and CLI, with a short default retention set by the operator |
+| Audit | Audit events for every admin, auth and data-access action, emitted as OTel logs to a Loam stream (the same pattern as the usage hooks); an audit query API and CLI, with a short default retention set by the operator. Extends D100's admin and security events and record fields (never document contents) |
 | Observability and usage hooks | Prometheus and OTel metrics, cgroup labels per sandbox (`loam.slice/tenant-<org>.slice/fn-<id>.scope`), Envoy access logs, OTLP spans |
 | Self-hosting | The Helm umbrella chart, the Loam operator, the Argo CD layout, RustFS defaults, backup and restore |
 | Clients and docs | SDKs, the CLI, generated clients, and the engine design docs |
