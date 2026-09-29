@@ -1,0 +1,70 @@
+# WeSQL on RustFS: the development stack from the Neon + WeSQL spike (docs/design/23-neon-and-wesql.md).
+# WeSQL (apecloud, GPL-2.0-only) runs unmodified as a separate service; Loam never links it.
+# Not a production layout: single node, default credentials, loopback ports, a beta image.
+name: loam-wesql
+
+services:
+  rustfs:
+    image: docker.io/rustfs/rustfs:1.0.0
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      # WeSQL's AWS C++ SDK client always uses virtual-hosted-style URLs (<bucket>.<host>),
+      # so RustFS must know its domain and the network must resolve wesql.rustfs.
+      RUSTFS_SERVER_DOMAINS: rustfs,rustfs:9000
+    networks:
+      default:
+        aliases: [wesql.rustfs]
+    ports:
+      - 127.0.0.1:9000:9000
+    volumes:
+      - rustfs-data:/data
+
+  # Creates the `wesql` bucket (SigV4-signed PUT; RustFS requires x-amz-content-sha256).
+  create-bucket:
+    image: docker.io/curlimages/curl:8.16.0
+    depends_on: [rustfs]
+    restart: "no"
+    environment:
+      AWS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      AWS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        until curl -sf -o /dev/null -H "x-amz-content-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        --aws-sigv4 aws:amz:us-east-1:s3 --user "$${AWS_ACCESS_KEY_ID}:$${AWS_SECRET_ACCESS_KEY}"
+        -X PUT http://rustfs:9000/wesql
+        || curl -sf -o /dev/null -H "x-amz-content-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        --aws-sigv4 aws:amz:us-east-1:s3 --user "$${AWS_ACCESS_KEY_ID}:$${AWS_SECRET_ACCESS_KEY}"
+        -I http://rustfs:9000/wesql;
+        do echo waiting for rustfs; sleep 1; done; echo bucket ready
+
+  wesql:
+    image: docker.io/apecloud/wesql-server:${WESQL_TAG:-8.0.35-0.1.0_beta5.40}
+    environment:
+      WESQL_CLUSTER_MEMBER: 127.0.0.1:13306
+      WESQL_OBJECTSTORE_PROVIDER: minio
+      WESQL_OBJECTSTORE_REGION: us-east-1
+      WESQL_OBJECTSTORE_ENDPOINT: http://rustfs:9000
+      WESQL_OBJECTSTORE_BUCKET: wesql
+      WESQL_OBJECTSTORE_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      WESQL_OBJECTSTORE_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      MYSQL_ROOT_PASSWORD: ${WESQL_ROOT_PASSWORD:-loam-dev}
+    # Keep the local data volume. In the spike, commits made after the last object-store snapshot
+    # were lost when the container was replaced without it (§23 §9.2), although their binlog
+    # slices had been archived to the bucket.
+    volumes:
+      - wesql-data:/data/mysql
+    ports:
+      - 127.0.0.1:13306:3306
+    mem_limit: 1g
+    depends_on:
+      create-bucket:
+        condition: service_completed_successfully
+
+volumes:
+  rustfs-data:
+  wesql-data:

@@ -1,0 +1,116 @@
+# Neon on RustFS: the development stack from the Neon + WeSQL spike (docs/design/23-neon-and-wesql.md).
+# Derived from neondatabase/neon `docker-compose/` (Apache-2.0), with MinIO replaced by RustFS,
+# one safekeeper instead of three, and computes that attach to an explicit tenant/timeline.
+# Not a production layout: no storage controller, no proxy, no TLS, default credentials, loopback ports.
+name: loam-neon
+
+x-neon-image: &neon-image ${NEON_REPOSITORY:-ghcr.io/neondatabase}/neon:${NEON_TAG:-latest}
+x-compute-image: &compute-image ${NEON_REPOSITORY:-ghcr.io/neondatabase}/compute-node-v${PG_VERSION:-16}:${NEON_TAG:-latest}
+x-s3-env: &s3-env
+  AWS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+  AWS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+  AWS_REGION: us-east-1
+
+services:
+  rustfs:
+    image: docker.io/rustfs/rustfs:1.0.0
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+    ports:
+      - 127.0.0.1:9000:9000
+    volumes:
+      - rustfs-data:/data
+
+  # Creates the `neon` bucket with a SigV4-signed PUT. RustFS requires x-amz-content-sha256,
+  # which curl 7.88's --aws-sigv4 does not add, so it is set to the empty-body hash.
+  create-bucket:
+    image: *neon-image
+    depends_on: [rustfs]
+    restart: "no"
+    environment: *s3-env
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        until curl -sf -o /dev/null -H "x-amz-content-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        --aws-sigv4 aws:amz:us-east-1:s3 --user "$${AWS_ACCESS_KEY_ID}:$${AWS_SECRET_ACCESS_KEY}"
+        -X PUT http://rustfs:9000/neon
+        || curl -sf -o /dev/null -H "x-amz-content-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        --aws-sigv4 aws:amz:us-east-1:s3 --user "$${AWS_ACCESS_KEY_ID}:$${AWS_SECRET_ACCESS_KEY}"
+        -I http://rustfs:9000/neon;
+        do echo waiting for rustfs; sleep 1; done; echo bucket ready
+
+  storage_broker:
+    image: *neon-image
+    command: ["storage_broker", "--listen-addr=0.0.0.0:50051"]
+
+  pageserver:
+    image: *neon-image
+    environment: *s3-env
+    ports:
+      - 127.0.0.1:9898:9898 # management API: tenants, timelines, branches
+    volumes:
+      - pageserver-data:/data/.neon
+      - ./pageserver.toml:/data/.neon/pageserver.toml:ro
+      - ./identity.toml:/data/.neon/identity.toml:ro
+    depends_on:
+      storage_broker:
+        condition: service_started
+      create-bucket:
+        condition: service_completed_successfully
+
+  # WAL lands on the safekeeper's disk first and is offloaded to the bucket; as upstream's compose,
+  # this keeps it in the container filesystem. A real deployment gives each safekeeper a volume.
+  safekeeper1:
+    image: *neon-image
+    environment: *s3-env
+    ports:
+      - 127.0.0.1:7676:7676
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        safekeeper --listen-pg=safekeeper1:5454 --listen-http=0.0.0.0:7676 --id=1
+        --broker-endpoint=http://storage_broker:50051 -D /data
+        --remote-storage="{endpoint='http://rustfs:9000', bucket_name='neon', bucket_region='us-east-1', prefix_in_bucket='/safekeeper/'}"
+    depends_on:
+      storage_broker:
+        condition: service_started
+      create-bucket:
+        condition: service_completed_successfully
+
+  # A compute is stateless: it attaches to (TENANT_ID, TIMELINE_ID), created beforehand through the
+  # pageserver API (see README.md). Recreating the container loses nothing.
+  compute1:
+    image: *compute-image
+    environment:
+      TENANT_ID: ${TENANT_ID:-}
+      TIMELINE_ID: ${TIMELINE_ID:-}
+    volumes:
+      - ./compute/config.json:/var/db/postgres/configs/config.json:ro
+      - ./compute/start.sh:/shell/start.sh:ro
+    ports:
+      - 127.0.0.1:55433:55433
+    entrypoint: ["/bin/bash", "/shell/start.sh"]
+    depends_on: [pageserver, safekeeper1]
+
+  # A second compute for a branch timeline (profile `branch`).
+  compute2:
+    profiles: ["branch"]
+    image: *compute-image
+    environment:
+      TENANT_ID: ${BRANCH_TENANT_ID:-${TENANT_ID:-}}
+      TIMELINE_ID: ${BRANCH_TIMELINE_ID:-}
+    volumes:
+      - ./compute/config.json:/var/db/postgres/configs/config.json:ro
+      - ./compute/start.sh:/shell/start.sh:ro
+    ports:
+      - 127.0.0.1:55434:55433
+    entrypoint: ["/bin/bash", "/shell/start.sh"]
+    depends_on: [pageserver, safekeeper1]
+
+volumes:
+  rustfs-data:
+  pageserver-data:
