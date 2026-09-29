@@ -1,6 +1,6 @@
 # Loam — Open-Core Boundary
 
-Status: **Approved** by the owner, 2026-09-29 (D220, [decision log](design/13-decision-log.md)). Refines the monetization note in [§00 §8](design/00-pitch.md): the engine, all gateways and the operator stay Apache-2.0, and reliability and performance features are never withheld from open source.
+Status: **Approved** by the owner, 2026-09-29 (D220, D221 for audit and SSO; [decision log](design/13-decision-log.md)). Refines the monetization note in [§00 §8](design/00-pitch.md): the engine, all gateways and the operator stay Apache-2.0, and reliability and performance features are never withheld from open source.
 
 ## The rule
 
@@ -16,7 +16,8 @@ This repository must never depend on `loam-platform`: no crate, package, build s
 | Live and metastore | The reactive database on TiKV, the TiKV metastore, and the change-feed bridges (Postgres logical replication, MySQL binlog) |
 | Durable and jobs | The embedded Resonate server, the durable patterns, `operon-jobs`, the Celery transport and result backend, and `@loam/bullmq` |
 | Runtime | The Rust Dapr API server, workerd and wasmtime hosting, gVisor sandboxing, Dapr secrets and state wiring, and the gateway |
-| Tenancy and access | Namespaces, OIDC and API-key auth, OpenFGA checks, and **enforcing** quotas and limits |
+| Tenancy and access | Namespaces, OIDC and API-key auth, plain OIDC SSO (self-hosters can broker SAML through Keycloak), OpenFGA checks, and **enforcing** quotas and limits |
+| Audit | Audit events for every admin, auth and data-access action, emitted as OTel logs to a Loam stream (the same pattern as the usage hooks); an audit query API and CLI, with a short default retention set by the operator |
 | Observability and usage hooks | Prometheus and OTel metrics, cgroup labels per sandbox (`loam.slice/tenant-<org>.slice/fn-<id>.scope`), Envoy access logs, OTLP spans |
 | Self-hosting | The Helm umbrella chart, the Loam operator, the Argo CD layout, RustFS defaults, backup and restore |
 | Clients and docs | SDKs, the CLI, generated clients, and the engine design docs |
@@ -29,9 +30,11 @@ This repository must never depend on `loam-platform`: no crate, package, build s
 - Hosted Neon/WeSQL fleet automation.
 - BYOC management.
 - Abuse, trust and safety.
+- Hosted audit: the audit UI (search, filters, per-user and per-org timelines), long retention (1 year or more), tamper-evident storage and legal hold, continuous SIEM export (Splunk, Datadog) and compliance report packs.
+- SCIM provisioning, org-wide enforced SSO, and cross-org admin.
 - The internal admin console, support tooling and runbooks.
 
-Quotas show the split: the engine enforces whatever limits it is given; the platform decides what those limits are for each plan.
+Quotas show the split: the engine enforces whatever limits it is given; the platform decides what those limits are for each plan. Audit and SSO follow the same principle: **no SSO tax** on SAML or OIDC, and the paid features are the operational ones at scale or across tenants.
 
 ## Borderline calls
 
@@ -39,7 +42,6 @@ Quotas show the split: the engine enforces whatever limits it is given; the plat
 |---|---|---|
 | Neon/WeSQL | Routing, the change feed, basic branch creation | Fleet automation |
 | Console | A basic single-cluster admin UI | The multi-tenant console |
-| SSO | Plain OIDC | Enterprise SSO/SCIM: a separate call, not yet decided |
 
 ## Applying it
 
