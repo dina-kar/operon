@@ -166,7 +166,7 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
@@ -177,8 +177,8 @@ jobs:
       # Owner ruling T7-3: the TiKV metastore is behind operon's `tikv`
       # feature (off by default), so lint that code too, and keep the default
       # build free of the git-pinned tikv-client.
-      - name: clippy (operon with the tikv feature)
-        run: cargo clippy -p operon --all-targets --features tikv,durable-tikv --locked -- -D warnings
+      - name: clippy (operon with the tikv and optional listener features)
+        run: cargo clippy -p operon --all-targets --features tikv,durable-tikv,stream-grpc --locked -- -D warnings
       - name: clippy (operon-durable with the native TiKV store)
         run: cargo clippy -p operon-durable --all-targets --features tikv --locked -- -D warnings
       - name: clippy (operon-safekeeper with the service and the TiKV store)
@@ -237,7 +237,7 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.engine == 'true') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
@@ -252,7 +252,7 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.engine == 'true') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
@@ -270,7 +270,7 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.engine == 'true') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
@@ -286,7 +286,7 @@ jobs:
             sleep 1
           done
           echo "operon dev did not answer on 6333 within 60 s"; exit 1
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
       # Each run prints `qdrant-client <version> <mode>: <n> checks passed`
       # last; the step fails unless it does.
       - name: qdrant-client 1.15.1 (legacy)
@@ -322,13 +322,13 @@ jobs:
           --health-cmd "curl -sf http://127.0.0.1:9200/_cluster/health"
           --health-interval 5s --health-timeout 5s --health-retries 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
       - name: build
         run: cargo build -p operon --locked
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
       # The suite starts `operon dev` on ephemeral ports (conftest.py) and
       # runs the oracle checks against the service above.
       - name: elasticsearch-py 8.19.3 against operon dev
@@ -343,7 +343,7 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.sim == 'true') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
@@ -371,7 +371,7 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'schedule' && (github.event_name != 'pull_request' || needs.changes.outputs.tikv == 'true')) }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
@@ -390,7 +390,7 @@ jobs:
           cargo test -p operon --features tikv --test meta_tikv --locked --no-run
           cargo test -p operon-durable --features tikv --lib --test tikv --locked --no-run
           cargo test -p operon-safekeeper --features tikv --test tikv --locked --no-run
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.tiup/components
           key: tiup-components-v8.5.8-${{ runner.os }}
@@ -411,7 +411,7 @@ jobs:
           cargo test -p operon-safekeeper --features tikv --test tikv --locked
       - name: playground logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tikv-playground-logs-${{ github.job }}
           path: |
@@ -429,7 +429,7 @@ jobs:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: paths
         id: paths
         run: echo "run=true" >> "$GITHUB_OUTPUT"
@@ -454,7 +454,7 @@ jobs:
           cargo test ${{ steps.packages.outputs.args }} --locked --no-run
           cargo test -p operon --features tikv --test meta_tikv --locked --no-run
           cargo test -p operon --features failpoints,tikv --test crash --locked --no-run
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         if: steps.paths.outputs.run == 'true'
         with:
           path: ~/.tiup/components
@@ -490,7 +490,7 @@ jobs:
         run: cargo test -p operon --features failpoints,tikv --test crash --locked
       - name: playground logs
         if: failure() && steps.paths.outputs.run == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tikv-playground-logs-${{ github.job }}
           path: |
@@ -515,27 +515,29 @@ jobs:
     env:
       DURABLE_FORK_TARGET_DIR: ${{ github.workspace }}/target/durable-fork-build
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
         with:
           key: durable
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.24"
           cache: false
       - name: operon-durable tests
         run: cargo test -p operon-durable --locked
       - name: operon durable tests
-        run: cargo test -p operon --features durable --test durable --bin operon --locked
+        # The binary's tests also cover the optional listener flags (the
+        # extra feature reuses this build).
+        run: cargo test -p operon --features durable,stream-grpc --test durable --bin operon --locked
       - name: checker self-test
         run: scripts/durable/conformance.sh --self-test
       - name: linearizability on SQLite (8 clients x 600 ops)
         run: scripts/durable/conformance.sh --store sqlite --clients 8 --ops 600
       - name: conformance output
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: durable-conformance-sqlite
           path: target/durable-conformance/
@@ -554,13 +556,13 @@ jobs:
     env:
       DURABLE_FORK_TARGET_DIR: ${{ github.workspace }}/target/durable-fork-build
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: protoc and the mysql client
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mysql-client
       - uses: Swatinem/rust-cache@v2
         with:
           key: durable
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.24"
           cache: false
@@ -569,7 +571,7 @@ jobs:
         run: |
           cargo test -p operon-durable --features mysql --test tidb --locked --no-run
           cargo build --release --locked -p operon --features durable-mysql
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.tiup/components
           key: tiup-components-tidb-v8.5.8-${{ runner.os }}
@@ -594,7 +596,7 @@ jobs:
           done
       - name: conformance output and TiDB logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: durable-tidb-logs
           path: |
@@ -617,11 +619,11 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.protos == 'true') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
-          version: 11.13.0
-      - uses: actions/setup-node@v4
+          version: 11.27.1
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -647,7 +649,7 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.deny == 'true') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   web:
@@ -659,11 +661,11 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: web/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
