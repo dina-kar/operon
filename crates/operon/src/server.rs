@@ -339,7 +339,7 @@ impl ServerConfig {
             && let operon_durable::DurableStore::Sqlite { .. } = durable.store
         {
             return Err(ServerError::Config(
-                "the sqlite durable store is single-node; use --durable-store mysql://…"
+                "the sqlite durable store is single-node; use --durable-store mysql://… or tikv://…"
                     .to_string(),
             ));
         }

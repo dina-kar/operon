@@ -75,6 +75,7 @@ impl DurableServer {
         let lock = match &config.store {
             DurableStore::Sqlite { path } => Some(lock_store(path)?),
             DurableStore::Mysql { .. } => None,
+            DurableStore::Tikv { .. } => None,
         };
         // Serving never migrates a MySQL store: an empty database would
         // otherwise get Resonate's schema on the first start (D1 Task 4).
@@ -136,6 +137,7 @@ impl DurableServer {
         let lock = match &config.store {
             DurableStore::Sqlite { path } => Some(lock_store(path)?),
             DurableStore::Mysql { .. } => None,
+            DurableStore::Tikv { .. } => None,
         };
         let options = Options::default().default_server("server_sqlite");
         let running = resonate_base::build(&registry, &configuration, &options)
@@ -268,6 +270,12 @@ fn prepare(
             "this build has no MySQL durable store (the durable-mysql feature is off)".into(),
         ));
     }
+    #[cfg(not(feature = "tikv"))]
+    if let DurableStore::Tikv { .. } = config.store {
+        return Err(DurableError::Config(
+            "this build has no native TiKV durable store (the durable-tikv feature is off)".into(),
+        ));
+    }
     let configuration = config::configuration(config, &registry::carried(&registry), mode, inproc)
         .map_err(|e| match e {
             DurableError::Config(message) => {
@@ -283,6 +291,7 @@ fn scrub_for(store: &DurableStore, message: &str) -> String {
     match store {
         DurableStore::Sqlite { .. } => message.to_string(),
         DurableStore::Mysql { url, .. } => config::scrub(message, url),
+        DurableStore::Tikv { .. } => message.to_string(),
     }
 }
 
