@@ -54,7 +54,7 @@ http-body = "1"
 httpmock = { version = "0.8.3", default-features = false, features = ["remote"] }
 humantime = "2"
 indexmap = { version = "2", features = ["serde"] }
-itertools = "0.14"
+itertools = "0.15"
 kafka-protocol = { version = "0.18", default-features = false }
 lance = { version = "=12.0.0", default-features = false }
 lance-file = { version = "=12.0.0", default-features = false }
