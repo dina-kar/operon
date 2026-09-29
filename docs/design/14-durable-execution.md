@@ -2,9 +2,9 @@
 
 Status: **Approved** (direction, user) · 2026-09-24. Items marked (verify) are resolved in the implementation plan.
 
-> **Amended 2026-09-27 by [§21](21-durable-execution.md) (D138–D147).** The server is embedded in the `operon` binary behind the `durable` feature instead of running in a `gateway` role. Its storage is SQLite (dev), TiDB (cloud now) and a TiKV `Store` (target) rather than the blob server over `operon-store`, which stays a candidate for self-hosted clusters (Q39). Phase A moves from M3 to track D (D1). §1 (the protocol), §5 (consistency) and §7 (non-goals) still hold; §3, §4 and §6 are superseded where §21 differs.
+> **Amended 2026-09-27 by [§21](21-durable-execution.md) (D138–D147).** The server is embedded in the `operon` binary behind the `durable` feature instead of running in a `gateway` role. Its storage is SQLite (dev) and a native TiKV `Store` (clusters, cloud and self-hosted; D261, which retires TiDB) rather than the blob server over `operon-store`. Phase A moves from M3 to track D (D1). §1 (the protocol), §5 (consistency) and §7 (non-goals) still hold; §3, §4 and §6 are superseded where §21 differs.
 
-AI agents need more than memory and retrieval. A multi-step agent run calls models and tools for minutes or hours, waits for humans, fans out sub-tasks and must survive crashes without redoing paid work. Today that means a sixth system (Temporal, or a queue + cron + Postgres). Operon serves the **Resonate protocol** instead, so agent workflows run durably against the same bucket that holds their memory, search indexes and traces.
+AI agents need more than memory and retrieval. A multi-step agent run calls models and tools for minutes or hours, waits for humans, fans out sub-tasks and must survive crashes without redoing paid work. Today that means a sixth system (Temporal, or a queue + cron + Postgres). Operon serves the **Resonate protocol** instead, so agent workflows run durably in the same system that holds their memory, search indexes and traces. (Since §21, durable state lives in SQLite or TiKV, not in the bucket: D139, D261.)
 
 ---
 
