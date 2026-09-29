@@ -67,7 +67,7 @@ Decorators come from **Resonate's own SDKs** (Python `@resonate.register`, TypeS
 │  durable store (§21)     queue event log: Loam stream `_jobs/<queue>` (idempotent producer)   │
 └────────────────────────────────────────────────────────────────────────────────────────────────┘
         │                        │                         │                          │
-   SQLite | TiDB | TiKV     TiKV keyspace `loam_jobs`   RustFS / S3 bucket       Sail pods, RisingWave,
+   SQLite | TiKV            TiKV keyspace `loam_jobs`   RustFS / S3 bucket       Sail pods, RisingWave,
                             (local: redb in dev)        ns/<ns>/jobs/…           Flink (K8s operator)
 ```
 
@@ -647,7 +647,7 @@ BullMQ's `getChildrenValues` reads the children's results from the job store; th
 | What runs the task | The framework's worker (Celery, BullMQ) | The framework's worker, which calls a Resonate function |
 | What a retry does | Runs the task again from the start | Resumes the function from its last finished step |
 | Resonate state per job | None | One root promise (id derived from the job) plus one per step |
-| Cost | One TiKV transaction per enqueue, lease and completion | Plus the durable writes of every step (SQLite, TiDB or TiKV, §21 §3.3), and the promise retention question (§21 Q40) |
+| Cost | One TiKV transaction per enqueue, lease and completion | Plus the durable writes of every step (SQLite or TiKV, §21 §3.3, D261), and the promise retention question (§21 Q40) |
 | When to use | Short, idempotent tasks; most jobs | Multi-step tasks with side effects that must not repeat (payments, emails, paid model calls, long pipelines) |
 
 Queue-mode jobs never create Resonate promises. That keeps the per-job cost at a few TiKV writes and keeps millions of short jobs out of the durable store, whose settled promises are never pruned today (§21 §8). Durable mode is chosen per task by the user, by writing the task as a Resonate function; Loam does not decide it.
