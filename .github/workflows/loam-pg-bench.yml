@@ -1,0 +1,55 @@
+# The P4b merge gate for the Loam WAL (docs/design/28-loam-postgres.md §7):
+# pgbench against stock safekeepers vs the Loam WAL service on TiKV, on a
+# dedicated runner. Manual only: shared runners are too noisy for p99s.
+name: Loam WAL benchmark (P4b)
+
+on:
+  workflow_dispatch:
+    inputs:
+      replicas:
+        description: "Safekeepers / TiKV stores"
+        type: choice
+        options: ["3", "1"]
+        default: "3"
+      repeats:
+        description: "Interleaved repeats of each variant"
+        default: "3"
+      duration:
+        description: "Seconds per workload"
+        default: "300"
+      workloads:
+        description: "Workloads (scripts/loam-pg-bench/workload.sh)"
+        default: "commit-1 commit-16 tpcb-16 tpcb-64 bulk"
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: [self-hosted, loam-bench]
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v7
+      - name: build loam-wal
+        run: cargo build --release --locked -p operon-safekeeper --features server,tikv --bin loam-wal
+      - name: tiup components
+        run: |
+          command -v tiup || curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
+          echo "$HOME/.tiup/bin" >> "$GITHUB_PATH"
+          "$HOME/.tiup/bin/tiup" install playground pd:v8.5.8 tikv:v8.5.8
+      - name: gate
+        run: |
+          scripts/loam-pg-bench/gate.sh --replicas "${{ inputs.replicas }}" \
+            --repeats "${{ inputs.repeats }}" --duration "${{ inputs.duration }}" \
+            --warmup 60 --scale 50 --workloads "${{ inputs.workloads }}" --force
+      - name: results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: loam-pg-bench-rf${{ inputs.replicas }}
+          path: bench/results/
+      - name: stop
+        if: always()
+        run: |
+          scripts/tikv/playground.sh stop --tag loam-bench || true
+          docker compose -f deploy/loam-pg-bench/compose.yaml --profile sk --profile sk3 --profile loam down || true

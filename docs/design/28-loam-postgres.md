@@ -374,6 +374,7 @@ If the gate fails on p99, the WAL stays behind its feature and stock safekeepers
   - Without a term, it serves up to `commit_lsn`, for the pageserver and replicas.
   - With a term, it serves up to `flush_lsn` within that term, for the compute's `neon_walreader` and recovery.
   - The pageserver hard-codes the **interpreted** protocol (`timeline.rs` `launch_wal_receiver`: protobuf, zstd level 1, per-shard filtering). The WAL service therefore decodes WAL with Neon's `wal_decoder` crate (Apache-2.0).
+  - **Confirmed in P4a:** vanilla ingestion was removed from the pageserver (neon #12126). A compute on the WAL service without an interpreted sender stalls on its first read of a page it wrote, because the pageserver never gets the WAL. Until the WAL service links `wal_decoder`, `operon-safekeeper`'s **feeder** acts as walproposer towards one stock safekeeper and streams it the committed WAL, off the commit path. That safekeeper runs with `--no-sync`, publishes to the broker and serves the pageserver. This is interim (Q112).
 - **Sources, in order:**
   1. the in-memory tail of recently appended chunks (written through at append time);
   2. TiKV (`scan W/<tl>/begin..`);
@@ -529,6 +530,55 @@ Each run lasts 5 minutes after a 1-minute warm-up, with `pgbench -l` per-transac
 
 A summary table goes into the P4c PR description. The run is a manual workflow (`workflow_dispatch`) on a dedicated runner, because shared CI runners are too noisy for p99s. It is also runnable locally. The spike's single-host numbers (§6.1, §6.4) are the first data point, not the gate.
 
+### 7.1 First results: laptop, 2026-09-29 (P4a/P4b)
+
+**Implemented:** `crates/operon-safekeeper`:
+- the v3 codecs, the acceptor and `WalStore`;
+- the TiKV store, as fenced 1PC transactions;
+- the service, HTTP API, feeder and the `loam-wal` binary.
+
+The harness is in `deploy/loam-pg-bench` and `scripts/loam-pg-bench`, and the raw results in `bench/results/`.
+
+**Verified:** an unmodified Neon compute (`compute-node-v16` at 77e22e4):
+- starts through `sync-safekeepers` against `loam-wal` on TiKV v8.5.8;
+- commits through it;
+- is ingested by the pageserver through the feeder.
+
+**Setup:**
+- **Host:** one laptop, 14 cores, 15 GB of RAM, a consumer Samsung NVMe without power-loss protection, btrfs.
+- **Placement:** every tier on the same disk, with no injected cross-AZ delay.
+- **Other load:** other work shared the host.
+- **Runs:** 60 s per workload after a 10 s warm-up. Baseline and candidate were interleaved three times each.
+- **Compute settings:** `shared_buffers = 2GB`, compute `fsync = off`.
+
+Means over the three repeats:
+
+| Workload | rf | Safekeepers p50 / p99 (ms) | Safekeepers TPS | Loam p50 / p99 (ms) | Loam TPS |
+|---|---|---|---|---|---|
+| `commit-1` | 1 | 2.9 / 20.0 | 199 | 6.5 / 43.1 | 109 |
+| `commit-16` | 1 | 6.0 / 28.9 | 1 969 | 17.0 / 66.3 | 791 |
+| `tpcb-16` (`-s 10`) | 1 | 15.7 / 125 | 687 | 28.8 / 237 | 365 |
+| `bulk` (WAL MB/s) | 1 | – | 97.5 | – | 20.4 |
+| `commit-1` | 3 | 5.6 / 37.1 | 117 | 13.8 / 96.2 | 58 |
+| `commit-16` | 3 | 11.5 / 63.6 | 983 | 32.4 / 127 | 474 |
+| `tpcb-16` (`-s 10`) | 3 | 29.0 / 300 | 369 | 56.1 / 443 | 215 |
+| `bulk` (WAL MB/s) | 3 | – | 76.9 | – | 11.9 |
+
+rf 1 compares one safekeeper with one TiKV store; rf 3 compares three safekeepers with three stores.
+
+**The gate fails on this hardware, for every workload at both replication factors.** The Loam WAL's p99 is about 1.5–2.6× the safekeepers', and its throughput about 0.2–0.6× (`bench/results/gate-rf*.md`). By D233, the WAL stays behind its feature and P4c does not start.
+
+**Where the time goes.** TiKV's own metrics, from a `commit-1` run:
+- **Raft log persist dominates:** p50 ≤ 2.6 ms, p99 up to 82 ms. That is the same consumer-SSD fsync the safekeeper pays, but with TiKV's scheduler, apply and 1PC steps added, plus three client RPCs per append: TSO, the fenced head read and the prewrite.
+- **Single-flight appends per timeline:** they cap group commit. `bulk` shows it most, at 12–20 MB/s against 77–98 MB/s.
+- **The interim feeder** adds a second WAL stream on the same disk.
+
+**Before the gate can pass, the levers are:**
+1. **Pipelined appends (Q115).** Several appends in flight per timeline, fenced without serialising on the head key. This is the main lever for `commit-16`, `tpcb` and `bulk`.
+2. **No PD round trip per append.** Reuse the previous commit timestamp as the next `start_ts`. This is safe here: a stale `start_ts` only causes extra write conflicts. It needs a `begin_at(ts)` in the `client-rust` fork.
+3. **The in-process interpreted sender (Q112).** It removes the feeder's second stream.
+4. **Re-run on the §7 topology.** Server NVMe with PLP (fsync in µs, not ms), three nodes and real or `netem` AZ delays (Q114). The owner's < 5 ms p99 target is a server-hardware number. Both variants on this laptop are far above it.
+
 ## 8. PgDog routing (D236)
 
 **Verified 2026-09-29.**
@@ -677,7 +727,7 @@ Each phase is small stacked PRs. The P4 phases are behind the feature `loam-wal`
 |---|---|---|
 | Q110 | Fork `neondatabase/postgres` as `dina-kar/postgres` (required by the fork's relative submodule URLs), and base the catch-up on the `REL_1x_STABLE_neon` heads (16.12/17.8, which may need unpublished extension changes) or on `main`'s pins (16.9/17.5)? | P2a |
 | Q111 | PGroonga for Zulip on CNPG: a custom image on `17.11-standard-trixie`, or a separate Cluster with an image that has it? | P1 |
-| Q112 | Where the interpreted sender builds: in Operon behind a feature, with the fork's Postgres headers in CI, or as a small binary crate inside the fork's workspace that links `operon-safekeeper`'s `WalStore`? | P4a plan |
+| Q112 | Where the interpreted sender builds: in Operon behind a feature, with the fork's Postgres headers in CI, or as a small binary crate inside the fork's workspace that links `operon-safekeeper`'s `WalStore`? *P4a:* interim answer is the feeder (§6.7); the published `neon` image ships Postgres 14–17 server headers under `/usr/local/v1x/include`, so CI can extract them for `postgres_ffi` | P4a plan |
 | Q113 | Scale-to-zero: run Neon's proxy (with Loam's `wake_compute`) in front of PgDog, or accept always-on computes for Loam Postgres in the first release? (Supersedes Q47) | P3 plan |
 | Q114 | Re-measure RawKV and TxnKV 1PC write latency on a three-node, three-AZ TiKV cluster with PLP NVMe, and collect published TiKV p99 figures for WAL-sized values | P4a |
 | Q115 | Pipelining: more than one in-flight append per timeline (for example a separate term key with `Lock` mutations and a flush marker per batch), if the single-flight group commit limits throughput | P4b results |

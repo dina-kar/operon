@@ -3,7 +3,8 @@
 # keyspaces, and optionally a keyspace-mode TiDB, from `tiup playground v8.5.8`.
 #
 #   scripts/tikv/playground.sh start [--with-tidb] [--stores N] [--tag T]
-#                                    [--tidb-config FILE] [--timeout S] [--force]
+#                                    [--tidb-config FILE] [--kv-config FILE]
+#                                    [--timeout S] [--force]
 #   scripts/tikv/playground.sh stop  [--tag T]
 #   scripts/tikv/playground.sh status [--tag T]
 #
@@ -26,7 +27,7 @@ RUN_DIR=$ROOT/target/tikv-playground
 export PATH="$HOME/.tiup/bin:$PATH"
 
 usage() {
-  sed -n '5,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '5,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit 2
 }
 
@@ -43,6 +44,7 @@ tag=loam-dev
 with_tidb=0
 stores=1
 tidb_config=$ROOT/deploy/tikv/tidb.toml
+kv_config=$ROOT/deploy/tikv/tikv.toml
 timeout=60
 force=0
 while [ $# -gt 0 ]; do
@@ -51,6 +53,7 @@ while [ $# -gt 0 ]; do
     --with-tidb) with_tidb=1; shift ;;
     --stores) stores=${2:?--stores needs a value}; shift 2 ;;
     --tidb-config) tidb_config=${2:?--tidb-config needs a value}; shift 2 ;;
+    --kv-config) kv_config=${2:?--kv-config needs a value}; shift 2 ;;
     --timeout) timeout=${2:?--timeout needs a value}; shift 2 ;;
     --force) force=1; shift ;;
     *) usage ;;
@@ -104,7 +107,7 @@ start() {
   # (and a CI step); stop sends SIGINT to the pid recorded here.
   setsid nohup tiup playground "$VERSION" --tag "$tag" --port-offset "$PORT_OFFSET" \
     --pd 1 --kv "$stores" --db "$db" --tiflash 0 --without-monitor \
-    --kv.config "$ROOT/deploy/tikv/tikv.toml" --pd.config "$ROOT/deploy/tikv/pd.toml" \
+    --kv.config "$kv_config" --pd.config "$ROOT/deploy/tikv/pd.toml" \
     "${db_args[@]}" >"$log_file" 2>&1 </dev/null &
   echo $! >"$pid_file"
 
