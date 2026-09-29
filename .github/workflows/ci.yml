@@ -126,6 +126,7 @@ jobs:
               - "crates/operon-common/**"
               - "crates/operon-live*/**"
               - "crates/operon-durable/**"
+              - "crates/operon-safekeeper/**"
               - "crates/operon/Cargo.toml"
               - "crates/operon/src/server.rs"
               - "crates/operon/src/meta_backend.rs"
@@ -180,6 +181,8 @@ jobs:
         run: cargo clippy -p operon --all-targets --features tikv,durable-tikv,stream-grpc,pgwire --locked -- -D warnings
       - name: clippy (operon-durable with the native TiKV store)
         run: cargo clippy -p operon-durable --all-targets --features tikv --locked -- -D warnings
+      - name: clippy (operon-safekeeper with the service and the TiKV store)
+        run: cargo clippy -p operon-safekeeper --all-targets --features server,tikv --locked -- -D warnings
       - name: operon's default build has no tikv-client
         run: |
           if cargo tree -p operon -e normal --prefix none --locked | grep -q '^tikv-client v'; then
@@ -227,6 +230,8 @@ jobs:
         run: cargo test -p operon-link --features failpoints --locked
       - name: collection with failpoints
         run: cargo test -p operon-collection --features failpoints --locked
+      - name: WAL service over TCP (operon-safekeeper, feature server)
+        run: cargo test -p operon-safekeeper --features server --locked
 
   crash-gate:
     name: kill -9 crash gate
@@ -386,6 +391,7 @@ jobs:
           cargo test ${{ steps.packages.outputs.args }} --locked --no-run
           cargo test -p operon --features tikv --test meta_tikv --locked --no-run
           cargo test -p operon-durable --features tikv --lib --test tikv --locked --no-run
+          cargo test -p operon-safekeeper --features tikv --test tikv --locked --no-run
       - uses: actions/cache@v6
         with:
           path: ~/.tiup/components
@@ -404,6 +410,7 @@ jobs:
           cargo test ${{ steps.packages.outputs.args }} --locked
           cargo test -p operon --features tikv --test meta_tikv --locked
           cargo test -p operon-durable --features tikv --lib --test tikv --locked
+          cargo test -p operon-safekeeper --features tikv --test tikv --locked
       - name: playground logs
         if: failure()
         uses: actions/upload-artifact@v7

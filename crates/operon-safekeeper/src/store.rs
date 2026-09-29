@@ -11,6 +11,8 @@
 //! applies exactly the same rules inside its own atomic section.
 
 use std::collections::{BTreeMap, HashMap};
+#[cfg(test)]
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -31,7 +33,9 @@ pub struct Deposed {
 /// `AppendRequest`s folded into one durable write (group commit).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppendBatch {
+    /// The proposer's term; the write is refused unless it is the stored one.
     pub term: Term,
+    /// Where the first chunk starts.
     pub begin_lsn: Lsn,
     /// Contiguous chunks, each at most `MAX_SEND_SIZE`; together they cover
     /// `[begin_lsn, begin_lsn + total)`.
@@ -43,14 +47,19 @@ pub struct AppendBatch {
 }
 
 impl AppendBatch {
+    /// The WAL bytes carried, over all chunks.
     pub fn len(&self) -> u64 {
         self.wal.iter().map(|c| c.len() as u64).sum()
     }
 
+    /// No WAL at all: every chunk is empty, or there are no chunks. Such a
+    /// batch only moves `commit_lsn` and `peer_horizon_lsn` ([`apply_append`]
+    /// relies on this).
     pub fn is_empty(&self) -> bool {
         self.wal.iter().all(Bytes::is_empty)
     }
 
+    /// `begin_lsn + len()`, the end of the batch's WAL.
     pub fn end_lsn(&self) -> Result<Lsn, Error> {
         self.begin_lsn.checked_add(self.len())
     }
@@ -108,8 +117,18 @@ pub trait WalStore: Send + Sync + 'static {
     ) -> Result<Result<AcceptorState, Deposed>, Error>;
 
     /// Persist a commit LSN learned from heartbeats (never above the WAL end,
-    /// never lowered). Off the commit path: the acceptor coalesces these.
-    async fn record_commit_lsn(&self, tl: &TimelineId, commit_lsn: Lsn) -> Result<(), Error>;
+    /// never lowered), fenced by `term` like an append. Off the commit path:
+    /// the acceptor coalesces these.
+    async fn record_commit_lsn(
+        &self,
+        tl: &TimelineId,
+        term: Term,
+        commit_lsn: Lsn,
+    ) -> Result<Result<(), Deposed>, Error>;
+
+    /// Persist the end of the WAL copied to the bucket (never lowered, never
+    /// above the WAL end).
+    async fn record_backup_lsn(&self, tl: &TimelineId, lsn: Lsn) -> Result<(), Error>;
 
     /// Persist the pageserver's `remote_consistent_lsn` (never lowered).
     async fn record_remote_consistent_lsn(&self, tl: &TimelineId, lsn: Lsn) -> Result<(), Error>;
@@ -259,6 +278,28 @@ pub fn apply_append(
     Ok(Ok(plan))
 }
 
+/// The heartbeat commit rule: fenced by `term`, clamped to the WAL end,
+/// never lowered. `Ok(Ok(()))` when `term` is the stored one (the head's
+/// `commit_lsn` may or may not have moved; callers compare it themselves),
+/// `Ok(Err(Deposed))` when the stored term is higher.
+pub fn apply_commit_lsn(
+    st: &mut AcceptorState,
+    term: Term,
+    commit_lsn: Lsn,
+) -> Result<Result<(), Deposed>, Error> {
+    if st.term > term {
+        return Ok(Err(Deposed { current: st.term }));
+    }
+    if st.term < term {
+        return Err(Error::Protocol(format!(
+            "commit_lsn of term {term} above the stored term {}",
+            st.term
+        )));
+    }
+    st.commit_lsn = st.commit_lsn.max(commit_lsn.min(st.wal_end()));
+    Ok(Ok(()))
+}
+
 /// The bytes of `batch` from `plan.skip` on, as chunks.
 pub fn remaining_chunks(batch: &AppendBatch, plan: &AppendPlan) -> Vec<Bytes> {
     let mut skip = plan.skip;
@@ -312,6 +353,7 @@ pub struct MemWalStore {
 }
 
 impl MemWalStore {
+    /// An empty store.
     pub fn new() -> Self {
         Self::default()
     }
@@ -422,9 +464,18 @@ impl WalStore for MemWalStore {
         })
     }
 
-    async fn record_commit_lsn(&self, tl: &TimelineId, commit_lsn: Lsn) -> Result<(), Error> {
+    async fn record_commit_lsn(
+        &self,
+        tl: &TimelineId,
+        term: Term,
+        commit_lsn: Lsn,
+    ) -> Result<Result<(), Deposed>, Error> {
+        self.with(tl, |t| apply_commit_lsn(&mut t.head, term, commit_lsn))
+    }
+
+    async fn record_backup_lsn(&self, tl: &TimelineId, lsn: Lsn) -> Result<(), Error> {
         self.with(tl, |t| {
-            t.head.commit_lsn = t.head.commit_lsn.max(commit_lsn.min(t.head.wal_end()));
+            t.head.backup_lsn = t.head.backup_lsn.max(lsn.min(t.head.wal_end()));
             Ok(())
         })
     }
@@ -655,7 +706,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(st.commit_lsn, Lsn(3));
-        s.record_commit_lsn(&tl(), Lsn(1)).await.unwrap();
+        s.record_commit_lsn(&tl(), 1, Lsn(1))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(s.load(&tl()).await.unwrap().unwrap().commit_lsn, Lsn(3));
     }
 
@@ -772,7 +826,10 @@ mod tests {
         assert!(s.read(&tl(), Lsn(108), 10).await.unwrap().is_empty());
 
         // Trim is clamped by commit, backup and remote_consistent LSNs.
-        s.record_commit_lsn(&tl(), Lsn(106)).await.unwrap();
+        s.record_commit_lsn(&tl(), 1, Lsn(106))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(s.trim(&tl(), Lsn(106)).await.unwrap(), Lsn(100));
         s.with(&tl(), |t| {
             t.head.backup_lsn = Lsn(106);
@@ -862,5 +919,280 @@ mod props {
         }]);
         let bytes = postcard::to_stdvec(&st).unwrap();
         assert_eq!(postcard::from_bytes::<AcceptorState>(&bytes).unwrap(), st);
+    }
+}
+
+#[cfg(test)]
+mod faults {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use proptest::prelude::*;
+
+    use super::*;
+    use crate::acceptor::Acceptor;
+    use crate::proto::{AppendRequest, AppendRequestHeader, ProposerGreeting, VoteRequest};
+    use crate::types::{Id, TermLsn};
+
+    /// Fails every `every`-th mutating call: before the inner write (the
+    /// transaction aborted) or after it (the commit happened, the answer was
+    /// lost, as an undetermined TiKV commit).
+    #[derive(Debug)]
+    struct Flaky {
+        inner: MemWalStore,
+        every: u32,
+        after: bool,
+        calls: AtomicU32,
+    }
+
+    impl Flaky {
+        fn fail_now(&self) -> bool {
+            self.calls.fetch_add(1, Ordering::Relaxed) % self.every == self.every - 1
+        }
+    }
+
+    macro_rules! flaky {
+        ($self:ident, $call:expr) => {{
+            let fail = $self.fail_now();
+            if fail && !$self.after {
+                return Err(Error::Store("injected before".into()));
+            }
+            let out = $call;
+            if fail {
+                return Err(Error::Store("injected after".into()));
+            }
+            out
+        }};
+    }
+
+    #[async_trait]
+    impl WalStore for Flaky {
+        async fn load(&self, tl: &TimelineId) -> Result<Option<AcceptorState>, Error> {
+            self.inner.load(tl).await
+        }
+        async fn create(
+            &self,
+            tl: &TimelineId,
+            s: ServerInfo,
+            l: Lsn,
+        ) -> Result<AcceptorState, Error> {
+            self.inner.create(tl, s, l).await
+        }
+        async fn update_meta(
+            &self,
+            tl: &TimelineId,
+            s: ServerInfo,
+            m: Option<Configuration>,
+        ) -> Result<AcceptorState, Error> {
+            self.inner.update_meta(tl, s, m).await
+        }
+        async fn vote(&self, tl: &TimelineId, term: Term) -> Result<(bool, AcceptorState), Error> {
+            self.inner.vote(tl, term).await
+        }
+        async fn elected(
+            &self,
+            tl: &TimelineId,
+            msg: &ProposerElected,
+        ) -> Result<Result<AcceptorState, Deposed>, Error> {
+            self.inner.elected(tl, msg).await
+        }
+        async fn append(
+            &self,
+            tl: &TimelineId,
+            batch: &AppendBatch,
+        ) -> Result<Result<AcceptorState, Deposed>, Error> {
+            flaky!(self, self.inner.append(tl, batch).await)
+        }
+        async fn record_commit_lsn(
+            &self,
+            tl: &TimelineId,
+            term: Term,
+            c: Lsn,
+        ) -> Result<Result<(), Deposed>, Error> {
+            flaky!(self, self.inner.record_commit_lsn(tl, term, c).await)
+        }
+        async fn record_backup_lsn(&self, tl: &TimelineId, l: Lsn) -> Result<(), Error> {
+            self.inner.record_backup_lsn(tl, l).await
+        }
+        async fn record_remote_consistent_lsn(&self, tl: &TimelineId, l: Lsn) -> Result<(), Error> {
+            self.inner.record_remote_consistent_lsn(tl, l).await
+        }
+        async fn read(
+            &self,
+            tl: &TimelineId,
+            f: Lsn,
+            m: usize,
+        ) -> Result<Vec<(Lsn, Bytes)>, Error> {
+            self.inner.read(tl, f, m).await
+        }
+        async fn trim(&self, tl: &TimelineId, l: Lsn) -> Result<Lsn, Error> {
+            self.inner.trim(tl, l).await
+        }
+    }
+
+    fn req(begin: u64, data: &[u8], commit: u64) -> AppendRequest {
+        AppendRequest {
+            h: AppendRequestHeader {
+                generation: 0,
+                term: 1,
+                begin_lsn: Lsn(begin),
+                end_lsn: Lsn(begin + data.len() as u64),
+                commit_lsn: Lsn(commit),
+                truncate_lsn: Lsn::INVALID,
+            },
+            wal: Bytes::copy_from_slice(data),
+        }
+    }
+
+    proptest! {
+        /// Store failures before or after the write, retried through the
+        /// acceptor: the stored WAL is exactly the stream, the acceptor's
+        /// view matches the store after each success, and a failure leaves
+        /// the acceptor's view where it was.
+        #[test]
+        fn appends_survive_injected_store_failures(
+            data in proptest::collection::vec(any::<u8>(), 1..300),
+            cuts in proptest::collection::vec(1usize..40, 1..10),
+            every in 2u32..5,
+            after in any::<bool>(),
+        ) {
+            let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+            rt.block_on(async {
+                let store = Arc::new(Flaky {
+                    inner: MemWalStore::new(),
+                    every,
+                    after,
+                    calls: AtomicU32::new(0),
+                });
+                let g = ProposerGreeting {
+                    tenant_id: Id([5; 16]),
+                    timeline_id: Id([6; 16]),
+                    mconf: Configuration::default(),
+                    pg_version: 160_009,
+                    system_id: 1,
+                    wal_seg_size: 16 << 20,
+                };
+                let (mut a, _) = Acceptor::greet(store.clone(), 1, &g, true).await.unwrap();
+                a.handle_vote(&VoteRequest { generation: 0, term: 1 }).await.unwrap();
+                let start = 500u64;
+                a.handle_elected(&ProposerElected {
+                    generation: 0,
+                    term: 1,
+                    start_streaming_at: Lsn(start),
+                    term_history: TermHistory(vec![TermLsn { term: 1, lsn: Lsn(start) }]),
+                })
+                .await
+                .unwrap();
+                let tl = a.timeline();
+                let (mut at, mut i) = (0usize, 0usize);
+                while at < data.len() {
+                    let len = cuts[i % cuts.len()].min(data.len() - at);
+                    let r = req(start + at as u64, &data[at..at + len], start + at as u64);
+                    loop {
+                        let before = a.state();
+                        match a.handle_appends(std::slice::from_ref(&r)).await {
+                            Ok(_) => break,
+                            Err(Error::Store(_)) => {
+                                // The acceptor did not move on a failure.
+                                assert_eq!(a.state().flush_lsn, before.flush_lsn);
+                            }
+                            Err(e) => panic!("{e}"),
+                        }
+                    }
+                    let head = store.inner.load(&tl).await.unwrap().unwrap();
+                    assert_eq!(head.flush_lsn, a.state().flush_lsn);
+                    at += len;
+                    i += 1;
+                }
+                let got: Vec<u8> = store
+                    .inner
+                    .read(&tl, Lsn(start), usize::MAX)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .flat_map(|(_, b)| b.to_vec())
+                    .collect();
+                assert_eq!(got, data);
+            });
+        }
+    }
+
+    #[tokio::test]
+    async fn a_deposed_idle_proposer_learns_the_term_on_refresh() {
+        let store = Arc::new(MemWalStore::new());
+        let g = ProposerGreeting {
+            tenant_id: Id([7; 16]),
+            timeline_id: Id([8; 16]),
+            mconf: Configuration::default(),
+            pg_version: 160_009,
+            system_id: 1,
+            wal_seg_size: 16 << 20,
+        };
+        let (mut old, _) = Acceptor::greet(store.clone(), 1, &g, true).await.unwrap();
+        old.handle_vote(&VoteRequest {
+            generation: 0,
+            term: 1,
+        })
+        .await
+        .unwrap();
+        let el = |term, th: Vec<TermLsn>| ProposerElected {
+            generation: 0,
+            term,
+            start_streaming_at: Lsn(10),
+            term_history: TermHistory(th),
+        };
+        old.handle_elected(&el(
+            1,
+            vec![TermLsn {
+                term: 1,
+                lsn: Lsn(10),
+            }],
+        ))
+        .await
+        .unwrap();
+        let (mut new, _) = Acceptor::greet(store.clone(), 1, &g, true).await.unwrap();
+        new.handle_vote(&VoteRequest {
+            generation: 0,
+            term: 2,
+        })
+        .await
+        .unwrap();
+        // Heartbeats alone never reach the store: the old term is echoed...
+        let hb = req(10, b"", 10);
+        let r = old.handle_appends(std::slice::from_ref(&hb)).await.unwrap();
+        assert!(matches!(r, crate::proto::AcceptorMessage::AppendResponse(ref x) if x.term == 1));
+        // ...until the timer's refresh; and its commit LSN is fenced.
+        old.refresh().await.unwrap();
+        let r = old.handle_appends(std::slice::from_ref(&hb)).await.unwrap();
+        assert!(matches!(r, crate::proto::AcceptorMessage::AppendResponse(ref x) if x.term == 2));
+        assert_eq!(
+            store
+                .record_commit_lsn(&old.timeline(), 1, Lsn(10))
+                .await
+                .unwrap(),
+            Err(Deposed { current: 2 })
+        );
+    }
+
+    #[tokio::test]
+    async fn an_inconsistent_append_header_is_refused() {
+        let store = Arc::new(MemWalStore::new());
+        let g = ProposerGreeting {
+            tenant_id: Id([9; 16]),
+            timeline_id: Id([9; 16]),
+            mconf: Configuration::default(),
+            pg_version: 160_009,
+            system_id: 1,
+            wal_seg_size: 16 << 20,
+        };
+        let (mut a, _) = Acceptor::greet(store, 1, &g, true).await.unwrap();
+        a.handle_vote(&VoteRequest {
+            generation: 0,
+            term: 1,
+        })
+        .await
+        .unwrap();
+        let mut r = req(10, b"abc", 0);
+        r.h.end_lsn = Lsn(20);
+        assert!(a.handle_appends(&[r]).await.is_err());
     }
 }

@@ -6651,14 +6651,20 @@ name = "operon-safekeeper"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "axum 0.8.9",
  "bytes",
+ "clap",
+ "futures",
  "hex",
+ "operon-tikv",
  "postcard",
  "proptest",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
