@@ -1,31 +1,102 @@
-# Operon
+# Loam
 
-**One bucket, every index.**
+**One bucket, every index: hybrid retrieval on object storage, with reactive data and durable agent runs beside it.**
 
-Operon is an open-source, object-storage-native, multi-model data engine for AI applications. It combines **streams (Kafka), full-text search (Elasticsearch), vector search (Qdrant), graph (Neo4j) and analytics (ClickHouse)** in one Rust engine over open formats — Apache Iceberg, Lance and Tantivy — stored in *your* S3/GCS/Azure bucket, with stateless, independently scalable compute. Agent runs get **durable execution** through the [Resonate](https://github.com/resonatehq/resonate) protocol, in the same bucket.
+Loam is an open-source, AI-native data platform built in Rust. It stores retrieval data in *your* object-storage bucket (RustFS, S3, GCS, Azure Blob or a local directory) in open formats: Lance and Tantivy today, Apache Iceberg next. Metadata lives in an embedded Raft metastore or in TiKV, and durable-execution state in SQLite (TiKV support is in progress). Retrieval compute is stateless and holds only caches, so it scales independently and can be replaced at any time.
 
-> **Status: M0 foundation complete; M1 collections in progress.** Operon has no usable release yet: the metastore, the internal log, workers, links, the PK index and garbage collection are built and pass the M0 exit gates ([report](docs/plans/m0-exit-report.md)). M1.1 and M1.2 add collections (Lance + Tantivy under one manifest), the query engine, the native collection API and Flight SQL; M1.3: hot tier, maintenance and cluster mode (qdrant-edge HNSW artifacts, pinned splits, split merges and Lance compaction, `operon cluster` with a networked metastore and rendezvous routing, write backpressure); the Qdrant and Elasticsearch surfaces follow in M1.4 and M1.5. The architecture is specified in [`docs/design`](docs/design/README.md) and the implementation plans are in [`docs/plans`](docs/plans/). Expect breaking changes everywhere.
+> **Early and moving fast.** Loam has no stable release yet, and APIs, formats and flags change without notice. The code still uses the working name **Operon**: the crates are `operon-*` and the binary is `operon`. They will be renamed to `loamdb` in one pass. The design is public in [`docs/design`](docs/design/README.md).
 
-## Why
+## Why Loam
 
-A typical production AI app runs Kafka, Elasticsearch, Qdrant, Neo4j and ClickHouse side by side: five stateful clusters, four or five copies of the same data, connector pipelines between them, and retrieval logic glued together in application code. Operon replaces that with:
+A typical production AI application runs Elasticsearch for keyword search, Qdrant for vectors, Neo4j for the knowledge graph, and Kafka for events, and often a workflow engine for agent runs too. That means four or five stateful clusters, several copies of the same data, connector pipelines between them, and retrieval logic glued together in application code across three network hops.
 
-- **Object storage as the only source of truth.** Compute nodes hold only caches. Storage costs object-storage prices, with no 3× block-storage replication.
-- **The log is the spine.** Every write lands in a stream. Tables, collections and graphs are materializations maintained by declarative *links*, with no connector zoo. Every write returns a *consistency token* you can use to read your own writes on any surface.
-- **Hot tiers everywhere.** Open formats on S3 are cheap by default. Derived, rebuildable node-local structures make the hot data fast: HNSW for vectors, pinned splits for text, ClickHouse-style projections for Iceberg tables and in-RAM CSR for graphs.
-- **Compatibility where it helps adoption.** Kafka wire protocol, an Elasticsearch REST subset, the Qdrant API, Bolt with a Cypher subset, and the ClickHouse HTTP interface. There's also a native hybrid-retrieval API that does vector + BM25 + filter + graph expansion + fusion in one planned query.
-- **Durable agent runs.** The Resonate SDKs (TypeScript, Python, Rust, Go, Java) work against Operon unmodified: each step of an agent run is a durable promise, so a crashed run resumes where it stopped instead of repeating model calls.
-- **Changes as streams.** Any keyed table or collection can expose its row-level changes as a changelog stream, readable by Kafka clients.
+Loam replaces that stack with one engine on one bucket:
 
-## Collections quick start
+- **Object storage is the source of truth for data.** Documents, vectors, text indexes and the log live in open formats in your bucket. You pay object-storage prices, with no 3× block-storage replication, and losing a query node loses no data. Only the small metadata and transaction state lives elsewhere: in the embedded metastore or in TiKV.
+- **The log is the spine.** Every write, whether native, Qdrant, Elasticsearch or Flight SQL, lands in a log first. Collections are materializations of that log, maintained by declarative *links*, so there is no connector zoo. Every write returns a **consistency token** that any later read can use to see it.
+- **Hybrid retrieval as one planned query.** Dense vectors, BM25 full text and filters, fused with reciprocal rank fusion in one DataFusion plan. Graph expansion for GraphRAG is next.
+- **Hot tiers where it matters.** Node-local, rebuildable acceleration in RAM and NVMe: HNSW graphs for vectors and pinned Tantivy splits for text, over a cheap durable tier on the bucket.
+- **Drop-in where it helps adoption.** Existing Qdrant and Elasticsearch clients, and the LangChain and LlamaIndex integrations built on them, work unmodified against the subset Loam implements.
+- **More than retrieval.** *Loam Live* is a reactive document database on TiKV. *Loam Durable* embeds a [Resonate](https://github.com/resonatehq/resonate) server, so agent runs survive crashes without repeating model calls.
 
-M1.2 serves collections through the native API and Flight SQL. Start a dev server (HTTP on `127.0.0.1:8080`, Flight SQL on `127.0.0.1:8082`, data in `.operon/`):
+Read the [pitch](docs/design/00-pitch.md) and the [architecture](docs/design/01-architecture.md) for the full reasoning.
+
+## Architecture
+
+<p align="center">
+  <img src="docs/assets/architecture.svg" alt="Loam architecture. Clients and protocols reach a stateless gateway and router. Behind it sit the retrieval engine, Loam Live, Loam Durable, the runtime and jobs, and Loam Postgres. TiKV holds metadata, transactions and the hot WAL. Object storage holds all data in open formats. Dotted outlines are in progress; dashed outlines are planned." width="100%">
+</p>
+
+- **Clients and protocols.** The native REST API, Arrow Flight SQL, and the Qdrant and Elasticsearch APIs, with Postgres and Kafka wire protocols to come.
+- **Gateway and router.** A stateless layer that speaks every protocol, issues consistency tokens and routes each request to the node that owns the data.
+- **Compute.** The retrieval engine, which covers the log, links, collections, the query engine, the hot tier and background workers. Beside it run Loam Live, Loam Durable and, later, a CPU-time functions runtime, jobs and Loam Postgres.
+- **TiKV.** Metadata (the catalog, leases and the timestamp oracle), Live's transactions, and a hot WAL. Single-node deployments use an embedded Raft metastore instead.
+- **Object storage.** Log segments, Lance datasets, Tantivy splits, manifests and hot-tier artifacts. Iceberg tables and Postgres pages come later.
+
+## Features
+
+Statuses reflect the `main` branch. **Available** means it is built and tested in CI, not that it is production ready.
+
+| Feature | What you get | Status |
+|---|---|---|
+| Collections | Documents with a schema, stored as Lance (vectors, columns) plus Tantivy (full text) under one manifest; upserts and deletes by id | Available |
+| Hybrid retrieval | Vector kNN, BM25 and filters fused with RRF in one query; SQL table functions `vector_search`, `text_search` and `rrf` | Available |
+| Native REST API | Namespaces, streams, collections, links, hybrid query and SQL | Available |
+| Arrow Flight SQL | SQL and Arrow results for any language with an ADBC or Flight SQL driver | Available |
+| Qdrant API | Qdrant REST and gRPC, tested with `qdrant-client` 1.15 and 1.19 | Available |
+| Elasticsearch subset | Document APIs, `_bulk`, `_search` with the core Query DSL, `knn`, hybrid and RRF, tested with `elasticsearch-py` 8.19 | Available |
+| Streams and links | Partitioned streams with a native produce and fetch API; links apply streams to targets exactly once | Available |
+| Hot tier | HNSW vector artifacts and pinned text splits in RAM and NVMe, with delta indexes for fresh writes | Available |
+| Pinned scans | Read a collection's pinned Lance version directly with pylance, Ray, Polars or PyTorch | Available |
+| Cluster mode | `operon cluster` with roles, rendezvous placement, read forwarding and write backpressure | Available |
+| TiKV metastore | The catalog, leases and timestamp oracle on TiKV (`--meta tikv://…`, cargo feature `tikv`) | Available (opt-in) |
+| Loam Durable | An embedded Resonate server: durable promises and tasks on SQLite (cargo feature `durable`) | Available (opt-in) |
+| Durable store on TiKV | Durable execution state on TiKV for clusters | In progress |
+| Loam Live | A reactive document database on TiKV: transactions, indexes, live queries and a TypeScript SDK | In progress |
+| Postgres and MySQL wire | SQL over the Postgres and MySQL wire protocols | In progress |
+| Streaming gRPC API | Idempotent produce and streaming subscribe over gRPC | In progress |
+| Web console | The Loam console and its design system, built against a mock of the console API | In progress |
+| Graph expansion | GraphRAG expansion of 1 to 2 hops, planned together with the retrieval query | Planned |
+| Iceberg analytics | Iceberg tables through a REST catalog, readable by DuckDB, Spark, Trino and ClickHouse | Planned |
+| Kafka wire and OTLP | Kafka clients and OpenTelemetry logs ingest into streams | Planned |
+| Auth and tenancy | API keys, authorization, tenant quotas and a namespace router | Planned |
+| Python SDK and MCP | A native Python client, `to_arrow()` and `to_polars()`, and an MCP server | Planned |
+| Loam Functions | A CPU-time serverless runtime on workerd, wasmtime and gVisor, with a Rust Dapr-style API | Planned |
+| Loam Jobs | Celery, BullMQ v6, PySpark (through Sail) and Flink SQL (through RisingWave) jobs run durably on Loam | Planned |
+| Loam Postgres | A fork of Neon whose WAL lives on TiKV and the bucket | Planned |
+| Self-hosting with GitOps | A Helm chart, a Kubernetes operator and Argo CD layouts | Planned |
+
+## Quick start
+
+### Prerequisites
+
+- **Rust.** Install [rustup](https://rustup.rs); the toolchain pinned in [`rust-toolchain.toml`](rust-toolchain.toml) installs on first build.
+- **protoc**, the Protocol Buffers compiler: `apt install protobuf-compiler`, `brew install protobuf`, or `pacman -S protobuf`.
+- **Memory.** The first build compiles DataFusion, Lance and Tantivy, so it is heavy. On machines with less than 32 GB of RAM, limit parallel jobs with `-j 4`.
+
+### Run a dev server
+
+`operon dev` runs everything in one process, with data in a local directory (`.operon/` by default):
 
 ```sh
 cargo run --release -p operon -- dev
 ```
 
-Create a collection, write documents and run a hybrid query (every write answers a consistency token; reads are strong by default, so they see it at once):
+It serves these listeners, each of which you can move or turn off (`operon dev --help`):
+
+| Surface | Default address | Flag |
+|---|---|---|
+| Native HTTP API | `127.0.0.1:8080` | `--listen` |
+| Arrow Flight SQL | `127.0.0.1:8082` | `--flight-sql-listen`, `--no-flight-sql` |
+| Qdrant REST and gRPC | `127.0.0.1:6333`, `127.0.0.1:6334` | `--qdrant-listen`, `--qdrant-grpc-listen`, `--no-qdrant` |
+| Elasticsearch REST | `127.0.0.1:9200` | `--es-listen`, `--no-es` |
+| Resonate (with `--features durable`) | `127.0.0.1:8001` | `--durable-listen`, `--no-durable` |
+
+To run against a bucket instead of a local directory, use `operon standalone --bucket s3://bucket/prefix`. For a multi-node deployment, use `operon cluster`.
+
+### Hybrid search with the native API
+
+Create a collection, write documents and run a hybrid query. Every write returns a consistency token, and reads are strong by default, so they see the write at once.
 
 ```sh
 curl -s localhost:8080/v1/namespaces/demo/collections -H 'content-type: application/json' -d '{
@@ -56,15 +127,34 @@ curl -s localhost:8080/v1/namespaces/demo/query -H 'content-type: application/js
   "fuse": {"method": "rrf", "k": 60},
   "limit": 3
 }'
+```
 
+The same query in SQL:
+
+```sh
 curl -s localhost:8080/v1/namespaces/demo/sql -H 'content-type: application/json' -d @- <<'JSON'
 {"query": "SELECT _id, body, _score FROM rrf(vector_search('kb', [1.0, 0.0, 0.0], 'embedding', 10), text_search('kb', 'refund', 'body', 10)) LIMIT 3"}
 JSON
 ```
 
-Connect with Flight SQL, for example through the ADBC driver (`pip install adbc-driver-flightsql pyarrow`; the ADBC drivers are gated in M1.7):
+### Use an existing Qdrant client
 
 ```python
+# pip install qdrant-client
+from qdrant_client import QdrantClient, models
+
+client = QdrantClient(url="http://localhost:6333")
+client.create_collection("docs", vectors_config=models.VectorParams(size=3, distance=models.Distance.COSINE))
+client.upsert("docs", points=[models.PointStruct(id=1, vector=[1.0, 0.0, 0.0], payload={"title": "refunds"})], wait=True)
+print(client.query_points("docs", query=[1.0, 0.0, 0.0], limit=1))
+```
+
+Requests without an `Operon-Namespace` header go to the `default` namespace. The Elasticsearch API on port 9200 works the same way with `elasticsearch-py`.
+
+### Query over Flight SQL
+
+```python
+# pip install adbc-driver-flightsql pyarrow
 import adbc_driver_flightsql.dbapi as flight_sql
 
 with flight_sql.connect(
@@ -75,7 +165,9 @@ with flight_sql.connect(
     print(cur.fetch_arrow_table())
 ```
 
-Fetch a scan plan and read the pinned Lance version directly with pylance (`pip install pylance==12.0.0`, the release that matches Lance 12.0.0):
+### Read the bucket directly
+
+`POST /v1/namespaces/{ns}/collections/{c}/scan` returns a pinned Lance version, which pylance reads straight from the bucket (`pip install pylance==12.0.0`):
 
 ```python
 import json, urllib.request
@@ -91,41 +183,90 @@ if plan["lance"] is not None:  # null until the first commit
     print(dataset.count_rows(), "live documents; tail:", plan["tail_records"], "records")
 ```
 
-The plan's `pin` reads the writes the Lance version does not hold yet (the tail) through the native API or Flight SQL ([§17 §3.7](docs/design/17-ai-data-ecosystem.md)).
+Writes that the pinned version does not hold yet (the plan's *tail*) are readable through the native API or Flight SQL.
 
-## Architecture at a glance
+## API surfaces
 
-```
- Kafka │ ES REST │ Qdrant │ Bolt/Cypher │ ClickHouse HTTP │ Resonate │ native gRPC/REST/Flight SQL
-                               │  gateway
-            ┌──────────────────┴──────────────────┐
-         log (WAL: standard │ express │ quorum)   query (DataFusion + hot tier)
-            └──────────────────┬──────────────────┘
-          object storage: log segments · Iceberg · Lance · Tantivy splits · graph sidecars · workflow state
-            workers: links · indexing · compaction · GC      meta: embedded Raft
-```
+| Surface | Protocol | Use it for | Code |
+|---|---|---|---|
+| Native API | REST (JSON) | Namespaces, streams, collections, links, hybrid query, SQL, scan plans | [`crates/operon/src/api`](crates/operon/src/api) |
+| Flight SQL | Arrow Flight over gRPC | SQL from any ADBC or Flight SQL client, with Arrow results | [`crates/operon`](crates/operon) |
+| Qdrant | REST and gRPC | Existing Qdrant clients and framework integrations | [`crates/operon-qdrant`](crates/operon-qdrant) |
+| Elasticsearch subset | REST (JSON, NDJSON) | Existing Elasticsearch 8 clients, LangChain and LlamaIndex stores | [`crates/operon-es`](crates/operon-es) |
+| Resonate | HTTP | Durable promises and tasks from the Resonate SDKs (TypeScript, Python, Rust, Go, Java) | [`crates/operon-durable`](crates/operon-durable) |
+| Loam Live | Connect / gRPC (`loam.live.v1`) | Reactive documents and live queries (in progress) | [`proto/loam`](proto/loam), [`sdks/live-typescript`](sdks/live-typescript) |
+| Console API | REST (OpenAPI) | The web console (in progress, served by a mock for now) | [`api/console`](api/console) |
 
-Start with the [pitch](docs/design/00-pitch.md) and the [architecture](docs/design/01-architecture.md).
+Each gateway documents where it differs from the original in its crate's module docs.
+
+## Project layout
+
+| Crate | What it does |
+|---|---|
+| [`operon`](crates/operon) | The server binary: the native HTTP API, Flight SQL, the gateways, and the `dev`, `standalone` and `cluster` commands |
+| [`operon-common`](crates/operon-common) | Identifier and schema types shared by all crates |
+| [`operon-store`](crates/operon-store) | Object-storage access: conditional writes, range reads and fault injection |
+| [`operon-cache`](crates/operon-cache) | Read-through RAM + NVMe byte-range cache over immutable objects |
+| [`operon-meta`](crates/operon-meta) | The embedded metastore on Raft: namespaces, streams, the sequencer, leases and pointers |
+| [`operon-meta-tikv`](crates/operon-meta-tikv) | The metastore on TiKV |
+| [`operon-meta-conformance`](crates/operon-meta-conformance) | A backend-agnostic conformance suite for the metastore (test only) |
+| [`operon-tikv`](crates/operon-tikv) | The TiKV client layer: transactions, the tuple codec, the timestamp oracle and keyspace bootstrap |
+| [`operon-log`](crates/operon-log) | The internal log: WAL objects, segments, the write and fetch paths, and retention |
+| [`operon-worker`](crates/operon-worker) | Lease-fenced background tasks with priorities and fair share |
+| [`operon-link`](crates/operon-link) | Links: exactly-once apply of streams into targets |
+| [`operon-pk`](crates/operon-pk) | The primary-key index on SlateDB |
+| [`operon-collection`](crates/operon-collection) | Collections: documents, the catalog, and Lance + Tantivy storage under one manifest |
+| [`operon-text`](crates/operon-text) | Tantivy integration: analyzers, splits on object storage and delete bitmaps |
+| [`operon-quickwit`](crates/operon-quickwit) | Quickwit's split, directory, query and merge-policy code, vendored and adapted |
+| [`operon-query`](crates/operon-query) | The read side: the search IR, hybrid query planning, SQL and the tail |
+| [`operon-hnsw`](crates/operon-hnsw) | HNSW index traits, an exact flat engine and the qdrant-edge engine |
+| [`operon-hot`](crates/operon-hot) | The hot tier: HNSW artifacts, pinned splits, budgets, placement and read forwarding |
+| [`operon-qdrant`](crates/operon-qdrant) | The Qdrant-compatible REST and gRPC gateway |
+| [`operon-es`](crates/operon-es) | The Elasticsearch-compatible REST gateway |
+| [`operon-durable`](crates/operon-durable) | Loam Durable: the Resonate server embedded in process |
+| [`operon-live`](crates/operon-live) | Loam Live: the reactive document database on TiKV |
+| [`operon-live-proto`](crates/operon-live-proto) | Loam Live's `loam.live.v1` protos and generated service code |
+| [`operon-sim`](crates/operon-sim) | Seeded cluster simulation and a linearizability checker (test only) |
+| [`operon-console-mock`](crates/operon-console-mock) | A mock of the console API with seed data |
+
+Other directories:
+
+| Path | Contents |
+|---|---|
+| [`docs/design`](docs/design/README.md) | The design documents and the decision log |
+| [`docs/plans`](docs/plans/README.md) | Implementation plans, task by task |
+| [`web`](web/README.md) | The web console and the `@loam/ui` design system |
+| [`sdks`](sdks) | Client SDKs (the Loam Live TypeScript SDK) |
+| [`proto`](proto), [`api`](api) | Protobuf and OpenAPI contracts |
+| [`conformance`](conformance) | External client conformance suites |
+| [`deploy`](deploy) | Local compose files for TiKV and companion services |
+| [`scripts`](scripts) | Development and CI helper scripts |
 
 ## Roadmap
 
-| Milestone | Scope |
-|---|---|
-| M0 | Foundation: metastore, object-store I/O, internal log, cache, workers, links |
-| M1 | Collections: Elasticsearch and Qdrant surfaces, hybrid retrieval, vector hot tier |
-| M2 | Graph: Cypher subset, Bolt, traversal, graph algorithms; durable execution (Resonate surface) |
-| M3 | Streams: Kafka compatibility, `express` WAL, changelog streams |
-| M4 | Analytics: Iceberg tables via Lakekeeper, ClickHouse HTTP, Iceberg hot tier, columnar stream segments, durable-execution search and execution graphs |
-| M5 | Scale and reliability: `quorum` WAL, Kafka transactions, distributed execution, multi-tenancy at scale |
-
-Details and exit gates: [docs/design/12-roadmap-testing-risks.md](docs/design/12-roadmap-testing-risks.md).
+In order: hybrid retrieval hardened for production (auth, quotas, telemetry, multi-node clusters, the Kubernetes operator), then graph expansion, streams with Kafka compatibility, and Iceberg analytics. Loam Live, Loam Durable, the functions runtime, jobs and Loam Postgres advance on their own tracks. The details, with exit criteria for each stage, are in [the roadmap](docs/design/12-roadmap-testing-risks.md) and [the implementation plans](docs/plans/README.md). Architectural decisions are recorded in [the decision log](docs/design/13-decision-log.md).
 
 ## Contributing
 
-We welcome design feedback and contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) and our [Code of Conduct](CODE_OF_CONDUCT.md). Report security issues as described in [SECURITY.md](SECURITY.md).
+Contributions of every size are welcome: bug reports, compatibility reports from your Qdrant or Elasticsearch client, docs fixes, tests and code.
+
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup, tests and the PR flow.
+- Look for issues labelled [`good first issue`](../../issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) or [`help wanted`](../../issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22).
+- For anything that changes a format, a protocol or a design decision, open an issue first.
+
+## Community
+
+- **Questions, bugs and ideas:** [GitHub issues](../../issues).
+- **Security issues:** please report them privately, as described in [SECURITY.md](SECURITY.md).
+- **Conduct:** everyone who takes part agrees to the [Code of Conduct](CODE_OF_CONDUCT.md).
+- **Governance and maintainers:** [GOVERNANCE.md](GOVERNANCE.md) and [MAINTAINERS.md](MAINTAINERS.md).
+
+## Built on
+
+Loam builds on great open-source work, including [DataFusion](https://datafusion.apache.org), [Lance](https://github.com/lancedb/lance), [Tantivy](https://github.com/quickwit-oss/tantivy), [Quickwit](https://github.com/quickwit-oss/quickwit), [qdrant-edge](https://github.com/qdrant/qdrant), [SlateDB](https://slatedb.io), [openraft](https://github.com/databendlabs/openraft), [TiKV](https://tikv.org) and [Resonate](https://github.com/resonatehq/resonate). Where Loam needs patches before upstream ships them, it uses pinned forks under [ostrium-labs](https://github.com/ostrium-labs): [resonate](https://github.com/ostrium-labs/resonate), [client-rust](https://github.com/ostrium-labs/client-rust), [neon](https://github.com/ostrium-labs/neon) and [sqlx](https://github.com/ostrium-labs/sqlx). Attributions are in [NOTICE](NOTICE).
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Loam is licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for third-party attributions.
 
-Everything needed to self-host Loam as a single organisation is open source in this repository; what is needed only to run Loam as a multi-tenant paid cloud lives in the managed Loam Cloud platform (proprietary, separate repository). See [docs/open-core.md](docs/open-core.md).
+**Open core.** Everything you need to self-host Loam for a single organisation is open source in this repository. Only what is needed to run Loam as a multi-tenant paid cloud (billing, metering and the hosted control plane) lives in a separate, proprietary platform. The boundary is spelled out in [docs/open-core.md](docs/open-core.md).

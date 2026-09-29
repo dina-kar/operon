@@ -1,0 +1,62 @@
+# The repository's labels. Apply them with scripts/sync-labels.sh, which
+# creates missing labels and updates existing ones (it never deletes).
+#
+# Every issue gets one kind/* label and at least one area/* label. Issue forms
+# set the kind (or good first issue) and status/needs-triage; the area is added
+# at triage, since the reporter often cannot tell which crate is involved.
+
+# Contributor entry points
+- name: good first issue
+  color: "7057ff"
+  description: Small and well scoped, with pointers; good for newcomers
+- name: help wanted
+  color: "008672"
+  description: Maintainers would welcome a contribution here
+
+# Areas (crate groups)
+- name: area/engine
+  color: "1a7f37"
+  description: "Retrieval engine: store, cache, meta, log, worker, link, pk, collection, text, query, hnsw, hot, sim"
+- name: area/live
+  color: "0e8a16"
+  description: "Loam Live and TiKV: operon-live, operon-live-proto, operon-tikv, operon-meta-tikv"
+- name: area/durable
+  color: "5319e7"
+  description: "Loam Durable, the embedded Resonate server: operon-durable"
+- name: area/wire
+  color: "0969da"
+  description: "Protocol surfaces: native HTTP API, Flight SQL, Qdrant, Elasticsearch, Postgres, MySQL, gRPC"
+- name: area/runtime
+  color: "bc4c00"
+  description: "Functions runtime and jobs (workerd, wasmtime, gVisor, Dapr API, Celery, BullMQ)"
+- name: area/sdk
+  color: "1d76db"
+  description: "Client SDKs in sdks/ and the generated clients"
+- name: area/web
+  color: "d4c5f9"
+  description: "The web console and @loam/ui in web/"
+- name: area/docs
+  color: "0075ca"
+  description: "README, crate docs, design docs and plans"
+- name: area/ci
+  color: "ededed"
+  description: "CI workflows, scripts, deny.toml and the build"
+
+# Kinds
+- name: kind/bug
+  color: "d73a4a"
+  description: Something is broken or behaves incorrectly
+- name: kind/feature
+  color: "a2eeef"
+  description: A new feature, API or compatibility surface
+- name: kind/docs
+  color: "c5def5"
+  description: Documentation only
+- name: kind/design
+  color: "fbca04"
+  description: A question about, or a change to, a design document or decision
+
+# Status
+- name: status/needs-triage
+  color: "e99695"
+  description: Not yet reviewed by a maintainer

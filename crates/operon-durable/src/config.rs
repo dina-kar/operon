@@ -80,9 +80,35 @@ pub enum DurableStore {
     /// connection's `ssl-mode`, whatever `url` says ([`DurableStore::mysql`]
     /// reads it from the URL).
     Mysql { url: String, tls: MysqlTls },
+    /// Native TiKV API v2 store, isolated by keyspace and root prefix.
+    Tikv {
+        pd: Vec<String>,
+        keyspace: String,
+        root: Vec<u8>,
+    },
 }
 
 impl DurableStore {
+    /// A native TiKV store. All durable servers in one deployment must use
+    /// the same keyspace and root; unrelated applications should use another
+    /// root within the keyspace.
+    pub fn tikv(pd: Vec<String>, keyspace: impl Into<String>) -> Result<Self, DurableError> {
+        if pd.is_empty() || pd.iter().any(|endpoint| endpoint.trim().is_empty()) {
+            return Err(DurableError::Config(
+                "TiKV needs at least one PD endpoint".into(),
+            ));
+        }
+        let keyspace = keyspace.into();
+        if keyspace.is_empty() {
+            return Err(DurableError::Config("TiKV needs an API v2 keyspace".into()));
+        }
+        Ok(Self::Tikv {
+            pd,
+            keyspace,
+            root: b"resonate-durable/".to_vec(),
+        })
+    }
+
     /// A MySQL store from `mysql://user:pass@host:port/db?ssl-mode=…`
     /// (D1 Task 4). `ssl-mode` (or `sslmode`) is `required`, `disabled`,
     /// `verify_ca` or `verify_identity` (owner ruling Q8); without it TLS is
@@ -164,6 +190,12 @@ impl fmt::Debug for DurableStore {
                 .field("url", &redact_url(url))
                 .field("tls", tls)
                 .finish(),
+            Self::Tikv { pd, keyspace, root } => f
+                .debug_struct("Tikv")
+                .field("pd", pd)
+                .field("keyspace", keyspace)
+                .field("root", root)
+                .finish(),
         }
     }
 }
@@ -173,6 +205,9 @@ impl fmt::Display for DurableStore {
         match self {
             Self::Sqlite { path } => write!(f, "sqlite:{}", path.display()),
             Self::Mysql { url, .. } => f.write_str(&redact_url(url)),
+            Self::Tikv { pd, keyspace, .. } => {
+                write!(f, "tikv://{}/{}", pd.join(","), keyspace)
+            }
         }
     }
 }
@@ -357,6 +392,12 @@ pub const PROTECTED: &[(&str, &str)] = &[
     ("servers.active", "the backend is --durable-store"),
     ("servers.server_sqlite.path", "the store is --durable-store"),
     ("servers.server_mysql.url", "the store is --durable-store"),
+    ("servers.server_tikv.pd", "the store is --durable-store"),
+    (
+        "servers.server_tikv.keyspace",
+        "the store is --durable-store",
+    ),
+    ("servers.server_tikv.root", "the store is --durable-store"),
     (
         "servers.server_mysql.migrate",
         "only operon durable migrate changes the schema",
@@ -433,6 +474,7 @@ pub(crate) fn server_id(store: &DurableStore) -> &'static str {
     match store {
         DurableStore::Sqlite { .. } => "server_sqlite",
         DurableStore::Mysql { .. } => "server_mysql",
+        DurableStore::Tikv { .. } => "server_tikv",
     }
 }
 
@@ -504,6 +546,26 @@ pub(crate) fn configuration(
                 )
                 .map_err(bad)?;
         }
+        DurableStore::Tikv { pd, keyspace, root } => {
+            let pd = format!(
+                "[{}]",
+                pd.iter().map(|p| quote(p)).collect::<Vec<_>>().join(", ")
+            );
+            let root = format!(
+                "[{}]",
+                root.iter()
+                    .map(u8::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            loader = loader
+                .set("servers.server_tikv.pd", &pd)
+                .map_err(bad)?
+                .set("servers.server_tikv.keyspace", &quote(keyspace))
+                .map_err(bad)?
+                .set("servers.server_tikv.root", &root)
+                .map_err(bad)?;
+        }
     }
     if let Some(instance) = inproc {
         loader = loader
@@ -535,6 +597,16 @@ pub(crate) fn configuration(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_tikv_store_selects_its_server() {
+        let store = DurableStore::tikv(vec!["127.0.0.1:2379".into()], "durable")
+            .expect("valid TiKV address");
+        assert_eq!(server_id(&store), "server_tikv");
+        assert!(matches!(store, DurableStore::Tikv { .. }));
+        assert!(DurableStore::tikv(Vec::new(), "durable").is_err());
+        assert!(DurableStore::tikv(vec!["127.0.0.1:2379".into()], "").is_err());
+    }
 
     fn carried() -> Vec<String> {
         [

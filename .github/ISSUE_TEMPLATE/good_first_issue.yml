@@ -1,0 +1,46 @@
+name: Good first issue (maintainers)
+description: A small, well-scoped task for a new contributor, with pointers and acceptance criteria.
+labels: ["good first issue"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Write this for someone who has never seen the codebase. Add an `area/*` and a `kind/*` label after you create it.
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: One to three sentences on why this matters.
+    validations:
+      required: true
+  - type: textarea
+    id: where
+    attributes:
+      label: Where to look
+      description: Files and line numbers, and any design doc section.
+      placeholder: |
+        - `crates/operon-log/src/segment.rs:120`
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What to do
+      description: The steps, in order.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: A checklist, including the scoped test or clippy command.
+      placeholder: |
+        - [ ] ...
+        - [ ] `cargo test -p operon-log` passes
+    validations:
+      required: true
+  - type: textarea
+    id: tips
+    attributes:
+      label: Tips
+      description: Build tips, related tests to copy, who to ask.
