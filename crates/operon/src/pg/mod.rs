@@ -42,14 +42,20 @@ pub const READ_ONLY_SQLSTATE: &str = "25006";
 /// How long the accept loop waits after a failed `accept` before retrying.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
+/// Configuration for the read-only PostgreSQL wire listener.
 #[derive(Clone, Debug)]
 pub struct PgConfig {
+    /// The loopback address to listen on.
     pub listen: SocketAddr,
+    /// The namespace whose collections the listener serves.
     pub namespace: String,
+    /// The most concurrent client connections; further ones are closed.
     pub max_connections: usize,
 }
 
 impl PgConfig {
+    /// A configuration for `listen` and `namespace` with at most 256
+    /// concurrent connections.
     pub fn new(listen: SocketAddr, namespace: impl Into<String>) -> Self {
         Self {
             listen,
@@ -81,6 +87,8 @@ pub struct PgHandle {
 }
 
 impl PgHandle {
+    /// Stops accepting connections, waits up to `grace` for connected
+    /// clients to finish, then disconnects the rest.
     pub async fn stop_within(self, grace: Duration) {
         self.shutdown.cancel();
         let _ = self.accept_task.await;
@@ -96,8 +104,8 @@ impl PgHandle {
 }
 
 /// A bound PostgreSQL listener, not yet serving: [`listen`] runs before the
-/// server starts any task, and [`start`] serves it once the collection
-/// service exists.
+/// server starts any task, [`prepare`] turns it into a [`PgPrepared`] once
+/// the collection service exists, and [`serve`] serves that.
 #[derive(Debug)]
 pub struct PgListener {
     listener: TcpListener,
