@@ -1,0 +1,195 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 802" width="1040" height="802" role="img" aria-labelledby="title desc">
+<title id="title">Loam architecture</title>
+<desc id="desc">Clients and protocols reach a stateless gateway and router, which serves the retrieval engine, Loam Live, Loam Durable, the runtime and jobs, and Loam Postgres. TiKV holds metadata, transactions and the hot WAL. Object storage (RustFS, S3, GCS or Azure Blob) holds all data in open formats. Dotted outlines are in progress; dashed outlines are planned.</desc>
+<style>
+
+.t{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif}
+.band{stroke-width:1.2}
+.chip,.box{stroke-width:1.5}
+.prog{stroke-dasharray:2 3}
+.plan{stroke-dasharray:7 4}
+.lbl{font-size:12px;font-weight:700;letter-spacing:.08em}
+.sub,.note{font-size:12.5px}
+.chipt,.legend,.body{font-size:13px}
+.ttl{font-size:15px;font-weight:700}
+.badge{font-size:11.5px;font-style:italic}
+.arrow{stroke-width:1.6}
+.t{fill:#1f2328}
+.panel{fill:#ffffff;stroke:#d1d9e0}
+.sub,.note,.body,.badge{fill:#59636e}
+.arrow{stroke:#59636e}
+.ah{fill:#59636e}
+.chip.lg{fill:#ffffff;stroke:#1f2328}
+.band.c{fill:#ddf4ff;stroke:#0969da}
+.chip.c,.box.c{fill:#f6fbff;stroke:#0969da}
+.cl{fill:#0969da}
+.band.g{fill:#fbefff;stroke:#8250df}
+.chip.g,.box.g{fill:#fdf8ff;stroke:#8250df}
+.gl{fill:#8250df}
+.band.e{fill:#dafbe1;stroke:#1a7f37}
+.chip.e,.box.e{fill:#f5fdf7;stroke:#1a7f37}
+.el{fill:#1a7f37}
+.band.k{fill:#fff1e5;stroke:#bc4c00}
+.chip.k,.box.k{fill:#fffaf5;stroke:#bc4c00}
+.kl{fill:#bc4c00}
+.band.s{fill:#fbf2dc;stroke:#7d4e00}
+.chip.s,.box.s{fill:#fffcf3;stroke:#7d4e00}
+.sl{fill:#7d4e00}
+@media (prefers-color-scheme:dark){
+.t{fill:#e6edf3}
+.panel{fill:#0d1117;stroke:#3d444d}
+.sub,.note,.body,.badge{fill:#9198a1}
+.arrow{stroke:#9198a1}
+.ah{fill:#9198a1}
+.chip.lg{fill:#0d1117;stroke:#e6edf3}
+.band.c{fill:#0c2d4f;stroke:#4493f8}
+.chip.c,.box.c{fill:#0d1f33;stroke:#4493f8}
+.cl{fill:#4493f8}
+.band.g{fill:#2a1b45;stroke:#ab7df8}
+.chip.g,.box.g{fill:#1d1530;stroke:#ab7df8}
+.gl{fill:#ab7df8}
+.band.e{fill:#0f2e1a;stroke:#3fb950}
+.chip.e,.box.e{fill:#0c1f13;stroke:#3fb950}
+.el{fill:#3fb950}
+.band.k{fill:#3a2010;stroke:#f0883e}
+.chip.k,.box.k{fill:#27170c;stroke:#f0883e}
+.kl{fill:#f0883e}
+.band.s{fill:#33270c;stroke:#d29922}
+.chip.s,.box.s{fill:#221b0b;stroke:#d29922}
+.sl{fill:#d29922}
+}
+</style>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+<rect class="panel" x="0.5" y="0.5" width="1039" height="801" rx="16"/>
+<rect class="band c" x="20" y="20" width="1000" height="118" rx="12"/>
+<text class="t lbl cl" x="40" y="46">CLIENTS AND PROTOCOLS</text>
+<text class="t sub" x="219" y="46">your apps, agents and tools</text>
+<rect class="chip c" x="40.0" y="62" width="142.6" height="30" rx="7"/>
+<text class="t chipt" x="111.3" y="82" text-anchor="middle">Native REST + gRPC</text>
+<rect class="chip c" x="190.6" y="62" width="125.7" height="30" rx="7"/>
+<text class="t chipt" x="253.4" y="82" text-anchor="middle">Arrow Flight SQL</text>
+<rect class="chip c" x="324.2" y="62" width="146.7" height="30" rx="7"/>
+<text class="t chipt" x="397.6" y="82" text-anchor="middle">Qdrant REST + gRPC</text>
+<rect class="chip c" x="479.0" y="62" width="146.5" height="30" rx="7"/>
+<text class="t chipt" x="552.2" y="82" text-anchor="middle">Elasticsearch subset</text>
+<rect class="chip c prog" x="633.5" y="62" width="106.7" height="30" rx="7"/>
+<text class="t chipt" x="686.9" y="82" text-anchor="middle">Postgres wire</text>
+<rect class="chip c plan" x="748.2" y="62" width="87.4" height="30" rx="7"/>
+<text class="t chipt" x="791.9" y="82" text-anchor="middle">Kafka wire</text>
+<rect class="chip c plan" x="843.6" y="62" width="84.5" height="30" rx="7"/>
+<text class="t chipt" x="885.9" y="82" text-anchor="middle">OTLP logs</text>
+<rect class="chip c" x="40.0" y="98" width="115.1" height="30" rx="7"/>
+<text class="t chipt" x="97.6" y="118" text-anchor="middle">Resonate SDKs</text>
+<rect class="chip c prog" x="163.1" y="98" width="113.7" height="30" rx="7"/>
+<text class="t chipt" x="220.0" y="118" text-anchor="middle">Loam Live SDK</text>
+<rect class="chip c" x="284.8" y="98" width="242.4" height="30" rx="7"/>
+<text class="t chipt" x="406.0" y="118" text-anchor="middle">pylance · Ray · Polars (pinned scans)</text>
+<rect class="chip c plan" x="535.2" y="98" width="249.9" height="30" rx="7"/>
+<text class="t chipt" x="660.1" y="118" text-anchor="middle">DuckDB · Spark · Trino (Iceberg REST)</text>
+<line class="arrow" x1="260" y1="140" x2="260" y2="159" marker-end="url(#ah)"/>
+<line class="arrow" x1="520" y1="140" x2="520" y2="159" marker-end="url(#ah)"/>
+<line class="arrow" x1="780" y1="140" x2="780" y2="159" marker-end="url(#ah)"/>
+<rect class="band g" x="20" y="164" width="1000" height="80" rx="12"/>
+<text class="t lbl gl" x="40" y="190">GATEWAY AND ROUTER</text>
+<text class="t sub" x="202" y="190">stateless; any node can serve any request</text>
+<rect class="chip g" x="40.0" y="202" width="141.5" height="30" rx="7"/>
+<text class="t chipt" x="110.7" y="222" text-anchor="middle">protocol front ends</text>
+<rect class="chip g" x="189.5" y="202" width="139.3" height="30" rx="7"/>
+<text class="t chipt" x="259.1" y="222" text-anchor="middle">consistency tokens</text>
+<rect class="chip g" x="336.8" y="202" width="252.0" height="30" rx="7"/>
+<text class="t chipt" x="462.8" y="222" text-anchor="middle">rendezvous routing · read forwarding</text>
+<rect class="chip g" x="596.8" y="202" width="140.2" height="30" rx="7"/>
+<text class="t chipt" x="666.9" y="222" text-anchor="middle">write backpressure</text>
+<rect class="chip g plan" x="745.0" y="202" width="226.3" height="30" rx="7"/>
+<text class="t chipt" x="858.1" y="222" text-anchor="middle">namespace router · auth · quotas</text>
+<line class="arrow" x1="260" y1="246" x2="260" y2="265" marker-end="url(#ah)"/>
+<line class="arrow" x1="520" y1="246" x2="520" y2="265" marker-end="url(#ah)"/>
+<line class="arrow" x1="780" y1="246" x2="780" y2="265" marker-end="url(#ah)"/>
+<rect class="band e" x="20" y="270" width="1000" height="262" rx="12"/>
+<text class="t lbl el" x="40" y="296">COMPUTE</text>
+<text class="t sub" x="117" y="296">stateless nodes with a RAM + NVMe hot tier</text>
+<rect class="box e" x="40" y="310" width="452" height="206" rx="10"/>
+<text class="t ttl" x="54" y="334">Retrieval engine</text>
+<text class="t body" x="54" y="355">vector + full text + filters, fused in one planned query</text>
+<rect class="chip e" x="54.0" y="370" width="208.0" height="30" rx="7"/>
+<text class="t chipt" x="158.0" y="390" text-anchor="middle">log: WAL + segments</text>
+<rect class="chip e" x="270.0" y="370" width="208.0" height="30" rx="7"/>
+<text class="t chipt" x="374.0" y="390" text-anchor="middle">links (exactly-once apply)</text>
+<rect class="chip e" x="54.0" y="407" width="208.0" height="30" rx="7"/>
+<text class="t chipt" x="158.0" y="427" text-anchor="middle">collections: Lance + Tantivy</text>
+<rect class="chip e" x="270.0" y="407" width="208.0" height="30" rx="7"/>
+<text class="t chipt" x="374.0" y="427" text-anchor="middle">DataFusion hybrid query + SQL</text>
+<rect class="chip e" x="54.0" y="444" width="208.0" height="30" rx="7"/>
+<text class="t chipt" x="158.0" y="464" text-anchor="middle">hot tier: HNSW · pinned splits</text>
+<rect class="chip e" x="270.0" y="444" width="208.0" height="30" rx="7"/>
+<text class="t chipt" x="374.0" y="464" text-anchor="middle">workers: index · compact · GC</text>
+<rect class="chip e plan" x="54.0" y="481" width="208.0" height="30" rx="7"/>
+<text class="t chipt" x="158.0" y="501" text-anchor="middle">graph expansion (GraphRAG)</text>
+<rect class="chip e plan" x="270.0" y="481" width="208.0" height="30" rx="7"/>
+<text class="t chipt" x="374.0" y="501" text-anchor="middle">Iceberg analytics tables</text>
+<rect class="box e prog" x="506" y="310" width="241.0" height="97.0" rx="10"/>
+<text class="t ttl" x="520" y="334">Loam Live</text>
+<text class="t badge" x="604" y="334">in progress</text>
+<text class="t body" x="520" y="356">reactive document database</text>
+<text class="t body" x="520" y="375">transactions · live queries</text>
+<text class="t body" x="520" y="394">TypeScript SDK</text>
+<rect class="box e" x="759.0" y="310" width="241.0" height="97.0" rx="10"/>
+<text class="t ttl" x="773.0" y="334">Loam Durable</text>
+<text class="t body" x="773.0" y="356">embedded Resonate server</text>
+<text class="t body" x="773.0" y="375">durable promises and tasks</text>
+<text class="t body" x="773.0" y="394">crash-safe agent runs</text>
+<rect class="box e plan" x="506" y="419.0" width="241.0" height="97.0" rx="10"/>
+<text class="t ttl" x="520" y="443.0">Runtime and jobs</text>
+<text class="t badge" x="659" y="443.0">planned</text>
+<text class="t body" x="520" y="465.0">CPU-time functions: workerd,</text>
+<text class="t body" x="520" y="484.0">wasmtime, gVisor, Dapr API</text>
+<text class="t body" x="520" y="503.0">jobs: Celery · BullMQ · Spark · Flink</text>
+<rect class="box e plan" x="759.0" y="419.0" width="241.0" height="97.0" rx="10"/>
+<text class="t ttl" x="773.0" y="443.0">Loam Postgres</text>
+<text class="t badge" x="891" y="443.0">planned</text>
+<text class="t body" x="773.0" y="465.0">Neon fork on Loam's WAL</text>
+<text class="t body" x="773.0" y="484.0">branching, scale to zero</text>
+<text class="t body" x="773.0" y="503.0">on the same bucket</text>
+<line class="arrow" x1="260" y1="534" x2="260" y2="553" marker-end="url(#ah)"/>
+<line class="arrow" x1="640" y1="534" x2="640" y2="553" marker-end="url(#ah)"/>
+<line class="arrow" x1="900" y1="534" x2="900" y2="553" marker-end="url(#ah)"/>
+<rect class="band k" x="20" y="558" width="1000" height="80" rx="12"/>
+<text class="t lbl kl" x="40" y="584">TIKV</text>
+<text class="t sub" x="84" y="584">metadata, transactions and the hot WAL</text>
+<rect class="chip k" x="40.0" y="596" width="221.1" height="30" rx="7"/>
+<text class="t chipt" x="150.5" y="616" text-anchor="middle">metastore: catalog · leases · TSO</text>
+<rect class="chip k prog" x="269.1" y="596" width="126.5" height="30" rx="7"/>
+<text class="t chipt" x="332.3" y="616" text-anchor="middle">Live transactions</text>
+<rect class="chip k prog" x="403.6" y="596" width="105.7" height="30" rx="7"/>
+<text class="t chipt" x="456.5" y="616" text-anchor="middle">durable store</text>
+<rect class="chip k plan" x="517.3" y="596" width="189.9" height="30" rx="7"/>
+<text class="t chipt" x="612.3" y="616" text-anchor="middle">hot WAL for Loam Postgres</text>
+<text class="t note" x="1000" y="616" text-anchor="end">dev and single node: embedded Raft</text>
+<line class="arrow" x1="260" y1="640" x2="260" y2="659" marker-end="url(#ah)"/>
+<line class="arrow" x1="520" y1="640" x2="520" y2="659" marker-end="url(#ah)"/>
+<line class="arrow" x1="780" y1="640" x2="780" y2="659" marker-end="url(#ah)"/>
+<rect class="band s" x="20" y="664" width="1000" height="80" rx="12"/>
+<text class="t lbl sl" x="40" y="690">OBJECT STORAGE</text>
+<text class="t sub" x="162" y="690">RustFS · S3 · GCS · Azure Blob · local disk: the only source of truth</text>
+<rect class="chip s" x="40.0" y="702" width="147.5" height="30" rx="7"/>
+<text class="t chipt" x="113.7" y="722" text-anchor="middle">log segments + WAL</text>
+<rect class="chip s" x="195.5" y="702" width="59.7" height="30" rx="7"/>
+<text class="t chipt" x="225.3" y="722" text-anchor="middle">Lance</text>
+<rect class="chip s" x="263.2" y="702" width="102.0" height="30" rx="7"/>
+<text class="t chipt" x="314.2" y="722" text-anchor="middle">Tantivy splits</text>
+<rect class="chip s" x="373.2" y="702" width="146.6" height="30" rx="7"/>
+<text class="t chipt" x="446.6" y="722" text-anchor="middle">manifests · PK index</text>
+<rect class="chip s" x="527.9" y="702" width="122.5" height="30" rx="7"/>
+<text class="t chipt" x="589.1" y="722" text-anchor="middle">hot-tier artifacts</text>
+<rect class="chip s plan" x="658.4" y="702" width="70.5" height="30" rx="7"/>
+<text class="t chipt" x="693.7" y="722" text-anchor="middle">Iceberg</text>
+<rect class="chip s plan" x="737.0" y="702" width="158.4" height="30" rx="7"/>
+<text class="t chipt" x="816.2" y="722" text-anchor="middle">Postgres pages + WAL</text>
+<rect class="chip lg" x="40" y="766" width="28" height="16" rx="4"/>
+<text class="t legend" x="76" y="779">available</text>
+<rect class="chip lg prog" x="155.90625" y="766" width="28" height="16" rx="4"/>
+<text class="t legend" x="191.90625" y="779">in progress</text>
+<rect class="chip lg plan" x="286.546875" y="766" width="28" height="16" rx="4"/>
+<text class="t legend" x="322.546875" y="779">planned</text>
+<text class="t note" x="1000" y="779" text-anchor="end">open formats in your bucket · compute holds only caches</text>
+</svg>
