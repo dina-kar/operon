@@ -3,7 +3,7 @@
   "private": true,
   "description": "The Loam console and the @loam/ui design system (design §19).",
   "license": "Apache-2.0",
-  "packageManager": "pnpm@11.13.0",
+  "packageManager": "pnpm@11.27.1",
   "engines": {
     "node": ">=22"
   },
