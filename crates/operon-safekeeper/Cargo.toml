@@ -23,7 +23,7 @@ required-features = ["server"]
 async-trait.workspace = true
 axum = { workspace = true, optional = true }
 bytes.workspace = true
-clap = { workspace = true, optional = true }
+clap = { workspace = true, optional = true, features = ["env"] }
 futures = { workspace = true, optional = true }
 hex.workspace = true
 operon-tikv = { workspace = true, optional = true }

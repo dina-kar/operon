@@ -16,8 +16,9 @@ const PROTOCOL_V3: u32 = 196_608;
 const SSL_REQUEST: u32 = 80_877_103;
 const GSSENC_REQUEST: u32 = 80_877_104;
 const CANCEL_REQUEST: u32 = 80_877_102;
-/// The largest message accepted: an AppendRequest is at most 128 KiB.
-const MAX_MESSAGE: usize = 16 << 20;
+/// The largest message accepted: an AppendRequest is at most 128 KiB plus
+/// its header; anything much larger is not a safekeeper client.
+const MAX_MESSAGE: usize = 1 << 20;
 
 /// Postgres epoch (2000-01-01) in Unix seconds.
 pub const PG_EPOCH_UNIX_SECS: i64 = 946_684_800;
@@ -237,7 +238,7 @@ pub mod client {
     ) -> Result<(), Error> {
         let mut body = BytesMut::new();
         body.put_u32(PROTOCOL_V3);
-        for (k, v) in params {
+        for (k, v) in params.iter().filter(|(k, _)| *k != "password") {
             body.put_slice(k.as_bytes());
             body.put_u8(0);
             body.put_slice(v.as_bytes());
@@ -252,6 +253,21 @@ pub mod client {
         loop {
             match read_message(s).await? {
                 Some((b'Z', _)) => return Ok(()),
+                // AuthenticationCleartextPassword: answer with the `password`
+                // parameter, as libpq does.
+                Some((b'R', body)) if body.as_ref() == 3u32.to_be_bytes() => {
+                    let pw = params
+                        .iter()
+                        .find(|(k, _)| *k == "password")
+                        .map(|(_, v)| *v)
+                        .unwrap_or_default();
+                    let mut m = BytesMut::from(pw.as_bytes());
+                    m.put_u8(0);
+                    let mut buf = BytesMut::new();
+                    put_message(&mut buf, b'p', &m);
+                    s.write_all(&buf).await.map_err(io)?;
+                    s.flush().await.map_err(io)?;
+                }
                 Some((b'E', body)) => return Err(Error::Protocol(error_text(&body))),
                 Some(_) => {}
                 None => return Err(Error::Io("closed during startup".into())),

@@ -102,8 +102,10 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// The router over a service.
+/// The router over a service. With an auth token configured, every route
+/// needs `Authorization: Bearer <token>`.
 pub fn router<S: WalStore>(svc: Arc<WalService<S>>) -> Router {
+    let token = svc.config().auth_token.clone();
     Router::new()
         .route("/v1/status", get(status::<S>))
         .route("/v1/tenant/timeline", post(create::<S>))
@@ -111,6 +113,31 @@ pub fn router<S: WalStore>(svc: Arc<WalService<S>>) -> Router {
             "/v1/tenant/{tenant_id}/timeline/{timeline_id}",
             get(timeline::<S>),
         )
+        .layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let token = token.clone();
+                async move {
+                    if let Some(t) = token {
+                        let ok = req
+                            .headers()
+                            .get(axum::http::header::AUTHORIZATION)
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|v| v.strip_prefix("Bearer "))
+                            .is_some_and(|got| {
+                                crate::service::constant_time_eq(got.as_bytes(), t.as_bytes())
+                            });
+                        if !ok {
+                            return ApiError(
+                                StatusCode::UNAUTHORIZED,
+                                "missing or wrong bearer token".into(),
+                            )
+                            .into_response();
+                        }
+                    }
+                    next.run(req).await
+                }
+            },
+        ))
         .with_state(svc)
 }
 

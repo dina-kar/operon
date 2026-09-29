@@ -4,7 +4,7 @@
 //! through `--listen-http` (or let walproposer create them).
 //!
 //! ```text
-//! loam-wal --listen-pg 0.0.0.0:5454 --listen-http 0.0.0.0:7676 \
+//! LOAM_WAL_AUTH_TOKEN=… loam-wal --listen-pg 10.0.0.5:5454 --listen-http 10.0.0.5:7676 \
 //!          --store tikv --pd 127.0.0.1:19379 --keyspace loam_pgwal
 //! ```
 
@@ -57,9 +57,19 @@ struct Args {
     /// the interpreted protocol itself.
     #[arg(long)]
     feed_safekeeper: Option<String>,
+    /// Clients must send this as their password (walproposer's
+    /// NEON_AUTH_TOKEN) and as the HTTP bearer token. Required unless both
+    /// listeners are on loopback.
+    #[arg(long, env = "LOAM_WAL_AUTH_TOKEN", hide_env_values = true)]
+    auth_token: Option<String>,
 }
 
 async fn run<S: WalStore>(store: Arc<S>, args: &Args) -> Result<(), Box<dyn std::error::Error>> {
+    if args.auth_token.is_none()
+        && !(args.listen_pg.ip().is_loopback() && args.listen_http.ip().is_loopback())
+    {
+        return Err("refusing to listen beyond loopback without --auth-token".into());
+    }
     let svc = WalService::new(
         store,
         WalServiceConfig {
@@ -70,6 +80,7 @@ async fn run<S: WalStore>(store: Arc<S>, args: &Args) -> Result<(), Box<dyn std:
                 retry: Duration::from_secs(1),
                 poll: Duration::from_millis(5),
             }),
+            auth_token: args.auth_token.clone(),
             ..WalServiceConfig::default()
         },
     );
