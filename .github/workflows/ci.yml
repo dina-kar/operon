@@ -33,7 +33,9 @@ jobs:
       # feature (off by default), so lint that code too, and keep the default
       # build free of the git-pinned tikv-client.
       - name: clippy (operon with the tikv feature)
-        run: cargo clippy -p operon --all-targets --features tikv --locked -- -D warnings
+        run: cargo clippy -p operon --all-targets --features tikv,durable-tikv --locked -- -D warnings
+      - name: clippy (operon-durable with the native TiKV store)
+        run: cargo clippy -p operon-durable --all-targets --features tikv --locked -- -D warnings
       - name: operon's default build has no tikv-client
         run: |
           if cargo tree -p operon -e normal --prefix none --locked | grep -q '^tikv-client v'; then
@@ -220,7 +222,7 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          pattern='^(crates/operon-tikv/|crates/operon-meta-tikv/|crates/operon-live[^/]*/|crates/operon/Cargo\.toml$|crates/operon/src/(server|meta_backend|main)\.rs$|crates/operon/tests/meta_tikv\.rs$|deploy/tikv/|scripts/tikv/|proto/loam/|\.github/workflows/ci\.yml$)'
+          pattern='^(crates/operon-tikv/|crates/operon-meta-tikv/|crates/operon-durable/|crates/operon-live[^/]*/|crates/operon/Cargo\.toml$|crates/operon/src/(server|meta_backend|main)\.rs$|crates/operon/tests/meta_tikv\.rs$|deploy/tikv/|scripts/tikv/|proto/loam/|\.github/workflows/ci\.yml$)'
           if git diff --name-only HEAD^1 HEAD | grep -qE "$pattern"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
@@ -247,6 +249,7 @@ jobs:
         run: |
           cargo test ${{ steps.packages.outputs.args }} --locked --no-run
           cargo test -p operon --features tikv --test meta_tikv --locked --no-run
+          cargo test -p operon-durable --features tikv --lib --test tikv --locked --no-run
       - uses: actions/cache@v4
         if: steps.paths.outputs.run == 'true'
         with:
@@ -268,6 +271,7 @@ jobs:
         run: |
           cargo test ${{ steps.packages.outputs.args }} --locked
           cargo test -p operon --features tikv --test meta_tikv --locked
+          cargo test -p operon-durable --features tikv --lib --test tikv --locked
       - name: playground logs
         if: failure() && steps.paths.outputs.run == 'true'
         uses: actions/upload-artifact@v4
