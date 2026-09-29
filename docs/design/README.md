@@ -4,6 +4,7 @@
 
 - **Status:** v0.3 — 2026-09-26 (revised after the 2026-09-25 [architecture review](../architecture-review-and-recommendations.md): decisions D42–D50; metastore backends, router, tenancy and erasure: D58–D70; FoundationDB dropped, streams and Kafka, one router, consistency tokens: D71–D76)
 - **Approved:** all documents (§00–§13), 2026-09-23; §14–§16 and the Fluss-derived stream features (`arrow` encoding, changelog streams), 2026-09-24; the architecture review's revisions (narrowed protocol footprint, native graph, Iceberg-only analytics, native streams, pluggable metastore, new build order), 2026-09-25; §17 AI data ecosystem (D51–D56), 2026-09-25; §18 metastore backends, tenancy and the namespace router (D58–D70; D67, D69 and D70 are defaults awaiting owner confirmation), 2026-09-26; FoundationDB dropped, the native stream API core and OTLP logs ingest in M2, the Kafka gateway and the RisingWave companion in M5, one router for every resource kind, consistency tokens on every backend (D71–D76), 2026-09-26
+- **Open-core boundary:** what stays open source in this repository and what belongs only to the managed Loam Cloud platform is set in [open-core.md](../open-core.md) (D220).
 
 ## Reading order
 
