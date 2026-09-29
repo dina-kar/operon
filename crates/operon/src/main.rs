@@ -225,6 +225,14 @@ struct Native {
     /// Serve no Flight SQL.
     #[arg(long)]
     no_flight_sql: bool,
+    /// PostgreSQL wire listener for collection queries (loopback only).
+    #[cfg(feature = "pgwire")]
+    #[arg(long)]
+    pg_listen: Option<SocketAddr>,
+    /// Namespace exposed on the PostgreSQL wire listener.
+    #[cfg(feature = "pgwire")]
+    #[arg(long, requires = "pg_listen")]
+    pg_namespace: Option<String>,
     /// Address of the Qdrant REST API [default: 127.0.0.1:6333].
     #[arg(long, conflicts_with = "no_qdrant")]
     qdrant_listen: Option<SocketAddr>,
@@ -427,6 +435,17 @@ impl Native {
         } else {
             Some(self.flight_sql_listen.unwrap_or(default_flight))
         };
+        #[cfg(feature = "pgwire")]
+        {
+            config.pg = self.pg_listen.map(|addr| {
+                operon::pg::PgConfig::new(
+                    addr,
+                    self.pg_namespace
+                        .clone()
+                        .unwrap_or_else(|| "default".into()),
+                )
+            });
+        }
         self.apply_qdrant(config);
         self.apply_durable(config);
         self.apply_es(config);
@@ -952,6 +971,10 @@ async fn main() -> ExitCode {
     // M1.6 W14, M1.7 A4: printed once the listener is bound.
     if let Some(addr) = server.flight_sql_addr() {
         println!("operon flight sql listening on grpc://{addr}");
+    }
+    #[cfg(feature = "pgwire")]
+    if let Some(addr) = server.pg_addr() {
+        println!("operon PostgreSQL wire listening on postgres://{addr}");
     }
     shutdown_signal().await;
     tracing::info!("shutting down");

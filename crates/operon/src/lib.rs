@@ -5,6 +5,8 @@
 pub mod api;
 pub mod cluster;
 mod meta_backend;
+#[cfg(feature = "pgwire")]
+pub mod pg;
 mod server;
 
 pub use meta_backend::{MetaBackend, NO_TIKV_FEATURE, TIKV_SCHEME};

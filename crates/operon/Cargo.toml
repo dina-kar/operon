@@ -17,6 +17,8 @@ axum.workspace = true
 base64.workspace = true
 bytes.workspace = true
 clap.workspace = true
+datafusion = { workspace = true, optional = true }
+datafusion-postgres = { workspace = true, optional = true }
 fail = { workspace = true, optional = true }
 http.workspace = true
 operon-cache.workspace = true
@@ -71,6 +73,8 @@ hnsw = ["operon-hot/hnsw"]
 durable = ["dep:operon-durable"]
 # The TiDB durable store through Resonate's MySQL plugin (D1 Task 4).
 durable-mysql = ["durable", "operon-durable/mysql"]
+# The PostgreSQL wire listener over collections (`--pg-listen`).
+pgwire = ["dep:datafusion-postgres", "dep:datafusion"]
 # Builds the multi-process cluster tests (`tests/cluster.rs`, M1.3 Task 11;
 # E43); CI runs them in their own job.
 cluster-tests = []

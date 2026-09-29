@@ -210,6 +210,9 @@ pub struct ServerConfig {
     pub flight_sql: Option<SocketAddr>,
     /// How Flight SQL bounds its statements and its ingest.
     pub flight: FlightConfig,
+    /// PostgreSQL wire listener over collections, when the pgwire feature is on.
+    #[cfg(feature = "pgwire")]
+    pub pg: Option<crate::pg::PgConfig>,
     /// Split merges and Lance compaction (plan M1.3 Tasks 1–2); a source
     /// whose switch (`merge`, `compaction`) is off is not run.
     pub maintenance: MaintenanceConfig,
@@ -274,6 +277,8 @@ impl ServerConfig {
             query: ServiceConfig::default(),
             flight_sql: None,
             flight: FlightConfig::default(),
+            #[cfg(feature = "pgwire")]
+            pg: None,
             cluster: None,
             #[cfg(feature = "qdrant")]
             qdrant: None,
@@ -408,6 +413,12 @@ pub enum ServerError {
     Hot(#[from] operon_hot::TierError),
     #[error("listen on {addr}: {source}")]
     Listen {
+        addr: SocketAddr,
+        source: std::io::Error,
+    },
+    #[cfg(feature = "pgwire")]
+    #[error("postgres listen on {addr}: {source}")]
+    PgListen {
         addr: SocketAddr,
         source: std::io::Error,
     },
@@ -569,6 +580,8 @@ pub struct Server {
     http: JoinHandle<()>,
     stop_http: oneshot::Sender<()>,
     flight: Option<Flight>,
+    #[cfg(feature = "pgwire")]
+    pg: Option<crate::pg::PgHandle>,
     #[cfg(feature = "qdrant")]
     qdrant: Option<Qdrant>,
     /// The embedded durable server (D1).
@@ -645,6 +658,8 @@ struct Assembled {
     hot: Option<HotTierImpl>,
     app: axum::Router,
     flight: Option<Flight>,
+    #[cfg(feature = "pgwire")]
+    pg: Option<crate::pg::PgHandle>,
     #[cfg(feature = "qdrant")]
     qdrant: Option<Qdrant>,
     /// Started by the caller before `assemble` and handed over here (a
@@ -936,6 +951,8 @@ impl Server {
             http,
             stop_http,
             flight: parts.flight,
+            #[cfg(feature = "pgwire")]
+            pg: parts.pg,
             #[cfg(feature = "qdrant")]
             qdrant: parts.qdrant,
             durable,
@@ -1022,6 +1039,8 @@ impl Server {
                     http,
                     stop_http,
                     flight: parts.flight,
+                    #[cfg(feature = "pgwire")]
+                    pg: parts.pg,
                     #[cfg(feature = "qdrant")]
                     qdrant: parts.qdrant,
                     durable: parts.durable,
@@ -1419,6 +1438,29 @@ impl Server {
         if let Some((placement, remote)) = routing {
             collections.set_placement(placement, remote);
         }
+        #[cfg(feature = "pgwire")]
+        let pg = match config.pg.clone().filter(|_| roles.gateway) {
+            Some(pg_config) => match crate::pg::start(collections.clone(), pg_config.clone()).await
+            {
+                Ok(handle) => Some(handle),
+                Err(source) => {
+                    collections.shutdown().await;
+                    if let Some(worker) = worker {
+                        worker.stop().await;
+                    }
+                    if let Some(tier) = &hot {
+                        tier.shutdown().await;
+                    }
+                    collection_factory.close().await;
+                    stop_early(writer, cache).await;
+                    return Err(ServerError::PgListen {
+                        addr: pg_config.listen,
+                        source,
+                    });
+                }
+            },
+            None => None,
+        };
         #[cfg(feature = "qdrant")]
         let qdrant = match qdrant_listeners {
             Some((qdrant, (rest, grpc))) => {
@@ -1489,6 +1531,8 @@ impl Server {
             hot,
             app,
             flight,
+            #[cfg(feature = "pgwire")]
+            pg,
             #[cfg(feature = "qdrant")]
             qdrant,
             durable: Durable::none(),
@@ -1534,6 +1578,12 @@ impl Server {
     /// The address Flight SQL listens on, when it does.
     pub fn flight_sql_addr(&self) -> Option<SocketAddr> {
         self.flight.as_ref().map(|flight| flight.addr)
+    }
+
+    /// The PostgreSQL wire listener, when configured.
+    #[cfg(feature = "pgwire")]
+    pub fn pg_addr(&self) -> Option<SocketAddr> {
+        self.pg.as_ref().map(|pg| pg.addr)
     }
 
     /// The address the durable execution API listens on, when it does (D1,
@@ -1632,6 +1682,10 @@ impl Server {
         shutdown_phase("flight");
         if let Some(flight) = self.flight {
             flight.stop().await;
+        }
+        #[cfg(feature = "pgwire")]
+        if let Some(pg) = self.pg {
+            pg.stop_within(HTTP_GRACE).await;
         }
         // D1 (T0-6, X8): after Flight (and, in cluster mode, after
         // `late.close()`), before the collection service: the runtime first,
