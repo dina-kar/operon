@@ -5823,6 +5823,7 @@ dependencies = [
  "operon-qdrant",
  "operon-query",
  "operon-store",
+ "operon-stream-grpc",
  "operon-tikv",
  "operon-worker",
  "proptest",
@@ -6354,6 +6355,24 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "operon-stream-grpc"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "operon-common",
+ "operon-log",
+ "operon-query",
+ "prost 0.14.4",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tonic 0.14.6",
+ "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]

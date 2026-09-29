@@ -176,8 +176,8 @@ jobs:
       # Owner ruling T7-3: the TiKV metastore is behind operon's `tikv`
       # feature (off by default), so lint that code too, and keep the default
       # build free of the git-pinned tikv-client.
-      - name: clippy (operon with the tikv feature)
-        run: cargo clippy -p operon --all-targets --features tikv,durable-tikv --locked -- -D warnings
+      - name: clippy (operon with the tikv and optional listener features)
+        run: cargo clippy -p operon --all-targets --features tikv,durable-tikv,stream-grpc --locked -- -D warnings
       - name: clippy (operon-durable with the native TiKV store)
         run: cargo clippy -p operon-durable --all-targets --features tikv --locked -- -D warnings
       - name: operon's default build has no tikv-client
@@ -521,7 +521,9 @@ jobs:
       - name: operon-durable tests
         run: cargo test -p operon-durable --locked
       - name: operon durable tests
-        run: cargo test -p operon --features durable --test durable --bin operon --locked
+        # The binary's tests also cover the optional listener flags (the
+        # extra feature reuses this build).
+        run: cargo test -p operon --features durable,stream-grpc --test durable --bin operon --locked
       - name: checker self-test
         run: scripts/durable/conformance.sh --self-test
       - name: linearizability on SQLite (8 clients x 600 ops)
