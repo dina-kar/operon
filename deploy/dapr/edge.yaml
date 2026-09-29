@@ -1,0 +1,117 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: operon-trigger-edge
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: operon-trigger-edge-dapr-guard
+rules:
+  - apiGroups: [dapr.io]
+    resources: [configurations]
+    verbs: [get]
+  - apiGroups: [dapr.io]
+    resources: [components]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: operon-trigger-edge-dapr-guard
+subjects:
+  - kind: ServiceAccount
+    name: operon-trigger-edge
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: operon-trigger-edge-dapr-guard
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: operon-trigger-edge
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: operon-trigger-edge
+  template:
+    metadata:
+      labels:
+        app: operon-trigger-edge
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: operon-trigger-edge
+        dapr.io/app-port: "8080"
+        dapr.io/app-protocol: http
+        dapr.io/config: operon-trigger-edge
+    spec:
+      serviceAccountName: operon-trigger-edge
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+      initContainers:
+        - name: reject-dapr-workflow
+          image: operon-trigger-edge:dev
+          args: [--check-config]
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: DAPR_CONFIG_NAME
+              value: operon-trigger-edge
+      containers:
+        - name: edge
+          image: operon-trigger-edge:dev
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: DAPR_CONFIG_NAME
+              value: operon-trigger-edge
+            - name: DAPR_GRPC_ENDPOINT
+              value: http://127.0.0.1:50001
+            - name: DAPR_GRPC_PROXY_ENDPOINT
+              value: 127.0.0.1:50001
+            - name: OPERON_STREAM_APP_ID
+              value: operon-stream
+            - name: OPERON_TRIGGER_STREAM
+              value: workflow-triggers
+            # The webhook route answers 401 unless this token is set and the
+            # caller sends `Authorization: Bearer <token>`.
+            - name: EDGE_WEBHOOK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: operon-trigger-edge-webhook
+                  key: token
+                  optional: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: operon-trigger-edge
+spec:
+  selector:
+    app: operon-trigger-edge
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

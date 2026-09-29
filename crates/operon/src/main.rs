@@ -225,6 +225,10 @@ struct Native {
     /// Serve no Flight SQL.
     #[arg(long)]
     no_flight_sql: bool,
+    /// Native stream gRPC listener for Dapr protocol adapters (loopback only).
+    #[cfg(feature = "stream-grpc")]
+    #[arg(long)]
+    stream_grpc_listen: Option<SocketAddr>,
     /// Address of the Qdrant REST API [default: 127.0.0.1:6333].
     #[arg(long, conflicts_with = "no_qdrant")]
     qdrant_listen: Option<SocketAddr>,
@@ -451,6 +455,10 @@ impl Native {
         } else {
             Some(self.flight_sql_listen.unwrap_or(default_flight))
         };
+        #[cfg(feature = "stream-grpc")]
+        {
+            config.stream_grpc = self.stream_grpc_listen;
+        }
         self.apply_qdrant(config);
         self.apply_durable(config);
         self.apply_es(config);
@@ -977,6 +985,10 @@ async fn main() -> ExitCode {
     if let Some(addr) = server.flight_sql_addr() {
         println!("operon flight sql listening on grpc://{addr}");
     }
+    #[cfg(feature = "stream-grpc")]
+    if let Some(addr) = server.stream_grpc_addr() {
+        println!("operon stream gRPC listening on grpc://{addr}");
+    }
     shutdown_signal().await;
     tracing::info!("shutting down");
     match server.shutdown().await {
@@ -1052,6 +1064,14 @@ mod tests {
     }
 
     #[cfg(feature = "qdrant")]
+    #[cfg(feature = "stream-grpc")]
+    #[test]
+    fn stream_grpc_flag_sets_the_config() {
+        assert_eq!(dev_config(&[]).stream_grpc, None);
+        let config = dev_config(&["--stream-grpc-listen", "127.0.0.1:8091"]);
+        assert_eq!(config.stream_grpc, Some("127.0.0.1:8091".parse().unwrap()));
+    }
+
     #[test]
     fn qdrant_flags_set_the_config() {
         let qdrant = dev_config(&[]).qdrant.expect("on by default");

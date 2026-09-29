@@ -116,7 +116,7 @@ sha2 = "0.11"
 slatedb = { version = "0.16", default-features = false }
 # The MySQL driver resonate-server-mysql uses (0.8.6, rustls); operon-durable
 # checks a TiDB store's schema with it before serving (D1 Task 4).
-sqlx = { version = "0.8.6", default-features = false }
+sqlx = { version = "0.9.0", default-features = false }
 tantivy = { version = "=0.26.2", default-features = false, features = ["quickwit", "mmap", "stopwords", "stemmer", "lz4-compression", "zstd-compression", "columnar-zstd-compression"] }
 tantivy-fst = "0.5"
 tempfile = "3"
@@ -134,6 +134,7 @@ tikv-client = { git = "https://github.com/dina-kar/client-rust", rev = "1f8962b0
 time = { version = "0.3", features = ["std", "formatting", "parsing", "macros"] }
 time-fmt = "0.3.8"
 tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["net"] }
 tokio-util = { version = "0.7", default-features = false }
 tonic = "0.14"
 tonic-prost = "0.14"
@@ -161,6 +162,7 @@ operon-log = { path = "crates/operon-log", version = "0.0.1" }
 operon-meta = { path = "crates/operon-meta", version = "0.0.1" }
 operon-meta-conformance = { path = "crates/operon-meta-conformance", version = "0.0.1" }
 operon-meta-tikv = { path = "crates/operon-meta-tikv", version = "0.0.1" }
+operon-stream-grpc = { path = "crates/operon-stream-grpc", version = "0.0.1" }
 operon-pk = { path = "crates/operon-pk", version = "0.0.1" }
 operon-qdrant = { path = "crates/operon-qdrant", version = "0.0.1" }
 operon-query = { path = "crates/operon-query", version = "0.0.1" }
