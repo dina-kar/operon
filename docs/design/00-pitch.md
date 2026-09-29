@@ -106,7 +106,7 @@ Primary buyer: platform teams at companies running AI apps at scale who are payi
 
 - **License:** Apache-2.0 for the entire engine, all gateways and the operator. Big-company adoption requires it; AGPL/BSL/SSPL dependencies are excluded (§11).
 - **Governance:** start company-led, plan for a foundation (LF AI & Data — as Vortex did — or CNCF) once there are ≥3 corporate contributors.
-- **Monetization (if a company forms):** managed cloud (the ClickHouse/Confluent model) — multi-region control plane, autoscaling, SSO/audit UI, support. **Do not** withhold reliability (quorum WAL) or performance (hot tiers) features from OSS; that is exactly the AutoMQ/LanceDB gap Operon wins on.
+- **Monetization (if a company forms):** managed cloud (the ClickHouse/Confluent model) — multi-region control plane, autoscaling, hosted audit UI, long retention, SIEM export, SCIM and enforced SSO, support. **Do not** withhold reliability (quorum WAL) or performance (hot tiers) features from OSS; that is exactly the AutoMQ/LanceDB gap Operon wins on.
 
 ## 9. Launch demo
 
