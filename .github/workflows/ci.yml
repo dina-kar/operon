@@ -126,6 +126,7 @@ jobs:
               - "crates/operon-common/**"
               - "crates/operon-live*/**"
               - "crates/operon-durable/**"
+              - "crates/operon-safekeeper/**"
               - "crates/operon/Cargo.toml"
               - "crates/operon/src/server.rs"
               - "crates/operon/src/meta_backend.rs"
@@ -384,6 +385,7 @@ jobs:
           cargo test ${{ steps.packages.outputs.args }} --locked --no-run
           cargo test -p operon --features tikv --test meta_tikv --locked --no-run
           cargo test -p operon-durable --features tikv --lib --test tikv --locked --no-run
+          cargo test -p operon-safekeeper --features tikv --test tikv --locked --no-run
       - uses: actions/cache@v4
         with:
           path: ~/.tiup/components
@@ -402,6 +404,7 @@ jobs:
           cargo test ${{ steps.packages.outputs.args }} --locked
           cargo test -p operon --features tikv --test meta_tikv --locked
           cargo test -p operon-durable --features tikv --lib --test tikv --locked
+          cargo test -p operon-safekeeper --features tikv --test tikv --locked
       - name: playground logs
         if: failure()
         uses: actions/upload-artifact@v4

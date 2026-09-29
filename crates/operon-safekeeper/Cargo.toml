@@ -7,10 +7,18 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+# The TiKV WalStore (the production hot tier). Off by default, so the crate
+# builds without the tikv-client git dependency.
+tikv = ["dep:operon-tikv", "dep:postcard", "dep:futures"]
+
 [dependencies]
 async-trait.workspace = true
 bytes.workspace = true
+futures = { workspace = true, optional = true }
 hex.workspace = true
+operon-tikv = { workspace = true, optional = true }
+postcard = { workspace = true, optional = true }
 serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

@@ -10,6 +10,7 @@
 //!   `safekeeper.rs`.
 //! - [`store`]: the [`WalStore`] trait (the fenced, durable head and WAL
 //!   chunks), the shared state-transition rules, and an in-memory store.
+//! - `tikv` (feature `tikv`): the TiKV store, one 1PC transaction per call.
 //!
 //! Neon's code is Apache-2.0; the ported parts keep its structure and name
 //! their sources.
@@ -17,6 +18,8 @@
 pub mod acceptor;
 pub mod proto;
 pub mod store;
+#[cfg(feature = "tikv")]
+pub mod tikv;
 pub mod types;
 
 pub use acceptor::Acceptor;
