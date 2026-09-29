@@ -260,10 +260,13 @@ append(tl, term, begin_lsn, bytes, commit_lsn):
   txn (optimistic, use_async_commit, try_one_pc):
     head = get(H(tl))                      # fence read
     if head.term != term  -> abort: reply AppendResponse{term: head.term}   # deposed
+    if end_lsn <= head.flush_lsn -> fully covered retry: write no chunk; put the head only if
+                                    commit_lsn grew; reply with the existing flush_lsn
     if head.flush_lsn > begin_lsn -> drop the overlapping prefix (same term: same bytes)
     if head.flush_lsn < begin_lsn -> error (gap), the proposer reconnects
-    put(W(tl, begin_lsn), bytes)           # one key per ≤128 KiB chunk
+    put(W(tl, max(begin_lsn, head.flush_lsn)), remaining bytes)   # one key per ≤128 KiB chunk
     put(H(tl), head{flush_lsn = end_lsn, commit_lsn = max(head.commit_lsn, commit_lsn)})
+                                           # end_lsn > head.flush_lsn here: flush_lsn only advances
   commit (1PC when H and W are in one region, else async commit)
   -> AppendResponse{term, flush_lsn = end_lsn, commit_lsn, …}
 ```
@@ -274,7 +277,7 @@ append(tl, term, begin_lsn, bytes, commit_lsn):
 
   No timing assumption is involved, which a lease-and-wait scheme would need.
 - **A vote** is the same transaction shape: read the head, grant the vote only if `head.term < term`, and write the head with the new term. The term is durable before `VoteResponse`, as in `handle_vote_request`.
-- **`ProposerElected`** truncates by deleting chunk keys above `start_streaming_at` and writing the new term history into the head, in one transaction. Committed WAL is never truncated (`start_streaming_at ≥ commit_lsn` is asserted, as in `handle_elected`).
+- **`ProposerElected`** truncates at `start_streaming_at`, in one transaction. A chunk key covers a range of LSNs, so the chunk that contains `start_streaming_at` is rewritten with only its bytes below that LSN; every chunk starting at or above it is deleted; and the head gets the new term history and `flush_lsn = start_streaming_at`. Committed WAL is never truncated (`start_streaming_at ≥ commit_lsn` is asserted, as in `handle_elected`).
 
 **Why not RawKV.** A RawKV write cannot check another key. The fenced raw scheme is "put the chunk, then CAS the head", which is two sequential Raft writes in atomic-CAS mode. A raw put without the CAS lets a deposed proposer's write be acknowledged. With one acceptor, a deposed compute would then count a commit that the new term truncates: an acknowledged transaction lost. The spike measured the options on one TiKV store (playground v8.5.8, API v2, default configuration, 1 000 sequential operations, two runs):
 
@@ -462,7 +465,7 @@ impl<S: WalStore> WalService<S> {
 | `AcceptorGreeting` `'g'` (A→P) | `node_id`, `mconf`, `term` | From the head: `term`; `node_id` = the pool's logical id |
 | `VoteRequest` `'v'` (P→A) | `generation`, `term` | `WalStore::vote`: one transaction; read the head, write `term` if higher |
 | `VoteResponse` `'v'` (A→P) | `term`, `vote_given`, `flush_lsn`, `truncate_lsn`, `term_history` | From the head after the vote |
-| `ProposerElected` `'e'` (P→A) | `term`, `start_streaming_at`, `term_history` | `WalStore::elected`: check `find_highest_common_point`, delete chunks above `start_streaming_at` (never below `commit_lsn`), write the history, in one transaction |
+| `ProposerElected` `'e'` (P→A) | `term`, `start_streaming_at`, `term_history` | `WalStore::elected`: check `find_highest_common_point`; rewrite the chunk containing `start_streaming_at` to end there and delete later chunks (never below `commit_lsn`); write the history, in one transaction |
 | `AppendRequest` `'a'` (P→A) | `term`, `begin_lsn`, `end_lsn`, `commit_lsn`, `truncate_lsn`, WAL bytes | Queue. The group-commit task takes the queue into one `WalStore::append` (§6.4). An empty request is a heartbeat: it updates `commit_lsn` in the next batch or in a coalesced head write |
 | `AppendResponse` `'a'` (A→P) | `term`, `flush_lsn`, `commit_lsn`, `hs_feedback`, `pageserver_feedback` | Sent after the append transaction commits, and unsolicited when new pageserver feedback arrives (as `network_write` does) |
 | `START_REPLICATION PHYSICAL X/Y` (reader) | Options `protocol = interpreted`, `shard_*`, `availability_zone` | Stream from `WalStore::read` up to `commit_lsn` (interpreted: decode and filter per shard) |
@@ -553,6 +556,7 @@ A summary table goes into the P4c PR description. The run is a manual workflow (
   - PgDog terminates client auth (SCRAM) against `users.toml`. Loam provisions the same role and password into the compute spec, and PgDog uses them for server connections.
   - PgDog's *passthrough* auth forces `auth_method = plain` (docs.pgdog.dev/features/authentication), so it is not used.
   - Credentials come from the auth plan's credential store (Q30).
+  - **TLS on both hops, with peer verification.** Clients reach PgDog only over TLS, with a certificate for PgDog's service name that clients verify (`sslmode=verify-full`); PgDog's non-TLS listener is not exposed. PgDog connects to computes over TLS with full verification of the compute's certificate against the cluster CA, and the compute spec accepts only TLS connections (`hostssl`). Where a service mesh provides mutual TLS between the pods, that satisfies the backend hop instead. Plaintext is refused on both hops.
 - **Pooling mode:** transaction mode by default. Session mode is used for migrations, `LISTEN`/`NOTIFY` and advisory locks. Each database entry sets its own mode.
 - **What PgDog cannot do:** it cannot wake a stopped compute, so there is no scale-to-zero. Scale-to-zero needs Neon's proxy and the `wake_compute` API (§5.2, Q113).
 

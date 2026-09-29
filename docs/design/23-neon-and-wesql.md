@@ -2,7 +2,7 @@
 
 Status: **Proposed** · 2026-09-29; **amended the same day by [§28 Loam Postgres](28-loam-postgres.md)** (owner decisions D230–D236). D149 (Neon for the showcase apps) and D151 (fork only when needed) are **superseded**: the showcase apps run plain Postgres 17 on CloudNativePG (D230), and Neon is forked now as `dina-kar/neon`, with Loam's control plane as its primary control plane (D231, D232). D150 and D153 are **amended**: Loam serves the control-plane API, and PgDog, not Loam's pg listener, routes Postgres OLTP connections (D236). Q45–Q48 are answered and Q49's syntax is settled there. The rest of this document stands; where the two disagree, §28 wins.
 
-This document comes from a conversation with the owner about running **Neon** (serverless Postgres whose storage lives on object storage) and **WeSQL** (MySQL whose storage lives on object storage) next to Loam. Two points were settled in that conversation: neither engine is linked into the Loam binary, and both run unmodified as sidecar services on the same RustFS store while Loam integrates with them from the outside. Everything else here is a **proposal**, decisions **D148–D157** and open questions **Q45–Q51**. D149 in particular **amends D-SC-12 and D-SC-16** and needs the owner's confirmation. It is not decided.
+This document comes from a conversation with the owner about running **Neon** (serverless Postgres whose storage lives on object storage) and **WeSQL** (MySQL whose storage lives on object storage) next to Loam. Two points were settled in that conversation: neither engine is linked into the Loam binary, and both run unmodified as sidecar services on the same RustFS store while Loam integrates with them from the outside. Everything else here is a **proposal**, decisions **D148–D157** and open questions **Q45–Q51**. D149 proposed amending D-SC-12 and D-SC-16; the owner **declined** it on 2026-09-29, and **D230 supersedes it**: the showcase apps run plain Postgres on CloudNativePG, not Neon. The other decisions stay proposals, except where §28 amends them.
 
 The spike of 2026-09-29 (§9) ran both engines on RustFS. Neon worked: psql, a branch created through the pageserver API, isolation between branches, pgoutput logical replication, OpenFGA and GlitchTip migrations, and recovery after the pageserver's disk was wiped. WeSQL ran basic SQL, but Forgejo's migrations failed on foreign keys, and commits made after the last snapshot were lost when the container was replaced without its local volume. The spike also found that **Neon's public repository has been nearly dormant since August 2025** (§4.1). That fact shapes D151.
 
@@ -177,13 +177,14 @@ Writes are compare-and-set on the version, like pointers (§20 §11.2). Secrets 
 
 > **Amended 2026-09-29** by D236 ([§28](28-loam-postgres.md) §8): for Postgres OLTP, PgDog (unmodified, AGPL-3.0, a separate service) routes by database name (`<db>`, `<db>__<branch>`), with config rendered by Loam's control plane. The pg listener keeps analytics (PG1). The MySQL half below is unchanged.
 
-**Postgres.** The client sends the `StartupMessage` (or `SSLRequest` first) before the server says anything, and its `database` parameter names the target. The pg listener (PG1, `crates/operon/src/pg/`) peeks at it before handing the socket to `pgwire`:
+**Postgres.** Postgres OLTP connections go to **PgDog**, not to Loam's pg listener (D236, §28 §8). Loam does not peek or splice:
 
-- If `database` has an `x/` record, Loam connects to the branch's compute (the branch is chosen by an `options=-c loam.branch=<name>` startup parameter, or by a `<db>@<branch>` database name, Q49), replays the startup packet and splices bytes both ways. Loam does not parse the session after that. SCRAM runs end to end between the client and the compute, with roles provisioned by Loam in the compute spec.
-- Any other name goes to Loam's analytics exactly as PG1 plans (Ruling 1: the database is the namespace).
-- TLS: Loam terminates it and connects to the compute over TLS that verifies the compute's identity (or an equivalent protected channel, such as mesh mTLS); backend traffic never crosses the cluster network in plaintext. SNI-based routing (as in Neon's proxy) is not needed, because the database name is visible after TLS termination.
-- The listener stays loopback-only until the unified auth plan (D111, Q30). Routing inherits that.
-- **Authorization before routing.** Because SCRAM passes through to the compute, Loam does not see the client's credentials. Before the listener leaves loopback, Loam must authenticate the principal itself and check it against the branch record's `owner` and the namespace's grants, for both `loam.branch` and `<db>@<branch>`; an unauthorized request is refused before Loam opens the compute connection or splices a byte. How the principal is presented on the pg wire is part of Q49.
+- **Config from records.** Loam's control plane renders `pgdog.toml` and `users.toml` from the `x/` and `X/` records: one `[[databases]]` entry per mapped database, named `<db>` for `main` and `<db>__<branch>` for each branch (Q49's syntax; the `options` form is unsupported), pointing at that branch's compute. It writes them to a ConfigMap and a Secret and sends `RELOAD` to PgDog's admin database after every record change, so a new or deleted branch takes effect without restarting PgDog.
+- **Unmapped names** have no PgDog entry. Loam's analytics stays on the pg listener exactly as PG1 plans (Ruling 1: the database is the namespace).
+- **Auth.** PgDog terminates SCRAM against `users.toml`; Loam provisions the same role into the compute spec, and PgDog uses it for server connections.
+- **Authorization before routing.** Loam renders a role into `users.toml` only for the databases its grants allow (the branch record's `owner` and the namespace's grants), so PgDog refuses an unauthorized database name before it opens a compute connection.
+- **TLS** on both hops, with peer verification (§28 §8): clients connect to PgDog over TLS, and PgDog connects to computes over TLS that verifies the compute's identity (or an equivalent protected channel, such as mesh mTLS). Neither hop carries plaintext on the cluster network.
+- PgDog stays reachable only inside the cluster (or on loopback in dev) until the unified auth plan (D111, Q30).
 
 **MySQL.** The server speaks first, and the database arrives in the client's `HandshakeResponse`, authenticated against a scramble from the server's greeting. Loam therefore cannot splice before authentication. It completes the handshake itself (`caching_sha2_password` or `mysql_native_password`, with credentials from the auth plan), opens its own connection to WeSQL with a stored credential and the requested schema, over TLS that verifies WeSQL's identity (the stored credential never crosses a plaintext connection), and then splices. `COM_CHANGE_USER` and `COM_INIT_DB` to another database are refused. This is N6. The simpler fallback is a dedicated port per WeSQL instance.
 
@@ -275,23 +276,23 @@ Rootless Podman 5 with docker-compose v5.2.0, RustFS 1.0.0, `neon:latest` and `c
 
 - **N1:** unit tests against recorded pageserver responses, and an ignored-by-default integration test against `deploy/neon/` (tenant, timeline, branch, compute, `SELECT 1`, teardown).
 - **N2:** records through the metastore conformance suite's CAS and absence cases, plus a TiKV playground test.
-- **N3:** socket-level tests with `tokio-postgres`: a mapped database reaches the compute (`SELECT current_setting('neon.timeline_id')`); an unmapped one reaches Loam's analytics; SCRAM passes through; a non-loopback bind is refused.
+- **N3 (§28's P3):** rendering tests from records to `pgdog.toml` and `users.toml` (golden files); then `tokio-postgres` through PgDog: `<db>` and `<db>__<branch>` reach the right compute (`SELECT current_setting('neon.timeline_id')`); a branch created or deleted after `RELOAD` appears or disappears without dropping other databases' connections; a role not granted a database is refused; plaintext is refused on both hops; an unmapped name stays on Loam's analytics listener.
 - **N4:** exactly-once under fault injection (kill the bridge between append and confirm; replace the compute mid-stream; drop the connection), checking that the collection equals the table.
 - **N5:** saga crash tests at every step boundary; compensation leaves no timeline or compute behind; a promotion is refused when `main` has diverged.
 - **N6:** WeSQL through the MySQL listener, and the binlog bridge under the same fault set as N4. Blocked on Q50.
-- **Suite gate (in the Commons project):** OpenFGA's Postgres datastore tests and GlitchTip's test suite against Neon through Loam's listener, then Keycloak and Plane.
+- **Suite gate (in the Commons project):** OpenFGA's Postgres datastore tests and GlitchTip's test suite against Neon through PgDog, then Keycloak and Plane.
 
 ## 11. Roadmap: track N (D157)
 
 > **Amended 2026-09-29** ([§28](28-loam-postgres.md) §11): N1 and N2 become inputs to §28's P2b (the Loam control plane), and N3's Postgres routing becomes P3 (PgDog). N4 and N5 run on Loam Postgres; N4 also runs against CloudNativePG. N6 is unchanged.
 
-Each PR is small, stacked and behind the `neon` feature, and changes no default code path. Track N starts after PG1's read-only half (Tasks 0–5), which provides the listener that N3 extends. N1 and N2 can land earlier.
+Each PR is small, stacked and behind the `neon` feature, and changes no default code path. N3 no longer extends PG1's listener (D236), so it depends only on N1 and N2. N6's MySQL routing still extends the MySQL listener.
 
 | PR | Scope | Depends on | Done when |
 |---|---|---|---|
 | **N1** | `operon-neon`: `NeonClient`, `ComputeSpec`, `ComputeRuntime` with the Podman/Compose runtime; `deploy/neon/` used by its integration test | — | Integration test green against `deploy/neon/`; `cargo deny` clean |
 | **N2** | Metastore records `x/`, `X/`, `b/` in `operon-meta-tikv`, with a typed API | N1 (types only) | Conformance CAS tests; TiKV playground test |
-| **N3** | pg listener routing by database name: peek the startup packet, splice to the compute, keep Loam analytics for unmapped names; the branch selector (Q49) | PG1 Tasks 0–5, N1, N2 | §10 N3 tests; loopback only |
+| **N3** | PgDog routing by database name (§28 P3): render `pgdog.toml`/`users.toml` from the `x/` and `X/` records, `RELOAD` after each change, `<db>__<branch>` names (Q49) | N1, N2 | §10 N3 tests; in-cluster only |
 | **N4** | The logical-replication bridge: slot and publication management, pgoutput decode (`supabase/etl` or in-tree), mapping to `DocOp`s, idempotent producer, confirm after append, lag alarms, resync | N2, D72 (idempotent producers), M1.5 Task 9a (filter deletes) | §10 N4 fault tests exact |
 | **N5** | Branch-per-workspace saga on Loam Durable: fork, start, record, compensate, keep, discard or promote; TTL GC schedule | N1–N3, D1 (Loam Durable) | §10 N5 crash tests |
 | **N6** | WeSQL: `deploy/wesql/` hardened, MySQL listener routing (terminating), binlog bridge | Q50 and Q51 answered; the MySQL listener merged | §10 N6 |
