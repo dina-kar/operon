@@ -152,6 +152,7 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zstd = "0.13"
 operon-cache = { path = "crates/operon-cache", version = "0.0.1" }
 operon-collection = { path = "crates/operon-collection", version = "0.0.1" }
+operon-cloudevents = { path = "crates/operon-cloudevents", version = "0.0.1" }
 operon-common = { path = "crates/operon-common", version = "0.0.1" }
 operon-durable = { path = "crates/operon-durable", version = "0.0.1" }
 operon-es = { path = "crates/operon-es", version = "0.0.1" }
