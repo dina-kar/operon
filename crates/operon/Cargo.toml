@@ -34,6 +34,7 @@ operon-meta-tikv = { workspace = true, optional = true }
 operon-qdrant = { workspace = true, optional = true }
 operon-query.workspace = true
 operon-store.workspace = true
+operon-stream-grpc = { workspace = true, optional = true }
 operon-tikv = { workspace = true, optional = true }
 operon-worker.workspace = true
 reqwest.workspace = true
@@ -71,6 +72,8 @@ hnsw = ["operon-hot/hnsw"]
 durable = ["dep:operon-durable"]
 # The TiDB durable store through Resonate's MySQL plugin (D1 Task 4).
 durable-mysql = ["durable", "operon-durable/mysql"]
+# The native stream gRPC endpoint used by Dapr protocol adapters.
+stream-grpc = ["dep:operon-stream-grpc"]
 # Builds the multi-process cluster tests (`tests/cluster.rs`, M1.3 Task 11;
 # E43); CI runs them in their own job.
 cluster-tests = []
