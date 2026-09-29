@@ -100,8 +100,16 @@ pub async fn serve(
         .await
 }
 
-/// Bind the requested address for an independently deployed stream service.
+/// Binds the stream listener. It has no authentication yet, so only
+/// loopback addresses are served (D111): an adapter reaches it through a
+/// sidecar in the same pod, such as Dapr's gRPC service invocation.
 pub async fn bind(addr: SocketAddr) -> std::io::Result<TcpListener> {
+    if !addr.ip().is_loopback() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "only loopback addresses are served until the unified auth plan (D111)",
+        ));
+    }
     TcpListener::bind(addr).await
 }
 
@@ -176,6 +184,12 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[tokio::test]
+    async fn listener_refuses_non_loopback() {
+        let err = bind("0.0.0.0:0".parse().unwrap()).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
     }
 
     #[tokio::test]

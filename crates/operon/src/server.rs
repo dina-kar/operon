@@ -1305,8 +1305,11 @@ impl Server {
         };
         #[cfg(feature = "stream-grpc")]
         let stream_grpc_listener = match config.stream_grpc.filter(|_| roles.gateway) {
-            Some(addr) => match tokio::net::TcpListener::bind(addr).await {
-                Ok(listener) => Some((listener, addr)),
+            Some(addr) => match operon_stream_grpc::bind(addr)
+                .await
+                .and_then(|listener| listener.local_addr().map(|bound| (listener, bound)))
+            {
+                Ok(bound) => Some(bound),
                 Err(source) => {
                     if let Err(err) = cache.close().await {
                         tracing::warn!(%err, "closing the cache after a failed start");

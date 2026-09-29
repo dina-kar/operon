@@ -225,7 +225,7 @@ struct Native {
     /// Serve no Flight SQL.
     #[arg(long)]
     no_flight_sql: bool,
-    /// Native stream gRPC listener for Dapr protocol adapters.
+    /// Native stream gRPC listener for Dapr protocol adapters (loopback only).
     #[cfg(feature = "stream-grpc")]
     #[arg(long)]
     stream_grpc_listen: Option<SocketAddr>,
