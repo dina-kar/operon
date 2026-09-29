@@ -2,8 +2,8 @@ use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State},
-    http::StatusCode,
+    extract::{ConnectInfo, DefaultBodyLimit, Path, State},
+    http::{HeaderMap, StatusCode, header::AUTHORIZATION},
     routing::{get, post},
 };
 use serde_json::{Value, json};
@@ -21,6 +21,26 @@ struct AppState {
     namespace: String,
     trigger_stream: String,
     grpc_endpoint: String,
+    /// SHA-256 of the webhook bearer token; the webhook route is off without it.
+    webhook_token: Option<[u8; 32]>,
+}
+
+fn digest(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
+}
+
+/// Whether the webhook request carries the configured bearer token. The
+/// digests are compared, so the comparison time does not depend on how much
+/// of the token matches.
+fn webhook_authorized(state: &AppState, headers: &HeaderMap) -> bool {
+    let Some(expected) = state.webhook_token else {
+        return false;
+    };
+    headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|token| digest(token.as_bytes()) == expected)
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -47,6 +67,17 @@ async fn kube_get(path: &str) -> Result<Value, Box<dyn std::error::Error>> {
         .await?)
 }
 
+/// Every Workflow API version a supported Dapr runtime serves (the alpha and
+/// beta HTTP names of Dapr 1.10-1.14 and the stable ones of 1.15+). Each must
+/// be denied, so an older runtime cannot keep a Workflow endpoint open.
+const WORKFLOW_APIS: [(&str, &str); 5] = [
+    ("v1.0", "http"),
+    ("v1.0-beta1", "http"),
+    ("v1.0-alpha1", "http"),
+    ("v1", "grpc"),
+    ("v1alpha1", "grpc"),
+];
+
 async fn guard_workflow() -> Result<(), Box<dyn std::error::Error>> {
     if env_or("DAPR_WORKFLOW_ENABLED", "false") != "false" {
         return Err("Dapr Workflow must remain disabled; Resonate owns durable execution".into());
@@ -63,7 +94,7 @@ async fn guard_workflow() -> Result<(), Box<dyn std::error::Error>> {
     let denied = config["spec"]["api"]["denied"]
         .as_array()
         .ok_or("Dapr Configuration has no API denylist")?;
-    for (version, protocol) in [("v1.0", "http"), ("v1", "grpc")] {
+    for (version, protocol) in WORKFLOW_APIS {
         if !denied.iter().any(|item| {
             item["name"] == "workflows"
                 && item["version"] == version
@@ -174,7 +205,9 @@ async fn health() -> Json<Value> {
 
 async fn event(
     Path(source): Path<String>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(message): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
     if !matches!(source.as_str(), "kafka" | "agent" | "webhook") {
@@ -184,6 +217,20 @@ async fn event(
         );
     }
     let is_pubsub = source != "webhook";
+    // Pub/sub deliveries come from the Dapr sidecar in this pod, over
+    // loopback; the Service can reach only the webhook route.
+    if is_pubsub && !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "pub/sub routes accept only the local Dapr sidecar"})),
+        );
+    }
+    if !is_pubsub && !webhook_authorized(&state, &headers) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "a valid webhook bearer token is required"})),
+        );
+    }
     match deliver(&state, &source, &message).await {
         Ok(_) if is_pubsub => (StatusCode::OK, Json(json!({"status": "SUCCESS"}))),
         Ok(value) => (StatusCode::ACCEPTED, Json(value)),
@@ -223,6 +270,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         namespace: env_or("OPERON_NAMESPACE", "default"),
         trigger_stream: env_or("OPERON_TRIGGER_STREAM", "workflow-triggers"),
         grpc_endpoint: env_or("DAPR_GRPC_PROXY_ENDPOINT", "127.0.0.1:50001"),
+        webhook_token: env::var("EDGE_WEBHOOK_TOKEN")
+            .ok()
+            .filter(|token| !token.is_empty())
+            .map(|token| digest(token.as_bytes())),
     });
     let app = Router::new()
         .route("/healthz", get(health))
@@ -230,6 +281,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .with_state(state);
     let addr: SocketAddr = env_or("EDGE_LISTEN", "0.0.0.0:8080").parse()?;
-    axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
+    axum::serve(
+        tokio::net::TcpListener::bind(addr).await?,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }

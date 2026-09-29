@@ -7,9 +7,20 @@ spec:
     samplingRate: "1"
   api:
     denied:
+      # Every Workflow API version: stable (Dapr 1.15+), and the beta and
+      # alpha names older runtimes serve. The edge's guard requires all five.
       - name: workflows
         version: v1.0
         protocol: http
       - name: workflows
+        version: v1.0-beta1
+        protocol: http
+      - name: workflows
+        version: v1.0-alpha1
+        protocol: http
+      - name: workflows
         version: v1
+        protocol: grpc
+      - name: workflows
+        version: v1alpha1
         protocol: grpc

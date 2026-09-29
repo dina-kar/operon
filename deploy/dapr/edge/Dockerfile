@@ -11,4 +11,5 @@ RUN cargo build --release --locked --manifest-path deploy/dapr/edge/Cargo.toml
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/deploy/dapr/edge/target/release/operon-trigger-edge /usr/local/bin/operon-trigger-edge
+USER 65532:65532
 ENTRYPOINT ["operon-trigger-edge"]

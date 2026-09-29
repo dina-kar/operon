@@ -48,6 +48,10 @@ spec:
         dapr.io/config: operon-no-workflow
     spec:
       serviceAccountName: operon-trigger-edge
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
       initContainers:
         - name: reject-dapr-workflow
           image: operon-trigger-edge:dev
@@ -80,6 +84,14 @@ spec:
               value: operon-stream
             - name: OPERON_TRIGGER_STREAM
               value: workflow-triggers
+            # The webhook route answers 401 unless this token is set and the
+            # caller sends `Authorization: Bearer <token>`.
+            - name: EDGE_WEBHOOK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: operon-trigger-edge-webhook
+                  key: token
+                  optional: true
           readinessProbe:
             httpGet:
               path: /healthz

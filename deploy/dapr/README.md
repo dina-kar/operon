@@ -13,7 +13,14 @@ the dev process has a fixed node ID. A production multi-replica layout needs
 `operon cluster` peers and object storage configuration.
 The adapter is Rust and depends on `dapr` with default features disabled;
 the default-enabled Dapr Workflow SDK feature is therefore absent. The
-webhook endpoint is `POST /events/webhook` on the edge Service. Dapr's
+webhook endpoint is `POST /events/webhook` on the edge Service. It answers
+401 unless the `operon-trigger-edge-webhook` Secret (key `token`) is set and
+the caller sends `Authorization: Bearer <token>`. The pub/sub routes
+(`/events/kafka`, `/events/agent`) accept only the pod's own Dapr sidecar,
+over loopback; add a NetworkPolicy if other workloads must not reach the
+edge Service at all. Use Dapr 1.15 or later: the Configuration denies every
+Workflow API version (stable, beta and alpha), and the guard checks all of
+them. Dapr's
 HTTP binding is output-only, so inbound webhooks enter this app's HTTP
 listener; its call to `operon-stream` uses Dapr's gRPC proxy.
 
