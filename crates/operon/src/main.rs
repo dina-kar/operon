@@ -225,7 +225,7 @@ struct Native {
     /// Serve no Flight SQL.
     #[arg(long)]
     no_flight_sql: bool,
-    /// Native stream gRPC listener for Dapr protocol adapters.
+    /// Native stream gRPC listener for Dapr protocol adapters (loopback only).
     #[cfg(feature = "stream-grpc")]
     #[arg(long)]
     stream_grpc_listen: Option<SocketAddr>,
@@ -288,9 +288,8 @@ struct Native {
     /// Serve no durable execution API.
     #[arg(long)]
     no_durable: bool,
-    /// Where durable state lives: sqlite:<path> or mysql://… [default for
-    /// dev and standalone: sqlite:<data-dir>/durable/default.db; cluster
-    /// has no default and needs mysql://…].
+    /// Where durable state lives: sqlite:<path>, tikv://<pd-hosts>/<keyspace>,
+    /// or legacy mysql://…. Cluster mode needs a shared store.
     #[arg(long, value_parser = DurableStoreParser, conflicts_with = "no_durable")]
     durable_store: Option<DurableStoreArg>,
     /// Deliver durable tasks to http:// and https:// targets (a server-side
@@ -311,12 +310,17 @@ struct Native {
     durable_debug: bool,
 }
 
-/// `--durable-store`: `sqlite:<path>` or `mysql://…`. With the feature a
+/// `--durable-store`: `sqlite:<path>`, `tikv://<pd-hosts>/<keyspace>`, or
+/// `mysql://…`. With the feature a
 /// MySQL store is parsed (its TLS mode read) at once; without it the URL is
 /// only kept. `Debug` never shows a password (D1 Task 4).
 #[derive(Clone, PartialEq, Eq)]
 enum DurableStoreArg {
     Sqlite(PathBuf),
+    #[cfg(feature = "durable")]
+    Tikv(operon_durable::DurableStore),
+    #[cfg(not(feature = "durable"))]
+    Tikv(String),
     #[cfg(feature = "durable")]
     Mysql(operon_durable::DurableStore),
     #[cfg(not(feature = "durable"))]
@@ -327,6 +331,7 @@ impl std::fmt::Debug for DurableStoreArg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Sqlite(path) => f.debug_tuple("Sqlite").field(path).finish(),
+            Self::Tikv(store) => f.debug_tuple("Tikv").field(store).finish(),
             #[cfg(feature = "durable")]
             Self::Mysql(store) => f.debug_tuple("Mysql").field(store).finish(),
             // Without the feature the URL is never used: show only its host.
@@ -359,7 +364,25 @@ fn parse_durable_store(text: &str) -> Result<DurableStoreArg, String> {
         #[cfg(not(feature = "durable"))]
         return Ok(DurableStoreArg::Mysql(text.to_string()));
     }
-    Err("expected sqlite:<path> or mysql://…".into())
+    if let Some(address) = text.strip_prefix("tikv://") {
+        let (hosts, keyspace) = address.split_once('/').ok_or_else(|| {
+            "tikv:// needs PD hosts and a keyspace, as in tikv://127.0.0.1:2379/loam_durable"
+                .to_string()
+        })?;
+        let pd: Vec<String> = hosts.split(',').map(str::to_string).collect();
+        #[cfg(feature = "durable")]
+        return operon_durable::DurableStore::tikv(pd, keyspace)
+            .map(DurableStoreArg::Tikv)
+            .map_err(|err| err.to_string());
+        #[cfg(not(feature = "durable"))]
+        {
+            if pd.is_empty() || pd.iter().any(|host| host.is_empty()) || keyspace.is_empty() {
+                return Err("tikv:// needs nonempty PD hosts and a keyspace".into());
+            }
+            return Ok(DurableStoreArg::Tikv(address.to_string()));
+        }
+    }
+    Err("expected sqlite:<path>, tikv://<pd-hosts>/<keyspace>, or mysql://…".into())
 }
 
 /// `--durable-store`'s value parser. A plain `fn` parser's error would quote
@@ -396,6 +419,7 @@ impl DurableStoreArg {
     fn to_store(&self) -> operon_durable::DurableStore {
         match self {
             Self::Sqlite(path) => operon_durable::DurableStore::Sqlite { path: path.clone() },
+            Self::Tikv(store) => store.clone(),
             Self::Mysql(store) => store.clone(),
         }
     }
@@ -516,7 +540,7 @@ impl Native {
                 if self.any_durable_flag() {
                     tracing::warn!(
                         "the --durable-* flags are ignored: operon cluster serves durable \
-                         execution only with --durable-store mysql://…"
+                         execution only with --durable-store tikv://… or mysql://…"
                     );
                 }
                 config.durable = None;
@@ -1040,6 +1064,14 @@ mod tests {
     }
 
     #[cfg(feature = "qdrant")]
+    #[cfg(feature = "stream-grpc")]
+    #[test]
+    fn stream_grpc_flag_sets_the_config() {
+        assert_eq!(dev_config(&[]).stream_grpc, None);
+        let config = dev_config(&["--stream-grpc-listen", "127.0.0.1:8091"]);
+        assert_eq!(config.stream_grpc, Some("127.0.0.1:8091".parse().unwrap()));
+    }
+
     #[test]
     fn qdrant_flags_set_the_config() {
         let qdrant = dev_config(&[]).qdrant.expect("on by default");
@@ -1480,6 +1512,13 @@ mod tests {
             parse_durable_store("mysql://root@127.0.0.1:4000/loam_durable_default"),
             Ok(DurableStoreArg::Mysql(_))
         ));
+        assert!(matches!(
+            parse_durable_store("tikv://127.0.0.1:2379,127.0.0.1:2381/loam_durable"),
+            Ok(DurableStoreArg::Tikv(_))
+        ));
+        assert!(parse_durable_store("tikv://127.0.0.1:2379").is_err());
+        assert!(parse_durable_store("tikv://127.0.0.1:2379/").is_err());
+        assert!(parse_durable_store("tikv://127.0.0.1:2379,/loam_durable").is_err());
         assert!(parse_durable_store("sqlite:").is_err());
         assert!(parse_durable_store("postgres://x").is_err());
         assert_eq!(parse_key_value("a.b=c=d"), Ok(("a.b".into(), "c=d".into())));

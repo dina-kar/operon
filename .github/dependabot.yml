@@ -1,0 +1,45 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ["area/ci", "status/needs-triage"]
+    commit-message:
+      prefix: "deps"
+    groups:
+      # Patch and minor bumps land together each week.
+      cargo-minor-and-patch:
+        update-types: ["minor", "patch"]
+      # These move in lockstep (Lance pins DataFusion and Arrow), so a major
+      # bump of one needs the others; review them as one PR.
+      data-stack:
+        patterns:
+          - "arrow*"
+          - "datafusion*"
+          - "lance*"
+          - "parquet"
+        update-types: ["major"]
+    ignore:
+      # Git-pinned forks: bumped by hand with the fork (see Cargo.toml and NOTICE).
+      - dependency-name: "resonate-*"
+      - dependency-name: "tikv-client"
+      # Pinned with `=` on purpose; bumped by hand with the matching tests.
+      - dependency-name: "tantivy"
+      - dependency-name: "qdrant-edge"
+      - dependency-name: "openraft"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ["area/ci", "status/needs-triage"]
+    commit-message:
+      prefix: "ci"
+    groups:
+      github-actions:
+        patterns: ["*"]

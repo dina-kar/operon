@@ -1,8 +1,55 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 language: en-US
+tone_instructions: "Be direct and specific. Prefer one concrete suggestion over several vague ones. Skip praise."
+early_access: false
 reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: true
+  sequence_diagrams: false
   auto_review:
     enabled: true
-    # Review stacked PRs too: their base is another plan branch, not the default branch.
+    drafts: false
+    # Review stacked PRs too: their base is another branch, not the default branch.
     base_branches:
       - ".*"
+  path_filters:
+    - "!Cargo.lock"
+    - "!**/pnpm-lock.yaml"
+    - "!web/apps/console/src/api/schema.d.ts"
+    - "!crates/operon-quickwit/src/**"
+  path_instructions:
+    - path: "crates/**/*.rs"
+      instructions: |
+        Rust engine code. Check correctness first: error handling (no unwrap or expect outside tests without a comment
+        saying why it cannot fail), cancellation and lock safety across .await, bounded memory and retries, and that
+        object-storage and metastore writes stay fenced and idempotent. New behavior needs tests; storage, log and
+        metastore changes need simulation or fault-injection coverage. Public items need doc comments. Flag new
+        dependencies whose license is not Apache-2.0 compatible (see deny.toml). Do not ask to rename operon-* crates;
+        the rename is planned separately.
+    - path: "crates/*/Cargo.toml"
+      instructions: |
+        Check that new dependencies use workspace versions where one exists, that optional dependencies sit behind a
+        feature, and that heavy or git-pinned dependencies are not added to default features.
+    - path: "docs/**/*.md"
+      instructions: |
+        Design and planning docs. Check internal consistency with the rest of docs/design (decision numbers, section
+        references, links), factual claims about third-party projects and their licenses, and clear plain English.
+        Do not ask for code changes in a docs-only PR.
+    - path: "*.md"
+      instructions: |
+        Top-level project docs read by newcomers. Check that commands, flags and paths match the repository, that
+        links are relative where possible, and that statuses are not overstated.
+    - path: ".github/**"
+      instructions: |
+        CI and repository automation. Check that workflows keep least-privilege permissions, pin third-party actions,
+        and that path filters still match the paths they intend to. Issue forms must be valid GitHub issue-form YAML.
+    - path: "web/**"
+      instructions: |
+        The TypeScript console and design system. Check accessibility, that API types come from the generated schema,
+        and that no secrets or environment-specific URLs are committed.
+chat:
+  auto_reply: true

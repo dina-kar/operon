@@ -72,6 +72,8 @@ hnsw = ["operon-hot/hnsw"]
 durable = ["dep:operon-durable"]
 # The TiDB durable store through Resonate's MySQL plugin (D1 Task 4).
 durable-mysql = ["durable", "operon-durable/mysql"]
+# The native TiKV durable store (`--durable-store tikv://…`).
+durable-tikv = ["durable", "operon-durable/tikv"]
 # The native stream gRPC endpoint used by Dapr protocol adapters.
 stream-grpc = ["dep:operon-stream-grpc"]
 # Builds the multi-process cluster tests (`tests/cluster.rs`, M1.3 Task 11;
