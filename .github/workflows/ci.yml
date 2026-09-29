@@ -53,6 +53,7 @@ jobs:
       deny: ${{ steps.filter.outputs.deny }}
       protos: ${{ steps.filter.outputs.protos }}
       web: ${{ steps.filter.outputs.web }}
+      dapr-edge: ${{ steps.filter.outputs.dapr-edge }}
     steps:
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
@@ -159,6 +160,13 @@ jobs:
               - ".github/workflows/**"
               - "web/**"
               - "api/**"
+            # deploy/dapr/edge is its own crate and lock, outside the
+            # workspace; it compiles operon-stream-grpc's stream.proto.
+            dapr-edge:
+              - ".github/workflows/**"
+              - "rust-toolchain*"
+              - "deploy/dapr/**"
+              - "crates/operon-stream-grpc/proto/**"
 
   check:
     name: fmt, clippy, test
@@ -676,3 +684,30 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm build
+
+  # The Dapr trigger edge (deploy/dapr/edge): a standalone crate with its own
+  # Cargo.lock, so the workspace jobs never build it.
+  dapr-edge:
+    name: Dapr trigger edge
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.dapr-edge == 'true') }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/dapr/edge
+    steps:
+      - uses: actions/checkout@v7
+      - name: protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: deploy/dapr/edge -> target
+      - name: rustfmt
+        run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: test
+        run: cargo test --locked
+      - name: the manifests render
+        working-directory: .
+        run: kubectl kustomize deploy/dapr > /dev/null
