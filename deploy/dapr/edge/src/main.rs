@@ -20,7 +20,9 @@ struct AppState {
     stream_app_id: String,
     namespace: String,
     trigger_stream: String,
-    grpc_endpoint: String,
+    /// One lazily connected channel to the Dapr gRPC proxy, shared by every
+    /// event instead of a new connection per event.
+    stream_client: StreamServiceClient<Channel>,
     /// SHA-256 of the webhook bearer token; the webhook route is off without it.
     webhook_token: Option<[u8; 32]>,
 }
@@ -155,13 +157,7 @@ fn normalize(source: &str, message: &Value) -> Result<(String, Vec<u8>, Vec<u8>)
 
 async fn deliver(state: &AppState, source: &str, message: &Value) -> Result<Value, String> {
     let (invocation_id, event_id, value) = normalize(source, message)?;
-    let endpoint = format!("http://{}", state.grpc_endpoint);
-    let channel = Channel::from_shared(endpoint)
-        .map_err(|error| error.to_string())?
-        .connect()
-        .await
-        .map_err(|error| error.to_string())?;
-    let mut client = StreamServiceClient::new(channel);
+    let mut client = state.stream_client.clone();
     let mut request = Request::new(ProduceRequest {
         namespace: state.namespace.clone(),
         stream: state.trigger_stream.clone(),
@@ -265,11 +261,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // that the local Dapr sidecar is available before the adapter starts.
     let mut dapr = dapr::Client::new().await?;
     dapr.get_metadata().await?;
+    let endpoint = format!(
+        "http://{}",
+        env_or("DAPR_GRPC_PROXY_ENDPOINT", "127.0.0.1:50001")
+    );
+    let channel = Channel::from_shared(endpoint)?.connect_lazy();
     let state = Arc::new(AppState {
         stream_app_id: env_or("OPERON_STREAM_APP_ID", "operon-stream"),
         namespace: env_or("OPERON_NAMESPACE", "default"),
         trigger_stream: env_or("OPERON_TRIGGER_STREAM", "workflow-triggers"),
-        grpc_endpoint: env_or("DAPR_GRPC_PROXY_ENDPOINT", "127.0.0.1:50001"),
+        stream_client: StreamServiceClient::new(channel),
         webhook_token: env::var("EDGE_WEBHOOK_TOKEN")
             .ok()
             .filter(|token| !token.is_empty())
