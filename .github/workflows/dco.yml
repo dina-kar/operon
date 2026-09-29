@@ -1,0 +1,34 @@
+name: DCO
+
+# Deliberately has no path filters, so docs-only PRs are checked too.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  dco:
+    name: DCO sign-off
+    runs-on: ubuntu-latest
+    if: github.actor != 'dependabot[bot]'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Check Signed-off-by trailers
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          status=0
+          # --no-merges skips merge commits.
+          for sha in $(git rev-list --no-merges "$BASE..$HEAD"); do
+            email=$(git log -1 --format='%ae' "$sha")
+            if ! git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$sha" \
+                | grep -qiF "<$email>"; then
+              echo "::error::commit $sha is missing 'Signed-off-by: ... <$email>' (use git commit -s)"
+              status=1
+            fi
+          done
+          exit $status
