@@ -62,6 +62,10 @@ if [ -z "${DOCKER_HOST:-}" ] && [ -S "/run/user/$(id -u)/podman/podman.sock" ]; 
 fi
 COMPOSE=(docker-compose)
 command -v docker-compose >/dev/null || COMPOSE=(docker compose)
+# The container engine for exec/cp/inspect: podman when its socket is in use.
+ENGINE=docker
+case ${DOCKER_HOST:-} in *podman*) ENGINE=podman ;; esac
+command -v "$ENGINE" >/dev/null || ENGINE=podman
 LOAM_WAL=${LOAM_WAL:-$(cargo metadata --format-version 1 --no-deps 2>/dev/null |
   python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/loam-wal}
 PD=127.0.0.1:19379
@@ -133,18 +137,20 @@ curl -sf -X POST -H 'Content-Type: application/json' \
 "${COMPOSE[@]}" up -d compute >/dev/null 2>&1
 container=$("${COMPOSE[@]}" ps -q compute)
 for _ in $(seq 1 90); do
-  podman exec "$container" pg_isready -q -h 127.0.0.1 -p 55433 2>/dev/null && break
+  "$ENGINE" exec "$container" pg_isready -q -h 127.0.0.1 -p 55433 2>/dev/null && break
   sleep 1
 done
+"$ENGINE" exec "$container" pg_isready -q -h 127.0.0.1 -p 55433 ||
+  { echo "run: the compute did not become ready" >&2; exit 1; }
 log "variant=$variant replicas=$replicas tenant=$TENANT_ID timeline=$TIMELINE_ID wal=$SAFEKEEPERS"
 
 # 4. The workloads, in order, on the same compute.
 results=()
 for w in $workloads; do
   log "workload $w (${duration}s after ${warmup}s warm-up)"
-  podman exec "$container" bash /bench/workload.sh "$w" "$duration" "$warmup" "$scale" >&2
+  "$ENGINE" exec "$container" bash /bench/workload.sh "$w" "$duration" "$warmup" "$scale" >&2
   rm -rf "$RUN_DIR/$w"
-  podman cp "$container:/tmp/bench/$w" "$RUN_DIR/$w"
+  "$ENGINE" cp "$container:/tmp/bench/$w" "$RUN_DIR/$w"
   results+=("$(python3 "$ROOT/scripts/loam-pg-bench/stats.py" "$RUN_DIR/$w" "$w")")
   log "${results[-1]}"
 done
@@ -152,7 +158,7 @@ done
 # 5. The result file.
 sha=$(git -C "$ROOT" rev-parse --short HEAD)
 file=$out/$(date -u +%Y%m%dT%H%M%SZ)-$sha-$variant-rf$replicas${label:+-$label}.json
-neon_image=$(podman image inspect --format '{{.Digest}}' "${NEON_REPOSITORY:-ghcr.io/neondatabase}/neon:${NEON_TAG:-latest}" 2>/dev/null || echo unknown)
+neon_image=$("$ENGINE" image inspect --format '{{.Digest}}' "${NEON_REPOSITORY:-ghcr.io/neondatabase}/neon:${NEON_TAG:-latest}" 2>/dev/null || echo unknown)
 disk=$(lsblk -dno MODEL "$(df --output=source "$HOME" | tail -1 | sed 's/p\?[0-9]*$//')" 2>/dev/null | head -1 || echo unknown)
 printf '%s\n' "${results[@]}" | V="$variant" R="$replicas" L="$label" SHA="$sha" \
   DATE="$(date -u +%FT%TZ)" DISK="$disk" IMG="$neon_image" DUR="$duration" WARM="$warmup" \

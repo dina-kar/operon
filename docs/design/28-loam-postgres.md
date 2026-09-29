@@ -530,7 +530,7 @@ Each run lasts 5 minutes after a 1-minute warm-up, with `pgbench -l` per-transac
 
 A summary table goes into the P4c PR description. The run is a manual workflow (`workflow_dispatch`) on a dedicated runner, because shared CI runners are too noisy for p99s. It is also runnable locally. The spike's single-host numbers (§6.1, §6.4) are the first data point, not the gate.
 
-### 7.1 First results: laptop, 2026-09-29 (P4a/P4b)
+### 7.1 First results: laptop, 2026-09-29 (P4a/P4b; not gate data)
 
 **Implemented:** `crates/operon-safekeeper`:
 - the v3 codecs, the acceptor and `WalStore`;
@@ -566,7 +566,9 @@ Means over the three repeats:
 
 rf 1 compares one safekeeper with one TiKV store; rf 3 compares three safekeepers with three stores.
 
-**The gate fails on this hardware, for every workload at both replication factors.** The Loam WAL's p99 is about 1.5–2.6× the safekeepers', and its throughput about 0.2–0.6× (`bench/results/gate-rf*.md`). By D233, the WAL stays behind its feature and P4c does not start.
+**These are not gate results.** They are laptop data points outside the §7 protocol: one host, a consumer disk, 60 s runs instead of 5 minutes, `-s 10`, and no `tpcb-64`. The gate itself needs the §7 topology on a dedicated runner (the manual `loam-pg-bench` workflow).
+
+**On this laptop, the comparison script's criteria fail for every workload at both replication factors.** The Loam WAL's p99 is about 1.5–2.6× the safekeepers', and its throughput about 0.2–0.6× (`bench/results/gate-rf*.md`). This gap is far wider than the noise, so a §7 run is not worth doing until the levers below are in. Meanwhile, D233 applies: the WAL stays behind its feature, and P4c does not start.
 
 **Where the time goes.** TiKV's own metrics, from a `commit-1` run:
 - **Raft log persist dominates:** p50 ≤ 2.6 ms, p99 up to 82 ms. That is the same consumer-SSD fsync the safekeeper pays, but with TiKV's scheduler, apply and 1PC steps added, plus three client RPCs per append: TSO, the fenced head read and the prewrite.

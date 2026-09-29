@@ -38,10 +38,15 @@ jobs:
           echo "$HOME/.tiup/bin" >> "$GITHUB_PATH"
           "$HOME/.tiup/bin/tiup" install playground pd:v8.5.8 tikv:v8.5.8
       - name: gate
+        env:
+          REPLICAS: ${{ inputs.replicas }}
+          REPEATS: ${{ inputs.repeats }}
+          DURATION: ${{ inputs.duration }}
+          WORKLOADS: ${{ inputs.workloads }}
         run: |
-          scripts/loam-pg-bench/gate.sh --replicas "${{ inputs.replicas }}" \
-            --repeats "${{ inputs.repeats }}" --duration "${{ inputs.duration }}" \
-            --warmup 60 --scale 50 --workloads "${{ inputs.workloads }}" --force
+          case "$REPEATS$DURATION" in *[!0-9]*) echo "repeats and duration must be numbers" >&2; exit 2 ;; esac
+          scripts/loam-pg-bench/gate.sh --replicas "$REPLICAS" --repeats "$REPEATS" \
+            --duration "$DURATION" --warmup 60 --scale 50 --workloads "$WORKLOADS" --force
       - name: results
         if: always()
         uses: actions/upload-artifact@v7
@@ -52,4 +57,10 @@ jobs:
         if: always()
         run: |
           scripts/tikv/playground.sh stop --tag loam-bench || true
-          docker compose -f deploy/loam-pg-bench/compose.yaml --profile sk --profile sk3 --profile loam down || true
+          # The same endpoint and compose binary run.sh uses.
+          if [ -z "${DOCKER_HOST:-}" ] && [ -S "/run/user/$(id -u)/podman/podman.sock" ]; then
+            export DOCKER_HOST=unix:///run/user/$(id -u)/podman/podman.sock
+          fi
+          compose=(docker-compose); command -v docker-compose >/dev/null || compose=(docker compose)
+          "${compose[@]}" -f deploy/loam-pg-bench/compose.yaml \
+            --profile sk --profile sk3 --profile loam down -v || true

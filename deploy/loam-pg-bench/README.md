@@ -21,7 +21,8 @@ Derived from [`deploy/neon`](../neon) (Apache-2.0, from `neondatabase/neon` `doc
 | Storage | pageserver, storage broker, RustFS | same |
 | Client | pgbench inside the compute container | same |
 
-`loam-wal` refuses to listen beyond loopback unless it has `--auth-token` (the benchmark uses
+`loam-wal` refuses to listen beyond loopback unless it has `--auth-token` and `--trusted-network`
+(it has no TLS yet, so the token is cleartext; the benchmark uses
 loopback only). Everything uses host networking, so the compute reaches containers and host processes the
 same way.
 

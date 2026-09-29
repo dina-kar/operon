@@ -4,7 +4,7 @@
 //! through `--listen-http` (or let walproposer create them).
 //!
 //! ```text
-//! LOAM_WAL_AUTH_TOKEN=… loam-wal --listen-pg 10.0.0.5:5454 --listen-http 10.0.0.5:7676 \
+//! LOAM_WAL_AUTH_TOKEN=… loam-wal --trusted-network --listen-pg 10.0.0.5:5454 --listen-http 10.0.0.5:7676 \
 //!          --store tikv --pd 127.0.0.1:19379 --keyspace loam_pgwal
 //! ```
 
@@ -62,13 +62,31 @@ struct Args {
     /// listeners are on loopback.
     #[arg(long, env = "LOAM_WAL_AUTH_TOKEN", hide_env_values = true)]
     auth_token: Option<String>,
+    /// Acknowledge that non-loopback listeners are on an encrypted private
+    /// network or tunnel: loam-wal has no TLS yet, and the token travels in
+    /// cleartext on its own connections.
+    #[arg(long)]
+    trusted_network: bool,
 }
 
 async fn run<S: WalStore>(store: Arc<S>, args: &Args) -> Result<(), Box<dyn std::error::Error>> {
-    if args.auth_token.is_none()
-        && !(args.listen_pg.ip().is_loopback() && args.listen_http.ip().is_loopback())
-    {
-        return Err("refusing to listen beyond loopback without --auth-token".into());
+    let loopback = args.listen_pg.ip().is_loopback() && args.listen_http.ip().is_loopback();
+    if !loopback {
+        // The token travels as a cleartext password and bearer token: loam-wal
+        // has no TLS yet, so beyond loopback it must be on a network the
+        // operator vouches for (a private link, WireGuard, a service mesh with
+        // mTLS). Both a token and that explicit acknowledgement are required.
+        if args.auth_token.is_none() {
+            return Err("refusing to listen beyond loopback without --auth-token".into());
+        }
+        if !args.trusted_network {
+            return Err(
+                "refusing to send the auth token in cleartext beyond loopback: loam-wal \
+                        has no TLS yet; pass --trusted-network only on an encrypted private \
+                        network or tunnel"
+                    .into(),
+            );
+        }
     }
     let svc = WalService::new(
         store,

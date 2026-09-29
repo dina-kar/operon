@@ -51,8 +51,15 @@ def main():
     print("|---|---|---|---|---|---|---|")
     for name in base:
         if name not in cand:
+            print(f"| {name} | – | missing | – | – | missing | FAIL |")
+            ok = False
             continue
         b, c = base[name], cand[name]
+        keys = ["wal_mb_per_s"] if name == "bulk" else ["p99_ms", "tps"]
+        if any(w.get(k) is None for w in b + c for k in keys):
+            print(f"| {name} | – | incomplete | – | – | incomplete | FAIL |")
+            ok = False
+            continue
         if name == "bulk":
             bt, ct = mean([w["wal_mb_per_s"] for w in b]), mean([w["wal_mb_per_s"] for w in c])
             nt = spread([w["wal_mb_per_s"] for w in b])
