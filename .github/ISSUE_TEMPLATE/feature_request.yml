@@ -1,0 +1,34 @@
+name: Feature or compatibility request
+description: Propose a feature, or report a missing piece of the Qdrant, Elasticsearch or another API.
+title: "feature: "
+labels: ["kind/feature", "status/needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do, and what stops you today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What should Loam do? An example request and response helps.
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility context
+      description: Which client, framework or API needs this? For example "LangChain ElasticsearchStore sends `_search` with `knn` and `query`".
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I would like to work on this myself.

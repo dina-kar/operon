@@ -125,6 +125,7 @@ jobs:
               - "crates/operon-meta-conformance/**"
               - "crates/operon-common/**"
               - "crates/operon-live*/**"
+              - "crates/operon-durable/**"
               - "crates/operon/Cargo.toml"
               - "crates/operon/src/server.rs"
               - "crates/operon/src/meta_backend.rs"
@@ -176,7 +177,9 @@ jobs:
       # feature (off by default), so lint that code too, and keep the default
       # build free of the git-pinned tikv-client.
       - name: clippy (operon with the tikv feature)
-        run: cargo clippy -p operon --all-targets --features tikv,pgwire --locked -- -D warnings
+        run: cargo clippy -p operon --all-targets --features tikv,durable-tikv,pgwire --locked -- -D warnings
+      - name: clippy (operon-durable with the native TiKV store)
+        run: cargo clippy -p operon-durable --all-targets --features tikv --locked -- -D warnings
       - name: operon's default build has no tikv-client
         run: |
           if cargo tree -p operon -e normal --prefix none --locked | grep -q '^tikv-client v'; then
@@ -380,6 +383,7 @@ jobs:
         run: |
           cargo test ${{ steps.packages.outputs.args }} --locked --no-run
           cargo test -p operon --features tikv --test meta_tikv --locked --no-run
+          cargo test -p operon-durable --features tikv --lib --test tikv --locked --no-run
       - uses: actions/cache@v4
         with:
           path: ~/.tiup/components
@@ -397,6 +401,7 @@ jobs:
         run: |
           cargo test ${{ steps.packages.outputs.args }} --locked
           cargo test -p operon --features tikv --test meta_tikv --locked
+          cargo test -p operon-durable --features tikv --lib --test tikv --locked
       - name: playground logs
         if: failure()
         uses: actions/upload-artifact@v4

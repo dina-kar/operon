@@ -6260,10 +6260,13 @@ name = "operon-durable"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "operon-tikv",
  "resonate-base",
+ "resonate-core",
  "resonate-gateway-http",
  "resonate-plugin",
  "resonate-sdk",
+ "resonate-server-blob",
  "resonate-server-mysql",
  "resonate-server-sqlite",
  "resonate-transport-http-poll",
@@ -6277,6 +6280,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -6610,7 +6614,7 @@ dependencies = [
  "futures",
  "hex",
  "humantime",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "postcard",
  "proptest",
  "rand 0.9.5",
@@ -8323,6 +8327,27 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "resonate-server-blob"
+version = "0.10.1"
+source = "git+https://github.com/dina-kar/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "cron",
+ "fastrand",
+ "futures",
+ "lazy_static",
+ "object_store 0.14.2",
+ "resonate-core",
+ "resonate-plugin",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "validator",
 ]
 
 [[package]]

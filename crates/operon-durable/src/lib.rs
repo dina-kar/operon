@@ -5,8 +5,8 @@
 //! configuration made from Loam's flags alone ([`DurableConfig`]), serves the
 //! durable API on a loopback listener (127.0.0.1:8001 by default, D138), and
 //! answers in-process protocol calls ([`DurableServer::process`]). The store
-//! is SQLite for `operon dev` and `standalone`, and a MySQL-protocol database
-//! (TiDB) with the `mysql` feature (D139).
+//! is SQLite for `operon dev` and `standalone`, native TiKV with the `tikv`
+//! feature, or a MySQL-protocol database with the `mysql` feature.
 //!
 //! [`DurableRuntime`] runs Loam's own durable functions on the Resonate Rust
 //! SDK over [`InProcNetwork`], which reaches the server through its
@@ -24,6 +24,8 @@ mod listen;
 mod mysql;
 mod registry;
 mod runtime;
+#[cfg(feature = "tikv")]
+pub mod tikv;
 
 pub use config::{
     DEFAULT_DATABASE, DEFAULT_LISTEN, DEFAULT_RETRY_TIMEOUT, DEFAULT_SHUTDOWN_TIMEOUT,

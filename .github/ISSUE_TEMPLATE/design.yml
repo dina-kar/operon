@@ -1,0 +1,23 @@
+name: Design discussion
+description: A question about, or a proposed change to, a design document or decision.
+title: "design: "
+labels: ["kind/design", "area/docs", "status/needs-triage"]
+body:
+  - type: input
+    id: section
+    attributes:
+      label: Document and section
+      description: For example `docs/design/04-hot-tier.md`, section 3.
+    validations:
+      required: true
+  - type: textarea
+    id: concern
+    attributes:
+      label: Concern or proposal
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Effects on formats, protocols, compatibility or operations.
