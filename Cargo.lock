@@ -6285,7 +6285,7 @@ dependencies = [
  "futures",
  "hex",
  "humantime",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "postcard",
  "proptest",
  "rand 0.9.5",
