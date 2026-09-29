@@ -521,7 +521,9 @@ jobs:
       - name: operon-durable tests
         run: cargo test -p operon-durable --locked
       - name: operon durable tests
-        run: cargo test -p operon --features durable --test durable --bin operon --locked
+        # The binary's tests also cover the optional listener flags (the
+        # extra feature reuses this build).
+        run: cargo test -p operon --features durable,stream-grpc --test durable --bin operon --locked
       - name: checker self-test
         run: scripts/durable/conformance.sh --self-test
       - name: linearizability on SQLite (8 clients x 600 ops)
