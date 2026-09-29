@@ -12,6 +12,6 @@
 - [ ] Tests added or updated (simulation or fault injection for storage, log and metastore paths)
 - [ ] `cargo fmt --all --check` and `cargo clippy` (scoped to the changed crates) pass
 - [ ] Docs updated if behavior, flags or formats changed
-- [ ] New dependencies are license-compatible (no AGPL, GPL, BSL, SSPL or ELv2)
+- [ ] New dependencies are license-compatible (no AGPL, GPL, LGPL, BSL, SSPL, ELv2 or proprietary code; see CONTRIBUTING.md)
 - [ ] Derived code is attributed in its file header and in NOTICE
 - [ ] Commits are signed off (`git commit -s`, DCO)

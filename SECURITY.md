@@ -13,7 +13,9 @@ Report them privately through GitHub's private vulnerability reporting:
 1. Open the repository's **Security** tab and choose **Report a vulnerability** ([direct link](../../security/advisories/new)).
 2. Fill in the advisory form. Only you and the maintainers can see it.
 
-If you cannot use GitHub, contact one of the maintainers listed in [MAINTAINERS.md](MAINTAINERS.md) and ask for a private channel.
+<!-- TODO(owner): replace the placeholder address below with a real security inbox before the repository is promoted. -->
+
+If you cannot use GitHub, email **security@ostrium-labs** (placeholder, to be confirmed). Please don't put vulnerability details in a public channel while you wait for a reply.
 
 Please include:
 
@@ -37,4 +39,4 @@ Of particular interest:
 - server-side request forgery, for example through durable task delivery targets;
 - any path that could lose or corrupt acknowledged data.
 
-Out of scope: findings that need a compromised host or bucket, denial of service through unbounded requests on an unauthenticated development server (`operon dev` binds to loopback by default), and issues in third-party dependencies that are already public (please report those upstream; we track advisories with `cargo-deny`).
+Out of scope: findings that need a compromised host or bucket, denial of service through unbounded requests on a loopback-bound, unauthenticated development server (the default for `operon dev`), and issues in third-party dependencies that are already public (please report those upstream; we track advisories with `cargo-deny`).

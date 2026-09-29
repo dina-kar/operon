@@ -103,7 +103,7 @@ The client conformance suites live in [`crates/operon-qdrant/tests/python`](crat
 ### What CI runs when
 
 - **Always:** fmt, clippy and the workspace tests; the crash gate; the cluster tests; the Qdrant and Elasticsearch client suites; the simulation seed sweep; `cargo-deny`; the web console; and the Loam Live protos.
-- **Only when matching paths change:** the TiKV suites (TiKV crates, Loam Live, the metastore wiring, `deploy/tikv`, `scripts/tikv`, `proto/loam`) and the durable-execution suite (`operon-durable`, the server wiring, `Cargo.lock`, `scripts/durable`, or the Resonate pin). Any change to `ci.yml` runs both.
+- **On pull requests, only when matching paths change:** the TiKV suites (TiKV crates, Loam Live, the metastore wiring, `deploy/tikv`, `scripts/tikv`, `proto/loam`) and the durable-execution suite (`operon-durable`, the server wiring, `Cargo.lock`, `scripts/durable`, or the Resonate pin). Any change to `ci.yml` runs both, and every push to `main` runs both.
 - **Nightly:** the long simulation sweep, the tail-merge property test, the TiKV crash gate and more.
 
 ## Pull requests
@@ -131,7 +131,7 @@ The area is a crate name without the `operon-` prefix (`log`, `meta`, `query`, `
 
 <!-- TODO(owner): confirm DCO over a CLA before the repository is promoted. If a CLA is chosen, replace this section and add a CLA bot. -->
 
-Loam uses the [Developer Certificate of Origin](https://developercertificate.org/) instead of a contributor license agreement. Sign off every commit:
+For now, Loam uses the [Developer Certificate of Origin](https://developercertificate.org/) and no contributor license agreement. This is the current requirement, and the maintainers may revisit it before the first release; any change will be announced here and will not apply retroactively. Sign off every commit:
 
 ```sh
 git commit -s -m "log: add a WAL object encoder"
