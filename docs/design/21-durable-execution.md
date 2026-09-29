@@ -2,12 +2,14 @@
 
 Status: **Proposed** · 2026-09-27. The direction is the owner's, from 2026-09-27: "link resonate plugins to loams binary and implement all the useful resonate patterns for loam". The owner also fixed four points: embed the server rather than run a sidecar; use SQLite in dev, TiDB for Loam cloud now and a native TiKV backend as the target; start with Resonate's HTTP transports; and take the dependencies from a pinned fork. This document turns that direction into decisions **D138–D147** and open questions **Q39–Q44**. The choices it makes on top of the owner's points are **proposals** until the owner confirms them. The first milestone, **D1**, is planned in [`docs/plans/2026-09-27-d1-durable-execution.md`](../plans/2026-09-27-d1-durable-execution.md).
 
+> **Amended 2026-09-29 (D260, D261, D262).** TiKV is the durable store for clusters, Loam cloud and self-hosted deployments: the **native TiKV backend** (`--durable-store tikv://<pd-hosts>/<keyspace>`, cargo feature `durable-tikv`) replaces TiDB (D261). There is no TiDB anywhere in Loam (D260). **What `main` does today:** `--durable-store` accepts `sqlite:<path>` and `mysql://…` only, and the TiKV backend is not merged yet. `mysql://` (Resonate's MySQL plugin, feature `durable-mysql`) is **legacy and deprecated**: kept for dev and tests until `tikv://` lands, then removed. The cargo feature `durable` is **opt-in**, not on by default (D262). TiDB text below is kept as history and marked where it no longer applies.
+
 This document **amends §14** (approved 2026-09-24, D19). §14's protocol analysis, consistency model and non-goals still hold. The following parts change:
 
 | §14 said | §21 says | Why |
 |---|---|---|
 | Resonate's gateway runs in the `gateway` role (§14 §3) | The server is linked into every `operon`/`loam` binary behind the cargo feature `durable`, on its own listener (D138) | Owner direction. One binary to ship, no extra role or process, and in-process calls from Loam's own code |
-| Storage is `resonate-server-blob` over `operon-store`, under `ns/<ns>/durable/` (§14 §3, §4) | SQLite in dev and standalone, TiDB (Resonate's MySQL plugin) for Loam cloud now, a TiKV `Store` for the blob server as the target (D139). Blob-on-the-bucket stays a candidate for self-hosted clusters (Q39) | Owner direction. Loam cloud runs TiKV and TiDB anyway (§20); TiDB already passes Resonate's full verification bar |
+| Storage is `resonate-server-blob` over `operon-store`, under `ns/<ns>/durable/` (§14 §3, §4) | SQLite in dev and standalone; the native TiKV backend (a TiKV `Store` for the blob server) for clusters, Loam cloud and self-hosted deployments (D139 as amended by D261). ~~TiDB (Resonate's MySQL plugin) for Loam cloud now~~: legacy, dev and tests only (D261) | Owner direction. Loam runs TiKV anyway (§20), and no TiDB (D260) |
 | Phase A in M3, Phase B in M4 (D19, D46) | A parallel track, **D**, like track R: D1 now, D2–D4 later (D145) | Durable operations are needed by M2 features (erasure, restore, reindex), so they cannot wait for M3 |
 | Resonate's own auth is replaced by Loam's (§14 §4) | Unchanged in intent, but deferred to the unified auth plan (D111). Until then the listener is loopback-only and refuses other addresses (D138) | D111 |
 
@@ -32,9 +34,9 @@ The spike (§13) linked and ran the embedded server. It uses Resonate's public c
 ### 2.1 Goals
 
 1. **Standard protocol, unchanged SDKs.** Any Resonate SDK at the server's protocol version (`2026-04-01`) works against Loam with only a URL change. Loam's conformance is Resonate's own linearizability check, run against the Loam binary (§10).
-2. **One binary.** Durable execution needs no extra process, container or role. `operon dev` has it on by default.
+2. **One binary.** Durable execution needs no extra process, container or role. The cargo feature `durable` is opt-in (D262); in a binary built with it (release builds, CI's durable jobs, the Loam cloud build), `operon dev` and `operon standalone` start the durable server by default on SQLite, and `--no-durable` turns it off.
 3. **Durable Loam operations.** Every Loam operation that can outlive a request becomes a durable function with an operation id, progress and cancellation. It resumes after a crash, and after a failure it re-runs only the failed branches.
-4. **Tenant isolation.** Each tenant's durable state lives in its own store: its own SQLite file, its own TiDB database, or its own TiKV key prefix or keyspace. Tenants never share Resonate groups, schedules or searches (§5).
+4. **Tenant isolation.** Each tenant's durable state lives in its own store: its own SQLite file or its own TiKV key prefix or keyspace (a TiDB database under the legacy `mysql://` backend). Tenants never share Resonate groups, schedules or searches (§5).
 5. **Buy, not build.** Loam writes glue, an in-process network and its own workflows. It does not write a durable-execution engine (user memory: prefer buy over build).
 
 ### 2.2 Non-goals
@@ -58,17 +60,19 @@ The spike (§13) linked and ran the embedded server. It uses Resonate's public c
 │              │                               ▼                                        │
 │              ▼                     Loam durable runtime (Resonate Rust SDK 0.6)        │
 │   ResonateServer (one per tenant: D1 = one)  ◄──── InProcNetwork: process() in-proc   │
-│     server plugin: sqlite | mysql | tikv*    ────► worker_inproc (scheme inproc://)   │
+│     server plugin: sqlite | tikv | mysql†    ────► worker_inproc (scheme inproc://)   │
 │     workers: http-poll (SSE), http-push (off by default), worker_inproc               │
 │              │                                                                        │
 └──────────────┼────────────────────────────────────────────────────────────────────────┘
                ▼
-   SQLite file (dev, standalone) │ TiDB database per tenant (cloud now) │ TiKV `loam_durable` keyspace (target)
+   SQLite file (dev, standalone) │ TiKV `loam_durable` keyspace (clusters, cloud, self-hosted)
 ```
+
+† `mysql` is the legacy TiDB/MySQL backend: on `main` today, deprecated by D261, kept for dev and tests until `tikv://` merges.
 
 ### 3.1 The embed (D138)
 
-- **Crate.** A new crate, `operon-durable`, owns the embedding. `operon` depends on it behind the feature `durable`, which is on by default. A build without the feature has no Resonate code in it.
+- **Crate.** A new crate, `operon-durable`, owns the embedding. `operon` depends on it behind the feature `durable`, which is **opt-in** (D262; owner ruling O1: toggling it rebuilds about 480 crates). The default features on `main` are `es`, `flight`, `hnsw` and `qdrant`. Release builds, CI's durable jobs and the Loam cloud build turn `durable` on. A build without the feature has no Resonate code in it, and a `--durable-*` flag only logs a warning.
 - **Composition.** `operon-durable` builds a `resonate_plugin::Registry` that names only the plugins Loam carries, then calls `resonate_base::build(&registry, &config, &options)` and `Running::start(debug)`. At shutdown it calls `Running::stop(timeout)`. It never calls `resonate_base::run` or `resonate_base::main`, for two reasons. `run` installs a global `tracing_subscriber` with `.init()`, which panics when Loam already installed one. It also waits on SIGINT/SIGTERM itself (`core/crates/resonate-base/src/lib.rs:171-208`). Both calls it does use are public API **(spike)**.
 - **Configuration.** Loam builds the `resonate_plugin::Configuration` with `Loader::new().set(key, value)` from its own flags. It reads no `resonate.toml` and no `RESONATE_*` environment, so an operator's standalone Resonate settings cannot leak into Loam. The key space is Resonate's (`servers.server_sqlite.path`, `gateways.gateway_http.bind`, and so on), so every plugin setting stays reachable through `--durable-set key=value`.
 - **Order.** The durable server starts after the metastore and before the native API, because Loam's operations API calls it. It stops after the native API and before the metastore. Resonate's own order (workers, then server, then gateways at start; server, then workers, then gateways at stop) stays inside `Running`.
@@ -82,19 +86,19 @@ The spike (§13) linked and ran the embedded server. It uses Resonate's public c
 - **Loopback only until the unified auth plan.** The durable API is unauthenticated in D1. It lets any caller create promises, schedule cron jobs and, through the push transport, make Loam send HTTP requests to an address named in a promise tag. So `--durable-listen` accepts only loopback addresses (127.0.0.0/8, `::1`, `localhost`) and refuses any other at startup: `durable listener must be loopback until authentication is configured (D111); got <addr>`. This is Live's rule (R1 Global Constraints), which is stricter than D111's warning for the M1 gateways. The unified auth plan lifts it (§5.3).
 - **One listener, Resonate's gateway.** The protocol routes and the poll transport's SSE route (`/poll/:group/:id`) share this listener, as Resonate intends ("one door, one lock", `core/crates/resonate-transport-http-poll/src/lib.rs:95-97`). Resonate's gateway serves it with **axum 0.7** (§11).
 
-### 3.3 Storage backends (D139)
+### 3.3 Storage backends (D139, amended by D261)
 
 | Backend | Where | Resonate plugin | Verification | Milestone |
 |---|---|---|---|---|
 | **SQLite** | `operon dev`, `operon standalone`; one file per tenant under the data directory (`<data>/durable/<tenant>.db`) | `resonate-server-sqlite` (rusqlite, bundled SQLite) | Upstream CI differential + porcupine; Loam conformance run (§10) | D1 |
-| **TiDB** | Loam cloud now; one database per tenant (`loam_durable_<tenant>`) in a system TiDB pool on keyspace `loam_durable_sql` | `resonate-server-mysql` (sqlx 0.8) with the TiDB fixes of upstream PR 0a/1 (pessimistic pin, retryable errnos) | Engine + port differential and porcupine all pass on TiDB v8.5.8 **(research)** | D1 |
-| **TiKV** | Loam cloud target; keyspace `loam_durable` on the Live TiKV cluster, tenant = key prefix; large tenants get their own keyspace | `resonate-server-blob` with a TiKV `Store` (upstream PR 2, or in-tree if not accepted) | Blob differential + port differential + porcupine with the TiKV store | D2 |
-| Postgres or blob-on-bucket | Self-hosted clusters without TiDB | `resonate-server-postgres` or `resonate-server-blob` over `operon-store` | Upstream CI | Open (Q39) |
+| **TiKV** (native) | `operon cluster`, Loam cloud and self-hosted clusters; `--durable-store tikv://<pd-hosts>/<keyspace>` (for example `tikv://127.0.0.1:2379/loam_durable`) on the TiKV cluster, tenant = key prefix; large tenants get their own keyspace | `resonate-server-tikv`: Loam's server plugin running `resonate-server-blob` over a TiKV `Store` in `operon-durable` (one key per object with a random revision; compare-and-set under a pessimistic lock), cargo feature `durable-tikv` | Blob differential + port differential + porcupine with the TiKV store | **D1** (added by D261, moved from D2); not on `main` yet |
+| ~~**TiDB**~~ (legacy `mysql://`) | ~~Loam cloud now~~. On `main` today; **deprecated** (D261): dev and tests only until the TiKV backend merges, then removed. One database per tenant (`loam_durable_<tenant>`) | `resonate-server-mysql` (sqlx 0.8) with the TiDB fixes of upstream PR 0a/1 (pessimistic pin, retryable errnos), cargo feature `durable-mysql` | Engine + port differential and porcupine all pass on TiDB v8.5.8 **(research)** | D1 (legacy) |
+| ~~Postgres or blob-on-bucket~~ | ~~Self-hosted clusters without TiDB~~ | — | — | Q39 resolved by D261: self-hosted clusters use TiKV |
 
-- **SQLite is single-node.** `operon cluster` refuses the SQLite backend (`the sqlite durable store is single-node; use --durable-store mysql://… or tikv://…`). A second process opening the same file is refused by the lock file Loam holds on the durable directory.
-- **Why TiDB now and TiKV later.** TiDB runs Resonate's existing MySQL engine with no new engine code, and it passed the whole upstream bar: engine differential (59,400 steps), port differential and porcupine at 8 × 600 and 16 × 400 **(research)**. It costs about 15 differential steps/s on a one-node playground, against about 1,200/s for in-memory SQLite **(research)**. That is enough for D1's operations. The TiKV `Store` is 600–900 lines **(estimate)**. It inherits the blob server's TLA+-checked design: one CAS'd document per origin (`spec/tlap` `Concrete`). It saves the TiDB SQL layer and pool per tenant. It is D2 because it depends on R1's `operon-tikv` and on the upstream placement discussion.
-- **The TiDB pool for durable state is Loam's own system data, not tenant SQL.** D123's rule "one TiDB per tenant keyspace" is about tenant SQL, where the tenant connects. Here only Loam connects, so tenants are separated by database, with one sqlx pool per active tenant (`max_connections = 4`, idle-evicted with the tenant's instance, §5.1).
-- **Migrations.** Resonate's SQL plugins refuse to start on a schema behind the binary unless `migrate = true`. Loam sets `migrate = true` for SQLite. For TiDB it runs migrations as an explicit upgrade step (`operon durable migrate`), matching Resonate's intent that DDL is a deployment decision.
+- **SQLite is single-node.** `operon cluster` refuses the SQLite backend. On `main` the message is `the sqlite durable store is single-node; use --durable-store mysql://…`; it names `tikv://…` once the TiKV backend merges. A cluster node without `--durable-store` serves no durable execution. A second process opening the same file is refused by the lock file Loam holds on the durable directory.
+- **History: why TiDB first (superseded by D261).** TiDB runs Resonate's existing MySQL engine with no new engine code, and it passed the whole upstream bar: engine differential (59,400 steps), port differential and porcupine at 8 × 600 and 16 × 400 **(research)**. It costs about 15 differential steps/s on a one-node playground, against about 1,200/s for in-memory SQLite **(research)**. That is enough for D1's operations. The TiKV `Store` is 600–900 lines **(estimate)**. It inherits the blob server's TLA+-checked design: one CAS'd document per origin (`spec/tlap` `Concrete`). It saves the TiDB SQL layer and pool per tenant. It was D2 because it depends on R1's `operon-tikv` and on the upstream placement discussion; D261 moves it into D1, and it lives in `operon-durable` rather than upstream.
+- **(Legacy.) The TiDB pool for durable state was Loam's own system data, not tenant SQL.** D123's rule "one TiDB per tenant keyspace" is about tenant SQL, where the tenant connects. Here only Loam connects, so tenants are separated by database, with one sqlx pool per active tenant (`max_connections = 4`, idle-evicted with the tenant's instance, §5.1).
+- **Migrations.** Resonate's SQL plugins refuse to start on a schema behind the binary unless `migrate = true`. Loam sets `migrate = true` for SQLite. For the legacy MySQL backend it runs migrations as an explicit upgrade step (`operon durable migrate`), matching Resonate's intent that DDL is a deployment decision.
 
 ### 3.4 Transports (D141)
 
@@ -114,7 +118,7 @@ Loam's Rust code is a Resonate worker like any other, written with the **Resonat
 
 - `InProcNetwork::send` deserializes the request envelope and calls `server.process()`. It never touches the listener.
 - `InProcNetwork::recv` registers the SDK's callback with `worker_inproc`. That is a Loam `WorkerPlugin` for the scheme `inproc`, and it turns each routed `Message` (`execute` or `unblock`) into the JSON frame the poll transport would have sent.
-- The group is `loam`. Each node's address is `inproc://any@loam/<node_id>`. With a shared backend (TiDB, TiKV), a task whose retry timeout fires on another node is delivered to that node's in-process worker, so any node can resume any Loam operation.
+- The group is `loam`. Each node's address is `inproc://any@loam/<node_id>`. With a shared backend (TiKV, or legacy MySQL), a task whose retry timeout fires on another node is delivered to that node's in-process worker, so any node can resume any Loam operation.
 
 So Loam's workflows run with the SDK's replay semantics (`ctx.run` checkpoints, deterministic ids, fan-out with `ctx.begin_run`/spawn, `ctx.sleep`, `ctx.promise`) and are not reimplemented. The spike did not build this adapter. D1 Task 6 builds it, with a loopback-HTTP fallback (the SDK's `HttpNetwork` against `127.0.0.1:8001`) if the in-process adapter hits a blocker.
 
@@ -133,7 +137,7 @@ Resonate has no tenant concept. Its groups, schedules, searches and timers are g
 | Backend | A tenant's store |
 |---|---|
 | SQLite | `<data>/durable/<tenant>.db` |
-| TiDB | database `loam_durable_<tenant>` |
+| MySQL (legacy) | database `loam_durable_<tenant>` |
 | TiKV | prefix `t/<tenant>/` inside keyspace `loam_durable` (the blob `KeySpace` prefix); a dedicated keyspace `loam_durable_<tenant>` for large tenants, by the size classes of D122 (Q41) |
 
 The **tenant** is the namespace (§18 §6), because quotas, erasure and encryption keys are per namespace. Instances are built on first use, evicted after 15 minutes idle (**estimate**, tuned in D2), and capped per node (LRU). An instance with pending timers is not "idle" if it is the only node serving that tenant. Timers need a running instance, so with a shared backend the router's rendezvous owner of `(ns, "durable")` (§18 §5) keeps the tenant's instance warm.
@@ -167,7 +171,7 @@ Each pattern becomes a concrete Loam feature with an owner milestone. For each o
 | a | Schedules | **Erasure-deadline sweep** (D69's 30-day completion) | **M2** | Yes | Medium: a durable cron whose run is itself a saga |
 | d | Async operations | Restore (M2), online index backfill (D97, M2), collection copy (D90, M2.x) as operations | M2 / M2.x | M2 ones yes | High: each is minutes to hours. Cost: each adds only its own workflow |
 | e | Human-in-the-loop | **Approval gates** on destructive operations (collection and namespace drop, erasure, restore over live data) and on agent actions | **D2** (needs the unified auth plan for approver identities) | v1.1 | Medium-high for cloud and agent safety. Cost: needs identities and the console |
-| c | Saga with compensation | **Tenant provisioning and deprovisioning**: TiKV keyspace, bucket prefix, TiDB pool, OpenFGA store, quotas, directory entry; rollback on failure | **D2**, with R2's router and `ControlStore` (D125) and M2.x's hosted control plane | v1.1 | High for cloud: today a half-provisioned tenant needs manual cleanup. Cost: one workflow per resource kind |
+| c | Saga with compensation | **Tenant provisioning and deprovisioning**: TiKV keyspace, bucket prefix, OpenFGA store, quotas, directory entry; rollback on failure | **D2**, with R2's router and `ControlStore` (D125) and M2.x's hosted control plane | v1.1 | High for cloud: today a half-provisioned tenant needs manual cleanup. Cost: one workflow per resource kind |
 | b | Fan-out / fan-in | Single-collection shard builds (D95), bulk re-embedding | M2.x / D3 | Later | Medium: builds are already lease-fenced tasks; value comes when one logical build spans hours and many nodes |
 | a | Schedules / operation | **Re-embedding a whole collection** (a model change) as a durable operation, optionally scheduled | **D3** (needs `embed()` links, §09) | Later | High when it exists: hours of paid model calls must not be redone |
 | f | Durable agents | Live **actions** as durable functions; the agent runtime (multi-agent handoffs, deep research with sub-agents as durable calls, MCP long-running tools); agent traces into Loam | **D3** (with R3), D4 | Later | Very high strategically (the AI-native cloud). Cost: Live actions (R2), auth (D111), OTLP traces ingest (Q43) |
@@ -191,7 +195,7 @@ Nothing in M1 is rewritten before M1 exits. After M2, the decision is revisited 
 
 A workflow starts N branches with `ctx.begin_run`, or spawns them in the Rust SDK, and awaits them all. Each branch is a child promise in the root's origin, so it commits atomically with the parent's state (§14 §1: single-origin). A failed branch is retried alone, with the SDK's retry policy. Finished branches return their memoized results on replay, as the fan-out example showed: in crash mode only the push branch re-ran **(spike)**. Loam's rules:
 
-- **Branch granularity is bounded.** One branch per file, and inside a file one step per slice (§7.2). A 1 TB import at 64 MiB slices is about 16,000 promises **(estimate)**. That fits SQLite and TiDB, but it is one origin. The blob and TiKV backends keep an origin as one document, so D2 caps a single origin's promise count (Q42) and splits very large imports into child operations with their own origins.
+- **Branch granularity is bounded.** One branch per file, and inside a file one step per slice (§7.2). A 1 TB import at 64 MiB slices is about 16,000 promises **(estimate)**. That fits SQLite, but it is one origin. The blob and TiKV backends keep an origin as one document, so D2 caps a single origin's promise count (Q42) and splits very large imports into child operations with their own origins.
 - **Concurrency is bounded per operation** (`max_parallel_files`, default 4) and per namespace (`max_concurrent_operations`, default 2). The collection write path's backpressure (D86) still applies: a 429 is a retryable step failure.
 
 ### 6.3 (c) Sagas with compensation
@@ -205,7 +209,7 @@ A saga is a sequence of durable steps, each with a compensating step. On failure
 | 1 | Directory entry `{org, app/namespace, state: provisioning}` in the `ControlStore` (D125) | Mark `failed`, then delete |
 | 2 | TiKV keyspace (`ensure_keyspace`, R1 Task 1) or shared-pool prefix (D122) | Disable and GC the keyspace (never reuse its id) |
 | 3 | Bucket prefix and envelope key (D96) | Destroy the key (crypto-shred), then delete the prefix |
-| 4 | TiDB pool for SQL-enabled tenants (D123) | Scale the pool to zero and drop it |
+| 4 | ~~TiDB pool for SQL-enabled tenants (D123)~~ Dropped: no TiDB (D260) | — |
 | 5 | OpenFGA store or model tuples (D67) | Delete the tuples |
 | 6 | Quotas (D65) and metering rows (D103) | Delete |
 | 7 | Durable instance store (§5.1) | Drop the database or prefix |
@@ -316,10 +320,10 @@ DELETE /v1/namespaces/{ns}/collections/{c}/import-schedules/{name}
 | Failure | Behaviour |
 |---|---|
 | Loam node crash (SQLite, `operon dev`) | State is in the SQLite file. On restart the instance reloads, timers re-arm from durable deadlines, and pending tasks are redispatched after `retry_timeout`. The HITL workflow completed after `kill -9` and restart **(spike)** |
-| Node crash (TiDB or TiKV, cluster) | Another node's instance for the tenant fires the task retry timeout and delivers to its own in-process worker (§3.5). SDK workers reconnect to any node's poll endpoint |
+| Node crash (TiKV, cluster) | Another node's instance for the tenant fires the task retry timeout and delivers to its own in-process worker (§3.5). SDK workers reconnect to any node's poll endpoint |
 | Durable listener port in use | Startup fails with `durable listener cannot bind 127.0.0.1:8001: …`, naming `--durable-listen` and `--no-durable` |
-| TiDB unavailable | The server's `ready()` is false and the gateway answers 503. The operations API answers 503 `durable_unavailable`. Retrieval surfaces are unaffected |
-| Commit-time conflict on TiDB | Retried (upstream PR 0a's errno classification, carried in the fork). Without it, conflicts in optimistic mode answer 500: 9 % of requests in research run 9 **(research)** |
+| TiKV (or legacy MySQL) unavailable | The server's `ready()` is false and the gateway answers 503. The operations API answers 503 `durable_unavailable`. Retrieval surfaces are unaffected |
+| Commit-time conflict on legacy TiDB/MySQL | Retried (upstream PR 0a's errno classification, carried in the fork). Without it, conflicts in optimistic mode answer 500: 9 % of requests in research run 9 **(research)** |
 | Handler panic | 500, no abort (§3.1). With SQLite, Loam then restarts the durable subsystem, not the process (stop the `Running`, reopen, start) |
 | Poison step (always fails) | The SDK's retry policy gives up and the branch fails. The operation fails, or skips the file (§7.2). No infinite loop |
 | Slow SDK worker | A bounded channel with `try_send` in the poll transport drops the message, and the retry timeout redelivers. The router never blocks |
@@ -329,13 +333,13 @@ DELETE /v1/namespaces/{ns}/collections/{c}/import-schedules/{name}
 
 ### 10.1 What upstream already tests, and what Loam adds
 
-Resonate holds each storage engine to an executable oracle (the engine differential and the port differential) and holds a live server to a Go port of the Lean abstract machine (porcupine) (research §2). Embedding changes none of the engine code, so Loam **does not re-run the engine and port differentials in its own CI**. They run in the fork's CI at the pinned revision, for SQLite and for TiDB via the MySQL plugin. Loam tests what embedding adds: the configuration mapping, the listener, the dispatcher (D2), the in-process network, and Loam's own workflows.
+Resonate holds each storage engine to an executable oracle (the engine differential and the port differential) and holds a live server to a Go port of the Lean abstract machine (porcupine) (research §2). Embedding changes none of the engine code, so Loam **does not re-run the engine and port differentials in its own CI**. They run in the fork's CI at the pinned revision, for SQLite and for TiDB via the MySQL plugin (legacy under D261); the TiKV `Store` is Loam's, so Loam's CI runs its blob and port differentials. Loam tests what embedding adds: the configuration mapping, the listener, the dispatcher (D2), the in-process network, and Loam's own workflows.
 
 ### 10.2 The conformance run against embedded Loam (D144)
 
-- **Linearizability.** Start `operon dev` with the durable debug flag (`--durable-debug`, hidden; it sets Resonate's `debug = true`, so `debug.*` is answered and the caller owns the clock). Run upstream's `conctrace --url http://127.0.0.1:8001/ --clients 8 --ops 600`, built from the pinned fork, then `conccheck -partition=false` from `spec/valid/porc`. It must say LINEARIZABLE. This runs per PR on paths under `crates/operon-durable/**` for SQLite, and nightly for TiDB, with 16 clients × 400 ops and three seeds.
+- **Linearizability.** Start `operon dev` with the durable debug flag (`--durable-debug`, hidden; it sets Resonate's `debug = true`, so `debug.*` is answered and the caller owns the clock). Run upstream's `conctrace --url http://127.0.0.1:8001/ --clients 8 --ops 600`, built from the pinned fork, then `conccheck -partition=false` from `spec/valid/porc`. It must say LINEARIZABLE. This runs per PR on paths under `crates/operon-durable/**` for SQLite, and nightly for the TiKV backend (TiDB before D261), with 16 clients × 400 ops and three seeds.
 - **The SDK example suite.** Nightly, against `operon dev`, with the Python examples hello-world, fan-out/fan-in (normal and `--crash`), human-in-the-loop (with `kill -9` of `operon` between suspend and resolve), schedule and money-transfer (saga), and the TypeScript hello-world and fan-out examples. Each asserts its expected output.
-- **Checker gap.** Porcupine refutes any history that contains a 503 (research F3). Until upstream PR 0b lands, the TiDB leg treats 503s as not applied, using the research's `porc.sh` rule, and reports how many there were.
+- **Checker gap.** Porcupine refutes any history that contains a 503 (research F3). Until upstream PR 0b lands, the nightly leg treats 503s as not applied, using the research's `porc.sh` rule, and reports how many there were.
 
 ### 10.3 Loam's own tests
 
@@ -433,8 +437,8 @@ Track D runs beside M1, M2 and R like track R, interleaved on the one-build mach
 
 | Milestone | Scope | Depends on | Exit gate |
 |---|---|---|---|
-| **D1** | Embedded server behind `durable`; SQLite and TiDB backends; the loopback listener; the fork with PR 0c/0a/1; the in-process network and Loam durable runtime; the operations API; bulk import from object storage; scheduled import; the conformance run and SDK example suite | M1.2 (collection write path, Flight mapping), R1 Task 1 (the TiDB playground) | Porcupine LINEARIZABLE against `operon dev` (SQLite) and against TiDB; SDK example suite green; import crash tests exact; D1 exit report |
-| **D2** | Multi-tenant instances and the dispatcher (after the unified auth plan); the TiKV `Store` backend; approval gates (e); tenant provisioning and deprovisioning sagas (c) with R2; push with an outbound allowlist; retention (Q40); operations in the console | D1, the unified auth plan (D111), R2 | Isolation tests; TiKV backend passes blob differential + porcupine; saga fault tests |
+| **D1** | Embedded server behind `durable` (opt-in, D262); SQLite and native TiKV backends (TiKV added by D261; not on `main` yet); the legacy TiDB/`mysql://` backend (on `main`, deprecated by D261); the loopback listener; the fork with PR 0c/0a/1; the in-process network and Loam durable runtime; the operations API; bulk import from object storage; scheduled import; the conformance run and SDK example suite | M1.2 (collection write path, Flight mapping), R1 Task 1 (the playground; PD and TiKV only after D260), R1's `operon-tikv` | Porcupine LINEARIZABLE against `operon dev` (SQLite) and against the TiKV backend (TiDB before D261); TiKV backend passes blob differential + porcupine; SDK example suite green; import crash tests exact; D1 exit report |
+| **D2** | Multi-tenant instances and the dispatcher (after the unified auth plan); tenant prefixes and keyspaces on the TiKV backend (Q41); approval gates (e); tenant provisioning and deprovisioning sagas (c) with R2; push with an outbound allowlist; retention (Q40); operations in the console | D1, the unified auth plan (D111), R2 | Isolation tests, including on TiKV; saga fault tests |
 | **M2 uses D1** | GDPR erasure orchestration and its deadline sweep (c, a); restore and online backfill as operations (d) | D1 | Per the M2 plan |
 | **D3** | Durable Live actions (f) with R3; the agent runtime on durable functions; MCP operation tools; agent traces via OTLP (Q43); re-embedding operations (a) once `embed()` exists | D2, R3 | Multi-agent and deep-research examples pass against Loam with crash injection |
 | **D4** | The connect-rust `loam://` transport (after PR 3a); Loam-hosted workers; §14 Phase B (change stream, search tables, execution graph) | D3 | Transport and graph gates |
@@ -443,19 +447,21 @@ Track D runs beside M1, M2 and R like track R, interleaved on the one-build mach
 
 | Earlier | Conflict | Resolution |
 |---|---|---|
-| D19 (§14): gateway role, blob over `operon-store`, Phase A in M3 | Owner's direction: embedded, SQLite/TiDB/TiKV, now | D138, D139 and D145 amend D19. §14's protocol, consistency and non-goal sections still hold. Blob-on-bucket stays a candidate for self-hosted clusters (Q39) |
-| D1: object storage is the only source of truth | Durable state on SQLite, TiDB or TiKV is not on object storage | Like Loam Live (D130), durable execution is a Loam cloud service whose store is TiKV or TiDB. In dev and standalone the SQLite file sits in the data directory, like the metastore's redb Raft log. Backups of the durable stores follow D131's BR log backup in cloud. Self-hosted S3-only clusters keep the option of the blob backend (Q39) |
+| D19 (§14): gateway role, blob over `operon-store`, Phase A in M3 | Owner's direction: embedded, SQLite/TiDB/TiKV, now | D138, D139 and D145 amend D19. §14's protocol, consistency and non-goal sections still hold. Self-hosted clusters use TiKV (D261 resolves Q39) |
+| D1: object storage is the only source of truth | Durable state on SQLite, TiDB or TiKV is not on object storage | Like Loam Live (D130), durable execution is a Loam cloud service whose store is TiKV (D261). In dev and standalone the SQLite file sits in the data directory, like the metastore's redb Raft log. Backups of the durable stores follow D131's BR log backup in cloud. Self-hosted clusters run TiKV too (D261) |
 | D46: Resonate Phase A in M3 | D1 now | D145: track D. M3 no longer carries Resonate Phase A |
 | D111: M1 gateways bind loopback and warn on other addresses | Durable refuses other addresses | Stricter, like Live, because unauthenticated durable writes and push delivery are more dangerous than unauthenticated reads (§3.2) |
 | §10 §2: `resonate = { listen = "0.0.0.0:8001" }` | Loopback default | §10's example is updated to `127.0.0.1:8001` |
 | Owner: "implement all the useful resonate patterns" | Some patterns wait for later milestones | All seven have a feature and a milestone (§6). The v1 set is (d), (b), (a) import schedule, (g), and M2's erasure saga and sweep. (e) and provisioning (c) need auth and the cloud control plane. (f) needs Live actions. Compaction and GC are deliberately not moved (§6.1) |
+| D138: `durable` on by default | `crates/operon/Cargo.toml` on `main` makes it opt-in (owner ruling O1) | D262 amends D138: opt-in cargo feature; the server starts by default at runtime only in binaries built with it |
+| D139: TiDB for Loam cloud now | D-SC-16 and the owner's 2026-09-29 direction: TiKV only | D261 supersedes the TiDB clause; `mysql://` is legacy |
 | Owner: "link resonate plugins" as a sidecar-free embed with the transport "http-poll/push" | Push is off by default | Push is linked and one flag away. It stays off by default only because an unauthenticated push transport lets any caller make Loam send requests to arbitrary addresses (§3.4). The auth plan and an allowlist turn it on in cloud |
 
 ## 16. Open questions
 
 | # | Question | Needed by |
 |---|---|---|
-| Q39 | The durable backend for self-hosted clusters without TiDB: Resonate's Postgres plugin (enterprises run Postgres; D58 adds Postgres to Loam in M2) or the blob server over `operon-store` (keeps D1 and needs no new service, at S3 PUT cost, §14 §6) | D2 plan |
+| Q39 | ~~The durable backend for self-hosted clusters without TiDB: Resonate's Postgres plugin (enterprises run Postgres; D58 adds Postgres to Loam in M2) or the blob server over `operon-store` (keeps D1 and needs no new service, at S3 PUT cost, §14 §6)~~ **Resolved 2026-09-29 by D261:** self-hosted clusters use the native TiKV backend | Resolved |
 | Q40 | Retention of settled promises: an upstream protocol or server setting (PR 5), or Loam-side deletes per backend. What horizon is safe given that a late retry re-creates a pruned id and re-runs the work? | D2 plan |
 | Q41 | TiKV durable layout: one `loam_durable` keyspace with tenant prefixes, or keyspaces per size class. It depends on Q36's keyspace limits | D2 plan |
 | Q42 | The largest origin the blob/TiKV backend should hold. An origin is one document, and TiKV prefers values under 1 MiB (raft entry limit ~8 MiB). What split rule should large fan-outs use (child operations with their own origins)? | D2 plan |
