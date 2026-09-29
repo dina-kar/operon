@@ -215,6 +215,8 @@ jobs:
           esac
       - name: test
         run: cargo test --workspace --locked
+      - name: operon's PostgreSQL wire listener (pgwire feature)
+        run: 'cargo test -p operon --features pgwire --lib --locked pg::'
       - name: metastore encoding
         run: 'cargo test -p operon-meta --test it encoding:: --locked'
       - name: metastore conformance
