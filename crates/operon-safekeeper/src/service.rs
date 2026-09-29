@@ -520,6 +520,7 @@ impl<S: WalStore> WalService<S> {
                             None => break,
                         },
                         _ = tick.tick() => {
+                            acc.refresh().await?;
                             acc.persist_commit_lsn().await?;
                             continue;
                         }
@@ -558,6 +559,7 @@ impl<S: WalStore> WalService<S> {
                             }
                         }
                         let t0 = std::time::Instant::now();
+                        acc.observe_term(self.progress(tl).term);
                         let r = acc.handle_appends(&batch).await?;
                         if let AcceptorMessage::AppendResponse(resp) = &r
                             && resp.term == term

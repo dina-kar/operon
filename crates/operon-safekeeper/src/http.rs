@@ -136,7 +136,12 @@ async fn create<S: WalStore>(
     let st = svc.store().create(&tl, server, start).await?;
     if let Some(c) = req.commit_lsn {
         let c: Lsn = c.parse()?;
-        svc.store().record_commit_lsn(&tl, c).await?;
+        if let Err(d) = svc.store().record_commit_lsn(&tl, st.term, c).await? {
+            return Err(ApiError(
+                StatusCode::CONFLICT,
+                format!("timeline {tl} moved to term {} meanwhile", d.current),
+            ));
+        }
     }
     let st = svc.store().load(&tl).await?.unwrap_or(st);
     Ok(Json(TimelineStatus::of(

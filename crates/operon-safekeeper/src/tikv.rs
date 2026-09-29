@@ -25,8 +25,8 @@ use operon_tikv::{Tikv, TxnError, TxnOptions};
 use crate::Error;
 use crate::proto::ProposerElected;
 use crate::store::{
-    AppendBatch, Deposed, WalStore, apply_append, apply_elected, apply_vote, read_chunks,
-    remaining_chunks, trim_bound,
+    AppendBatch, Deposed, WalStore, apply_append, apply_commit_lsn, apply_elected, apply_vote,
+    read_chunks, remaining_chunks, trim_bound,
 };
 use crate::types::{AcceptorState, Configuration, Lsn, ServerInfo, Term, TimelineId};
 
@@ -38,6 +38,9 @@ const HEAD_VERSION: u8 = 1;
 const UNDETERMINED_RETRIES: u32 = 3;
 /// Chunks deleted per trim transaction.
 const TRIM_BATCH: usize = 1024;
+/// Chunks deleted per truncation transaction on election. Scans return values,
+/// so this bounds memory (64 × 128 KiB) and the transaction's size.
+const TRUNCATE_BATCH: usize = 64;
 
 fn head_key(tl: &TimelineId) -> Vec<u8> {
     let mut k = Vec::with_capacity(33);
@@ -121,6 +124,7 @@ impl TikvWalStore {
         Self { tikv }
     }
 
+    /// The handle the store runs its transactions on.
     pub fn tikv(&self) -> &Tikv {
         &self.tikv
     }
@@ -228,37 +232,56 @@ impl WalStore for TikvWalStore {
     ) -> Result<Result<AcceptorState, Deposed>, Error> {
         let tl = *tl;
         let msg = msg.clone();
-        self.run("pgwal.elected", move |txn| {
+        // Chunks above the truncation point go in bounded batches. The WAL
+        // they hold is from a deposed term: the vote that elected this
+        // proposer already fences its writer, so no new chunks appear there.
+        // Only the last transaction, which finds at most a batch left, writes
+        // the head; until then every rule is re-checked.
+        loop {
             let msg = msg.clone();
-            Box::pin(async move {
-                let Some(mut st) = get_head(txn, &tl).await? else {
-                    return Ok(Err(Error::NotFound(tl)));
-                };
-                let at = match apply_elected(&mut st, &msg) {
-                    Err(e) => return Ok(Err(e)),
-                    Ok(Err(d)) => return Ok(Ok(Err(d))),
-                    Ok(Ok(at)) => at.0,
-                };
-                // Cut the chunk that straddles the truncation point, and
-                // delete every chunk at or above it.
-                if let Some((begin, bytes)) = chunk_at(txn, &tl, at).await?
-                    && begin < at
-                {
-                    let keep = (at - begin) as usize;
-                    txn.put(&wal_key(&tl, begin), bytes[..keep].to_vec())
-                        .await?;
-                }
-                let above = txn
-                    .scan(&wal_key(&tl, at), Some(&wal_key(&tl, u64::MAX)), usize::MAX)
-                    .await?;
-                for (k, _) in above {
-                    txn.delete(&k).await?;
-                }
-                txn.put(&head_key(&tl), encode_head(&st)?).await?;
-                Ok(Ok(Ok(st)))
-            })
-        })
-        .await
+            let done = self
+                .run("pgwal.elected", move |txn| {
+                    let msg = msg.clone();
+                    Box::pin(async move {
+                        let Some(mut st) = get_head(txn, &tl).await? else {
+                            return Ok(Err(Error::NotFound(tl)));
+                        };
+                        let at = match apply_elected(&mut st, &msg) {
+                            Err(e) => return Ok(Err(e)),
+                            Ok(Err(d)) => return Ok(Ok(Some(Err(d)))),
+                            Ok(Ok(at)) => at.0,
+                        };
+                        let above = txn
+                            .scan(
+                                &wal_key(&tl, at),
+                                Some(&wal_key(&tl, u64::MAX)),
+                                TRUNCATE_BATCH + 1,
+                            )
+                            .await?;
+                        let more = above.len() > TRUNCATE_BATCH;
+                        for (k, _) in above.into_iter().take(TRUNCATE_BATCH) {
+                            txn.delete(&k).await?;
+                        }
+                        if more {
+                            return Ok(Ok(None));
+                        }
+                        // Cut the chunk that straddles the truncation point.
+                        if let Some((begin, bytes)) = chunk_at(txn, &tl, at).await?
+                            && begin < at
+                        {
+                            let keep = (at - begin) as usize;
+                            txn.put(&wal_key(&tl, begin), bytes[..keep].to_vec())
+                                .await?;
+                        }
+                        txn.put(&head_key(&tl), encode_head(&st)?).await?;
+                        Ok(Ok(Some(Ok(st))))
+                    })
+                })
+                .await?;
+            if let Some(out) = done {
+                return Ok(out);
+            }
+        }
     }
 
     async fn append(
@@ -295,16 +318,43 @@ impl WalStore for TikvWalStore {
         .await
     }
 
-    async fn record_commit_lsn(&self, tl: &TimelineId, commit_lsn: Lsn) -> Result<(), Error> {
+    async fn record_commit_lsn(
+        &self,
+        tl: &TimelineId,
+        term: Term,
+        commit_lsn: Lsn,
+    ) -> Result<Result<(), Deposed>, Error> {
         let tl = *tl;
         self.run("pgwal.commit_lsn", move |txn| {
             Box::pin(async move {
                 let Some(mut st) = get_head(txn, &tl).await? else {
                     return Ok(Err(Error::NotFound(tl)));
                 };
-                let c = st.commit_lsn.max(commit_lsn.min(st.wal_end()));
-                if c != st.commit_lsn {
-                    st.commit_lsn = c;
+                let before = st.commit_lsn;
+                match apply_commit_lsn(&mut st, term, commit_lsn) {
+                    Err(e) => return Ok(Err(e)),
+                    Ok(Err(d)) => return Ok(Ok(Err(d))),
+                    Ok(Ok(())) => {}
+                }
+                if st.commit_lsn != before {
+                    txn.put(&head_key(&tl), encode_head(&st)?).await?;
+                }
+                Ok(Ok(Ok(())))
+            })
+        })
+        .await
+    }
+
+    async fn record_backup_lsn(&self, tl: &TimelineId, lsn: Lsn) -> Result<(), Error> {
+        let tl = *tl;
+        self.run("pgwal.backup_lsn", move |txn| {
+            Box::pin(async move {
+                let Some(mut st) = get_head(txn, &tl).await? else {
+                    return Ok(Err(Error::NotFound(tl)));
+                };
+                let b = st.backup_lsn.max(lsn.min(st.wal_end()));
+                if b != st.backup_lsn {
+                    st.backup_lsn = b;
                     txn.put(&head_key(&tl), encode_head(&st)?).await?;
                 }
                 Ok(Ok(()))

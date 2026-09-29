@@ -221,13 +221,75 @@ async fn trim_is_clamped_and_deletes_chunks() {
             .unwrap()
             .unwrap();
     }
-    s.record_commit_lsn(&t, Lsn(1100)).await.unwrap();
+    s.record_commit_lsn(&t, 1, Lsn(1100))
+        .await
+        .unwrap()
+        .unwrap();
     // backup_lsn and remote_consistent_lsn still at the start: nothing goes.
     assert_eq!(s.trim(&t, Lsn(1050)).await.unwrap(), Lsn(1000));
     s.record_remote_consistent_lsn(&t, Lsn(1055)).await.unwrap();
-    // backup_lsn is still 1000 (no bucket copy yet).
-    assert_eq!(s.trim(&t, Lsn(1050)).await.unwrap(), Lsn(1000));
+    assert_eq!(
+        s.trim(&t, Lsn(1050)).await.unwrap(),
+        Lsn(1000),
+        "no bucket copy yet"
+    );
     assert_eq!(read_all(&s, &t, 1000).await.len(), 100);
+
+    // The bucket copy reaches 1045: trim to 1045, keeping the chunk at 1040.
+    s.record_backup_lsn(&t, Lsn(1045)).await.unwrap();
+    assert_eq!(s.trim(&t, Lsn(1050)).await.unwrap(), Lsn(1045));
+    assert!(matches!(
+        s.read(&t, Lsn(1044), 10).await,
+        Err(operon_safekeeper::Error::Trimmed { .. })
+    ));
+    let rest = read_all(&s, &t, 1045).await;
+    assert_eq!(rest.len(), 55);
+    assert_eq!(&rest[..5], b"44444");
+    // The chunks below the kept one are gone from TiKV.
+    let tikv = s.tikv().clone();
+    let left = tikv
+        .run(operon_tikv::TxnOptions::new("test.scan"), |txn| {
+            Box::pin(async move { txn.scan(b"W", Some(b"X"), 100).await })
+        })
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(left.len(), 6, "chunks from 1040 on remain");
+}
+
+/// A long uncommitted tail of a deposed term is truncated in bounded batches.
+#[tokio::test]
+async fn election_truncates_a_long_tail_in_batches() {
+    let Some(s) = store().await else { return };
+    let t = tl(11);
+    s.create(&t, ServerInfo::default(), Lsn::INVALID)
+        .await
+        .unwrap();
+    s.vote(&t, 1).await.unwrap();
+    s.elected(&t, &elected(1, 100, &[(1, 100)]))
+        .await
+        .unwrap()
+        .unwrap();
+    // 200 one-byte chunks, more than one truncation batch (64).
+    for i in 0..200u64 {
+        s.append(&t, &batch(1, 100 + i, b"x", 101))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    s.vote(&t, 2).await.unwrap();
+    let st = s
+        .elected(&t, &elected(2, 101, &[(1, 100), (2, 101)]))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(st.flush_lsn, Lsn(101));
+    assert_eq!(read_all(&s, &t, 100).await, b"x");
+    s.append(&t, &batch(2, 101, b"NEW", 0))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read_all(&s, &t, 100).await, b"xNEW");
 }
 
 /// The acceptor end to end on TiKV, and a latency sample of the commit path
