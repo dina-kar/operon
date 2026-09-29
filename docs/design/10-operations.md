@@ -30,7 +30,7 @@ The metastore is chosen per cluster behind `trait MetaStore` (§01 §3.2, D47):
 | `raft` (embedded openraft) | Default | The `meta` role: 1 node (dev, standalone) or 3/5 nodes across AZs | Raft majority | Snapshots to the bucket + Raft log (§6) |
 | `postgres` | M2 | An existing managed Postgres; no `meta` role | The provider's (Multi-AZ, Aurora, Cloud SQL HA) | The provider's backups and point-in-time recovery |
 | `dynamodb` | M2 | One DynamoDB table (on demand or provisioned); no `meta` role | DynamoDB's multi-AZ replication | Point-in-time recovery, on-demand backups |
-| `tidb` | M6 | A TiDB cluster or TiDB Cloud, over the MySQL protocol | TiKV's Raft replication | TiDB's BR backups and point-in-time recovery |
+| ~~`tidb`~~ `tikv` | ~~M6~~ R1 | A PD + TiKV cluster (API v2 keyspace), over `tikv-client`; `--meta tikv://<pd-hosts>/<keyspace>`, cargo feature `tikv`. Replaces the TiDB backend (D124, D260: no TiDB) | TiKV's Raft replication | BR full and log backups (PITR) of the keyspace (D131) |
 | `remote` | M2.x | `operon-meta-remote` to the hosted control plane (BYOC-managed-meta) | The control plane's | The control plane's |
 
 Every backend serves the same relaxed contract (D59, §18 §3).
@@ -46,7 +46,7 @@ bucket = "s3://acme-operon/prod"
 zones = ["use1-az1", "use1-az2", "use1-az4"]
 
 [meta]
-backend = "raft"            # raft | postgres (M2) | dynamodb (M2) | tidb (M6) | remote (M2.x)
+backend = "raft"            # raft | postgres (M2) | dynamodb (M2) | tikv (R1; D260: no tidb) | remote (M2.x)
 peers = ["meta-0:7400", "meta-1:7400", "meta-2:7400"]   # raft only
 # postgres = { url = "postgres://operon@pg.internal:5432/operon", read_pool = 10, write_pool = 5 }
 # dynamodb = { table = "loam-meta", region = "us-east-1" }

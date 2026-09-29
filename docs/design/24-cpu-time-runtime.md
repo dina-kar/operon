@@ -279,7 +279,7 @@ Track F depends on the unified auth plan (Q30) for API keys and OpenFGA, on D72 
 | Earlier | This document | Resolution |
 |---|---|---|
 | D120: rquickjs for Live functions | workerd for the function runtime (D171) | Both stand. D120 is Live's deterministic mutations; D171 is general functions. Q35 gains workerd as a candidate |
-| D139: Resonate on TiDB for cloud | Resonate on TiKV in clusters | Follows D-SC-16 and the owner's forks-first plan (§22 §13b item 4); D139 is amended when that validation passes, not here |
+| D139: Resonate on TiDB for cloud | Resonate on TiKV in clusters | Follows D-SC-16 and the owner's forks-first plan (§22 §13b item 4). D261 (2026-09-29) now supersedes D139's TiDB clause: durable state on the native TiKV backend |
 | D47/§10: openraft default metastore | TiKV for the runtime's metadata (D179) | D179 covers this runtime and the GitOps deployment. `operon dev` and `operon standalone` keep openraft |
 | The draft's rquickjs T0, WasmEdge, Kata-driven T3, eBPF-first metering, "raft or postgres" | D171, D172, D174, D175, D179 | Superseded by the owner's 2026-09-29 changes |
 

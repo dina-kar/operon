@@ -82,7 +82,7 @@ One binary, `operon`, runs any combination of five roles. All roles except `meta
              meta:        trait MetaStore (§3.2) — namespaces, schemas, stream offsets
                           & segment index, consumer offsets, leases, manifest pointers,
                           link state. Default: embedded openraft (meta role);
-                          Postgres or DynamoDB (M2), TiDB (M6) as external backends.
+                          Postgres or DynamoDB (M2), TiKV (R1, D124) as external backends.
              catalog:     Lakekeeper (Iceberg REST) — for Iceberg tables; external engines use it too
 ```
 
@@ -115,7 +115,7 @@ As built (M1.3): the openraft backend runs over the network. Every node holds a 
 | Embedded **openraft** (redb log, snapshots in the bucket; KRaft / ClickHouse Keeper style) | `operon-meta` | Default (M0) | `operon dev`, standalone, and clusters of 3 or 5 `meta` nodes; no external dependency |
 | **Postgres** | `operon-meta-postgres` | M2 | Deployments that already run managed Postgres (RDS/Aurora, Cloud SQL, Azure Database); no `meta` role to operate. Follows Lakekeeper's patterns; the throughput ceiling is open (Q17) |
 | **DynamoDB** | `operon-meta-dynamodb` | M2 | AWS-native and serverless deployments; the hosted control plane's store (M2.x) |
-| **TiDB** | `operon-meta-tidb` | M6 | Metadata beyond one Postgres primary: scale-out, strongly consistent SQL over the MySQL protocol |
+| ~~**TiDB**~~ **TiKV** | ~~`operon-meta-tidb`~~ `operon-meta-tikv` | ~~M6~~ R1 | Metadata beyond one Postgres primary, and Loam cloud and cluster metadata: scale-out, transactional KV over `tikv-client`. Replaces the TiDB backend (D124); no TiDB anywhere (D260) |
 
 Every backend serves the same relaxed contract (D59): `commit_wal` is atomic per partition group, commands carry bounded-skew stamps with GC claims instead of one monotonic clock, and composite reads follow documented read orders. The openraft backend is stronger, but callers rely only on the relaxed contract. One conformance suite, with the linearizability checker, runs against every backend, each backend has its own fault matrix, and the crash and fault gates run on each (§12 §2 item 5, §18 §4). The directory, the sharded metastore and the placement rules for millions of namespaces are in §18 §5.
 
