@@ -121,6 +121,7 @@ jobs:
               - *toolchain
               - "crates/operon-tikv/**"
               - "crates/operon-meta-tikv/**"
+              - "crates/operon-meta/**"
               - "crates/operon-meta-conformance/**"
               - "crates/operon-common/**"
               - "crates/operon-live*/**"
