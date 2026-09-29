@@ -6308,6 +6308,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "operon-safekeeper"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "hex",
+ "postcard",
+ "proptest",
+ "serde",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "operon-sim"
 version = "0.0.1"
 dependencies = [

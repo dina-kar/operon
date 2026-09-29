@@ -62,3 +62,12 @@ ab4be1c2cdd58d4e593202991fb520221c83bdfd plus the patches listed in
 docs/plans/r1-dependency-spike.md), pinned by revision in Cargo.toml. Its
 generated protobuf code comes from pingcap/kvproto (Apache License 2.0).
 Copyright TiKV Project Authors.
+
+Neon (https://github.com/neondatabase/neon), Apache License 2.0, Copyright
+Neon Inc. crates/operon-safekeeper/ ports the safekeeper wire protocol (v3)
+and the acceptor state machine from Neon's safekeeper/src/safekeeper.rs,
+safekeeper/src/handler.rs, safekeeper/src/receive_wal.rs,
+libs/utils/src/pageserver_feedback.rs and pgxn/neon/walproposer.c, revision
+77e22e4bf09d88b70b4a83a38c2f6de6301816b4 (the last published images), via
+the fork https://github.com/ostrium-labs/neon. deploy/neon/ is derived from
+Neon's docker-compose/ at the same revision.

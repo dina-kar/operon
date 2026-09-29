@@ -1,0 +1,24 @@
+[package]
+name = "operon-safekeeper"
+description = "Loam's WAL service for Neon computes: the safekeeper wire protocol (v3), the acceptor state machine and the WalStore trait that the TiKV hot tier implements (§28 P4a)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+hex.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+postcard.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true
