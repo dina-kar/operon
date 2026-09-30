@@ -216,6 +216,31 @@ impl TikvMeta {
         .await
     }
 
+    /// Deletes every ledger entry of `stream`, [`PRUNE_BATCH`] per
+    /// transaction.
+    pub(crate) async fn purge_idempotency_stream(&self, stream: StreamId) -> MetaResult<()> {
+        let (lo, hi) = keys::prefix_range(&keys::idempotency_entries(stream));
+        loop {
+            let (from, hi) = (lo.clone(), hi.clone());
+            let emptied = self
+                .write_plain("meta.purge_idempotency_stream", move |txn| {
+                    let (from, hi) = (from.clone(), hi.clone());
+                    Box::pin(async move {
+                        let page = txn.scan(&from, hi.as_deref(), PRUNE_BATCH).await?;
+                        let last = page.len() < PRUNE_BATCH;
+                        for (key, _) in page {
+                            txn.delete(&key).await?;
+                        }
+                        Ok::<_, TxnError>(Ok(last))
+                    })
+                })
+                .await?;
+            if emptied {
+                return Ok(());
+            }
+        }
+    }
+
     /// One transaction per page of [`PRUNE_BATCH`] entries, each checking
     /// the fence and stamped with its start timestamp.
     pub(crate) async fn prune_idempotency_keys_impl(
