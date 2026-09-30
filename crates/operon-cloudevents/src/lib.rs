@@ -305,7 +305,12 @@ fn validate(attrs: &[Attr]) -> Result<(), Error> {
             });
         }
         match attr.kind {
-            AttrType::Integer if attr.value.parse::<i32>().is_err() => {
+            AttrType::Integer
+                if attr
+                    .value
+                    .parse::<i32>()
+                    .map_or(true, |n| n.to_string() != attr.value) =>
+            {
                 return Err(Error::Type {
                     name: attr.name.clone(),
                     expected: "a 32-bit integer",

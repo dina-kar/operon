@@ -141,3 +141,22 @@ fn batches_round_trip_and_name_the_bad_event() {
     );
     assert!(parse_batch(SPEC_EXAMPLE.as_bytes()).is_err());
 }
+
+#[test]
+fn an_integer_extension_must_be_canonical() {
+    use operon_cloudevents::{Attr, AttrType, CloudEvent};
+    for bad in ["+5", "007", "-0", " 5"] {
+        let attrs = vec![
+            Attr::string("specversion", "1.0"),
+            Attr::string("id", "1"),
+            Attr::string("source", "/s"),
+            Attr::string("type", "t"),
+            Attr {
+                name: "n".into(),
+                value: bad.into(),
+                kind: AttrType::Integer,
+            },
+        ];
+        assert!(CloudEvent::new(attrs, None).is_err(), "{bad}");
+    }
+}
