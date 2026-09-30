@@ -17,7 +17,7 @@
 //! instance as the proposer are woken by an in-process registry; others poll
 //! the store.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -28,7 +28,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
 
-use crate::acceptor::Acceptor;
+use crate::acceptor::{Acceptor, Appends, PendingAppends};
 use crate::pgwire::{self, Startup};
 use crate::proto::{AcceptorMessage, Command, PROTO_VERSION, ProposerMessage};
 use crate::store::WalStore;
@@ -548,20 +548,50 @@ impl<S: WalStore> WalService<S> {
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut pending: Option<ProposerMessage> = None;
             let mut stats = PushStats::default();
+            // Appends in flight, oldest first: they are issued in LSN order
+            // and answered in that order, so every response's flush LSN
+            // covers only completed writes (§28 §7.3).
+            let depth = self.store.max_in_flight().max(1);
+            let mut flights: VecDeque<Flight> = VecDeque::new();
             loop {
+                // A message that cannot be handled while writes are in flight
+                // (or an append beyond the pipeline's depth) waits for them.
+                let must_land = match &pending {
+                    Some(ProposerMessage::Append(_)) => flights.len() >= depth,
+                    Some(_) => !flights.is_empty(),
+                    None => false,
+                };
+                if must_land {
+                    let (f, res) = land(&mut flights).await;
+                    self.answer(tl, &mut acc, f, res, &mut wr, &mut buf, &mut stats)
+                        .await?;
+                    continue;
+                }
                 let msg = match pending.take() {
                     Some(m) => m,
-                    None => tokio::select! {
-                        m = rx.recv() => match m {
-                            Some(m) => m,
-                            None => break,
-                        },
-                        _ = tick.tick() => {
-                            acc.refresh().await?;
-                            acc.persist_commit_lsn().await?;
-                            continue;
+                    None => {
+                        let ev = tokio::select! {
+                            biased;
+                            landed = land(&mut flights), if !flights.is_empty() => Event::Landed(Box::new(landed)),
+                            m = rx.recv(), if flights.len() < depth => Event::Msg(m),
+                            _ = tick.tick() => Event::Tick,
+                        };
+                        match ev {
+                            Event::Landed(landed) => {
+                                let (f, res) = *landed;
+                                self.answer(tl, &mut acc, f, res, &mut wr, &mut buf, &mut stats)
+                                    .await?;
+                                continue;
+                            }
+                            Event::Msg(Some(m)) => m,
+                            Event::Msg(None) => break,
+                            Event::Tick => {
+                                acc.refresh().await?;
+                                acc.persist_commit_lsn().await?;
+                                continue;
+                            }
                         }
-                    },
+                    }
                 };
                 match msg {
                     ProposerMessage::Greeting(_) => {
@@ -597,23 +627,38 @@ impl<S: WalStore> WalService<S> {
                         }
                         let t0 = std::time::Instant::now();
                         acc.observe_term(self.progress(tl).term);
-                        let r = acc.handle_appends(&batch).await?;
-                        if let AcceptorMessage::AppendResponse(resp) = &r
-                            && resp.term == term
-                        {
-                            self.registry.tail(tl, |t| {
-                                for a in batch.iter().filter(|a| a.h.end_lsn <= resp.flush_lsn) {
-                                    t.push(a.h.begin_lsn, a.wal.clone());
+                        match acc.begin_appends(&batch)? {
+                            Appends::Reply(r) => {
+                                // Answers stay in order: after the writes in flight.
+                                while !flights.is_empty() {
+                                    let (f, res) = land(&mut flights).await;
+                                    self.answer(tl, &mut acc, f, res, &mut wr, &mut buf, &mut stats)
+                                        .await?;
                                 }
-                            });
-                        }
-                        reply_to(&mut wr, &mut buf, &r).await?;
-                        if bytes > 0 {
-                            stats.record(tl, batch.len(), bytes, t0.elapsed());
+                                reply_to(&mut wr, &mut buf, &r).await?;
+                            }
+                            Appends::Pending(p) => {
+                                let task = p.batch.clone().map(|b| {
+                                    let store = self.store.clone();
+                                    tokio::spawn(async move { store.append(&tl, &b).await })
+                                });
+                                flights.push_back(Flight {
+                                    pending: p,
+                                    reqs: batch,
+                                    bytes,
+                                    t0,
+                                    task,
+                                });
+                            }
                         }
                     }
                 }
                 self.registry.publish(tl, Progress::of(&acc.state()));
+            }
+            while !flights.is_empty() {
+                let (f, res) = land(&mut flights).await;
+                self.answer(tl, &mut acc, f, res, &mut wr, &mut buf, &mut stats)
+                    .await?;
             }
             acc.persist_commit_lsn().await?;
             Ok(())
@@ -629,6 +674,38 @@ impl<S: WalStore> WalService<S> {
             let _ = send(&mut wr, &mut buf).await;
         }
         res
+    }
+
+    /// Answer one landed append: adopt its outcome, refresh the tail
+    /// readers use, and reply.
+    #[allow(clippy::too_many_arguments)]
+    async fn answer<W: AsyncWrite + Unpin>(
+        &self,
+        tl: TimelineId,
+        acc: &mut Acceptor<S>,
+        f: Flight,
+        res: Option<StoreAppend>,
+        wr: &mut W,
+        buf: &mut BytesMut,
+        stats: &mut PushStats,
+    ) -> Result<(), Error> {
+        let term = f.pending.term();
+        let r = acc.finish_appends(f.pending, res).await?;
+        if let AcceptorMessage::AppendResponse(resp) = &r
+            && resp.term == term
+        {
+            self.registry.tail(tl, |t| {
+                for a in f.reqs.iter().filter(|a| a.h.end_lsn <= resp.flush_lsn) {
+                    t.push(a.h.begin_lsn, a.wal.clone());
+                }
+            });
+        }
+        reply_to(wr, buf, &r).await?;
+        if f.bytes > 0 {
+            stats.record(tl, f.reqs.len(), f.bytes, f.t0.elapsed());
+        }
+        self.registry.publish(tl, Progress::of(&acc.state()));
+        Ok(())
     }
 
     async fn replicate<R, W>(
@@ -729,6 +806,41 @@ impl<S: WalStore> WalService<S> {
 }
 
 /// Append latency on one WAL push stream, logged every 10 s.
+/// A store append's outcome.
+type StoreAppend = Result<Result<AcceptorState, crate::store::Deposed>, Error>;
+
+/// One append between issue and answer.
+struct Flight {
+    pending: PendingAppends,
+    reqs: Vec<crate::proto::AppendRequest>,
+    bytes: usize,
+    t0: std::time::Instant,
+    /// The store write; `None` for heartbeats, which land at once.
+    task: Option<tokio::task::JoinHandle<StoreAppend>>,
+}
+
+enum Event {
+    Landed(Box<(Flight, Option<StoreAppend>)>),
+    Msg(Option<ProposerMessage>),
+    Tick,
+}
+
+/// Waits for the oldest append in flight and takes it off the queue.
+/// Cancel-safe: the queue only changes once the write has completed.
+async fn land(flights: &mut VecDeque<Flight>) -> (Flight, Option<StoreAppend>) {
+    let res = match flights.front_mut().and_then(|f| f.task.as_mut()) {
+        Some(task) => Some(
+            task.await
+                .unwrap_or_else(|e| Err(Error::Store(format!("append task: {e}")))),
+        ),
+        None => None,
+    };
+    let f = flights
+        .pop_front()
+        .unwrap_or_else(|| unreachable!("land() on an empty queue"));
+    (f, res)
+}
+
 #[derive(Debug, Default)]
 struct PushStats {
     since: Option<std::time::Instant>,
