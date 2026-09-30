@@ -1,4 +1,4 @@
-//! CloudEvents on streams (design §02 §7.4, D271): ingest with
+//! CloudEvents on streams (design §02 §7.4, D270): ingest with
 //! deduplication by `source` + `id` through the metastore ledger, and
 //! consume as events. [`ingest`] is shared by the HTTP route and the gRPC
 //! `ProduceCloudEvents` call.
