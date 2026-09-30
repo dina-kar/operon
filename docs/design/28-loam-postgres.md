@@ -13,7 +13,7 @@ The owner then chose the WAL design:
 - **A Loam crate speaks Neon's safekeeper protocol**, so walproposer and the pageserver stay unmodified.
 - **A pgbench merge gate** gates the switch-over.
 
-These are decisions **D230–D236**, all owner-approved on 2026-09-29. The WAL replacement (D233) is approved *direction*: it becomes the default only if the benchmark gate passes. The concrete WAL design is **D237–D241**. They are Loam's proposals within the owner's decisions and are marked as such. Open questions are **Q110–Q119**. Arm A of the WAL (§7.2, 2026-09-30) adds D263–D270 (D263, compio for the data path, is the owner's) and Q261–Q264.
+These are decisions **D230–D236**, all owner-approved on 2026-09-29. The WAL replacement (D233) is approved *direction*: it becomes the default only if the benchmark gate passes. The concrete WAL design is **D237–D241**. They are Loam's proposals within the owner's decisions and are marked as such. Open questions are **Q110–Q119**. Arm A of the WAL (§7.2, 2026-09-30) adds D263–D269 and D271 (D270 is the CloudEvents decision; D263, compio for the data path, is the owner's) and Q261–Q264.
 
 This document **supersedes §23's D149** (Neon for the showcase apps) and **D151** (fork only when needed). It **amends D150** (the control plane grows from a client into the primary control plane) and **D153** (PgDog, not Loam's pg listener, splices Postgres connections to computes). D148, D152, D154 and D155 stand. D156 and D157's WeSQL row are not affected.
 
@@ -581,7 +581,7 @@ rf 1 compares one safekeeper with one TiKV store; rf 3 compares three safekeeper
 3. **The in-process interpreted sender (Q112).** It removes the feeder's second stream.
 4. **Re-run on the §7 topology.** Server NVMe with PLP (fsync in µs, not ms), three nodes and real or `netem` AZ delays (Q114). The owner's < 5 ms p99 target is a server-hardware number. Both variants on this laptop are far above it.
 
-### 7.2 Arm A: a native leaderless WAL on local NVMe (D263–D270, 2026-09-30)
+### 7.2 Arm A: a native leaderless WAL on local NVMe (D263–D269 and D271, 2026-09-30)
 
 On 2026-09-30 the owner decided that the Loam WAL targets **native leaderless-WAL performance** instead of tuning the TiKV hot tier. Two arms are measured against the same gate:
 
@@ -597,7 +597,7 @@ The owner also asked for Arm A's store to be a tiered, low-level I/O layer, with
 | TiKV's Raft hop and apply on every append | No TiKV on the commit path. Each acceptor writes to its own local NVMe |
 | Three client round trips per append (TSO, fenced head read, prewrite) | None. The term fence is an in-memory check on the acceptor, made durable by the vote |
 | One append in flight per timeline | Many in flight. Writes are issued while earlier ones are still syncing, and acks follow the durable position (Q115 answered) |
-| The feeder shares the disk | The feeder stays until Q112 is solved, but its safekeeper moves to another filesystem (D270) |
+| The feeder shares the disk | The feeder stays until Q112 is solved, but its safekeeper moves to another filesystem (D271) |
 
 #### The design
 
@@ -668,7 +668,7 @@ The owner also asked for Arm A's store to be a tiered, low-level I/O layer, with
   - **`backup_lsn`** is advanced in the lease record, and the other acceptors read it from there.
   - **Trim.** A segment is recycled once every timeline in it has passed `min(backup_lsn, remote_consistent_lsn, commit_lsn)`.
   - **Pinning.** An idle timeline whose pageserver lags pins old segments. Rewriting its live records forward, as `raft-engine` purges, is left for later (Q262).
-- **D270. The pageserver feed stays the feeder for now (Q112).**
+- **D271. The pageserver feed stays the feeder for now (Q112).**
   - **Why not in-process decoding yet:** it needs Neon's `wal_decoder`, `postgres_ffi` (bindgen against the fork's Postgres server headers), `utils` and `pageserver_api`, which bring Neon's workspace dependency pins into Operon's. That is not feasible within this arm.
   - **Instead:**
     - exactly one designated acceptor runs the feeder;

@@ -12,7 +12,7 @@ publish = false
 bytes.workspace = true
 object_store.workspace = true
 operon-cache.workspace = true
-operon-collection.workspace = true
+operon-collection = { workspace = true, features = ["test-util"] }
 operon-common.workspace = true
 operon-link.workspace = true
 operon-log.workspace = true
