@@ -78,6 +78,50 @@ gate. The gate needs server hardware:
 - NVMe with power-loss protection;
 - the three-AZ topology of §7, with `tc netem` delays or real zones.
 
+## Arm A on a laptop (2026-09-30)
+
+Arm A (§28 §7.2) has three front-end and I/O tiers. They are run with
+`gate.sh --replicas 3 --repeats 3 --duration 60 --warmup 10 --scale 10 --candidates "nvme-pwritev2 nvme-uring nvme-sqpoll"`
+(baseline and candidates interleaved; the raw files and the gate report are in
+[`bench/results`](../../bench/results), `gate-rf3-20260930T174137Z.md`):
+
+| Variant | What runs |
+|---|---|
+| `nvme-pwritev2` | tokio front end, `O_DIRECT` + `pwritev2(RWF_DSYNC)` from a thread pool (the fallback tier) |
+| `nvme-uring` | compio shards, io_uring, `O_DIRECT` + `O_DSYNC` writes (FUA on this drive) |
+| `nvme-sqpoll` | as `nvme-uring`, with SQPOLL |
+
+Three acceptors per run, each with its own journal on btrfs, and three stock safekeepers as the
+baseline. Mean of 3 runs each, p50 / p99 in ms:
+
+| workload | safekeepers | tokio pwritev2 | compio | compio + SQPOLL |
+|---|---|---|---|---|
+| commit-1 | 8.48 / 34.02 | 9.23 / 39.05 | 6.52 / 27.83 | 6.03 / 26.83 |
+| commit-16 | 13.86 / 89.82 | 8.57 / 57.68 | 5.74 / 68.45 | 5.63 / 57.84 |
+| tpcb-16 | 32.35 / 304.22 | 18.99 / 231.68 | 14.70 / 205.74 | 12.70 / 118.14 |
+| bulk (WAL MB/s) | 117.6 | 10.8 | 12.3 | 14.3 |
+| WAL CPU per commit-1 tx (µs) | 3702 | 1893 | 1373 | 25055 |
+
+What this shows, and what it does not:
+
+- The commit-latency gate holds for compio and compio + SQPOLL on all three latency workloads.
+  The tokio `pwritev2` fallback fails `commit-1` (p99 39 ms against a baseline ceiling that the
+  gate tolerates up to 34 ms plus run-to-run spread) and passes the two others.
+- **The gate as a whole fails, for every tier, on `bulk`.** One 250 MB transaction runs at
+  11 to 14 MB/s on Arm A against 118 MB/s on the safekeepers. The same figure on all three tiers
+  points at a cause above the I/O tier (how the journal seals units or how the acceptor batches
+  appends under a streaming walproposer), not at the runtime. It is not fixed here.
+- SQPOLL buys a little latency (p99 tpcb-16 118 ms against 206 ms) and costs 18 times the CPU per
+  commit, because the poller thread spins. It is worth it only on a core that has nothing else to do.
+- This is a laptop, so read the numbers as direction, not as the gate. The noise column of the gate
+  report shows p99 spreads of 39% to 97% between baseline repeats, and most "pass" margins are
+  inside it. The host was shared: other builds and CI jobs ran during the runs (`--force`), so
+  p99 and p99.9 are pessimistic and unevenly so. The drive is a client NVMe (Samsung BM9C1a) with a
+  volatile write cache, so a FUA write costs more than on a power-loss-protected drive; the
+  journals and the baseline's volumes share one btrfs; all three acceptors and all three
+  safekeepers share one disk; there is no injected cross-AZ delay. The gate itself needs the server
+  hardware listed above, and an ext4 run to separate the btrfs cost.
+
 ## Not modelled yet
 
 - **Cross-AZ delays.** Both variants run with zero injected delay.
