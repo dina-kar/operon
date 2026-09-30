@@ -135,7 +135,7 @@ else
   fi
   if ! "$ROOT/scripts/tikv/playground.sh" status --tag "$TAG" >/dev/null 2>&1; then
     "$ROOT/scripts/tikv/playground.sh" start --tag "$TAG" --stores "$replicas" \
-      --kv-config "$kv_config" --timeout 180 --force >&2
+      --kv-config "$kv_config" --timeout 180 --force >&2 9>&-
     echo "$cfg_sum" >"$RUN_DIR/kv-config.sum"
   fi
   if [ "$place" = 1 ] && [ "$replicas" = 3 ]; then
@@ -144,7 +144,7 @@ else
   RUST_LOG=${RUST_LOG:-info} setsid nohup "$LOAM_WAL" --listen-pg 127.0.0.1:5460 \
     --listen-http 127.0.0.1:7690 --store "$store" --pipeline-depth "$depth" \
     --pd "$PD" --keyspace loam_pgwal \
-    --feed-safekeeper 127.0.0.1:5457 >"$RUN_DIR/loam-wal.log" 2>&1 </dev/null &
+    --feed-safekeeper 127.0.0.1:5457 >"$RUN_DIR/loam-wal.log" 2>&1 </dev/null 9>&- &
   echo $! >"$RUN_DIR/loam-wal.pid"
   for _ in $(seq 1 30); do curl -sf localhost:7690/v1/status >/dev/null && break; sleep 1; done
   SAFEKEEPERS=127.0.0.1:5460
