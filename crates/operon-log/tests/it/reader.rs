@@ -198,6 +198,9 @@ async fn a_batch_larger_than_max_bytes_is_returned_whole() {
     f.shutdown().await;
 }
 
+/// How soon after the append's ack a long poll must have woken.
+const WAKE_SLACK: Duration = Duration::from_secs(2);
+
 #[tokio::test]
 async fn a_long_poll_at_the_high_watermark_wakes_on_commit() {
     let flush_interval = Duration::from_millis(250);
@@ -229,7 +232,13 @@ async fn a_long_poll_at_the_high_watermark_wakes_on_commit() {
         .await
         .unwrap();
     let acked = Instant::now();
-    let (response, woke) = poll.await.unwrap();
+    // A missed wake-up fails here, not after the 30s `max_wait`.
+    let abort = poll.abort_handle();
+    let Ok(joined) = tokio::time::timeout(WAKE_SLACK, poll).await else {
+        abort.abort();
+        panic!("the poll did not wake within {WAKE_SLACK:?} of the ack");
+    };
+    let (response, woke) = joined.unwrap();
     let response = response.unwrap();
     assert_eq!(response.records.len(), 3);
     assert_eq!(response.records[0].offset, 2);
@@ -239,10 +248,10 @@ async fn a_long_poll_at_the_high_watermark_wakes_on_commit() {
     // the append instead also timed the flush interval, the segment put and
     // the metastore commit, which on a loaded CI runner overshot a
     // `flush_interval + 100ms` bound (357 to 543ms seen) without any late
-    // wake-up. The 2s slack is only scheduling noise; a missed wake-up
-    // would sit out the whole 30s `max_wait`.
+    // wake-up. The slack is only scheduling noise; a missed wake-up would
+    // sit out the whole 30s `max_wait`.
     let late = woke.saturating_duration_since(acked);
-    assert!(late < Duration::from_secs(2), "woke {late:?} after the ack");
+    assert!(late < WAKE_SLACK, "woke {late:?} after the ack");
     f.shutdown().await;
 }
 
