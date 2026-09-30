@@ -1,4 +1,4 @@
-//! The stream ingest ledger of idempotency keys (design §02 §7.4, D270):
+//! The stream ingest ledger of idempotency keys (design §02 §7.4, D271):
 //! claim, complete, release and prune.
 
 use std::collections::BTreeMap;
