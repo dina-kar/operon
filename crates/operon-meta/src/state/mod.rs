@@ -76,7 +76,7 @@ pub struct MetaState {
     /// carries it only in format 7, written while it is non-empty.
     #[serde(skip)]
     alias_targets: BTreeMap<(NamespaceId, String), AliasTargets>,
-    /// The stream ingest ledger (design §02 §7.4, D271): per stream and
+    /// The stream ingest ledger (design §02 §7.4, D273): per stream and
     /// idempotency key, a pending claim or where the event was appended,
     /// until it lapses and is pruned. Serde skips it, so the derived
     /// encoding stays M1.1's; a snapshot carries it only in format 8,
