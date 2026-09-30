@@ -349,3 +349,146 @@ async fn acceptor_on_tikv_commit_latency_sample() {
         p(0.99)
     );
 }
+
+// The raw store (§28 §7.3) on a live cluster.
+
+async fn raw_store() -> Option<operon_safekeeper::tikv_raw::TikvRawWalStore> {
+    let cluster = testing::cluster().await?;
+    let kv = operon_safekeeper::tikv_raw::TikvRawKv::connect(cluster.config(testing::TEST_META))
+        .await
+        .unwrap();
+    Some(kv.into_store(8))
+}
+
+async fn read_all_raw(
+    s: &operon_safekeeper::tikv_raw::TikvRawWalStore,
+    tl: &TimelineId,
+    from: u64,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut at = Lsn(from);
+    loop {
+        let got = s.read(tl, at, 1 << 20).await.unwrap();
+        if got.is_empty() {
+            return out;
+        }
+        for (lsn, b) in got {
+            assert_eq!(lsn, at);
+            at = Lsn(at.0 + b.len() as u64);
+            out.extend_from_slice(&b);
+        }
+    }
+}
+
+#[tokio::test]
+async fn raw_store_fences_a_deposed_writer() {
+    let Some(old) = raw_store().await else { return };
+    let t = tl(40);
+    old.create(&t, ServerInfo::default(), Lsn::INVALID)
+        .await
+        .unwrap();
+    assert!(old.vote(&t, 1).await.unwrap().0);
+    old.elected(&t, &elected(1, 100, &[(1, 100)]))
+        .await
+        .unwrap()
+        .unwrap();
+    let st = old
+        .append(&t, &batch(1, 100, b"abcdef", 0))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(st.flush_lsn, Lsn(106));
+
+    // A second instance on the same keys: a new proposer takes over.
+    let new = operon_safekeeper::tikv_raw::RawWalStore::new(
+        old.kv().clone(),
+        old.kv().root().to_vec(),
+        8,
+    );
+    let (given, st) = new.vote(&t, 2).await.unwrap();
+    assert!(given);
+    assert_eq!(st.flush_lsn, Lsn(106));
+    // The old writer's put lands, its fence read refuses the ack.
+    assert_eq!(
+        old.append(&t, &batch(1, 106, b"ghi", 0)).await.unwrap(),
+        Err(Deposed { current: 2 })
+    );
+    new.elected(&t, &elected(2, 104, &[(1, 100), (2, 104)]))
+        .await
+        .unwrap()
+        .unwrap();
+    new.append(&t, &batch(2, 104, b"XY", 0))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read_all_raw(&new, &t, 100).await, b"abcdXY");
+    let st = new.load(&t).await.unwrap().unwrap();
+    assert_eq!((st.term, st.flush_lsn), (2, Lsn(106)));
+    // Trim below the commit point.
+    new.record_commit_lsn(&t, 2, Lsn(106))
+        .await
+        .unwrap()
+        .unwrap();
+    new.record_backup_lsn(&t, Lsn(106)).await.unwrap();
+    new.record_remote_consistent_lsn(&t, Lsn(106))
+        .await
+        .unwrap();
+    assert_eq!(new.trim(&t, Lsn(105)).await.unwrap(), Lsn(105));
+    assert_eq!(read_all_raw(&new, &t, 105).await, b"Y");
+}
+
+/// Pipelined appends on a live cluster, and a latency sample of the raw
+/// commit path (one 8 KiB append per commit, one in flight).
+#[tokio::test]
+async fn raw_store_pipelined_appends_and_latency_sample() {
+    let Some(s) = raw_store().await else { return };
+    let s = Arc::new(s);
+    let t = tl(41);
+    s.create(&t, ServerInfo::default(), Lsn::INVALID)
+        .await
+        .unwrap();
+    s.vote(&t, 1).await.unwrap();
+    s.elected(&t, &elected(1, 1 << 24, &[(1, 1 << 24)]))
+        .await
+        .unwrap()
+        .unwrap();
+    let chunk = vec![7u8; 8192];
+    let mut at = 1u64 << 24;
+    let mut lat = Vec::new();
+    for _ in 0..200 {
+        let t0 = Instant::now();
+        let st = s
+            .append(&t, &batch(1, at, &chunk, at))
+            .await
+            .unwrap()
+            .unwrap();
+        lat.push(t0.elapsed());
+        at += 8192;
+        assert_eq!(st.flush_lsn, Lsn(at));
+    }
+    lat.sort();
+    let p = |q: f64| lat[((lat.len() as f64 * q) as usize).min(lat.len() - 1)];
+    eprintln!(
+        "tikv raw append 8 KiB: p50 {:?} p90 {:?} p99 {:?}",
+        p(0.5),
+        p(0.9),
+        p(0.99)
+    );
+    // 64 appends, 8 in flight at a time.
+    let start = at;
+    let mut tasks = Vec::new();
+    for i in 0..64u64 {
+        let s = s.clone();
+        let b = batch(1, start + i * 8192, &chunk, 0);
+        tasks.push(tokio::spawn(async move { s.append(&t, &b).await }));
+        if tasks.len() >= 8 {
+            tasks.remove(0).await.unwrap().unwrap().unwrap();
+        }
+    }
+    for task in tasks {
+        task.await.unwrap().unwrap().unwrap();
+    }
+    let end = start + 64 * 8192;
+    assert_eq!(s.load(&t).await.unwrap().unwrap().flush_lsn, Lsn(end));
+    assert_eq!(read_all_raw(&s, &t, start).await.len() as u64, end - start);
+}
