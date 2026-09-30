@@ -34,6 +34,7 @@ operon-link.workspace = true
 operon-log.workspace = true
 operon-meta.workspace = true
 operon-meta-tikv = { workspace = true, optional = true }
+opensrv-mysql = { workspace = true, optional = true }
 operon-qdrant = { workspace = true, optional = true }
 operon-query.workspace = true
 operon-store.workspace = true
@@ -77,6 +78,8 @@ durable = ["dep:operon-durable"]
 durable-mysql = ["durable", "operon-durable/mysql"]
 # The native TiKV durable store (`--durable-store tikv://…`).
 durable-tikv = ["durable", "operon-durable/tikv"]
+# The MySQL wire listener over collections (`--mysql-listen`).
+mysql-wire = ["dep:opensrv-mysql", "dep:datafusion"]
 # The PostgreSQL wire listener over collections (`--pg-listen`).
 pgwire = ["dep:datafusion-postgres", "dep:datafusion", "dep:futures"]
 # The native stream gRPC endpoint used by Dapr protocol adapters.
