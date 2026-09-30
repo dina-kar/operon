@@ -105,8 +105,9 @@ baseline. Mean of 3 runs each, p50 / p99 in ms:
 What this shows, and what it does not:
 
 - The commit-latency gate holds for compio and compio + SQPOLL on all three latency workloads.
-  The tokio `pwritev2` fallback fails `commit-1` (p99 39 ms against a baseline ceiling that the
-  gate tolerates up to 34 ms plus run-to-run spread) and passes the two others.
+  The tokio `pwritev2` fallback fails `commit-1` on throughput, not latency: its mean p99 (39 ms)
+  is inside the baseline's range (26 to 39 ms), but its mean of 88 TPS is below the baseline's
+  slowest repeat (92), dragged down by one 64 TPS run. It passes `commit-16` and `tpcb-16`.
 - **The gate as a whole fails, for every tier, on `bulk`.** One 250 MB transaction runs at
   11 to 14 MB/s on Arm A against 118 MB/s on the safekeepers. The same figure on all three tiers
   points at a cause above the I/O tier (how the journal seals units or how the acceptor batches
