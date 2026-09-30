@@ -153,7 +153,7 @@ fn carried(err: &DataFusionError) -> Option<ServiceError> {
 }
 
 /// A planning error: the service error it carries, else `InvalidArgument`.
-fn planning(err: DataFusionError) -> ServiceError {
+pub fn planning(err: DataFusionError) -> ServiceError {
     carried(&err).unwrap_or_else(|| ServiceError::InvalidArgument(format!("sql: {err}")))
 }
 

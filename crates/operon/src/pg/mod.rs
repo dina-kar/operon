@@ -559,7 +559,7 @@ impl QueryHook for ReadOnlyHook {
             context
                 .execute_logical_plan(plan)
                 .await
-                .map_err(|error| ServiceError::InvalidArgument(format!("sql: {error}")))
+                .map_err(operon_query::sql::planning)
         };
         Some(
             self.respond(context, frame, &format, client.metadata())
