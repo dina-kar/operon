@@ -8,18 +8,22 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+async-trait.workspace = true
+base64.workspace = true
 bytes.workspace = true
+operon-cloudevents.workspace = true
 operon-log.workspace = true
 operon-query.workspace = true
 prost.workspace = true
+prost-types.workspace = true
 tokio.workspace = true
+time.workspace = true
 tokio-stream.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
 tonic.workspace = true
 tonic-prost.workspace = true
 
 [dev-dependencies]
-async-trait.workspace = true
 operon-common.workspace = true
 
 [build-dependencies]

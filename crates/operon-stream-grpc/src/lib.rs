@@ -13,15 +13,38 @@ use tokio_stream::wrappers::TcpListenerStream;
 use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status};
 
-pub mod proto {
-    tonic::include_proto!("loam.stream.v1");
+pub mod events;
+
+// The generated code names the CloudEvents package by relative paths, so
+// both packages live at their own module paths, as prost expects.
+mod generated {
+    pub mod io {
+        pub mod cloudevents {
+            pub mod v1 {
+                tonic::include_proto!("io.cloudevents.v1");
+            }
+        }
+    }
+    pub mod loam {
+        pub mod stream {
+            pub mod v1 {
+                tonic::include_proto!("loam.stream.v1");
+            }
+        }
+    }
 }
 
+/// `loam.stream.v1`.
+pub use generated::loam::stream::v1 as proto;
+
+pub use events::EventProducer;
+use proto::produce_cloud_events_request::Events;
 use proto::stream_service_server::{StreamService, StreamServiceServer};
 
 #[derive(Clone)]
 struct NativeStreams {
     producer: Arc<dyn StreamProducer>,
+    events: Arc<dyn EventProducer>,
 }
 
 #[tonic::async_trait]
@@ -72,6 +95,38 @@ impl StreamService for NativeStreams {
             last_offset: ack.last_offset,
         }))
     }
+
+    async fn produce_cloud_events(
+        &self,
+        request: Request<proto::ProduceCloudEventsRequest>,
+    ) -> Result<Response<proto::ProduceCloudEventsResponse>, Status> {
+        let request = request.into_inner();
+        if request.namespace.is_empty() || request.stream.is_empty() {
+            return Err(Status::invalid_argument(
+                "namespace and stream are required",
+            ));
+        }
+        let events = match &request.events {
+            Some(Events::Batch(batch)) => events::from_proto_batch(batch),
+            Some(Events::JsonBatch(body)) => events::from_json_batch(body),
+            None => Err("a batch of events is required".to_string()),
+        }
+        .map_err(|message| Status::invalid_argument(format!("invalid CloudEvent: {message}")))?;
+        if events.is_empty() {
+            return Err(Status::invalid_argument("events must not be empty"));
+        }
+        let results = self
+            .events
+            .produce_events(
+                &request.namespace,
+                &request.stream,
+                request.partition,
+                events,
+            )
+            .await
+            .map_err(status)?;
+        Ok(Response::new(proto::ProduceCloudEventsResponse { results }))
+    }
 }
 
 fn status(error: ServiceError) -> Status {
@@ -92,10 +147,11 @@ fn status(error: ServiceError) -> Status {
 pub async fn serve(
     listener: TcpListener,
     producer: Arc<dyn StreamProducer>,
+    events: Arc<dyn EventProducer>,
     stop: CancellationToken,
 ) -> Result<(), tonic::transport::Error> {
     tonic::transport::Server::builder()
-        .add_service(StreamServiceServer::new(NativeStreams { producer }))
+        .add_service(StreamServiceServer::new(NativeStreams { producer, events }))
         .serve_with_incoming_shutdown(TcpListenerStream::new(listener), stop.cancelled_owned())
         .await
 }
@@ -167,6 +223,34 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
+    impl EventProducer for Recorder {
+        async fn produce_events(
+            &self,
+            _ns: &str,
+            stream: &str,
+            partition: Option<u32>,
+            events: Vec<operon_cloudevents::CloudEvent>,
+        ) -> Result<Vec<proto::EventResult>, ServiceError> {
+            if stream == "missing" {
+                return Err(ServiceError::NotFound {
+                    kind: "stream",
+                    name: stream.to_string(),
+                });
+            }
+            Ok(events
+                .iter()
+                .enumerate()
+                .map(|(i, _)| proto::EventResult {
+                    status: proto::EventStatus::Appended.into(),
+                    partition: partition.unwrap_or(0),
+                    offset: i as u64,
+                    retry_after_ms: 0,
+                })
+                .collect())
+        }
+    }
+
     fn request(stream: &str, records: usize) -> proto::ProduceRequest {
         proto::ProduceRequest {
             namespace: "default".into(),
@@ -198,7 +282,12 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let recorder = Arc::new(Recorder::default());
         let stop = CancellationToken::new();
-        let server = tokio::spawn(serve(listener, recorder.clone(), stop.clone()));
+        let server = tokio::spawn(serve(
+            listener,
+            recorder.clone(),
+            recorder.clone(),
+            stop.clone(),
+        ));
         let mut client = StreamServiceClient::connect(format!("http://{addr}"))
             .await
             .unwrap();
@@ -226,6 +315,157 @@ mod tests {
         let unnamed = client.produce(request("", 1)).await.unwrap_err();
         assert_eq!(unnamed.code(), tonic::Code::InvalidArgument);
         let missing = client.produce(request("missing", 1)).await.unwrap_err();
+        assert_eq!(missing.code(), tonic::Code::NotFound);
+
+        stop.cancel();
+        server.await.unwrap().unwrap();
+    }
+
+    fn cloud_event(id: &str) -> events::cloudevents::CloudEvent {
+        use events::cloudevents::cloud_event::cloud_event_attribute_value::Attr;
+        use events::cloudevents::cloud_event::{CloudEventAttributeValue, Data};
+        let attr = |attr| CloudEventAttributeValue { attr: Some(attr) };
+        events::cloudevents::CloudEvent {
+            id: id.into(),
+            source: "/orders".into(),
+            spec_version: "1.0".into(),
+            r#type: "order.created".into(),
+            attributes: [
+                (
+                    "subject".to_string(),
+                    attr(Attr::CeString("order-7".into())),
+                ),
+                (
+                    "time".to_string(),
+                    attr(Attr::CeTimestamp(prost_types::Timestamp {
+                        seconds: 1_790_762_400,
+                        nanos: 250_000_000,
+                    })),
+                ),
+                ("retries".to_string(), attr(Attr::CeInteger(3))),
+                ("urgent".to_string(), attr(Attr::CeBoolean(true))),
+                ("blob".to_string(), attr(Attr::CeBytes(vec![1, 2, 3]))),
+                (
+                    "datacontenttype".to_string(),
+                    attr(Attr::CeString("application/json".into())),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            data: Some(Data::TextData("{\"total\":12}".into())),
+        }
+    }
+
+    #[test]
+    fn a_protobuf_event_round_trips_through_the_codec() {
+        let proto = cloud_event("p-1");
+        let event = events::from_proto(&proto).unwrap();
+        assert_eq!(event.attr("time"), Some("2026-09-30T10:00:00.25Z"));
+        assert_eq!(event.attr("retries"), Some("3"));
+        assert_eq!(event.attr("blob"), Some("AQID"));
+        assert_eq!(event.data().map(|d| &d[..]), Some(&b"{\"total\":12}"[..]));
+        assert_eq!(events::to_proto(&event), proto);
+        // The same event through the JSON format keeps its extension types.
+        let json = operon_cloudevents::json::write_event(&event);
+        let again = operon_cloudevents::json::parse_event(&json).unwrap();
+        assert_eq!(again.attr("retries"), Some("3"));
+    }
+
+    #[test]
+    fn proto_data_and_untyped_attributes_are_refused() {
+        use events::cloudevents::cloud_event::{CloudEventAttributeValue, Data};
+        let mut any = cloud_event("p-2");
+        any.data = Some(Data::ProtoData(prost_types::Any::default()));
+        assert!(events::from_proto(&any).is_err());
+        let mut empty = cloud_event("p-3");
+        empty
+            .attributes
+            .insert("x".into(), CloudEventAttributeValue { attr: None });
+        assert!(events::from_proto(&empty).is_err());
+        let mut bad = cloud_event("p-4");
+        bad.spec_version = "0.3".into();
+        assert!(events::from_proto(&bad).is_err());
+    }
+
+    #[tokio::test]
+    async fn produce_cloud_events_answers_per_event() {
+        let listener = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let recorder = Arc::new(Recorder::default());
+        let stop = CancellationToken::new();
+        let server = tokio::spawn(serve(
+            listener,
+            recorder.clone(),
+            recorder.clone(),
+            stop.clone(),
+        ));
+        let mut client = StreamServiceClient::connect(format!("http://{addr}"))
+            .await
+            .unwrap();
+        let request =
+            |stream: &str, events: Option<proto::produce_cloud_events_request::Events>| {
+                proto::ProduceCloudEventsRequest {
+                    namespace: "default".into(),
+                    stream: stream.into(),
+                    partition: Some(1),
+                    events,
+                }
+            };
+        let batch = events::cloudevents::CloudEventBatch {
+            events: vec![cloud_event("g-1"), cloud_event("g-2")],
+        };
+        let answer = client
+            .produce_cloud_events(request(
+                "events",
+                Some(proto::produce_cloud_events_request::Events::Batch(batch)),
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(answer.results.len(), 2);
+        assert_eq!(answer.results[1].offset, 1);
+        assert_eq!(answer.results[0].partition, 1);
+
+        // The JSON batch is read by the same codec as HTTP's.
+        let json = br#"[{"specversion":"1.0","id":"j-1","source":"/s","type":"t"}]"#;
+        let answer = client
+            .produce_cloud_events(request(
+                "events",
+                Some(proto::produce_cloud_events_request::Events::JsonBatch(
+                    json.to_vec(),
+                )),
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(answer.results.len(), 1);
+
+        let invalid = br#"[{"specversion":"1.0","id":"j-1","source":"/s","type":"t"},{"id":"x"}]"#;
+        let err = client
+            .produce_cloud_events(request(
+                "events",
+                Some(proto::produce_cloud_events_request::Events::JsonBatch(
+                    invalid.to_vec(),
+                )),
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(err.message().contains("event 1"), "{err}");
+        let none = client
+            .produce_cloud_events(request("events", None))
+            .await
+            .unwrap_err();
+        assert_eq!(none.code(), tonic::Code::InvalidArgument);
+        let missing = client
+            .produce_cloud_events(request(
+                "missing",
+                Some(proto::produce_cloud_events_request::Events::JsonBatch(
+                    json.to_vec(),
+                )),
+            ))
+            .await
+            .unwrap_err();
         assert_eq!(missing.code(), tonic::Code::NotFound);
 
         stop.cancel();

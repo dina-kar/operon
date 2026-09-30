@@ -530,3 +530,57 @@ pub(super) async fn fetch_events(
         .insert("operon-high-watermark", number(response.high_watermark));
     Ok(out)
 }
+
+/// The gRPC `ProduceCloudEvents` ingest: the same path as the HTTP route.
+#[cfg(feature = "stream-grpc")]
+#[derive(Clone, Debug)]
+pub struct NativeEventProducer {
+    pub meta: Arc<dyn MetaStore>,
+    pub writer: LogWriter,
+    pub config: EventsConfig,
+    pub node_id: u64,
+}
+
+#[cfg(feature = "stream-grpc")]
+#[async_trait::async_trait]
+impl operon_stream_grpc::EventProducer for NativeEventProducer {
+    async fn produce_events(
+        &self,
+        ns: &str,
+        stream: &str,
+        partition: Option<u32>,
+        events: Vec<CloudEvent>,
+    ) -> Result<Vec<operon_stream_grpc::proto::EventResult>, operon_query::ServiceError> {
+        use operon_stream_grpc::proto::{EventResult, EventStatus as Status};
+        let ctx = IngestContext {
+            meta: &self.meta,
+            writer: &self.writer,
+            config: &self.config,
+            node_id: self.node_id,
+        };
+        let report = ingest(&ctx, ns, stream, partition, &events)
+            .await
+            .map_err(|err| super::streams::service_error(err, stream))?;
+        Ok(report
+            .outcomes
+            .iter()
+            .map(|outcome| {
+                let (partition, offset) = outcome.location.unwrap_or_default();
+                EventResult {
+                    status: match outcome.status {
+                        EventStatus::Appended => Status::Appended,
+                        EventStatus::Duplicate => Status::Duplicate,
+                        EventStatus::InFlight { .. } => Status::InFlight,
+                    }
+                    .into(),
+                    partition,
+                    offset,
+                    retry_after_ms: match outcome.status {
+                        EventStatus::InFlight { retry_after_ms } => retry_after_ms,
+                        _ => 0,
+                    },
+                }
+            })
+            .collect())
+    }
+}

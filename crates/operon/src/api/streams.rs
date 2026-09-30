@@ -99,7 +99,7 @@ pub struct NativeStreamProducer {
 
 /// An [`ApiError`] as a service error, by status (rule 7), keeping the
 /// message.
-fn service_error(err: ApiError, stream: &str) -> ServiceError {
+pub(crate) fn service_error(err: ApiError, stream: &str) -> ServiceError {
     let message = err.message().to_string();
     match err.status() {
         StatusCode::BAD_REQUEST => ServiceError::InvalidArgument(message),
