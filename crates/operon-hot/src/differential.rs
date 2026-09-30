@@ -987,6 +987,25 @@ const MIN_JUDGED: u64 = 20;
 /// are still judged on their own from [`MIN_POOLED`] queries.
 const MIN_POOLED: u64 = 50;
 
+/// Which tiers a phase with `approximate` approximate queries is judged on
+/// by itself: `(hot, cold)`.
+fn tiers_judged(approximate: u64) -> (bool, bool) {
+    (approximate >= MIN_JUDGED, approximate >= MIN_POOLED)
+}
+
+#[cfg(test)]
+mod judged_tests {
+    use super::*;
+
+    #[test]
+    fn the_thresholds_are_inclusive_and_the_cold_tier_needs_more() {
+        assert_eq!(tiers_judged(MIN_JUDGED - 1), (false, false));
+        assert_eq!(tiers_judged(MIN_JUDGED), (true, false));
+        assert_eq!(tiers_judged(MIN_POOLED - 1), (true, false));
+        assert_eq!(tiers_judged(MIN_POOLED), (true, true));
+    }
+}
+
 /// One answer, as compared.
 struct Answer {
     /// The canonical body: the response without `hot_used`, or the error.
@@ -1576,8 +1595,7 @@ impl DiffHarness {
         // A phase with few approximate queries is judged only in the pool
         // of such phases (row 12.5; the cold tier from `MIN_POOLED` queries,
         // Ruling C4): one miss in three queries is 0.933.
-        let hot_judged = approximate >= MIN_JUDGED;
-        let cold_judged = approximate >= MIN_POOLED;
+        let (hot_judged, cold_judged) = tiers_judged(approximate);
         for (tier, value, judged) in [
             ("hot", report.hot_recall, hot_judged),
             ("cold", report.cold_recall, cold_judged),
