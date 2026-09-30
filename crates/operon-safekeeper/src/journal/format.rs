@@ -220,7 +220,12 @@ mod tests {
     #[test]
     fn a_record_round_trips_and_pads_to_eight() {
         let mut out: Vec<u8> = Vec::new();
-        put_record(&mut out, 3, &hdr(Kind::Append, 5), &[&b"hel"[..], &b"lo"[..]]);
+        put_record(
+            &mut out,
+            3,
+            &hdr(Kind::Append, 5),
+            &[&b"hel"[..], &b"lo"[..]],
+        );
         assert_eq!(out.len(), RECORD_HEADER + 8);
         match parse_record(&out, 3, SEGMENT_HEADER) {
             Parsed::Record {

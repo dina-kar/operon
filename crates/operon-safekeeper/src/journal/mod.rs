@@ -363,22 +363,23 @@ impl Journal {
             }
         }
         drop(buf);
-        let last_data = with_data.last().map_or(0, |f| f.seq);
         let (mut ready, mut free): (VecDeque<_>, Vec<_>) = (VecDeque::new(), Vec::new());
         for p in segs.list_free().map_err(io_err)? {
-            free.push(Retired { path: p, held: None });
+            free.push(Retired {
+                path: p,
+                held: None,
+            });
         }
+        // An empty segment may still hold stale records past the first unit
+        // (a torn or zeroed head): never reuse it under its own number, only
+        // recycle its file under a new one.
         for f in empty {
-            if f.seq > last_data {
-                ready.push_back(f);
-            } else {
-                let seq = f.seq;
-                drop(f);
-                free.push(Retired {
-                    path: segs.retire(seq).map_err(io_err)?,
-                    held: None,
-                });
-            }
+            let seq = f.seq;
+            drop(f);
+            free.push(Retired {
+                path: segs.retire(seq).map_err(io_err)?,
+                held: None,
+            });
         }
         let mut max_seq = seqs.last().copied().unwrap_or(0);
         // The first segments are prepared before the journal serves anything,
@@ -532,7 +533,10 @@ impl Journal {
             let seq = st.cur.seq;
             let next_off = st.next_off;
             let unit = st.next_id;
-            let open = st.open.as_mut().ok_or_else(|| Error::Store("no open unit".into()))?;
+            let open = st
+                .open
+                .as_mut()
+                .ok_or_else(|| Error::Store("no open unit".into()))?;
             let pos = open.len();
             format::put_record(open, seq, h, payload);
             if h.kind == Kind::Append {
@@ -879,9 +883,17 @@ pub fn pwrite_dsync(f: &std::fs::File, buf: &[u8], mut off: u64) -> io::Result<(
     use rustix::io::{ReadWriteFlags, pwritev2};
     let mut done = 0usize;
     while done < buf.len() {
-        match pwritev2(f, &[io::IoSlice::new(&buf[done..])], off, ReadWriteFlags::DSYNC) {
+        match pwritev2(
+            f,
+            &[io::IoSlice::new(&buf[done..])],
+            off,
+            ReadWriteFlags::DSYNC,
+        ) {
             Ok(0) => {
-                return Err(io::Error::new(io::ErrorKind::WriteZero, "pwritev2 wrote nothing"));
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "pwritev2 wrote nothing",
+                ));
             }
             Ok(n) => {
                 done += n;
@@ -975,9 +987,13 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (j, _) = replay(cfg(d.path(), Tier::Buffered));
         j.start();
-        let a = j.append(&append_hdr(tl(1), 0, 10), &[&[1u8; 10][..]]).unwrap();
+        let a = j
+            .append(&append_hdr(tl(1), 0, 10), &[&[1u8; 10][..]])
+            .unwrap();
         j.wait(a.unit).await.unwrap();
-        let b = j.append(&append_hdr(tl(1), 10, 10), &[&[2u8; 10][..]]).unwrap();
+        let b = j
+            .append(&append_hdr(tl(1), 10, 10), &[&[2u8; 10][..]])
+            .unwrap();
         j.wait(b.unit).await.unwrap();
         j.close();
         // Tear the second record.
@@ -987,13 +1003,52 @@ mod tests {
         let (j2, got) = replay(cfg(d.path(), Tier::Buffered));
         assert_eq!(got.len(), 1);
         j2.start();
-        let c = j2.append(&append_hdr(tl(1), 10, 5), &[&[3u8; 5][..]]).unwrap();
+        let c = j2
+            .append(&append_hdr(tl(1), 10, 5), &[&[3u8; 5][..]])
+            .unwrap();
         j2.wait(c.unit).await.unwrap();
         j2.close();
         let (_j3, got) = replay(cfg(d.path(), Tier::Buffered));
         assert_eq!(got.len(), 2);
         assert_eq!(got[1].1.lsn, Lsn(10));
         assert!(got[1].0 > got[0].0, "the new record is in a later segment");
+    }
+
+    #[tokio::test]
+    async fn an_emptied_head_never_lets_stale_later_units_replay() {
+        let d = tempfile::tempdir().unwrap();
+        let (j, _) = replay(cfg(d.path(), Tier::Buffered));
+        j.start();
+        let a = j
+            .append(&append_hdr(tl(1), 0, 10), &[&[1u8; 10][..]])
+            .unwrap();
+        j.wait(a.unit).await.unwrap();
+        let b = j
+            .append(&append_hdr(tl(1), 10, 10), &[&[2u8; 10][..]])
+            .unwrap();
+        j.wait(b.unit).await.unwrap();
+        j.close();
+        assert_eq!(a.seq, b.seq);
+        // Zero the first unit only: the second is still on disk behind it.
+        let path = d.path().join(format!("{:016x}.seg", a.seq));
+        let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        f.write_all_at(&[0u8; BLOCK], SEGMENT_HEADER as u64)
+            .unwrap();
+        let (j2, got) = replay(cfg(d.path(), Tier::Buffered));
+        assert!(got.is_empty());
+        j2.start();
+        // Write past where the stale unit sits, with different LSNs.
+        let mut last = 0;
+        for i in 0..4u64 {
+            last = j2
+                .append(&append_hdr(tl(1), 100 + i, 10), &[&[3u8; 10][..]])
+                .unwrap()
+                .unit;
+        }
+        j2.wait(last).await.unwrap();
+        j2.close();
+        let (_j3, got) = replay(cfg(d.path(), Tier::Buffered));
+        assert!(got.iter().all(|(_, h, _)| h.lsn.0 >= 100), "{got:?}");
     }
 
     #[tokio::test]
@@ -1029,7 +1084,10 @@ mod tests {
         j.close();
         let (_j2, got) = replay(cfg(d.path(), Tier::Buffered));
         let lsns: Vec<u64> = got.iter().map(|(_, h, _)| h.lsn.0).collect();
-        assert!(lsns.windows(2).all(|w| w[0] < w[1]), "log order, no stale records");
+        assert!(
+            lsns.windows(2).all(|w| w[0] < w[1]),
+            "log order, no stale records"
+        );
         assert_eq!(*lsns.last().unwrap(), 199 * 4000);
     }
 
@@ -1038,7 +1096,10 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (j, _) = replay(cfg(d.path(), Tier::Buffered));
         let big = vec![0u8; 20 << 10];
-        assert!(j.append(&append_hdr(tl(1), 0, big.len()), &[&big[..]]).is_err());
+        assert!(
+            j.append(&append_hdr(tl(1), 0, big.len()), &[&big[..]])
+                .is_err()
+        );
         assert!(j.append(&append_hdr(tl(1), 0, 3), &[&b"ab"[..]]).is_err());
         j.close();
     }
@@ -1047,9 +1108,13 @@ mod tests {
     fn units_are_block_aligned_and_ids_follow_the_order() {
         let d = tempfile::tempdir().unwrap();
         let (j, _) = replay(cfg(d.path(), Tier::Buffered));
-        let a = j.append(&append_hdr(tl(1), 0, 10), &[&[1u8; 10][..]]).unwrap();
+        let a = j
+            .append(&append_hdr(tl(1), 0, 10), &[&[1u8; 10][..]])
+            .unwrap();
         let u1 = j.try_take().unwrap();
-        let b = j.append(&append_hdr(tl(1), 10, 10), &[&[1u8; 10][..]]).unwrap();
+        let b = j
+            .append(&append_hdr(tl(1), 10, 10), &[&[1u8; 10][..]])
+            .unwrap();
         let u2 = j.try_take().unwrap();
         assert_eq!((a.unit, b.unit), (1, 2));
         assert_eq!((u1.id, u2.id), (1, 2));

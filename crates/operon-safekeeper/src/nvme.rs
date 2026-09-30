@@ -15,7 +15,7 @@
 //!   point, Truncate records cut it, Progress records raise the lazily kept
 //!   LSNs.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use async_trait::async_trait;
@@ -164,6 +164,8 @@ pub struct NvmeWalStore {
     /// Every timeline's trimmed LSN, for freeing segments without locking
     /// each timeline.
     trimmed: StdMutex<HashMap<TimelineId, u64>>,
+    /// Timelines with Progress records not yet stored in their heads.
+    dirty: StdMutex<HashSet<TimelineId>>,
 }
 
 impl std::fmt::Debug for NvmeWalStore {
@@ -174,7 +176,15 @@ impl std::fmt::Debug for NvmeWalStore {
     }
 }
 
-fn record(kind: Kind, tl: &TimelineId, term: Term, lsn: Lsn, aux: u64, aux2: u64, len: usize) -> RecordHeader {
+fn record(
+    kind: Kind,
+    tl: &TimelineId,
+    term: Term,
+    lsn: Lsn,
+    aux: u64,
+    aux2: u64,
+    len: usize,
+) -> RecordHeader {
     RecordHeader {
         kind,
         tl: *tl,
@@ -220,7 +230,10 @@ impl NvmeWalStore {
                 }
             }
         })?;
-        let trimmed = tls.iter().map(|(k, t)| (*k, t.head.trimmed_lsn.0)).collect();
+        let trimmed = tls
+            .iter()
+            .map(|(k, t)| (*k, t.head.trimmed_lsn.0))
+            .collect();
         let tls = tls
             .into_iter()
             .map(|(k, mut t)| {
@@ -237,6 +250,7 @@ impl NvmeWalStore {
             meta,
             tls: StdMutex::new(tls),
             trimmed: StdMutex::new(trimmed),
+            dirty: StdMutex::new(HashSet::new()),
         })
     }
 
@@ -272,7 +286,46 @@ impl NvmeWalStore {
         );
         let p = self.journal.append(&h, &[])?;
         t.last_unit = p.unit;
+        self.dirty
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(*tl);
         Ok(p.unit)
+    }
+
+    /// Store the durable head of every timeline whose Progress records were
+    /// written since its head was last stored, so recycling the journal
+    /// segments that carry them loses nothing.
+    async fn persist_progress(&self) -> Result<(), Error> {
+        let dirty: Vec<TimelineId> = self
+            .dirty
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain()
+            .collect();
+        for tl in dirty {
+            let Ok(t) = self.get(&tl) else {
+                continue;
+            };
+            let mut t = t.lock().await;
+            let durable = self.journal.durable().unit;
+            t.settle(durable);
+            if let Err(e) = self.meta.put(&tl, &t.durable_head()).await {
+                self.dirty
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(tl);
+                return Err(e);
+            }
+            if t.last_unit > durable {
+                // The latest Progress record is not on disk yet.
+                self.dirty
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(tl);
+            }
+        }
+        Ok(())
     }
 
     /// Close the journal (tests and shutdown).
@@ -412,7 +465,11 @@ impl WalStore for NvmeWalStore {
         // Pack the chunks into records of at most `max` bytes each.
         let mut group: Vec<Bytes> = Vec::new();
         let mut group_len = 0usize;
-        let mut flush_group = |group: &mut Vec<Bytes>, group_len: &mut usize, t: &mut Tl, at: &mut u64| -> Result<(), Error> {
+        let mut flush_group = |group: &mut Vec<Bytes>,
+                               group_len: &mut usize,
+                               t: &mut Tl,
+                               at: &mut u64|
+         -> Result<(), Error> {
             if *group_len == 0 {
                 return Ok(());
             }
@@ -549,9 +606,7 @@ impl WalStore for NvmeWalStore {
         };
         entries
             .into_iter()
-            .map(|(lsn, seq, off, len)| {
-                Ok((lsn, Bytes::from(self.journal.read(seq, off, len)?)))
-            })
+            .map(|(lsn, seq, off, len)| Ok((lsn, Bytes::from(self.journal.read(seq, off, len)?))))
             .collect()
     }
 
@@ -578,6 +633,9 @@ impl WalStore for NvmeWalStore {
             m.insert(*tl, bound.0);
             m.clone()
         };
+        // A freed segment may hold the only copy of another timeline's lazily
+        // kept LSNs: put every durable one in the stored heads first.
+        self.persist_progress().await?;
         self.journal
             .free(|tl, end| trimmed.get(tl).is_some_and(|&t| end <= t));
         Ok(bound)
@@ -657,10 +715,17 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            let st = s.append(&tl(), &batch(1, 100, b"abcdef", 0)).await.unwrap().unwrap();
+            let st = s
+                .append(&tl(), &batch(1, 100, b"abcdef", 0))
+                .await
+                .unwrap()
+                .unwrap();
             assert_eq!(st.flush_lsn, Lsn(106));
             // A retried prefix and a gap.
-            s.append(&tl(), &batch(1, 103, b"defgh", 104)).await.unwrap().unwrap();
+            s.append(&tl(), &batch(1, 103, b"defgh", 104))
+                .await
+                .unwrap()
+                .unwrap();
             assert!(s.append(&tl(), &batch(1, 200, b"z", 0)).await.is_err());
             assert_eq!(read_all(&s, 100).await, b"abcdefgh");
             // Term 2 truncates the uncommitted tail.
@@ -673,11 +738,19 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            s.append(&tl(), &batch(2, 105, b"XYZ", 106)).await.unwrap().unwrap();
+            s.append(&tl(), &batch(2, 105, b"XYZ", 106))
+                .await
+                .unwrap()
+                .unwrap();
             assert_eq!(read_all(&s, 100).await, b"abcdeXYZ");
-            s.record_remote_consistent_lsn(&tl(), Lsn(103)).await.unwrap();
+            s.record_remote_consistent_lsn(&tl(), Lsn(103))
+                .await
+                .unwrap();
             s.record_backup_lsn(&tl(), Lsn(104)).await.unwrap();
-            s.record_commit_lsn(&tl(), 2, Lsn(107)).await.unwrap().unwrap();
+            s.record_commit_lsn(&tl(), 2, Lsn(107))
+                .await
+                .unwrap()
+                .unwrap();
             s.close();
             drop(s);
 
@@ -702,11 +775,20 @@ mod tests {
         let s = NvmeWalStore::open(cfg(d.path(), Tier::Uring { depth: 1 }), meta)
             .await
             .unwrap();
-        s.create(&tl(), ServerInfo::default(), Lsn::INVALID).await.unwrap();
+        s.create(&tl(), ServerInfo::default(), Lsn::INVALID)
+            .await
+            .unwrap();
         // The vote waits for durability only of what was written: nothing yet.
         s.vote(&tl(), 1).await.unwrap();
-        s.elected(&tl(), &elected(1, 0, &[(1, 0)])).await.unwrap().unwrap();
-        let p = s.append_nowait(&tl(), &batch(1, 0, b"hello", 0)).await.unwrap().unwrap();
+        s.elected(&tl(), &elected(1, 0, &[(1, 0)]))
+            .await
+            .unwrap()
+            .unwrap();
+        let p = s
+            .append_nowait(&tl(), &batch(1, 0, b"hello", 0))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(p.state.flush_lsn, Lsn(5));
         let ticket = p.ticket.unwrap();
         assert_eq!(s.load(&tl()).await.unwrap().unwrap().flush_lsn, Lsn(0));
@@ -725,9 +807,14 @@ mod tests {
     async fn trim_frees_segments_and_reads_below_it_fail() {
         let d = tempfile::tempdir().unwrap();
         let s = open(d.path(), Tier::Buffered).await;
-        s.create(&tl(), ServerInfo::default(), Lsn::INVALID).await.unwrap();
+        s.create(&tl(), ServerInfo::default(), Lsn::INVALID)
+            .await
+            .unwrap();
         s.vote(&tl(), 1).await.unwrap();
-        s.elected(&tl(), &elected(1, 0, &[(1, 0)])).await.unwrap().unwrap();
+        s.elected(&tl(), &elected(1, 0, &[(1, 0)]))
+            .await
+            .unwrap()
+            .unwrap();
         let chunk = vec![1u8; 30_000];
         for i in 0..40u64 {
             s.append(&tl(), &batch(1, i * 30_000, &chunk, i * 30_000))
@@ -738,9 +825,16 @@ mod tests {
         let before = s.journal().live_segments().len();
         assert!(before > 3);
         let end = 40 * 30_000;
-        s.record_commit_lsn(&tl(), 1, Lsn(end)).await.unwrap().unwrap();
-        s.record_backup_lsn(&tl(), Lsn(end - 100_000)).await.unwrap();
-        s.record_remote_consistent_lsn(&tl(), Lsn(end)).await.unwrap();
+        s.record_commit_lsn(&tl(), 1, Lsn(end))
+            .await
+            .unwrap()
+            .unwrap();
+        s.record_backup_lsn(&tl(), Lsn(end - 100_000))
+            .await
+            .unwrap();
+        s.record_remote_consistent_lsn(&tl(), Lsn(end))
+            .await
+            .unwrap();
         let t = s.trim(&tl(), Lsn(end)).await.unwrap();
         assert_eq!(t, Lsn(end - 100_000));
         assert!(s.journal().live_segments().len() < before);
@@ -750,7 +844,10 @@ mod tests {
         drop(s);
         let s = open(d.path(), Tier::Buffered).await;
         let st = s.load(&tl()).await.unwrap().unwrap();
-        assert_eq!((st.trimmed_lsn, st.flush_lsn), (Lsn(end - 100_000), Lsn(end)));
+        assert_eq!(
+            (st.trimmed_lsn, st.flush_lsn),
+            (Lsn(end - 100_000), Lsn(end))
+        );
         assert_eq!(read_all(&s, end - 100_000).await.len(), 100_000);
         s.close();
     }
@@ -759,9 +856,14 @@ mod tests {
     async fn a_large_batch_is_split_into_records() {
         let d = tempfile::tempdir().unwrap();
         let s = open(d.path(), Tier::Pwritev2 { depth: 4 }).await;
-        s.create(&tl(), ServerInfo::default(), Lsn::INVALID).await.unwrap();
+        s.create(&tl(), ServerInfo::default(), Lsn::INVALID)
+            .await
+            .unwrap();
         s.vote(&tl(), 1).await.unwrap();
-        s.elected(&tl(), &elected(1, 0, &[(1, 0)])).await.unwrap().unwrap();
+        s.elected(&tl(), &elected(1, 0, &[(1, 0)]))
+            .await
+            .unwrap()
+            .unwrap();
         let data: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
         let b = AppendBatch {
             term: 1,

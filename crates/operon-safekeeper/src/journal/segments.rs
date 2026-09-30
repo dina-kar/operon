@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use tracing::{debug, warn};
 
-use super::format::{self, BLOCK, SEGMENT_HEADER};
 use super::AlignedBuf;
+use super::format::{self, BLOCK, SEGMENT_HEADER};
 
 /// One segment file, open for writing (direct or buffered) and for reads.
 #[derive(Debug)]
@@ -128,7 +128,9 @@ fn mount_source(dir: &Path) -> Option<String> {
         let mount_point = pre.split(' ').nth(4)?;
         let source = post.split(' ').nth(1)?;
         if dir.starts_with(mount_point)
-            && best.as_ref().is_none_or(|(len, _)| mount_point.len() > *len)
+            && best
+                .as_ref()
+                .is_none_or(|(len, _)| mount_point.len() > *len)
         {
             best = Some((mount_point.len(), source.to_string()));
         }
@@ -222,7 +224,9 @@ impl SegmentDir {
         let _ = fs::remove_file(&p);
         match res {
             Ok(()) => Ok(true),
-            Err(e) if e.raw_os_error() == Some(rustix::io::Errno::INVAL.raw_os_error()) => Ok(false),
+            Err(e) if e.raw_os_error() == Some(rustix::io::Errno::INVAL.raw_os_error()) => {
+                Ok(false)
+            }
             Err(e) => Err(e),
         }
     }
@@ -332,46 +336,67 @@ impl SegmentDir {
             },
             None => false,
         };
-        let mut o = OpenOptions::new();
-        o.read(true).write(true);
-        if !recycled {
-            o.create_new(true);
-        }
-        if self.direct {
-            o.custom_flags(o_direct());
-        }
-        let f = o.open(&tmp)?;
-        if !recycled {
-            if self.fs == FsKind::Btrfs
-                && let Err(e) = set_nocow(&f)
-            {
-                debug!(error = %e, "NOCOW on a segment");
+        let made = (|| -> io::Result<()> {
+            let mut o = OpenOptions::new();
+            o.read(true).write(true);
+            if !recycled {
+                o.create_new(true);
             }
-            if let Err(e) =
-                rustix::fs::fallocate(&f, rustix::fs::FallocateFlags::empty(), 0, self.size)
-            {
-                debug!(error = %e, "fallocate refused; zero-filling only");
+            if self.direct {
+                o.custom_flags(o_direct());
             }
-            // Pre-zero: turns unwritten extents into written ones, so an
-            // append never needs a metadata commit for the extent.
-            let chunk = (1usize << 20).min(self.size as usize);
-            let mut zeros = AlignedBuf::new(chunk);
-            zeros.zero_to(chunk);
-            let mut at = 0u64;
-            while at < self.size {
-                let n = chunk.min((self.size - at) as usize);
-                f.write_all_at(&zeros[..n], at)?;
-                at += n as u64;
+            let f = o.open(&tmp)?;
+            if !recycled {
+                if self.fs == FsKind::Btrfs
+                    && let Err(e) = set_nocow(&f)
+                {
+                    debug!(error = %e, "NOCOW on a segment");
+                }
+                if let Err(e) =
+                    rustix::fs::fallocate(&f, rustix::fs::FallocateFlags::empty(), 0, self.size)
+                {
+                    debug!(error = %e, "fallocate refused; zero-filling only");
+                }
+                // Pre-zero: turns unwritten extents into written ones, so an
+                // append never needs a metadata commit for the extent.
+                let chunk = (1usize << 20).min(self.size as usize);
+                let mut zeros = AlignedBuf::new(chunk);
+                zeros.zero_to(chunk);
+                let mut at = 0u64;
+                while at < self.size {
+                    let n = chunk.min((self.size - at) as usize);
+                    f.write_all_at(&zeros[..n], at)?;
+                    at += n as u64;
+                }
             }
+            let mut h = AlignedBuf::new(SEGMENT_HEADER);
+            h.extend_from_slice(&format::segment_header(seq, self.size));
+            f.write_all_at(&h, 0)?;
+            f.sync_data()?;
+            drop(f);
+            Ok(())
+        })();
+        if let Err(e) = made {
+            // Do not leave a half-made file behind: a recycled one goes back
+            // to the free pool, a new one is deleted.
+            match (recycled, recycle) {
+                (true, Some(old)) => {
+                    let _ = fs::rename(&tmp, old);
+                }
+                _ => {
+                    let _ = fs::remove_file(&tmp);
+                }
+            }
+            return Err(e);
         }
-        let mut h = AlignedBuf::new(SEGMENT_HEADER);
-        h.extend_from_slice(&format::segment_header(seq, self.size));
-        f.write_all_at(&h, 0)?;
-        f.sync_data()?;
-        drop(f);
         fs::rename(&tmp, self.path(seq))?;
         sync_dir(&self.dir)?;
-        debug!(seq, recycled, took_ms = started.elapsed().as_millis() as u64, "segment prepared");
+        debug!(
+            seq,
+            recycled,
+            took_ms = started.elapsed().as_millis() as u64,
+            "segment prepared"
+        );
         self.open_segment(seq)
     }
 
@@ -392,14 +417,18 @@ mod tests {
         let sd = SegmentDir::open(d.path(), 64 << 10, false).unwrap();
         let s1 = sd.prepare(1, None).unwrap();
         assert_eq!(s1.read.metadata().unwrap().len(), 64 << 10);
-        s1.write.write_all_at(&[7u8; 16], SEGMENT_HEADER as u64).unwrap();
+        s1.write
+            .write_all_at(&[7u8; 16], SEGMENT_HEADER as u64)
+            .unwrap();
         drop(s1);
         let old = sd.retire(1).unwrap();
         assert_eq!(sd.list().unwrap(), Vec::<u64>::new());
         let s2 = sd.prepare(2, Some(&old)).unwrap();
         assert_eq!(sd.list().unwrap(), vec![2]);
         let mut b = [0u8; 16];
-        s2.read.read_exact_at(&mut b, SEGMENT_HEADER as u64).unwrap();
+        s2.read
+            .read_exact_at(&mut b, SEGMENT_HEADER as u64)
+            .unwrap();
         assert_eq!(b, [7u8; 16], "a recycled segment keeps its old bytes");
         assert!(sd.open_segment(2).is_ok());
     }
