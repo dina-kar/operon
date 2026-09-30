@@ -13,10 +13,12 @@ use std::time::Duration;
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::{DataType, Schema};
 use datafusion::common::ParamValues;
+use datafusion::datasource::MemTable;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::sqlparser::ast::Statement;
 use datafusion_postgres::DfSessionService;
+use datafusion_postgres::arrow_pg::datatypes::df::encode_dataframe;
 use datafusion_postgres::datafusion_pg_catalog::{
     pg_catalog::context::EmptyContextProvider, setup_pg_catalog,
 };
@@ -24,13 +26,18 @@ use datafusion_postgres::hooks::{
     HookClient, QueryHook, cursor::CursorStatementHook, set_show::SetShowHook,
     transactions::TransactionStatementHook,
 };
+use datafusion_postgres::pgwire::api::ClientPortalStore;
 use datafusion_postgres::pgwire::api::auth::StartupHandler;
+use datafusion_postgres::pgwire::api::portal::{Format, Portal};
 use datafusion_postgres::pgwire::api::query::{ExtendedQueryHandler, SimpleQueryHandler};
 use datafusion_postgres::pgwire::api::results::Response;
+use datafusion_postgres::pgwire::api::store::PortalStore;
 use datafusion_postgres::pgwire::api::{ClientInfo, NoopHandler, PgWireServerHandlers};
 use datafusion_postgres::pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
+use datafusion_postgres::pgwire::messages::PgWireBackendMessage;
 use datafusion_postgres::pgwire::tokio::process_socket;
-use operon_query::CollectionService;
+use datafusion_postgres::pgwire::types::format::FormatOptions;
+use operon_query::{CollectionService, ServiceError, SqlConfig};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -154,16 +161,21 @@ pub async fn prepare(
     let context = Arc::new(service.sql_context(&config.namespace));
     setup_pg_catalog(&context, &config.namespace, EmptyContextProvider)
         .map_err(io::Error::other)?;
+    let sql = service.config().sql.clone();
+    let query = Arc::new(DfSessionService::new_with_hooks(
+        context,
+        vec![
+            Arc::new(ReadOnlyHook { sql }),
+            Arc::new(CursorStatementHook),
+            Arc::new(SetShowHook),
+            Arc::new(TransactionStatementHook),
+        ],
+    ));
     let handlers = Arc::new(Handlers {
-        query: Arc::new(DfSessionService::new_with_hooks(
-            context,
-            vec![
-                Arc::new(ReadOnlyHook),
-                Arc::new(CursorStatementHook),
-                Arc::new(SetShowHook),
-                Arc::new(TransactionStatementHook),
-            ],
-        )),
+        extended: Arc::new(ExtendedService {
+            inner: query.clone(),
+        }),
+        query,
     });
     Ok(PgPrepared {
         listener,
@@ -239,6 +251,7 @@ pub fn serve(prepared: PgPrepared) -> PgHandle {
 
 struct Handlers {
     query: Arc<DfSessionService>,
+    extended: Arc<ExtendedService>,
 }
 
 impl PgWireServerHandlers for Handlers {
@@ -247,7 +260,7 @@ impl PgWireServerHandlers for Handlers {
     }
 
     fn extended_query_handler(&self) -> Arc<impl ExtendedQueryHandler> {
-        self.query.clone()
+        self.extended.clone()
     }
 
     fn startup_handler(&self) -> Arc<impl StartupHandler> {
@@ -255,7 +268,128 @@ impl PgWireServerHandlers for Handlers {
     }
 }
 
-struct ReadOnlyHook;
+/// Bounds every query by the SQL row and time limits every other SQL surface
+/// enforces (`operon_query::sql::run_bounded`).
+struct ReadOnlyHook {
+    sql: SqlConfig,
+}
+
+/// Where [`ExtendedService`] leaves the portal's result-column format for
+/// [`ReadOnlyHook`], which is handed no portal.
+const RESULT_FORMAT_KEY: &str = "loam.result_format";
+
+fn format_to_metadata(format: &Format) -> String {
+    match format {
+        Format::UnifiedText => "text".to_string(),
+        Format::UnifiedBinary => "binary".to_string(),
+        Format::Individual(codes) => codes
+            .iter()
+            .map(i16::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+    }
+}
+
+fn format_from_metadata(value: Option<&String>) -> Format {
+    match value.map(String::as_str) {
+        None | Some("text") => Format::UnifiedText,
+        Some("binary") => Format::UnifiedBinary,
+        Some(codes) => {
+            Format::Individual(codes.split(',').filter_map(|c| c.parse().ok()).collect())
+        }
+    }
+}
+
+/// The wire error of a bounded run: 57014 `query_canceled` past the time
+/// limit, 54000 `program_limit_exceeded` past the row limit.
+fn limit_error(sqlstate: &str, message: &str) -> PgWireError {
+    PgWireError::UserError(Box::new(ErrorInfo::new(
+        "ERROR".to_string(),
+        sqlstate.to_string(),
+        message.to_string(),
+    )))
+}
+
+fn service_error(error: ServiceError) -> PgWireError {
+    match error {
+        ServiceError::Timeout => {
+            limit_error("57014", "canceling statement due to statement timeout")
+        }
+        other => PgWireError::ApiError(Box::new(other)),
+    }
+}
+
+impl ReadOnlyHook {
+    /// Runs the planned `frame` within the SQL limits and encodes the rows.
+    async fn respond(
+        &self,
+        context: &SessionContext,
+        frame: impl std::future::Future<Output = Result<datafusion::prelude::DataFrame, ServiceError>>,
+        format: &Format,
+        metadata: &std::collections::HashMap<String, String>,
+    ) -> PgWireResult<Response> {
+        let result = operon_query::sql::run_bounded(&self.sql, frame)
+            .await
+            .map_err(service_error)?;
+        if result.truncated {
+            return Err(limit_error(
+                "54000",
+                "SQL result exceeds the configured row limit",
+            ));
+        }
+        let table = MemTable::try_new(result.schema, vec![result.batches])
+            .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+        let frame = context
+            .read_table(Arc::new(table))
+            .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+        let options = Arc::new(FormatOptions::from_client_metadata(metadata));
+        Ok(Response::Query(
+            encode_dataframe(frame, format, Some(options)).await?,
+        ))
+    }
+}
+
+/// The extended-protocol handler: `DfSessionService`, told each portal's
+/// result format for the hook to encode with.
+struct ExtendedService {
+    inner: Arc<DfSessionService>,
+}
+
+#[async_trait]
+impl ExtendedQueryHandler for ExtendedService {
+    type Statement = <DfSessionService as ExtendedQueryHandler>::Statement;
+    type QueryParser = <DfSessionService as ExtendedQueryHandler>::QueryParser;
+
+    fn query_parser(&self) -> Arc<Self::QueryParser> {
+        self.inner.query_parser()
+    }
+
+    async fn do_query<C>(
+        &self,
+        client: &mut C,
+        portal: &Portal<Self::Statement>,
+        max_rows: usize,
+    ) -> PgWireResult<Response>
+    where
+        C: ClientInfo
+            + ClientPortalStore
+            + futures::Sink<PgWireBackendMessage>
+            + Unpin
+            + Send
+            + Sync,
+        C::PortalStore: PortalStore<Statement = Self::Statement>,
+        C::Error: std::fmt::Debug,
+        PgWireError: From<<C as futures::Sink<PgWireBackendMessage>>::Error>,
+    {
+        client.metadata_mut().insert(
+            RESULT_FORMAT_KEY.to_string(),
+            format_to_metadata(&portal.result_column_format),
+        );
+        let response = ExtendedQueryHandler::do_query(&*self.inner, client, portal, max_rows).await;
+        client.metadata_mut().remove(RESULT_FORMAT_KEY);
+        response
+    }
+}
 
 fn read_only_error() -> PgWireError {
     PgWireError::UserError(Box::new(ErrorInfo::new(
@@ -343,7 +477,7 @@ impl QueryHook for ReadOnlyHook {
         &self,
         statement: &Statement,
         context: &SessionContext,
-        _client: &mut dyn HookClient,
+        client: &mut dyn HookClient,
     ) -> Option<PgWireResult<Response>> {
         if is_session_statement(statement) {
             return None;
@@ -354,10 +488,23 @@ impl QueryHook for ReadOnlyHook {
         if !is_query(statement) {
             return Some(Err(read_only_error()));
         }
-        match operon_query::sql::plan_read_only(context, &statement.to_string()).await {
-            Ok(frame) => ensure_encodable(frame.schema().as_arrow()).err().map(Err),
-            Err(error) => Some(Err(PgWireError::ApiError(Box::new(error)))),
+        let sql = statement.to_string();
+        let unencodable = std::sync::atomic::AtomicBool::new(false);
+        let frame = async {
+            let frame = operon_query::sql::plan_read_only(context, &sql).await?;
+            if ensure_encodable(frame.schema().as_arrow()).is_err() {
+                unencodable.store(true, std::sync::atomic::Ordering::Relaxed);
+                return Err(ServiceError::InvalidArgument("unencodable column".into()));
+            }
+            Ok(frame)
+        };
+        let response = self
+            .respond(context, frame, &Format::UnifiedText, client.metadata())
+            .await;
+        if unencodable.load(std::sync::atomic::Ordering::Relaxed) {
+            return Some(Err(unsupported_type_error()));
         }
+        Some(response)
     }
 
     async fn handle_extended_parse_query(
@@ -389,15 +536,35 @@ impl QueryHook for ReadOnlyHook {
     async fn handle_extended_query(
         &self,
         statement: &Statement,
-        _plan: &LogicalPlan,
-        _params: &ParamValues,
-        _context: &SessionContext,
-        _client: &mut dyn HookClient,
+        plan: &LogicalPlan,
+        params: &ParamValues,
+        context: &SessionContext,
+        client: &mut dyn HookClient,
     ) -> Option<PgWireResult<Response>> {
         if is_cursor_statement(statement) {
             return check_cursor_statement(statement).err().map(Err);
         }
-        (!is_query(statement) && !is_session_statement(statement)).then(|| Err(read_only_error()))
+        if is_session_statement(statement) {
+            return None;
+        }
+        if !is_query(statement) {
+            return Some(Err(read_only_error()));
+        }
+        let format = format_from_metadata(client.metadata().get(RESULT_FORMAT_KEY));
+        let frame = async {
+            let plan = plan
+                .clone()
+                .replace_params_with_values(params)
+                .map_err(|error| ServiceError::InvalidArgument(format!("sql: {error}")))?;
+            context
+                .execute_logical_plan(plan)
+                .await
+                .map_err(|error| ServiceError::InvalidArgument(format!("sql: {error}")))
+        };
+        Some(
+            self.respond(context, frame, &format, client.metadata())
+                .await,
+        )
     }
 }
 
@@ -447,5 +614,88 @@ mod tests {
             false,
         )]);
         assert!(ensure_encodable(&schema).is_err());
+    }
+
+    /// A server with a PostgreSQL listener and SQL limits of `max_rows` rows
+    /// and `timeout`, and a client of it.
+    async fn limited(
+        max_rows: usize,
+        timeout: Duration,
+    ) -> (crate::Server, tokio_postgres::Client, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut config = crate::ServerConfig::new(dir.path());
+        config.listen = SocketAddr::from(([127, 0, 0, 1], 0));
+        config.query.sql.max_rows = max_rows;
+        config.query.sql.timeout = timeout;
+        config.pg = Some(PgConfig::new(
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            "default",
+        ));
+        let server = crate::Server::start(config).await.unwrap();
+        let addr = server.pg_addr().unwrap();
+        let (client, connection) = tokio_postgres::Config::new()
+            .host("127.0.0.1")
+            .port(addr.port())
+            .user("loam")
+            .connect(tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(connection);
+        (server, client, dir)
+    }
+
+    fn sqlstate(error: &tokio_postgres::Error) -> String {
+        error
+            .as_db_error()
+            .unwrap_or_else(|| panic!("not a database error: {error:?}"))
+            .code()
+            .code()
+            .to_string()
+    }
+
+    const ROWS: &str = "SELECT value FROM generate_series(1, 100)";
+    const FOREVER: &str = "SELECT sum(value) FROM generate_series(1, 5000000000)";
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn row_limit_applies_to_both_protocols() {
+        let (server, client, _dir) = limited(10, Duration::from_secs(30)).await;
+        // Under the limit, both protocols return the rows.
+        let under = "SELECT value FROM generate_series(1, 10)";
+        assert_eq!(client.simple_query(under).await.unwrap().len(), 10 + 2);
+        assert_eq!(client.query(under, &[]).await.unwrap().len(), 10);
+        let statement = client.prepare(under).await.unwrap();
+        assert_eq!(client.query(&statement, &[]).await.unwrap().len(), 10);
+        // Over it, both are refused with program_limit_exceeded.
+        let error = client.simple_query(ROWS).await.unwrap_err();
+        assert_eq!(sqlstate(&error), "54000", "{error:?}");
+        let error = client.query(ROWS, &[]).await.unwrap_err();
+        assert_eq!(sqlstate(&error), "54000", "{error:?}");
+        let statement = client
+            .prepare("SELECT value FROM generate_series(1, 100) WHERE value <= $1")
+            .await
+            .unwrap();
+        assert_eq!(client.query(&statement, &[&5i64]).await.unwrap().len(), 5);
+        let error = client.query(&statement, &[&100i64]).await.unwrap_err();
+        assert_eq!(sqlstate(&error), "54000", "{error:?}");
+        // The session survives the refusals.
+        assert_eq!(client.query(under, &[]).await.unwrap().len(), 10);
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn time_limit_applies_to_both_protocols() {
+        let (server, client, _dir) = limited(10_000, Duration::from_millis(300)).await;
+        let started = std::time::Instant::now();
+        let error = client.simple_query(FOREVER).await.unwrap_err();
+        assert_eq!(sqlstate(&error), "57014", "{error:?}");
+        let error = client.query(FOREVER, &[]).await.unwrap_err();
+        assert_eq!(sqlstate(&error), "57014", "{error:?}");
+        let statement = client.prepare(FOREVER).await.unwrap();
+        let error = client.query(&statement, &[]).await.unwrap_err();
+        assert_eq!(sqlstate(&error), "57014", "{error:?}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        // The session survives the cancellations.
+        assert_eq!(client.query("SELECT 1", &[]).await.unwrap().len(), 1);
+        server.shutdown().await.unwrap();
     }
 }

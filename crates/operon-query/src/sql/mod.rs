@@ -178,7 +178,21 @@ pub async fn run_read_only(
     sql: &str,
     config: &SqlConfig,
 ) -> Result<SqlResult, ServiceError> {
-    tokio::time::timeout(config.timeout, run(ctx, sql, config.max_rows))
+    run_bounded(config, plan_read_only(ctx, sql)).await
+}
+
+/// Rule 6 for a caller that plans its own frame (a wire protocol's prepared
+/// statements): awaits `frame`, then collects at most `config.max_rows` rows,
+/// the whole of it within `config.timeout`.
+pub async fn run_bounded<F>(config: &SqlConfig, frame: F) -> Result<SqlResult, ServiceError>
+where
+    F: Future<Output = Result<DataFrame, ServiceError>>,
+{
+    let run = async {
+        let frame = frame.await?;
+        collect_bounded(frame, config.max_rows).await
+    };
+    tokio::time::timeout(config.timeout, run)
         .await
         .map_err(|_| ServiceError::Timeout)?
 }
@@ -216,8 +230,7 @@ pub async fn execute_read_only(
     frame.execute_stream().await.map_err(planning)
 }
 
-async fn run(ctx: &SessionContext, sql: &str, max_rows: usize) -> Result<SqlResult, ServiceError> {
-    let frame = plan_read_only(ctx, sql).await?;
+async fn collect_bounded(frame: DataFrame, max_rows: usize) -> Result<SqlResult, ServiceError> {
     let mut stream = execute_read_only(frame).await?;
     let schema = stream.schema();
     let mut batches = Vec::new();
