@@ -100,7 +100,7 @@ fn binary_events_round_trip_through_a_record() {
     let event = binary::parse_binary(&map, Bytes::from_static(b"hi")).unwrap();
     let back = from_record(&to_record(&event), AT);
     assert_eq!(back, event);
-    let (headers, body) = binary::write_binary(&back);
+    let (headers, body) = binary::write_binary(&back).unwrap();
     assert_eq!(headers, map);
     assert_eq!(body.as_ref(), b"hi");
 }
@@ -219,7 +219,7 @@ fn typed_extensions_keep_their_types() {
     let kinds: Vec<AttrType> = back.attrs().iter().map(|a| a.kind).collect();
     assert_eq!(kinds[4..], [AttrType::Integer, AttrType::Boolean]);
     // Binary mode carries strings only and leaves the types header out.
-    let (headers, _) = binary::write_binary(&back);
+    let (headers, _) = binary::write_binary(&back).unwrap();
     assert_eq!(headers["ce-n"], "-3");
     assert!(!headers.contains_key("loam_ce_types"));
 }
