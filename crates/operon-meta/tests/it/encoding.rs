@@ -27,6 +27,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use operon_common::meta::{IdempotencyEntry, IdempotencyState};
 use operon_common::schema::{
     CollectionSchema, Distance, DynamicMapping, FieldKind, FieldSpec, HnswParams, Quantization,
     SparseModifier, SparseVectorSpec, VectorElement, VectorIndexSpec, VectorSpec,
@@ -669,6 +670,11 @@ fn every_command_variant_is_in_the_golden_list() {
             Command::UpdateAliases { .. } => "UpdateAliases",
             Command::SetCollectionHot { .. } => "SetCollectionHot",
             Command::UpdateAliasTargets { .. } => "UpdateAliasTargets",
+            // D270's, listed in `golden_commands_d270`.
+            Command::ClaimIdempotencyKeys { .. }
+            | Command::CompleteIdempotencyKeys { .. }
+            | Command::ReleaseIdempotencyKeys { .. }
+            | Command::PruneIdempotencyKeys { .. } => continue,
         };
         seen.insert(name);
     }
@@ -921,6 +927,8 @@ fn every_reply_variant_is_in_the_golden_lists() {
             Reply::SchemaUpdated { .. } => "SchemaUpdated",
             Reply::AliasesUpdated => "AliasesUpdated",
             Reply::CollectionHotSet => "CollectionHotSet",
+            // D270's, listed in `golden_replies_d270`.
+            Reply::IdempotencyClaimed { .. } | Reply::IdempotencyKeysUpdated => continue,
         };
         seen.insert(name);
     }
@@ -1053,14 +1061,13 @@ fn a_version_v_plus_1_snapshot_without_hot_configuration_is_refused() {
     assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
 }
 
-/// Version 7 is M1.5's (row E4 of the M1.5 plan): every version above
-/// it is unsupported.
+/// Version 8 is D270's: every version above it is unsupported.
 #[test]
 fn a_version_above_v_plus_1_is_unsupported() {
     let hot = operon_meta::snapshot_bytes(&golden_state_m1_3()).expect("encode");
     let aliases = operon_meta::snapshot_bytes(&golden_state_m1_5()).expect("encode");
     for bytes in [&hot, &aliases] {
-        for version in [8u32, 9, u32::MAX] {
+        for version in [9u32, 10, u32::MAX] {
             let err = operon_meta::state_from_snapshot_bytes(&reversioned(bytes, version, &[]))
                 .expect_err("refused");
             assert_eq!(err.kind(), io::ErrorKind::Unsupported, "{err}");
@@ -1320,4 +1327,149 @@ fn a_version_7_snapshot_may_carry_an_empty_hot_map() {
         operon_meta::state_from_snapshot_bytes(&bytes).expect("decode"),
         state
     );
+}
+
+// ----- D270: the stream ingest ledger -----
+
+const LEDGER_OWNER: &str = "req-1";
+
+/// Continues from an empty state: a namespace and a stream (id 1), then
+/// every ledger command.
+fn golden_commands_d270() -> Vec<Command> {
+    let ns = NamespaceId(1);
+    let stream = StreamId(1);
+    vec![
+        Command::CreateNamespace {
+            name: "acme".to_string(),
+        },
+        Command::CreateStream {
+            namespace: ns,
+            name: "events".to_string(),
+            partitions: 2,
+            class: WalClass::Standard,
+            retention: Retention::default(),
+        },
+        Command::ClaimIdempotencyKeys {
+            stream,
+            owner: LEDGER_OWNER.to_string(),
+            keys: vec![[1; 32], [2; 32], [3; 32]],
+            ttl_ms: 120_000,
+            now_ms: 1_000,
+        },
+        Command::CompleteIdempotencyKeys {
+            stream,
+            owner: LEDGER_OWNER.to_string(),
+            done: vec![([1; 32], 0, 10), ([2; 32], 1, 20)],
+            window_ms: 3_600_000,
+            now_ms: 2_000,
+        },
+        Command::ReleaseIdempotencyKeys {
+            stream,
+            owner: "req-2".to_string(),
+            keys: vec![[3; 32]],
+        },
+        Command::PruneIdempotencyKeys {
+            fence: None,
+            now_ms: 3_000,
+        },
+    ]
+}
+
+fn golden_replies_d270() -> Vec<Result<Reply, ApplyError>> {
+    vec![
+        Ok(Reply::IdempotencyClaimed {
+            states: vec![
+                IdempotencyState::Claimed,
+                IdempotencyState::InFlight { until_ms: 121_000 },
+                IdempotencyState::Done {
+                    partition: 1,
+                    offset: 20,
+                },
+            ],
+        }),
+        Ok(Reply::IdempotencyKeysUpdated),
+        Err(ApplyError::StreamNotFound(StreamId(9))),
+    ]
+}
+
+fn golden_state_d270() -> MetaState {
+    let mut state = MetaState::default();
+    for command in golden_commands_d270() {
+        state
+            .apply(command.clone())
+            .unwrap_or_else(|e| panic!("{command:?} failed to apply: {e}"));
+    }
+    state
+}
+
+#[test]
+fn d270_commands_encode_to_the_golden_bytes() {
+    let fresh = postcard::to_stdvec(&golden_commands_d270()).expect("encode");
+    let golden = golden_bytes("commands-d270.bin", &fresh);
+    assert_eq!(fresh, golden);
+    let decoded: Vec<Command> = postcard::from_bytes(&golden).expect("decode");
+    assert_eq!(decoded, golden_commands_d270());
+}
+
+#[test]
+fn d270_replies_encode_to_the_golden_bytes() {
+    let fresh = postcard::to_stdvec(&golden_replies_d270()).expect("encode");
+    let golden = golden_bytes("replies-d270.bin", &fresh);
+    assert_eq!(fresh, golden);
+    let decoded: Vec<Result<Reply, ApplyError>> = postcard::from_bytes(&golden).expect("decode");
+    assert_eq!(decoded, golden_replies_d270());
+}
+
+#[test]
+fn the_d270_commands_apply_and_leave_the_expected_ledger() {
+    let state = golden_state_d270();
+    assert!(state.check_invariants().is_empty());
+    let stream = StreamId(1);
+    assert_eq!(
+        state.idempotency_entry(stream, &[1; 32]),
+        Some(&IdempotencyEntry::Done {
+            partition: 0,
+            offset: 10,
+            until_ms: 3_602_000
+        })
+    );
+    assert!(matches!(
+        state.idempotency_entry(stream, &[3; 32]),
+        Some(IdempotencyEntry::Pending { .. })
+    ));
+}
+
+#[test]
+fn d270_ledger_snapshot_is_version_8_and_round_trips() {
+    let state = golden_state_d270();
+    let bytes = operon_meta::snapshot_bytes(&state).expect("encode");
+    assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().expect("4")), 8);
+    let golden = golden_bytes("snapshot-d270.bin", &bytes);
+    assert_eq!(bytes, golden);
+    let back = operon_meta::state_from_snapshot_bytes(&golden).expect("decode");
+    assert_eq!(
+        back.idempotency_entry(StreamId(1), &[2; 32]),
+        state.idempotency_entry(StreamId(1), &[2; 32])
+    );
+    assert_eq!(operon_meta::snapshot_bytes(&back).expect("encode"), golden);
+}
+
+#[test]
+fn a_state_without_a_ledger_snapshots_as_before() {
+    let base = std::fs::read(golden_path("snapshot-v5.bin")).expect("snapshot-v5.bin");
+    assert_eq!(
+        operon_meta::snapshot_bytes(&golden_state()).expect("encode"),
+        base
+    );
+}
+
+#[test]
+fn a_version_8_snapshot_without_a_ledger_is_refused() {
+    let aliases = operon_meta::snapshot_bytes(&golden_state_m1_5()).expect("encode");
+    // The version-7 body relabelled 8: no ledger, then an empty one.
+    for append in [&[][..], &[0u8][..]] {
+        let err = operon_meta::state_from_snapshot_bytes(&reversioned(&aliases, 8, append))
+            .expect_err("refused");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+    }
 }

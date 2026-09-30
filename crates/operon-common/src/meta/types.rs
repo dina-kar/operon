@@ -128,6 +128,57 @@ impl IndexEntry {
 /// committed twice.
 pub const WAL_COMMIT_WINDOW_MS: u64 = 900_000;
 
+/// An idempotency key of the stream ingest ledger (design §02 §7.4, D270):
+/// SHA-256 of an event's identity, such as a CloudEvent's `source` and `id`.
+pub type IdempotencyKey = [u8; 32];
+
+/// The longest a claim stays pending, and the longest a done key is
+/// remembered: 24 hours.
+pub const MAX_IDEMPOTENCY_TTL_MS: u64 = 86_400_000;
+
+/// The most keys one claim, completion or release may carry.
+pub const MAX_IDEMPOTENCY_KEYS: usize = 1_000;
+
+/// One key of the ledger, until `until_ms` by the metastore clock; an entry
+/// past it counts as absent and is pruned.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IdempotencyEntry {
+    /// Claimed by `owner`, which is appending the event.
+    Pending { owner: String, until_ms: u64 },
+    /// Appended at `offset` of `partition`.
+    Done {
+        partition: u32,
+        offset: u64,
+        until_ms: u64,
+    },
+}
+
+impl IdempotencyEntry {
+    /// When the entry lapses.
+    pub fn until_ms(&self) -> u64 {
+        match self {
+            IdempotencyEntry::Pending { until_ms, .. }
+            | IdempotencyEntry::Done { until_ms, .. } => *until_ms,
+        }
+    }
+
+    /// Whether the entry still counts at `now_ms`.
+    pub fn is_live_at(&self, now_ms: u64) -> bool {
+        now_ms < self.until_ms()
+    }
+}
+
+/// What a claim found for one key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IdempotencyState {
+    /// The key is now pending under the claim's owner: append the event.
+    Claimed,
+    /// Another owner's claim is pending until `until_ms`: retry later.
+    InFlight { until_ms: u64 },
+    /// The event was appended before, at `offset` of `partition`.
+    Done { partition: u32, offset: u64 },
+}
+
 /// A lease on a key, such as a worker task (design §09 §3, §6).
 ///
 /// The epoch grows by one every time a different holder takes the lease and

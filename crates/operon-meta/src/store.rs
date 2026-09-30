@@ -12,8 +12,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use operon_common::meta::{
     AliasAction, AliasTargetAction, AliasTargets, ApplyError, ChangeWait, Collection,
-    CollectionHead, CollectionRoots, Consistency, Fence, HotConfig, Lease, LeaseGrant, Link,
-    LinkHead, LinkId, MetaChanges, MetaError, MetaResult, MetaStopped, MetaStore, NameTarget,
+    CollectionHead, CollectionRoots, Consistency, Fence, HotConfig, IdempotencyClaim,
+    IdempotencyCompletion, IdempotencyEntry, IdempotencyKey, IdempotencyState, Lease, LeaseGrant,
+    Link, LinkHead, LinkId, MetaChanges, MetaError, MetaResult, MetaStopped, MetaStore, NameTarget,
     Namespace, PartitionBounds, PartitionIndex, Pointer, PointerCas, Retention, SegmentSwap,
     Stream, StreamState, TargetRef, Tracked, WalClass, WalCommit, collection_pointer_key,
     link_pointer_key,
@@ -601,6 +602,54 @@ impl MetaStore for MetaClient {
 
     async fn prune_wal_commits(&self, fence: Option<Fence>) -> MetaResult<u32> {
         MetaClient::prune_wal_commits(self, fence).await
+    }
+
+    async fn claim_idempotency_keys(
+        &self,
+        claim: IdempotencyClaim,
+    ) -> MetaResult<Vec<IdempotencyState>> {
+        MetaClient::claim_idempotency_keys(
+            self,
+            claim.stream,
+            claim.owner,
+            claim.keys,
+            claim.ttl_ms,
+        )
+        .await
+    }
+
+    async fn complete_idempotency_keys(&self, completion: IdempotencyCompletion) -> MetaResult<()> {
+        MetaClient::complete_idempotency_keys(
+            self,
+            completion.stream,
+            completion.owner,
+            completion.done,
+            completion.window_ms,
+        )
+        .await
+    }
+
+    async fn release_idempotency_keys(
+        &self,
+        stream: StreamId,
+        owner: &str,
+        keys: Vec<IdempotencyKey>,
+    ) -> MetaResult<()> {
+        MetaClient::release_idempotency_keys(self, stream, owner.to_string(), keys).await
+    }
+
+    async fn idempotency_key(
+        &self,
+        consistency: Consistency,
+        stream: StreamId,
+        key: IdempotencyKey,
+    ) -> MetaResult<Option<IdempotencyEntry>> {
+        self.read(consistency, |s| s.idempotency_entry(stream, &key).cloned())
+            .await
+    }
+
+    async fn prune_idempotency_keys(&self, fence: Option<Fence>) -> MetaResult<u32> {
+        MetaClient::prune_idempotency_keys(self, fence).await
     }
 
     async fn orphan_wal_objects(

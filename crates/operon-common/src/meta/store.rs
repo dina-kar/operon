@@ -55,12 +55,13 @@ use crate::meta::error::MetaResult;
 #[cfg(doc)]
 use crate::meta::error::{ApplyError, MetaError};
 use crate::meta::types::{
-    AliasAction, AliasTargetAction, AliasTargets, Collection, Fence, HotConfig, Lease, LeaseGrant,
-    Link, LinkId, Namespace, Pointer, Retention, Stream, TargetRef, WalClass,
+    AliasAction, AliasTargetAction, AliasTargets, Collection, Fence, HotConfig, IdempotencyEntry,
+    IdempotencyKey, IdempotencyState, Lease, LeaseGrant, Link, LinkId, Namespace, Pointer,
+    Retention, Stream, TargetRef, WalClass,
 };
 use crate::meta::views::{
-    CollectionHead, CollectionRoots, LinkHead, NameTarget, PartitionIndex, PointerCas, SegmentSwap,
-    StreamState, WalCommit,
+    CollectionHead, CollectionRoots, IdempotencyClaim, IdempotencyCompletion, LinkHead, NameTarget,
+    PartitionIndex, PointerCas, SegmentSwap, StreamState, WalCommit,
 };
 use crate::schema::CollectionSchema;
 use crate::{CollectionId, NamespaceId, StreamId};
@@ -388,6 +389,55 @@ pub trait MetaStore: Send + Sync + fmt::Debug + 'static {
         consistency: Consistency,
         prefix: &str,
     ) -> MetaResult<Vec<(String, Lease)>>;
+
+    // ----- Idempotency keys (design §02 §7.4, D270) -----
+
+    /// Claims each key of `claim.keys` for `claim.owner` until
+    /// `claim.ttl_ms` from now, stamped with [`MetaStore::now_ms`], and
+    /// returns what it found for each key, in order: a key that is absent,
+    /// lapsed, or already pending under the same owner is
+    /// [`IdempotencyState::Claimed`] (a retry of the claim claims again); a
+    /// key pending under another owner is [`IdempotencyState::InFlight`]; a
+    /// done key is [`IdempotencyState::Done`]. Rejected with
+    /// [`ApplyError::StreamNotFound`], or [`ApplyError::InvalidArgument`]
+    /// for no keys, more than
+    /// [`MAX_IDEMPOTENCY_KEYS`](crate::meta::MAX_IDEMPOTENCY_KEYS), a
+    /// repeated key, an empty owner, or a TTL of 0 or above
+    /// [`MAX_IDEMPOTENCY_TTL_MS`](crate::meta::MAX_IDEMPOTENCY_TTL_MS).
+    async fn claim_idempotency_keys(
+        &self,
+        claim: IdempotencyClaim,
+    ) -> MetaResult<Vec<IdempotencyState>>;
+
+    /// Marks each key done at its partition and offset, remembered for
+    /// `window_ms` from now, if it is still pending under `owner` (lapsed or
+    /// not). A key another owner claimed since, or that is done already, is
+    /// left as it is, so a retry changes nothing. Rejected with
+    /// [`ApplyError::InvalidArgument`] like a claim.
+    async fn complete_idempotency_keys(&self, completion: IdempotencyCompletion) -> MetaResult<()>;
+
+    /// Drops each key still pending under `owner`, so a retry need not wait
+    /// for the claim to lapse after a failed append. Other keys are left as
+    /// they are, so a retry is safe.
+    async fn release_idempotency_keys(
+        &self,
+        stream: StreamId,
+        owner: &str,
+        keys: Vec<IdempotencyKey>,
+    ) -> MetaResult<()>;
+
+    /// The entry of `key`, lapsed or not, if it has not been pruned.
+    async fn idempotency_key(
+        &self,
+        consistency: Consistency,
+        stream: StreamId,
+        key: IdempotencyKey,
+    ) -> MetaResult<Option<IdempotencyEntry>>;
+
+    /// Forgets lapsed entries; returns how many were removed. Stamped with
+    /// [`MetaStore::now_ms`]. A retry removes nothing more. Rejected with
+    /// [`ApplyError::Fenced`] when the fence is broken.
+    async fn prune_idempotency_keys(&self, fence: Option<Fence>) -> MetaResult<u32>;
 
     // ----- Manifest pointers -----
 

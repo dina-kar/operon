@@ -526,7 +526,10 @@ impl MetaNode {
             | Command::SwapSegment { now_ms, .. }
             | Command::TrimPartition { now_ms, .. }
             | Command::PruneWalCommits { now_ms, .. }
-            | Command::DropCollection { now_ms, .. } => *now_ms,
+            | Command::DropCollection { now_ms, .. }
+            | Command::ClaimIdempotencyKeys { now_ms, .. }
+            | Command::CompleteIdempotencyKeys { now_ms, .. }
+            | Command::PruneIdempotencyKeys { now_ms, .. } => *now_ms,
             Command::CommitWal { created_at_ms, .. } => *created_at_ms,
             _ => return Ok(()),
         };
