@@ -10,7 +10,7 @@ use operon_cloudevents::http::{
 fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
     let mut map = HeaderMap::new();
     for (name, value) in pairs {
-        map.append(*name, HeaderValue::from_str(value).unwrap());
+        map.append(*name, HeaderValue::from_str(value).expect("header value"));
     }
     map
 }
