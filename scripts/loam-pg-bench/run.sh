@@ -61,6 +61,12 @@ kv_config=${kv_config:-$ROOT/deploy/loam-pg-bench/tikv.toml}
 out=$(realpath -m "$out")
 cd "$DEPLOY"
 
+# One benchmark at a time per host: the compose project, the ports and the
+# p99s are shared (a second run.sh waits here).
+mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}"
+exec 9>"${XDG_CACHE_HOME:-$HOME/.cache}/loam-pg-bench.lock"
+flock 9
+
 # p99s on a shared machine: wait until no build runs (--force skips this).
 if [ "$force" = 0 ]; then
   while pgrep -x cargo >/dev/null || pgrep -x rustc >/dev/null; do
