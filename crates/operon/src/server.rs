@@ -213,6 +213,9 @@ pub struct ServerConfig {
     pub stream_grpc: Option<SocketAddr>,
     /// How Flight SQL bounds its statements and its ingest.
     pub flight: FlightConfig,
+    /// PostgreSQL wire listener over collections, when the pgwire feature is on.
+    #[cfg(feature = "pgwire")]
+    pub pg: Option<crate::pg::PgConfig>,
     /// Split merges and Lance compaction (plan M1.3 Tasks 1–2); a source
     /// whose switch (`merge`, `compaction`) is off is not run.
     pub maintenance: MaintenanceConfig,
@@ -279,6 +282,8 @@ impl ServerConfig {
             #[cfg(feature = "stream-grpc")]
             stream_grpc: None,
             flight: FlightConfig::default(),
+            #[cfg(feature = "pgwire")]
+            pg: None,
             cluster: None,
             #[cfg(feature = "qdrant")]
             qdrant: None,
@@ -413,6 +418,12 @@ pub enum ServerError {
     Hot(#[from] operon_hot::TierError),
     #[error("listen on {addr}: {source}")]
     Listen {
+        addr: SocketAddr,
+        source: std::io::Error,
+    },
+    #[cfg(feature = "pgwire")]
+    #[error("postgres listen on {addr}: {source}")]
+    PgListen {
         addr: SocketAddr,
         source: std::io::Error,
     },
@@ -580,6 +591,8 @@ pub struct Server {
     http: JoinHandle<()>,
     stop_http: oneshot::Sender<()>,
     flight: Option<Flight>,
+    #[cfg(feature = "pgwire")]
+    pg: Option<crate::pg::PgHandle>,
     #[cfg(feature = "stream-grpc")]
     stream_grpc: Option<StreamGrpc>,
     #[cfg(feature = "qdrant")]
@@ -658,6 +671,8 @@ struct Assembled {
     hot: Option<HotTierImpl>,
     app: axum::Router,
     flight: Option<Flight>,
+    #[cfg(feature = "pgwire")]
+    pg: Option<crate::pg::PgHandle>,
     #[cfg(feature = "stream-grpc")]
     stream_grpc: Option<StreamGrpc>,
     #[cfg(feature = "qdrant")]
@@ -986,6 +1001,8 @@ impl Server {
             http,
             stop_http,
             flight: parts.flight,
+            #[cfg(feature = "pgwire")]
+            pg: parts.pg,
             #[cfg(feature = "stream-grpc")]
             stream_grpc: parts.stream_grpc,
             #[cfg(feature = "qdrant")]
@@ -1074,6 +1091,8 @@ impl Server {
                     http,
                     stop_http,
                     flight: parts.flight,
+                    #[cfg(feature = "pgwire")]
+                    pg: parts.pg,
                     #[cfg(feature = "stream-grpc")]
                     stream_grpc: parts.stream_grpc,
                     #[cfg(feature = "qdrant")]
@@ -1303,6 +1322,24 @@ impl Server {
             },
             None => None,
         };
+        // The PostgreSQL wire listener, on gateways only: bound here, before
+        // any task is spawned, and served once the collection service exists.
+        #[cfg(feature = "pgwire")]
+        let pg_listener = match config.pg.clone().filter(|_| roles.gateway) {
+            Some(pg_config) => match crate::pg::listen(&pg_config).await {
+                Ok(bound) => Some((bound, pg_config)),
+                Err(source) => {
+                    if let Err(err) = cache.close().await {
+                        tracing::warn!(%err, "closing the cache after a failed start");
+                    }
+                    return Err(ServerError::PgListen {
+                        addr: pg_config.listen,
+                        source,
+                    });
+                }
+            },
+            None => None,
+        };
         #[cfg(feature = "stream-grpc")]
         let stream_grpc_listener = match config.stream_grpc.filter(|_| roles.gateway) {
             Some(addr) => match operon_stream_grpc::bind(addr)
@@ -1474,7 +1511,6 @@ impl Server {
             },
             false => None,
         };
-        let worker = roles.worker.then(|| worker.start());
         // Rule 5.1: after the collection context, before the router, on the
         // reader built above (the server keeps none, row 0.52).
         let collections = CollectionService::new(
@@ -1489,6 +1525,32 @@ impl Server {
         if let Some((placement, remote)) = routing {
             collections.set_placement(placement, remote);
         }
+        // Every fallible PostgreSQL step (the `pg_catalog` setup) runs here,
+        // before the worker starts; the accept loop is spawned only after.
+        #[cfg(feature = "pgwire")]
+        let pg = match pg_listener {
+            Some((bound, pg_config)) => {
+                match crate::pg::prepare(collections.clone(), bound, pg_config.clone()).await {
+                    Ok(prepared) => Some(prepared),
+                    Err(source) => {
+                        collections.shutdown().await;
+                        if let Some(tier) = &hot {
+                            tier.shutdown().await;
+                        }
+                        collection_factory.close().await;
+                        stop_early(writer, cache).await;
+                        return Err(ServerError::PgListen {
+                            addr: pg_config.listen,
+                            source,
+                        });
+                    }
+                }
+            }
+            None => None,
+        };
+        let worker = roles.worker.then(|| worker.start());
+        #[cfg(feature = "pgwire")]
+        let pg = pg.map(crate::pg::serve);
         #[cfg(feature = "qdrant")]
         let qdrant = match qdrant_listeners {
             Some((qdrant, (rest, grpc))) => {
@@ -1567,6 +1629,8 @@ impl Server {
             hot,
             app,
             flight,
+            #[cfg(feature = "pgwire")]
+            pg,
             #[cfg(feature = "stream-grpc")]
             stream_grpc,
             #[cfg(feature = "qdrant")]
@@ -1614,6 +1678,12 @@ impl Server {
     /// The address Flight SQL listens on, when it does.
     pub fn flight_sql_addr(&self) -> Option<SocketAddr> {
         self.flight.as_ref().map(|flight| flight.addr)
+    }
+
+    /// The PostgreSQL wire listener, when configured.
+    #[cfg(feature = "pgwire")]
+    pub fn pg_addr(&self) -> Option<SocketAddr> {
+        self.pg.as_ref().map(|pg| pg.addr)
     }
 
     /// The native stream gRPC listener, when configured.
@@ -1718,6 +1788,10 @@ impl Server {
         shutdown_phase("flight");
         if let Some(flight) = self.flight {
             flight.stop().await;
+        }
+        #[cfg(feature = "pgwire")]
+        if let Some(pg) = self.pg {
+            pg.stop_within(HTTP_GRACE).await;
         }
         #[cfg(feature = "stream-grpc")]
         if let Some(stream_grpc) = self.stream_grpc {

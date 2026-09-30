@@ -1,8 +1,12 @@
 //! The DataFusion catalog of one namespace (plan M1.2 Task 10 rule 1): the
 //! catalog `"<ns>"` with one schema, `collections`, whose tables are the
-//! namespace's collections and aliases.
+//! namespace's collections and aliases. A wire front end may register more
+//! schemas beside it (the PostgreSQL listener's `pg_catalog`, PG1); none can
+//! replace `collections`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::{PoisonError, RwLock};
 
 use async_trait::async_trait;
 use datafusion::catalog::{CatalogProvider, SchemaProvider, TableProvider};
@@ -13,11 +17,14 @@ use crate::exec::df_error;
 use crate::sql::provider::CollectionProvider;
 use crate::sql::{COLLECTIONS_SCHEMA, SqlScope};
 
-/// The catalog of one namespace: one schema, [`COLLECTIONS_SCHEMA`].
+/// The catalog of one namespace: [`COLLECTIONS_SCHEMA`], plus any schema a
+/// wire front end registers.
 #[derive(Debug)]
 pub struct NamespaceCatalog {
     scope: SqlScope,
     schema: Arc<CollectionsSchema>,
+    /// Schemas registered beside `collections`, such as `pg_catalog`.
+    additional_schemas: RwLock<HashMap<String, Arc<dyn SchemaProvider>>>,
 }
 
 impl NamespaceCatalog {
@@ -27,6 +34,7 @@ impl NamespaceCatalog {
                 scope: scope.clone(),
             }),
             scope,
+            additional_schemas: RwLock::new(HashMap::new()),
         }
     }
 
@@ -45,11 +53,43 @@ impl NamespaceCatalog {
 
 impl CatalogProvider for NamespaceCatalog {
     fn schema_names(&self) -> Vec<String> {
-        vec![COLLECTIONS_SCHEMA.to_string()]
+        let mut names = vec![COLLECTIONS_SCHEMA.to_string()];
+        names.extend(
+            self.additional_schemas
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .keys()
+                .cloned(),
+        );
+        names
     }
 
     fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
-        (name == COLLECTIONS_SCHEMA).then(|| self.schema.clone() as Arc<dyn SchemaProvider>)
+        if name == COLLECTIONS_SCHEMA {
+            return Some(self.schema.clone());
+        }
+        self.additional_schemas
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(name)
+            .cloned()
+    }
+
+    fn register_schema(
+        &self,
+        name: &str,
+        schema: Arc<dyn SchemaProvider>,
+    ) -> Result<Option<Arc<dyn SchemaProvider>>, DataFusionError> {
+        if name == COLLECTIONS_SCHEMA {
+            return Err(DataFusionError::Configuration(
+                "the collections schema cannot be replaced".to_string(),
+            ));
+        }
+        Ok(self
+            .additional_schemas
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(name.to_string(), schema))
     }
 }
 
