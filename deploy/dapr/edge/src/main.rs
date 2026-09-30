@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use tonic::{Request, transport::Channel};
 
 // Both packages at their own module paths, as prost's relative paths expect.
+#[allow(clippy::enum_variant_names)] // the CloudEvents schema's own names
 mod generated {
     pub mod io {
         pub mod cloudevents {
