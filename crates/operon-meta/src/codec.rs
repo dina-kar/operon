@@ -22,7 +22,7 @@ const SNAPSHOT_MAGIC: &[u8; 8] = b"OPNMETA\0";
 /// without any is still written as before.
 /// Version 7 (M1.5) appends the multi-target alias map; a state without one
 /// is still written as version 5 or 6 (M1.5 Ruling 22).
-/// Version 8 (D271) appends the stream ingest ledger; a state without one is
+/// Version 8 (D270) appends the stream ingest ledger; a state without one is
 /// still written as version 5, 6 or 7.
 const SNAPSHOT_FORMAT_VERSION: u32 = 8;
 /// The version a state with multi-target aliases and without a ledger is

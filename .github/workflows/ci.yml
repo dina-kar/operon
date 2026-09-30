@@ -178,7 +178,7 @@ jobs:
       # feature (off by default), so lint that code too, and keep the default
       # build free of the git-pinned tikv-client.
       - name: clippy (operon with the tikv and optional listener features)
-        run: cargo clippy -p operon --all-targets --features tikv,durable-tikv,stream-grpc,pgwire --locked -- -D warnings
+        run: cargo clippy -p operon --all-targets --features tikv,durable-tikv,stream-grpc,pgwire,mysql-wire --locked -- -D warnings
       - name: clippy (operon-durable with the native TiKV store)
         run: cargo clippy -p operon-durable --all-targets --features tikv --locked -- -D warnings
       - name: clippy (operon-safekeeper with the service and the TiKV store)
@@ -218,6 +218,8 @@ jobs:
           esac
       - name: test
         run: cargo test --workspace --locked
+      - name: operon's MySQL wire listener (mysql-wire feature)
+        run: 'cargo test -p operon --features mysql-wire --lib --locked mysql_wire::'
       - name: operon's PostgreSQL wire listener (pgwire feature)
         run: 'cargo test -p operon --features pgwire --lib --locked pg::'
       - name: metastore encoding

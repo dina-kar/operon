@@ -225,6 +225,14 @@ struct Native {
     /// Serve no Flight SQL.
     #[arg(long)]
     no_flight_sql: bool,
+    /// MySQL wire listener for collection queries (loopback only).
+    #[cfg(feature = "mysql-wire")]
+    #[arg(long)]
+    mysql_listen: Option<SocketAddr>,
+    /// Namespace exposed on the MySQL wire listener.
+    #[cfg(feature = "mysql-wire")]
+    #[arg(long, requires = "mysql_listen")]
+    mysql_namespace: Option<String>,
     /// PostgreSQL wire listener for collection queries (loopback only).
     #[cfg(feature = "pgwire")]
     #[arg(long)]
@@ -467,6 +475,17 @@ impl Native {
         } else {
             Some(self.flight_sql_listen.unwrap_or(default_flight))
         };
+        #[cfg(feature = "mysql-wire")]
+        {
+            config.mysql_wire = self.mysql_listen.map(|addr| {
+                operon::mysql_wire::MysqlConfig::new(
+                    addr,
+                    self.mysql_namespace
+                        .clone()
+                        .unwrap_or_else(|| "default".into()),
+                )
+            });
+        }
         #[cfg(feature = "pgwire")]
         {
             config.pg = self.pg_listen.map(|addr| {
@@ -1010,6 +1029,10 @@ async fn main() -> ExitCode {
     // M1.6 W14, M1.7 A4: printed once the listener is bound.
     if let Some(addr) = server.flight_sql_addr() {
         println!("operon flight sql listening on grpc://{addr}");
+    }
+    #[cfg(feature = "mysql-wire")]
+    if let Some(addr) = server.mysql_wire_addr() {
+        println!("operon MySQL wire listening on mysql://{addr}");
     }
     #[cfg(feature = "pgwire")]
     if let Some(addr) = server.pg_addr() {

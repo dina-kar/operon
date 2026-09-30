@@ -273,7 +273,7 @@ pub enum Command {
     },
     /// Claims 1..=[`MAX_IDEMPOTENCY_KEYS`](operon_common::meta::MAX_IDEMPOTENCY_KEYS)
     /// distinct keys of `stream` for `owner` until `now_ms + ttl_ms` (the
-    /// stream ingest ledger, design §02 §7.4, D271; this and the next three
+    /// stream ingest ledger, design §02 §7.4, D270; this and the next three
     /// are appended last). Each key absent, lapsed or pending under `owner`
     /// becomes pending under `owner`; the reply says per key what was found
     /// ([`Reply::IdempotencyClaimed`]). A retry claims the same keys again.
@@ -345,7 +345,7 @@ pub enum Reply {
     /// [`Command::SetCollectionHot`] applied (M1.3; appended last).
     CollectionHotSet,
     /// What [`Command::ClaimIdempotencyKeys`] found for each key, in order
-    /// (D271; appended last).
+    /// (D270; appended last).
     IdempotencyClaimed {
         states: Vec<IdempotencyState>,
     },
