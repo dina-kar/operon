@@ -147,11 +147,15 @@ fn a_seed_with_backpressure_refuses_some_writes() {
 }
 
 /// Plan M1.3 Task 13 rule 3: the worker runs split merges and Lance
-/// compaction, and a long enough seed commits both.
+/// compaction, and a long enough seed commits both; the run's checks then
+/// hold over the maintained collection. The run waits for both at the end
+/// (`await_maintenance`), so a loaded runner that slows the workload phase
+/// does not decide the outcome.
 #[test]
 fn a_seed_with_maintenance_has_merges_and_compactions() {
     let report = run(SimConfig {
         steps: 600,
+        await_maintenance: true,
         ..SimConfig::new(7)
     });
     assert!(report.is_ok(), "{}", report.describe());
