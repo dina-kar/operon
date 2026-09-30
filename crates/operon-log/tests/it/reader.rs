@@ -224,21 +224,25 @@ async fn a_long_poll_at_the_high_watermark_wakes_on_commit() {
     // Let the poll reach its wait (it can only return early on a commit).
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(!poll.is_finished());
-    let started = Instant::now();
     f.writer
         .append(f.stream, 0, records("late", 3))
         .await
         .unwrap();
+    let acked = Instant::now();
     let (response, woke) = poll.await.unwrap();
     let response = response.unwrap();
     assert_eq!(response.records.len(), 3);
     assert_eq!(response.records[0].offset, 2);
     assert_eq!(response.next_offset, 5);
-    let latency = woke.duration_since(started);
-    assert!(
-        latency < flush_interval + Duration::from_millis(100),
-        "{latency:?}"
-    );
+    // The poll wakes on the commit, not on `max_wait`: it returns (at the
+    // latest) right after the append is acknowledged. Measuring from before
+    // the append instead also timed the flush interval, the segment put and
+    // the metastore commit, which on a loaded CI runner overshot a
+    // `flush_interval + 100ms` bound (357 to 543ms seen) without any late
+    // wake-up. The 2s slack is only scheduling noise; a missed wake-up
+    // would sit out the whole 30s `max_wait`.
+    let late = woke.saturating_duration_since(acked);
+    assert!(late < Duration::from_secs(2), "woke {late:?} after the ack");
     f.shutdown().await;
 }
 
