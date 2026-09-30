@@ -31,10 +31,12 @@ for i in $(seq 1 "$repeats"); do
 done
 report=$out/gate-rf$replicas-$(date -u +%Y%m%dT%H%M%SZ).md
 : >"$report"
+failed=0
 for c in $candidates; do
   # shellcheck disable=SC2086
   python3 "$ROOT/scripts/loam-pg-bench/compare.py" --name "$c" \
-    --baseline ${files[$baseline]} --candidate ${files[$c]} | tee -a "$report" || true
+    --baseline ${files[$baseline]} --candidate ${files[$c]} | tee -a "$report" || failed=1
   echo | tee -a "$report"
 done
 echo "gate: wrote $report" >&2
+exit "$failed"

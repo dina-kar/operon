@@ -56,7 +56,7 @@ DEPLOY=$ROOT/deploy/loam-pg-bench
 variant= replicas=1 duration=60 warmup=10 scale=10 label= keep=0 force=0
 store=tikv-raw depth=8 kv_config= place=1
 workloads="commit-1 commit-16 tpcb-16 bulk"
-out=$ROOT/bench/results disk_root= feeder_root=/mnt/Projects/rust-cache/loam-bench/feeder
+out=$ROOT/bench/results disk_root= feeder_root=
 io_depth=4
 while [ $# -gt 0 ]; do
   case $1 in
@@ -129,6 +129,8 @@ LOAM_WAL=${LOAM_WAL:-$(cargo metadata --format-version 1 --no-deps 2>/dev/null |
 PD=127.0.0.1:19379
 TAG=loam-bench
 RUN_DIR=$ROOT/target/loam-pg-bench
+# The feeder's data, by default inside the repository's target directory.
+feeder_root=${feeder_root:-$RUN_DIR/feeder}
 mkdir -p "$RUN_DIR" "$out"
 log() { echo "run: $*" >&2; }
 
@@ -292,14 +294,17 @@ for w in $workloads; do
   log "workload $w (${duration}s after ${warmup}s warm-up)"
   mapfile -t wp < <(wal_pids)
   mapfile -t fp < <(feeder_pids)
-  w0=0 w1=0 f0=0 f1=0
+  w0=0 w1=0 f0=0 f1=0 seen=0
   while IFS= read -r line; do
     case $line in
-      MEASURE_START) w0=$(ticks "${wp[@]}"); f0=$(ticks "${fp[@]}") ;;
-      MEASURE_END) w1=$(ticks "${wp[@]}"); f1=$(ticks "${fp[@]}") ;;
+      MEASURE_START) w0=$(ticks "${wp[@]}"); f0=$(ticks "${fp[@]}"); seen=$((seen | 1)) ;;
+      MEASURE_END) w1=$(ticks "${wp[@]}"); f1=$(ticks "${fp[@]}"); seen=$((seen | 2)) ;;
       *) echo "$line" >&2 ;;
     esac
   done < <(timeout "${WORKLOAD_TIMEOUT:-$((duration + warmup + 900))}" "$ENGINE" exec "$container" bash /bench/workload.sh "$w" "$duration" "$warmup" "$scale")
+  # A workload that failed or never reached its measured phase has no valid CPU figures.
+  wait $! || { echo "run: workload $w failed" >&2; exit 1; }
+  [ "$seen" = 3 ] || { echo "run: workload $w did not report both MEASURE_START and MEASURE_END" >&2; exit 1; }
   rm -rf "$RUN_DIR/$w"
   "$ENGINE" cp "$container:/tmp/bench/$w" "$RUN_DIR/$w"
   r=$(python3 "$ROOT/scripts/loam-pg-bench/stats.py" "$RUN_DIR/$w" "$w")
