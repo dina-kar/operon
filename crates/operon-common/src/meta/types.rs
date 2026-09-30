@@ -128,7 +128,7 @@ impl IndexEntry {
 /// committed twice.
 pub const WAL_COMMIT_WINDOW_MS: u64 = 900_000;
 
-/// An idempotency key of the stream ingest ledger (design §02 §7.4, D271):
+/// An idempotency key of the stream ingest ledger (design §02 §7.4, D270):
 /// SHA-256 of an event's identity, such as a CloudEvent's `source` and `id`.
 pub type IdempotencyKey = [u8; 32];
 

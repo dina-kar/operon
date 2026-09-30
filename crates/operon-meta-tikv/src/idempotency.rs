@@ -1,4 +1,4 @@
-//! The stream ingest ledger (design §02 §7.4, D271): claim, complete,
+//! The stream ingest ledger (design §02 §7.4, D270): claim, complete,
 //! release and prune, with the rules of
 //! `operon-meta/src/state/idempotency.rs`. Time is the transaction's start
 //! timestamp, the metastore clock of that transaction (row R2).

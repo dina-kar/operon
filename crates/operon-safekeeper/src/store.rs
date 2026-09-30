@@ -77,6 +77,15 @@ pub struct AppendPlan {
 /// The durable storage of acceptor heads and WAL.
 #[async_trait]
 pub trait WalStore: Send + Sync + 'static {
+    /// How many [`append`](Self::append)s of one timeline the service may
+    /// have in flight at once. With more than one, appends are issued in LSN
+    /// order but may complete in any order; the store then acknowledges only
+    /// the contiguous durable end in the `flush_lsn` it returns. The default,
+    /// 1, is the single-flight group commit of §28 §6.5.
+    fn max_in_flight(&self) -> usize {
+        1
+    }
+
     /// The head, if the timeline exists.
     async fn load(&self, tl: &TimelineId) -> Result<Option<AcceptorState>, Error>;
 

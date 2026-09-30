@@ -390,7 +390,7 @@ pub trait MetaStore: Send + Sync + fmt::Debug + 'static {
         prefix: &str,
     ) -> MetaResult<Vec<(String, Lease)>>;
 
-    // ----- Idempotency keys (design §02 §7.4, D271) -----
+    // ----- Idempotency keys (design §02 §7.4, D270) -----
 
     /// Claims each key of `claim.keys` for `claim.owner` until
     /// `claim.ttl_ms` from now, stamped with [`MetaStore::now_ms`], and

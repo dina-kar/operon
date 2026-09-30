@@ -670,7 +670,7 @@ fn every_command_variant_is_in_the_golden_list() {
             Command::UpdateAliases { .. } => "UpdateAliases",
             Command::SetCollectionHot { .. } => "SetCollectionHot",
             Command::UpdateAliasTargets { .. } => "UpdateAliasTargets",
-            // D271's, listed in `golden_commands_d271`.
+            // D270's, listed in `golden_commands_d270`.
             Command::ClaimIdempotencyKeys { .. }
             | Command::CompleteIdempotencyKeys { .. }
             | Command::ReleaseIdempotencyKeys { .. }
@@ -927,7 +927,7 @@ fn every_reply_variant_is_in_the_golden_lists() {
             Reply::SchemaUpdated { .. } => "SchemaUpdated",
             Reply::AliasesUpdated => "AliasesUpdated",
             Reply::CollectionHotSet => "CollectionHotSet",
-            // D271's, listed in `golden_replies_d271`.
+            // D270's, listed in `golden_replies_d270`.
             Reply::IdempotencyClaimed { .. } | Reply::IdempotencyKeysUpdated => continue,
         };
         seen.insert(name);
@@ -1061,7 +1061,7 @@ fn a_version_v_plus_1_snapshot_without_hot_configuration_is_refused() {
     assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
 }
 
-/// Version 8 is D271's: every version above it is unsupported.
+/// Version 8 is D270's: every version above it is unsupported.
 #[test]
 fn a_version_above_v_plus_1_is_unsupported() {
     let hot = operon_meta::snapshot_bytes(&golden_state_m1_3()).expect("encode");
@@ -1329,13 +1329,13 @@ fn a_version_7_snapshot_may_carry_an_empty_hot_map() {
     );
 }
 
-// ----- D271: the stream ingest ledger -----
+// ----- D270: the stream ingest ledger -----
 
 const LEDGER_OWNER: &str = "req-1";
 
 /// Continues from an empty state: a namespace and a stream (id 1), then
 /// every ledger command.
-fn golden_commands_d271() -> Vec<Command> {
+fn golden_commands_d270() -> Vec<Command> {
     let ns = NamespaceId(1);
     let stream = StreamId(1);
     vec![
@@ -1375,7 +1375,7 @@ fn golden_commands_d271() -> Vec<Command> {
     ]
 }
 
-fn golden_replies_d271() -> Vec<Result<Reply, ApplyError>> {
+fn golden_replies_d270() -> Vec<Result<Reply, ApplyError>> {
     vec![
         Ok(Reply::IdempotencyClaimed {
             states: vec![
@@ -1392,9 +1392,9 @@ fn golden_replies_d271() -> Vec<Result<Reply, ApplyError>> {
     ]
 }
 
-fn golden_state_d271() -> MetaState {
+fn golden_state_d270() -> MetaState {
     let mut state = MetaState::default();
-    for command in golden_commands_d271() {
+    for command in golden_commands_d270() {
         state
             .apply(command.clone())
             .unwrap_or_else(|e| panic!("{command:?} failed to apply: {e}"));
@@ -1403,26 +1403,26 @@ fn golden_state_d271() -> MetaState {
 }
 
 #[test]
-fn d271_commands_encode_to_the_golden_bytes() {
-    let fresh = postcard::to_stdvec(&golden_commands_d271()).expect("encode");
-    let golden = golden_bytes("commands-d271.bin", &fresh);
+fn d270_commands_encode_to_the_golden_bytes() {
+    let fresh = postcard::to_stdvec(&golden_commands_d270()).expect("encode");
+    let golden = golden_bytes("commands-d270.bin", &fresh);
     assert_eq!(fresh, golden);
     let decoded: Vec<Command> = postcard::from_bytes(&golden).expect("decode");
-    assert_eq!(decoded, golden_commands_d271());
+    assert_eq!(decoded, golden_commands_d270());
 }
 
 #[test]
-fn d271_replies_encode_to_the_golden_bytes() {
-    let fresh = postcard::to_stdvec(&golden_replies_d271()).expect("encode");
-    let golden = golden_bytes("replies-d271.bin", &fresh);
+fn d270_replies_encode_to_the_golden_bytes() {
+    let fresh = postcard::to_stdvec(&golden_replies_d270()).expect("encode");
+    let golden = golden_bytes("replies-d270.bin", &fresh);
     assert_eq!(fresh, golden);
     let decoded: Vec<Result<Reply, ApplyError>> = postcard::from_bytes(&golden).expect("decode");
-    assert_eq!(decoded, golden_replies_d271());
+    assert_eq!(decoded, golden_replies_d270());
 }
 
 #[test]
-fn the_d271_commands_apply_and_leave_the_expected_ledger() {
-    let state = golden_state_d271();
+fn the_d270_commands_apply_and_leave_the_expected_ledger() {
+    let state = golden_state_d270();
     assert!(state.check_invariants().is_empty());
     let stream = StreamId(1);
     assert_eq!(
@@ -1440,11 +1440,11 @@ fn the_d271_commands_apply_and_leave_the_expected_ledger() {
 }
 
 #[test]
-fn d271_ledger_snapshot_is_version_8_and_round_trips() {
-    let state = golden_state_d271();
+fn d270_ledger_snapshot_is_version_8_and_round_trips() {
+    let state = golden_state_d270();
     let bytes = operon_meta::snapshot_bytes(&state).expect("encode");
     assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().expect("4")), 8);
-    let golden = golden_bytes("snapshot-d271.bin", &bytes);
+    let golden = golden_bytes("snapshot-d270.bin", &bytes);
     assert_eq!(bytes, golden);
     let back = operon_meta::state_from_snapshot_bytes(&golden).expect("decode");
     assert_eq!(

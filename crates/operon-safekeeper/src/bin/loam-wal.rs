@@ -22,8 +22,12 @@ use operon_safekeeper::store::{MemWalStore, WalStore};
 enum StoreKind {
     /// In memory: nothing survives a restart (tests and protocol work).
     Mem,
-    /// TiKV: the production hot tier (build with --features tikv).
+    /// TiKV: the production hot tier (build with --features tikv), one
+    /// fenced 1PC transaction per append.
     Tikv,
+    /// TiKV RawKV: blind, pipelined appends fenced once per election
+    /// (§28 §7.3; build with --features tikv).
+    TikvRaw,
 }
 
 #[derive(Debug, Parser)]
@@ -49,6 +53,9 @@ struct Args {
     /// The TiKV keyspace (store tikv).
     #[arg(long, default_value = "loam_pgwal")]
     keyspace: String,
+    /// Appends in flight per timeline (store tikv-raw).
+    #[arg(long, default_value_t = operon_safekeeper::tikv_raw::DEFAULT_PIPELINE_DEPTH)]
+    pipeline_depth: usize,
     /// How often a heartbeat-only commit LSN is persisted, in ms.
     #[arg(long, default_value_t = 1000)]
     commit_flush_ms: u64,
@@ -125,20 +132,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     match args.store {
         StoreKind::Mem => run(Arc::new(MemWalStore::new()), &args).await,
-        StoreKind::Tikv => {
+        StoreKind::Tikv | StoreKind::TikvRaw => {
             #[cfg(feature = "tikv")]
             {
                 let pd = args.pd.split(',').map(|s| s.trim().to_string()).collect();
-                let tikv = operon_tikv::Tikv::connect(operon_tikv::TikvConfig::new(
-                    pd,
-                    args.keyspace.clone(),
-                ))
-                .await?;
-                run(
-                    Arc::new(operon_safekeeper::tikv::TikvWalStore::new(tikv)),
-                    &args,
-                )
-                .await
+                let config = operon_tikv::TikvConfig::new(pd, args.keyspace.clone());
+                if matches!(args.store, StoreKind::TikvRaw) {
+                    let kv = operon_safekeeper::tikv_raw::TikvRawKv::connect(config).await?;
+                    run(Arc::new(kv.into_store(args.pipeline_depth)), &args).await
+                } else {
+                    let tikv = operon_tikv::Tikv::connect(config).await?;
+                    run(
+                        Arc::new(operon_safekeeper::tikv::TikvWalStore::new(tikv)),
+                        &args,
+                    )
+                    .await
+                }
             }
             #[cfg(not(feature = "tikv"))]
             {
