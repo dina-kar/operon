@@ -11,11 +11,12 @@ use bytes::Bytes;
 use object_store::memory::InMemory;
 use operon_cache::{RangeCache, RangeCacheConfig};
 use operon_collection::{
-    CollectionConfig, CollectionContext, CollectionGcRoots, CollectionSchema, CollectionSnapshot,
-    CollectionTargetFactory, CollectionWriter, CommitKind, DocOp, Document, DynamicMapping,
-    FieldKind, FieldSpec, LanceCompactionSource, LanceConfig, LanceEnv, MaintenanceConfig,
-    ManifestCache, OpResult, PatchMode, PkGcRoots, PrimaryKey, SplitMergeSource, VectorIndexSpec,
-    VectorSpec, WriteError, fold_stream, live_manifest, split_path, verify_collection,
+    CollectionCommitHook, CollectionCommitStep, CollectionConfig, CollectionContext,
+    CollectionGcRoots, CollectionSchema, CollectionSnapshot, CollectionTargetFactory,
+    CollectionWriter, DocOp, Document, DynamicMapping, FieldKind, FieldSpec, LanceCompactionSource,
+    LanceConfig, LanceEnv, MaintenanceConfig, ManifestCache, OpResult, PatchMode, PkGcRoots,
+    PrimaryKey, SplitMergeSource, VectorIndexSpec, VectorSpec, WriteError, fold_stream,
+    live_manifest, split_path, verify_collection,
 };
 use operon_common::meta::{
     ApplyError, Collection, Consistency, MetaError, MetaStore, PointerCas, Retention, TargetRef,
@@ -60,6 +61,13 @@ pub struct SimConfig {
     pub partitions: u32,
     /// Store faults between bursts.
     pub fault_rates: FaultRates,
+    /// At the end, with faults off and the writes settled, keep the worker
+    /// running until it has committed a split merge and a Lance compaction
+    /// (up to the settle wait). Maintenance commits only within
+    /// `commit_delay` of its snapshot and yields to link apply, so on a
+    /// loaded runner the workload phase alone can end before either lands.
+    /// Default false.
+    pub await_maintenance: bool,
 }
 
 impl SimConfig {
@@ -78,6 +86,7 @@ impl SimConfig {
                 delay: 0.05,
                 max_delay: Duration::from_millis(20),
             },
+            await_maintenance: false,
         }
     }
 }
@@ -156,10 +165,9 @@ pub struct SimStats {
     pub collection_version: u64,
     /// Records the collection dead-lettered (the schema-invalid ops).
     pub collection_dead_letters: u64,
-    /// Split merges among the `Maintenance` commits of the live manifest's
-    /// chain (as far back as its manifests still exist).
+    /// Split merges the workers committed (their manifest CAS succeeded).
     pub merges: u64,
-    /// Lance compactions among them.
+    /// Lance compactions the workers committed.
     pub compactions: u64,
     /// Doc writes refused over the unapplied-data budget (plan M1.3 Task
     /// 15): not acknowledged, nothing written.
@@ -305,6 +313,36 @@ struct Cluster {
     docs: CollectionId,
     docs_stream: StreamId,
     docs_schema: CollectionSchema,
+    /// The maintenance commits of every worker the run started.
+    maintenance: Arc<MaintenanceCommits>,
+}
+
+/// Maintenance commits counted as they land, through the sources' commit
+/// hooks. They used to be counted afterwards by walking the live
+/// manifest's parent chain, but GC (`keep_manifests: 3`, 1 s grace) had
+/// deleted all but the last few manifests by then, so the count depended
+/// on how the run's wall-clock timing placed the merges and compactions
+/// relative to the final commits, and `a_seed_with_maintenance_has_merges_and_compactions`
+/// failed on CI with one of them 0 (seed 7: merges 0-3, compactions 0-2
+/// across runs).
+#[derive(Debug, Default)]
+struct MaintenanceCommits {
+    merges: AtomicU64,
+    compactions: AtomicU64,
+}
+
+impl MaintenanceCommits {
+    /// A commit hook that bumps `counter(self)` after each successful
+    /// manifest CAS.
+    fn hook(self: &Arc<Self>, counter: fn(&Self) -> &AtomicU64) -> CollectionCommitHook {
+        let this = self.clone();
+        Arc::new(move |step, _fence| {
+            if step == CollectionCommitStep::AfterCas {
+                counter(&this).fetch_add(1, Ordering::Relaxed);
+            }
+            Box::pin(std::future::ready(()))
+        })
+    }
 }
 
 /// A running worker and the collection target factory its link apply
@@ -516,6 +554,7 @@ impl Cluster {
             docs,
             docs_stream,
             docs_schema: docs_schema(),
+            maintenance: Arc::default(),
         })
     }
 
@@ -603,14 +642,14 @@ impl Cluster {
         )));
         // Plan M1.3 Task 13 rule 3: merges and compactions, within the grace
         // period.
-        worker.add_source(Arc::new(SplitMergeSource::new(
-            ctx.clone(),
-            maintenance_config(),
-        )));
-        worker.add_source(Arc::new(LanceCompactionSource::new(
-            ctx,
-            maintenance_config(),
-        )));
+        worker.add_source(Arc::new(
+            SplitMergeSource::new(ctx.clone(), maintenance_config())
+                .with_hook(self.maintenance.hook(|m| &m.merges)),
+        ));
+        worker.add_source(Arc::new(
+            LanceCompactionSource::new(ctx, maintenance_config())
+                .with_hook(self.maintenance.hook(|m| &m.compactions)),
+        ));
         Ok(SimWorker {
             handle: worker.start(),
             collections,
@@ -1434,6 +1473,9 @@ async fn drive(
     };
     settle_link(cluster, rec).await;
     let settled = settle_collection(cluster, rec).await;
+    if config.await_maintenance {
+        settle_maintenance(cluster).await;
+    }
     worker.stop().await;
     if !settled {
         diagnose_collection_link(cluster, rec).await;
@@ -1462,6 +1504,20 @@ async fn high_watermarks(
                 .collect()
         })
         .unwrap_or_default())
+}
+
+/// Waits (up to [`WAIT`]) until the workers have committed a split merge and
+/// a Lance compaction. Not a violation when they have not: the caller
+/// judges the counts.
+async fn settle_maintenance(cluster: &Cluster) {
+    let deadline = Instant::now() + WAIT;
+    let done = || {
+        cluster.maintenance.merges.load(Ordering::Relaxed) > 0
+            && cluster.maintenance.compactions.load(Ordering::Relaxed) > 0
+    };
+    while !done() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// Waits until the link has applied every committed record of `events`.
@@ -1898,29 +1954,10 @@ async fn verify_collection_model(cluster: &Cluster, rec: &Recorder) {
     if let Some(dataset) = snapshot.dataset() {
         objects.push(dataset.manifest_location().path.to_string());
     }
-    // The merges and compactions of the chain, as far back as its manifests
-    // exist: a `Maintenance` commit that changed the splits is a merge, one
-    // that changed the Lance version a compaction.
-    let (mut merges, mut compactions) = (0, 0);
-    let mut child = manifest.clone();
-    while let Some(parent_path) = child.parent_manifest.clone() {
-        let Ok(parent) = ctx.manifests.load(&ctx.store, &parent_path).await else {
-            break;
-        };
-        if child.kind == CommitKind::Maintenance {
-            if child.splits != parent.splits {
-                merges += 1;
-            }
-            if child.lance_version != parent.lance_version {
-                compactions += 1;
-            }
-        }
-        child = (*parent).clone();
-    }
     {
         let mut stats = lock(&rec.stats);
-        stats.merges = merges;
-        stats.compactions = compactions;
+        stats.merges = cluster.maintenance.merges.load(Ordering::Relaxed);
+        stats.compactions = cluster.maintenance.compactions.load(Ordering::Relaxed);
     }
     for object in objects {
         if let Err(err) = cluster.store.head(&object).await {

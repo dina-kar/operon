@@ -44,6 +44,8 @@ datafusion = { version = "54.1", default-features = false, features = [
     "string_expressions",
     "unicode_expressions",
 ] }
+# PostgreSQL wire access over collections (operon feature `pgwire`, PG1).
+datafusion-postgres = "0.18"
 fail = "0.5"
 fnv = "1"
 foyer = "0.22"
