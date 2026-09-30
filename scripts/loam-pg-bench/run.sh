@@ -6,13 +6,18 @@
 #   scripts/loam-pg-bench/run.sh --variant safekeepers|loam [--replicas 1|3]
 #       [--duration S] [--warmup S] [--scale N] [--workloads "commit-1 ..."]
 #       [--label L] [--out DIR] [--keep] [--force]
+#       [--store tikv-raw|tikv] [--depth N] [--kv-config FILE] [--no-place]
 #
 # Each run uses a fresh tenant and timeline and a fresh compute, and writes
 # <out>/<date>-<git-sha>-<variant>-rf<replicas>[-<label>].json. Compare runs
 # with scripts/loam-pg-bench/compare.py.
 #
-# Candidate topology: compute -> loam-wal (host process, --store tikv) ->
-# TiKV playground (<replicas> stores, deploy/loam-pg-bench/tikv.toml). The
+# Candidate topology: compute -> loam-wal (host process, --store tikv-raw by
+# default: blind pipelined appends, --depth in flight per timeline; or the
+# P4a transactional store with --store tikv) -> TiKV playground (<replicas>
+# stores, --kv-config, default deploy/loam-pg-bench/tikv.toml). With 3
+# stores, place-leaders.sh labels them z1..z3 and pins the loam_pgwal leaders
+# to z1, the compute's zone (--no-place skips it). The
 # pageserver still ingests through one stock safekeeper (--no-sync) that
 # loam-wal feeds with committed WAL off the commit path (crates/
 # operon-safekeeper feeder.rs), until the WAL service serves the interpreted
@@ -27,6 +32,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 DEPLOY=$ROOT/deploy/loam-pg-bench
 
 variant= replicas=1 duration=60 warmup=10 scale=10 label= keep=0 force=0
+store=tikv-raw depth=8 kv_config= place=1
 workloads="commit-1 commit-16 tpcb-16 bulk"
 out=$ROOT/bench/results
 while [ $# -gt 0 ]; do
@@ -41,11 +47,17 @@ while [ $# -gt 0 ]; do
     --out) out=$2; shift 2 ;;
     --keep) keep=1; shift ;;
     --force) force=1; shift ;;
+    --store) store=$2; shift 2 ;;
+    --depth) depth=$2; shift 2 ;;
+    --kv-config) kv_config=$(realpath "$2"); shift 2 ;;
+    --no-place) place=0; shift ;;
     *) sed -n '5,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
   esac
 done
 case $variant in safekeepers | loam) ;; *) echo "run: --variant safekeepers|loam" >&2; exit 2 ;; esac
 case $replicas in 1 | 3) ;; *) echo "run: --replicas 1|3" >&2; exit 2 ;; esac
+case $store in tikv | tikv-raw) ;; *) echo "run: --store tikv|tikv-raw" >&2; exit 2 ;; esac
+kv_config=${kv_config:-$ROOT/deploy/loam-pg-bench/tikv.toml}
 out=$(realpath -m "$out")
 cd "$DEPLOY"
 
@@ -108,17 +120,24 @@ else
   [ -x "$LOAM_WAL" ] || { echo "run: no loam-wal at $LOAM_WAL (see the header)" >&2; exit 1; }
   stores=$(curl -sf "http://$PD/pd/api/v1/stores" 2>/dev/null |
     python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])' 2>/dev/null || echo 0)
-  if [ "$stores" != "$replicas" ] &&
-    "$ROOT/scripts/tikv/playground.sh" status --tag "$TAG" >/dev/null 2>&1; then
-    log "restarting the playground with $replicas store(s) (it has $stores)"
+  # A playground started with another store count or TiKV config is restarted.
+  cfg_sum=$(sha256sum "$kv_config" | cut -c1-16)
+  if "$ROOT/scripts/tikv/playground.sh" status --tag "$TAG" >/dev/null 2>&1 &&
+    { [ "$stores" != "$replicas" ] || [ "$(cat "$RUN_DIR/kv-config.sum" 2>/dev/null)" != "$cfg_sum" ]; }; then
+    log "restarting the playground with $replicas store(s) and $(basename "$kv_config")"
     "$ROOT/scripts/tikv/playground.sh" stop --tag "$TAG" >&2
   fi
   if ! "$ROOT/scripts/tikv/playground.sh" status --tag "$TAG" >/dev/null 2>&1; then
     "$ROOT/scripts/tikv/playground.sh" start --tag "$TAG" --stores "$replicas" \
-      --kv-config "$DEPLOY/tikv.toml" --timeout 180 --force >&2
+      --kv-config "$kv_config" --timeout 180 --force >&2
+    echo "$cfg_sum" >"$RUN_DIR/kv-config.sum"
+  fi
+  if [ "$place" = 1 ] && [ "$replicas" = 3 ]; then
+    "$ROOT/scripts/loam-pg-bench/place-leaders.sh" --pd "$PD" --zone z1 >&2
   fi
   RUST_LOG=${RUST_LOG:-info} setsid nohup "$LOAM_WAL" --listen-pg 127.0.0.1:5460 \
-    --listen-http 127.0.0.1:7690 --store tikv --pd "$PD" --keyspace loam_pgwal \
+    --listen-http 127.0.0.1:7690 --store "$store" --pipeline-depth "$depth" \
+    --pd "$PD" --keyspace loam_pgwal \
     --feed-safekeeper 127.0.0.1:5457 >"$RUN_DIR/loam-wal.log" 2>&1 </dev/null &
   echo $! >"$RUN_DIR/loam-wal.pid"
   for _ in $(seq 1 30); do curl -sf localhost:7690/v1/status >/dev/null && break; sleep 1; done
@@ -163,6 +182,8 @@ disk=$(lsblk -dno MODEL "$(df --output=source "$HOME" | tail -1 | sed 's/p\?[0-9
 printf '%s\n' "${results[@]}" | V="$variant" R="$replicas" L="$label" SHA="$sha" \
   DATE="$(date -u +%FT%TZ)" DISK="$disk" IMG="$neon_image" DUR="$duration" WARM="$warmup" \
   SCALE="$scale" SB="${SHARED_BUFFERS:-2GB}" CF="${COMPUTE_FSYNC:-off}" SK="$SAFEKEEPERS" \
+  STORE="$([ "$variant" = loam ] && echo "$store" || echo -)" DEPTH="$depth" \
+  KVCFG="$([ "$variant" = loam ] && basename "$kv_config" || echo -)" \
   python3 -c '
 import json, sys, platform, os
 workloads = [json.loads(l) for l in sys.stdin if l.strip()]
@@ -173,7 +194,9 @@ print(json.dumps({
   "versions": {"neon_image": os.environ["IMG"], "tikv": "v8.5.8"},
   "settings": {"duration_s": int(os.environ["DUR"]), "warmup_s": int(os.environ["WARM"]),
                "scale": int(os.environ["SCALE"]), "shared_buffers": os.environ["SB"],
-               "compute_fsync": os.environ["CF"], "wal": os.environ["SK"]},
+               "compute_fsync": os.environ["CF"], "wal": os.environ["SK"],
+               "store": os.environ["STORE"], "pipeline_depth": int(os.environ["DEPTH"]),
+               "tikv_config": os.environ["KVCFG"]},
   "workloads": workloads}, indent=2))' >"$file"
 log "wrote $file"
 echo "$file"
