@@ -5,7 +5,7 @@
 use std::ops::Range;
 
 use crate::meta::types::{
-    Collection, Fence, Freshness, IndexEntry, Link, Pointer, Stream, WalChunk,
+    Collection, Fence, Freshness, IdempotencyKey, IndexEntry, Link, Pointer, Stream, WalChunk,
 };
 use crate::{CollectionId, NamespaceId, StreamId};
 
@@ -191,4 +191,33 @@ pub enum NameTarget {
         /// [`AliasTargets::write_target`](super::AliasTargets::write_target).
         write_target: Option<CollectionId>,
     },
+}
+
+/// A claim on idempotency keys of one stream
+/// ([`claim_idempotency_keys`](super::MetaStore::claim_idempotency_keys)).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdempotencyClaim {
+    pub stream: StreamId,
+    /// Unique per request, so a retry of the same request is not mistaken
+    /// for another one's claim.
+    pub owner: String,
+    /// 1..=[`MAX_IDEMPOTENCY_KEYS`](crate::meta::MAX_IDEMPOTENCY_KEYS)
+    /// distinct keys.
+    pub keys: Vec<IdempotencyKey>,
+    /// How long the claims stay pending, at most
+    /// [`MAX_IDEMPOTENCY_TTL_MS`](crate::meta::MAX_IDEMPOTENCY_TTL_MS).
+    pub ttl_ms: u64,
+}
+
+/// Marks claimed keys done
+/// ([`complete_idempotency_keys`](super::MetaStore::complete_idempotency_keys)).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdempotencyCompletion {
+    pub stream: StreamId,
+    pub owner: String,
+    /// Each key with the partition and offset its event was appended at.
+    pub done: Vec<(IdempotencyKey, u32, u64)>,
+    /// How long the keys are remembered: the dedup window, at most
+    /// [`MAX_IDEMPOTENCY_TTL_MS`](crate::meta::MAX_IDEMPOTENCY_TTL_MS).
+    pub window_ms: u64,
 }

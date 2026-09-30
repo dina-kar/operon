@@ -63,6 +63,11 @@ macro_rules! for_each_case {
             collection_hot_defaults_and_set_is_retry_safe,
             collection_hot_needs_the_collection_in_its_namespace,
             a_dropped_collection_forgets_its_hot_config,
+            // idempotency
+            claim_complete_then_duplicate,
+            a_pending_claim_is_in_flight_until_it_lapses_or_is_released,
+            a_done_key_lapses_with_its_window_and_prune_forgets_it,
+            ledger_requests_are_validated,
             // gc
             retired_expired_respects_grace,
             forget_objects_removes_retired_entries,

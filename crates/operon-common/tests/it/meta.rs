@@ -209,7 +209,8 @@ mod dyn_compatible {
     use async_trait::async_trait;
     use operon_common::meta::{
         AliasAction, AliasTargetAction, AliasTargets, Collection, CollectionHead, CollectionRoots,
-        Consistency, Fence, HotConfig, Lease, LeaseGrant, Link, LinkHead, LinkId, MetaChanges,
+        Consistency, Fence, HotConfig, IdempotencyClaim, IdempotencyCompletion, IdempotencyEntry,
+        IdempotencyKey, IdempotencyState, Lease, LeaseGrant, Link, LinkHead, LinkId, MetaChanges,
         MetaResult, MetaStore, NameTarget, Namespace, PartitionIndex, Pointer, PointerCas,
         Retention, SegmentSwap, Stream, StreamState, TargetRef, Tracked, WalClass, WalCommit,
     };
@@ -500,6 +501,34 @@ mod dyn_compatible {
             unimplemented!()
         }
         async fn prune_wal_commits(&self, _: Option<Fence>) -> MetaResult<u32> {
+            unimplemented!()
+        }
+        async fn claim_idempotency_keys(
+            &self,
+            _: IdempotencyClaim,
+        ) -> MetaResult<Vec<IdempotencyState>> {
+            unimplemented!()
+        }
+        async fn complete_idempotency_keys(&self, _: IdempotencyCompletion) -> MetaResult<()> {
+            unimplemented!()
+        }
+        async fn release_idempotency_keys(
+            &self,
+            _: StreamId,
+            _: &str,
+            _: Vec<IdempotencyKey>,
+        ) -> MetaResult<()> {
+            unimplemented!()
+        }
+        async fn idempotency_key(
+            &self,
+            _: Consistency,
+            _: StreamId,
+            _: IdempotencyKey,
+        ) -> MetaResult<Option<IdempotencyEntry>> {
+            unimplemented!()
+        }
+        async fn prune_idempotency_keys(&self, _: Option<Fence>) -> MetaResult<u32> {
             unimplemented!()
         }
         async fn orphan_wal_objects(
