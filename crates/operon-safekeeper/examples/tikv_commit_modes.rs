@@ -15,7 +15,7 @@
 use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
-use tikv_client::{Config, RawClient, TransactionClient, TransactionOptions};
+use operon_tikv::tikv_client::{Config, RawClient, TransactionClient, TransactionOptions};
 
 fn arg(args: &[String], name: &str, default: &str) -> String {
     args.iter()
