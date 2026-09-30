@@ -440,7 +440,7 @@ pub(crate) fn decode_u32(what: &str, bytes: &[u8]) -> Result<u32, MetaError> {
 // ---- The stream ingest ledger ----
 
 /// `q/<stream>/<key>` → the ledger entry of an idempotency key (design §02
-/// §7.4, D273); keys are 32-byte SHA-256 digests.
+/// §7.4, D270); keys are 32-byte SHA-256 digests.
 pub(crate) fn idempotency(stream: StreamId, key: &[u8; 32]) -> Vec<u8> {
     tagged(b'q', &[&stream.0.to_be_bytes(), key])
 }

@@ -1,4 +1,4 @@
-//! The stream ingest ledger (design §02 §7.4, D273).
+//! The stream ingest ledger (design §02 §7.4, D270).
 
 use std::time::Duration;
 
