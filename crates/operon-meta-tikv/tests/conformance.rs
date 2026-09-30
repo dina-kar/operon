@@ -1,5 +1,5 @@
 //! The `MetaStore` conformance suite against the TiKV metastore (R1 plan
-//! Tasks 4–5): all 53 cases with their linearizability histories, plus the
+//! Tasks 4–5): every case with their linearizability histories, plus the
 //! TiKV-specific tests of the clock, the id blocks and `commit_wal`'s
 //! partition groups. Every test needs a cluster and skips without
 //! `OPERON_TEST_PD`.
@@ -109,7 +109,7 @@ impl Faults for LoseAcks {
 }
 
 mod suite {
-    // All 53 cases, linearizability histories included (row R3).
+    // Every case, linearizability histories included (row R3).
     operon_meta_conformance::metastore_conformance!(super::TikvBackend);
 }
 

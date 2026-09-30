@@ -1,6 +1,7 @@
 mod catalog;
 mod collections;
 mod hot;
+mod idempotency;
 mod invariants;
 mod leases;
 mod links;
@@ -12,8 +13,8 @@ mod sequencer;
 use std::collections::BTreeMap;
 
 use operon_common::meta::{
-    AliasTargets, ApplyError, Collection, HotConfig, Lease, Link, LinkId, MAX_KEY_LEN,
-    MAX_NAME_LEN, Namespace, Pointer, Stream,
+    AliasTargets, ApplyError, Collection, HotConfig, IdempotencyEntry, IdempotencyKey, Lease, Link,
+    LinkId, MAX_KEY_LEN, MAX_NAME_LEN, Namespace, Pointer, Stream,
 };
 use operon_common::{CollectionId, NamespaceId, StreamId};
 use serde::{Deserialize, Serialize};
@@ -75,6 +76,13 @@ pub struct MetaState {
     /// carries it only in format 7, written while it is non-empty.
     #[serde(skip)]
     alias_targets: BTreeMap<(NamespaceId, String), AliasTargets>,
+    /// The stream ingest ledger (design §02 §7.4, D271): per stream and
+    /// idempotency key, a pending claim or where the event was appended,
+    /// until it lapses and is pruned. Serde skips it, so the derived
+    /// encoding stays M1.1's; a snapshot carries it only in format 8,
+    /// written while it is non-empty.
+    #[serde(skip)]
+    idempotency: BTreeMap<(StreamId, IdempotencyKey), IdempotencyEntry>,
 }
 
 impl MetaState {
@@ -185,6 +193,28 @@ impl MetaState {
             }
             Command::UpdateAliasTargets { namespace, actions } => {
                 self.update_alias_targets(namespace, actions)
+            }
+            Command::ClaimIdempotencyKeys {
+                stream,
+                owner,
+                keys,
+                ttl_ms,
+                now_ms,
+            } => self.claim_idempotency_keys(stream, owner, keys, ttl_ms, now_ms),
+            Command::CompleteIdempotencyKeys {
+                stream,
+                owner,
+                done,
+                window_ms,
+                now_ms,
+            } => self.complete_idempotency_keys(stream, owner, done, window_ms, now_ms),
+            Command::ReleaseIdempotencyKeys {
+                stream,
+                owner,
+                keys,
+            } => self.release_idempotency_keys(stream, owner, keys),
+            Command::PruneIdempotencyKeys { fence, now_ms } => {
+                self.prune_idempotency_keys(fence, now_ms)
             }
         }
     }

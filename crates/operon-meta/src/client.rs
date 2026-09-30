@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use operon_common::meta::{
     AliasAction, AliasTargetAction, ApplyError, Consistency, Fence, Freshness, HotConfig,
-    LeaseGrant, LinkId, MetaError, Retention, TargetRef, WalChunk, WalClass,
+    IdempotencyKey, IdempotencyState, LeaseGrant, LinkId, MetaError, Retention, TargetRef,
+    WalChunk, WalClass,
 };
 use operon_common::schema::CollectionSchema;
 use operon_common::{CollectionId, NamespaceId, StreamId};
@@ -956,6 +957,82 @@ impl MetaClient {
             .await?
         {
             Reply::AliasesUpdated => Ok(()),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
+        }
+    }
+
+    /// Claims idempotency keys ([`Command::ClaimIdempotencyKeys`]), stamped
+    /// with the client's clock.
+    pub async fn claim_idempotency_keys(
+        &self,
+        stream: StreamId,
+        owner: String,
+        keys: Vec<IdempotencyKey>,
+        ttl_ms: u64,
+    ) -> Result<Vec<IdempotencyState>, MetaError> {
+        let command = Command::ClaimIdempotencyKeys {
+            stream,
+            owner,
+            keys,
+            ttl_ms,
+            now_ms: self.now_ms(),
+        };
+        match self.write(command).await? {
+            Reply::IdempotencyClaimed { states } => Ok(states),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
+        }
+    }
+
+    /// Marks claimed keys done ([`Command::CompleteIdempotencyKeys`]).
+    pub async fn complete_idempotency_keys(
+        &self,
+        stream: StreamId,
+        owner: String,
+        done: Vec<(IdempotencyKey, u32, u64)>,
+        window_ms: u64,
+    ) -> Result<(), MetaError> {
+        let command = Command::CompleteIdempotencyKeys {
+            stream,
+            owner,
+            done,
+            window_ms,
+            now_ms: self.now_ms(),
+        };
+        match self.write(command).await? {
+            Reply::IdempotencyKeysUpdated => Ok(()),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
+        }
+    }
+
+    /// Drops pending claims ([`Command::ReleaseIdempotencyKeys`]).
+    pub async fn release_idempotency_keys(
+        &self,
+        stream: StreamId,
+        owner: String,
+        keys: Vec<IdempotencyKey>,
+    ) -> Result<(), MetaError> {
+        match self
+            .write(Command::ReleaseIdempotencyKeys {
+                stream,
+                owner,
+                keys,
+            })
+            .await?
+        {
+            Reply::IdempotencyKeysUpdated => Ok(()),
+            other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
+        }
+    }
+
+    /// Forgets lapsed ledger entries ([`Command::PruneIdempotencyKeys`]);
+    /// returns how many were removed.
+    pub async fn prune_idempotency_keys(&self, fence: Option<Fence>) -> Result<u32, MetaError> {
+        let command = Command::PruneIdempotencyKeys {
+            fence,
+            now_ms: self.now_ms(),
+        };
+        match self.write(command).await? {
+            Reply::Pruned { removed } => Ok(removed),
             other => Err(MetaError::UnexpectedReply(format!("{other:?}"))),
         }
     }

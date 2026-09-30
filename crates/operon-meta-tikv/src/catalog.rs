@@ -663,6 +663,12 @@ impl TikvMeta {
                     released.push(entry);
                 }
                 release_entries(txn, &released, now_ms).await?;
+                for (key, _) in txn
+                    .scan_prefix(&keys::idempotency_entries(collection.stream))
+                    .await?
+                {
+                    txn.delete(&key).await?;
+                }
                 // The implicit link and its pointer, the manifest pointer,
                 // the collection.
                 txn.delete(&keys::link(collection.link)).await?;

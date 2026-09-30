@@ -1,8 +1,8 @@
 use std::ops::Range;
 
 use operon_common::meta::{
-    AliasAction, AliasTargetAction, Fence, Freshness, HotConfig, LeaseGrant, LinkId, Retention,
-    TargetRef, WalChunk, WalClass,
+    AliasAction, AliasTargetAction, Fence, Freshness, HotConfig, IdempotencyKey, IdempotencyState,
+    LeaseGrant, LinkId, Retention, TargetRef, WalChunk, WalClass,
 };
 use operon_common::schema::CollectionSchema;
 use operon_common::{CollectionId, NamespaceId, StreamId};
@@ -271,6 +271,38 @@ pub enum Command {
         namespace: NamespaceId,
         actions: Vec<AliasTargetAction>,
     },
+    /// Claims 1..=[`MAX_IDEMPOTENCY_KEYS`](operon_common::meta::MAX_IDEMPOTENCY_KEYS)
+    /// distinct keys of `stream` for `owner` until `now_ms + ttl_ms` (the
+    /// stream ingest ledger, design §02 §7.4, D271; this and the next three
+    /// are appended last). Each key absent, lapsed or pending under `owner`
+    /// becomes pending under `owner`; the reply says per key what was found
+    /// ([`Reply::IdempotencyClaimed`]). A retry claims the same keys again.
+    ClaimIdempotencyKeys {
+        stream: StreamId,
+        owner: String,
+        keys: Vec<IdempotencyKey>,
+        ttl_ms: u64,
+        now_ms: u64,
+    },
+    /// Marks each key still pending under `owner` done at its partition and
+    /// offset, until `now_ms + window_ms`; other keys are left as they are,
+    /// so a retry changes nothing.
+    CompleteIdempotencyKeys {
+        stream: StreamId,
+        owner: String,
+        done: Vec<(IdempotencyKey, u32, u64)>,
+        window_ms: u64,
+        now_ms: u64,
+    },
+    /// Drops each key still pending under `owner`. A retry is a no-op.
+    ReleaseIdempotencyKeys {
+        stream: StreamId,
+        owner: String,
+        keys: Vec<IdempotencyKey>,
+    },
+    /// Forgets lapsed ledger entries. A retry removes nothing more. Fenced
+    /// like [`Command::TrimPartition`].
+    PruneIdempotencyKeys { fence: Option<Fence>, now_ms: u64 },
 }
 
 /// The result of successfully applying a [`Command`].
@@ -312,6 +344,14 @@ pub enum Reply {
     AliasesUpdated,
     /// [`Command::SetCollectionHot`] applied (M1.3; appended last).
     CollectionHotSet,
+    /// What [`Command::ClaimIdempotencyKeys`] found for each key, in order
+    /// (D271; appended last).
+    IdempotencyClaimed {
+        states: Vec<IdempotencyState>,
+    },
+    /// [`Command::CompleteIdempotencyKeys`] or
+    /// [`Command::ReleaseIdempotencyKeys`] applied.
+    IdempotencyKeysUpdated,
 }
 
 impl std::fmt::Display for Command {
@@ -396,6 +436,36 @@ impl std::fmt::Display for Command {
                 "UpdateAliasTargets({namespace}, {} actions)",
                 actions.len()
             ),
+            Command::ClaimIdempotencyKeys {
+                stream,
+                owner,
+                keys,
+                ..
+            } => write!(
+                f,
+                "ClaimIdempotencyKeys({stream}, {owner}, {} keys)",
+                keys.len()
+            ),
+            Command::CompleteIdempotencyKeys {
+                stream,
+                owner,
+                done,
+                ..
+            } => write!(
+                f,
+                "CompleteIdempotencyKeys({stream}, {owner}, {} keys)",
+                done.len()
+            ),
+            Command::ReleaseIdempotencyKeys {
+                stream,
+                owner,
+                keys,
+            } => write!(
+                f,
+                "ReleaseIdempotencyKeys({stream}, {owner}, {} keys)",
+                keys.len()
+            ),
+            Command::PruneIdempotencyKeys { .. } => write!(f, "PruneIdempotencyKeys"),
         }
     }
 }

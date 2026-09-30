@@ -79,6 +79,7 @@ impl MetaState {
             return;
         };
         self.stream_names.remove(&(stream.namespace, stream.name));
+        self.drop_stream_idempotency(id);
         for partition in 0..stream.partitions {
             let Some(state) = self.partitions.remove(&(id, partition)) else {
                 continue;
