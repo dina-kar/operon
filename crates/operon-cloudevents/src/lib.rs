@@ -87,12 +87,16 @@ impl AttrType {
 /// encoding of the spec's type system, exactly as it arrived), and its type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Attr {
+    /// The attribute's name.
     pub name: String,
+    /// The value's string form.
     pub value: String,
+    /// The value's type.
     pub kind: AttrType,
 }
 
 impl Attr {
+    /// A string attribute.
     pub fn string(name: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -166,22 +170,27 @@ impl CloudEvent {
             .map(|attr| attr.value.as_str())
     }
 
+    /// The `id` attribute.
     pub fn id(&self) -> &str {
         self.attr("id").unwrap_or_default()
     }
 
+    /// The `source` attribute.
     pub fn source(&self) -> &str {
         self.attr("source").unwrap_or_default()
     }
 
+    /// The `type` attribute.
     pub fn ty(&self) -> &str {
         self.attr("type").unwrap_or_default()
     }
 
+    /// The `datacontenttype` attribute, if present.
     pub fn datacontenttype(&self) -> Option<&str> {
         self.attr("datacontenttype")
     }
 
+    /// The data's bytes, if the event has data.
     pub fn data(&self) -> Option<&Bytes> {
         self.data.as_ref()
     }
