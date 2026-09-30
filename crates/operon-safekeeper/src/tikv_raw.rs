@@ -956,8 +956,8 @@ mod tikv_kv {
     /// deletes on a plain client; compare-and-swap on an atomic-mode one.
     #[derive(Clone)]
     pub struct TikvRawKv {
-        plain: tikv_client::RawClient,
-        atomic: tikv_client::RawClient,
+        plain: operon_tikv::tikv_client::RawClient,
+        atomic: operon_tikv::tikv_client::RawClient,
         /// For PD's HTTP API (region pre-splits).
         tikv: operon_tikv::Tikv,
     }
@@ -973,19 +973,22 @@ mod tikv_kv {
     /// The raw TiKV store.
     pub type TikvRawWalStore = RawWalStore<TikvRawKv>;
 
-    fn err(e: tikv_client::Error) -> Error {
+    fn err(e: operon_tikv::tikv_client::Error) -> Error {
         Error::Store(e.to_string())
     }
 
     impl TikvRawKv {
         /// Connects to the keyspace of `config` (which must exist, on API v2).
         pub async fn connect(config: operon_tikv::TikvConfig) -> Result<Self, Error> {
-            let client_config = tikv_client::Config::default()
+            let client_config = operon_tikv::tikv_client::Config::default()
                 .with_timeout(config.request_timeout)
                 .with_keyspace(&config.keyspace);
-            let plain = tikv_client::RawClient::new_with_config(config.pd.clone(), client_config)
-                .await
-                .map_err(err)?;
+            let plain = operon_tikv::tikv_client::RawClient::new_with_config(
+                config.pd.clone(),
+                client_config,
+            )
+            .await
+            .map_err(err)?;
             let atomic = plain.with_atomic_for_cas();
             let tikv = operon_tikv::Tikv::connect(config)
                 .await
