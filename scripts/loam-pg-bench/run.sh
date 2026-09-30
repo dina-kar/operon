@@ -41,7 +41,7 @@
 # on the same filesystem as those volumes.
 #
 # The Arm A variants feed the pageserver through one stock --no-sync
-# safekeeper that acceptor 1 streams committed WAL to (feeder.rs, D270); its
+# safekeeper that acceptor 1 streams committed WAL to (feeder.rs, D271); its
 # data goes to --feeder-root, on another filesystem than the journals.
 #
 # Needs: podman (or docker) with docker-compose, and the loam-wal binary:
