@@ -160,11 +160,15 @@ async fn propose(pg: SocketAddr, payload: &[u8]) -> TcpStream {
             other => panic!("{other:?}"),
         }
     }
-    // The quorum commit arrives in a heartbeat.
+    // The quorum commit arrives in a heartbeat. (A pipelined store may
+    // still owe responses for writes the one above already covered.)
     send(&mut p, append(1, end, b"", end)).await;
-    match recv(&mut p).await {
-        AcceptorMessage::AppendResponse(r) => assert_eq!(r.commit_lsn, Lsn(end)),
-        other => panic!("{other:?}"),
+    loop {
+        match recv(&mut p).await {
+            AcceptorMessage::AppendResponse(r) if r.commit_lsn == Lsn(end) => break,
+            AcceptorMessage::AppendResponse(r) => assert_eq!(r.flush_lsn, Lsn(end)),
+            other => panic!("{other:?}"),
+        }
     }
     p
 }
@@ -220,6 +224,103 @@ async fn walproposer_flow_then_replication_and_status() {
         "{body}"
     );
     assert!(body.contains("\"term\":1"), "{body}");
+}
+
+/// A RawKv whose writes complete out of order: each put sleeps a little,
+/// longer for some than for later ones.
+#[derive(Debug, Default)]
+struct Shuffled {
+    inner: operon_safekeeper::tikv_raw::MemRawKv,
+    n: std::sync::atomic::AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl operon_safekeeper::tikv_raw::RawKv for Shuffled {
+    async fn get(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, operon_safekeeper::Error> {
+        self.inner.get(key).await
+    }
+    async fn batch_put(
+        &self,
+        pairs: Vec<(Vec<u8>, Vec<u8>)>,
+    ) -> Result<(), operon_safekeeper::Error> {
+        let i = self.n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis((i * 7) % 5)).await;
+        self.inner.batch_put(pairs).await
+    }
+    async fn compare_and_swap(
+        &self,
+        key: Vec<u8>,
+        expected: Option<Vec<u8>>,
+        new: Vec<u8>,
+    ) -> Result<(Option<Vec<u8>>, bool), operon_safekeeper::Error> {
+        self.inner.compare_and_swap(key, expected, new).await
+    }
+    async fn scan(
+        &self,
+        from: Vec<u8>,
+        to: Vec<u8>,
+        limit: u32,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, operon_safekeeper::Error> {
+        self.inner.scan(from, to, limit).await
+    }
+    async fn delete_range(
+        &self,
+        from: Vec<u8>,
+        to: Vec<u8>,
+    ) -> Result<(), operon_safekeeper::Error> {
+        self.inner.delete_range(from, to).await
+    }
+}
+
+/// The walproposer flow over the raw store with 8 appends in flight whose
+/// writes land out of order: acks stay monotonic and cover only contiguous
+/// WAL, and readers get exactly the stream.
+#[tokio::test]
+async fn pipelined_appends_over_the_raw_store() {
+    let store = Arc::new(operon_safekeeper::tikv_raw::RawWalStore::new(
+        Arc::new(Shuffled::default()),
+        b"t/".to_vec(),
+        8,
+    ));
+    assert_eq!(store.max_in_flight(), 8);
+    let svc = WalService::new(
+        store,
+        WalServiceConfig {
+            poll_interval: Duration::from_millis(5),
+            ..Default::default()
+        },
+    );
+    let pg = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let pg_addr = pg.local_addr().unwrap();
+    tokio::spawn(svc.clone().serve(pg, std::future::pending()));
+
+    let payload: Vec<u8> = (0..3000u32).map(|i| (i % 253) as u8).collect();
+    let _p = propose(pg_addr, &payload).await;
+    let end = START + payload.len() as u64;
+    let mut q = connect(pg_addr).await;
+    let rows = client::query_rows(&mut q, "TIMELINE_STATUS").await.unwrap();
+    assert_eq!(rows[0][0], Some(Lsn(end).to_string()));
+
+    let mut r = connect(pg_addr).await;
+    client::query(
+        &mut r,
+        &format!("START_REPLICATION PHYSICAL {}", Lsn(START)),
+    )
+    .await
+    .unwrap();
+    client::expect_copy_both(&mut r).await.unwrap();
+    let mut got = Vec::new();
+    while got.len() < payload.len() {
+        let mut m = client::recv_copy_data(&mut r).await.unwrap().unwrap();
+        if m.get_u8() == b'w' {
+            let start = m.get_u64();
+            let _end = m.get_u64();
+            let _ts = m.get_i64();
+            assert_eq!(start, START + got.len() as u64);
+            got.extend_from_slice(&m);
+        }
+    }
+    assert_eq!(got, payload);
 }
 
 #[tokio::test]

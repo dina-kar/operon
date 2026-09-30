@@ -40,6 +40,36 @@ pub struct Acceptor<S> {
     peer_horizon_lsn: Lsn,
     /// Where the current term's WAL starts; `None` before `ProposerElected`.
     term_start_lsn: Option<Lsn>,
+    /// The end of the last append handed to the store (in flight or done).
+    issued_end: Lsn,
+}
+
+impl PendingAppends {
+    /// The proposer term the append was issued under.
+    pub fn term(&self) -> crate::types::Term {
+        self.term
+    }
+}
+
+/// What [`Acceptor::begin_appends`] decided.
+#[derive(Debug)]
+pub enum Appends {
+    /// Answer now; the store is not involved.
+    Reply(AcceptorMessage),
+    /// Write `batch` (if any), then call [`Acceptor::finish_appends`].
+    Pending(PendingAppends),
+}
+
+/// An append between [`Acceptor::begin_appends`] and
+/// [`Acceptor::finish_appends`].
+#[derive(Debug)]
+pub struct PendingAppends {
+    /// The store write; `None` for heartbeats.
+    pub batch: Option<AppendBatch>,
+    term: crate::types::Term,
+    term_start_lsn: Lsn,
+    commit_lsn: Lsn,
+    truncate_lsn: Lsn,
 }
 
 impl<S: WalStore> Acceptor<S> {
@@ -121,6 +151,7 @@ impl<S: WalStore> Acceptor<S> {
                 commit_lsn,
                 peer_horizon_lsn,
                 term_start_lsn: None,
+                issued_end: Lsn::INVALID,
             },
             reply,
         ))
@@ -180,6 +211,7 @@ impl<S: WalStore> Acceptor<S> {
             }
             Ok(st) => {
                 self.adopt(st);
+                self.issued_end = self.state.flush_lsn;
                 self.term_start_lsn = Some(
                     msg.term_history
                         .0
@@ -199,8 +231,27 @@ impl<S: WalStore> Acceptor<S> {
         &mut self,
         reqs: &[AppendRequest],
     ) -> Result<AcceptorMessage, Error> {
+        match self.begin_appends(reqs)? {
+            Appends::Reply(r) => Ok(r),
+            Appends::Pending(p) => {
+                let res = match &p.batch {
+                    Some(b) => Some(self.store.append(&self.tl, b).await),
+                    None => None,
+                };
+                self.finish_appends(p, res).await
+            }
+        }
+    }
+
+    /// The first half of [`Self::handle_appends`], without the store: check
+    /// the requests and build the store write. The service issues the write
+    /// (several may be in flight, [`WalStore::max_in_flight`]) and hands its
+    /// outcome to [`Self::finish_appends`], in issue order.
+    pub fn begin_appends(&mut self, reqs: &[AppendRequest]) -> Result<Appends, Error> {
         let Some(first) = reqs.first() else {
-            return Ok(AcceptorMessage::AppendResponse(self.append_response()));
+            return Ok(Appends::Reply(AcceptorMessage::AppendResponse(
+                self.append_response(),
+            )));
         };
         for r in reqs {
             self.check_generation(r.h.generation, "AppendRequest")?;
@@ -220,9 +271,8 @@ impl<S: WalStore> Acceptor<S> {
         }
         let term = first.h.term;
         if self.state.term > term {
-            return Ok(AcceptorMessage::AppendResponse(AppendResponse::term_only(
-                self.state.mconf.generation,
-                self.state.term,
+            return Ok(Appends::Reply(AcceptorMessage::AppendResponse(
+                AppendResponse::term_only(self.state.mconf.generation, self.state.term),
             )));
         }
         let Some(term_start_lsn) = self.term_start_lsn.filter(|_| self.state.term == term) else {
@@ -242,6 +292,7 @@ impl<S: WalStore> Acceptor<S> {
             .max()
             .unwrap_or_default();
         let data: Vec<&AppendRequest> = reqs.iter().filter(|r| !r.wal.is_empty()).collect();
+        let mut batch = None;
         if let Some(d0) = data.first() {
             let mut at = d0.h.begin_lsn;
             for r in &data {
@@ -253,36 +304,81 @@ impl<S: WalStore> Acceptor<S> {
                 }
                 at = r.h.end_lsn;
             }
-            let batch = AppendBatch {
+            // Appends in flight have not reached `state` yet: the stream
+            // continues from the end of the last one issued.
+            if self.issued_end != Lsn::INVALID && d0.h.begin_lsn > self.issued_end {
+                return Err(Error::Protocol(format!(
+                    "AppendRequest at {} leaves a gap after the WAL end {}",
+                    d0.h.begin_lsn, self.issued_end
+                )));
+            }
+            self.issued_end = self.issued_end.max(at);
+            batch = Some(AppendBatch {
                 term,
                 begin_lsn: d0.h.begin_lsn,
                 wal: data.iter().map(|r| r.wal.clone()).collect(),
                 commit_lsn: commit_lsn.max(self.commit_lsn),
                 truncate_lsn: truncate_lsn.max(self.peer_horizon_lsn),
-            };
-            match self.store.append(&self.tl, &batch).await? {
-                Err(d) => {
-                    self.state.term = d.current;
-                    return Ok(AcceptorMessage::AppendResponse(AppendResponse::term_only(
-                        self.state.mconf.generation,
-                        d.current,
-                    )));
-                }
-                Ok(st) => self.adopt(st),
+            });
+        }
+        Ok(Appends::Pending(PendingAppends {
+            batch,
+            term,
+            term_start_lsn,
+            commit_lsn,
+            truncate_lsn,
+        }))
+    }
+
+    /// The second half of [`Self::handle_appends`]: adopt the store write's
+    /// outcome (`None` when there was no WAL to write) and answer.
+    pub async fn finish_appends(
+        &mut self,
+        p: PendingAppends,
+        res: Option<Result<Result<AcceptorState, crate::store::Deposed>, Error>>,
+    ) -> Result<AcceptorMessage, Error> {
+        match res {
+            None => {}
+            Some(Err(e)) => return Err(e),
+            Some(Ok(Err(d))) => {
+                self.state.term = self.state.term.max(d.current);
+                return Ok(AcceptorMessage::AppendResponse(AppendResponse::term_only(
+                    self.state.mconf.generation,
+                    self.state.term,
+                )));
+            }
+            Some(Ok(Ok(st))) => {
+                // Completions may report a flush LSN below one already
+                // adopted (a pipelined store's contiguous end): never go back.
+                let flush = self.state.flush_lsn.max(st.flush_lsn);
+                self.adopt(st);
+                self.state.flush_lsn = flush;
             }
         }
+        // An earlier completion in the pipeline deposed this proposer.
+        if self.state.term != p.term {
+            return Ok(AcceptorMessage::AppendResponse(AppendResponse::term_only(
+                self.state.mconf.generation,
+                self.state.term,
+            )));
+        }
 
-        self.peer_horizon_lsn = self.peer_horizon_lsn.max(truncate_lsn);
-        if commit_lsn != Lsn::INVALID {
-            let c = commit_lsn.max(self.commit_lsn).min(self.state.wal_end());
+        self.peer_horizon_lsn = self.peer_horizon_lsn.max(p.truncate_lsn);
+        if p.commit_lsn != Lsn::INVALID {
+            let c = p.commit_lsn.max(self.commit_lsn).min(self.state.wal_end());
             self.commit_lsn = self.commit_lsn.max(c);
         }
         // sync-safekeepers waits for commit_lsn to reach the term start; make
         // that durable at once, as Neon does.
-        if self.commit_lsn >= term_start_lsn && self.state.commit_lsn < term_start_lsn {
+        if self.commit_lsn >= p.term_start_lsn && self.state.commit_lsn < p.term_start_lsn {
             self.persist_commit_lsn().await?;
         }
         Ok(AcceptorMessage::AppendResponse(self.append_response()))
+    }
+
+    /// The store, for the service's in-flight writes.
+    pub fn store(&self) -> &Arc<S> {
+        &self.store
     }
 
     /// Persist the in-memory commit LSN if it is ahead of the store's,
