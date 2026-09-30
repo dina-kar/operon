@@ -805,7 +805,24 @@ impl Journal {
                 (st.max_seq, take_recyclable(&mut st.free))
             };
             match self.inner.segs.prepare(seq, recycle.as_deref()) {
-                Ok(f) => self.lock().ready.push_back(f),
+                Ok(f) => {
+                    let mut st = self.lock();
+                    if f.seq < st.cur.seq {
+                        // A rollover prepared a later segment inline while
+                        // this one was being made: writing here now would put
+                        // newer records under an older number, and recovery
+                        // replays by number. Recycle it instead.
+                        let seq = f.seq;
+                        drop(f);
+                        match self.inner.segs.retire(seq) {
+                            Ok(path) => st.free.push(Retired { path, held: None }),
+                            Err(e) => warn!(seq, error = %e, "could not retire a stale segment"),
+                        }
+                    } else {
+                        let at = st.ready.partition_point(|r| r.seq < f.seq);
+                        st.ready.insert(at, f);
+                    }
+                }
                 Err(e) => {
                     warn!(seq, error = %e, "journal: preparing a segment failed; retrying");
                     std::thread::sleep(Duration::from_secs(1));
