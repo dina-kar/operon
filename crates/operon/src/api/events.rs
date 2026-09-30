@@ -507,7 +507,11 @@ pub(super) async fn fetch_events(
             return Ok(StatusCode::NO_CONTENT.into_response());
         };
         let event = event_of(first.offset, &first.record);
-        let (mut headers, body) = ce_http::write_binary(&event);
+        let (mut headers, body) = ce_http::write_binary(&event).map_err(|err| {
+            super::errors::internal(format!(
+                "a stored event cannot be sent in binary mode: {err}"
+            ))
+        })?;
         headers.insert("operon-offset", number(first.offset));
         headers.insert("operon-next-offset", number(first.offset + 1));
         headers.insert("operon-high-watermark", number(response.high_watermark));
