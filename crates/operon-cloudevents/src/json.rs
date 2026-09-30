@@ -43,8 +43,9 @@ impl<'de> serde::Deserialize<'de> for Members {
             }
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Members, A::Error> {
                 let mut members: Vec<(String, Box<RawValue>)> = Vec::new();
+                let mut seen = std::collections::HashSet::new();
                 while let Some((name, value)) = map.next_entry::<String, Box<RawValue>>()? {
-                    if members.iter().any(|(other, _)| *other == name) {
+                    if !seen.insert(name.clone()) {
                         return Err(serde::de::Error::custom(format!(
                             "member '{name}' appears more than once"
                         )));
