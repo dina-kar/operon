@@ -74,6 +74,8 @@ const CAS_RETRIES: u32 = 64;
 /// TiKV's are on the region leader.
 #[async_trait]
 pub trait RawKv: Send + Sync + 'static {
+    /// The value of `key`, or `None`; reflects every write that completed
+    /// before the call.
     async fn get(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, Error>;
     /// Blind puts (non-atomic mode).
     async fn batch_put(&self, pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), Error>;
@@ -92,6 +94,8 @@ pub trait RawKv: Send + Sync + 'static {
         to: Vec<u8>,
         limit: u32,
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error>;
+    /// Deletes every key in `[from, to)` (non-atomic mode); nothing when
+    /// `from >= to`.
     async fn delete_range(&self, from: Vec<u8>, to: Vec<u8>) -> Result<(), Error>;
     /// Ask for region boundaries at `keys` (best effort; the default does
     /// nothing).
@@ -104,7 +108,9 @@ pub trait RawKv: Send + Sync + 'static {
 /// last one: to the WAL end).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Segment {
+    /// The writer term whose keys (`… ‖ 'W' ‖ term ‖ lsn`) hold the range.
     pub term: Term,
+    /// The first LSN of the range.
     pub start: Lsn,
 }
 
@@ -182,7 +188,7 @@ struct Tracker {
     contiguous: u64,
     /// Completed ranges above `contiguous`: begin → end.
     done: BTreeMap<u64, u64>,
-    /// The in-memory commit and peer horizon LSNs (persisted by
+    /// The in-memory commit and peer horizon LSNs (both persisted by
     /// `record_commit_lsn`).
     commit_lsn: Lsn,
     peer_horizon_lsn: Lsn,
@@ -242,6 +248,7 @@ impl<K: RawKv> RawWalStore<K> {
         }
     }
 
+    /// The RawKV the store runs on.
     pub fn kv(&self) -> &Arc<K> {
         &self.kv
     }
@@ -718,11 +725,13 @@ impl<K: RawKv> WalStore for RawWalStore<K> {
         term: Term,
         commit_lsn: Lsn,
     ) -> Result<Result<(), Deposed>, Error> {
-        let local = self.with_cache(tl, |c| {
+        let (local, horizon) = self.with_cache(tl, |c| {
             c.tracker
                 .as_ref()
                 .filter(|t| t.term == term)
-                .map(|t| Lsn(t.contiguous))
+                .map_or((None, Lsn::INVALID), |t| {
+                    (Some(Lsn(t.contiguous)), t.peer_horizon_lsn)
+                })
         });
         self.update(tl, |h| {
             // Clamp to what is known durable: this instance's contiguous end
@@ -733,10 +742,12 @@ impl<K: RawKv> WalStore for RawWalStore<K> {
             if let Err(d) = apply_commit_lsn(&mut st, term, commit_lsn)? {
                 return Ok(Step::Keep(Err(d)));
             }
-            if st.commit_lsn == before {
+            let horizon = h.state.peer_horizon_lsn.max(horizon);
+            if st.commit_lsn == before && horizon == h.state.peer_horizon_lsn {
                 return Ok(Step::Keep(Ok(())));
             }
             h.state.commit_lsn = st.commit_lsn;
+            h.state.peer_horizon_lsn = horizon;
             // The commit LSN is durable WAL of this history: a valid scan start.
             let last_start = h.segments.last().map_or(Lsn::INVALID, |s| s.start);
             h.state.flush_lsn = h.state.flush_lsn.max(st.commit_lsn.max(last_start));
@@ -875,6 +886,7 @@ pub struct MemRawKv {
 }
 
 impl MemRawKv {
+    /// An empty map.
     pub fn new() -> Self {
         Self::default()
     }

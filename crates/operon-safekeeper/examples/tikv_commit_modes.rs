@@ -203,7 +203,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     println!(
-        "| mode ({size} B, {ops} ops, interleaved) | p50 ms | p90 ms | p99 ms | max ms | ops/s |"
+        "| mode ({size} B, {ops} ops, interleaved) | p50 ms | p90 ms | p99 ms | max ms | 1/mean ops/s (sequential; the pipelined row is wall-clock) |"
     );
     println!("|---|---|---|---|---|---|");
     for (m, (name, _)) in modes.drain(..).enumerate() {
