@@ -181,8 +181,8 @@ jobs:
         run: cargo clippy -p operon --all-targets --features tikv,durable-tikv,stream-grpc,pgwire,mysql-wire --locked -- -D warnings
       - name: clippy (operon-durable with the native TiKV store)
         run: cargo clippy -p operon-durable --all-targets --features tikv --locked -- -D warnings
-      - name: clippy (operon-safekeeper with the service and the TiKV store)
-        run: cargo clippy -p operon-safekeeper --all-targets --features server,tikv --locked -- -D warnings
+      - name: clippy (operon-safekeeper with the service, the TiKV store and the NVMe store)
+        run: cargo clippy -p operon-safekeeper --all-targets --features server,tikv,nvme --locked -- -D warnings
       - name: operon's default build has no tikv-client
         run: |
           if cargo tree -p operon -e normal --prefix none --locked | grep -q '^tikv-client v'; then
@@ -232,8 +232,8 @@ jobs:
         run: cargo test -p operon-link --features failpoints --locked
       - name: collection with failpoints
         run: cargo test -p operon-collection --features failpoints --locked
-      - name: WAL service over TCP (operon-safekeeper, feature server)
-        run: cargo test -p operon-safekeeper --features server --locked
+      - name: WAL service over TCP and the NVMe store (operon-safekeeper, features server, nvme)
+        run: cargo test -p operon-safekeeper --features server,nvme --locked
 
   crash-gate:
     name: kill -9 crash gate

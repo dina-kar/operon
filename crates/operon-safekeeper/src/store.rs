@@ -74,6 +74,27 @@ pub struct AppendPlan {
     pub skip: u64,
 }
 
+/// A store's durable position, for pipelined appends: every write whose
+/// ticket is at or below `unit` is durable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Durable {
+    /// Every ticket up to and including this one is durable (0: none yet).
+    pub unit: u64,
+    /// The store stopped after a failed write: nothing more becomes durable.
+    pub failed: bool,
+}
+
+/// A pipelined append, accepted and ordered but maybe not yet durable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pending {
+    /// The head after the write, with `flush_lsn` at the end of the WAL
+    /// written (not necessarily durable).
+    pub state: AcceptorState,
+    /// Durable once [`WalStore::durability`] reaches it; `None` when nothing
+    /// new was written.
+    pub ticket: Option<u64>,
+}
+
 /// The durable storage of acceptor heads and WAL.
 #[async_trait]
 pub trait WalStore: Send + Sync + 'static {
@@ -124,6 +145,26 @@ pub trait WalStore: Send + Sync + 'static {
         tl: &TimelineId,
         batch: &AppendBatch,
     ) -> Result<Result<AcceptorState, Deposed>, Error>;
+
+    /// A pipelined [`WalStore::append`]: the same rules, but it may return
+    /// once the write is ordered, with a ticket to wait on. Stores that are
+    /// durable per call (memory, TiKV) keep this default.
+    async fn append_nowait(
+        &self,
+        tl: &TimelineId,
+        batch: &AppendBatch,
+    ) -> Result<Result<Pending, Deposed>, Error> {
+        Ok(self.append(tl, batch).await?.map(|state| Pending {
+            state,
+            ticket: None,
+        }))
+    }
+
+    /// The durable position [`Pending::ticket`]s of `tl` are measured
+    /// against; `None` for stores whose appends are durable on return.
+    fn durability(&self, _tl: &TimelineId) -> Option<tokio::sync::watch::Receiver<Durable>> {
+        None
+    }
 
     /// Persist a commit LSN learned from heartbeats (never above the WAL end,
     /// never lowered), fenced by `term` like an append. Off the commit path:
