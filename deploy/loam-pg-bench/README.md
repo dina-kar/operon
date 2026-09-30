@@ -137,6 +137,28 @@ What this shows, and what it does not:
   safekeepers share one disk; there is no injected cross-AZ delay. The gate itself needs the server
   hardware listed above, and an ext4 run to separate the btrfs cost.
 
+### Why `bulk` was slow, and what changed
+
+The `bulk` gap was not the runtime or the I/O tier. Measured on ext4 (no transparent compression)
+with three acceptors on one client NVMe:
+
+- Units were full (about 1.9 MiB), aligned and four in flight; WAL CPU was low. The journal was waiting
+  on the device.
+- Every stall coincided with a segment being prepared. Pre-zeroing a 64 MiB segment took 1.5 to 4.5 s
+  under load, and journal writes ran 5 to 30 times slower meanwhile.
+- The cause is the pre-zero itself. It doubles the bytes written, and it turns every later data write
+  into an overwrite of already-written blocks. On this drive a `dsync` overwrite runs at about 70 MB/s,
+  against 280 to 490 MB/s for a first write (`dd oflag=direct,dsync`, 1 GB of random data each way).
+- Skipping pre-zeroing entirely fixes bulk (55 against 15 to 24 MB/s at 250 MB) but makes `commit-1`
+  2.4 times slower (p50 2.9 against 1.2 ms), because each small write then converts an unwritten extent.
+
+So the journal now pre-zeroes only when it is not busy: a segment that filled in under
+`hot_segment` (2 s) means fast ingest, and new segments are prepared without pre-zeroing; the preparer
+zeroes them later, once the journal goes quiet. `commit-1` is unchanged (p50 1.16 ms, p99 9.1 ms, against
+1.17 and 8.6 before). A 1 GB `bulk` goes from 12 to 20 to 26 MB/s on three acceptors, which is where the
+three stock safekeepers land on the same disk (22 to 26 MB/s). The 118 and 182 MB/s figures above for a
+250 MB `bulk` are the drive absorbing a short burst, not sustained throughput.
+
 ## Not modelled yet
 
 - **Cross-AZ delays.** Both variants run with zero injected delay.

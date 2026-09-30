@@ -7,6 +7,7 @@ use std::io;
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tracing::{debug, warn};
 
@@ -22,6 +23,9 @@ pub struct SegmentFile {
     pub write: File,
     /// A buffered handle for reads and recovery.
     pub read: File,
+    /// Every block has been written once (so an append needs no extent
+    /// conversion). False for a segment prepared without pre-zeroing.
+    pub zeroed: AtomicBool,
 }
 
 impl SegmentFile {
@@ -315,6 +319,7 @@ impl SegmentDir {
             path,
             write,
             read,
+            zeroed: AtomicBool::new(true),
         }))
     }
 
@@ -323,7 +328,12 @@ impl SegmentDir {
     /// number), else create, `fallocate` and pre-zero a new one. The header
     /// goes in last; the file is `fdatasync`ed and renamed into place, and the
     /// directory synced, before this returns.
-    pub fn prepare(&self, seq: u64, recycle: Option<&Path>) -> io::Result<Arc<SegmentFile>> {
+    pub fn prepare(
+        &self,
+        seq: u64,
+        recycle: Option<&Path>,
+        zero: bool,
+    ) -> io::Result<Arc<SegmentFile>> {
         let tmp = self.dir.join(format!("{seq:016x}.tmp"));
         let started = std::time::Instant::now();
         let recycled = match recycle {
@@ -358,15 +368,14 @@ impl SegmentDir {
                     debug!(error = %e, "fallocate refused; zero-filling only");
                 }
                 // Pre-zero: turns unwritten extents into written ones, so an
-                // append never needs a metadata commit for the extent.
-                let chunk = (1usize << 20).min(self.size as usize);
-                let mut zeros = AlignedBuf::new(chunk);
-                zeros.zero_to(chunk);
-                let mut at = 0u64;
-                while at < self.size {
-                    let n = chunk.min((self.size - at) as usize);
-                    f.write_all_at(&zeros[..n], at)?;
-                    at += n as u64;
+                // append never needs a metadata commit for the extent. Skipped
+                // when the journal is ingesting fast (`zero` false): the zeros
+                // would double the bytes written and make each data write an
+                // overwrite, which a flash drive handles slowly. The preparer
+                // zeroes such a segment later, while it is idle
+                // ([`SegmentDir::zero_rest`]).
+                if zero {
+                    zero_range(&f, 0, self.size)?;
                 }
             }
             let mut h = AlignedBuf::new(SEGMENT_HEADER);
@@ -397,7 +406,21 @@ impl SegmentDir {
             took_ms = started.elapsed().as_millis() as u64,
             "segment prepared"
         );
-        self.open_segment(seq)
+        let f = self.open_segment(seq)?;
+        f.zeroed.store(zero || recycled, Ordering::Relaxed);
+        Ok(f)
+    }
+
+    /// Pre-zero the unused body of a segment that was prepared without it.
+    /// Only for a segment nothing writes to.
+    pub fn zero_rest(&self, f: &SegmentFile) -> io::Result<()> {
+        if f.zeroed.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        zero_range(&f.write, SEGMENT_HEADER as u64, self.size)?;
+        f.write.sync_data()?;
+        f.zeroed.store(true, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Delete a retired segment file.
@@ -405,6 +428,20 @@ impl SegmentDir {
         fs::remove_file(path)?;
         sync_dir(&self.dir)
     }
+}
+
+/// Write zeros over `[from, to)` in 1 MiB direct-I/O-safe chunks.
+fn zero_range(f: &File, from: u64, to: u64) -> io::Result<()> {
+    let chunk = (1usize << 20).min(to as usize);
+    let mut zeros = AlignedBuf::new(chunk);
+    zeros.zero_to(chunk);
+    let mut at = from;
+    while at < to {
+        let n = chunk.min((to - at) as usize);
+        f.write_all_at(&zeros[..n], at)?;
+        at += n as u64;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -415,7 +452,7 @@ mod tests {
     fn prepare_recycle_and_list() {
         let d = tempfile::tempdir().unwrap();
         let sd = SegmentDir::open(d.path(), 64 << 10, false).unwrap();
-        let s1 = sd.prepare(1, None).unwrap();
+        let s1 = sd.prepare(1, None, true).unwrap();
         assert_eq!(s1.read.metadata().unwrap().len(), 64 << 10);
         s1.write
             .write_all_at(&[7u8; 16], SEGMENT_HEADER as u64)
@@ -423,7 +460,7 @@ mod tests {
         drop(s1);
         let old = sd.retire(1).unwrap();
         assert_eq!(sd.list().unwrap(), Vec::<u64>::new());
-        let s2 = sd.prepare(2, Some(&old)).unwrap();
+        let s2 = sd.prepare(2, Some(&old), true).unwrap();
         assert_eq!(sd.list().unwrap(), vec![2]);
         let mut b = [0u8; 16];
         s2.read
@@ -437,7 +474,7 @@ mod tests {
     fn a_wrong_header_is_refused() {
         let d = tempfile::tempdir().unwrap();
         let sd = SegmentDir::open(d.path(), 64 << 10, false).unwrap();
-        sd.prepare(3, None).unwrap();
+        sd.prepare(3, None, true).unwrap();
         fs::rename(sd.path(3), sd.path(4)).unwrap();
         assert!(sd.open_segment(4).is_err());
     }

@@ -193,6 +193,10 @@ pub struct JournalConfig {
     pub prepared: usize,
     /// The largest flush unit, and so the largest record.
     pub unit_capacity: usize,
+    /// A segment that fills faster than this means the journal is ingesting
+    /// fast: new segments are then prepared without pre-zeroing, which would
+    /// double the bytes written. The preparer zeroes them once it is idle.
+    pub hot_segment: Duration,
 }
 
 impl JournalConfig {
@@ -203,6 +207,7 @@ impl JournalConfig {
             tier,
             prepared: 2,
             unit_capacity: 2 << 20,
+            hot_segment: Duration::from_secs(2),
         }
     }
 
@@ -246,6 +251,8 @@ pub struct Unit {
 #[derive(Debug)]
 struct State {
     cur: Arc<SegmentFile>,
+    /// When `cur` became the current segment.
+    cur_since: std::time::Instant,
     /// Where the open unit starts in `cur`.
     next_off: u64,
     open: Option<AlignedBuf>,
@@ -395,7 +402,10 @@ impl Journal {
         while ready.len() < cfg.prepared + 1 {
             max_seq += 1;
             let recycle = take_recyclable(&mut free);
-            ready.push_back(segs.prepare(max_seq, recycle.as_deref()).map_err(io_err)?);
+            ready.push_back(
+                segs.prepare(max_seq, recycle.as_deref(), true)
+                    .map_err(io_err)?,
+            );
         }
         let cur = ready
             .pop_front()
@@ -417,6 +427,7 @@ impl Journal {
             segs,
             st: Mutex::new(State {
                 cur,
+                cur_since: std::time::Instant::now(),
                 next_off: SEGMENT_HEADER as u64,
                 open: None,
                 next_id: 1,
@@ -579,6 +590,12 @@ impl Journal {
         st.sealed.push_back(unit);
     }
 
+    /// Whether the current segment is filling fast enough that new ones
+    /// should skip pre-zeroing.
+    fn is_hot(&self, st: &State) -> bool {
+        st.cur_since.elapsed() < self.inner.cfg.hot_segment
+    }
+
     fn rollover(&self, st: &mut State) -> Result<(), Error> {
         let next = match st.ready.pop_front() {
             Some(f) => f,
@@ -588,12 +605,13 @@ impl Journal {
                 let recycle = take_recyclable(&mut st.free);
                 self.inner
                     .segs
-                    .prepare(st.max_seq, recycle.as_deref())
+                    .prepare(st.max_seq, recycle.as_deref(), !self.is_hot(st))
                     .map_err(io_err)?
             }
         };
         st.live.insert(next.seq, next.clone());
         st.cur = next;
+        st.cur_since = std::time::Instant::now();
         st.next_off = SEGMENT_HEADER as u64;
         self.inner.prep.notify_one();
         Ok(())
@@ -765,6 +783,16 @@ impl Journal {
         freed
     }
 
+    /// Whether each prepared, unused segment has been pre-zeroed (tests).
+    #[cfg(test)]
+    fn ready_zeroed(&self) -> Vec<bool> {
+        self.lock()
+            .ready
+            .iter()
+            .map(|f| f.zeroed.load(std::sync::atomic::Ordering::Relaxed))
+            .collect()
+    }
+
     /// The live segments' sequence numbers (for tests and metrics).
     pub fn live_segments(&self) -> Vec<u64> {
         self.lock().live.keys().copied().collect()
@@ -802,7 +830,7 @@ impl Journal {
 
     fn run_preparer(&self) {
         loop {
-            let (seq, recycle) = {
+            let (seq, recycle, zero) = {
                 let mut st = self.lock();
                 loop {
                     if st.shutdown {
@@ -811,12 +839,51 @@ impl Journal {
                     if st.ready.len() < self.inner.cfg.prepared {
                         break;
                     }
-                    st = self.inner.prep.wait(st).unwrap_or_else(|p| p.into_inner());
+                    // Idle and full: finish pre-zeroing a segment made without.
+                    if !self.is_hot(&st)
+                        && let Some(i) = st
+                            .ready
+                            .iter()
+                            .position(|f| !f.zeroed.load(std::sync::atomic::Ordering::Relaxed))
+                        && let Some(f) = st.ready.remove(i)
+                    {
+                        drop(st);
+                        // Out of `ready` while it is written, so a rollover
+                        // cannot take a segment being zeroed.
+                        let res = self.inner.segs.zero_rest(&f);
+                        if let Err(e) = &res {
+                            warn!(seq = f.seq, error = %e, "could not pre-zero a segment");
+                            std::thread::sleep(Duration::from_secs(1));
+                        }
+                        st = self.lock();
+                        if f.seq < st.cur.seq {
+                            let seq = f.seq;
+                            drop(f);
+                            match self.inner.segs.retire(seq) {
+                                Ok(path) => st.free.push(Retired { path, held: None }),
+                                Err(e) => {
+                                    warn!(seq, error = %e, "could not retire a stale segment")
+                                }
+                            }
+                        } else {
+                            let at = st.ready.partition_point(|r| r.seq < f.seq);
+                            st.ready.insert(at, f);
+                        }
+                        continue;
+                    }
+                    // Wake now and then to notice that the journal went idle.
+                    st = self
+                        .inner
+                        .prep
+                        .wait_timeout(st, self.inner.cfg.hot_segment)
+                        .unwrap_or_else(|p| p.into_inner())
+                        .0;
                 }
                 st.max_seq += 1;
-                (st.max_seq, take_recyclable(&mut st.free))
+                let zero = !self.is_hot(&st);
+                (st.max_seq, take_recyclable(&mut st.free), zero)
             };
-            match self.inner.segs.prepare(seq, recycle.as_deref()) {
+            match self.inner.segs.prepare(seq, recycle.as_deref(), zero) {
                 Ok(f) => {
                     let mut st = self.lock();
                     if f.seq < st.cur.seq {
@@ -1134,5 +1201,40 @@ mod tests {
         j.complete(vec![u1], Ok(()));
         assert_eq!(j.durable().unit, 2);
         j.close();
+    }
+
+    #[tokio::test]
+    async fn fast_ingest_skips_pre_zeroing_and_idle_catches_up() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = cfg(d.path(), Tier::Buffered);
+        c.hot_segment = Duration::from_millis(300);
+        let (j, _) = replay(c);
+        j.start();
+        // Fill several segments at once: each rollover finds the journal hot.
+        let data = vec![5u8; 4000];
+        let mut last = 0;
+        for i in 0..40u64 {
+            last = j
+                .append(&append_hdr(tl(1), i * 4000, 4000), &[&data[..]])
+                .unwrap()
+                .unit;
+        }
+        j.wait(last).await.unwrap();
+        assert!(
+            j.ready_zeroed().contains(&false),
+            "segments made while hot are not pre-zeroed"
+        );
+        // Idle: the preparer zeroes them.
+        for _ in 0..100 {
+            if j.ready_zeroed().iter().all(|z| *z) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(j.ready_zeroed().iter().all(|z| *z), "zeroed once idle");
+        j.close();
+        // Everything written is still there.
+        let (_j2, got) = replay(cfg(d.path(), Tier::Buffered));
+        assert_eq!(got.len(), 40);
     }
 }
