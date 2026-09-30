@@ -1,4 +1,4 @@
-//! CloudEvents 1.0 for Operon streams (design §02 §7.4, D273).
+//! CloudEvents 1.0 for Operon streams (design §02 §7.4, D270).
 //!
 //! A [`CloudEvent`] keeps every attribute as the exact string it arrived
 //! with, in arrival order, plus the type of each extension, so an event

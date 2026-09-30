@@ -1,6 +1,6 @@
 # 02 — Stream Engine
 
-Status: **Approved** · 2026-09-22 · revised 2026-09-25 (native streaming API, D43) · revised 2026-09-26 (the stream API core and OTLP logs ingest in M2, the Kafka gateway in M5, D72–D74) · amended 2026-09-26 (envelope encryption of WAL chunks, D96; collection write backpressure, D86) · amended 2026-09-30 (CloudEvents 1.0 ingest and consume, §7.4, D273)
+Status: **Approved** · 2026-09-22 · revised 2026-09-25 (native streaming API, D43) · revised 2026-09-26 (the stream API core and OTLP logs ingest in M2, the Kafka gateway in M5, D72–D74) · amended 2026-09-26 (envelope encryption of WAL chunks, D96; collection write backpressure, D86) · amended 2026-09-30 (CloudEvents 1.0 ingest and consume, §7.4, D270)
 
 Goal: a partitioned log with **AutoMQ-grade reliability** (RPO 0 on node and AZ loss, seconds-level failover, no data on broker disks) and a choice of latency/cost per stream, reached through Operon's native streaming API and, from M5, the Kafka wire protocol — and it is the internal spine for every other object in Operon.
 
@@ -173,7 +173,7 @@ Tools that read or write Loam with no code of ours in them:
 | Fluent Bit, `kafka` output | Records into Loam | Kafka (§7.2) | M5 | Planned (D74) |
 | Vector, `kafka` source and sink | Streams in and out | Kafka (§7.2) | M5 | Planned (D74) |
 
-### 7.4 CloudEvents 1.0 (D273)
+### 7.4 CloudEvents 1.0 (D270)
 
 Streams accept and serve [CloudEvents 1.0](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md), the envelope the CPU-time runtime's gateway uses for async events (D184). An event is stored as one ordinary record, laid out as the CloudEvents [Kafka protocol binding](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/bindings/kafka-protocol-binding.md) lays out a binary-mode Kafka message, so a stream of events is also a valid Kafka topic of CloudEvents for the M5 gateway (§7.2), and nothing in the log, the segmenter or links knows about CloudEvents.
 
@@ -276,4 +276,4 @@ Tuning `flush_interval` trades PUT cost against latency; `express` trades storag
 3. Whether native named consumers need server-side partition assignment beyond per-partition leases. Kafka clients get it from consumer groups (§7.2).
 4. `arrow` encoding: Arrow IPC per chunk vs. one Arrow file per segment with a column index (either layout keeps the WAL's batch bytes, §5).
 5. Changelog retention default (same as the source's implicit stream, or shorter) and whether `full` mode is allowed on collections with large documents.
-6. CloudEvents dedup window per stream instead of per server, and a cap on ledger entries per namespace, if the ledger's memory (§7.4) matters at event rates beyond webhooks and triggers (Q271).
+6. CloudEvents dedup window per stream instead of per server, and a cap on ledger entries per namespace, if the ledger's memory (§7.4) matters at event rates beyond webhooks and triggers (Q270).
