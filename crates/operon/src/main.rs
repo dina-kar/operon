@@ -225,6 +225,14 @@ struct Native {
     /// Serve no Flight SQL.
     #[arg(long)]
     no_flight_sql: bool,
+    /// PostgreSQL wire listener for collection queries (loopback only).
+    #[cfg(feature = "pgwire")]
+    #[arg(long)]
+    pg_listen: Option<SocketAddr>,
+    /// Namespace exposed on the PostgreSQL wire listener.
+    #[cfg(feature = "pgwire")]
+    #[arg(long, requires = "pg_listen")]
+    pg_namespace: Option<String>,
     /// Native stream gRPC listener for Dapr protocol adapters (loopback only).
     #[cfg(feature = "stream-grpc")]
     #[arg(long)]
@@ -455,6 +463,17 @@ impl Native {
         } else {
             Some(self.flight_sql_listen.unwrap_or(default_flight))
         };
+        #[cfg(feature = "pgwire")]
+        {
+            config.pg = self.pg_listen.map(|addr| {
+                operon::pg::PgConfig::new(
+                    addr,
+                    self.pg_namespace
+                        .clone()
+                        .unwrap_or_else(|| "default".into()),
+                )
+            });
+        }
         #[cfg(feature = "stream-grpc")]
         {
             config.stream_grpc = self.stream_grpc_listen;
@@ -984,6 +1003,10 @@ async fn main() -> ExitCode {
     // M1.6 W14, M1.7 A4: printed once the listener is bound.
     if let Some(addr) = server.flight_sql_addr() {
         println!("operon flight sql listening on grpc://{addr}");
+    }
+    #[cfg(feature = "pgwire")]
+    if let Some(addr) = server.pg_addr() {
+        println!("operon PostgreSQL wire listening on postgres://{addr}");
     }
     #[cfg(feature = "stream-grpc")]
     if let Some(addr) = server.stream_grpc_addr() {
