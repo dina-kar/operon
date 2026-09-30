@@ -21,6 +21,7 @@ pub mod faults;
 mod gc;
 mod keyspace;
 mod pd;
+pub mod regions;
 mod runner;
 pub mod testing;
 pub mod token;
@@ -40,6 +41,9 @@ pub use faults::{Fault, FaultPlan, FaultPoint};
 pub use gc::{DEFAULT_GC_INTERVAL, GC_LEASE_KEY, GcBarrier, GcConfig, GcHandle, GcLoop, GcReport};
 pub use keyspace::{KeyspaceMeta, ensure_keyspace};
 pub use runner::{CommitMode, Committed, Mode, TikvStats, TxnError, TxnOptions};
+/// The pinned `tikv-client` (Loam's fork), for callers that need its raw API
+/// (the WAL's raw store) without their own git dependency.
+pub use tikv_client;
 pub use tikv_client::{Timestamp, TimestampExt};
 pub use txn::{MAX_VALUE_BYTES, PAGE_KEYS, Pair, Snap, Txn};
 
