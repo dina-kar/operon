@@ -29,18 +29,29 @@ them. Dapr's
 HTTP binding is output-only, so inbound webhooks enter this app's HTTP
 listener; its call to `operon-stream` uses Dapr's gRPC proxy.
 
-Kafka and AI-agent publishers send JSON `{"event_id":"publisher-stable-id",
-"payload":{...}}` to their respective topics. Dapr wraps this as a
-CloudEvent. Webhook publishers send the same JSON body. The edge normalizes
-these into records on `workflow-triggers` and includes a stable SHA-256 ID
-derived from the source and publisher event ID. Dapr pub/sub acknowledges only
-after `StreamService.Produce` succeeds; gRPC failures request redelivery.
+Kafka and AI-agent publishers publish through Dapr pub/sub; Dapr wraps each
+message as a CloudEvent and delivers it to the edge as
+`application/cloudevents+json`. Webhook publishers send a CloudEvent in
+binary mode (`ce-*` headers) or structured mode. The edge passes the event to
+`StreamService.ProduceCloudEvents` unchanged: a structured event goes through
+as the JSON it arrived as, a binary-mode event as a protobuf event. Nothing
+is renamed or rewritten, and a request that is not a CloudEvent is refused
+(`DROP` for pub/sub, 415 for the webhook). The stream stores each event in the
+CloudEvents Kafka binding's layout (`ce_*` headers) and deduplicates by
+`source` + `id` (design 02, section 7.4): a redelivered event, or a `Produce`
+that timed out after appending, is answered `duplicate` and appended once.
+Dapr pub/sub acknowledges (`SUCCESS`) after the append or a duplicate; a
+failed call or an event another request is still appending answers `RETRY`;
+an invalid event answers `DROP`. Publishers keep `id` stable across their own
+retries (Dapr's `cloudevent.id` publish metadata, or a CloudEvent they build
+themselves).
 
-The trigger stream consumer must use `resonate-invocation-id` as its durable
-workflow invocation key. Stream production currently has no native atomic
-deduplication, so duplicate deliveries can append multiple records; one
-workflow execution requires the consumer's Resonate idempotency check. Keep
-the same publisher `event_id` on retries.
+The trigger stream consumer keys each workflow invocation by the event's
+idempotency key, SHA-256(`source`, 0x00, `id`), or by the record's `ce_source`
+and `ce_id` headers. The stream's deduplication window (one hour by default,
+`--cloudevents-dedup-window`, at most 24 hours) bounds how long a redelivery
+is recognized; the consumer's Resonate idempotency check covers anything
+older.
 
 The deployment's init container reads the live Dapr Configuration and
 Components via Kubernetes API. It fails startup if the Workflow APIs are not
