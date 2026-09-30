@@ -51,7 +51,7 @@ while [ $# -gt 0 ]; do
     --depth) depth=$2; shift 2 ;;
     --kv-config) kv_config=$(realpath "$2"); shift 2 ;;
     --no-place) place=0; shift ;;
-    *) sed -n '5,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *) sed -n '5,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
   esac
 done
 case $variant in safekeepers | loam) ;; *) echo "run: --variant safekeepers|loam" >&2; exit 2 ;; esac
