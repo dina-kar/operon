@@ -102,6 +102,20 @@ baseline. Mean of 3 runs each, p50 / p99 in ms:
 | bulk (WAL MB/s) | 117.6 | 10.8 | 12.3 | 14.3 |
 | WAL CPU per commit-1 tx (µs) | 3702 | 1893 | 1373 | 25055 |
 
+A second run, made later with `run.sh` waiting for every build on the host to finish (no `--force`;
+`gate-rf3-20260930T185121Z.md`), gives the same picture. p50 / p99 ms:
+
+| workload | safekeepers | tokio pwritev2 | compio | compio + SQPOLL |
+|---|---|---|---|---|
+| commit-1 | 5.27 / 32.62 | 7.40 / 38.98 | 4.33 / 40.97 | 4.01 / 29.93 |
+| commit-16 | 10.91 / 52.06 | 7.22 / 49.26 | 4.27 / 29.55 | 4.16 / 28.17 |
+| tpcb-16 | 21.46 / 207.22 | 12.73 / 113.23 | 9.62 / 98.46 | 9.95 / 112.41 |
+| bulk (WAL MB/s) | 74.1 | 17.0 | 21.7 | 14.9 |
+
+Here compio's `commit-1` p99 (41 ms) is above the baseline's worst repeat, although its p50 and TPS are
+better: single-client tail latency on this drive is not separated from noise by three runs. The
+other findings hold.
+
 What this shows, and what it does not:
 
 - The commit-latency gate holds for compio and compio + SQPOLL on all three latency workloads.
