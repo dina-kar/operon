@@ -11,6 +11,8 @@
 //! - [`store`]: the [`WalStore`] trait (the fenced, durable head and WAL
 //!   chunks), the shared state-transition rules, and an in-memory store.
 //! - `tikv` (feature `tikv`): the TiKV store, one 1PC transaction per call.
+//! - [`tikv_raw`]: the raw TiKV store, blind pipelined appends fenced once
+//!   per election (`TikvRawKv` with feature `tikv`).
 //! - [`pgwire`]: the slice of the Postgres protocol a safekeeper speaks.
 //! - `service`, `http` (feature `server`): the listener walproposer connects
 //!   to, the control plane's HTTP API, and the `loam-wal` binary; `feeder`,
@@ -32,6 +34,7 @@ pub mod service;
 pub mod store;
 #[cfg(feature = "tikv")]
 pub mod tikv;
+pub mod tikv_raw;
 pub mod types;
 
 pub use acceptor::Acceptor;
