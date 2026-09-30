@@ -213,6 +213,8 @@ pub struct ServerConfig {
     pub stream_grpc: Option<SocketAddr>,
     /// How Flight SQL bounds its statements and its ingest.
     pub flight: FlightConfig,
+    /// CloudEvents ingest: the dedup window (design §02 §7.4).
+    pub cloudevents: crate::api::events::EventsConfig,
     /// PostgreSQL wire listener over collections, when the pgwire feature is on.
     #[cfg(feature = "pgwire")]
     pub pg: Option<crate::pg::PgConfig>,
@@ -282,6 +284,7 @@ impl ServerConfig {
             #[cfg(feature = "stream-grpc")]
             stream_grpc: None,
             flight: FlightConfig::default(),
+            cloudevents: crate::api::events::EventsConfig::default(),
             #[cfg(feature = "pgwire")]
             pg: None,
             cluster: None,
@@ -321,6 +324,7 @@ impl ServerConfig {
         self.validate_durable()?;
         self.flight.validate().map_err(ServerError::Config)?;
         self.validate_backpressure()?;
+        self.cloudevents.validate().map_err(ServerError::Config)?;
         self.gc
             .check_deadlines(&[
                 ("segmenter.swap_deadline", self.segmenter.swap_deadline),
@@ -1593,6 +1597,7 @@ impl Server {
             }),
             forward_stats,
             node_info,
+            cloudevents: config.cloudevents,
         };
         let app = match roles.gateway {
             true => api::router(state),

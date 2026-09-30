@@ -22,6 +22,7 @@ datafusion-postgres = { workspace = true, optional = true }
 fail = { workspace = true, optional = true }
 http.workspace = true
 operon-cache.workspace = true
+operon-cloudevents.workspace = true
 operon-collection.workspace = true
 operon-common.workspace = true
 # The embedded Resonate server (D1), with the durable feature only.

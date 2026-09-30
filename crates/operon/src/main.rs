@@ -260,6 +260,10 @@ struct Native {
     /// Serve no Elasticsearch API.
     #[arg(long)]
     no_es: bool,
+    /// How long a CloudEvent's `source` + `id` is remembered, so a retry does
+    /// not append it again, in seconds [default: 3600, at most 86400].
+    #[arg(long)]
+    cloudevents_dedup_window: Option<u64>,
     /// Whether this node runs a hot tier, and whether reads use it when a
     /// request does not say (`Operon-Hot`).
     #[arg(long, value_enum, default_value = "on")]
@@ -485,6 +489,9 @@ impl Native {
         config.query.hot_default = hot;
         config.hot.enabled = hot;
         config.hot.pin_all = self.hot_pin_all;
+        if let Some(seconds) = self.cloudevents_dedup_window {
+            config.cloudevents.dedup_window = std::time::Duration::from_secs(seconds);
+        }
         if let Some(dir) = &self.hot_dir {
             config.hot.dir = dir.clone();
         }

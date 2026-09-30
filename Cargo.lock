@@ -6139,6 +6139,7 @@ dependencies = [
  "http",
  "object_store 0.14.2",
  "operon-cache",
+ "operon-cloudevents",
  "operon-collection",
  "operon-common",
  "operon-durable",
