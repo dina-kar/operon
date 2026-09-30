@@ -745,10 +745,10 @@ impl Journal {
         }
         // Keep a few files to recycle; delete the rest.
         while st.free.len() > self.inner.cfg.prepared {
-            if let Some(r) = st.free.pop() {
-                if let Err(e) = self.inner.segs.remove(&r.path) {
-                    warn!(path = %r.path.display(), error = %e, "could not delete a freed segment");
-                }
+            if let Some(r) = st.free.pop()
+                && let Err(e) = self.inner.segs.remove(&r.path)
+            {
+                warn!(path = %r.path.display(), error = %e, "could not delete a freed segment");
             }
         }
         if !freed.is_empty() {
