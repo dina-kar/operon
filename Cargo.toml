@@ -12,9 +12,9 @@ authors = ["The Operon Authors"]
 [workspace.dependencies]
 anyhow = "1"
 arrow = "58.4"
-arrow-array = "58.4"
-arrow-flight = { version = "58.4", features = ["flight-sql-experimental"] }
-arrow-schema = "58.4"
+arrow-array = "60.0"
+arrow-flight = { version = "59.3", features = ["flight-sql-experimental"] }
+arrow-schema = "60.0"
 async-trait = "0.1"
 axum = "0.8"
 base64 = "0.22"
@@ -34,7 +34,7 @@ crc32c = "0.6"
 data-encoding = "2"
 # Lance's feature set (no parquet or compression): adding operon-query does
 # not rebuild DataFusion for the workspace.
-datafusion = { version = "54.1", default-features = false, features = [
+datafusion = { version = "55.1", default-features = false, features = [
     "crypto_expressions",
     "datetime_expressions",
     "encoding_expressions",
