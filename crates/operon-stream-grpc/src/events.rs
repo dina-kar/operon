@@ -1,4 +1,4 @@
-//! CloudEvents over gRPC (design §02 §7.4, D271): the protobuf format's
+//! CloudEvents over gRPC (design §02 §7.4, D270): the protobuf format's
 //! conversion to and from [`CloudEvent`], and the ingest the service calls.
 
 use std::collections::BTreeMap;

@@ -1,4 +1,4 @@
-//! CloudEvents on the native HTTP API (design §02 §7.4, D271): ingest in
+//! CloudEvents on the native HTTP API (design §02 §7.4, D270): ingest in
 //! binary, structured and batched mode, deduplication by `source` + `id`,
 //! and consume as events.
 

@@ -1,5 +1,5 @@
 //! `StreamService.ProduceCloudEvents` against a server started in-process
-//! (design §02 §7.4, D271): the protobuf format, the JSON pass-through,
+//! (design §02 §7.4, D270): the protobuf format, the JSON pass-through,
 //! and the ledger shared with the HTTP route.
 #![cfg(feature = "stream-grpc")]
 
