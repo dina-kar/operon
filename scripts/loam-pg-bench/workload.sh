@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Runs inside the benchmark compute (deploy/loam-pg-bench): one workload, with
-# a warm-up, and pgbench per-transaction logs under /tmp/bench/<name>/.
+# a warm-up, and pgbench per-transaction logs under /tmp/bench/<name>/. It
+# prints MEASURE_START and MEASURE_END around the measured phase, where
+# run.sh samples the WAL tier's CPU time.
 #
 #   workload.sh <name> <duration-s> <warmup-s> <scale>
 #
@@ -25,8 +27,10 @@ case $name in
     sql "CREATE TABLE IF NOT EXISTS t(id bigserial PRIMARY KEY, v text)"
     echo 'INSERT INTO t(v) VALUES (repeat($$x$$,100));' > commit.sql
     pgbench "${PG[@]}" -n -f commit.sql -c "$clients" -j "$clients" -T "$warmup" postgres >/dev/null 2>&1
+    echo MEASURE_START
     pgbench "${PG[@]}" -n -f commit.sql -c "$clients" -j "$clients" -T "$duration" \
       -l --log-prefix=tx postgres > summary.txt 2>&1
+    echo MEASURE_END
     ;;
   tpcb-*)
     clients=${name#tpcb-}
@@ -34,15 +38,19 @@ case $name in
       pgbench "${PG[@]}" -i -s "$scale" -q postgres >/dev/null 2>&1
     fi
     pgbench "${PG[@]}" -n -c "$clients" -j "$clients" -T "$warmup" postgres >/dev/null 2>&1
+    echo MEASURE_START
     pgbench "${PG[@]}" -n -c "$clients" -j "$clients" -T "$duration" \
       -l --log-prefix=tx postgres > summary.txt 2>&1
+    echo MEASURE_END
     ;;
   bulk)
     sql "DROP TABLE IF EXISTS bulk; CREATE TABLE bulk(v text)"
     start=$(sql "SELECT pg_current_wal_lsn()")
+    echo MEASURE_START
     t0=$(date +%s%N)
     sql "INSERT INTO bulk SELECT repeat('x', 1000) FROM generate_series(1, 250000)"
     t1=$(date +%s%N)
+    echo MEASURE_END
     end=$(sql "SELECT pg_current_wal_lsn()")
     bytes=$(sql "SELECT pg_wal_lsn_diff('$end', '$start')")
     echo "bulk wal_bytes=$bytes nanos=$((t1 - t0))" > summary.txt

@@ -1,26 +1,40 @@
 #!/usr/bin/env bash
-# The P4b gate run (docs/design/28-loam-postgres.md §7): baseline and
-# candidate interleaved (A B A B A B) so that drift on the host hits both,
-# then compare.py over the results.
+# The P4b gate run (docs/design/28-loam-postgres.md §7): the baseline and
+# each candidate interleaved (A B C A B C ...) so that drift on the host hits
+# all of them, then compare.py of each candidate against the baseline.
 #
-#   scripts/loam-pg-bench/gate.sh [--replicas 1|3] [--repeats N] [--out DIR] [run.sh options]
+#   scripts/loam-pg-bench/gate.sh [--replicas 1|3] [--repeats N] [--out DIR]
+#       [--baseline VARIANT] [--candidates "VARIANT ..."] [run.sh options]
+#
+# The defaults compare safekeepers with loam (P4a). Arm A (§7.2):
+#   --candidates "nvme-pwritev2 nvme-uring nvme-sqpoll"
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-replicas=1 repeats=3 out=$ROOT/bench/results extra=()
+replicas=1 repeats=3 out=$ROOT/bench/results baseline=safekeepers candidates=loam extra=()
 while [ $# -gt 0 ]; do
   case $1 in
     --replicas) replicas=$2; shift 2 ;;
     --repeats) repeats=$2; shift 2 ;;
     --out) out=$2; shift 2 ;;
+    --baseline) baseline=$2; shift 2 ;;
+    --candidates) candidates=$2; shift 2 ;;
     *) extra+=("$1"); shift ;;
   esac
 done
-base=() cand=()
+declare -A files
 for i in $(seq 1 "$repeats"); do
-  base+=("$("$ROOT/scripts/loam-pg-bench/run.sh" --variant safekeepers --replicas "$replicas" \
-    --out "$out" --label "r$i" "${extra[@]}")")
-  cand+=("$("$ROOT/scripts/loam-pg-bench/run.sh" --variant loam --replicas "$replicas" \
-    --out "$out" --label "r$i" "${extra[@]}")")
+  for v in $baseline $candidates; do
+    f=$("$ROOT/scripts/loam-pg-bench/run.sh" --variant "$v" --replicas "$replicas" \
+      --out "$out" --label "r$i" "${extra[@]}")
+    files[$v]="${files[$v]:-} $f"
+  done
 done
-python3 "$ROOT/scripts/loam-pg-bench/compare.py" --baseline "${base[@]}" --candidate "${cand[@]}" |
-  tee "$out/gate-rf$replicas-$(date -u +%Y%m%dT%H%M%SZ).md"
+report=$out/gate-rf$replicas-$(date -u +%Y%m%dT%H%M%SZ).md
+: >"$report"
+for c in $candidates; do
+  # shellcheck disable=SC2086
+  python3 "$ROOT/scripts/loam-pg-bench/compare.py" --name "$c" \
+    --baseline ${files[$baseline]} --candidate ${files[$c]} | tee -a "$report" || true
+  echo | tee -a "$report"
+done
+echo "gate: wrote $report" >&2

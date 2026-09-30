@@ -71,10 +71,12 @@ services:
         condition: service_completed_successfully
 
   # The baseline: stock safekeepers, each on its own volume (fsync on).
+  # SK1_DATA..SK3_DATA and SKF_DATA may name host directories instead, to
+  # put every WAL tier on one chosen filesystem (run.sh --disk-root).
   safekeeper1:
     <<: *safekeeper
     profiles: ["sk"]
-    volumes: [sk1-data:/data]
+    volumes: ["${SK1_DATA:-sk1-data}:/data"]
     command:
       - >
         safekeeper --listen-pg=127.0.0.1:5454 --listen-http=127.0.0.1:7676 --id=1
@@ -83,7 +85,7 @@ services:
   safekeeper2:
     <<: *safekeeper
     profiles: ["sk3"]
-    volumes: [sk2-data:/data]
+    volumes: ["${SK2_DATA:-sk2-data}:/data"]
     command:
       - >
         safekeeper --listen-pg=127.0.0.1:5455 --listen-http=127.0.0.1:7677 --id=2
@@ -92,7 +94,7 @@ services:
   safekeeper3:
     <<: *safekeeper
     profiles: ["sk3"]
-    volumes: [sk3-data:/data]
+    volumes: ["${SK3_DATA:-sk3-data}:/data"]
     command:
       - >
         safekeeper --listen-pg=127.0.0.1:5456 --listen-http=127.0.0.1:7678 --id=3
@@ -107,7 +109,7 @@ services:
   feeder-safekeeper:
     <<: *safekeeper
     profiles: ["loam"]
-    volumes: [skf-data:/data]
+    volumes: ["${SKF_DATA:-skf-data}:/data"]
     command:
       - >
         safekeeper --listen-pg=127.0.0.1:5457 --listen-http=127.0.0.1:7679 --id=9 --no-sync
