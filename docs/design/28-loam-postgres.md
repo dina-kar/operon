@@ -605,7 +605,7 @@ The owner also asked for Arm A's store to be a tiered, low-level I/O layer, with
   - **Shards.** Each shard is one thread running a compio runtime, and **owns a set of timelines** (by hash of the timeline id, over a shard count fixed at first start). A shard also owns its own journal (D265), so group commit is per shard and needs no locks across cores.
   - **What runs on the owning shard:** the timeline's `START_WAL_PUSH` connection, its journal writes, and its durable writes. An accept thread reads the startup packet, which names the timeline, then hands the socket to the owning shard.
   - **The driver is io_uring.** compio's own opcodes cover sockets. Custom `OpCode`s cover what compio does not expose: `WRITE`/`WRITE_FIXED` with `RWF_DSYNC`, and registered buffers. The raw `io-uring` crate and `io_uring_register` on the ring's fd are used only where compio cannot help: buffer registration and file-table updates.
-  - **Linked writes.** compio 0.19 does not expose `IO_LINK` to callers. So the linked `WRITE` → `FSYNC` pair for FUA-less devices is issued as two back-to-back operations on the shard.
+  - **Linked writes.** The safe compio 0.19 API used here cannot pass the `IO_LINK` flag on an operation. So the `WRITE` → `FSYNC` pair for FUA-less devices is two back-to-back operations on the shard, and the `FSYNC` is submitted only after the `WRITE` completes successfully. An `AppendResponse` never precedes durability. (The low-level `Extra` / `Proactor::push_with_extra` path could link the pair; it is a later optimisation.)
   - **Where io_uring is blocked,** compio falls back to its epoll driver, and durable writes go to the `pwritev2` pool.
   - **tokio stays for the control plane:** the TiKV metadata client, S3 offload, the admin HTTP API (axum) and the feeder. It is bridged to the shards by bounded channels, off the commit path. The existing tokio WAL service stays as the fallback front end (`--runtime tokio`), and is benchmarked as tier (a).
 
@@ -693,7 +693,7 @@ The commit path is the only place where latency is gated. TiKV's modes are measu
 - **On this drive a FUA write costs about as much as a cache flush.** So on equal filesystems, the direct tiers and `fdatasync` land close together.
 - **btrfs adds its log-tree commit** to every durable write: 2.1–2.7 ms here against about 0.9 ms on ext4, on the same drive.
 - **A power-loss-protected drive matters more than any tier.** Its durable write is microseconds (§6.6), and that cannot be shown on the laptop.
-- **What the tiers remove is everything else:** allocation, `fsync`s and renames on the commit path, a sync that waits for earlier writes, and one sync per timeline. The gate runs measures each tier separately (§7.3), and also on an ext4 partition, to separate the btrfs cost.
+- **What the tiers remove is everything else:** allocation, `fsync`s and renames on the commit path, a sync that waits for earlier writes, and one sync per timeline. The gate measures each tier separately (§7.3), and also on an ext4 partition, to separate the btrfs cost.
 
 #### Open questions (Q261–Q264)
 
