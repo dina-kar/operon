@@ -21,6 +21,7 @@ pub mod faults;
 mod gc;
 mod keyspace;
 mod pd;
+pub mod regions;
 mod runner;
 pub mod testing;
 pub mod token;
