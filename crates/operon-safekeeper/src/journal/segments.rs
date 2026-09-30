@@ -83,10 +83,18 @@ impl DeviceCaps {
         };
         let dev = meta.dev();
         let (major, minor) = (rustix::fs::major(dev), rustix::fs::minor(dev));
-        let base = PathBuf::from(format!("/sys/dev/block/{major}:{minor}"));
+        let mut bases = vec![PathBuf::from(format!("/sys/dev/block/{major}:{minor}"))];
+        // btrfs (and other multi-device filesystems) report an anonymous
+        // device number; the mount's source names the block device.
+        if let Some(src) = mount_source(dir)
+            && let Some(name) = Path::new(&src).file_name()
+        {
+            bases.push(Path::new("/sys/class/block").join(name));
+        }
         // A partition has no queue/ of its own: its parent's is the disk's.
-        let queue = [base.join("queue"), base.join("../queue")]
-            .into_iter()
+        let queue = bases
+            .iter()
+            .flat_map(|b| [b.join("queue"), b.join("../queue")])
             .find(|q| q.is_dir());
         let Some(queue) = queue else {
             return DeviceCaps::default();
@@ -107,6 +115,25 @@ impl DeviceCaps {
             logical_block_size: read("logical_block_size").and_then(|v| v.parse().ok()),
         }
     }
+}
+
+/// The source device of the mount holding `dir` (from `/proc/self/mountinfo`:
+/// the longest mount point that prefixes the path).
+fn mount_source(dir: &Path) -> Option<String> {
+    let dir = fs::canonicalize(dir).ok()?;
+    let info = fs::read_to_string("/proc/self/mountinfo").ok()?;
+    let mut best: Option<(usize, String)> = None;
+    for line in info.lines() {
+        let (pre, post) = line.split_once(" - ")?;
+        let mount_point = pre.split(' ').nth(4)?;
+        let source = post.split(' ').nth(1)?;
+        if dir.starts_with(mount_point)
+            && best.as_ref().is_none_or(|(len, _)| mount_point.len() > *len)
+        {
+            best = Some((mount_point.len(), source.to_string()));
+        }
+    }
+    best.map(|(_, s)| s).filter(|s| s.starts_with("/dev/"))
 }
 
 /// Set `FS_NOCOW_FL` on a file or directory (btrfs: overwrite in place; new
@@ -204,6 +231,32 @@ impl SegmentDir {
         self.dir.join(format!("{seq:016x}.seg"))
     }
 
+    fn free_path(&self, seq: u64) -> PathBuf {
+        self.dir.join(format!("{seq:016x}.free"))
+    }
+
+    /// Retire a freed segment: rename it out of the replay set, durably, so
+    /// a restart never replays its records. Returns the file to recycle.
+    pub fn retire(&self, seq: u64) -> io::Result<PathBuf> {
+        let to = self.free_path(seq);
+        fs::rename(self.path(seq), &to)?;
+        sync_dir(&self.dir)?;
+        Ok(to)
+    }
+
+    /// Retired segment files waiting to be recycled.
+    pub fn list_free(&self) -> io::Result<Vec<PathBuf>> {
+        let mut out = Vec::new();
+        for e in fs::read_dir(&self.dir)? {
+            let p = e?.path();
+            if p.extension().is_some_and(|x| x == "free") {
+                out.push(p);
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
     /// Every segment's sequence number, ascending.
     pub fn list(&self) -> io::Result<Vec<u64>> {
         let mut out = Vec::new();
@@ -266,14 +319,14 @@ impl SegmentDir {
     /// number), else create, `fallocate` and pre-zero a new one. The header
     /// goes in last; the file is `fdatasync`ed and renamed into place, and the
     /// directory synced, before this returns.
-    pub fn prepare(&self, seq: u64, recycle: Option<u64>) -> io::Result<Arc<SegmentFile>> {
+    pub fn prepare(&self, seq: u64, recycle: Option<&Path>) -> io::Result<Arc<SegmentFile>> {
         let tmp = self.dir.join(format!("{seq:016x}.tmp"));
         let started = std::time::Instant::now();
         let recycled = match recycle {
-            Some(old) => match fs::rename(self.path(old), &tmp) {
+            Some(old) => match fs::rename(old, &tmp) {
                 Ok(()) => true,
                 Err(e) => {
-                    warn!(old, error = %e, "could not recycle a segment; creating one");
+                    warn!(old = %old.display(), error = %e, "could not recycle a segment; creating one");
                     false
                 }
             },
@@ -322,9 +375,9 @@ impl SegmentDir {
         self.open_segment(seq)
     }
 
-    /// Delete a segment file.
-    pub fn remove(&self, seq: u64) -> io::Result<()> {
-        fs::remove_file(self.path(seq))?;
+    /// Delete a retired segment file.
+    pub fn remove(&self, path: &Path) -> io::Result<()> {
+        fs::remove_file(path)?;
         sync_dir(&self.dir)
     }
 }
@@ -341,7 +394,9 @@ mod tests {
         assert_eq!(s1.read.metadata().unwrap().len(), 64 << 10);
         s1.write.write_all_at(&[7u8; 16], SEGMENT_HEADER as u64).unwrap();
         drop(s1);
-        let s2 = sd.prepare(2, Some(1)).unwrap();
+        let old = sd.retire(1).unwrap();
+        assert_eq!(sd.list().unwrap(), Vec::<u64>::new());
+        let s2 = sd.prepare(2, Some(&old)).unwrap();
         assert_eq!(sd.list().unwrap(), vec![2]);
         let mut b = [0u8; 16];
         s2.read.read_exact_at(&mut b, SEGMENT_HEADER as u64).unwrap();

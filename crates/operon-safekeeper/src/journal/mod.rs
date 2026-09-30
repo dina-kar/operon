@@ -248,8 +248,8 @@ struct State {
     ready: VecDeque<Arc<SegmentFile>>,
     /// Segments with data (and `cur`), by sequence.
     live: BTreeMap<u64, Arc<SegmentFile>>,
-    /// Freed segments, for the preparer to recycle.
-    free: Vec<Arc<SegmentFile>>,
+    /// Retired segments, for the preparer to recycle.
+    free: Vec<Retired>,
     max_seq: u64,
     /// Units taken by an engine and not yet completed: id → segment.
     inflight: BTreeMap<u64, u64>,
@@ -291,6 +291,13 @@ impl std::fmt::Debug for Inner {
 #[derive(Clone, Debug)]
 pub struct Journal {
     inner: Arc<Inner>,
+}
+
+/// A retired segment file: recyclable once no reader holds it.
+#[derive(Debug)]
+struct Retired {
+    path: PathBuf,
+    held: Option<Arc<SegmentFile>>,
 }
 
 /// Buffers kept for reuse per journal.
@@ -358,21 +365,32 @@ impl Journal {
         drop(buf);
         let last_data = with_data.last().map_or(0, |f| f.seq);
         let (mut ready, mut free): (VecDeque<_>, Vec<_>) = (VecDeque::new(), Vec::new());
+        for p in segs.list_free().map_err(io_err)? {
+            free.push(Retired { path: p, held: None });
+        }
         for f in empty {
             if f.seq > last_data {
                 ready.push_back(f);
             } else {
-                free.push(f);
+                let seq = f.seq;
+                drop(f);
+                free.push(Retired {
+                    path: segs.retire(seq).map_err(io_err)?,
+                    held: None,
+                });
             }
         }
         let mut max_seq = seqs.last().copied().unwrap_or(0);
-        let cur = match ready.pop_front() {
-            Some(f) => f,
-            None => {
-                max_seq += 1;
-                segs.prepare(max_seq, None).map_err(io_err)?
-            }
-        };
+        // The first segments are prepared before the journal serves anything,
+        // so pre-zeroing never competes with the first commits.
+        while ready.len() < cfg.prepared + 1 {
+            max_seq += 1;
+            let recycle = take_recyclable(&mut free);
+            ready.push_back(segs.prepare(max_seq, recycle.as_deref()).map_err(io_err)?);
+        }
+        let cur = ready
+            .pop_front()
+            .ok_or_else(|| Error::Store("journal: no segment".into()))?;
         let mut live: BTreeMap<u64, Arc<SegmentFile>> =
             with_data.into_iter().map(|f| (f.seq, f)).collect();
         live.insert(cur.seq, cur.clone());
@@ -558,7 +576,7 @@ impl Journal {
                 let recycle = take_recyclable(&mut st.free);
                 self.inner
                     .segs
-                    .prepare(st.max_seq, recycle)
+                    .prepare(st.max_seq, recycle.as_deref())
                     .map_err(io_err)?
             }
         };
@@ -706,18 +724,26 @@ impl Journal {
                 break;
             }
             if let Some(f) = st.live.remove(&seq) {
-                st.free.push(f);
+                match self.inner.segs.retire(seq) {
+                    Ok(path) => st.free.push(Retired {
+                        path,
+                        held: Some(f),
+                    }),
+                    Err(e) => {
+                        warn!(seq, error = %e, "could not retire a segment; keeping it");
+                        st.live.insert(seq, f);
+                        break;
+                    }
+                }
             }
             st.ends.remove(&seq);
             freed.push(seq);
         }
         // Keep a few files to recycle; delete the rest.
         while st.free.len() > self.inner.cfg.prepared {
-            if let Some(f) = st.free.pop() {
-                let seq = f.seq;
-                drop(f);
-                if let Err(e) = self.inner.segs.remove(seq) {
-                    warn!(seq, error = %e, "could not delete a freed segment");
+            if let Some(r) = st.free.pop() {
+                if let Err(e) = self.inner.segs.remove(&r.path) {
+                    warn!(path = %r.path.display(), error = %e, "could not delete a freed segment");
                 }
             }
         }
@@ -778,7 +804,7 @@ impl Journal {
                 st.max_seq += 1;
                 (st.max_seq, take_recyclable(&mut st.free))
             };
-            match self.inner.segs.prepare(seq, recycle) {
+            match self.inner.segs.prepare(seq, recycle.as_deref()) {
                 Ok(f) => self.lock().ready.push_back(f),
                 Err(e) => {
                     warn!(seq, error = %e, "journal: preparing a segment failed; retrying");
@@ -789,13 +815,12 @@ impl Journal {
     }
 }
 
-/// A freed segment no reader holds any more, if there is one.
-fn take_recyclable(free: &mut Vec<Arc<SegmentFile>>) -> Option<u64> {
-    let i = free.iter().position(|f| Arc::strong_count(f) == 1)?;
-    let f = free.swap_remove(i);
-    let seq = f.seq;
-    drop(f);
-    Some(seq)
+/// A retired segment no reader holds any more, if there is one.
+fn take_recyclable(free: &mut Vec<Retired>) -> Option<PathBuf> {
+    let i = free
+        .iter()
+        .position(|r| r.held.as_ref().is_none_or(|f| Arc::strong_count(f) == 1))?;
+    Some(free.swap_remove(i).path)
 }
 
 fn read_fully(f: &std::fs::File, buf: &mut [u8]) -> io::Result<usize> {
