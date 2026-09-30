@@ -7,14 +7,33 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+# The TiKV WalStore (the production hot tier). Off by default, so the crate
+# builds without the tikv-client git dependency.
+tikv = ["dep:operon-tikv", "dep:postcard", "dep:futures"]
+# The network service, its HTTP API and the loam-wal binary.
+server = ["dep:axum", "dep:clap", "dep:serde_json", "dep:tracing-subscriber"]
+
+[[bin]]
+name = "loam-wal"
+path = "src/bin/loam-wal.rs"
+required-features = ["server"]
+
 [dependencies]
 async-trait.workspace = true
+axum = { workspace = true, optional = true }
 bytes.workspace = true
+clap = { workspace = true, optional = true, features = ["env"] }
+futures = { workspace = true, optional = true }
 hex.workspace = true
+operon-tikv = { workspace = true, optional = true }
+postcard = { workspace = true, optional = true }
 serde.workspace = true
+serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
 
 [dev-dependencies]
 postcard.workspace = true

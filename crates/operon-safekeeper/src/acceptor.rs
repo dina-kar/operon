@@ -204,6 +204,14 @@ impl<S: WalStore> Acceptor<S> {
         };
         for r in reqs {
             self.check_generation(r.h.generation, "AppendRequest")?;
+            if r.h.begin_lsn.checked_add(r.wal.len() as u64)? != r.h.end_lsn {
+                return Err(Error::Protocol(format!(
+                    "AppendRequest [{}, {}) carries {} WAL bytes",
+                    r.h.begin_lsn,
+                    r.h.end_lsn,
+                    r.wal.len()
+                )));
+            }
             if r.h.term != first.h.term {
                 return Err(Error::Protocol(
                     "AppendRequests of two terms in one batch".into(),
@@ -277,13 +285,41 @@ impl<S: WalStore> Acceptor<S> {
         Ok(AcceptorMessage::AppendResponse(self.append_response()))
     }
 
-    /// Persist the in-memory commit LSN if it is ahead of the store's.
+    /// Persist the in-memory commit LSN if it is ahead of the store's,
+    /// fenced by the current term (a deposed proposer's is dropped).
     pub async fn persist_commit_lsn(&mut self) -> Result<(), Error> {
         if self.commit_lsn > self.state.commit_lsn {
-            self.store
-                .record_commit_lsn(&self.tl, self.commit_lsn)
-                .await?;
-            self.state.commit_lsn = self.commit_lsn;
+            match self
+                .store
+                .record_commit_lsn(&self.tl, self.state.term, self.commit_lsn)
+                .await?
+            {
+                Ok(()) => self.state.commit_lsn = self.commit_lsn,
+                Err(d) => {
+                    self.state.term = d.current;
+                    self.commit_lsn = self.state.commit_lsn;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Learn a higher term seen elsewhere on this instance (another
+    /// connection's proposer). Heartbeats never touch the store, so without
+    /// this a deposed, idle proposer would keep hearing its own term.
+    pub fn observe_term(&mut self, term: crate::types::Term) {
+        self.state.term = self.state.term.max(term);
+    }
+
+    /// Re-read the head and adopt a higher stored term (a proposer elected on
+    /// another instance). The service calls this on its commit timer, so a
+    /// deposed proposer that only sends heartbeats learns within one interval.
+    pub async fn refresh(&mut self) -> Result<(), Error> {
+        if let Some(st) = self.store.load(&self.tl).await?
+            && st.term > self.state.term
+        {
+            info!(tl = %self.tl, term = self.state.term, stored = st.term, "deposed");
+            self.state.term = st.term;
         }
         Ok(())
     }

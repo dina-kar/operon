@@ -1,7 +1,8 @@
 # PD for Loam's dev playground and CI (R1 plan Task 1).
 # Keyspaces created at bootstrap. Loam: loam_meta (the metastore),
-# loam_live_dev (the dev Live app), sql_dev (the dev TiDB). Tests:
+# loam_live_dev (the dev Live app), sql_dev (the dev TiDB), loam_pgwal (the
+# Loam Postgres WAL hot tier, design §28 §6.5). Tests:
 # loam_test_meta, loam_test_live, loam_test_sql; tests isolate by a random
 # root prefix and never create or delete a keyspace.
 [keyspace]
-pre-alloc = ["loam_meta", "loam_live_dev", "sql_dev", "loam_test_meta", "loam_test_live", "loam_test_sql"]
+pre-alloc = ["loam_meta", "loam_live_dev", "sql_dev", "loam_pgwal", "loam_test_meta", "loam_test_live", "loam_test_sql"]
