@@ -103,6 +103,18 @@ async fn append_read_and_restart() {
         other.load(&tl()).await.unwrap().unwrap().commit_lsn,
         Lsn(107)
     );
+    // So is the proposer's truncate LSN (the peer horizon).
+    let mut b = batch(1, 108, b"i", 0);
+    b.truncate_lsn = Lsn(104);
+    s.append(&tl(), &b).await.unwrap().unwrap();
+    s.record_commit_lsn(&tl(), 1, Lsn(107))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        other.load(&tl()).await.unwrap().unwrap().peer_horizon_lsn,
+        Lsn(104)
+    );
 }
 
 #[tokio::test]
