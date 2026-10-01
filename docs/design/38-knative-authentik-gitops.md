@@ -2,13 +2,13 @@
 
 Status: **Proposed** · 2026-10-02. Source: three owner rulings. On 2026-10-01 the owner wrote "loams multitenant also fully opensource using knative and for gitops clever cloud, for auth Authentik so no paid plan" and "all run on cloudflare using byoc". On 2026-10-02 the owner narrowed them: "keep loam cloud and loams-cloud private; may add Knative in OSS but no metering; I want adoption and also to raise money from VCs; move Cloudflare, OpenRTB etc. commercial to private repos." This document applies the 2026-10-02 ruling. It does **not** reopen the open-core boundary (D220, [open-core.md](../open-core.md)), which stays as approved on 2026-09-29.
 
-It turns the ruling into decisions **D440–D459** and open questions **Q440–Q459**. They are **proposals** until the owner rules on them. Plans: [MT1](../plans/2026-10-02-mt1-authentik-identity.md) (Authentik identity), [MT2](../plans/2026-10-02-mt2-knative.md) (Knative Serving and Eventing) and [MT3](../plans/2026-10-02-mt3-gitops-clever.md) (GitOps).
+It turns the ruling into decisions **D440–D459** and open questions **Q440–Q453** (Q454–Q459 are reserved and unused). They are **proposals** until the owner rules on them. Plans: [MT1](../plans/2026-10-02-mt1-authentik-identity.md) (Authentik identity), [MT2](../plans/2026-10-02-mt2-knative.md) (Knative Serving and Eventing) and [MT3](../plans/2026-10-02-mt3-gitops-clever.md) (GitOps).
 
 **Amends** [§19](19-console-identity-and-agents.md) (the IdP in front of Loam), [§22](22-showcase-suite.md) (D-SC-3: the suite's IdP), [§24](24-cpu-time-runtime.md) (a Knative runner for the `http-port` contract), [§25](25-clever-cloud-stack.md) (what "GitOps from Clever Cloud" means; new sync waves) and [§27](27-usage-hooks.md) (Knative pods under the hooks contract, with no meter). **Narrows** D111 (the unified auth plan) and D221 (SAML is brokered through Authentik, not Keycloak). The private side of the same ruling (the hosted Loams Cloud on Cloudflare, the protocol gateway, the Cloudflare target, the metering ledger) is designed in `loam-platform`. This repository does not depend on it.
 
 Markers: **(verify)** means not checked against a primary source; the task that depends on it checks it first. **(estimate)** means computed, not measured. Every version, licence and status claim with a date was read on 2026-10-02 from the source named in §13.
 
-**Numbering.** D440–D459 and Q440–Q459 are this document's reserved ranges.
+**Numbering.** D440–D459 and Q440–Q459 are this document's reserved ranges; Q440–Q453 are used.
 
 ---
 
@@ -74,7 +74,7 @@ So Knative replaces the hand-written T2 scheduler that F2 would otherwise need. 
 | `Runner` method | Knative operation |
 |---|---|
 | `deploy(cx, artifact)` | Server-side apply of a `serving.knative.dev/v1` `Service` named `fn-<function_id>` in `loam-ns-<namespace>`, with the image by digest, `runtimeClassName: gvisor`, `containerConcurrency` from the manifest, `autoscaling.knative.dev/min-scale: "0"`, `max-scale` from the namespace's limits, and the §27 §3.2 labels. Idempotent by digest: an unchanged digest creates no new revision |
-| `invoke(cx, dep, req)` | HTTP/2 to Kourier's internal service with `Host: fn-<id>.loam-ns-<ns>.svc.cluster.local`, the request's `traceparent`, and the runtime's Biscuit (D182) in `x-loam-sandbox-token`. `usage: None` (D444) |
+| `invoke(cx, dep, req)` | HTTP/2 over TLS to Kourier's internal service (Knative's internal TLS on; no cleartext fallback, because the Biscuit is a bearer token; MT2 Ruling 4) with `Host: fn-<id>.loam-ns-<ns>.svc.cluster.local`, the request's `traceparent`, and the runtime's Biscuit (D182) in `x-loam-sandbox-token`. `usage: None` (D444) |
 | `undeploy(cx, dep)` | Delete the `Service`; Knative garbage-collects its revisions |
 | `health()` | `KnativeServing` `Ready`, Kourier reachable |
 | `capabilities()` | contracts `[http-port]`, `suspend: false`, cold start: Knative's (seconds, image-dependent) **(estimate)** |
