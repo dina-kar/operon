@@ -21,6 +21,9 @@ while [ $# -gt 0 ]; do
     *) extra+=("$1"); shift ;;
   esac
 done
+# An empty list would run the baseline alone and report a gate that compared nothing.
+read -r -a cands <<<"$candidates"
+[ "${#cands[@]}" -gt 0 ] || { echo "gate: --candidates names no variant" >&2; exit 2; }
 declare -A files
 for i in $(seq 1 "$repeats"); do
   for v in $baseline $candidates; do
