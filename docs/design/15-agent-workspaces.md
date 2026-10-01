@@ -48,12 +48,12 @@ ns/<ns>/repos/<repo_id>/
 - **Refs are a CAS'd document, not metastore state.** A deployment may hold tens of millions of repos (Cloudflare's stated target is tens of millions per namespace), and pushes are user data. The per-repo document pattern is the one the Resonate blob server uses (§14): one conditional PUT commits a ref transaction atomically.
 > **Amended (proposed), D388–D390 (§36 §4):** the single `refs` document becomes a per-repository WAL of create-only segments (`wal/<seq>.lgw`, the commit point) plus checkpoints (`checkpoints/<seq>.lgc`) and a `head` hint; a push's pack and index become one object, `packs/<checksum>.lpk`. A fork is a checkpoint 0 naming its parent and seq, still one PUT.
 
-- **Fork = a new `refs` document naming its parent.** Reads fall through to the parent's packs (Git "alternates"), so a fork costs one PUT and no data copy. Per-agent forks or per-agent branches both work.
+- **Fork = a new `refs` document naming its parent** *(superseded by D388: a checkpoint 0 naming the parent repository and seq)*. Reads fall through to the parent's packs (Git "alternates"), so a fork costs one PUT and no data copy. Per-agent forks or per-agent branches both work.
 
 ### 3.2 Protocol
 
 - **Smart HTTP, protocol v2**, in the `gateway` role, for stock `git`, gitoxide, libgit2 and JGit clients. *(D394, §36 §6.1: v2 upload-pack; receive-pack stays v0/v1 because v2 has no push; plans GT1–GT2.)*
-- **Push (receive-pack):** stream the pack → verify it (index, connectivity, object limits) → PUT pack + idx (create-only) → CAS the `refs` document with per-ref old-oid checks, fast-forward rules and branch protection → append a record to the repo's event stream → acknowledge. The event record is written after the commit, at least once, with a repair sweep, so links (§4) see every push.
+- **Push (receive-pack):** stream the pack → verify it (index, connectivity, object limits) → PUT pack + idx (create-only) → CAS the `refs` document with per-ref old-oid checks, fast-forward rules and branch protection *(superseded by D389–D391, §36 §4.4 and §6.3: one `packs/<checksum>.lpk` PUT, then the transaction joins the sequencer's next create-only WAL segment)* → append a record to the repo's event stream → acknowledge. The event record is written after the commit, at least once, with a repair sweep, so links (§4) see every push.
 - **Fetch/clone (upload-pack):** negotiation uses the commit-graph cached on query nodes; existing packs are reused whole when the wants cover them, otherwise a pack is generated. **Partial clone** (`--filter=blob:none`, `tree:0`) and shallow clones let sandboxes start with trees only and fetch blobs on demand.
 - **Contention:** pushes to one repo contend on its `refs` document. Repo-affinity routing (§04) lets one node group-commit concurrent pushes, as Resonate does per origin.
 - **Git LFS:** batch API with objects in the namespace CAS (§5.2).
@@ -228,13 +228,13 @@ Agents with many MCP servers pay for every tool definition in every request. The
 ## 11. Object layout additions
 
 ```
-ns/<ns>/repos/<repo_id>/{refs, packs/, commit-graph/}
+ns/<ns>/repos/<repo_id>/{refs, packs/, commit-graph/}   # amended by D388–D390: {head, wal/, checkpoints/, packs/<checksum>.lpk, midx/, commit-graph/} (§36 §4.1)
 ns/<ns>/cas/packs/<ulid>.{pack,idx}          # chunks: env images, LFS, package caches, artifacts
 ns/<ns>/envs/<env_key>/manifest               # environment image manifest (nydus bootstrap)
 ns/<ns>/cache/<tool>/…                       # sccache, bazel-remote, turbo
 ```
 
-GC: reachability from `refs` documents and env manifests (env images retained by last use), cache entries by age (§03 §7).
+GC: reachability from `refs` documents (from D388: checkpoints within retention, §36 §7) and env manifests (env images retained by last use), cache entries by age (§03 §7).
 
 ## 12. Design targets (not measurements)
 
