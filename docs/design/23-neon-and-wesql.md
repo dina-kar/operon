@@ -186,6 +186,8 @@ Writes are compare-and-set on the version, like pointers (§20 §11.2). Secrets 
 - **TLS** on both hops, with peer verification (§28 §8): clients connect to PgDog over TLS, and PgDog connects to computes over TLS that verifies the compute's identity (or an equivalent protected channel, such as mesh mTLS). Neither hop carries plaintext on the cluster network.
 - PgDog stays reachable only inside the cluster (or on loopback in dev) until the unified auth plan (D111, Q30).
 
+> **Proposed 2026-10-01** ([§31](31-loam-router-and-verification.md), D320): Vitess's vtgate (Apache-2.0, unmodified, v24) fronts WeSQL instead of the Loam-built splice below, for unsharded and sharded keyspaces alike, with Loam rendering vtgate's static auth file and VSchema. The splice stays the fallback if §31's RT3 compatibility gate fails. Vitess-fronted WeSQL runs with `gtid_mode = ON` (§31 §9.1).
+
 **MySQL.** The server speaks first, and the database arrives in the client's `HandshakeResponse`, authenticated against a scramble from the server's greeting. Loam therefore cannot splice before authentication. It completes the handshake itself (`caching_sha2_password` or `mysql_native_password`, with credentials from the auth plan), opens its own connection to WeSQL with a stored credential and the requested schema, over TLS that verifies WeSQL's identity (the stored credential never crosses a plaintext connection), and then splices. `COM_CHANGE_USER` and `COM_INIT_DB` to another database are refused. This is N6. The simpler fallback is a dedicated port per WeSQL instance.
 
 ### 6.4 Change bridges (D154, N4 and N6)
