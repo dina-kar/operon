@@ -16,7 +16,7 @@ Markers: **(verify)** means not checked against a primary source; the task that 
 
 | # | Decision | Status |
 |---|---|---|
-| D440 | **The open-core boundary stands** (D220, reconfirmed by the owner on 2026-10-02). Self-hosting a single organisation is open source; running the multi-tenant paid cloud is `loam-platform`. Knative, Authentik and the GitOps layout are self-hosting features, so they are open. **No metering in this repository**: only §27's hooks stay. The protocol gateway (§34) and the Cloudflare target (§35, PR #179) move to `loam-platform`, and §34 becomes a stub | Proposed · owner ruling 2026-10-02 |
+| D440 | **The open-core boundary stands** (D220, reconfirmed by the owner on 2026-10-02). Self-hosting a single organisation is open source; running the multi-tenant paid cloud is `loam-platform`. Knative, Authentik and the GitOps layout are self-hosting features, so they are open. **No metering in this repository**: only §27's hooks stay. The protocol gateway (§34) and the Cloudflare target (the former §35) move to `loam-platform` (private), and §34 becomes a stub | Proposed · owner ruling 2026-10-02 |
 | D441 | **Knative Serving is an optional compute layer** for the `http-port` contract (§24 D181, tier T2) in self-hosted clusters. `KnativeRunner` implements the `Runner` trait (D375): one Knative `Service` per function, one `Revision` per version, scale to zero, gVisor through `runtimeClassName`. The node supervisor stays the only runner for `fetch` (T0 workerd) and Wasm (T1), whose many-tenants-per-process model Knative cannot express | Proposed |
 | D442 | **Knative's ingress is Kourier, inside the cluster, behind Loam's edge.** Envoy stays the edge (D184); the gateway routes a function's traffic to Kourier's internal service with the tenant already checked. Knative's own domains are cluster-local (`svc.cluster.local`), so no function is reachable except through the gateway | Proposed |
 | D443 | **Tenancy on Knative: one Kubernetes namespace per Loam namespace** (`loam-ns-<namespace>`), with a default-deny `NetworkPolicy`, a `ResourceQuota` and a `LimitRange` set by `loam-operator` from the namespace's limits. The quota is **enforced** here; who **sets** it per plan is `loam-platform`'s concern (D220). Every pod carries §27 §3.2's labels | Proposed |
@@ -169,7 +169,7 @@ The "Enterprise features" page also lists "External OAuth and SAML sources embed
 ### 4.3 How Loam uses it (D449)
 
 ```
- person ── browser / loam CLI ──► Authentik (OIDC: code + PKCE, or device code; MFA, passkeys, SAML/LDAP/OAuth sources)
+ person ── browser / loams CLI ─► Authentik (OIDC: code + PKCE, or device code; MFA, passkeys, SAML/LDAP/OAuth sources)
                                      │ ID token + access token (groups claim)
                                      ▼
                            loam-gateway  POST /api/v1/oauth/token
@@ -181,7 +181,7 @@ The "Enterprise features" page also lists "External OAuth and SAML sources embed
  sandbox ── Biscuit minted and attenuated by the supervisor (D188, unchanged)
 ```
 
-- **People sign in through Authentik.** The console uses the authorization-code flow with PKCE; `loam login` uses the device-code flow (`providers/oauth2/views/device_*`). Loam's gateway is an OIDC relying party (`openidconnect` 4, §19 §6) and keeps the session.
+- **People sign in through Authentik.** The console uses the authorization-code flow with PKCE; `loams login` uses the device-code flow (`providers/oauth2/views/device_*`). Loam's gateway is an OIDC relying party (`openidconnect` 4, §19 §6) and keeps the session.
 - **Loam issues Loam tokens.** The gateway exchanges the Authentik token for a Loam access token on its own token endpoint (RFC 8693, §19 §5.2 flow 1, with Authentik registered as a trusted issuer). Every listener verifies only Loam tokens, so the verification code does not change with the IdP.
 - **Agents are not Authentik users.** An agent is a Loam principal with a trust policy (§19 §5.1). Authentik's agent accounts are Enterprise and are not used.
 - **Groups reach OpenFGA at sign-in.** The `groups` claim maps to Loam teams (§19 P4, "OIDC groups can map to teams"); the gateway writes `team#member` tuples through the outbox (D66) when a person signs in or refreshes. Removal takes effect at the next refresh (1 hour) or on session revocation. Continuous provisioning through SCIM stays a `loam-platform` feature (D221) unless the owner moves it (Q440).
@@ -224,7 +224,7 @@ Checked on 2026-10-02 (GitHub organisation `CleverCloud`, and §25 §2's invento
 | `clever-kubernetes-operator` | MIT · v0.8.0 (2026-06-09), pushed 2026-09-04 | **Forked** as `loam-operator` (D185): reconciles `Loam`, `Function`, `RuntimePool`, `ObjectStore`, and now the per-namespace Knative tenancy (D443) |
 | `terraform-provider-clevercloud` | Apache-2.0 · v2.3.0 (2026-09-28) | Infra under GitOps on Clever Kubernetes Engine (CKE) |
 | `karpenter-provider-clever-cloud` | Apache-2.0 · v0.13.0 (2026-10-01) | Node autoscaling on CKE |
-| `clever-tools` | Apache-2.0 · 5.0.2 (2026-09-16) | Reference for the `loam` CLI's deploy UX (§30) |
+| `clever-tools` | Apache-2.0 · 5.0.2 (2026-09-16) | Reference for the `loams` CLI's deploy UX (§30) |
 | A GitOps reconciler, deployer or git-push build system | **none published** | Clever's own deployer is closed (§25 §1) |
 
 So Clever supplies the operator skeleton and the infrastructure layer for CKE, and **a GitOps engine is still needed**. Argo CD (Apache-2.0, v3.5.3, 2026-09-14) stays that engine (D186); Flux (Apache-2.0, v2.9.6, 2026-10-01) is the documented alternative for the smallest profile (D454).
@@ -256,8 +256,8 @@ k3s v1.37.1+k3s1 (2026-09-30) or k3d, started with `--disable traefik`. On it: A
 
 | What | Was | Now |
 |---|---|---|
-| The protocol gateway, OpenRTB and Google adapters, the canonical `loam.rtb.v1`, partner negotiation, the ad-tech conformance suite (D366–D371, D373, D377, D379) and plans GW1–GW4 | §34, merged in #177 | `loam-platform`. §34 is a stub that keeps the vendor-neutral decisions (the standards charter, the narrow waist, the CloudEvents profile, the high-rate path, state rules, the `Runner` trait, usage hooks from runners) |
-| The Cloudflare target (`CloudflareRunner`, Workers, Durable Objects, R2, Containers placement, the startup credits plan) and plan CF1 | §35 on PR #179 | `loam-platform`. §36 (Loam Git) and GT1–GT3 stay; the `Fs` trait and `NativeFs` move into §36 |
+| The protocol gateway, OpenRTB and Google adapters, the canonical `loam.rtb.v1`, partner negotiation, the ad-tech conformance suite (D366–D371, D373, D377, D379) and plans GW1–GW4 | §34, merged in #177 | `loam-platform` (private). §34 is a stub that keeps the vendor-neutral decisions (the standards charter, the narrow waist, the CloudEvents profile, the high-rate path, state rules, the `Runner` trait, usage hooks from runners) |
+| The Cloudflare target (`CloudflareRunner`, Workers, Durable Objects, R2, Containers placement, the startup credits plan) and plan CF1 | the former §35 (PR #179) | `loam-platform` (private). §36 (Loam Git) and GT1–GT3 stay; the `Fs` trait and `NativeFs` move into §36 |
 | The usage CloudEvents form and its Arrow mapping (RN1 Task 6), and any ledger | RN1, §34 §12 | `loam-platform`. RN1 keeps the `Runner` trait, `RunnerHost`, the process and Lambda runners and §27's host-report emitter |
 
 ## 8. Contradictions with earlier decisions, and how they are resolved
@@ -270,7 +270,7 @@ k3s v1.37.1+k3s1 (2026-09-30) or k3d, started with `--disable traefik`. On it: A
 | 4 | **§19 P7, §6** name Keycloak as the SAML broker | Authentik | Amended (D447, D450); built-in sign-in kept |
 | 5 | **§19 §3**: Cloud identity "Clerk or Keycloak" | — | Not changed here (hosted is `loam-platform`, D440) |
 | 6 | **D379** (§34): the adapters, negotiation and ad-tech conformance are Apache-2.0 here | `loam-platform` | Superseded by D440 (owner ruling 2026-10-02) |
-| 7 | **§35 §2** (PR #179): `CloudflareRunner` and the Worker crates are Apache-2.0 here | `loam-platform` | Superseded by D440 before merge |
+| 7 | **The former §35 §2** (PR #179): `CloudflareRunner` and the Worker crates are Apache-2.0 here | `loam-platform` (private) | Superseded by D440 before merge |
 | 8 | **D376 item 4, RN1 Task 6**: usage as CloudEvents, built here | Moved | The record spec (§27 §3.6) stays; the event form is `loam-platform`'s (D444) |
 | 9 | **D186**: Argo CD | "GitOps from Clever Cloud" | No conflict: Clever has no GitOps engine (D453) |
 | 10 | **§24 §11 F2**: Loam schedules T2 sandboxes | Knative schedules them when enabled | Refined by D441; F2's gVisor setup stays |
@@ -298,7 +298,7 @@ Knative graduated in the CNCF on 2025-10-08 (CNCF announcement).
 
 | Plan | Scope | Depends on |
 |---|---|---|
-| [MT1](../plans/2026-10-02-mt1-authentik-identity.md) | Authentik blueprints and the CI guard; the gateway's OIDC sign-in against Authentik; the RFC 8693 exchange for Loam tokens; groups → teams → OpenFGA tuples; `loam login` with device code; the showcase moves from Keycloak | §19's M2 identity work (the token endpoint, sessions); D66's outbox |
+| [MT1](../plans/2026-10-02-mt1-authentik-identity.md) | Authentik blueprints and the CI guard; the gateway's OIDC sign-in against Authentik; the RFC 8693 exchange for Loam tokens; groups → teams → OpenFGA tuples; `loams login` with device code; the showcase moves from Keycloak | §19's M2 identity work (the token endpoint, sessions); D66's outbox |
 | [MT2](../plans/2026-10-02-mt2-knative.md) | `operon-runner-knative`; per-namespace tenancy in `loam-operator`; Kourier routing from the gateway; `loam-knative-source`; the Knative sink docs; usage-hook conformance with no meter | RN1 Tasks 1–3 (the trait); `loam-operator` (D185) |
 | [MT3](../plans/2026-10-02-mt3-gitops-clever.md) | New waves and health checks; the Authentik and Knative `Application`s; the Flux layout; the k3s small profile; CKE variant | MT1 Task 1, MT2 Task 1; §25's layout |
 
@@ -314,7 +314,7 @@ MT, like tracks R, D, J and GT, interleaves on the one-build machine: one cargo 
 | Two schedulers (supervisor and Knative) for one runtime | They own different contracts (§3.1); the `Runner` trait hides which one runs a function |
 | Kourier and Envoy both in the path | Kourier is internal and small; Q446 asks whether `net-gateway-api` on Envoy Gateway removes Kourier |
 | Usage under Knative is coarser than the supervisor's (pod cgroup, not per invocation) | Accepted: no metering in OSS (D444); per-invocation precision for billing is `loam-platform`'s problem |
-| Removing §34 and §35 leaves references dangling in other branches | §34 stays as a stub at the same path; §36 is edited on its own branch (PR #179); `_pending` logs list what moved |
+| Removing §34 and §35 leaves references dangling in other branches | §34 stays as a stub at the same path; §36 was edited to match; the decision log records what moved (one row per moved range) |
 
 ## 12. Open questions
 
@@ -330,7 +330,7 @@ MT, like tracks R, D, J and GT, interleaves on the one-build machine: one cargo 
 | Q447 | Authentik's Postgres: CloudNativePG now (D230), Loam Postgres (§28) later | Eng | MT3 Task 3 |
 | Q448 | Does Authentik's OIDC provider send back-channel logout, so a removed user's Loam session ends before its refresh **(verify)** | Eng | MT1 Task 4 |
 | Q449 | Flux as the default for the single-node profile, if MT3 measures Argo CD as too heavy (merges Q-RT-11) | Eng | MT3 Task 6 |
-| Q450 | Give §34's retained vendor-neutral decisions (D360–D365, D372, D374, D378) their own OSS document, and split GW1's vendor-neutral tasks (`buf breaking`, the CloudEvents profile) into an OSS plan | Founder | Before GW1's private plan starts |
+| Q450 | Give §34's retained vendor-neutral decisions (D360–D365, D372, D374, D378) their own OSS document, and split GW1's vendor-neutral tasks (`buf breaking`, the CloudEvents profile) into an OSS plan | Founder | Before GW1's plan starts in `loam-platform` (private) |
 | Q451 | The `loam.dev/*` pod labels of §27 §3.2 under the `loams` rename: keep, or move to `loams.dev/*` with the rename PR | Eng | Rename PR |
 | Q452 | `loam-knative-source` for Iggy topics (§32): in MT2 or with FL1 | Eng | After FL1 |
 | Q453 | Authentik upgrade cadence and who takes security patches for self-hosters (chart values pinned in Loam's layout) | Eng | MT3 Task 2 |

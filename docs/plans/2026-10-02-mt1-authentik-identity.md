@@ -6,7 +6,7 @@
 
 **Goal:**
 - Authentik 2026.8.x, open-source edition only, configured entirely by Loam's blueprints, with a CI guard that fails if any Enterprise feature or licence appears (D452, D458).
-- The gateway signs people in through Authentik (authorization code with PKCE for the console; device code for `loam login`) and issues Loam access tokens by RFC 8693 exchange of the Authentik token (D449).
+- The gateway signs people in through Authentik (authorization code with PKCE for the console; device code for `loams login`) and issues Loam access tokens by RFC 8693 exchange of the Authentik token (D449).
 - The `groups` claim becomes Loam teams and OpenFGA `team#member` tuples at sign-in and refresh.
 - The showcase suite moves from Keycloak to Authentik (D-SC-3 superseded).
 
@@ -69,7 +69,7 @@ scripts/authentik/
   e2e.sh                            # k3d: install, load blueprint, sign in headlessly, exchange, call the API
 crates/operon-auth/src/oidc/        # (or wherever §19's M2 put sign-in) issuer config, JWKS cache, exchange grant
 crates/operon-auth/tests/authentik.rs
-crates/operon-cli/src/login.rs      # `loam login` device flow
+crates/operon-cli/src/login.rs      # `loams login` device flow
 showcase/authentik/                 # the suite's blueprint (Task 6)
 docs/guides/identity-authentik.md
 ```
@@ -122,11 +122,11 @@ docs/guides/identity-authentik.md
 
 **Commit:** `auth: map IdP groups to teams and OpenFGA tuples at sign-in`.
 
-### Task 5: Console sign-in and `loam login`
+### Task 5: Console sign-in and `loams login`
 
 **Files:** the console API's existing `GET /api/v1/auth/oidc/{provider}/start` (already in `api/console/openapi.json`) and a new `GET /api/v1/auth/oidc/{provider}/callback`, added to the OpenAPI contract, to `operon-console-mock` and to the contract tests (§19 P9, P10); `crates/operon-cli/src/login.rs`.
 
-**Produces:** authorization code with PKCE (S256) and `state` and `nonce` checks for the console; the device-code flow for the CLI (`loam login --issuer <url>`), which polls Authentik, then exchanges at Loam's token endpoint and stores the Loam refresh state the way §30 stores credentials.
+**Produces:** authorization code with PKCE (S256) and `state` and `nonce` checks for the console; the device-code flow for the CLI (`loams login --issuer <url>`), which polls Authentik, then exchanges at Loam's token endpoint and stores the Loam refresh state the way §30 stores credentials.
 
 **Tests:** `callback_is_in_openapi_and_mock` (the contract test covers both operations); `pkce_s256_required`; `state_mismatch_rejected`; `nonce_replay_rejected`; `device_code_bound_to_loam_cli_client`; `cli_login_end_to_end` (compose stack, headless approval through Authentik's flow executor API).
 

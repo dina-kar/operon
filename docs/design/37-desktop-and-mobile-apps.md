@@ -11,7 +11,7 @@ This document turns that direction into decisions **D420–D439** and open quest
 
 Markers: **(verified 2026-10-01)** means checked against a primary source on that date (§17). **(verify)** means the plan that builds it checks it first. **(estimate)** means computed, not measured. Paths of the form `harness-desktop/…` point into `dina-kar/deepseek-harness-desktop` at `2d1b505` (2026-08-15); `harness-mobile/…` into `dina-kar/deepseek-harness-mobile` at `68b6c2f`.
 
-**Naming.** This document writes `loams` for the CLI binary and `@loams/*` for npm packages, following the owner's 2026-10-01 namespace ruling. §30 writes `loam` and `loamdb` (D33); the binary name is still §30's Q284. Until D33's rename PR, everything builds under the working names (`operon`, `@loam/console`, `@loam/ui`).
+**Naming.** This document writes `loams` for the CLI binary and `@loams/*` for npm packages, following the owner's namespace rulings (D400, D401; the binary `loams` answers §30's Q284). Until D33's rename PR, everything builds under the working names (`operon`, `@loam/console`, `@loam/ui`).
 
 ---
 
@@ -275,7 +275,7 @@ The integrations of the other designs land as plugins in these slots:
 | §30 CLI | `@loams/plugin-stacks` (desktop), `@loams/plugin-mcp` (desktop: `loams mcp install --agent …` through the CLI bridge); `@loams/plugin-cli-hints` (browser: copyable commands) | `console.page`, `palette.command` | `platform.stacks` (desktop only) |
 | §32 Flow | `@loams/plugin-flow` | `console.page` (routes, lag, DLQ), `flow.step.editor` | `rpc.flow` |
 | §33 connectors | `@loams/plugin-connectors` | `console.page` (catalog, instances), `connector.config` | `rpc.flow` (`ListConnectors`, `DescribeConnector`, `ValidateRoute`) |
-| §34 gateway | `@loams/plugin-gateway` | `console.page` (adapters, partner records, Q374) | its service once §34 defines one |
+| §34 gateway (moved to `loam-platform`, private, D440) | a private plugin, not designed here | `console.page` | `loam-platform` |
 | §21 durable | `@loams/plugin-durable` | `console.page` (operations, runs), `operation.detail` | `rpc.operations` |
 | §19 identity | `@loams/plugin-identity`, `-agents`, `-keys`, `-audit` | today's console pages, moved into plugins | `api` |
 | §37 approvals and devices | `@loams/plugin-approvals`, `@loams/plugin-devices` | `console.page`, `approval.renderer`, `shell.overlay` | `rpc.approvals`, `rpc.devices` |
@@ -319,7 +319,7 @@ D220 stands: everything a single organisation needs to self-host is open, and th
 
 | Set | Where it lives | Contents |
 |---|---|---|
-| `oss` | This repository: `web/apps/console/catalog/base.yml` | Shell, identity (org, teams, projects, environments, members), agents, keys, audit (the short-retention open audit of D221), collections, engine views, jobs, durable, live, flow, connectors, gateway, approvals, devices, plugins management |
+| `oss` | This repository: `web/apps/console/catalog/base.yml` | Shell, identity (org, teams, projects, environments, members), agents, keys, audit (the short-retention open audit of D221), collections, engine views, jobs, durable, live, flow, connectors, approvals, devices, plugins management |
 | `desktop` | This repository: `web/apps/desktop/catalog/desktop.patch.yml` | `oss` + `platform-tauri`, stacks, MCP install, desktop notifications, updates |
 | hosted | The private repositories (not designed here) | `oss` + private plugins, built by the private repositories' CI from this repository's published host and plugins |
 
@@ -575,7 +575,7 @@ Package names stay `loam.*` to match `loam.live.v1` and `loam.stream.v1`; whethe
 **Recommendation: desktop and console in this repository; both phone apps in one new repository, `ostrium-labs/loams-mobile`.**
 
 ```
-ostrium-labs/loam (this repository)
+ostrium-labs/loams (this repository)
 ├── proto/loam/{instance,devices,approvals,operations,notifications,errors}/v1/   (AP0)
 ├── crates/operon-apps-mock/                       (AP0; scenarios shared by every app)
 ├── crates/loams-push/                             (AP4, not yet planned)
@@ -587,7 +587,7 @@ ostrium-labs/loam (this repository)
 ostrium-labs/loams-mobile
 ├── android/  (core, proto, data, push, app, conformance)
 ├── ios/      (Packages/LoamsCore, LoamsProto, LoamsData; Loams app; LoamsNotificationService; LoamsConformance)
-├── conformance/proto-ref.lock                     (the loam git ref both apps generate from)
+├── conformance/proto-ref.lock                     (this repository's git ref both apps generate from)
 └── buf.gen.swift.yaml, buf.gen.kotlin.yaml        (copies of AP0's templates)
 ```
 
@@ -706,15 +706,15 @@ Order: AP0 first; AP1a and the two phone plans in parallel; AP1 after AP1a's hos
 | **§21 §6.5** (approve and reject over REST) | A shared approvals service with proofs | `loam.approvals.v1` (D435); the REST routes can remain as thin wrappers |
 | **D146** (operations over REST) | Streams of operations for apps | `loam.operations.v1` is the Connect face of the same state (D438) |
 | **D111** (no auth or TLS in M1; loopback listeners) | Phones need remote, authenticated instances | Phones are mock-only until the auth plan; desktop local stacks work on loopback now |
-| **D33** (`loamdb` packages; working names) and the owner's 2026-10-01 `loams` ruling | npm `@loams/*`, the binary `loams` | This document follows the ruling; the decision row that amends D33 belongs to whoever records the ruling (as §32's log notes) |
-| **§30** (the binary `loam`, Q284; `@loam/*` in Q283) | The desktop's sidecar is `loams` | Q284 decides the binary name; the desktop takes whatever the CLI ships |
+| **D33** (`loamdb` packages; working names) and the owner's 2026-10-01 `loams` ruling | npm `@loams/*`, the binary `loams` | This document follows the ruling, recorded as D400 (which amends D33) |
+| **§30** (the binary, Q284; the npm scope, Q283) | The desktop's sidecar is `loams` | Consistent: Q284 and Q283 were answered on 2026-10-02 (D401, D400); §30 now writes `loams` |
 | **§30 D294** (`self-update` refuses installs it did not make) | A desktop-provided binary on PATH | A new `install_method: "desktop"` that `self-update` refuses (D429) |
 | **§30 D289** (no destructive MCP tools) | The desktop's stacks page | Consistent: creation and deletion stay CLI commands in AP1 |
 | **D284** (no telemetry) | The apps | The apps send no telemetry by default (Q433) |
 | **D128** (one protobuf toolchain: buffa and connect-rust on the server, buf with protobuf-es for clients) | Swift and Kotlin clients | Extended, not changed: the same `buf` inputs gain Swift and Kotlin templates |
 | **§26 D206** (`loam.jobs.v1`, not on `main`) | Jobs screens | Feature-gated on `api_versions`; the apps ship before J1 |
 | **§19 §3** (`@loam/console`, `@loam/ui`) | `@loams/*` plugins | Renamed in D33's rename PR with everything else |
-| **§34 D364** (`dev.loam.` event and schema naming) | CloudEvents `io.loams.dev.*` per the owner's ruling | This document uses the ruling; §34 is out of step (its Q361) |
+| **§34 D364** (`dev.loam.` event and schema naming) | CloudEvents `io.loams.dev.*` per the owner's ruling | Consistent: Q361 was answered with `io.loams.dev.` (D402) and §34 D364 follows it |
 | **§19 P8** (no Node service beside the binary) | cordis | Only cordis's browser half is used; there is no Node host (§2.3) |
 | The harness itself: `cordis_define` (model-written plugins) | — | Not adopted (§2.3) |
 | The harness itself: `!!js` in `cordis.yml` | — | Forbidden in Loam catalogs (D423) |

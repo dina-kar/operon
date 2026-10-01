@@ -339,7 +339,7 @@ The exit report records throughput, p50/p99 ingest latency, end-to-end freshness
 
 ### Task 12: Documentation
 
-**Files:** `docs/guides/fabric/{index.md,ingest.md}`, `deploy/fabric/README.md`, `CHANGELOG.md`, `docs/plans/README.md` (the integrator adds the row; this task only updates the status if the row exists).
+**Files:** `docs/guides/fabric/{index.md,ingest.md}`, `deploy/fabric/README.md`, `CHANGELOG.md`, `docs/plans/README.md` (the FL1 row's status).
 
 **Semantics:** how to start the stack, provision a namespace, create a topic and a table, post events (curl examples for the three HTTP modes), read them from Iggy and Fluss, and see them in Iceberg; the dedup rules and limits; what is not in FL1 (auth, HA ingest owners, the House).
 

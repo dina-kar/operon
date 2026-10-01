@@ -550,7 +550,7 @@ Each phase is small stacked PRs. RT adds crates and CI jobs and changes no M-tra
 | D11 (Apache-2.0) | The chat dump's "router license AGPL or Apache" | Apache-2.0 (D318) |
 | D28 (seeded, not bit-exact simulation) | The chat dump's madsim/turmoil DST | D313 adds a bit-exact tier for sans-I/O code; D28 unchanged for the engine |
 | D153, MySQL half (§23 §6.3, N6: Loam's handshake-and-splice proxy) | D320: vtgate | Proposed amendment; the splice is the fallback for unsharded WeSQL only, and sharded MySQL waits for D317 |
-| §29 §7.2 ("the router follows the record") | With Vitess, the repoint is `TabletExternallyReparented` | Amended by D320 once §29 merges; noted for the integrator |
+| §29 §7.2 ("the router follows the record") | With Vitess, the repoint is `TabletExternallyReparented` | Amendment proposed by D320; a note is in §29 §7.2 |
 | §18 §5.8 ("Loam avoids cross-shard atomicity") | D306 enables PgDog 2PC for SQL databases | No conflict: §18 is about the retrieval engine's metadata; SQL databases opt in under D306's rule |
 | §18 §5.5 ("Loam never copies data") | SQL resharding copies rows | No conflict: D321 scopes §18 to the retrieval engine |
 | §20 §14 item 4 (the Elle-style checker in `operon-sim`'s checker module) | D314 puts it in `operon-detsim::checkers` | One implementation in `operon-detsim`, re-exported by `operon-sim` |

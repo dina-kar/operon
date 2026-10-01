@@ -1,6 +1,6 @@
 # 11 — Buy vs Build
 
-Status: **Approved** · research as of 2026-09-22 (Fluss and Resonate added 2026-09-24; revised 2026-09-25 after the architecture review: dependencies of the dropped Kafka, Bolt/Cypher and ClickHouse surfaces removed, metastore backends and ADBC added; AI data ecosystem integrations added the same day, §17, D51–D56; metastore backends, CI targets, RustFS and OpenFGA revised 2026-09-26, §18, D58–D70; FoundationDB dropped, OTLP and Kafka dependencies added the same day, D71–D74)
+Status: **Approved** · research as of 2026-09-22 (Fluss and Resonate added 2026-09-24; revised 2026-09-25 after the architecture review: dependencies of the dropped Kafka, Bolt/Cypher and ClickHouse surfaces removed, metastore backends and ADBC added; AI data ecosystem integrations added the same day, §17, D51–D56; metastore backends, CI targets, RustFS and OpenFGA revised 2026-09-26, §18, D58–D70; FoundationDB dropped, OTLP and Kafka dependencies added the same day, D71–D74; amended 2026-10-02: Apache Iggy becomes a companion (D405), Fluss proposed as one (D333), Loam Git's gitoxide and sccache rows, D394–D398)
 
 Rule: **buy (embed/fork) everything that is not the differentiator; build the serving layer that closed competitors keep closed.** Only Apache-2.0 / MIT / compatible permissive dependencies. No AGPL, BSL, SSPL or ELv2 code in the engine.
 
@@ -95,12 +95,12 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | Milvus 3.0 | Apache-2.0 (Go/C++) | Lake-native "external collections" over Lance/Iceberg/Parquet/Vortex; Woodpecker zero-disk WAL |
 | GreptimeDB, RisingWave (Hummock), InfluxDB 3 | Apache-2.0 | Stateless frontends + object-store engines + metasrv patterns |
 | Databend | Apache-2.0 + Elastic License 2.0 | Stateless warehouse on S3, meta-service on openraft (whose upstream it maintains). Since 2026 it has been repositioned as an "agent-ready" warehouse (analytics + full-text + vector search + sandboxed Python UDFs), which makes it a competitor for M1/M4 (see §12 risk 11). It is SQL-first, with no Qdrant/ES compatibility and no graph expansion |
-| Apache Fluss (incubating) | Apache-2.0 (Java) | Columnar (Arrow) log with projection pushdown, primary-key tables that emit changelogs with before images, union reads of fresh log + lakehouse, tiering to Iceberg/Paimon/Lance. Taken as ideas: `arrow` segment encoding (§02 §5) and changelog streams (§02 §8.1). Not embeddable (JVM, ZooKeeper, tablet-server disks); a competitor for M4/M5 (§12 risk 11). Its Rust client (`fluss-rust` 0.1) is a possible interop target, not a dependency |
+| Apache Fluss | Apache-2.0 (Java) | Columnar (Arrow) log with projection pushdown, primary-key tables that emit changelogs with before images, union reads of fresh log + lakehouse, tiering to Iceberg/Paimon/Lance. Taken as ideas: `arrow` segment encoding (§02 §5) and changelog streams (§02 §8.1). Not embeddable (JVM, ZooKeeper, tablet-server disks); a competitor for M4/M5 (§12 risk 11). Its Rust client, `fluss-rust` 0.1 in this row's original research, was a possible interop target, not a dependency; the Rust client current at Fluss 1.0.0 is `fluss-rs` 1.0.0 (§32 §3, checked 2026-10-01), used only in `fabric/` (D343). *Proposed 2026-10-01 (D333, §32):* Fluss 1.0 as the Event Fabric's real-time table layer, run as a companion beside Iggy; it graduated from incubation on 2026-07-16 |
 | Resonate specification | Apache-2.0 | Lean 4 executable abstract machine, TLA+ model, property catalogue and a trace checker that replays a real server's traffic against the model: a reference for M0.4's simulation and linearizability checks alongside Octopii |
 | Octopii | Apache-2.0 | Deterministic simulation of openraft clusters (simulated time and RNG, VFS fault injection, partitioned in-memory network, cluster oracle): the reference for M0.4's simulation harness. Not adopted: it vendors a modified openraft, is not on crates.io, has a single maintainer, and pulls in `protobuf` 2.x (RUSTSEC-2024-0437) |
 | DiskANN (Rust) | MIT | SSD-resident ANN for larger-than-RAM hot tier (Phase C evaluation) |
 | Vortex | Apache-2.0 (LF AI & Data) | Future local/hot encoding option |
-| Apache Iggy | Apache-2.0 | Thread-per-core io_uring design, VSR clustering, DST practices |
+| Apache Iggy | Apache-2.0 | Thread-per-core io_uring design, VSR clustering, DST practices. Also a companion since 2026-10-02 (§4, D405) |
 | MosaicML Streaming | Apache-2.0 | Elastic determinism (a seeded shuffle over canonical partitions, `num_canonical_nodes`) and mid-epoch resume: the model for `loamdb.torch`'s sampler (§17 §5.5) |
 | Sail (object-store shuffle) | Apache-2.0 | Stateless workers with blocking shuffle to object storage and checkpointing (0.7): a reference for M6's distributed shuffle |
 | TileDB | MIT (core) | Timestamped fragments and named retained snapshots (the idea behind dataset tags, D52); a tensor column type (Q19) |
@@ -117,6 +117,7 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | Spice | Apache-2.0 (Spice.ai Enterprise proprietary) | Federation and acceleration for agent apps, with Operon as a Flight SQL source (M1 gate, D56); also a competitor (§12 risk 11) | Flight SQL | Ships forks of DataFusion and arrow-rs (§5) |
 | Sail | Apache-2.0 (Rust) | Spark Connect compute for PySpark curation jobs: reads collections through `format("loam")` (M2) and tables through Iceberg REST (M4 gate, D55) | Python data source; Iceberg REST | DataFusion version lockstep (§5) |
 | Ray | Apache-2.0 | Distributed curation, embedding backfills and batch inference over collections (M2) | Scan plans + Lance fragments; Flight `DoPut` | Python compute cluster, run by the user |
+| Apache Iggy | Apache-2.0 (Rust) | The Event Fabric's ingest log and protocol edge beside the Loam WAL (owner ruling D405; §32 §5.2, D332), unmodified, server 0.9.0 | Iggy's SDKs and connectors runtime; the `loam_sink` and `fluss_sink` plugins (FL1) | A separate service by design; pre-1.0 wire protocol (D332) |
 
 Stream-processor companions (RisingWave, Arroyo, Flink) connect over the Kafka gateway in M5, which brings back the RisingWave integration (D22, D74). Before M5, RisingWave writes to Loam through its Elasticsearch, HTTP and Iceberg sinks (§02 §7.3).
 
@@ -124,14 +125,14 @@ Stream-processor companions (RisingWave, Arroyo, Flink) connect over the Kafka g
 
 | Component | Project | License | Role | Notes |
 |---|---|---|---|---|
-| Git objects and packs | **gitoxide** (`gix-*`) | Apache-2.0 / MIT | Pack parsing, indexes, protocol, SHA-1/SHA-256 | Server-side upload-pack/receive-pack not implemented upstream → build the server loop |
+| Git objects and packs | **gitoxide** (`gix-*`) | Apache-2.0 / MIT | Pack parsing, indexes, protocol, SHA-1/SHA-256 | Server-side upload-pack/receive-pack not implemented upstream → build the server loop. Pack encoding without delta compression and bitmap writing are also unchecked upstream (2026-10-01): repacking uses stock `git` as a process (D396) |
 | Lazy, deduplicated images | **nydus** (Dragonfly) | Apache-2.0 (Rust) | Environment images (RAFS v6 / EROFS), chunk dedup, lazy fetch | Verify its storage backend can use Operon's bucket or cache |
 | Chunking / hashing | fastcdc, BLAKE3 | MIT / Apache-2.0 | Content-defined chunks for the namespace CAS | — |
 | FUSE | fuser | MIT | Userspace mounts where virtiofs/EROFS are unavailable | — |
 | Code parsing | tree-sitter | MIT | Symbol chunks and code graphs | — |
 | MCP | Rust MCP SDK (`rmcp`) | Apache-2.0 | MCP server and gateway on the 2026-07-28 stateless spec | 3.4.1 supports 2026-07-28 (M1.6 plan; §1) |
 | Session parsing and pricing | **tokscale-core** (tokscale) | MIT (Rust) | Parse Claude Code, Codex, opencode (and ~30 other harnesses') session files into `token_usage` (§16 §6) | Library crate of the tokscale CLI; parity check against the CLI |
-| Build cache | sccache, bazel-remote | Apache-2.0 | Point at the bucket; no Operon code | — |
+| Build cache | sccache, bazel-remote | Apache-2.0 | sccache v0.18.0: direct S3/R2 path with no Loam code, or a Loam WebDAV gateway path for metering hooks, LRU and trust (D398) | — |
 | Sandbox runtimes | microsandbox (libkrun), Firecracker, Cloud Hypervisor, Kata, gVisor, E2B, Anthropic `sandbox-runtime`, Codex | Apache-2.0 | `operon-sandbox` backends: microsandbox (default), Firecracker (fleet), gVisor (Kubernetes without KVM), process (dev only) (§15 §8) | Integrated through a `Runtime` trait, never forked |
 | References | git-remote-object-store, awslabs/git-remote-s3, AgentFS, Jujutsu, mountpoint-s3, JuiceFS | Apache-2.0 / MIT | Designs to learn from | — |
 

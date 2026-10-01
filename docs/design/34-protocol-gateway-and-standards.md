@@ -1,6 +1,6 @@
 # 34 — The Standards Charter and the Narrow Waist (the protocol gateway moved)
 
-Status: **Stub** · 2026-10-02. The protocol gateway is a commercial component, designed in the private `loam-platform` repository (owner ruling of 2026-10-02: "move Cloudflare, OpenRTB etc. commercial to private repos"; [§38](38-knative-authentik-gitops.md) D440). The OpenRTB and Google adapters, the canonical `loam.rtb.v1` model, per-partner version negotiation, the bid hot path, match/merge for identity profiles, the ad-tech conformance suite and the plans GW1–GW4 left this repository with that ruling; D366–D371, D373, D377 and D379 are `loam-platform`'s now, under its own numbering. This repository does not depend on any of it. What stays is the vendor-neutral part that the open engine needs, kept below so that the decisions D360–D365, D372, D374, D375, D376 and D378 keep a home. They are still **proposals** until the owner rules on them (Q450 asks whether they get a document of their own).
+Status: **Stub** · 2026-10-02. The protocol gateway is a commercial component, designed in the private `loam-platform` repository (owner ruling of 2026-10-02: "move Cloudflare, OpenRTB etc. commercial to private repos"; [§38](38-knative-authentik-gitops.md) D440). The OpenRTB and Google adapters, the canonical `loam.rtb.v1` model, per-partner version negotiation, the bid hot path, match/merge for identity profiles, the ad-tech conformance suite and the plans GW1–GW4 left this repository for `loam-platform` (private) with that ruling; D366–D371, D373, D377 and D379 are `loam-platform`'s now, under its own numbering. This repository does not depend on any of it. What stays is the vendor-neutral part that the open engine needs, kept below so that the decisions D360–D365, D372, D374, D375, D376 and D378 keep a home. They are still **proposals** until the owner rules on them (Q450 asks whether they get a document of their own).
 
 ---
 
@@ -70,6 +70,6 @@ The `data` struct is derived at build time from the protobuf descriptor (scalars
 | Q368 | Iceberg v3 `timestamptz_ns` by M4, or the `time_ns` column (§4) | Eng | Event-table plan |
 | Q369 | Move `operon-stream-grpc` from tonic/prost to connect-rust/buffa (D128), and when | Eng | M2 stream API plan |
 | Q372 | Internal HTTP/3: the condition that enables it | Eng | Later |
-| Q450 | Give §1's decisions their own document, and split GW1's vendor-neutral tasks (`buf breaking`, the CloudEvents profile, the event Arrow mapping) into an open plan | Founder | Before GW1 starts in `loam-platform` |
+| Q450 | Give §1's decisions their own document, and split GW1's vendor-neutral tasks (`buf breaking`, the CloudEvents profile, the event Arrow mapping) into an open plan | Founder | Before GW1 starts in `loam-platform` (private) |
 
 Q360, Q363–Q365, Q370, Q371, Q373 and Q374 moved to `loam-platform` with the gateway and the Cloudflare runner.

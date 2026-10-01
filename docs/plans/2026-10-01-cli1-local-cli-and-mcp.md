@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists the interfaces it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (names, paths, flags, error codes, exit codes, file formats), use them verbatim. The code is not pre-written in this plan (M0.3 Ruling 1).
 
-> **Status: Planned** (2026-10-01). Track CLI (D298), beside M1 and tracks R and D. Branches `cli1-t<N>`, stacked; PRs target `main`. CLI1 adds one crate (`operon-cli`) and three server flags (Task 3), and changes no M1 code path beyond `crates/operon/src/main.rs` and the `Native` flag group. **Working names throughout (D33):** the binary is `operon` and every user-facing string says `operon`. The rename PR changes `operon` to `loam` in strings; the env-var prefix stays `LOAM_` from the start (Ruling 2). Nothing is published.
+> **Status: Planned** (2026-10-01). Track CLI (D298), beside M1 and tracks R and D. Branches `cli1-t<N>`, stacked; PRs target `main`. CLI1 adds one crate (`operon-cli`) and three server flags (Task 3), and changes no M1 code path beyond `crates/operon/src/main.rs` and the `Native` flag group. **Working names throughout (D33):** the binary is `operon` and every user-facing string says `operon`. The rename PR changes `operon` to `loams` in strings; the env-var prefix stays `LOAM_` from the start (Ruling 2). Nothing is published.
 
 **Goal:** Ship design §30's local half (D281–D285, D287–D291):
 - `operon-cli`: the client command groups flattened into the `operon` binary, with the output and exit-code contract (D283), `LOAM_HOME` and profiles (D284);
@@ -28,7 +28,7 @@
 
 **Spec:**
 - [`docs/design/30-loam-cli.md`](../design/30-loam-cli.md): all of it; §5 (tree), §6 (output), §7 (home), §8 (stacks), §10 (NVMe), §11 (secrets), §12 (MCP), §13 (docs).
-- [`docs/design/13-decision-log.md`](../design/13-decision-log.md) (after the integrator merges [`_pending/30-log.md`](../design/_pending/30-log.md)): D281–D291, D295, D298; D29, D33, D65, D111, D262, D-PG-1.
+- [`docs/design/13-decision-log.md`](../design/13-decision-log.md): D281–D291, D295, D298; D29, D33, D65, D111, D262, D-PG-1.
 - [`docs/plans/2026-09-24-m1.6-sdks-mcp.md`](2026-09-24-m1.6-sdks-mcp.md): Ruling 7 (protocol versions), Task 7 (the error shape `structured_error`), Ruling 19 (`--mcp-listen`), Task 9 (client configs).
 - [`docs/design/19-console-identity-and-agents.md`](../design/19-console-identity-and-agents.md) §5.5 (keys are not for agents).
 - [`docs/design/04-hot-tier.md`](../design/04-hot-tier.md) §1 (H1, H2); [`docs/design/10-operations.md`](../design/10-operations.md) §1, §2.
@@ -497,7 +497,7 @@ pub async fn serve_stdio(ctx: Context, project: Option<PathBuf>) -> Result<(), C
 Argument structs (`serde` + `schemars::JsonSchema`, `deny_unknown_fields`): `SearchDocsArgs { query: String, limit: Option<u8> /* 1..=20, default 5 */ }`; `SnippetArgs { engine: Engine, language: Language, task: Option<Task> }`; `StackStatusArgs { name: Option<String> }`; `StackCreateArgs { name: String, engines: Vec<String>, storage: Option<String> /* "dir:…" | "mount:…" */, start: Option<bool> /* true */, allow_download: Option<bool> /* false; CLI1 has no downloads → must be false or absent */ }`; `StackNameArgs { name: String }`; `EnvExportArgs { name: String, path: Option<String> /* ".env.loam" */, merge_into: Option<String> }`.
 
 **Semantics:** design §12.1 exactly.
-- `serverInfo` `{name: "loam", version: build.version}` (the rename changes nothing here: the server already says `loam`); instructions text: one paragraph telling the model that the stack's data tools are on the `loam-<stack>` server and that destructive actions are for the user to run.
+- `serverInfo` `{name: "loams", version: build.version}` (the rename changes nothing here: the server already says `loams`); instructions text: one paragraph telling the model that the stack's data tools are on the `loams-<stack>` server and that destructive actions are for the user to run.
 - Protocol versions as M1.6 Ruling 7 (stateless 2026-07-28 and legacy `initialize`); rmcp's stdio transport; no `Mcp-Session-Id` concept on stdio. Logging: a `tracing` subscriber to stderr at `warn` and to `<home>/logs/mcp.log` at `info` (never stdout).
 - Results: `CallToolResult::structured(json)`; errors `CallToolResult::structured_error({"error": code, "message", "hint"})` with design §6.3 codes; argument deserialization failures are rmcp `invalid_params`.
 - `stack_create`: Ruling 8's limits; `storage` with `nvme:` → `usage` ("only a person formats disks: ask the user to run `operon storage prepare`"); `allow_download: true` → `usage` in CLI1 (no downloads yet); object store forced `local`, metastore `embedded`; then the same `stack::create` + `start` path as the CLI; writes `.env.loam` per Ruling 7 using the server's `project`.
@@ -520,7 +520,7 @@ Argument structs (`serde` + `schemars::JsonSchema`, `deny_unknown_fields`): `Sea
 ```rust
 pub enum Agent { ClaudeCode, Codex, Cursor, Windsurf }
 pub enum Scope { User, Project, Local }   // Local only for claude-code
-pub struct Entry { pub name: String /* "loam" | "loam-<stack>" */, pub transport: Transport }
+pub struct Entry { pub name: String /* "loams" | "loams-<stack>" */, pub transport: Transport }
 pub enum Transport { Stdio { command: PathBuf, args: Vec<String> }, Http { url: String } }
 pub trait AgentConfig {
     fn cli(&self) -> Option<&'static str>;                                    // "claude" | "codex" | None
@@ -536,7 +536,7 @@ pub fn apply(ctx: &Context, plan: &InstallPlan, dry_run: bool) -> Result<Install
 ```
 
 **Semantics:** design §12.2 table and rules, Ruling 13.
-- Entries: `loam` → `Stdio { command: <abs current_exe>, args: ["mcp", "serve"] }` (plus `--stack <n>` when `--stack` is given); `loam-<stack>` → `Http { url: "http://127.0.0.1:<mcp>/mcp" }` when the stack has the `mcp` engine and `--no-data` is absent.
+- Entries: `loams` → `Stdio { command: <abs current_exe>, args: ["mcp", "serve"] }` (plus `--stack <n>` when `--stack` is given); `loams-<stack>` → `Http { url: "http://127.0.0.1:<mcp>/mcp" }` when the stack has the `mcp` engine and `--no-data` is absent.
 - File formats: Claude Code `.mcp.json` (stdio: `{"command", "args"}`; http: `{"type": "http", "url"}`); Codex TOML (`[mcp_servers.<name>]` with `command`/`args` or `url`); Cursor JSON (`{"type": "stdio", "command", "args"}`; http `{"url"}`); Windsurf JSON (`{"command", "args"}`; http `{"serverUrl"}`).
 - JSON edited with `serde_json` (`preserve_order`) as a `Value`; the file's top-level key order, every non-Loam entry and unknown top-level keys survive; indentation 2 spaces, trailing newline. TOML through `toml_edit::DocumentMut`, preserving comments. An input that does not parse → `config_unparseable` (exit 5), file untouched.
 - Before the first edit of a file: copy to `<file>.loam-backup` (only if no backup exists). Writes atomic, mode preserved (new files 0600 for user scope, 0644 for project scope).
@@ -550,7 +550,7 @@ pub fn apply(ctx: &Context, plan: &InstallPlan, dry_run: bool) -> Result<Install
 
 ### Task 11: `init`, the guide and the design amendments
 
-**Files:** `crates/operon-cli/src/init.rs`, `crates/operon/tests/cli/init.rs`, `docs/guides/cli.md`, `docs/guides/mcp.md` (cross-link; created by M1.6 Task 9, or created here as a stub if M1.6 has not merged), `docs/design/30-loam-cli.md` (status of §19's CLI1 row; as-built notes), `docs/design/10-operations.md` (§1: a pointer to `operon stack` for laptops), `CHANGELOG.md`. The plans README and decision-log rows come from `docs/design/_pending/30-log.md` (the integrator). **PR size:** about 500 lines plus docs.
+**Files:** `crates/operon-cli/src/init.rs`, `crates/operon/tests/cli/init.rs`, `docs/guides/cli.md`, `docs/guides/mcp.md` (cross-link; created by M1.6 Task 9, or created here as a stub if M1.6 has not merged), `docs/design/30-loam-cli.md` (status of §19's CLI1 row; as-built notes), `docs/design/10-operations.md` (§1: a pointer to `operon stack` for laptops), `CHANGELOG.md`. The plans README and decision-log rows were integrated on 2026-10-02. **PR size:** about 500 lines plus docs.
 
 **Semantics:**
 - `init` (interactive): (1) profile `default` with `endpoint = "local"` if absent; (2) unless a stack exists, `stack create --name dev` with `--engines` chosen from a multi-select of available engines (default the registry's defaults) and storage `dir:` (if `storage inspect` finds an eligible, unmounted NVMe disk it prints the `sudo operon storage prepare …` line, never runs it); (3) `.env.loam` in the project directory if there is one; (4) detect agents (Ruling 13 and design §12.2) and offer `mcp install` for each. Non-interactive: `init --yes [--stack NAME] [--engines LIST] [--agent A]… [--no-agent] [--no-env]` does the same without prompts; with neither a TTY nor `--yes`, `confirmation_required`. Output: `{profile, stack: <describe>, env_file, agents: [<install report>]}`.

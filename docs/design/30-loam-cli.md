@@ -1,10 +1,10 @@
 # 30 — Loam CLI, Installer and Agent Bootstrap
 
-Status: **Proposed** · 2026-10-01. The direction is the owner's. On 2026-10-01 the owner asked to fold the first draft in `chatdump.md` (an earlier chat) into the design docs, the decision log and the plans. The direction from that draft is: a one-line installer (`curl -fsSL https://loams.dev/install.sh | sh`); one `loam` binary that is both the CLI and an MCP server (`loam mcp serve`); AWS-style commands (`configure`, `stack create|describe|list|delete`, `keys`, `env export`, `mcp install --agent …`, `pkg add`, `self-update`); prebuilt feature-set variants instead of building on the user's laptop; NVMe set up for the foyer cache; secrets kept out of agent transcripts by writing them to `.env.loam`; and cargo-dist for releases. This document turns that direction into decisions **D281–D299** and open questions **Q281–Q294**. Every choice that goes beyond the direction (names, formats, safety rules, phasing) is a **proposal** until the owner confirms it. **No code is written by this document.**
+Status: **Proposed** · 2026-10-01. The direction is the owner's. On 2026-10-01 the owner asked to fold the first draft in `chatdump.md` (an earlier chat) into the design docs, the decision log and the plans. The direction from that draft is: a one-line installer (`curl -fsSL https://loams.dev/install.sh | sh`); one `loams` binary that is both the CLI and an MCP server (`loams mcp serve`); AWS-style commands (`configure`, `stack create|describe|list|delete`, `keys`, `env export`, `mcp install --agent …`, `pkg add`, `self-update`); prebuilt feature-set variants instead of building on the user's laptop; NVMe set up for the foyer cache; secrets kept out of agent transcripts by writing them to `.env.loam`; and cargo-dist for releases. This document turns that direction into decisions **D281–D299** and open questions **Q281–Q294**. Every choice that goes beyond the direction (names, formats, safety rules, phasing) is a **proposal** until the owner confirms it. **No code is written by this document.**
 
 Markers: **(verified 2026-10-01)** means checked against a primary source on that date (§23 lists the sources). **(verify)** means the plan that builds it checks it first. **(estimate)** means computed, not measured. Paths of the form `crates/…` point at `main` at `9eaddae` (2026-10-01).
 
-**Naming.** This document writes `loam`, the product name from D33. Until D33's rename PR, the binary is `operon` and the new crate is `operon-cli`. The CLI1 plan builds everything under those working names, and the rename PR renames them along with everything else. Nothing is published before the rename (D33).
+**Naming.** This document writes `loams` for the binary and its commands, following the owner's rulings of 2026-10-01 and 2026-10-02 (D400, D401, D406): the binary is `loams` (answering Q284), packages are `loams` on crates.io, PyPI and npm (scope `@loams`; `loamdb` from D33 is superseded), Go modules are `loams.dev/...`, the domain is `loams.dev` and the repository becomes `ostrium-labs/loams`. Crate names after the rename (`loams`, `loams-server`, `loams-cli`) follow the same namespace. The rulings do not cover the local state directory and environment variables, so `LOAM_HOME` (default `~/.loam`), the `LOAM_*` variables and `.env.loam` keep their spelling here. Until D33's rename PR, the binary is `operon` and the new crate is `operon-cli`. The CLI1 plan builds everything under those working names, and the rename PR renames them along with everything else. Nothing is published before the rename (D33).
 
 ---
 
@@ -12,22 +12,22 @@ Markers: **(verified 2026-10-01)** means checked against a primary source on tha
 
 | # | Decision | Status |
 |---|---|---|
-| D281 | **One binary.** The `loam` binary holds the server commands (today's `operon dev`, `standalone`, `cluster`, `warm`, `durable`, unchanged), the client CLI and a stdio MCP server. The client CLI is a new library crate, `operon-cli`, with one module per command group, flattened into the binary's clap tree. It is not one crate per group (§4) | Proposed |
-| D282 | **The command tree is `loam <group> <verb>`**, in the AWS CLI's shape, with one set of flag names across every group (§5) | Proposed |
+| D281 | **One binary.** The `loams` binary holds the server commands (today's `operon dev`, `standalone`, `cluster`, `warm`, `durable`, unchanged), the client CLI and a stdio MCP server. The client CLI is a new library crate, `operon-cli`, with one module per command group, flattened into the binary's clap tree. It is not one crate per group (§4) | Proposed |
+| D282 | **The command tree is `loams <group> <verb>`**, in the AWS CLI's shape, with one set of flag names across every group (§5) | Proposed |
 | D283 | **An output and exit-code contract.** `--output table\|json\|text` (default `table`, also set by `LOAM_OUTPUT` or the profile). In `json` mode stdout holds exactly one JSON document and errors go to stderr as one JSON object. There are ten stable exit codes (0–9, plus 130) and stable snake_case error codes. Prompts never appear without a TTY. Destructive commands need `--yes` (§6) | Proposed |
 | D284 | **Local state lives in `LOAM_HOME`** (default `~/.loam`): `bin/`, `config.toml` (profiles), `credentials.toml` (0600), `stacks/<name>/`, `variants/`, `receipt.json`. **The CLI sends no telemetry.** The only automatic network call is a daily update check, which can be turned off and never runs in `json` mode or under `mcp serve` (§7) | Proposed |
 | D285 | **A stack is a supervised local server process**, described by `stack.toml`. An **engine registry** maps each engine to a cargo feature, server flags, a port and environment variables (§8.2). Engines that were not asked for are switched off with the server's existing `--no-*` flags. **`pg` is the Postgres wire over collections** (D-PG-1, analytics). **`postgres` is OLTP Postgres, a companion service (D299)**, and is the only engine that sets `DATABASE_URL` (§8) | Proposed |
 | D286 | **Prebuilt variants, not builds on the user's machine.** There are two server variants, `standard` and `full`, plus a client-only `cli` variant once the server split lands (D297). Release targets are Linux x86_64 and aarch64 (glibc ≥ 2.35) and macOS aarch64. `failpoints`, `cluster-tests` and `durable-mysql` are never in a variant. If the installed variant lacks an engine, `stack create` downloads the smallest variant that has it. `--from-source` is a documented escape hatch (§9) | Proposed |
-| D287 | **NVMe without a privileged helper.** `loam storage inspect` reads the device (read-only). `sudo loam storage prepare --device … --yes` formats (ext4), mounts by UUID, writes the fstab line and hands the mount to the user. Without root, `stack create --storage nvme:/dev/…` prints the exact `sudo` command and exits 3. The H1 range cache (foyer) and the hot tier are placed on the mount through **new server flags `--cache-dir`, `--cache-disk-bytes` and `--cache-ram-bytes`** (§10) | Proposed |
+| D287 | **NVMe without a privileged helper.** `loams storage inspect` reads the device (read-only). `sudo loams storage prepare --device … --yes` formats (ext4), mounts by UUID, writes the fstab line and hands the mount to the user. Without root, `stack create --storage nvme:/dev/…` prints the exact `sudo` command and exits 3. The H1 range cache (foyer) and the hot tier are placed on the mount through **new server flags `--cache-dir`, `--cache-disk-bytes` and `--cache-ram-bytes`** (§10) | Proposed |
 | D288 | **Secrets never pass through MCP.** Credentials are written to `.env.loam` (mode 0600, added to `.gitignore`) and a tool returns only names and redacted values. A `Secret` type has no `Serialize` and a redacted `Debug`. A canary test calls every tool and asserts the secret never appears. The credential variable is `LOAM_API_KEY`, the whole `loam_<key_id>_<secret>` token (D65), not a separate `LOAM_KEY_SECRET` (§11) | Proposed |
-| D289 | **`loam mcp serve` is a stdio bootstrap server**: `search_docs`, `get_sdk_snippet`, `loam_info`, `stack_status`, `stack_create`, `stack_start`, `env_export` and `add_package` (CLI2). **The data tools stay on the stack's own MCP endpoint** (M1.6, `127.0.0.1:8083/mcp`, D111), so they are not proxied. No tool deletes, stops, formats, mints keys or updates the binary. File writes stay inside the project directory, packages come from an allow-list, and downloads need explicit consent (§12.1) | Proposed |
-| D290 | **`loam mcp install --agent claude-code\|codex\|cursor\|windsurf`** uses the agent's own CLI when it is on `PATH` (`claude mcp add`, `codex mcp add`) and otherwise edits the agent's config file in place. It always writes an absolute binary path, never touches entries it did not write, backs the file up before the first edit, refuses to edit a file it cannot parse, and has a `--dry-run` mode. It registers two entries: `loam` (stdio) and `loam-<stack>` (HTTP, the data tools) (§12.2) | Proposed |
-| D291 | **The docs and SDK snippets are embedded in the binary**, built from `docs/guides/**` and a new `docs/snippets/**` tree. CI runs every snippet against `loam dev`. `search_docs` searches them with an in-memory Tantivy index. The docs therefore always match the installed binary, and the MCP server reports its version in `serverInfo` and `loam_info` (§13) | Proposed |
-| D292 | **The release pipeline is cargo-dist 0.33** (MIT OR Apache-2.0, verified 2026-10-01). It produces GitHub Releases on `ostrium-labs/loam`, SHA-256 checksums and GitHub artifact attestations (SLSA provenance), plus **a minisign-signed release manifest**, `loam-release.json`. Nothing is published before D33's rename and the move to `ostrium-labs` (§17.1) | Proposed |
-| D293 | **`https://loams.dev/install.sh` is a thin POSIX `sh` script** that Loam owns, published as a release asset. `loams.dev` redirects to it. The script detects the platform, picks the variant, downloads the archive, verifies its SHA-256 (and the minisign signature when `minisign` is installed), installs to `~/.loam/bin`, writes a receipt, updates `PATH`, and offers to run `loam init` (§17.2) | Proposed |
-| D294 | **`loam self-update`** fetches the signed manifest, verifies it with the public keys embedded in the binary, checks the archive's SHA-256, smoke-tests the new binary, replaces itself atomically (`self-replace`), keeps the previous binary for `--rollback`, and never restarts stacks. It refuses installs it did not make, such as `cargo install` or a package manager (§17.3) | Proposed |
-| D295 | **Keys, login and agents follow §19, after the unified auth plan (D111, Q30).** Keys are API keys scoped to one environment, for apps and service accounts. **Agents never receive keys** (§19 §5.5). In CLI3, `loam mcp serve` acts as an agent principal with short-lived, vended tokens (§19 P5, P6). Until then, `keys` and `login` exit 6 (`unsupported`) and `.env.loam` holds endpoints only (§15) | Proposed |
-| D296 | **`loam pkg add` resolves logical names** (`sdk`, `bullmq`, `celery`, `durable`, `live`) to the registry names D33 sets (`loamdb` on npm, PyPI and crates.io). It pins the version that matches the CLI, finds the project's package manager from its lockfile, and refuses anything outside the allow-list when it is called from MCP (§14) | Proposed |
+| D289 | **`loams mcp serve` is a stdio bootstrap server**: `search_docs`, `get_sdk_snippet`, `loam_info`, `stack_status`, `stack_create`, `stack_start`, `env_export` and `add_package` (CLI2). **The data tools stay on the stack's own MCP endpoint** (M1.6, `127.0.0.1:8083/mcp`, D111), so they are not proxied. No tool deletes, stops, formats, mints keys or updates the binary. File writes stay inside the project directory, packages come from an allow-list, and downloads need explicit consent (§12.1) | Proposed |
+| D290 | **`loams mcp install --agent claude-code\|codex\|cursor\|windsurf`** uses the agent's own CLI when it is on `PATH` (`claude mcp add`, `codex mcp add`) and otherwise edits the agent's config file in place. It always writes an absolute binary path, never touches entries it did not write, backs the file up before the first edit, refuses to edit a file it cannot parse, and has a `--dry-run` mode. It registers two entries: `loams` (stdio) and `loams-<stack>` (HTTP, the data tools) (§12.2) | Proposed |
+| D291 | **The docs and SDK snippets are embedded in the binary**, built from `docs/guides/**` and a new `docs/snippets/**` tree. CI runs every snippet against `loams dev`. `search_docs` searches them with an in-memory Tantivy index. The docs therefore always match the installed binary, and the MCP server reports its version in `serverInfo` and `loam_info` (§13) | Proposed |
+| D292 | **The release pipeline is cargo-dist 0.33** (MIT OR Apache-2.0, verified 2026-10-01). It produces GitHub Releases on `ostrium-labs/loams`, SHA-256 checksums and GitHub artifact attestations (SLSA provenance), plus **a minisign-signed release manifest**, `loams-release.json`. Nothing is published before D33's rename and the move to `ostrium-labs` (§17.1) | Proposed |
+| D293 | **`https://loams.dev/install.sh` is a thin POSIX `sh` script** that Loam owns, published as a release asset. `loams.dev` redirects to it. The script detects the platform, picks the variant, downloads the archive, verifies its SHA-256 (and the minisign signature when `minisign` is installed), installs to `~/.loam/bin`, writes a receipt, updates `PATH`, and offers to run `loams init` (§17.2) | Proposed |
+| D294 | **`loams self-update`** fetches the signed manifest, verifies it with the public keys embedded in the binary, checks the archive's SHA-256, smoke-tests the new binary, replaces itself atomically (`self-replace`), keeps the previous binary for `--rollback`, and never restarts stacks. It refuses installs it did not make, such as `cargo install` or a package manager (§17.3) | Proposed |
+| D295 | **Keys, login and agents follow §19, after the unified auth plan (D111, Q30).** Keys are API keys scoped to one environment, for apps and service accounts. **Agents never receive keys** (§19 §5.5). In CLI3, `loams mcp serve` acts as an agent principal with short-lived, vended tokens (§19 P5, P6). Until then, `keys` and `login` exit 6 (`unsupported`) and `.env.loam` holds endpoints only (§15) | Proposed |
+| D296 | **`loams pkg add` resolves logical names** (`sdk`, `bullmq`, `celery`, `durable`, `live`) to the registry names of the 2026-10-02 ruling (`loams` on npm, PyPI and crates.io, the `@loams` npm scope; D400, which supersedes D33's `loamdb`). It pins the version that matches the CLI, finds the project's package manager from its lockfile, and refuses anything outside the allow-list when it is called from MCP (§14) | Proposed |
 | D297 | **The server split.** The server library moves from `crates/operon` into a new `operon-server` crate. `crates/operon` keeps the binary, with `operon-server` behind a default feature `server`, and re-exports it so tests are unchanged. This makes the `cli` variant possible. It lands in the PR after D33's rename, in CLI2 (§4.2) | Proposed |
 | D298 | **Track CLI, in three plans.** CLI1: the local CLI and the stdio MCP server, under the working name. CLI2: the release pipeline, variants, the installer, self-update, the server split and `pkg add`, at or after the rename. CLI3: keys, login, agent tokens, companions and cloud stacks, after the unified auth plan (§19) | Proposed |
 | D299 | **Companion services**: `postgres` (Postgres 17 in a container for local stacks; Loam Postgres images once track P publishes them, D231), `tikv` (the pinned tiup playground that R1 uses), and `rustfs` (the RustFS container, D61). They run through a container runtime the CLI detects (Docker or Podman). They are never linked or bundled into the binary (§16) | Proposed |
@@ -36,7 +36,7 @@ Markers: **(verified 2026-10-01)** means checked against a primary source on tha
 
 ### 2.1 Goals
 
-1. **Paste one command and get a working stack.** After `curl … | sh` and `loam init`, a laptop runs Loam with the Qdrant, Elasticsearch, Flight SQL and MCP surfaces, has a `.env.loam` its app can read, and has its coding agent connected. No compiler is needed.
+1. **Paste one command and get a working stack.** After `curl … | sh` and `loams init`, a laptop runs Loam with the Qdrant, Elasticsearch, Flight SQL and MCP surfaces, has a `.env.loam` its app can read, and has its coding agent connected. No compiler is needed.
 2. **Agents can drive it.** Every command has a stable JSON output and a stable exit code, so a model that already knows `aws <service> <verb>` can chain commands. The bootstrap MCP tools let an agent read the docs, provision a local stack and install the SDK itself.
 3. **Credentials stay out of transcripts.** No tool output, error, log line or JSON document that an agent can read contains a secret.
 4. **One artifact per platform and variant**, with checksums, provenance and a signature, and a self-update that verifies all three.
@@ -55,15 +55,15 @@ Markers: **(verified 2026-10-01)** means checked against a primary source on tha
 
 | Existing | What it is today | What this document does with it |
 |---|---|---|
-| The `operon` binary (`crates/operon/src/main.rs`) | clap 4 derive. Subcommands `dev`, `standalone`, `cluster`, `warm` and `durable migrate`. Listener flags are in the shared `Native` group (`--flight-sql-listen`, `--no-qdrant`, `--es-listen`, `--pg-listen`, `--durable-listen`, …) | Kept unchanged as top-level commands, so CI, the crash gate and every plan that runs `operon dev` keep working. The client groups are added beside them (D281). A local stack runs `loam dev` or `loam standalone` with flags the engine registry generates (D285) |
+| The `operon` binary (`crates/operon/src/main.rs`) | clap 4 derive. Subcommands `dev`, `standalone`, `cluster`, `warm` and `durable migrate`. Listener flags are in the shared `Native` group (`--flight-sql-listen`, `--no-qdrant`, `--es-listen`, `--pg-listen`, `--durable-listen`, …) | Kept unchanged as top-level commands, so CI, the crash gate and every plan that runs `operon dev` keep working. The client groups are added beside them (D281). A local stack runs `loams dev` or `loams standalone` with flags the engine registry generates (D285) |
 | Cargo features of `operon` | `default = ["es", "flight", "hnsw", "qdrant"]`. Opt-in: `tikv`, `durable` (D262), `durable-tikv`, `durable-mysql` (legacy, D260), `pgwire`, `mysql-wire`, `stream-grpc`, `failpoints`, `cluster-tests`. Planned: `mcp` (M1.6, default on), `live` (R1 Task 12), `console` (§19), `jobs` (§26) | The feature matrix and the variants (D286, §9) |
-| M1.6's MCP server (`operon-mcp`, planned) | HTTP, stateless MCP 2026-07-28 on its own listener `127.0.0.1:8083` (D111, M1.6 Ruling 19). Five data tools: `search`, `sql`, `memory_write`, `list_collections`, `get_documents` | Unchanged. It is the stack's data endpoint. `mcp install` registers it as `loam-<stack>` next to the stdio bootstrap server (D289, D290). Both use rmcp |
+| M1.6's MCP server (`operon-mcp`, planned) | HTTP, stateless MCP 2026-07-28 on its own listener `127.0.0.1:8083` (D111, M1.6 Ruling 19). Five data tools: `search`, `sql`, `memory_write`, `list_collections`, `get_documents` | Unchanged. It is the stack's data endpoint. `mcp install` registers it as `loams-<stack>` next to the stdio bootstrap server (D289, D290). Both use rmcp |
 | "Your existing docs MCP server" (in the chat dump) | **Does not exist.** Neither this repository nor `loam-cloud` has one (checked 2026-10-01) | Replaced by the embedded docs bundle and `search_docs` (D291) |
 | §19 console and identity | API keys scoped to one environment, which "cannot be issued to agents" (§5.5). Agents are principals with short-lived tokens obtained by federation, delegation or vending (P5, P6) | Keys belong to apps. The agent path uses vending (D295, CLI3) |
 | §10 operations | Deployment modes `dev`, `standalone` and `cluster`. M1 has no config file; flags only (§10 §2) | `stack.toml` is the CLI's own record. It is translated into flags, and the server never reads it (§8.1) |
 | §04 hot tier | H1 is a foyer RAM and NVMe range cache (`operon-cache::RangeCacheConfig { memory_bytes, disk: Option<DiskConfig> }`). H2 is the hot tier (`--hot-dir`, `--hot-nvme-bytes`, `--hot-ram-bytes`). **No flag sets H1's disk tier today**, so `operon dev` caches 256 MiB in RAM only | D287 adds the H1 flags, and NVMe setup points H1 and H2 at the mount |
 | D111 | No auth or TLS in M1; new gateways bind loopback | Local stacks bind loopback. `keys` waits for the auth plan (D295) |
-| D33 | Renamed Loam (`loamdb`) after M1; M1 publishes nothing | CLI1 is built under the working names. Releases start after the rename (D292) |
+| D33 | Renamed Loam (`loamdb`, superseded by `loams` in D400) after M1; M1 publishes nothing | CLI1 is built under the working names. Releases start after the rename (D292) |
 
 ## 4. The binary and its crates (D281, D297)
 
@@ -96,14 +96,14 @@ The `cli` variant needs a binary that does not link the engine. Today `crates/op
 
 - `[features] default = ["server", …]`, with `server = ["dep:operon-server"]` and every engine feature forwarded (`es = ["server", "operon-server/es"]`, …);
 - `lib.rs`: `#[cfg(feature = "server")] pub use operon_server::*;`, so `crates/operon/tests/**` (which use `operon::{Server, ServerConfig}` and `CARGO_BIN_EXE_operon`) do not change;
-- `main.rs`: the server subcommands behind `#[cfg(feature = "server")]`. Without the feature, `loam dev` exits 6 with `this is the cli variant; install the standard variant: loam self-update --variant standard`.
+- `main.rs`: the server subcommands behind `#[cfg(feature = "server")]`. Without the feature, `loams dev` exits 6 with `this is the cli variant; install the standard variant: loams self-update --variant standard`.
 
 The split is mechanical but touches every in-flight `crates/operon` branch (pg, mysql_wire, durable). It therefore lands right after D33's rename PR, which already invalidates every branch, and not in CLI1.
 
 ## 5. The command tree (D282)
 
 ```
-loam [--output table|json|text] [--profile NAME] [--no-input] [--quiet] [-v…] [--color auto|always|never]
+loams [--output table|json|text] [--profile NAME] [--no-input] [--quiet] [-v…] [--color auto|always|never]
 ├── init                         [--yes] [--stack NAME] [--engines LIST] [--agent AGENT…] [--no-agent] [--no-env]
 ├── configure                    (interactive: endpoint, default stack, output)
 │   ├── get KEY | set KEY VALUE | unset KEY | list
@@ -155,7 +155,7 @@ Rules shared by every group:
 | Names | Kebab-case flags. One spelling for each concept: `--name` is the stack in `stack *`, and `--stack` is the stack everywhere else. `--yes` confirms. `--dry-run` writes nothing. `--output` sets the format. A list value is a comma-separated string (`--engines qdrant,es`). A duration is humantime (`30s`, `90d`) |
 | Default stack | `--stack` defaults to the profile's `default_stack`. That is the first stack created, unless `configure set default_stack` changes it |
 | Aliases | `es` = `elasticsearch`. `raft` = `embedded` (the dev metastore is single-node openraft, §10 §1). `ls` = `list`. `rm` = `delete`. There are no other aliases |
-| Help | Every command has a one-line `about` and an example in `long_about`. `loam help <cmd>` and `-h` behave as clap's do |
+| Help | Every command has a one-line `about` and an example in `long_about`. `loams help <cmd>` and `-h` behave as clap's do |
 | Server commands | `dev`, `standalone` and the others stay exactly as they are. The CLI never adds client flags to them |
 
 ## 6. Output, errors and exit codes (D283)
@@ -169,14 +169,14 @@ Rules shared by every group:
 - **Commands that emit a file format** (`env export`, `completions`) emit that format unless `--output json` is given explicitly. With `--output json`, `env export` returns `{"stack", "path", "variables": {...}}`. With `--output json`, `completions` returns `{"shell", "script"}`, where `script` is the generated completion text as one JSON string.
 - **`mcp serve` always writes JSON-RPC to stdout** (§12.1). `--output` does not change its transport. A startup error before the transport opens follows §6.2.
 
-Every JSON output type derives `schemars::JsonSchema`. The schemas are snapshotted in `crates/operon-cli/tests/schemas/*.json` and a test fails on any change that is not additive. `loam version --output json` reports `"output_schema": 1`, which is bumped only by a breaking change, announced one minor release ahead.
+Every JSON output type derives `schemars::JsonSchema`. The schemas are snapshotted in `crates/operon-cli/tests/schemas/*.json` and a test fails on any change that is not additive. `loams version --output json` reports `"output_schema": 1`, which is bumped only by a breaking change, announced one minor release ahead.
 
 ### 6.2 Errors
 
 In `json` mode an error is one object on **stderr**, stdout is empty, and the exit code is set:
 
 ```json
-{"error": {"code": "stack_not_found", "message": "no stack named `dev`", "hint": "run `loam stack list`", "exit_code": 4, "details": {"name": "dev"}}}
+{"error": {"code": "stack_not_found", "message": "no stack named `dev`", "hint": "run `loams stack list`", "exit_code": 4, "details": {"name": "dev"}}}
 ```
 
 In `table` and `text` modes the same error prints as `error: <message>` and `hint: <hint>` on stderr.
@@ -207,13 +207,13 @@ In `table` and `text` modes the same error prints as `error: <message>` and `hin
 
 ```
 $LOAM_HOME (default ~/.loam; mode 0700)
-├── bin/loam                        # the installed binary (install.sh, self-update)
-├── bin/loam.prev                   # the previous binary, kept by self-update for --rollback
+├── bin/loams                       # the installed binary (install.sh, self-update)
+├── bin/loams.prev                   # the previous binary, kept by self-update for --rollback
 ├── env  env.fish                   # PATH snippets, sourced from shell rc files
 ├── receipt.json                    # {version, variant, target, installed_at, install_method: "install.sh", source_url}
 ├── config.toml                     # profiles (no secrets)
 ├── credentials.toml                # 0600; CLI3: login tokens per profile
-├── variants/<version>/<variant>/loam   # downloaded server variants (D286)
+├── variants/<version>/<variant>/loams  # downloaded server variants (D286)
 ├── cache/update-check.json         # {checked_at, latest}
 ├── mcp-installs.json               # what `mcp install` wrote, and where (D290)
 └── stacks/<name>/
@@ -236,7 +236,7 @@ update_check = true
 ```
 
 - **Writes are atomic**: write a temp file in the same directory, `fsync`, then `rename`. Secret files are created with mode 0600 before anything is written to them.
-- **The update check** happens at most once a day, in the background of an ordinary command. It reads the release manifest (§17.1) and prints `a newer loam (0.5.0) is available: loam self-update` on stderr in `table` mode only. It never runs in `json` mode, under `mcp serve`, with `CI=true`, or with `LOAM_NO_UPDATE_CHECK=1` or `update_check = false`. It sends no identifiers beyond what an HTTP GET of a public file carries.
+- **The update check** happens at most once a day, in the background of an ordinary command. It reads the release manifest (§17.1) and prints `a newer loams (0.5.0) is available: loams self-update` on stderr in `table` mode only. It never runs in `json` mode, under `mcp serve`, with `CI=true`, or with `LOAM_NO_UPDATE_CHECK=1` or `update_check = false`. It sends no identifiers beyond what an HTTP GET of a public file carries.
 
 ## 8. Stacks (D285)
 
@@ -247,7 +247,7 @@ update_check = true
 name = "dev"
 version = "0.4.0"                 # the binary version that created it
 variant = "standard"
-binary = "/home/u/.loam/bin/loam" # or ~/.loam/variants/0.4.0/full/loam
+binary = "/home/u/.loam/bin/loams" # or ~/.loam/variants/0.4.0/full/loams
 engines = ["native", "flight-sql", "mcp", "qdrant", "es"]
 metastore = "embedded"            # embedded | tikv://<pd-hosts>/<keyspace>
 object_store = "local"            # local | s3://… | gs://… | az://… | file:///…
@@ -274,14 +274,14 @@ es = 9200
 The server never reads `stack.toml`. **`stack run` translates it into the server's command line**, for example:
 
 ```
-loam dev --data-dir ~/.loam/stacks/dev/data --listen 127.0.0.1:8080 \
+loams dev --data-dir ~/.loam/stacks/dev/data --listen 127.0.0.1:8080 \
   --flight-sql-listen 127.0.0.1:8082 --mcp-listen 127.0.0.1:8083 \
   --qdrant-listen 127.0.0.1:6333 --qdrant-grpc-listen 127.0.0.1:6334 --es-listen 127.0.0.1:9200 \
   --no-durable --cache-dir ~/.loam/stacks/dev/cache --cache-ram-bytes 1073741824 \
   --hot-dir ~/.loam/stacks/dev/hot
 ```
 
-`object_store = "local"` runs `dev`. Anything else runs `standalone --bucket <url>`. **Every address the CLI generates is loopback** (D111). Exposing a local stack is outside the CLI: the operator runs `loam standalone` or `cluster` directly.
+`object_store = "local"` runs `dev`. Anything else runs `standalone --bucket <url>`. **Every address the CLI generates is loopback** (D111). Exposing a local stack is outside the CLI: the operator runs `loams standalone` or `cluster` directly.
 
 ### 8.2 The engine registry
 
@@ -311,7 +311,7 @@ loam dev --data-dir ~/.loam/stacks/dev/data --listen 127.0.0.1:8080 \
 ### 8.3 Lifecycle and the supervisor
 
 - **`stack create`** resolves the spec (variant, ports, storage) and writes `stack.toml`. Unless `--no-start` is given, it then runs `stack start`, writes `.env.loam` in the current project directory if there is one (§11.2), and prints the endpoints. It refuses an existing name (exit 5).
-- **`stack start`** takes the stack's `lock` and spawns `loam stack run --name <n>` detached: a new session (`setsid`), stdin from `/dev/null`, stdout and stderr appended to `logs/server.log`. It writes `server.pid`, then polls `GET http://<native>/ready` every 200 ms until it returns 200 or `--wait-timeout` passes. On timeout it exits 7 with the last 20 log lines in `details.log_tail`.
+- **`stack start`** takes the stack's `lock` and spawns `loams stack run --name <n>` detached: a new session (`setsid`), stdin from `/dev/null`, stdout and stderr appended to `logs/server.log`. It writes `server.pid`, then polls `GET http://<native>/ready` every 200 ms until it returns 200 or `--wait-timeout` passes. On timeout it exits 7 with the last 20 log lines in `details.log_tail`.
 - **`stack run`** is the foreground form. It execs the server binary with the generated flags, so systemd units, launchd plists and containers use the same command line. A `--service systemd|launchd` generator is a CLI2 follow-up (Q288).
 - **`stack stop`** sends SIGTERM to the process group, waits `--grace` (default 30 s, about the server's own `HTTP_GRACE` plus listener drains), then sends SIGKILL. It removes `server.pid`.
 - **`stack describe`** reports one of `running` (the pid is alive and `/ready` returns 200), `starting`, `unhealthy` (alive but not ready), `stopped` or `crashed` (a pid file whose process is gone). It also reports the endpoints, the variable names, the binary and its version, and `binary_outdated` if the stack's binary is older than the installed one.
@@ -320,7 +320,7 @@ loam dev --data-dir ~/.loam/stacks/dev/data --listen 127.0.0.1:8080 \
 
 ```json
 {"name": "dev", "state": "running", "pid": 41233, "version": "0.4.0", "variant": "standard",
- "binary": "/home/u/.loam/bin/loam", "binary_outdated": false, "metastore": "embedded", "object_store": "local",
+ "binary": "/home/u/.loam/bin/loams", "binary_outdated": false, "metastore": "embedded", "object_store": "local",
  "storage": {"kind": "nvme", "device": "/dev/nvme1n1", "path": "/mnt/loam-cache", "cache_disk_bytes": 858993459200},
  "engines": [
    {"engine": "qdrant", "endpoints": {"rest": "http://127.0.0.1:6333", "grpc": "http://127.0.0.1:6334"}, "env": ["QDRANT_URL", "QDRANT_GRPC_URL"]},
@@ -353,7 +353,7 @@ Building `operon` with release settings takes tens of minutes and several GB of 
 1. Compute the features the requested engines need (§8.2).
 2. If the running binary's compiled-in features (`env!`-baked by `build.rs` into `operon_cli::version::FEATURES`) cover them, the stack uses the running binary.
 3. Otherwise, take the smallest variant in the release manifest that covers them, at the same version as the running binary. If it is already in `variants/<version>/<variant>/`, use it. If not, download it with the self-update verification path (§17.3), with consent (`--allow-download`, or a prompt).
-4. If no variant covers them, exit 6 (`feature_not_in_variant`) and name the missing features. `--from-source` then runs `cargo install --locked --git https://github.com/ostrium-labs/loam --tag v<version> operon --no-default-features --features <list> --root ~/.loam/variants/<version>/src-<hash>/`, after warning about time and memory. It needs a Rust toolchain and is never chosen automatically.
+4. If no variant covers them, exit 6 (`feature_not_in_variant`) and name the missing features. `--from-source` then runs `cargo install --locked --git https://github.com/ostrium-labs/loams --tag v<version> loams --no-default-features --features <list> --root ~/.loam/variants/<version>/src-<hash>/`, after warning about time and memory. It needs a Rust toolchain and is never chosen automatically.
 
 ## 10. NVMe and the cache (D287)
 
@@ -372,17 +372,17 @@ These are the M1-era flag forms of §10 §2's `[cache] nvme_path` and `nvme` key
 ### 10.2 The flow
 
 ```
-loam stack create --name dev --storage nvme:/dev/nvme1n1
+loams stack create --name dev --storage nvme:/dev/nvme1n1
   ├─ device mounted already? ──yes──► use <mountpoint>/loam/<stack>/{cache,hot}; check that the user can write there
   └─ no ──► running as root? ──no──► exit 3 (sudo_step_required) and print:
-                │                       sudo loam storage prepare --device /dev/nvme1n1 --mount /mnt/loam-cache --yes
-                │                       loam stack create --name dev --storage mount:/mnt/loam-cache
+                │                       sudo loams storage prepare --device /dev/nvme1n1 --mount /mnt/loam-cache --yes
+                │                       loams stack create --name dev --storage mount:/mnt/loam-cache
                 └─ yes ──► refuse: exit 3 ("run `storage prepare` under sudo, then `stack create` as yourself")
 ```
 
 `stack create` never formats anything. Only `storage prepare` writes to a device, and only when the user ran it explicitly as root.
 
-**`loam storage prepare --device D --yes`** (Linux only; elsewhere exit 6, `platform_unsupported`) does the following:
+**`loams storage prepare --device D --yes`** (Linux only; elsewhere exit 6, `platform_unsupported`) does the following:
 
 1. **Inspects** the device with `lsblk --json --bytes --output NAME,PATH,TYPE,SIZE,FSTYPE,MOUNTPOINTS,PKNAME,MODEL,SERIAL,ROTA,RO` and `blkid -p -o export D` (util-linux).
 2. **Refuses** (exit 5, nothing written) if any of these holds:
@@ -422,7 +422,7 @@ The remaining 10 % is headroom for ext4 and for foyer's own overheads. Both valu
 ### 11.2 `.env.loam`
 
 ```dotenv
-# Written by loam 0.4.0 for stack "dev" at 2026-10-01T09:12:44Z. Do not commit.
+# Written by loams 0.4.0 for stack "dev" at 2026-10-01T09:12:44Z. Do not commit.
 LOAM_STACK=dev
 LOAM_URL=http://127.0.0.1:8080
 LOAM_FLIGHT_SQL_URL=grpc://127.0.0.1:8082
@@ -430,11 +430,11 @@ LOAM_MCP_URL=http://127.0.0.1:8083/mcp
 QDRANT_URL=http://127.0.0.1:6333
 QDRANT_GRPC_URL=http://127.0.0.1:6334
 ELASTICSEARCH_URL=http://127.0.0.1:9200
-# No API key: this stack serves loopback without auth (D111). `loam keys create` arrives with the auth plan.
+# No API key: this stack serves loopback without auth (D111). `loams keys create` arrives with the auth plan.
 ```
 
 - **Loam owns `.env.loam` entirely.** Each write replaces it atomically, with mode 0600. Writing to it is idempotent.
-- **`--merge PATH`** (for example `--merge .env`) updates the variables between `# >>> loam (stack dev) >>>` and `# <<< loam <<<` markers in place, inserting the block if it is absent. Lines outside the block are never changed. This replaces the chat dump's `loam env export >> .env`, which duplicates lines on every run. The plain `>>` form still works, and the docs recommend `--merge`.
+- **`--merge PATH`** (for example `--merge .env`) updates the variables between `# >>> loams (stack dev) >>>` and `# <<< loams <<<` markers in place, inserting the block if it is absent. Lines outside the block are never changed. This replaces the chat dump's `loams env export >> .env`, which duplicates lines on every run. The plain `>>` form still works, and the docs recommend `--merge`.
 - **`.gitignore`.** If the project is a git repository and `git check-ignore -q .env.loam` fails, the CLI appends `.env.loam` to `.gitignore` and says so on stderr. `--no-gitignore` skips this.
 - **Variable names.** The chat dump's `LOAM_KEY_ID` stays (it is not secret, and logs may print it). `LOAM_KEY_SECRET` becomes **`LOAM_API_KEY`**, the whole `loam_<key_id>_<secret>` token (D65), because the SDKs and gateways need the whole token. `QDRANT_API_KEY` and `ELASTICSEARCH_API_KEY` carry the same token, since the Qdrant `api-key` header and the ES `ApiKey` scheme accept it (§10 §4). `DATABASE_URL` is set only by the `postgres` companion (§8.2).
 - **The project directory** is `--project-dir`, else `$CLAUDE_PROJECT_DIR` (which Claude Code sets for MCP servers, verified 2026-10-01), else the nearest ancestor of the working directory that holds `.git`, `package.json`, `pyproject.toml` or `Cargo.toml`, else the working directory.
@@ -442,9 +442,9 @@ ELASTICSEARCH_URL=http://127.0.0.1:9200
 
 ## 12. MCP
 
-### 12.1 `loam mcp serve` (D289)
+### 12.1 `loams mcp serve` (D289)
 
-`loam mcp serve` serves MCP over stdio with rmcp (Apache-2.0; 3.5.0 on crates.io on 2026-10-01, and the workspace pins 3.4.1, so CLI1 Task 0 picks one) using the `transport-io` feature. It supports the same protocol versions as M1.6 Ruling 7: 2026-07-28 statelessly, and 2025-11-25, 2025-06-18 and 2025-03-26 with `initialize`. Stdout carries only JSON-RPC. Logs go to stderr at `warn` and to `~/.loam/logs/mcp.log` at `info`. `serverInfo` is `{"name": "loam", "version": "<binary version>"}`. The tool list is fixed for the life of the process; it does not depend on which stacks exist.
+`loams mcp serve` serves MCP over stdio with rmcp (Apache-2.0; 3.5.0 on crates.io on 2026-10-01, and the workspace pins 3.4.1, so CLI1 Task 0 picks one) using the `transport-io` feature. It supports the same protocol versions as M1.6 Ruling 7: 2026-07-28 statelessly, and 2025-11-25, 2025-06-18 and 2025-03-26 with `initialize`. Stdout carries only JSON-RPC. Logs go to stderr at `warn` and to `~/.loam/logs/mcp.log` at `info`. `serverInfo` is `{"name": "loams", "version": "<binary version>"}`. The tool list is fixed for the life of the process; it does not depend on which stacks exist.
 
 | Tool | Inputs | Returns | Annotations | Safety rules |
 |---|---|---|---|---|
@@ -469,18 +469,18 @@ Errors are `CallToolResult::structured_error({"error": code, "message", "hint"})
 
 `mcp install` registers both servers instead (§12.2).
 
-### 12.2 `loam mcp install` (D290)
+### 12.2 `loams mcp install` (D290)
 
 | Agent | With its CLI on `PATH` (preferred) | Without it: the file the CLI edits | HTTP data entry |
 |---|---|---|---|
-| `claude-code` | `claude mcp add --scope <scope> loam -- <abs>/loam mcp serve`, then `claude mcp add --transport http --scope <scope> loam-<stack> http://127.0.0.1:<mcp>/mcp` (verified 2026-10-01) | project scope only: `.mcp.json` `{"mcpServers": {"loam": {"command": "<abs>/loam", "args": ["mcp", "serve"]}}}`. For user scope without `claude`, the CLI prints the command and exits 3 | `{"type": "http", "url": "…/mcp"}` (M1.6 Task 9) |
-| `codex` | `codex mcp add loam -- <abs>/loam mcp serve` (verified 2026-10-01) | `~/.codex/config.toml` (user) or `.codex/config.toml` (project), edited with `toml_edit`: `[mcp_servers.loam] command = "<abs>/loam"`, `args = ["mcp", "serve"]` | `[mcp_servers.loam-<stack>] url = "…/mcp"` |
-| `cursor` | none (verified 2026-10-01: no CLI, only a UI and an extension API) | `~/.cursor/mcp.json` (user) or `.cursor/mcp.json` (project): `{"mcpServers": {"loam": {"type": "stdio", "command": "<abs>/loam", "args": ["mcp", "serve"]}}}` | `{"url": "…/mcp"}` (verify the key) |
-| `windsurf` | none | `~/.codeium/windsurf/mcp_config.json`: `{"mcpServers": {"loam": {"command": "<abs>/loam", "args": ["mcp", "serve"]}}}` (verified 2026-10-01) | `{"serverUrl": "…/mcp"}` |
+| `claude-code` | `claude mcp add --scope <scope> loams -- <abs>/loams mcp serve`, then `claude mcp add --transport http --scope <scope> loams-<stack> http://127.0.0.1:<mcp>/mcp` (verified 2026-10-01) | project scope only: `.mcp.json` `{"mcpServers": {"loams": {"command": "<abs>/loams", "args": ["mcp", "serve"]}}}`. For user scope without `claude`, the CLI prints the command and exits 3 | `{"type": "http", "url": "…/mcp"}` (M1.6 Task 9) |
+| `codex` | `codex mcp add loams -- <abs>/loams mcp serve` (verified 2026-10-01) | `~/.codex/config.toml` (user) or `.codex/config.toml` (project), edited with `toml_edit`: `[mcp_servers.loams] command = "<abs>/loams"`, `args = ["mcp", "serve"]` | `[mcp_servers.loams-<stack>] url = "…/mcp"` |
+| `cursor` | none (verified 2026-10-01: no CLI, only a UI and an extension API) | `~/.cursor/mcp.json` (user) or `.cursor/mcp.json` (project): `{"mcpServers": {"loams": {"type": "stdio", "command": "<abs>/loams", "args": ["mcp", "serve"]}}}` | `{"url": "…/mcp"}` (verify the key) |
+| `windsurf` | none | `~/.codeium/windsurf/mcp_config.json`: `{"mcpServers": {"loams": {"command": "<abs>/loams", "args": ["mcp", "serve"]}}}` (verified 2026-10-01) | `{"serverUrl": "…/mcp"}` |
 
 Rules:
-- **Absolute paths.** GUI agents may not inherit the shell's `PATH`, so the entry always names the absolute binary path (`~/.loam/bin/loam`, expanded).
-- **Idempotent.** Installing twice gives the same file. The CLI updates its own entries (named `loam` or `loam-<stack>`) and leaves every other entry, key and key order alone (`serde_json` with `preserve_order`, or `toml_edit`).
+- **Absolute paths.** GUI agents may not inherit the shell's `PATH`, so the entry always names the absolute binary path (`~/.loam/bin/loams`, expanded).
+- **Idempotent.** Installing twice gives the same file. The CLI updates its own entries (named `loams` or `loams-<stack>`) and leaves every other entry, key and key order alone (`serde_json` with `preserve_order`, or `toml_edit`).
 - **Safe edits.** The file is copied to `<file>.loam-backup` before the CLI's first edit to it. A file that does not parse is never rewritten (exit 5, `config_unparseable`). The write is atomic.
 - **Tracked.** `~/.loam/mcp-installs.json` records each entry written. `mcp uninstall` removes only those entries.
 - **`--dry-run`** prints the command or a unified diff and writes nothing.
@@ -501,22 +501,22 @@ Rules:
 
 ```toml
 [sdk]
-npm = "loamdb"            # D33; "@loam/sdk" (chat dump) only if the scope is secured (Q283)
-pypi = "loamdb"
-crates = "loamdb"
+npm = "loams"            # D400; the `@loams` scope (D400) holds the other npm packages
+pypi = "loams"
+crates = "loams"
 [bullmq]
-npm = "@loam/bullmq"      # §26 §7.2; falls back to "loamdb-bullmq" if Q283 says no
+npm = "@loams/bullmq"      # §26 §7.2
 [celery]
 pypi = "loam-celery"      # §26 §7.1
 [durable]
-npm = "@loam/durable"     # §26 §12.2
-pypi = "loamdb"           # the helpers ship in the SDK (§26 §8.4)
+npm = "@loams/durable"     # §26 §12.2
+pypi = "loams"           # the helpers ship in the SDK (§26 §8.4)
 [live]
 npm = "@operon/live"      # R1 Task 14's working name; renamed by D33
 ```
 
 - **The ecosystem** comes from `--language`, else from the project's files: `pnpm-lock.yaml` → `pnpm add`, `bun.lock` → `bun add`, `yarn.lock` → `yarn add`, `package-lock.json` or a bare `package.json` → `npm install`, `uv.lock` or a `pyproject.toml` with `[tool.uv]` → `uv add`, `poetry.lock` → `poetry add`, `Cargo.toml` → `cargo add`. A `requirements.txt` alone gets exit 6 with a hint (the CLI does not edit pip files). If more than one ecosystem matches, the CLI asks, or exits 3 without a TTY.
-- **The version** is pinned to the CLI's minor version (`loamdb@~0.4.0`, `loamdb>=0.4,<0.5`, `loamdb = "0.4"`), so the SDK matches the server the CLI runs. `--version` overrides it.
+- **The version** is pinned to the CLI's minor version (`loams@~0.4.0`, `loams>=0.4,<0.5`, `loams = "0.4"`), so the SDK matches the server the CLI runs. `--version` overrides it.
 - **Anything not in the allow-list** is refused from MCP (`add_package`). From the terminal, the CLI passes it through after a warning.
 
 ## 15. Keys, login and agents (D295, CLI3)
@@ -552,30 +552,30 @@ The container runtime is Docker or Podman, whichever is found first; `LOAM_CONTA
   github-attestations = true
   hosting = "github"
   install-path = "~/.loam/bin"
-  global-artifacts-jobs = ["./release-manifest"]   # runs in the build-global-artifacts phase; signs loam-release.json (verify that its outputs upload)
+  global-artifacts-jobs = ["./release-manifest"]   # runs in the build-global-artifacts phase; signs loams-release.json (verify that its outputs upload)
   [dist.github-custom-runners]
   x86_64-unknown-linux-gnu = "ubuntu-22.04"
   aarch64-unknown-linux-gnu = "ubuntu-22.04-arm"
   aarch64-apple-darwin = "macos-15"
   ```
 
-- **Variants.** cargo-dist builds per package, with `features` and `default-features` per package (verified 2026-10-01). It does not offer several feature sets of one package. CLI2 Task 0 is a spike that tries thin variant packages: `crates/loam-variant-standard` and `-full`, each a two-line `main.rs` calling `operon::main()` with its own feature list and `[[bin]] name = "loam"`. If cargo-dist's precise builds handle three packages that produce a binary of the same name, it builds all variants. If not, a Loam-owned matrix job in the same workflow builds the extra variants with `cargo build -p operon --profile dist --features …` and uploads `loam-<variant>-<target>.tar.xz` to the release (Q293).
-- **The release manifest**, `loam-release.json`, is signed with minisign as `loam-release.json.minisig`:
+- **Variants.** cargo-dist builds per package, with `features` and `default-features` per package (verified 2026-10-01). It does not offer several feature sets of one package. CLI2 Task 0 is a spike that tries thin variant packages: `crates/loams-variant-standard` and `-full`, each a two-line `main.rs` calling `operon::main()` with its own feature list and `[[bin]] name = "loams"`. If cargo-dist's precise builds handle three packages that produce a binary of the same name, it builds all variants. If not, a Loam-owned matrix job in the same workflow builds the extra variants with `cargo build -p operon --profile dist --features …` and uploads `loams-<variant>-<target>.tar.xz` to the release (Q293).
+- **The release manifest**, `loams-release.json`, is signed with minisign as `loams-release.json.minisig`:
 
   ```json
   {"schema": 1, "version": "0.4.0", "channel": "stable", "published_at": "2026-11-02T10:00:00Z",
    "output_schema": 1, "docs_version": "0.4.0",
    "artifacts": [{"variant": "standard", "target": "x86_64-unknown-linux-gnu",
-     "url": "https://github.com/ostrium-labs/loam/releases/download/v0.4.0/loam-standard-x86_64-unknown-linux-gnu.tar.xz",
+     "url": "https://github.com/ostrium-labs/loams/releases/download/v0.4.0/loams-standard-x86_64-unknown-linux-gnu.tar.xz",
      "sha256": "…", "size": 0, "features": ["durable", "es", "flight", "hnsw", "mcp", "pgwire", "qdrant"]}]}
   ```
 
-- **Signing.** The minisign secret key lives in the GitHub environment `release`, which has required reviewers (Q282). The public keys (current and next) are committed in `release/minisign.pub` and embedded in the binary and in `install.sh`. GitHub artifact attestations (Sigstore, SLSA build provenance) are verified out of band with `gh attestation verify <file> --repo ostrium-labs/loam`. A `SHA256SUMS` file is published for people who verify by hand.
-- **When.** The pipeline runs on PRs as `dist plan` plus one `dist build` per target with publishing off. **Publishing starts only after D33's rename PR and the transfer to `ostrium-labs/loam`** (user memory). A release is cut by pushing a tag `v<semver>` on `main`.
+- **Signing.** The minisign secret key lives in the GitHub environment `release`, which has required reviewers (Q282). The public keys (current and next) are committed in `release/minisign.pub` and embedded in the binary and in `install.sh`. GitHub artifact attestations (Sigstore, SLSA build provenance) are verified out of band with `gh attestation verify <file> --repo ostrium-labs/loams`. A `SHA256SUMS` file is published for people who verify by hand.
+- **When.** The pipeline runs on PRs as `dist plan` plus one `dist build` per target with publishing off. **Publishing starts only after D33's rename PR and the transfer to `ostrium-labs/loams`** (user memory). A release is cut by pushing a tag `v<semver>` on `main`.
 
 ### 17.2 `install.sh` (D293, CLI2)
 
-The source is `release/install.sh`: POSIX `sh` and `set -eu`, about 250 lines, checked by shellcheck. Each release publishes it with the version stamped in. `https://loams.dev/install.sh` answers 302 to `https://github.com/ostrium-labs/loam/releases/latest/download/install.sh`, and `curl -fsSL` follows the redirect. The GitHub URL works without `loams.dev`. **`loams.dev` had no DNS record on 2026-10-01** (Q281).
+The source is `release/install.sh`: POSIX `sh` and `set -eu`, about 250 lines, checked by shellcheck. Each release publishes it with the version stamped in. `https://loams.dev/install.sh` answers 302 to `https://github.com/ostrium-labs/loams/releases/latest/download/install.sh`, and `curl -fsSL` follows the redirect. The GitHub URL works without `loams.dev`. **`loams.dev` had no DNS record on 2026-10-01**; the owner bought it on Cloudflare on 2026-10-02 (D401, answering Q281).
 
 ```
 curl -fsSL https://loams.dev/install.sh | sh
@@ -584,25 +584,25 @@ curl -fsSL https://loams.dev/install.sh | sh -s -- --variant full --version 0.4.
 
 1. **Platform.** `uname -s` and `uname -m` give Linux x86_64/aarch64 or Darwin arm64. Anything else prints a message naming WSL2, `cargo install`, or the `cli` variant once it exists.
 2. **Tools.** It uses `curl` (else `wget`), `tar`, `xz` and `sha256sum` (else `shasum -a 256`).
-3. **Manifest.** It fetches `loam-release.json` (latest, or `--version` / `LOAM_VERSION`). If `minisign` is installed, it verifies the signature with the embedded public key. If not, it says the signature was not checked and how to check it. `--require-signature` makes a missing `minisign` an error.
+3. **Manifest.** It fetches `loams-release.json` (latest, or `--version` / `LOAM_VERSION`). If `minisign` is installed, it verifies the signature with the embedded public key. If not, it says the signature was not checked and how to check it. `--require-signature` makes a missing `minisign` an error.
 4. **Archive.** It downloads the archive for the variant (`--variant`, `LOAM_VARIANT`, default `standard`) and target, and checks its SHA-256 against the manifest. A mismatch exits 9.
-5. **Install.** It writes `$LOAM_HOME/bin/loam` (`LOAM_HOME` default `~/.loam`) and the receipt `receipt.json`. It appends `. "$HOME/.loam/env"` to `~/.profile`, `~/.bashrc` and `~/.zshrc` (those that exist) and adds `~/.config/fish/conf.d/loam.fish`, unless `--no-modify-path` is given. A line is never added twice.
-6. **Init.** If `/dev/tty` is readable (stdin is the pipe) and neither `--no-init` nor `--yes` was given, it asks "Run `loam init` now? [Y/n]" and reads the answer from `/dev/tty`.
+5. **Install.** It writes `$LOAM_HOME/bin/loams` (`LOAM_HOME` default `~/.loam`) and the receipt `receipt.json`. It appends `. "$HOME/.loam/env"` to `~/.profile`, `~/.bashrc` and `~/.zshrc` (those that exist) and adds `~/.config/fish/conf.d/loams.fish`, unless `--no-modify-path` is given. A line is never added twice.
+6. **Init.** If `/dev/tty` is readable (stdin is the pipe) and neither `--no-init` nor `--yes` was given, it asks "Run `loams init` now? [Y/n]" and reads the answer from `/dev/tty`.
 
 **Verification policy.** The archive's SHA-256 check against the manifest is always mandatory. The manifest's **signature** is checked by `install.sh` only when `minisign` is installed, or always with `--require-signature`. This is the only verification path that may skip the signature, because a POSIX script has no portable Ed25519 verifier. Every download the binary makes (`self-update`, variant downloads) always verifies the signature (§17.3).
 
 **Trust model, stated in the guide.** The first install trusts TLS and GitHub, which is the usual trust-on-first-use of `curl | sh`. From then on, the binary carries the public keys, so every `self-update` and every variant download is signature-checked whatever the host serves.
 
-### 17.3 `loam self-update` (D294, CLI2)
+### 17.3 `loams self-update` (D294, CLI2)
 
-1. **Refuse foreign installs.** Without `receipt.json`, or when `current_exe()` is not `$LOAM_HOME/bin/loam`, it exits 6 (`managed_install`) with the right upgrade command: `cargo install loamdb` (`cargo install loam` names an unrelated crate, verified 2026-10-01), or the package manager.
+1. **Refuse foreign installs.** Without `receipt.json`, or when `current_exe()` is not `$LOAM_HOME/bin/loams`, it exits 6 (`managed_install`) with the right upgrade command: `cargo install loams` (`cargo install loam` names an unrelated crate, verified 2026-10-01), or the package manager.
 2. **Fetch and verify** the manifest for `--version` or the latest, with the embedded public keys (`minisign-verify` 0.3, MIT). A failure exits 9.
 3. **Check versions.** If the target is not newer, it prints "up to date" and exits 0. `--version` with an older version needs `--yes`.
 4. **Download** the archive for the receipt's variant (`--variant` switches it), then check its SHA-256 (exit 9 on mismatch).
-5. **Smoke-test.** It extracts the archive to `$LOAM_HOME/bin/.loam-new` and runs `.loam-new version --output json`. The `version` and `features` it reports must match the manifest.
-6. **Swap.** It copies the current binary to `bin/loam.prev`, then `self_replace::self_replace(".loam-new")` (self-replace 1.5, Apache-2.0) swaps the binary atomically. It then updates the receipt.
-7. **Leave stacks alone.** Running stacks keep their binary. `stack describe` shows `binary_outdated` and the hint `loam stack restart --upgrade`.
-8. **`--check`** stops after step 3 and returns `{current, latest, update_available}`. **`--rollback`** swaps `loam.prev` back in.
+5. **Smoke-test.** It extracts the archive to `$LOAM_HOME/bin/.loams-new` and runs `.loams-new version --output json`. The `version` and `features` it reports must match the manifest.
+6. **Swap.** It copies the current binary to `bin/loams.prev`, then `self_replace::self_replace(".loams-new")` (self-replace 1.5, Apache-2.0) swaps the binary atomically. It then updates the receipt.
+7. **Leave stacks alone.** Running stacks keep their binary. `stack describe` shows `binary_outdated` and the hint `loams stack restart --upgrade`.
+8. **`--check`** stops after step 3 and returns `{current, latest, update_available}`. **`--rollback`** swaps `loams.prev` back in.
 
 axoupdater (cargo-dist's updater library, MIT OR Apache-2.0, 0.10.2) was considered. It updates from cargo-dist's own install receipts and installers, so it does not support Loam's variants or the minisign manifest. Self-replace plus minisign-verify is about 150 lines of Loam code.
 
@@ -625,7 +625,7 @@ axoupdater (cargo-dist's updater library, MIT OR Apache-2.0, 0.10.2) was conside
 | Plan | Scope | Depends on |
 |---|---|---|
 | **CLI1** ([plan](../plans/2026-10-01-cli1-local-cli-and-mcp.md)) | `operon-cli`; the output contract; `LOAM_HOME` and `configure`; the H1 cache flags; the engine registry; `stack create/describe/list/start/stop/restart/run/logs/delete`; `storage inspect/prepare`; `env export` and `.env.loam`; the docs bundle and snippets; `mcp serve` (seven tools) and `mcp install` for four agents; `init`; `version`, `completions`; the CLI guide | M1.2 (as built). M1.6 Task 7 only for the `mcp` engine row and the HTTP entry (both conditional) |
-| **CLI2** ([plan](../plans/2026-10-01-cli2-release-and-install.md)) | The server split (`operon-server`, D297) and the `cli` variant; cargo-dist; variants; the signed manifest; `install.sh`; `self-update`; variant download in `stack create`; `pkg add` and `add_package`; `--from-source`; service-unit generators | CLI1; D33's rename PR; the transfer to `ostrium-labs/loam`; Q281 and Q282 for publishing |
+| **CLI2** ([plan](../plans/2026-10-01-cli2-release-and-install.md)) | The server split (`operon-server`, D297) and the `cli` variant; cargo-dist; variants; the signed manifest; `install.sh`; `self-update`; variant download in `stack create`; `pkg add` and `add_package`; `--from-source`; service-unit generators | CLI1; D33's rename PR; the transfer to `ostrium-labs/loams`; Q281 and Q282 for publishing |
 | CLI3 (not yet planned) | `keys`, `login`, agent tokens for `mcp serve` (§15); companions (§16); remote and cloud stacks (Q291) | The unified auth plan (D111, Q30); §19 M2 work; P2 for Loam Postgres images |
 
 CLI1 runs beside M1, like tracks R and D: it adds one crate and three server flags, and changes no M1 code path beyond `main.rs` and the `Native` flag group. Its builds interleave with other tracks on the one-build machine (D127).
@@ -634,7 +634,7 @@ CLI1 runs beside M1, like tracks R and D: it adds one crate and three server fla
 
 | # | Risk | Mitigation |
 |---|---|---|
-| 1 | **The `loam` binary name collides** with another tool on users' machines. The Soroban `loam-cli` crate (2025) may install a `loam` binary (verify) | `~/.loam/bin` goes first in `PATH` through `~/.loam/env`. `loam version` identifies itself (`loam (Loam database) 0.4.0`). Q284 |
+| 1 | **The binary name collides** with another tool on users' machines. Shipping `loams` (D401, answering Q284) avoids the `loam` binary the Soroban `loam-cli` crate (2025) may install | `~/.loam/bin` goes first in `PATH` through `~/.loam/env`. `loams version` identifies itself (`loams (Loams database) 0.4.0`) |
 | 2 | **Variant sizes** (estimate 120–240 MB) make the one-line install slow on poor links | The `cli` variant (D297). xz archives. `stack create` reuses the running binary whenever it covers the engines |
 | 3 | **CI time** for 2–3 variants × 3 targets in release mode | Releases only on tags. PRs run `dist plan` plus one target. The Swatinem cache keys on the variant |
 | 4 | **An agent misuses `stack_create`** (many stacks, port exhaustion) | At most 8 local stacks per `LOAM_HOME` (exit 5 past that). Loopback only. No disks, buckets or downloads without consent. Q292 |
@@ -651,32 +651,32 @@ CLI1 runs beside M1, like tracks R and D: it adds one crate and three server fla
 
 | # | Question | Owner | Needed by |
 |---|---|---|---|
-| Q281 | `loams.dev` has no DNS record (checked 2026-10-01). Who registers and hosts it? The proposal is a redirect route in `loam-cloud` (Next.js) for `/install.sh` and `/releases/*`, pointing at GitHub Releases. Should the product docs' source move into this repository's `docs/guides` so that the site and the embedded bundle share it (§13)? | Founder | CLI2 publish |
+| Q281 | ~~`loams.dev` has no DNS record (checked 2026-10-01). Who registers and hosts it?~~ Answered 2026-10-02 by the owner: `loams.dev` is bought on Cloudflare (D401). Still open: the proposal is a redirect route in `loam-cloud` (Next.js) for `/install.sh` and `/releases/*`, pointing at GitHub Releases. Should the product docs' source move into this repository's `docs/guides` so that the site and the embedded bundle share it (§13)? | Founder | CLI2 publish |
 | Q282 | Signing: who generates and holds the minisign key (offline, owner), and which reviewers gate the `release` environment? Or should Loam use Sigstore keyless only and drop minisign, which would mean no in-band verification without `gh` or `cosign`? | Founder | CLI2 Task 4 |
-| Q283 | The `@loam` npm scope: `@loam/sdk` (chat dump), `@loam/bullmq` and `@loam/durable` (§26) all need it. On 2026-10-01 the registry showed no packages under `@loam` and none of those three names exists. Register the scope, or rename to `loamdb-*` | Founder | CLI2 Task 8, J2 |
-| Q284 | The binary name `loam` against other tools that install a `loam` binary (Soroban's `loam-cli`, verify). Keep `loam`, or ship `loamdb` with `loam` as an optional alias? | Founder | Before the first release |
+| Q283 | ~~The `@loam` npm scope: `@loam/sdk` (chat dump), `@loam/bullmq` and `@loam/durable` (§26) all need it. Register the scope, or rename to `loamdb-*`~~ Answered 2026-10-02 by the owner: the npm scope is `@loams` (D400) | Founder | Resolved |
+| Q284 | ~~The binary name `loam` against other tools that install a `loam` binary (Soroban's `loam-cli`). Keep `loam`, or ship `loamdb` with a `loam` alias?~~ Answered 2026-10-02 by the owner: the binary is `loams` (D401) | Founder | Resolved |
 | Q285 | Windows: the `cli` variant only, or WSL2 only? | Founder | CLI2 Task 3 |
 | Q286 | Intel macOS server builds: skip (proposed), or build on cross-compiled runners? | Eng | CLI2 Task 3 |
 | Q287 | The default install variant: `standard` (proposed, so one command gives a working stack) or `cli` (small, with a server downloaded on first `stack create`)? | Founder | CLI2 Task 6 |
 | Q288 | Local stacks as detached processes (proposed) or as systemd user units and launchd agents by default (they survive logout and reboot)? | Eng | CLI2 Task 10 |
-| Q289 | Container images per variant on GHCR (`ghcr.io/ostrium-labs/loam:<version>-<variant>`): in CLI2 or later? | Founder | CLI2 |
-| Q290 | Homebrew tap, npm shim (`npx loamdb`) and PyPI shim distribution: which, and when? | Founder | After CLI2 |
+| Q289 | Container images per variant on GHCR (`ghcr.io/ostrium-labs/loams:<version>-<variant>`): in CLI2 or later? | Founder | CLI2 |
+| Q290 | Homebrew tap, npm shim (`npx loams`) and PyPI shim distribution: which, and when? | Founder | After CLI2 |
 | Q291 | Cloud stacks: the `loam-platform` public API the CLI calls for `stack create --target cloud`, and whether the cloud client lives in this repository (D220: the CLI is open) | Founder | CLI3 plan |
 | Q292 | May `stack_create` from MCP start a local process without a human confirming it? The proposal is yes: loopback only, local object store, no disks, no downloads without `allow_download`, at most 8 stacks | Founder | CLI1 Task 9 |
-| Q293 | The CLI2 Task 0 spike result: does cargo-dist build variant packages that each produce a binary named `loam`, or does Loam own a matrix job? | Eng | CLI2 Task 3 |
+| Q293 | The CLI2 Task 0 spike result: does cargo-dist build variant packages that each produce a binary named `loams`, or does Loam own a matrix job? | Eng | CLI2 Task 3 |
 | Q294 | Default ports for the stack's pg (15432) and MySQL (13306) listeners, chosen to avoid local Postgres and MySQL. D-PG-1 gives the server no default port. Keep these, or use 5433 and 3307? | Eng | CLI1 Task 4 |
 
 ## 22. Contradictions with earlier decisions, and how they are resolved
 
 | Earlier | Conflict with the chat dump | Resolution |
 |---|---|---|
-| D33 (renamed Loam after M1; M1 publishes nothing) | The chat dump installs `loam` from `loams.dev` now | CLI1 is built under the working names (`operon`, `operon-cli`). Releases and the installer go live only after the rename PR and the move to `ostrium-labs/loam` (D292) |
+| D33 (renamed Loam after M1; M1 publishes nothing) | The chat dump installs `loams` from `loams.dev` now | CLI1 is built under the working names (`operon`, `operon-cli`). Releases and the installer go live only after the rename PR and the move to `ostrium-labs/loams` (D292) |
 | D111 (no auth or TLS in M1) | `stack create` "creates the first key"; `.env.loam` holds `LOAM_KEY_SECRET` and `QDRANT_API_KEY` | Keys wait for the unified auth plan (D295, CLI3). Until then `.env.loam` holds endpoints only, and `keys` exits 6 |
 | §19 §5.5 ("keys cannot be issued to agents") and P6 (agents hold no long-lived secrets) | The agent "provisions the stack" and the stack writes key secrets | Keys are created only by people, through the CLI, for apps. MCP tools never mint or return keys. In CLI3, `mcp serve` uses vended agent tokens (D295). The chat dump's own rule (secrets to `.env.loam`, the key id only through MCP) is kept and made stricter (D288) |
 | D65 (the key is one token, `loam_<key_id>_<secret>`) | Separate `LOAM_KEY_ID` and `LOAM_KEY_SECRET` | `LOAM_API_KEY` holds the whole token; `LOAM_KEY_ID` stays as a non-secret label (D288) |
 | D-PG-1, PG1, D2, D230, D231 (the pg listener is analytics; OLTP Postgres is CNPG or Loam Postgres, a separate service) | `--engines postgres` with `DATABASE_URL` implies OLTP Postgres inside the binary | `pg` is the analytics listener with `LOAM_PG_URL`. `postgres` is a companion service (D299, CLI3) and the only engine that sets `DATABASE_URL` (D285) |
 | D260 (no TiDB), D124 (TiKV metastore) | `--metastore raft` is the only backend named | `--metastore embedded` (alias `raft`) or `tikv://…`. Postgres and DynamoDB arrive with M2 (D58). No TiDB anywhere |
-| M1.6 Ruling 19 and D111 (MCP is HTTP on its own loopback listener; five data tools) | `loam mcp serve` "runs your existing docs MCP server over stdio" and exposes `stack_status`, `env_export` and others | No docs MCP server exists. The stdio bootstrap server is new (D289). The data tools stay on M1.6's HTTP endpoint, and `mcp install` registers both (D290) |
+| M1.6 Ruling 19 and D111 (MCP is HTTP on its own loopback listener; five data tools) | `loams mcp serve` "runs your existing docs MCP server over stdio" and exposes `stack_status`, `env_export` and others | No docs MCP server exists. The stdio bootstrap server is new (D289). The data tools stay on M1.6's HTTP endpoint, and `mcp install` registers both (D290) |
 | The chat dump's "MCP tools should omit [destructive ops] or require confirmation" | — | Omitted, not confirmed (D289), because elicitation support varies under 2026-07-28 |
 | The chat dump's "Builds the single server binary with only those components enabled" | A per-stack build | Prebuilt variants, with run-time `--no-*` flags for subsets. `--from-source` is opt-in (D286); the chat dump itself recommended prebuilt variants |
 | The chat dump's "one crate per command group" | — | One `operon-cli` crate with modules (§4.1) |
@@ -684,8 +684,8 @@ CLI1 runs beside M1, like tracks R and D: it adds one crate and three server fla
 | D29 (release builds carry no failpoints) | — | Enforced by the variant guard (§9.2) |
 | D138 vs D262 (whether durable is on by default) | — | D262 holds: `durable` is opt-in in the crate and on in the release variants |
 | §10 §2 (no config file in M1) | `stack.toml` | `stack.toml` is the CLI's own record, translated into flags. The server's M2 configuration file is unaffected (§8.1) |
-| The chat dump's `loam pkg add @loam/sdk` vs D33 (`loamdb`) | — | Logical names map to D33's `loamdb` names. `@loam/*` names depend on Q283 (D296) |
-| The chat dump's `loam env export >> .env` | It duplicates lines on every run | `--merge .env` with marker blocks; `>>` still works (§11.2) |
+| The chat dump's `loam pkg add @loam/sdk` vs D33 (`loamdb`) | — | Superseded by the owner's 2026-10-02 ruling (D400): logical names map to `loams` packages and the `@loams` npm scope (D296) |
+| The chat dump's `loams env export >> .env` | It duplicates lines on every run | `--merge .env` with marker blocks; `>>` still works (§11.2) |
 
 ## 23. Sources
 
