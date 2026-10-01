@@ -944,6 +944,7 @@ dependencies = [
  "dapr",
  "hex",
  "prost",
+ "prost-types",
  "reqwest",
  "serde_json",
  "sha2",
