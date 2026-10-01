@@ -68,6 +68,7 @@ macro_rules! for_each_case {
             a_pending_claim_is_in_flight_until_it_lapses_or_is_released,
             a_done_key_lapses_with_its_window_and_prune_forgets_it,
             ledger_requests_are_validated,
+            a_fenced_ledger_prune_is_refused_and_keeps_every_entry,
             // gc
             retired_expired_respects_grace,
             forget_objects_removes_retired_entries,

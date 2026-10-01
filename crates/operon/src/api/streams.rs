@@ -24,16 +24,29 @@ pub async fn produce_records(
     stream: &str,
     records: Vec<(u32, Vec<Record>)>,
 ) -> Result<Vec<AppendAck>, ApiError> {
+    let id = checked_stream(meta, ns, stream, &records).await?;
+    Ok(writer.append_many(id, records).await?)
+}
+
+/// The id of stream `stream`, after rule 4's check of `records` for an
+/// implicit stream. Callers that must tell a failed append from one of
+/// unknown outcome ([`events`](super::events)) append themselves.
+pub(crate) async fn checked_stream(
+    meta: &Arc<dyn MetaStore>,
+    ns: &str,
+    stream: &str,
+    records: &[(u32, Vec<Record>)],
+) -> Result<StreamId, ApiError> {
     let id = stream_id(&**meta, ns, stream).await?;
     if stream.starts_with(IMPLICIT_STREAM_PREFIX) {
         let collection = implicit_collection(&**meta, ns, stream, id).await?;
-        for (partition, records) in &records {
+        for (partition, records) in records {
             for (i, record) in records.iter().enumerate() {
                 check_implicit_key(&collection, *partition, i, record.key.as_deref())?;
             }
         }
     }
-    Ok(writer.append_many(id, records).await?)
+    Ok(id)
 }
 
 /// The collection whose implicit stream is `stream` (rule 4.1, through

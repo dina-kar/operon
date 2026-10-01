@@ -213,6 +213,8 @@ pub struct ServerConfig {
     pub stream_grpc: Option<SocketAddr>,
     /// How Flight SQL bounds its statements and its ingest.
     pub flight: FlightConfig,
+    /// CloudEvents ingest: the dedup window (design §02 §7.4).
+    pub cloudevents: crate::api::events::EventsConfig,
     /// MySQL wire listener over collections, when the mysql-wire feature is on.
     #[cfg(feature = "mysql-wire")]
     pub mysql_wire: Option<crate::mysql_wire::MysqlConfig>,
@@ -285,6 +287,7 @@ impl ServerConfig {
             #[cfg(feature = "stream-grpc")]
             stream_grpc: None,
             flight: FlightConfig::default(),
+            cloudevents: crate::api::events::EventsConfig::default(),
             #[cfg(feature = "mysql-wire")]
             mysql_wire: None,
             #[cfg(feature = "pgwire")]
@@ -326,6 +329,7 @@ impl ServerConfig {
         self.validate_durable()?;
         self.flight.validate().map_err(ServerError::Config)?;
         self.validate_backpressure()?;
+        self.cloudevents.validate().map_err(ServerError::Config)?;
         self.gc
             .check_deadlines(&[
                 ("segmenter.swap_deadline", self.segmenter.swap_deadline),
@@ -1635,6 +1639,7 @@ impl Server {
             }),
             forward_stats,
             node_info,
+            cloudevents: config.cloudevents,
         };
         let app = match roles.gateway {
             true => api::router(state),

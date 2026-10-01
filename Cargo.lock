@@ -6392,6 +6392,7 @@ dependencies = [
  "object_store 0.14.2",
  "opensrv-mysql",
  "operon-cache",
+ "operon-cloudevents",
  "operon-collection",
  "operon-common",
  "operon-durable",

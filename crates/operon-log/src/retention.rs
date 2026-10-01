@@ -118,6 +118,15 @@ async fn apply(meta: &dyn MetaStore, fence: &Fence) -> Result<RetentionReport, T
         .prune_wal_commits(Some(fence.clone()))
         .await
         .map_err(fenced)?;
+    // The CloudEvents ledger's lapsed entries go with the commit records
+    // (design §02 §7.4).
+    let ledger = meta
+        .prune_idempotency_keys(Some(fence.clone()))
+        .await
+        .map_err(fenced)?;
+    if ledger > 0 {
+        tracing::debug!(ledger, "pruned lapsed idempotency keys");
+    }
     Ok(report)
 }
 

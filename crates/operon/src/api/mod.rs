@@ -7,6 +7,7 @@
 
 mod collections;
 mod errors;
+pub mod events;
 pub mod hot;
 pub mod internal;
 mod query;
@@ -98,6 +99,8 @@ pub struct AppState {
     /// The metastore view `GET /internal/v1/node/stats` reports in cluster
     /// mode.
     pub node_info: Option<Arc<dyn internal::NodeInfo>>,
+    /// CloudEvents ingest (design §02 §7.4).
+    pub cloudevents: events::EventsConfig,
 }
 
 /// What a query node needs to run forwarded reads (plan M1.3 Task 11).
@@ -124,6 +127,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/namespaces/{ns}/streams/{stream}/partitions/{partition}/records",
             post(produce).get(fetch),
+        )
+        .route(
+            "/v1/namespaces/{ns}/streams/{stream}/events",
+            post(events::produce_events),
+        )
+        .route(
+            "/v1/namespaces/{ns}/streams/{stream}/partitions/{partition}/events",
+            get(events::fetch_events),
         )
         .route("/v1/namespaces/{ns}/links", post(create_link))
         .route("/v1/namespaces/{ns}/links/{link}", get(describe_link))
