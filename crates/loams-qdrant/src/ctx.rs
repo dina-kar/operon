@@ -15,7 +15,7 @@ use crate::{NAMESPACE_HEADER, QdrantConfig, TOKEN_HEADER};
 pub struct RequestCtx {
     /// `Loams-Namespace`, or the configured namespace.
     pub ns: String,
-    /// `AtLeast(token)` with an `Loams-Consistency-Token`, else `Strong`.
+    /// `AtLeast(token)` with a `Loams-Consistency-Token`, else `Strong`.
     /// Qdrant's own `consistency` parameter is not read (Ruling 14).
     pub consistency: ReadConsistency,
     /// The request's `timeout` (seconds), when given.

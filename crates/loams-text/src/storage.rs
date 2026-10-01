@@ -18,7 +18,7 @@ use loams_quickwit::storage::{
 use loams_store::{Store, StoreError};
 use tokio::io::{AsyncRead, AsyncWriteExt};
 
-/// A Quickwit [`Storage`] whose paths are relative to `root` in an Loams
+/// A Quickwit [`Storage`] whose paths are relative to `root` in a Loams
 /// [`Store`]. Ranged reads go through the [`RangeCache`]; writes are
 /// create-only, and a write that finds identical bytes already there
 /// succeeds (so a retry after a lost acknowledgement is harmless).

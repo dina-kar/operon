@@ -131,7 +131,7 @@ pub fn decode_pk_delta(bytes: &[u8]) -> Result<Vec<PkDeltaEntry>, CollectionErro
     Ok(entries)
 }
 
-/// The body of an Loams envelope (`magic ‖ u16 LE version ‖ body ‖ crc32c
+/// The body of a Loams envelope (`magic ‖ u16 LE version ‖ body ‖ crc32c
 /// LE`), or why it is not one.
 pub(crate) fn open_envelope<'a>(
     magic: &[u8; 4],

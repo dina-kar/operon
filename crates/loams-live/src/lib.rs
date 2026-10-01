@@ -6,7 +6,7 @@
 //! checksummed text form, tables and indexes ([`TableDef`], [`IndexDef`] and
 //! the catalog operations in [`catalog`]), the key layout of §20 §4.3
 //! ([`AppKeys`]), and the document operations with index maintenance in
-//! [`docs`], which run inside an `loams-tikv` transaction and return the
+//! [`docs`], which run inside a `loams-tikv` transaction and return the
 //! [`WriteRecord`]s the commit journal needs. [`Limits`] holds R1's document
 //! and mutation limits. The sharded, sequenced commit journal (Task 9), its
 //! [`Tailer`] and its [`Janitor`] are in [`journal`]. [`LiveTxn`], its

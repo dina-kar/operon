@@ -45,7 +45,7 @@ pub struct RequestCtx {
     pub format: ResponseFormat,
     /// `pretty` given without a value or as `true`.
     pub pretty: bool,
-    /// `AtLeast(token)` with an `Loams-Consistency-Token`, else `Strong`.
+    /// `AtLeast(token)` with a `Loams-Consistency-Token`, else `Strong`.
     pub consistency: ReadConsistency,
     pub started: Instant,
 }

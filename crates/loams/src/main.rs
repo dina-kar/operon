@@ -251,7 +251,7 @@ struct Native {
     /// Address of the Qdrant gRPC API [default: 127.0.0.1:6334].
     #[arg(long, conflicts_with = "no_qdrant")]
     qdrant_grpc_listen: Option<SocketAddr>,
-    /// The namespace of Qdrant requests without an `Loams-Namespace`
+    /// The namespace of Qdrant requests without a `Loams-Namespace`
     /// header [default: default].
     #[arg(long, conflicts_with = "no_qdrant")]
     qdrant_namespace: Option<String>,
