@@ -322,8 +322,7 @@ async fn an_index_update_delete_sequence_on_one_id_answers_like_es() {
     use loams_es::write::{WriteCall, WriteItem, execute};
     let es = Es::start().await;
     Es::ok(es.put("/i", None).await);
-    let gateway =
-        loams_es::EsGateway::new(es.server.collections(), loams_es::EsConfig::default());
+    let gateway = loams_es::EsGateway::new(es.server.collections(), loams_es::EsConfig::default());
     let ctx = loams_es::RequestCtx::fallback();
     let ctx = loams_es::RequestCtx {
         namespace: NS.to_string(),

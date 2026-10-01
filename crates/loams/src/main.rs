@@ -909,11 +909,9 @@ fn arm_failpoints() -> Result<(), String> {
 #[cfg(not(feature = "failpoints"))]
 fn arm_failpoints() -> Result<(), String> {
     if std::env::var_os("LOAMS_FAILPOINTS").is_some() {
-        return Err(
-            "LOAMS_FAILPOINTS is set, but this build has no failpoints \
+        return Err("LOAMS_FAILPOINTS is set, but this build has no failpoints \
                     (build with --features failpoints)"
-                .to_string(),
-        );
+            .to_string());
     }
     Ok(())
 }
@@ -1190,8 +1188,7 @@ mod tests {
         assert_eq!(es.namespace, "acme");
         assert!(dev_config(&["--no-es"]).es.is_none());
         assert!(
-            Cli::try_parse_from(["loams", "dev", "--no-es", "--es-listen", "127.0.0.1:1"])
-                .is_err()
+            Cli::try_parse_from(["loams", "dev", "--no-es", "--es-listen", "127.0.0.1:1"]).is_err()
         );
         // D111: loopback in every mode.
         let cli = Cli::try_parse_from(["loams", "standalone", "--bucket", "file:///tmp/b"])

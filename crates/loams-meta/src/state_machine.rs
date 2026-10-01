@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures::{Stream, TryStreamExt};
+use loams_store::{Store, StoreError};
 use openraft::storage::{EntryResponder, RaftSnapshotBuilder, RaftStateMachine};
 use openraft::{EntryPayload, OptionalSend};
-use loams_store::{Store, StoreError};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
 

@@ -170,9 +170,7 @@ fn tokens(text: &str) -> Vec<String> {
 }
 
 fn tokens_of(name: &str, text: &str) -> Vec<String> {
-    let mut analyzer = loams_text::tokenizer_manager()
-        .get(name)
-        .expect("analyzer");
+    let mut analyzer = loams_text::tokenizer_manager().get(name).expect("analyzer");
     let mut out = Vec::new();
     analyzer
         .token_stream(text)

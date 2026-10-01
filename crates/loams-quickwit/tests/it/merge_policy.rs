@@ -2,9 +2,7 @@
 
 use std::time::Duration;
 
-use loams_quickwit::merge_policy::{
-    MergePolicy, StableLogMergePolicy, StableLogMergePolicyConfig,
-};
+use loams_quickwit::merge_policy::{MergePolicy, StableLogMergePolicy, StableLogMergePolicyConfig};
 use loams_quickwit::shim::consts::DEFAULT_SPLIT_NUM_DOCS_TARGET;
 use loams_quickwit::shim::{SplitId, SplitMaturity, SplitMetadata};
 use time::OffsetDateTime;

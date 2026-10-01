@@ -135,9 +135,7 @@ proptest! {
 #[test]
 fn the_schema_types_are_reexported() {
     // Ruling 6: the same types, reachable from both crates.
-    fn same(
-        schema: loams_common::schema::CollectionSchema,
-    ) -> loams_collection::CollectionSchema {
+    fn same(schema: loams_common::schema::CollectionSchema) -> loams_collection::CollectionSchema {
         schema
     }
     let schema = loams_collection::schema::CollectionSchema::new(

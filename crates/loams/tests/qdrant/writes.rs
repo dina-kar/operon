@@ -1075,12 +1075,7 @@ async fn write_responses_carry_the_consistency_token() {
         })
         .await
         .expect("upsert");
-    assert!(
-        response
-            .metadata()
-            .get("loams-consistency-token")
-            .is_some()
-    );
+    assert!(response.metadata().get("loams-consistency-token").is_some());
     assert_eq!(
         response.get_ref().result.as_ref().expect("present").status,
         pb::UpdateStatus::Acknowledged as i32

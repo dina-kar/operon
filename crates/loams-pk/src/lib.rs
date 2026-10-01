@@ -13,10 +13,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use loams_store::Store;
 use object_store::ObjectStore;
 use object_store::path::Path;
 use object_store::prefix::PrefixStore;
-use loams_store::Store;
 use slatedb::config::{DbReaderOptions, Settings};
 use slatedb::db_cache::DbCache;
 use slatedb::{CloseReason, Db, DbReader, DbReaderMode, ErrorKind, WriteBatch};

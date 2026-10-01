@@ -655,10 +655,7 @@ impl Fixture {
             link: self.link_source(),
             index: loams_collection::IndexBuildSource::new(self.ctx.clone()),
             merge: loams_collection::SplitMergeSource::new(self.ctx.clone(), maintenance.clone()),
-            compaction: loams_collection::LanceCompactionSource::new(
-                self.ctx.clone(),
-                maintenance,
-            ),
+            compaction: loams_collection::LanceCompactionSource::new(self.ctx.clone(), maintenance),
             build: self.source_over(
                 HotBuildConfig {
                     rebuild_max_staleness: DIFF_STALENESS,

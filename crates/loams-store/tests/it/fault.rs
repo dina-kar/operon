@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use object_store::memory::InMemory;
 use loams_store::{Fault, FaultyStore, Op, Store, StoreError};
+use object_store::memory::InMemory;
 
 fn faulty() -> (Arc<FaultyStore>, Store) {
     let faulty = Arc::new(FaultyStore::new(Arc::new(InMemory::new())));

@@ -49,9 +49,7 @@ impl Meta {
     pub async fn stream(&self, ns: &str, name: &str, partitions: u32) -> (NamespaceId, StreamId) {
         let ns = match self.client.create_namespace(ns).await {
             Ok(id) => id,
-            Err(loams_meta::MetaError::Rejected(loams_meta::ApplyError::NamespaceExists(id))) => {
-                id
-            }
+            Err(loams_meta::MetaError::Rejected(loams_meta::ApplyError::NamespaceExists(id))) => id,
             Err(err) => panic!("create namespace: {err}"),
         };
         let stream = self
@@ -242,9 +240,7 @@ pub async fn segment_now(
         .await
     {
         Ok(()) => Some(path),
-        Err(loams_meta::MetaError::Rejected(loams_meta::ApplyError::IndexMismatch {
-            ..
-        })) => {
+        Err(loams_meta::MetaError::Rejected(loams_meta::ApplyError::IndexMismatch { .. })) => {
             store.delete(&path).await.expect("delete");
             None
         }

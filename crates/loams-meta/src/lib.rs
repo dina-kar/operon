@@ -30,9 +30,6 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use codec::{snapshot_bytes, snapshot_round_trip, state_from_snapshot_bytes};
 pub use command::{Command, Reply};
 pub use db::LocalDb;
-pub use log_store::LogStore;
-pub use network::Router;
-pub use node::{MembershipView, MetaConfig, MetaNode, RaftStatus};
 pub use loams_common::meta::{
     AliasAction, AliasTargetAction, AliasTargets, ApplyError, COLLECTION_KIND, Collection,
     Consistency, EntryKind, Fence, Freshness, HotConfig, IndexEntry, Lease, LeaseGrant, Link,
@@ -41,6 +38,9 @@ pub use loams_common::meta::{
     Stream, TargetRef, WAL_COMMIT_WINDOW_MS, WalChunk, WalClass, collection_pk_prefix,
     collection_pointer_key, collection_prefix, implicit_name, log_stale_object,
 };
+pub use log_store::LogStore;
+pub use network::Router;
+pub use node::{MembershipView, MetaConfig, MetaNode, RaftStatus};
 pub use raft::{EntryReply, NodeId, SnapshotData, TypeConfig};
 pub use state::MetaState;
 pub use state_machine::StateMachineStore;

@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use object_store::memory::InMemory;
 use loams_cache::{RangeCache, RangeCacheConfig};
 use loams_collection::{
     CollectionCommitHook, CollectionCommitStep, CollectionConfig, CollectionContext,
@@ -37,6 +36,7 @@ use loams_meta::{
 use loams_query::{BacklogMonitor, BackpressureConfig, Override, ServiceError};
 use loams_store::{FaultRates, FaultyStore, Store};
 use loams_worker::{Worker, WorkerConfig, WorkerHandle};
+use object_store::memory::InMemory;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use tempfile::TempDir;

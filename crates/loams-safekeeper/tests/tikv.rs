@@ -400,11 +400,8 @@ async fn raw_store_fences_a_deposed_writer() {
     assert_eq!(st.flush_lsn, Lsn(106));
 
     // A second instance on the same keys: a new proposer takes over.
-    let new = loams_safekeeper::tikv_raw::RawWalStore::new(
-        old.kv().clone(),
-        old.kv().root().to_vec(),
-        8,
-    );
+    let new =
+        loams_safekeeper::tikv_raw::RawWalStore::new(old.kv().clone(), old.kv().root().to_vec(), 8);
     let (given, st) = new.vote(&t, 2).await.unwrap();
     assert!(given);
     assert_eq!(st.flush_lsn, Lsn(106));

@@ -1010,10 +1010,9 @@ async fn run_link(meta: &MetaClient, ctx: &CollectionContext, reader: &LogReader
 /// One run of M1.1's index builds over every collection.
 async fn run_indexes(meta: &MetaClient, ctx: &CollectionContext) {
     let source = loams_collection::IndexBuildSource::new(ctx.clone());
-    let results =
-        loams_worker::run_once(meta.clone(), "indexer", Duration::from_secs(30), &source)
-            .await
-            .expect("run the index builds");
+    let results = loams_worker::run_once(meta.clone(), "indexer", Duration::from_secs(30), &source)
+        .await
+        .expect("run the index builds");
     for (_, result) in &results {
         if let loams_worker::RunResult::Ran(Err(err)) = result {
             eprintln!("index build: {err}");

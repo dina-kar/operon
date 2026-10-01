@@ -4,11 +4,11 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use object_store::memory::InMemory;
 use loams_cache::{RangeCache, RangeCacheConfig};
 use loams_quickwit::storage::{Storage, StorageErrorKind};
 use loams_store::{Fault, FaultyStore, Op, Store};
 use loams_text::LoamsStorage;
+use object_store::memory::InMemory;
 use tokio::io::AsyncReadExt;
 
 fn payload(len: usize) -> Vec<u8> {

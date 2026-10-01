@@ -17,11 +17,11 @@ use datafusion::prelude::SessionContext;
 use datafusion::sql::sqlparser::ast::Statement;
 use datafusion::sql::sqlparser::dialect::MySqlDialect;
 use datafusion::sql::sqlparser::parser::Parser;
+use loams_query::{CollectionService, SqlConfig};
 use opensrv_mysql::{
     AsyncMysqlIntermediary, AsyncMysqlShim, Column, ColumnFlags, ColumnType, ErrorKind, InitWriter,
     ParamParser, QueryResultWriter, StatementMetaWriter,
 };
-use loams_query::{CollectionService, SqlConfig};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;

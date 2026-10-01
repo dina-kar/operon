@@ -330,8 +330,7 @@ async fn an_event_another_request_is_appending_is_409_with_retry_after() {
         .await
         .unwrap()
         .unwrap();
-    let parsed =
-        loams_cloudevents::json::parse_event(event("f-1").to_string().as_bytes()).unwrap();
+    let parsed = loams_cloudevents::json::parse_event(event("f-1").to_string().as_bytes()).unwrap();
     meta.claim_idempotency_keys(IdempotencyClaim {
         stream: stream.id,
         owner: "another-request".to_string(),

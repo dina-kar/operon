@@ -7,6 +7,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use loams_meta::rpc::{self, JoinRequest, LeaveRequest};
+use loams_meta::{
+    ApplyError, Command, Consistency, HttpTransport, HttpTransportConfig, MetaClient,
+    MetaClientConfig, MetaConfig, MetaError, MetaNode, MetaState, SystemClock, Transport,
+    TypeConfig,
+};
+use loams_store::Store;
 use openraft::entry::RaftEntry;
 use openraft::error::{Fatal, RaftError};
 use openraft::impls::leader_id_adv::LeaderId;
@@ -15,13 +22,6 @@ use openraft::type_config::alias::{EntryOf, LogIdOf, SnapshotMetaOf};
 use openraft::{
     BasicNode, ErrorSubject, ErrorVerb, LogId, Membership, StorageError, StoredMembership, Vote,
 };
-use loams_meta::rpc::{self, JoinRequest, LeaveRequest};
-use loams_meta::{
-    ApplyError, Command, Consistency, HttpTransport, HttpTransportConfig, MetaClient,
-    MetaClientConfig, MetaConfig, MetaError, MetaNode, MetaState, SystemClock, Transport,
-    TypeConfig,
-};
-use loams_store::Store;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;

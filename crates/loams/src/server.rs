@@ -763,8 +763,7 @@ impl StreamGrpc {
         let stop = CancellationToken::new();
         let task_stop = stop.clone();
         let task = tokio::spawn(async move {
-            if let Err(err) = loams_stream_grpc::serve(listener, streams, events, task_stop).await
-            {
+            if let Err(err) = loams_stream_grpc::serve(listener, streams, events, task_stop).await {
                 tracing::error!(%err, "native stream gRPC server failed");
             }
         });

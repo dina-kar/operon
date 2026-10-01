@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use object_store::memory::InMemory;
 use loams_pk::{PkError, PkIndex, PkIndexConfig, PkReader};
 use loams_store::{Fault, FaultyStore, Op, Store};
+use object_store::memory::InMemory;
 
 const PATH: &str = "ns/1/pk/7/";
 

@@ -6,14 +6,14 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::BoxStream;
+use loams_cache::{CacheError, DiskConfig, RangeCache, RangeCacheConfig};
+use loams_store::{Fault, FaultyStore, Op, Store};
 use object_store::memory::InMemory;
 use object_store::path::Path;
 use object_store::{
     CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
     PutMultipartOptions, PutOptions, PutPayload, PutResult,
 };
-use loams_cache::{CacheError, DiskConfig, RangeCache, RangeCacheConfig};
-use loams_store::{Fault, FaultyStore, Op, Store};
 
 fn data(len: usize) -> Bytes {
     Bytes::from((0..len).map(|i| (i % 251) as u8).collect::<Vec<u8>>())

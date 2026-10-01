@@ -83,11 +83,7 @@ fn column_dir(f: &Fixture, config: &HotTierConfig, kind: &str) -> PathBuf {
         .join(COLUMN)
 }
 
-fn ann(
-    f: &Fixture,
-    tier: &HotTierImpl,
-    version: u64,
-) -> Option<Arc<dyn loams_query::hot::HotAnn>> {
+fn ann(f: &Fixture, tier: &HotTierImpl, version: u64) -> Option<Arc<dyn loams_query::hot::HotAnn>> {
     tier.ann(f.ns, f.cid, COLUMN, version)
 }
 

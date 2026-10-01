@@ -19,8 +19,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use bytes::Bytes;
-use openraft::raft::{AppendEntriesRequest, VoteRequest};
 use loams_common::meta::{ApplyError, MetaError};
+use openraft::raft::{AppendEntriesRequest, VoteRequest};
 use serde::{Deserialize, Serialize};
 
 use crate::command::{Command, Reply};

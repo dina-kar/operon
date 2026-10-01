@@ -958,11 +958,7 @@ async fn dense_and_sparse_retrievers_fuse() {
     assert_eq!(u64s(&rescored.hits), vec![2, 1]);
     assert_eq!(
         rescored.hits[0].score,
-        score(
-            loams_collection::Distance::Cosine,
-            &[0.6, 0.8],
-            &[0.0, 1.0]
-        )
+        score(loams_collection::Distance::Cosine, &[0.6, 0.8], &[0.0, 1.0])
     );
     setup.shutdown().await;
 }

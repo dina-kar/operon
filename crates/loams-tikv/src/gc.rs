@@ -940,7 +940,10 @@ mod tests {
         let r = round(&fake, Duration::from_secs(600)).await.expect("round");
         assert_eq!(r.safe_point, barrier);
         assert_eq!(r.held_by.as_deref(), Some("loams/test/x"));
-        assert!(fake.calls().contains(&format!("locks loams_meta {barrier}")));
+        assert!(
+            fake.calls()
+                .contains(&format!("locks loams_meta {barrier}"))
+        );
     }
 
     #[tokio::test]

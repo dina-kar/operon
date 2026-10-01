@@ -9,15 +9,15 @@ use std::sync::Arc;
 
 use crate::common::{doc, range_cache};
 use lance::dataset::transaction::Operation;
-use object_store::ObjectStoreExt;
-use object_store::memory::InMemory;
-use object_store::path::Path;
 use loams_collection::{
     CachedObjectStore, CollectionSchema, DynamicMapping, LanceCommitter, LanceConfig, LanceEnv,
     NewRow, PrimaryKey, to_record_batch,
 };
 use loams_common::{CollectionId, NamespaceId};
 use loams_store::{FaultyStore, Op, Store};
+use object_store::ObjectStoreExt;
+use object_store::memory::InMemory;
+use object_store::path::Path;
 use serde_json::json;
 
 mod plain {

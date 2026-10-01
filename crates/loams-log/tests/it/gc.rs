@@ -182,8 +182,7 @@ async fn only_old_unreferenced_objects_are_deleted() {
     assert_eq!(live_wal.len(), 1);
 
     let now = f.clock.now_ms();
-    let orphan_wal =
-        loams_log::paths::wal_object(loams_meta::WalClass::Standard, 9, ulid_at(now));
+    let orphan_wal = loams_log::paths::wal_object(loams_meta::WalClass::Standard, 9, ulid_at(now));
     let orphan_segment = loams_log::paths::segment(f.ns, f.stream, 0, 0, ulid_at(now));
     for path in [&orphan_wal, &orphan_segment] {
         f.store

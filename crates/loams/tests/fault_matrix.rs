@@ -39,7 +39,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
-use object_store::memory::InMemory;
 use loams_cache::{CacheError, RangeCache, RangeCacheConfig};
 use loams_collection::{
     CollectionConfig, CollectionContext, CollectionGcRoots, CollectionSchema,
@@ -68,6 +67,7 @@ use loams_query::hot::HotTier;
 use loams_query::placement::LocalOnly;
 use loams_store::{Fault, FaultyStore, Op, Store};
 use loams_worker::{RunResult, TaskError, TaskSource, run_once};
+use object_store::memory::InMemory;
 use tempfile::TempDir;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

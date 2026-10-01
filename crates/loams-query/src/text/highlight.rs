@@ -164,8 +164,7 @@ fn field_snippets(
         .ok_or_else(|| ServiceError::Internal(format!("no analyzer {analyzer}")))?;
     let mut out = Vec::new();
     for value in extract(source, &spec.source_path) {
-        let Ok(Some(loams_collection::IndexValue::Text(text))) =
-            coerce(&spec.kind, value.as_ref())
+        let Ok(Some(loams_collection::IndexValue::Text(text))) = coerce(&spec.kind, value.as_ref())
         else {
             continue;
         };

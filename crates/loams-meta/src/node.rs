@@ -7,17 +7,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use loams_common::meta::{
+    ApplyError, Consistency, Fence, LeaseGrant, MetaError, Retention, WalChunk, WalClass,
+};
+use loams_common::{NamespaceId, StreamId};
+use loams_store::Store;
 use openraft::async_runtime::WatchReceiver;
 use openraft::error::{
     ChangeMembershipError, ClientWriteError, InitializeError, LinearizableReadError, RaftError,
 };
 use openraft::metrics::WaitError;
 use openraft::{BasicNode, ChangeMembers, Raft, ReadPolicy, SnapshotPolicy};
-use loams_common::meta::{
-    ApplyError, Consistency, Fence, LeaseGrant, MetaError, Retention, WalChunk, WalClass,
-};
-use loams_common::{NamespaceId, StreamId};
-use loams_store::Store;
 
 use crate::clock::{Clock, SystemClock};
 use crate::command::{Command, Reply};

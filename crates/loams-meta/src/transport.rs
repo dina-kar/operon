@@ -14,6 +14,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
 use bytes::Bytes;
+use loams_common::meta::MetaError;
 use openraft::BasicNode;
 use openraft::error::{
     Fatal, NetworkError, RPCError, RaftError, ReplicationClosed, StreamingError, Unreachable,
@@ -23,7 +24,6 @@ use openraft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, SnapshotResponse, VoteRequest, VoteResponse,
 };
 use openraft::type_config::alias::VoteOf;
-use loams_common::meta::MetaError;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
