@@ -108,7 +108,7 @@ API keys stay for SDK users and service accounts that cannot federate (§18 §6:
 - every key is scoped to one environment;
 - keys default to a 90-day expiry;
 - the console marks keys that were not used for 30 days;
-- keys cannot be issued to agents.
+- keys cannot be issued to agents. The CLI follows this rule (D295, §30 §15): `loam keys create` makes keys for apps, written to `.env.loam`; the stdio MCP server never mints or returns keys, and from CLI3 it acts as an agent principal with vended tokens.
 
 ## 6. Human sign-in in OSS (P7)
 
