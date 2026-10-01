@@ -581,7 +581,7 @@ rf 1 compares one safekeeper with one TiKV store; rf 3 compares three safekeeper
 3. **The in-process interpreted sender (Q112).** It removes the feeder's second stream.
 4. **Re-run on the §7 topology.** Server NVMe with PLP (fsync in µs, not ms), three nodes and real or `netem` AZ delays (Q114). The owner's < 5 ms p99 target is a server-hardware number. Both variants on this laptop are far above it.
 
-### 7.2 Arm A: a native leaderless WAL on local NVMe (D263–D269 and D271, 2026-09-30)
+### 7.2 Arm A: a native leaderless WAL on local NVMe (D263–D269 and D271–D272, 2026-09-30)
 
 On 2026-09-30 the owner decided that the Loam WAL targets **native leaderless-WAL performance** instead of tuning the TiKV hot tier. Two arms are measured against the same gate:
 
@@ -599,12 +599,12 @@ The owner also asked for Arm A's store to be a tiered, low-level I/O layer, with
 | One append in flight per timeline | Many in flight. Writes are issued while earlier ones are still syncing, and acks follow the durable position (Q115 answered) |
 | The feeder shares the disk | The feeder stays until Q112 is solved, but its safekeeper moves to another filesystem (D271) |
 
-#### The design
+#### The design (target; D272 records the compio path as built, which leaves out the custom `OpCode`s and registered buffers below)
 
 - **D263. compio is the runtime of the Arm A data path** (owner decision, 2026-09-30; final).
   - **Shards.** Each shard is one thread running a compio runtime, and **owns a set of timelines** (by hash of the timeline id, over a shard count fixed at first start). A shard also owns its own journal (D265), so group commit is per shard and needs no locks across cores.
   - **What runs on the owning shard:** the timeline's `START_WAL_PUSH` connection, its journal writes, and its durable writes. An accept thread reads the startup packet, which names the timeline, then hands the socket to the owning shard.
-  - **The driver is io_uring.** compio's own opcodes cover sockets. Custom `OpCode`s cover what compio does not expose: `WRITE`/`WRITE_FIXED` with `RWF_DSYNC`, and registered buffers. The raw `io-uring` crate and `io_uring_register` on the ring's fd are used only where compio cannot help: buffer registration and file-table updates.
+  - **The driver is io_uring.** *(Target design. The built path in D272 uses `O_DSYNC` descriptors and no custom `OpCode`s or registered buffers.)* compio's own opcodes cover sockets. Custom `OpCode`s cover what compio does not expose: `WRITE`/`WRITE_FIXED` with `RWF_DSYNC`, and registered buffers. The raw `io-uring` crate and `io_uring_register` on the ring's fd are used only where compio cannot help: buffer registration and file-table updates.
   - **Linked writes.** The safe compio 0.19 API used here cannot pass the `IO_LINK` flag on an operation. So the `WRITE` → `FSYNC` pair for FUA-less devices is two back-to-back operations on the shard, and the `FSYNC` is submitted only after the `WRITE` completes successfully. An `AppendResponse` never precedes durability. (The low-level `Extra` / `Proactor::push_with_extra` path could link the pair; it is a later optimisation.)
   - **Where io_uring is blocked,** compio falls back to its epoll driver, and durable writes go to the `pwritev2` pool.
   - **tokio stays for the control plane:** the TiKV metadata client, S3 offload, the admin HTTP API (axum) and the feeder. It is bridged to the shards by bounded channels, off the commit path. The existing tokio WAL service stays as the fallback front end (`--runtime tokio`), and is benchmarked as tier (a).
@@ -642,7 +642,7 @@ The owner also asked for Arm A's store to be a tiered, low-level I/O layer, with
 
   | Tier | Durable write | Used when |
   |---|---|---|
-  | **`uring`** | io_uring on the owning compio shard (D263), with **registered files** (segment slots updated on rollover) and **registered, aligned buffers** (`WRITE_FIXED`) on `O_DIRECT` segments. The write carries **`RWF_DSYNC`**: on pre-zeroed blocks the kernel sends one **FUA** write when the device has FUA, and write + flush when it does not. The alternative is a **linked `WRITE` → `FSYNC(DATASYNC)`** pair (`--uring-sync linked`, chosen automatically when `queue/fua` is 0). Optionally **SQPOLL** (`--uring-sqpoll`). **IOPOLL** is used only when the device has NVMe poll queues (`queue/io_poll` = 1) | io_uring is allowed (`io_uring_setup` succeeds and the opcodes probe) and the filesystem takes `O_DIRECT` |
+  | **`uring`** (target design; D272 is the built path) | io_uring on the owning compio shard (D263), with **registered files** (segment slots updated on rollover) and **registered, aligned buffers** (`WRITE_FIXED`) on `O_DIRECT` segments. The write carries **`RWF_DSYNC`**: on pre-zeroed blocks the kernel sends one **FUA** write when the device has FUA, and write + flush when it does not. The alternative is a **linked `WRITE` → `FSYNC(DATASYNC)`** pair (`--uring-sync linked`, chosen automatically when `queue/fua` is 0). Optionally **SQPOLL** (`--uring-sqpoll`). **IOPOLL** is used only when the device has NVMe poll queues (`queue/io_poll` = 1) | io_uring is allowed (`io_uring_setup` succeeds and the opcodes probe) and the filesystem takes `O_DIRECT` |
   | **`pwritev2`** | `O_DIRECT` + `pwritev2(RWF_DSYNC)` from a small thread pool (one thread per in-flight unit) | io_uring is blocked, as by Docker's default seccomp profile and GKE's COS |
   | **`buffered`** | `pwrite` into the page cache; a sync thread runs `fdatasync` back to back while unsynced data exists | No `O_DIRECT` (tmpfs, some overlay filesystems), or chosen by `--io buffered` |
   | *Future:* NVMe passthrough | `uring_cmd` on `/dev/ng*`: NVMe write commands with FUA, no filesystem | A raw namespace per node. Documented only; no SPDK |
