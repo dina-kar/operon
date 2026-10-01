@@ -99,7 +99,7 @@ is about 43% at rf1 and 23% at rf3; commit-16 54% at rf1, tpcb-16 22% at rf1 and
 rf3, a single baseline commit-16 run hit 398 ms. Differences
 under those bands are not results.
 
-| run (p99 ms median (min-max) / TPS) | safekeepers | Loam txn | raw d1 | raw d8 | raw d32 |
+| run (p99 ms median (min-max) / TPS) | safekeepers | Loam txn (rf3: leaders not placed, see below) | raw d1 | raw d8 | raw d32 |
 |---|---|---|---|---|---|
 | rf1 commit-1 | 16.6 (16.5-23.6) / 197 | 45.6 (36.0-73.9) / 117 | 46.2 (24.1-48.9) / 138 | 44.0 (36.1-44.3) / 120 | 44.6 (40.3-45.1) / 133 |
 | rf1 commit-16 | 31.2 (22.0-38.8) / 2129 | 69.7 (68.8-124.8) / 731 | 72.3 (44.9-75.0) / 919 | 40.7 (33.4-49.7) / 1361 | 57.6 (44.9-59.5) / 1388 |
@@ -129,6 +129,19 @@ transactional store had (raw is no faster on commit-1). It is not purely the
 fsync: the safekeepers fsync the same disk and keep a 17 ms p99, so TiKV's
 extra work (raft-engine plus apply, region leader hop) roughly doubles the tail.
 Only a PLP NVMe, or the local-NVMe WAL of Arm A, can remove that floor.
+
+Correction found in review: `place-leaders.sh` only placed the raw key range
+(`r`), so the transactional store's rf3 rows above ran with unplaced leaders.
+After fixing it (one PD rule group per store mode) the transactional store was
+rerun at rf3 with leaders placed, 3 interleaved repeats against fresh baselines
+(`bench/results/2026-10-01-raw/txn-placed/`): baseline commit-1 p99 35.2 ms /
+102 TPS, commit-16 65.7 / 1047, tpcb-16 268 / 312, bulk 78 MB/s; transactional
+store with placed leaders commit-1 111.5 ms (92.5-118.5) / 30 TPS, commit-16
+195.6 / 238, tpcb-16 874 / 116, bulk 9.3 MB/s. That is much worse than the
+unplaced rows (48.6 ms / 76 TPS) and I do not know why (a raw-store control run
+right after was normal: commit-1 p99 60 ms / 63 TPS, commit-16 86 ms / 622 TPS).
+The transactional store is the superseded design, so it was not chased further;
+the raw rows (placed) are unaffected.
 
 Caveats: one laptop (14 CPUs, 16 GB, one shared consumer SSD), Neon and TiKV
 and loam-wal all on it; n=3; the baseline's own spread is large; compute fsync
