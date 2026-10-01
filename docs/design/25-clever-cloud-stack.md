@@ -2,6 +2,8 @@
 
 Status: **Proposed** · 2026-09-29. This is the companion to [§24](24-cpu-time-runtime.md). The owner's direction (2026-09-29): "use rustfs and clever cloud opensource stack to gitops, evaluate all the tools that are we adopt from clever cloud". This document does four things: it inventories every relevant open-source project from Clever Cloud (§2), compares Sōzu with Loam's planned edge (§3), compares Biscuit with the planned auth (§4), and designs the GitOps layout (§5–§6). Its decisions are **D185–D188** in §24's table, and its questions are **Q-RT-8 … Q-RT-14**.
 
+> **Amended 2026-10-02** by [§38](38-knative-authentik-gitops.md) (proposed): "GitOps from Clever Cloud" means Clever's open-source operator and infrastructure tooling (D185, the CKE Terraform and Karpenter providers); Clever publishes no GitOps engine, so **Argo CD stays** (D186, D453), with a Flux layout for the smallest profile (D454). §6.3 gains waves for CloudNativePG, the Knative Operator, Authentik and Knative (D455); the operator also reconciles Knative tenancy per namespace (D443). Plan MT3.
+
 Markers are the same as in §24. Every license was read from the repository's `LICENSE` file (or, where there is none, from the crate manifest, as noted). Activity dates come from the GitHub API on 2026-09-29.
 
 **License rule applied throughout.** A **linked dependency** must not be AGPL, BSL, SSPL or ELv2. An **AGPL service** may run only unmodified, as a separate process, and the risk is flagged even then. LGPL linked into a Rust binary is not banned by the rule, but static linking brings relinking obligations. It is flagged wherever it appears.

@@ -48,3 +48,11 @@ Quotas show the split: the engine enforces whatever limits it is given; the plat
 - A new feature goes here if a single organisation running its own cluster needs it. It goes to `loam-platform` only if it exists solely to sell, bill or operate Loam for many tenants.
 - When the platform needs something from the engine, add an open hook or API here (a metric, an event, an admin endpoint) instead of platform-specific code.
 - Design docs 24 (CPU-time runtime) and 26 (jobs API), in review, follow this boundary; D190 on the §24 branch already moves billing to `loam-platform`.
+
+## Reconfirmed 2026-10-02
+
+The owner reconfirmed this boundary on 2026-10-02 ("keep loam cloud and loams-cloud private; may add Knative in OSS but no metering; I want adoption and also to raise money from VCs; move Cloudflare, OpenRTB etc. commercial to private repos"), withdrawing the ruling of 2026-10-01 that would have opened the multi-tenant platform. Recorded in [§38](design/38-knative-authentik-gitops.md) (D440, proposed):
+
+- **Stays as above.** Metering and billing, the multi-tenant control plane, fleet operations, hosted databases, BYOC management and the hosted console remain `loam-platform` (and `loam-cloud` for the site and console).
+- **Added to the open column**, as self-hosting features: Knative Serving and Eventing as an optional compute and delivery layer, **with no metering** (only §27's hooks); Authentik's open-source edition as the default IdP of the Kubernetes distribution, which takes Keycloak's place as the SAML broker in the Tenancy row and in D221 (D447); the GitOps layout's new waves (D453–D455).
+- **Moved to `loam-platform`** as commercial components: the protocol gateway with the OpenRTB and Google adapters ([§34](design/34-protocol-gateway-and-standards.md) is now a stub keeping the vendor-neutral charter, CloudEvents profile and `Runner` trait), the Cloudflare deployment target and its startup-credits plan (formerly §35 on PR #179), the hosted Loams Cloud on Cloudflare, and the usage-event form and any metering ledger.
