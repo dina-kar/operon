@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use operon_common::StreamId;
 use operon_common::meta::{
-    ApplyError, Consistency, IdempotencyClaim, IdempotencyCompletion, IdempotencyEntry,
+    ApplyError, Consistency, Fence, IdempotencyClaim, IdempotencyCompletion, IdempotencyEntry,
     IdempotencyKey, IdempotencyState, MAX_IDEMPOTENCY_KEYS, MAX_IDEMPOTENCY_TTL_MS, MetaStore,
 };
 
@@ -259,4 +259,53 @@ pub async fn ledger_requests_are_validated(backend: &dyn Backend) {
         ),
         ApplyError::StreamNotFound(missing)
     );
+}
+
+pub async fn a_fenced_ledger_prune_is_refused_and_keeps_every_entry(backend: &dyn Backend) {
+    let db = backend.start().await;
+    let meta = db.first();
+    let s = one_stream(meta, "idem-fenced").await;
+    meta.claim_idempotency_keys(claim(s, "req-1", &[1, 2], TTL_MS))
+        .await
+        .expect("claim");
+    meta.complete_idempotency_keys(completion(s, "req-1", &[(1, 0, 1)]))
+        .await
+        .expect("complete");
+    let lease = "idem-fenced/lease";
+    let grant = meta
+        .acquire_lease(lease, "retention", Duration::from_secs(30))
+        .await
+        .expect("acquire");
+    let fence = |epoch| {
+        Some(Fence {
+            lease: lease.to_string(),
+            epoch,
+        })
+    };
+    // A holder that lost the lease prunes nothing.
+    assert_eq!(
+        rejected(meta.prune_idempotency_keys(fence(grant.epoch + 1)).await),
+        ApplyError::Fenced {
+            lease: lease.to_string()
+        }
+    );
+    // The right holder prunes, and live entries (pending and done) stay.
+    assert_eq!(
+        db.last()
+            .prune_idempotency_keys(fence(grant.epoch))
+            .await
+            .expect("prune"),
+        0
+    );
+    for n in [1, 2] {
+        assert!(
+            meta.idempotency_key(L, s, key(n))
+                .await
+                .expect("read")
+                .is_some()
+        );
+    }
+    meta.release_lease(lease, "retention", grant.epoch)
+        .await
+        .expect("release");
 }
