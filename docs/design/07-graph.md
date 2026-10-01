@@ -1,6 +1,6 @@
 # 07 — Graph (native GraphRAG)
 
-Status: **Approved** · 2026-09-22 · revised 2026-09-25 (native only, D44; M3)
+Status: **Approved** · 2026-09-22 · revised 2026-09-25 (native only, D44; M3) · confirmed 2026-10-01 ([§32](32-loam-flow-fabric-house.md) D350: Grafeo evaluated and not adopted as the graph engine; a `grafeo-server` companion only if Q339 asks for Cypher or GQL)
 
 Graphs in Operon are **property graphs mapped over collections and tables**, accelerated by dense vertex IDs and CSR/CSC adjacency sidecars. The graph is not a separate copy of the data: the same rows that are searchable and analyzable are traversable. Traversal is a DataFusion operator, so a GraphRAG retrieval (vector/BM25 seeds → 1–2 hops → rerank) is one planned query. Graphs are reached through SQL table functions, the `expand` stage of the native hybrid search API, and Operon-native graph-store adapters for the AI frameworks; there is no Cypher, Bolt or Neo4j procedure surface (D44).
 
