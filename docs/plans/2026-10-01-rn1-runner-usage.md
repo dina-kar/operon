@@ -62,7 +62,7 @@ From §27: the `HostReport`/`Invocation`/`HostReportAck` fields 1–11 as publis
 
 ```
 proto/loam/meter/v1/meter.proto
-crates/operon-meter/                         # new (Tasks 1–2, 6)
+crates/operon-meter/                         # new (Tasks 1–2)
   Cargo.toml  build.rs
   src/{lib.rs,codec.rs,reporter.rs,buffer.rs,testing.rs,metrics.rs}
   tests/{codec.rs,reporter.rs}
@@ -156,9 +156,9 @@ impl RunnerHost { pub async fn invoke(&self, cx: &InvocationCx, dep: &Deployment
 #[macro_export] macro_rules! runner_conformance { ($factory:expr) => { … } }   // one #[tokio::test] per case
 ```
 
-**Semantics:** `RunnerHost::invoke` calls the runner; if `kind() == Supervisor`, a returned `usage` is a bug (logged at error, dropped, counted `loam_runner_double_report_total`); otherwise a missing `usage` is a bug the same way, and a present one becomes one `Invocation` with `runner = kind().as_str()`, recorded on the `Reporter`. A failed invocation that consumed CPU still reports it. Conformance cases: `deploy_is_idempotent_by_digest`; `invoke_returns_handler_response`; `usage_present_iff_not_supervisor`; `undeploy_then_invoke_is_not_found`; `deadline_is_enforced`; `concurrent_invokes_complete`; `unsupported_contract_is_refused`; `health_reports_ready`.
+**Semantics:** `RunnerCapabilities` gains `pub host_reports: bool` (true for `Process`, `Lambda`, `CloudRun`, `ContainerApps` and `External` runners that measure; false for `Supervisor`, which reports its own tiers, and `Knative`, whose usage reaches the hooks through pod cgroups with no host report, §38 D444). `RunnerHost::invoke` calls the runner; if `host_reports` is false, a returned `usage` is a bug (logged at error, dropped, counted `loam_runner_double_report_total`); otherwise a missing `usage` is a bug the same way, and a present one becomes one `Invocation` with `runner = kind().as_str()`, recorded on the `Reporter`. A failed invocation that consumed CPU still reports it. Conformance cases: `deploy_is_idempotent_by_digest`; `invoke_returns_handler_response`; `usage_present_iff_not_supervisor`; `undeploy_then_invoke_is_not_found`; `deadline_is_enforced`; `concurrent_invokes_complete`; `unsupported_contract_is_refused`; `health_reports_ready`.
 
-**Tests:** `supervisor_kind_is_never_reported_by_host`; `external_runner_is_reported_once`; `failed_invoke_still_reports_usage`; `runner_label_is_kind`; a `FakeRunner` passes `runner_conformance!`.
+**Tests:** `supervisor_kind_is_never_reported_by_host`; `non_reporting_runner_returns_none_without_error` (a fake runner with `host_reports: false`); `external_runner_is_reported_once`; `failed_invoke_still_reports_usage`; `runner_label_is_kind`; a `FakeRunner` passes `runner_conformance!`.
 
 **Commit:** `runner: add the Runner trait, RunnerHost and the runner conformance kit`.
 

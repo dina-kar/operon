@@ -99,7 +99,7 @@ Remove the GW1–GW4 rows from the Track GW section if they were integrated from
 | **D379** (§34): adapters, negotiation and the ad-tech conformance suite are Apache-2.0 here | `loam-platform` | **Superseded by D440** |
 | **D380, D383–D387** (§35, PR #179, unmerged) | Moved to `loam-platform` with the Cloudflare target | **Withdrawn by D440**; PR #179 is edited to drop §35 (D381 and D382 stay, re-homed in §36) |
 | **D376 item 4** and RN1 Task 6: the usage CloudEvents form built here | Built in `loam-platform` | **Amended by D440, D444**; the record spec in §27 §3.6 stays |
-| **D375**: a thin `WorkersRunner` in this repository after D111 | Commercial; plugs in as `RunnerKind::External` | **Amended by D440** |
+| **D375**: the `Runner` trait (kept in this repository, §24 §16) and its runner list, which named a thin `WorkersRunner` built here after D111 | The trait and `KnativeRunner` (D441) stay open; only the Workers runner is commercial and plugs in as `RunnerKind::External` | **D375's runner list amended by D440**; the trait is unchanged |
 | **§24 §11 F2**: Loam schedules T2 pods | Knative schedules them when enabled | **Refined by D441** |
 | **D186**: Argo CD | "GitOps from Clever Cloud" | **No conflict** (D453): Clever publishes no GitOps engine |
 | **§22 §4.4**: Authentik's enterprise split as a reason to prefer Keycloak | A CI guard | **Answered by D458** |

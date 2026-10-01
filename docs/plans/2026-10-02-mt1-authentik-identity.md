@@ -38,7 +38,7 @@ Same as the M1 overview §8, plus:
 
 | # | Ruling | Why | Cost if wrong |
 |---|---|---|---|
-| 1 | **The Authentik application is `loam`**, with two OAuth2 providers: `loam-console` (confidential, authorization code + PKCE, redirect `https://<console-host>/api/v1/auth/oidc/callback`) and `loam-cli` (public, device code, no redirect). Scopes: `openid`, `profile`, `email`, `groups`, `offline_access` | One application per product; the CLI cannot hold a secret | Renaming later breaks existing installs' redirect URIs; documented in the upgrade notes |
+| 1 | **The Authentik application is `loam`**, with two OAuth2 providers: `loam-console` (confidential, authorization code + PKCE, redirect `https://<console-host>/api/v1/auth/oidc/authentik/callback`) and `loam-cli` (public, device code, no redirect). Scopes: `openid`, `profile`, `email`, `groups`, `offline_access` | One application per product; the CLI cannot hold a secret | Renaming later breaks existing installs' redirect URIs; documented in the upgrade notes |
 | 2 | **The `groups` scope mapping** emits `groups` as a list of Authentik group names prefixed `loam-` (`[g.name for g in request.user.ak_groups.all() if g.name.startswith("loam-")]`) | Only groups meant for Loam reach the token; a company's other groups do not leak | Teams named without the prefix are invisible to Loam; documented |
 | 3 | **Group → team mapping**: Authentik group `loam-<project>-<role>` maps to the Loam team `<project>-<role>` with project role `<role>` ∈ {`admin`, `developer`, `viewer`}; `loam-org-owner` and `loam-org-admin` map to org roles. Anything else is ignored and counted (`loam_auth_unmapped_groups_total`) | Deterministic, no mapping table to keep in sync | A company with existing group names writes them as `loam-` aliases in Authentik |
 | 4 | **Exchange grant**: `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`, `subject_token` = the Authentik access token, `subject_token_type=urn:ietf:params:oauth:token-type:access_token`, `audience` = a Loam environment id. The gateway validates the token by the issuer's JWKS (cached 10 minutes), `aud` = the `loam-console` or `loam-cli` client id, `exp`, and `iss` in `[auth] trusted_issuers`; it then issues a Loam access token with `sub` = the Loam user id (JIT-created on first sight, keyed by `(iss, sub)`), `org`, `env`, `scp` from the user's grants, and **no** `act` | §19 §5.2 flow 1 already specifies the exchange for workload identities; people use the same endpoint | None beyond §19's |
@@ -86,9 +86,9 @@ docs/guides/identity-authentik.md
 
 **Files:** `deploy/authentik/{blueprints/loam.yaml,compose.yaml,values.yaml}`, `scripts/authentik/{guard.py,enterprise-apps.txt}`, `.github/workflows/identity.yml`.
 
-**Produces:** the blueprint of Rulings 1–2 (application `loam`; providers `loam-console`, `loam-cli`; scope mapping `loam-groups`; groups `loam-org-owner`, `loam-org-admin`; the default enrolment flow with TOTP or WebAuthn required); the guard of Ruling 7; a CI job `identity` that starts the compose stack, waits for `/-/health/ready/`, applies the blueprint and runs the guard.
+**Produces:** the blueprint of Rulings 1–2 (application `loam`; providers `loam-console`, `loam-cli`; scope mapping `loam-groups`; groups `loam-org-owner`, `loam-org-admin`; the default enrolment flow with TOTP or WebAuthn required; a **device-code flow** `loam-device-code` (designation Stage Configuration, with a consent stage) assigned as the active Brand's device-code flow, which Authentik requires for the device grant and does not create by default); the guard of Ruling 7; a CI job `identity` that starts the compose stack, waits for `/-/health/ready/`, applies the blueprint and runs the guard.
 
-**Tests:** `guard_rejects_enterprise_model` (a fixture blueprint with `authentik_providers_google_workspace.googleworkspaceprovider` fails); `guard_rejects_licence_values`; `guard_accepts_loam_blueprint`; `blueprint_applies_cleanly` (the worker's blueprint instance reports `successful`); `no_licence_installed`.
+**Tests:** `guard_rejects_enterprise_model` (a fixture blueprint with `authentik_providers_google_workspace.googleworkspaceprovider` fails); `guard_rejects_licence_values`; `guard_accepts_loam_blueprint`; `brand_has_device_code_flow` (the default Brand's `flow_device_code` is `loam-device-code`); `blueprint_applies_cleanly` (the worker's blueprint instance reports `successful`); `no_licence_installed`.
 
 **Commit:** `deploy: Authentik blueprints and the open-source-edition guard`.
 
@@ -124,11 +124,11 @@ docs/guides/identity-authentik.md
 
 ### Task 5: Console sign-in and `loam login`
 
-**Files:** the console API's `/api/v1/auth/oidc/{start,callback}`; `crates/operon-cli/src/login.rs`.
+**Files:** the console API's existing `GET /api/v1/auth/oidc/{provider}/start` (already in `api/console/openapi.json`) and a new `GET /api/v1/auth/oidc/{provider}/callback`, added to the OpenAPI contract, to `operon-console-mock` and to the contract tests (§19 P9, P10); `crates/operon-cli/src/login.rs`.
 
 **Produces:** authorization code with PKCE (S256) and `state` and `nonce` checks for the console; the device-code flow for the CLI (`loam login --issuer <url>`), which polls Authentik, then exchanges at Loam's token endpoint and stores the Loam refresh state the way §30 stores credentials.
 
-**Tests:** `pkce_s256_required`; `state_mismatch_rejected`; `nonce_replay_rejected`; `device_code_bound_to_loam_cli_client`; `cli_login_end_to_end` (compose stack, headless approval through Authentik's flow executor API).
+**Tests:** `callback_is_in_openapi_and_mock` (the contract test covers both operations); `pkce_s256_required`; `state_mismatch_rejected`; `nonce_replay_rejected`; `device_code_bound_to_loam_cli_client`; `cli_login_end_to_end` (compose stack, headless approval through Authentik's flow executor API).
 
 **Commit:** `auth: console and CLI sign-in through an OIDC IdP`.
 
