@@ -2,6 +2,8 @@
 
 Status: **Proposed** · 2026-10-01. Source: the owner's drafts "Précis (CDMP, Java stack)", "Top 200 connectors" and "Rollout" (`chatdump.md` lines 551–628), read as the design of Loam Flow's connector registry, and the owner's direction of 2026-10-01 that event ingestion runs on Apache Iggy and Apache Fluss ([§32](32-loam-flow-fabric-house.md) D331–D333). This document makes decisions **D352–D359** and asks **Q348–Q359**. It depends on §32 for the envelope (D334), the bridges (D336), Flow routes (D337–D339) and the `fabric/` workspace (D343). **No code is written by this document.**
 
+Names follow §32's owner rulings of 2026-10-01: packages under `loams` (`@loams/*` on npm), Go modules under `loams.dev/...`, CloudEvents types `io.loams.dev.<domain>.<name>.v1`. **Java is deferred**: the Camel connector layer stays, as an unmodified Camel runtime driven by generated YAML routes, but any Loam-written Java (a Java SDK, a Kestra plugin, custom Camel processors) waits until the owner lifts the deferral.
+
 Markers are §32's: **(verify)**, **(estimate)**, **(read 2026-10-01)**. "The précis" is the draft's "Précis (CDMP, Java stack)"; "CDMP" there is the draft's name for the canonical event contract, which in Loam is CloudEvents 1.0 (D334).
 
 ---
@@ -12,8 +14,8 @@ Markers are §32's: **(verify)**, **(estimate)**, **(read 2026-10-01)**. "The pr
 |---|---|---|
 | D352 | **A connector registry in `loam-flow`**: one versioned manifest per connector (`connectors/registry/<id>.yaml`, schema `loam.flow.v1.ConnectorSpec`), loaded at start, served by `FlowService.ListConnectors`/`DescribeConnector`, and checked by CI (schema, licence, capability tests). A connector **instance** (credentials, endpoints, tables) is a namespace object; a route (§32 D337) references instances | Proposed |
 | D353 | **Every connector declares its capabilities** (§4): direction (source, sink), modes (streaming, batch, CDC, webhook, request-reply), delivery per direction, transactional and upsert/delete support, ordering, formats, schema handling, bulk Arrow support, backpressure, auth methods, config schema, secret fields and limits. A route that uses an undeclared capability is refused; a connector's contract tests prove each declared capability (the précis' change 1) | Proposed |
-| D354 | **Runtimes, buy first** (§5): **native Rust** connectors in `loam-flow` for the hot path where Loam has the code or a good crate exists; **Iggy's connectors runtime** (Rust plugins) where Iggy has the connector; **Apache Camel** 4.22 for the long tail, run unmodified in a JVM service `loam-connect` whose routes end in `camel-iggy`; **Debezium Server** 3.7 (unmodified) for CDC of databases Loam does not bridge itself. **Kestra is not a runtime**: Resonate is Loam's orchestrator (D210), and Kestra is a companion with a Loam plugin (Q356). Kafka Connect arrives only through Iggy's Kafka gateway (§32 Q331) | Proposed |
-| D355 | **One envelope and one delivery contract for every connector** (the précis' change 3): sources emit CloudEvents 1.0 with `type` = `dev.loam.flow.<connector>.<event>.v1`, `source` = `/connectors/<instance>/<resource>`, and an `id` stable across re-reads, so D334's dedup and PK tables make re-delivery harmless; sinks consume CloudEvents and deliver at least once with `ce_id` as the idempotency key | Proposed |
+| D354 | **Runtimes, buy first** (§5): **native Rust** connectors in `loam-flow` for the hot path where Loam has the code or a good crate exists; **Iggy's connectors runtime** (Rust plugins) where Iggy has the connector; **Apache Camel** 4.22 for the long tail, run unmodified as `loam-connect`, driven by generated YAML routes that end in `camel-iggy` (no Loam-written Java while Java is deferred, owner 2026-10-01); **Debezium Server** 3.7 (unmodified) for CDC of databases Loam does not bridge itself. **Kestra is not a runtime**: Resonate is Loam's orchestrator (D210), and Kestra is a companion with a Loam plugin (Q356). Kafka Connect arrives only through Iggy's Kafka gateway (§32 Q331) | Proposed |
+| D355 | **One envelope and one delivery contract for every connector** (the précis' change 3): sources emit CloudEvents 1.0 with `type` = `io.loams.dev.flow.<connector>.<event>.v1`, `source` = `/connectors/<instance>/<resource>`, and an `id` stable across re-reads, so D334's dedup and PK tables make re-delivery harmless; sinks consume CloudEvents and deliver at least once with `ce_id` as the idempotency key | Proposed |
 | D356 | **Bulk data moves as Arrow, never row by row through Camel** (the précis' "control plane vs data plane"): batches of 65 536 rows (default), partitioned by a declared key, written by parallel tasks; **ADBC** (`adbc_driver_manager` 0.24 with the Apache-2.0 Snowflake, BigQuery, Postgres, SQLite, Flight SQL and DuckDB drivers) for warehouse reads and bulk loads; native drivers for OLTP upserts; JDBC only inside `loam-connect`; **Avro only at Kafka and schema-registry boundaries**, Arrow inside | Proposed |
 | D357 | **CDC is observed, not reinvented** (§7): Loam Postgres and WeSQL changes come from Loam's own bridges (D154, §29 D279); external Postgres, MySQL, MariaDB, SQL Server, Oracle, Db2 and MongoDB go through **Debezium Server** with its HTTP sink posting CloudEvents (Debezium's CloudEvents converter) to `loam-fabric ingest`; Iggy's `postgres_source` (logical replication) is the lighter option for Postgres. Current-state tables are Fluss PK tables (Versioned on the source LSN); history is the Iceberg log table; SCD2 is a House view. No triggers; replication-slot lag is monitored and alerted | Proposed |
 | D358 | **The ★ set is 21 Loam-owned hot-path connectors**, each with a fixed runtime (§8), shipped in **CN1** in the précis' rollout order (Kafka, PostgreSQL, MySQL, Debezium, S3, Iceberg, Parquet/Arrow/Avro, Elasticsearch, ClickHouse, Snowflake and BigQuery via ADBC, HTTP/Webhooks, JDBC), then Kinesis, Redis and OpenTelemetry. Phase 2 (CN2) is the remaining P2 connectors through stock Camel and Iggy plugins; phase 3 (CN3) is the long tail through OpenAPI-generated connectors | Proposed |
@@ -96,7 +98,7 @@ config:                            # JSON Schema 2020-12 for an instance's setti
   $ref: schemas/kafka.config.json
 secrets: [sasl.password, tls.key_pem]   # resolved through Dapr secret stores (D189); never stored in the instance
 envelope:
-  emits: dev.loam.flow.kafka.record.v1
+  emits: io.loams.dev.flow.kafka.record.v1
   consumes: "*"
 limits: { max_record_bytes: 16777216 }
 conformance: [contract, roundtrip, kill-restart, dup-check]
@@ -189,7 +191,7 @@ Iceberg (current + history)  →  House: SELECT … FINAL, SCD2 view over histor
 | 18 | JDBC | source, sink | camel: `jdbc`/`sql` components in `loam-connect`; bulk reads through Arrow's JDBC adapter (verify the Java packaging) | 12 |
 | 19 | Kinesis | source, sink | native: `aws-sdk-kinesis` (Apache-2.0), enhanced fan-out optional | 13 |
 | 20 | Redis | source (Streams), sink | native: `redis` crate (BSD-3-Clause) with consumer groups on Streams; `SET`/`HSET`/`XADD` sinks | 13 |
-| 21 | OpenTelemetry | source | native: OTLP/HTTP and OTLP/gRPC receiver in `loam-fabric ingest`, one CloudEvent per log record, span or metric point (`type` `dev.loam.otel.<signal>.v1`) | 13 |
+| 21 | OpenTelemetry | source | native: OTLP/HTTP and OTLP/gRPC receiver in `loam-fabric ingest`, one CloudEvent per log record, span or metric point (`type` `io.loams.dev.otel.<signal>.v1`) | 13 |
 
 Rollout: **CN1** the 21 above; **CN2** every P2 row of Appendix A through stock Camel components (`loam-connect`) or Iggy plugins, each with a manifest and contract tests; **CN3** the P3 rows, most through OpenAPI-generated native connectors. CN2 and CN3 are not planned yet.
 
@@ -201,7 +203,7 @@ Rollout: **CN1** the 21 above; **CN2** every P2 row of Appendix A through stock 
 
 ## 10. Where it lives (open core)
 
-All of §33 is open source (D220): self-hosters need connectors. `loam-connect` (Java) lives in this repository under `connect/` with its own Maven build and a path-filtered CI job, or in its own repository (Q353). `loam-platform` adds the managed fleet: per-tenant connector pods, autoscaling, plan limits on connector count and throughput, the hosted secrets UI, connector metering (through the usage hooks, §27).
+All of §33 is open source (D220): self-hosters need connectors. `loam-connect` (YAML route templates and configuration for the unmodified Camel runtime) lives in this repository under `connect/` with a path-filtered CI job, or in its own repository (Q353). `loam-platform` adds the managed fleet: per-tenant connector pods, autoscaling, plan limits on connector count and throughput, the hosted secrets UI, connector metering (through the usage hooks, §27).
 
 ## 11. Risks
 
@@ -227,7 +229,7 @@ All of §33 is open source (D220): self-hosters need connectors. `loam-connect` 
 | Q353 | `loam-connect`'s home: `connect/` in this repository, or its own repository | Founder | CN1 Task 12 |
 | Q354 | Instance credentials: per namespace through Dapr secret components (D189), or Loam-vended short-lived credentials where the provider supports them (AWS STS, GCP WIF) | Eng | Unified auth plan |
 | Q355 | Which P2 connectors move into CN1 if a launch customer needs them | Founder | CN1 start |
-| Q356 | Publish a Kestra plugin for Loam (tasks for House queries, Fabric produce, route control) so Kestra users can drive Loam | Founder | After CN1 |
+| Q356 | Publish a Kestra plugin for Loam (tasks for House queries, Fabric produce, route control) so Kestra users can drive Loam. **Deferred with Java** (owner, 2026-10-01): a Kestra plugin is Java code | Founder | When Java is un-deferred |
 | Q357 | Contribute Loam's native connectors (Kafka, ADBC, Kinesis) to Iggy's connectors runtime as plugins, so one Rust connector set serves both | Founder | After CN1 |
 | Q358 | OpenAPI-generated connectors (CN3): the generator (`progenitor`, Apache-2.0/MIT, or `openapi-generator`), and how cursors and webhooks are declared beside the spec | Eng | CN3 plan |
 | Q359 | Connector metering hooks (§27): which counters (events, bytes, API calls) the platform needs per instance | Founder | Before the cloud beta |
