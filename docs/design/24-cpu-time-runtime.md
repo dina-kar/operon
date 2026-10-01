@@ -1,6 +1,6 @@
 # 24 — Loam Functions: a CPU-Time Serverless Runtime
 
-Status: **Proposed** · 2026-09-29; amended the same day by two owner decisions (D189: secrets through Dapr; D190: billing in `loam-platform`). Source: the owner's draft "CPU-Time Serverless Runtime: Consolidated Plan" v2 (2026-09-28). On 2026-09-29 the owner approved ten changes to that draft in conversation. This document is built on those changes, and they override the draft wherever the two differ. They are decisions **D170–D179**, marked *approved in conversation 2026-09-29*. **D180–D188** are this document's own proposals and the parts of the draft that the changes left untouched; the owner has not yet ruled on them. **D189** and **D190** are owner decisions made on 2026-09-29, after the draft. The deployment and the Clever Cloud evaluation are in the companion document, [§25](25-clever-cloud-stack.md). **Amended 2026-10-01** by the owner's "Loam Serverless Runtime — Consolidated Plan" v1 (2026-09-30), folded in by [§34](34-protocol-gateway-and-standards.md): the `Runner` trait (D375) and usage from external runners (D376), §16 below; both proposed.
+Status: **Proposed** · 2026-09-29; amended the same day by two owner decisions (D189: secrets through Dapr; D190: billing in `loam-platform`). Source: the owner's draft "CPU-Time Serverless Runtime: Consolidated Plan" v2 (2026-09-28). On 2026-09-29 the owner approved ten changes to that draft in conversation. This document is built on those changes, and they override the draft wherever the two differ. They are decisions **D170–D179**, marked *approved in conversation 2026-09-29*. **D180–D188** are this document's own proposals and the parts of the draft that the changes left untouched; the owner has not yet ruled on them. **D189** and **D190** are owner decisions made on 2026-09-29, after the draft. The deployment and the Clever Cloud evaluation are in the companion document, [§25](25-clever-cloud-stack.md). **Amended 2026-10-01** by the owner's "Loam Serverless Runtime — Consolidated Plan" v1 (2026-09-30), folded in by [§34](34-protocol-gateway-and-standards.md): the `Runner` trait (D375) and usage from external runners (D376), §16 below; both proposed. **Amended 2026-10-02** by [§38](38-knative-authentik-gitops.md) (D440, D441, D444, proposed): the trait now lives in §16, `KnativeRunner` runs the `http-port` contract on Knative Serving, no meter runs in this repository, and the Cloudflare runner moved to `loam-platform`.
 
 Markers: **(verify)** means the claim was not checked against a primary source, or was checked only against a secondary one; the task that depends on it resolves it first. **(estimate)** means computed, not measured. **(draft)** means the figure comes from the owner's draft and was not re-checked here. Every license, release and pricing claim was read on 2026-09-29 from the source named in §15.
 
@@ -282,7 +282,7 @@ Track F depends on the unified auth plan (Q30) for API keys and OpenFGA, on D72 
 | D139: Resonate on TiDB for cloud | Resonate on TiKV in clusters | Follows D-SC-16 and the owner's forks-first plan (§22 §13b item 4). D261 (2026-09-29) now supersedes D139's TiDB clause: durable state on the native TiKV backend |
 | D47/§10: openraft default metastore | TiKV for the runtime's metadata (D179) | D179 covers this runtime and the GitOps deployment. `operon dev` and `operon standalone` keep openraft |
 | The draft's rquickjs T0, WasmEdge, Kata-driven T3, eBPF-first metering, "raft or postgres" | D171, D172, D174, D175, D179 | Superseded by the owner's 2026-09-29 changes |
-| The consolidated plan v1 (2026-09-30): "Resonate on TiDB", four co-equal runner targets, a Dapr sidecar where needed, metering CloudEvents into Iceberg in this repository | D261, D170, D183, D190, D202 | Resolved in §34 §15 (rows 1, 5, 16, 18): Resonate on TiKV; `SupervisorRunner` is the default and the others are options (D375); one shared `daprd`; the record spec is open and the ledger is `loam-platform` (D376) |
+| The consolidated plan v1 (2026-09-30): "Resonate on TiDB", four co-equal runner targets, a Dapr sidecar where needed, metering CloudEvents into Iceberg in this repository | D261, D170, D183, D190, D202 | Resolved in §16 (the reconciliation was §34 §15, now in `loam-platform`): Resonate on TiKV; `SupervisorRunner` is the default and the others are options (D375); one shared `daprd`; the record spec is open and the ledger is `loam-platform` (D376) |
 
 ## 13. Risks
 
@@ -327,20 +327,46 @@ Read on 2026-09-29.
 
 ## 16. Amendments from the consolidated plan (2026-10-01; D375, D376)
 
-The owner's "Loam Serverless Runtime — Consolidated Plan" v1 (2026-09-30) restates this document's premise and adds runners outside Loam's nodes. [§34](34-protocol-gateway-and-standards.md) holds the full reconciliation; this section records what changes here.
+The owner's "Loam Serverless Runtime — Consolidated Plan" v1 (2026-09-30) restates this document's premise and adds runners outside Loam's nodes. The full reconciliation was §34; since the owner's ruling of 2026-10-02 (§38 D440) the protocol gateway and the Cloudflare runner are commercial components in `loam-platform`, and [§34](34-protocol-gateway-and-standards.md) is a stub. The `Runner` trait therefore lives here.
 
 **The draft's corrections, checked.**
 
 | # | The draft's correction | Here |
 |---|---|---|
 | 1 | Fargate, Cloud Run and Container Apps bill allocated resources over wall time; Knative adds no CPU billing; only Cloudflare Workers bills CPU time; CPU billing is something Loam meters and charges | Agrees with §9 and D180. Cloudflare's prices are unchanged on 2026-10-01 ($0.02 per million CPU-ms, $0.30 per million requests, no charge for duration) |
-| 2 | "Resonate is not backed by TiKV … use TiDB" | Withdrawn: Loam's fork has the native TiKV store, on `main` since PR #114 (D261; §34 §15 row 2) |
+| 2 | "Resonate is not backed by TiKV … use TiDB" | Withdrawn: Loam's fork has the native TiKV store, on `main` since PR #114 (D261) |
 | 3 | The sample code was not durable (raw get/put race, completion written after side effects, `f64` money, no tenant prefix) | Agrees: TiKV only through transactions or CAS, integer money, tenant scope on every key (D374) |
 | 4 | Dapr subscriptions need registration; handlers answer `SUCCESS`/`RETRY`/`DROP`; CloudEvent attributes are preserved | Already so in `deploy/dapr/edge` and §02 §7.4 (D270) |
 | 5 | `tikv-client` does not build for `wasm32-unknown-unknown`; Workers stay thin | Agrees with §5: functions reach Loam through `loam-dapr` and the gateway, never TiKV |
 
-**Runners (D375).** §3's architecture is one `Runner` among several: the node supervisor and its tiers are `SupervisorRunner`, the default and the only runner with D170's placement next to the data. `LambdaRunner` (Rust, arm64, `provided.al2023`), a thin `WorkersRunner` (after D111, Q373) and, on demand, Cloud Run and Container Apps runners (Q367) are options for burst, edge and BYOC. The trait is in §34 §11 and is built by [RN1](../plans/2026-10-01-rn1-runner-usage.md); `SupervisorRunner` is built with F1. External runners run no Dapr (D183 is unchanged inside Loam's clusters).
+**Runners (D375).** §3's architecture is one `Runner` among several: the node supervisor and its tiers are `SupervisorRunner`, the default and the only runner with D170's placement next to the data. `KnativeRunner` (§38 D441) runs the `http-port` contract on Knative Serving in self-hosted clusters. `LambdaRunner` (Rust, arm64, `provided.al2023`) and, on demand, Cloud Run and Container Apps runners (Q367) are options for burst and BYOC. Runners outside this repository (the commercial Cloudflare runner in `loam-platform`) implement the same trait as `RunnerKind::External`. The trait is built by [RN1](../plans/2026-10-01-rn1-runner-usage.md); `SupervisorRunner` is built with F1. External runners run no Dapr (D183 is unchanged inside Loam's clusters).
 
-**Usage (D376).** For external runners the gateway process that invoked the runner reports each invocation on `/run/loam/meter.sock` from the runner's measurement (Lambda: the bootstrap's `getrusage` delta, capped by the billed duration, Q366; Workers: the Tail Worker's `CPUTimeMs`). The supervisor keeps reporting its own tiers (§7). `loam.meter.v1.Invocation` gains additive fields for the runner, the region, the provider's billed duration, compile CPU and overhead CPU ([§27 §3.6](27-usage-hooks.md)).
+```rust
+// crates/operon-runner/src/lib.rs (RN1)
+#[async_trait]
+pub trait Runner: Send + Sync + fmt::Debug + 'static {
+    fn kind(&self) -> RunnerKind;                                   // Supervisor, Process, Lambda, Knative, …
+    fn capabilities(&self) -> &RunnerCapabilities;                  // contracts (fetch, http-port), limits, suspend support
+    async fn deploy(&self, cx: &TenantCx, artifact: &Artifact) -> Result<Deployment, RunnerError>; // idempotent by digest
+    async fn invoke(&self, cx: &InvocationCx, dep: &DeploymentRef, req: InvokeRequest) -> Result<InvokeResponse, RunnerError>;
+    async fn undeploy(&self, cx: &TenantCx, dep: &DeploymentRef) -> Result<(), RunnerError>;
+    async fn health(&self) -> RunnerHealth;
+}
+pub struct InvokeResponse { pub response: http::Response<Bytes>, pub usage: Option<Usage> } // None: the runner's usage reaches the hooks another way
+```
+
+| Runner | Contract | Isolation | CPU source for the hooks | Status |
+|---|---|---|---|---|
+| `SupervisorRunner` | `fetch`, `http-port`, `static` (D181) | this document's tiers | the supervisor's hooks (D175, D201); `usage: None` | F1 builds the supervisor; RN1 the adapter |
+| `KnativeRunner` | `http-port` | gVisor pods (§38 §3) | the pod cgroup and its labels (§27 §3.2); `usage: None`, no meter (§38 D444) | MT2 |
+| `ProcessRunner` (dev and tests) | `fetch` over a child process | cgroup v2 when delegated, else none | child `cpu.stat` or `wait4` rusage | RN1 |
+| `LambdaRunner` | `fetch` through Loam's Lambda bootstrap | Firecracker (AWS) | **open (Q366)**: either the in-process `getrusage(RUSAGE_SELF)` delta capped by the billed duration × `memory_mb / 1 769`, or the billed duration itself | RN1 (Task 5 waits for Q366) |
+| Cloud Run, Container Apps | `http-port` | gVisor or VM (provider) | in-container cgroup `cpu.stat` **(verify)** | not planned (Q367) |
+
+**Placement.** D170's advantage is placement next to the data; a function on Lambda loses it and pays the round trips and egress. External runners are for burst capacity and BYOC accounts that want their own cloud bill, not the default.
+
+**Usage (D376).** For external runners the gateway process that invoked the runner reports each invocation on `/run/loam/meter.sock` from the runner's measurement (Lambda: the bootstrap's `getrusage` delta, capped by the billed duration, Q366). These are hooks only: nothing in this repository aggregates, rates or bills them (§38 D444). The supervisor keeps reporting its own tiers (§7). `loam.meter.v1.Invocation` gains additive fields for the runner, the region, the provider's billed duration, compile CPU and overhead CPU ([§27 §3.6](27-usage-hooks.md)).
 
 **Track F.** F1 is unchanged. RN1 adds `operon-meter` (the host-report emitter of §27 §3.3, which F1's supervisor then uses), `operon-runner`, `ProcessRunner` and `LambdaRunner`; it does not build the supervisor.
+
+**Knative (2026-10-02, §38 D441).** When `knative.enabled`, the `http-port` contract (T2) runs on Knative Serving through `KnativeRunner`, which takes over F2's pod scheduling; F2 keeps the gVisor node setup and the `gvisor` `RuntimeClass`. T0 and T1 stay on the supervisor.

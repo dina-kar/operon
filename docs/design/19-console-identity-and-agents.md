@@ -2,6 +2,8 @@
 
 Status: **Proposed** · 2026-09-26. Decision numbers are assigned at merge; until then they are P1–P10. This document builds on §18 §6–§8 (D64–D66) and amends one line of D65 (the tenancy model, P2).
 
+> **Amended 2026-10-02** by [§38](38-knative-authentik-gitops.md) (proposed): Authentik's open-source edition is the documented and tested IdP in front of Loam, replacing Keycloak as the SAML broker in P7 and §6 (D447, D450). People sign in through it; the gateway exchanges its token for a Loam access token (RFC 8693, §5.2 flow 1) and stays the authority for Loam tokens; agents, vending and §5.3 are unchanged (D449). The single binary keeps built-in sign-in (D450). §3's hosted identity ("Clerk or Keycloak") is not changed here; it is `loam-platform`'s decision (Q442).
+
 Markers: **(verify)** is not checked against a primary source; the plan that builds it resolves it.
 
 ---
@@ -16,7 +18,7 @@ Markers: **(verify)** is not checked against a primary source; the plan that bui
 | P4 | **Teams** hold members and receive project roles; OIDC groups can map to teams | M2 |
 | P5 | **Agents are principals**, beside users and service accounts: owned by a project, with a capability policy, a token TTL cap and their own audit trail | M2 |
 | P6 | **Agents hold no long-lived secrets.** They get short-lived, scoped access tokens by workload-identity federation, user delegation (OAuth 2.1 + PKCE, for MCP clients) or vending from a parent token | M2 (federation, delegation); W1 (vending, §15 §8) |
-| P7 | **Human sign-in in OSS:** first-run setup token, email and password (argon2id) with TOTP, and generic OIDC SSO. Passkeys follow. SAML and SCIM are brokered by an IdP (Keycloak, Dex, Authentik), not built in | M2; passkeys M2.x |
+| P7 | **Human sign-in in OSS:** first-run setup token, email and password (argon2id) with TOTP, and generic OIDC SSO. Passkeys follow. SAML and SCIM are brokered by an IdP (Authentik by default since §38 D447; Keycloak, Dex, Authentik), not built in | M2; passkeys M2.x |
 | P8 | **Auth is Rust, in the gateway**, on the `ControlStore`: no Node service beside the binary. Built from primitives, not a framework | M2 |
 | P9 | **The console API contract** is OpenAPI 3.1 at `api/console/openapi.json`, the single source for the console's types, the mock server and the gateway's implementation | Now |
 | P10 | **`operon-console-mock`**, an httpmock server with seed data, serves the contract before the gateway does | Now |
@@ -120,7 +122,7 @@ API keys stay for SDK users and service accounts that cannot federate (§18 §6:
 | OIDC single sign-on | Yes, several providers | Keycloak, Okta, Entra ID, Google Workspace, Authentik, Dex, GitHub (through Dex). Just-in-time provisioning, allowed email domains, group-to-team mapping. `openidconnect` 4 |
 | Passkeys (WebAuthn) | M2.x | `webauthn-rs` 0.5 (MPL-2.0, used unmodified as a separate crate) |
 | Magic links | No | They need SMTP, which many self-hosters do not run |
-| SAML, SCIM | No | Put an IdP in front: Keycloak brokers SAML to OIDC (product doc 08). SCIM is a Cloud and BYOC feature |
+| SAML, SCIM | No | Put an IdP in front: Authentik's open-source edition brokers SAML to OIDC and is the documented, tested choice (§38 D447); Keycloak, Dex or any OIDC IdP also works. SCIM is a Cloud and BYOC feature |
 
 **The setup token** is a bootstrap credential, so it never goes into a log sink:
 
