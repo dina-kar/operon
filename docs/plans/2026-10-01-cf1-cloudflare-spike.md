@@ -41,7 +41,7 @@ Plus a `CloudflareRunner` thin-mode prototype with the Tail Worker usage mapping
 |---|---|---|---|
 | 1 | **The Cloudflare code lives in its own workspace** at `deploy/cloudflare/` | workers-rs, wasm-bindgen and pinned Emscripten patch sets must not enter the main lockfile or `cargo deny` before the spike decides | Two lockfiles to maintain; acceptable for a spike, and the decision in Task 9 says whether it stays |
 | 2 | **"Clone a repository" means fetching its pack over Smart HTTP v2 from a public host with a hand-built request, then indexing it** | gitoxide has no Workers transport; the constraint the spike must measure is pack indexing and object reads in 128 MB, not transport code | The real fetch path (GT2) adds negotiation cost; it is CPU-light next to indexing |
-| 3 | **Peak memory is linear-memory size**, from a fresh isolate per measured request (a new deploy version or a unique Durable Object id) | The only figure Wasm exposes; JS heap is small for Rust Workers | Under-reports isolate memory; noted in the report |
+| 3 | **Peak memory is linear-memory size**, from a fresh deployment per measured request; measurements that use unique Durable Object ids instead are reported as isolate-wide, since several Durable Objects can share an isolate | The only figure Wasm exposes; JS heap is small for Rust Workers | Under-reports isolate memory; noted in the report |
 | 4 | **The decision rule is §35 §9's**, applied per workload and mode, and recorded as rulings | One rule for every workload | The owner may override per workload in Task 9 |
 
 ## Carried in
@@ -151,7 +151,7 @@ docs/plans/cf1-spike-report.md
 **Semantics and measures:**
 1. **Q399:** build `operon-store` (with `object_store`'s `aws` feature) for `wasm32-unknown-unknown` inside a Worker; record whether it builds and works against R2's S3 endpoint. If not, record the error and what an R2-binding `Store` adapter needs (the methods `operon-git` uses: `put_if_absent`, `get`, `get_range`, `list`, `delete`).
 2. Latency p50/p95/p99 of PUT (1 KiB, 64 KiB, 1 MiB, 8 MiB) and GET (full and 64 KiB range), through the binding and through the S3 API, from a Worker and from a native client in one region.
-3. **The commit race** (§36 §4.2): 16 concurrent Worker requests create `loam-cf1/race/<run>/wal/00000000000000000001.lgw` with `If-None-Match: *` (S3 API) and with `onlyIf: { etagDoesNotMatch: "*" }` or the equivalent conditional headers (binding): exactly one succeeds in each of 100 runs; the others get `412` (S3 API) or `null` (binding).
+3. **The commit race** (§36 §4.2): 16 concurrent Worker requests create `loam-cf1/race/<run>/wal/00000000000000000001.lgw` with `If-None-Match: *` (S3 API) and with `onlyIf: { etagDoesNotMatch: "*" }` or the equivalent conditional headers (binding): exactly one succeeds in each of 100 runs, and never two; each loser gets `412` (S3 API) or `null` (binding), or `429` from R2's one-write-per-second limit on one key. Record the split of `412` and `429` and confirm that a `429` loser's follow-up GET finds the winner's object (§36 §4.2's resolution).
 4. **The per-key limit:** write one key twice a second for 60 s; record the error code and rate at which R2 refuses (expected: the 1 write/s limit of the R2 limits page).
 5. `If-Match` on overwrite with a stale ETag returns `412`.
 

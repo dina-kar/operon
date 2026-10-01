@@ -135,13 +135,13 @@ pub struct DirectRecipe { pub env: Vec<(String, String)> }    // the SCCACHE_* v
     async fn vend(&self, grant: &CacheGrant, ttl: Duration) -> Result<S3Credentials, VendError>;
 }
 pub struct R2Vendor;      // POST /accounts/{account_id}/r2/temp-access-credentials (permission object-read-only|object-read-write, prefixes, ttlSeconds ≤ 604800)
-pub struct StaticVendor;  // a configured key pair per class, for RustFS and S3 until the providers of §25 §5 exist
+pub struct StaticVendor;  // a configured key pair per (repository, class), for RustFS and S3 until the providers of §25 §5 exist
 pub fn recipe(grant: &CacheGrant, creds: &S3Credentials, endpoint: &str, bucket: &str, region: &str) -> DirectRecipe;
 ```
 
-**Semantics:** the recipe sets `SCCACHE_BUCKET`, `SCCACHE_ENDPOINT`, `SCCACHE_REGION` (`auto` for R2), `SCCACHE_S3_KEY_PREFIX=ns/<ns>/cache/sccache/<repo>/trusted/`, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`, and `SCCACHE_S3_RW_MODE=READ_ONLY` for untrusted grants. `R2Vendor` maps a grant to `prefixes = [<that prefix>]` and the permission; it never vends `admin-*` permissions. The guide documents both paths, the trust model and eviction (age since write only on the direct path, Q390).
+**Semantics:** the recipe sets `SCCACHE_BUCKET`, `SCCACHE_ENDPOINT`, `SCCACHE_REGION` (`auto` for R2), `SCCACHE_S3_KEY_PREFIX=ns/<ns>/cache/sccache/<repo>/trusted/`, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`, and `SCCACHE_S3_RW_MODE=READ_ONLY` for untrusted grants. `R2Vendor` maps a grant to `prefixes = [<that prefix>]` and the permission; it never vends `admin-*` permissions. **Credentials are the boundary, not sccache's settings:** a build can call S3 directly with the raw `AWS_*` values, so `SCCACHE_S3_KEY_PREFIX` and `SCCACHE_S3_RW_MODE` restrict nothing. Every vended credential must be restricted on the server to the grant's repository prefix, and to read-only for untrusted grants: R2 by the temporary credential's `prefixes` and permission; RustFS and S3 by a per-(repository, class) key whose bucket policy allows only that prefix and those actions. `StaticVendor` refuses to start unless each configured key declares its prefix and permission, and Task 3 checks them against the store (a write and an out-of-prefix read with an untrusted key must fail). The guide documents both paths, the trust model and eviction (age since write only on the direct path, Q390).
 
-**Tests:** `recipe_for_untrusted_is_read_only`; `r2_vendor_request_body_matches_api` (against a mock of the Cloudflare API); `r2_vendor_never_requests_admin_permissions`; `static_vendor_per_class`.
+**Tests:** `recipe_for_untrusted_is_read_only`; `r2_vendor_request_body_matches_api` (against a mock of the Cloudflare API); `r2_vendor_never_requests_admin_permissions`; `static_vendor_per_class`; `static_vendor_refuses_undeclared_scope`; `untrusted_key_cannot_write_or_read_outside_prefix` (against RustFS with a bucket policy).
 
 **Commit:** `cache: add the direct path's credential vending and recipe`.
 

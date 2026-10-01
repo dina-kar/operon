@@ -147,7 +147,7 @@ What the Cloudflare blog announced on 2026-09-28 ("Supporting native Rust in Wor
 
 - `worker-build --emscripten` (and `--tokio`) builds Rust for `wasm32-unknown-emscripten`, with examples `emscripten`, `emscripten-tokio` and `emscripten-tcp` in workers-rs.
 - `-sNODERAWFS` bridges file-system calls to `node:fs`. `worker-fs-mount` (Dan Lapid) mounts a `node:fs`-compatible backend; its `durable-object-fs` backend "stores files as rows in the Durable Object's SQLite storage", written synchronously and committed with the object's transaction.
-- `-sNODERAWSOCKETS` gives epoll, TCP, UDP and Unix sockets over `node:net`. **Inbound TCP is "upcoming".**
+- `-sNODERAWSOCKETS` gives epoll, TCP, UDP and Unix sockets over `node:net`. **General inbound TCP is "upcoming"**; the Minecraft demonstration accepts players' connections into a Durable Object, within the experimental preview. Neither changes D380's placement of the data plane, whose blockers are threads, memory and local NVMe.
 - **Tokio** runs either through JSPI (which needs thread-local context swaps during stack switches) or through a proposed `LocalEventLoop` that replaces parking with a host-driven wake; `LocalEventLoop::block_on` panics where a runtime would park. The first Tokio patch for the target is upstream; further patch sets are in review; `libc`, `socket2` and `mio` needed patches (mostly adding the target to platform gates). The examples depend on these patches directly. The post links no PRs and states no size, memory or performance figures, and it does not say whether JSPI is enabled in Workers (Q380).
 - The demonstration is the Pumpkin Minecraft server (Rust, Tokio) in a Durable Object.
 
