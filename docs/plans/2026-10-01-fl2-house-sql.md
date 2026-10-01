@@ -33,6 +33,7 @@
 - **Deny by default** (§32 §7.8): every disabled function or engine has a test that it answers code 344.
 - **Pinned versions move together.** `chdb-core`, the reference server and the corpus's expected outputs carry one ClickHouse version, recorded in `fabric/crates/loam-house/src/versions.rs`; a bump is one PR that regenerates the expected outputs.
 - **The build machine.** One cargo build at a time; `libchdb` is linked dynamically (never statically: the static archive is 328 MB); the FL1 stack is stopped during builds.
+- **Names (owner rulings, 2026-10-01).** Crates here are unpublished working names (`loam-*`); when published they are `loams-*` (crates.io, PyPI) and `@loams/*` (npm), Go modules `loams.dev/...`; Loam-defined CloudEvents types use `io.loams.dev.<domain>.<name>.v1`.
 - **Commit areas:** `house`, `chdb`, `conformance`, `ci`, `docs`.
 
 ## Rulings made while writing this plan

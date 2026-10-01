@@ -40,6 +40,7 @@
 - **Memory.** The stack must fit in 8 GiB RSS (estimate; Task 0 measures). It is stopped before any cargo build and started after it, as the TiKV playground is (R1 Global Constraints).
 - **Builds.** One cargo build at a time, the shared target, `-j 6`, lld. Never in `/tmp`. Stop and report if `/home` has under 8 GB free.
 - **Tests skip without the stack.** Every test that needs a service calls `loam_fabric_testing::stack()`, which returns `None` and prints `skipped: <test> needs LOAM_FABRIC_STACK` when the variable is unset; CI's `fabric` job sets it.
+- **Names (owner rulings, 2026-10-01).** Crates here are unpublished working names (`loam-*`); when published they are `loams-*` (crates.io, PyPI) and `@loams/*` (npm), Go modules `loams.dev/...`; Loam-defined CloudEvents types use `io.loams.dev.<domain>.<name>.v1`.
 - **Commit areas:** `fabric`, `iggy`, `fluss`, `deploy`, `ci`, `docs`.
 
 ## Rulings made while writing this plan
@@ -139,7 +140,7 @@ pub fn to_iggy(ev: &CloudEvent) -> Result<IggyEvent, EnvelopeError>;  // ce_<att
 pub fn from_iggy(id: u128, headers: &[(String, Vec<u8>)], payload: &[u8]) -> FromIggy;
 pub enum FromIggy { Event(CloudEvent), Synthesized(CloudEvent) }   // D270 consume rule 3 for messages without valid ce_ headers:
                                                                    // id "{stream}-{topic}-{partition}-{offset}", source "/fabric/{ns}/{topic}/{partition}",
-                                                                   // type "dev.loam.fabric.message"
+                                                                   // type "io.loams.dev.fabric.message.v1"
 // loam-fabric-envelope::fluss
 pub const CE_COLUMNS: &[(&str, FlussType)];                       // Ruling 9, in this order
 pub fn event_schema(data: Option<&arrow_schema::Schema>) -> arrow_schema::Schema;

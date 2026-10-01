@@ -20,7 +20,8 @@
 - Rust 1.97.1, the `fabric/` workspace. New dependencies (Task 0 verifies versions, licences, build cost): `jsonschema` 0.30+ (MIT), `serde_yaml_ng` or `serde_norway` (MIT/Apache; Task 0 picks a maintained YAML crate), `rdkafka` 0.39 with `cmake-build` and `ssl-vendored` (MIT; librdkafka BSD-2-Clause), `tokio-postgres` 0.7 (MIT/Apache), `mysql_async` 0.37 (MIT/Apache), `object_store` 0.14 (Apache-2.0), `iceberg` 0.10 (Apache-2.0), `parquet` 59, `arrow-ipc`/`arrow-flight` 59, `apache-avro` 0.22 (Apache-2.0), `adbc_core` and `adbc_driver_manager` 0.24 (Apache-2.0), `clickhouse` 0.15 (Apache-2.0), `aws-sdk-kinesis` 1.x (Apache-2.0), `redis` 1.7 (BSD-3-Clause), `reqwest` 0.12, `hmac`, `sha2`, `opentelemetry-proto` (Apache-2.0) for OTLP decoding.
 - Services for tests (added to `deploy/fabric/compose.yaml` under profile `connectors`, pinned by digest): Apache Kafka 4.x in KRaft mode (Apache-2.0), Postgres 17 with `wal_level=logical`, MySQL 8.4 with row binlog, Debezium Server 3.7.0.Final, Elasticsearch-compatible target (Loam's own ES gateway from `operon dev`, plus OpenSearch 3.x (Apache-2.0) for a third-party check), ClickHouse server (the FL2 reference image), Redis-compatible Valkey 8 (BSD-3-Clause), floci 2.1.0 (MIT, D60) for Kinesis and S3 events, RustFS (S3), Lakekeeper.
 - ADBC drivers: Snowflake and BigQuery drivers (Apache-2.0, `adbc-drivers/*`), Postgres, SQLite, DuckDB and Flight SQL drivers (Apache Arrow ADBC); shipped as shared libraries pinned by SHA-256 (Q349).
-- Java (Task 12 only): JDK 21 (Temurin, GPL-2.0 with Classpath Exception, run only), Maven 3.9, Apache Camel 4.22.x (the version Task 0 pins).
+- Java (Task 12 only, **run, never written**): the `apache/camel` 4.22.x runtime image or Camel JBang (`camel run *.yaml`), JDK 21 inside it. **Java is deferred (owner, 2026-10-01): Loam writes no Java in CN1** — no Maven project, no Loam processor, no Java SDK; routes are YAML, transforms use Camel's built-in `jq`/`jsonata` languages and `camel-cloudevents`.
+- Names: published packages `loams-*` (crates.io, PyPI) and `@loams/*` (npm); CloudEvents types `io.loams.dev.<domain>.<name>.v1` (owner rulings, 2026-10-01).
 
 **Spec:**
 - [`docs/design/33-connectors.md`](../design/33-connectors.md): all of it.
@@ -37,19 +38,19 @@
 - **Loopback only (D111)** for `FlowService` and every connector endpoint Loam serves (webhooks, OTLP).
 - **Tests skip without services**, as FL1 (`loam_fabric_testing::stack()`, plus `LOAM_CONNECTORS_STACK` for the `connectors` profile).
 - **The build machine.** `rdkafka`'s static librdkafka build is the heaviest addition (Task 0 measures); it is behind the feature `kafka` (on in CI and release, off by default for local builds of other tasks).
-- **Commit areas:** `flow`, `connectors`, `connect` (Java), `ci`, `docs`.
+- **Commit areas:** `flow`, `connectors`, `connect` (YAML routes), `ci`, `docs`.
 
 ## Rulings made while writing this plan
 
 | # | Ruling | Why | Cost if wrong |
 |---|---|---|---|
 | 1 | **The registry is generated from one CSV**, `connectors/registry/catalog.csv` (the columns of §33 Appendix A plus `id`, `category`, `runtime`, `ref`, `status`); per-connector YAML manifests for ★ connectors are hand-written and checked against the CSV; P2/P3 manifests are generated stubs with `status: planned` | One source for 200 rows; hand-written detail where it matters | A CSV edit can disagree with a hand-written manifest; the drift test catches it |
-| 2 | **Event types**: `dev.loam.flow.<connector-id>.<event>.v1` with these events: Kafka `record`, Kinesis `record`, Redis `stream-entry`, S3 `object` and `object-deleted`, Iceberg `rows`, Postgres/MySQL batch `rows`, CDC `change` (with `loamop`), ADBC `rows`, HTTP poll `response-item`, webhook `delivery`, OTLP `log`, `span`, `metric` | One naming rule (§33 D355) | Renaming later is a manifest major bump |
+| 2 | **Event types**: `io.loams.dev.flow.<connector-id>.<event>.v1` with these events: Kafka `record`, Kinesis `record`, Redis `stream-entry`, S3 `object` and `object-deleted`, Iceberg `rows`, Postgres/MySQL batch `rows`, CDC `change` (with `loamop`), ADBC `rows`, HTTP poll `response-item`, webhook `delivery`, OTLP `log`, `span`, `metric` | One naming rule (§33 D355) | Renaming later is a manifest major bump |
 | 3 | **Batch-of-rows events** carry Arrow IPC stream bytes (`datacontenttype: application/vnd.apache.arrow.stream`), 65 536 rows each by default (`batch_rows`), one event per batch; their `id` is `"<run-id>/<partition>/<first-row>-<last-row>"` and a run id is stable across retries of the same run | Bulk stays columnar end to end (§33 D356); `fluss_sink` appends Arrow batches without per-row decoding (FL1 Task 8 gains an Arrow fast path in this plan's Task 5) | Iggy's message size limit caps batch bytes; Task 0 records the limit and `batch_bytes` (default 8 MiB) splits batches |
 | 4 | **Native source positions commit after the Fabric acknowledges** the batch (FL1's `ingest` core answers with offsets) | At-least-once with re-delivery recognisable by id (§33 §6) | None |
 | 5 | **Native sinks are Iggy consumer groups** named `flow-<instance>`, committing offsets after the sink acknowledges | Same model as the Iggy plugins | None |
 | 6 | **Debezium Server runs one container per CDC instance** with the HTTP sink to `loam-fabric ingest` (`debezium.sink.type=http`, CloudEvents structured format through Debezium's CloudEvents converter, verify the 3.7 property names in Task 0), offsets and schema history in files on a volume | Unmodified Debezium; one failure domain per source database | Many containers for many sources; Q351's Iggy `postgres_source` for small Postgres sources |
-| 7 | **`loam-connect` is Camel Main** (not Quarkus) in CN1, with YAML-DSL routes loaded from a mounted directory and reloaded on change | Least moving parts; Quarkus native is Q352 for CN2 | JVM start time and memory; measured in Task 12 |
+| 7 | **`loam-connect` is the unmodified Camel runtime in Main mode** (not Quarkus) in CN1, with YAML-DSL routes loaded from a mounted directory and reloaded on change; no Loam Java (Java deferred, owner 2026-10-01) | Least moving parts; Quarkus native is Q352 for CN2 | JVM start time and memory; measured in Task 12 |
 | 8 | **JDBC drivers are not shipped**: `loam-connect` loads drivers from a mounted directory; the PostgreSQL (BSD-2-Clause) and MariaDB Connector/J (LGPL-2.1, loaded, not modified) drivers are documented; MySQL Connector/J (GPL-2.0 with FOSS exception) is the user's choice | Keeps the image's licence set clean (D359) | One more step for users of JDBC |
 | 9 | **ADBC drivers load by path from an allowlist** in the instance's namespace config (`adbc.drivers = ["snowflake", "bigquery", …]`) and only from `/opt/loam/adbc/<name>/<version>/` with a SHA-256 check | A driver is native code in Loam's process | A compromised driver image still runs in-process; Q349 |
 
@@ -79,10 +80,10 @@ fabric/crates/loam-flow/src/{lib.rs,registry.rs,manifest.rs,validate.rs,instance
                                         clickhouse.rs,adbc.rs,kinesis.rs,redis.rs,otlp.rs}}
 fabric/crates/loam-flow/tests/{registry.rs,validate.rs,secrets.rs,runtime.rs,<connector>.rs …}
 fabric/crates/loam-flow-conformance/src/{lib.rs,contract.rs,roundtrip.rs,kill.rs,dup.rs,bulk.rs,cdc.rs}
-connect/{pom.xml,src/main/java/dev/loam/connect/{Main.java,RouteReloader.java},src/main/resources/application.properties,Dockerfile,README.md}
+connect/{routes/templates/*.yaml.tmpl,application.properties,compose.fragment.yaml,README.md}   # YAML only; no Java (deferred)
 deploy/fabric/compose.yaml (profile connectors)  deploy/fabric/connectors/**
 scripts/connectors/{gen_registry.sh,camel_catalog.py,kestra_catalog.py,matrix.py}
-.github/workflows/fabric.yml (jobs connectors-unit, connectors-it, connect-java)
+.github/workflows/fabric.yml (jobs connectors-unit, connectors-it, connect-routes)
 docs/guides/connectors/{index.md (generated), <id>.md for each ★}
 docs/plans/cn1-dependency-spike.md  docs/plans/cn1-exit-report.md
 ```
@@ -179,7 +180,7 @@ pub struct SourceBatch { pub events: Vec<CloudEvent>, pub position: Position }
 
 **Files:** `fabric/crates/loam-flow/src/connectors/{http.rs,webhook.rs}`, `connectors/registry/{http,webhooks}.yaml`, `connectors/schemas/{http,webhooks}.config.json`, `fabric/crates/loam-flow/tests/{http.rs,webhook.rs}`, `docs/guides/connectors/{http,webhooks}.md`.
 
-**Semantics:** **HTTP sink**: POST each event in CloudEvents binary mode (or structured, by config) with `Idempotency-Key: <ce_id>`, retries with exponential backoff (100 ms → 30 s, 10 attempts) on 408/425/429/5xx and connection errors, honouring `Retry-After`; 4xx other than those → DLQ. **HTTP polling source**: a request template, a cursor extracted with a JSON pointer (or a `Link` header), an items pointer, one event per item with `id` = `"<url>#<item key>"` and the cursor as the position; poll interval and rate limit from config. **Webhooks source**: routes `POST /v1/namespaces/{ns}/fabric/webhooks/{instance}` on `ingest`'s listener; verification schemes `hmac-sha256` (header and secret configurable), `github` (`X-Hub-Signature-256`), `stripe` (`Stripe-Signature` with tolerance 300 s), `slack` (`X-Slack-Signature` + timestamp), `shopify` (`X-Shopify-Hmac-Sha256`); a failed signature → 401 and a counter; each delivery becomes one CloudEvent (`type dev.loam.flow.webhooks.delivery.v1`, `id` the provider's delivery id header where one exists, else SHA-256 of the body and timestamp).
+**Semantics:** **HTTP sink**: POST each event in CloudEvents binary mode (or structured, by config) with `Idempotency-Key: <ce_id>`, retries with exponential backoff (100 ms → 30 s, 10 attempts) on 408/425/429/5xx and connection errors, honouring `Retry-After`; 4xx other than those → DLQ. **HTTP polling source**: a request template, a cursor extracted with a JSON pointer (or a `Link` header), an items pointer, one event per item with `id` = `"<url>#<item key>"` and the cursor as the position; poll interval and rate limit from config. **Webhooks source**: routes `POST /v1/namespaces/{ns}/fabric/webhooks/{instance}` on `ingest`'s listener; verification schemes `hmac-sha256` (header and secret configurable), `github` (`X-Hub-Signature-256`), `stripe` (`Stripe-Signature` with tolerance 300 s), `slack` (`X-Slack-Signature` + timestamp), `shopify` (`X-Shopify-Hmac-Sha256`); a failed signature → 401 and a counter; each delivery becomes one CloudEvent (`type io.loams.dev.flow.webhooks.delivery.v1`, `id` the provider's delivery id header where one exists, else SHA-256 of the body and timestamp).
 
 **Tests:** `http_sink_retries_and_dedupe_header`; `http_sink_4xx_goes_to_dlq`; `http_poll_follows_cursor_and_resumes`; `webhook_each_scheme_verifies` (fixtures from each provider's docs); `webhook_bad_signature_is_401`; `webhook_replay_is_deduplicated` (same delivery id twice → one event); contract suites for both manifests.
 
@@ -199,7 +200,7 @@ pub struct SourceBatch { pub events: Vec<CloudEvent>, pub position: Position }
 
 **Files:** `fabric/crates/loam-flow/src/connectors/kafka.rs`, `connectors/registry/kafka.yaml`, `connectors/schemas/kafka.config.json`, `fabric/crates/loam-flow/tests/kafka.rs`, `docs/guides/connectors/kafka.md`.
 
-**Semantics:** **source**: an `rdkafka` `StreamConsumer` in group `loam-<ns>-<instance>`, `enable.auto.commit=false`; each record → one CloudEvent (records that already carry valid `ce_` headers are passed through as those events, D270's rule 1; others get `type dev.loam.flow.kafka.record.v1`, `id` `"<topic>/<partition>/<offset>"`, `subject` the key, headers as `kafkaheader_<name>` extensions); offsets committed after the Fabric acknowledges (Ruling 4); partitions map to Iggy partitions by key hash (Kafka's murmur2, so per-key order is kept). **sink**: an idempotent producer (`enable.idempotence=true`, `acks=all`), the CloudEvents Kafka binary layout (D270), key = `partitionkey` else `subject`; Avro values with a schema registry when configured. Auth: SASL PLAIN/SCRAM over TLS, mTLS, MSK IAM (verify `rdkafka`'s OAUTHBEARER callback route for MSK IAM in Task 0; else documented as Camel-only).
+**Semantics:** **source**: an `rdkafka` `StreamConsumer` in group `loam-<ns>-<instance>`, `enable.auto.commit=false`; each record → one CloudEvent (records that already carry valid `ce_` headers are passed through as those events, D270's rule 1; others get `type io.loams.dev.flow.kafka.record.v1`, `id` `"<topic>/<partition>/<offset>"`, `subject` the key, headers as `kafkaheader_<name>` extensions); offsets committed after the Fabric acknowledges (Ruling 4); partitions map to Iggy partitions by key hash (Kafka's murmur2, so per-key order is kept). **sink**: an idempotent producer (`enable.idempotence=true`, `acks=all`), the CloudEvents Kafka binary layout (D270), key = `partitionkey` else `subject`; Avro values with a schema registry when configured. Auth: SASL PLAIN/SCRAM over TLS, mTLS, MSK IAM (verify `rdkafka`'s OAUTHBEARER callback route for MSK IAM in Task 0; else documented as Camel-only).
 
 **Tests:** `source_reads_all_partitions_in_order_per_key`; `source_resumes_from_committed_offsets`; `ce_headers_pass_through`; `sink_idempotent_on_retry`; `sink_ce_binary_layout_matches_d270`; `kill_restart_source_no_loss`; `sasl_scram_and_mtls`; contract suite.
 
@@ -257,13 +258,13 @@ pub struct SourceBatch { pub events: Vec<CloudEvent>, pub position: Position }
 
 ### Task 12: JDBC ★ through `loam-connect`
 
-**Files:** `connect/**`, `connectors/registry/jdbc.yaml`, `fabric/crates/loam-flow/src/runtime/camel.rs`, `.github/workflows/fabric.yml` (job `connect-java`, path-filtered on `connect/**`), tests, docs.
+**Files:** `connect/**` (YAML route templates, `application.properties`, a compose fragment; no Java), `connectors/registry/jdbc.yaml`, `fabric/crates/loam-flow/src/runtime/camel.rs`, `.github/workflows/fabric.yml` (job `connect-routes`, path-filtered on `connect/**`), tests, docs.
 
-**Semantics:** `loam-connect` is a Camel Main 4.22.x application (Ruling 7) with `camel-iggy`, `camel-jdbc`, `camel-sql`, `camel-yaml-dsl` and Camel's route reloading from `/etc/loam-connect/routes/`. JDBC source route: `timer` or `sql` consumer with a high-water query → `marshal` to the CloudEvents structured JSON (`camel-cloudevents` where it fits, else a small Loam processor) → `iggy:` producer. JDBC sink route: `iggy:` consumer → `sql`/`jdbc` producer with batch inserts. Drivers mounted (Ruling 8). Image `ghcr.io/dina-kar/loam-connect` built in CI (not published until the rename, as other artifacts). `CamelRuntime` renders the YAML routes and checks Camel's route status over its health/management endpoint (verify Camel Main's HTTP management in 4.22).
+**Semantics:** `loam-connect` is the unmodified Camel 4.22.x runtime (Camel JBang or the official image, Ruling 7: Camel Main mode) with `camel-iggy`, `camel-jdbc`, `camel-sql`, `camel-yaml-dsl`, `camel-cloudevents` and the `jq` language on its classpath, loading YAML routes from `/etc/loam-connect/routes/` with route reloading. **Loam writes no Java** (owner, 2026-10-01). JDBC source route: `timer` → `sql` with a high-water query (the high-water value kept in a Camel `caffeine` or file-backed idempotent repository, verify which survives restarts) → a `jq` transform producing the CloudEvents structured JSON (`type` `io.loams.dev.flow.jdbc.rows.v1`, `id` from the table and key) → `iggy:` producer with the `ce_` headers set by `setHeader` steps. JDBC sink route: `iggy:` consumer → `jq` to row maps → `sql` producer with batch inserts. Drivers mounted (Ruling 8). `CamelRuntime` renders the YAML from `connect/routes/templates/` and checks route status over Camel's health endpoint (verify Camel Main's HTTP health in 4.22). If a capability turns out to need Java (for example exact CloudEvents binary-mode headers), the connector declares the narrower capability and the gap is recorded for when Java is un-deferred.
 
-**Tests:** `jdbc_source_postgres_high_water`; `jdbc_sink_batches`; `route_reload_without_restart`; `camel_iggy_roundtrip` (events written by Camel read back by `loam-fabric` with valid envelopes); Java unit tests for the Loam processor; contract suite.
+**Tests:** `jdbc_source_postgres_high_water`; `jdbc_sink_batches`; `route_reload_without_restart`; `camel_iggy_roundtrip` (events written by Camel read back by `loam-fabric` with valid envelopes); `rendered_routes_are_valid_yaml_dsl` (Camel's `camel validate`/JBang check, verify the command); contract suite.
 
-**Commit:** `connect: add loam-connect (Camel) and the JDBC connector`.
+**Commit:** `connect: add loam-connect routes (Camel, YAML only) and the JDBC connector`.
 
 ### Task 13: Kinesis ★, Redis ★ and OpenTelemetry ★
 
@@ -298,7 +299,7 @@ pub struct SourceBatch { pub events: Vec<CloudEvent>, pub position: Position }
 | G | 6 | CN1 (7/11): Kafka | ~800 lines |
 | H | 7, 8 | CN1 (8/11): Postgres, MySQL, CDC through Debezium | ~1 500 lines |
 | I | 9, 10 | CN1 (9/11): S3, Iceberg, Elasticsearch, ClickHouse | ~1 300 lines |
-| J | 11, 12 | CN1 (10/11): ADBC (Snowflake, BigQuery) and JDBC via `loam-connect` | ~1 200 lines Rust + ~400 Java |
+| J | 11, 12 | CN1 (10/11): ADBC (Snowflake, BigQuery) and JDBC via `loam-connect` | ~1 200 lines Rust + YAML route templates |
 | K | 13, 14 | CN1 (11/11): Kinesis, Redis, OTLP, the gate and the catalog | ~1 300 lines |
 
 ## Rulings made during execution
