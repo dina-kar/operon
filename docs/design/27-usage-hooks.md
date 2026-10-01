@@ -1,6 +1,6 @@
 # 27 — Usage Hooks: How the Engine Exposes Usage for Metering
 
-Status: **Proposed** · 2026-09-29. Builds on D190 (billing and metering move to the private `loam-platform` repository; §24 §7 lists the open hooks) and turns §24 §7's list into a contract. Refines D182 and D190. Decisions **D200–D202**; questions **Q-UH-n**.
+Status: **Proposed** · 2026-09-29. Builds on D190 (billing and metering move to the private `loam-platform` repository; §24 §7 lists the open hooks) and turns §24 §7's list into a contract. Refines D182 and D190. Decisions **D200–D202**; questions **Q-UH-n**. **Amended 2026-10-01** by [§34](34-protocol-gateway-and-standards.md) (D376, proposed): usage from runners outside Loam's nodes, additive `loam.meter.v1` fields and a CloudEvents form of the host report (§3.6).
 
 Numbering: `main` ends at D147. The highest number on any `design-*` branch is D190 (§24, `design-cpu-time-runtime`). Docs 23 and 26 are being written on other branches and may take numbers after D190, so this document starts at **D200**.
 
@@ -94,6 +94,25 @@ message HostReportAck { uint64 seq = 1; }   // cumulative: every report with seq
 - **D103's usage records** in the `ControlStore` remain, as the engine's own view of logical bytes.
 - **eBPF** stays last, as a cross-check only (D175).
 
+### 3.6 Usage from external runners (D376)
+
+§24 §16 adds runners outside Loam's nodes (D375): `LambdaRunner`, a thin `WorkersRunner`, and later Cloud Run and Container Apps. They have no cgroup the supervisor owns and cannot reach `/run/loam/meter.sock`. The contract still has one consumer interface:
+
+- **One reporter per invocation.** The supervisor reports its own tiers as above. For an external runner, the **runner host** (the gateway process that called `Runner::invoke`) writes the `HostReport`, with its own `host_id`, from the `Usage` the runner returned. A runner never reports and is never reported twice.
+- **Where the CPU comes from.** Lambda: Loam's bootstrap reads `getrusage(RUSAGE_SELF)` before and after each invocation and returns the delta to the runner in a response header the bootstrap owns (`x-loam-usage`); the runner host caps it at the billed duration × the function's vCPUs and sets `cpu_estimated` when the cap applies (Q366). Workers: the Tail Worker's `CPUTimeMs` (Cloudflare changelog 2025-04-09), joined to the invocation by its request id; `cpu_estimated` stays false.
+- **Additive fields** in `loam.meter.v1.Invocation`; consumers that do not know them ignore them:
+
+```protobuf
+  string runner = 12;              // "supervisor", "process", "lambda", "workers", …; empty means "supervisor"
+  string region = 13;              // the provider's region for external runners; empty on Loam's nodes
+  uint64 provider_billed_ms = 14;  // the provider's billed duration (Lambda's platform report), 0 when none
+  uint64 compile_usec = 15;        // CPU Loam spent compiling for this tenant (Cranelift, script compile), not in cpu_usec
+  uint64 overhead_usec = 16;       // runtime CPU attributable to the invocation but not to tenant code, where measured
+```
+
+- **A CloudEvents form.** Each `Invocation` can also be emitted as the CloudEvent `dev.loam.meter.usage.v1` (`id` = `<host_id>:<seq>:<index>`, `source` = `/hosts/<host_id>`, `tenantid` = `<org>/<namespace>`, `data` = the `Invocation` in protobuf), through the high-rate stream path of §34 §4.3. It is off unless a consumer configures the target stream, so the engine keeps no default dependency (D202). The socket stays the authoritative, acknowledged path.
+- **Totals.** For Lambda and Workers there is no cgroup total to reconcile against; the provider's own figures (billed duration, CPU-ms on Cloudflare's invoice) play that role, and the reconciliation is `loam-platform`'s (D190, D202).
+
 ## 4. What is not in this repository (D202)
 
 The node agent that reads these hooks, the aggregation of usage per tenant, pricing, invoices and credits, and the export to a billing provider are part of Loam Cloud and live outside this repository. This repository does not depend on them, and its chart does not deploy them. Anyone can build the same thing on the hooks in §3, or use an open-source metering service.
@@ -111,6 +130,7 @@ The node agent that reads these hooks, the aggregation of usage per tenant, pric
 | Q-UH-1 | Per-namespace metric cardinality: OTLP delta metrics only, or a Prometheus endpoint limited to the namespaces active on a node | Eng | F1 plan |
 | Q-UH-2 | How the hooks contract is versioned (the metric names, the cgroup layout, the labels and `loam.meter.v1`), and where its conformance tests live | Eng | F1 plan |
 | Q-UH-3 | The final cgroup reading for T2 pods, whose cgroups the kubelet removes: a delay on pod cleanup, or the sandbox's own accounting sent as a final report | Eng | F2 plan |
+| Q366 | Lambda CPU attribution: the in-process `getrusage` delta capped by billed duration, or billed duration as the meter on Lambda (§3.6, §34 Q366) | Founder | RN1 Task 5 |
 
 ## 7. Sources
 
