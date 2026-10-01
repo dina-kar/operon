@@ -54,6 +54,8 @@ jobs:
       protos: ${{ steps.filter.outputs.protos }}
       web: ${{ steps.filter.outputs.web }}
       dapr-edge: ${{ steps.filter.outputs.dapr-edge }}
+      spec: ${{ steps.filter.outputs.spec }}
+      router: ${{ steps.filter.outputs.router }}
     steps:
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
@@ -167,6 +169,17 @@ jobs:
               - "rust-toolchain*"
               - "deploy/dapr/**"
               - "crates/operon-stream-grpc/proto/**"
+            # The router's TLA+ specs and their checker (RT0, D310).
+            spec:
+              - ".github/workflows/**"
+              - "spec/**"
+              - "scripts/spec/**"
+            # The router's kernel crate and compatibility inventory (RT0).
+            router:
+              - ".github/workflows/**"
+              - "crates/loams-sqlrouter/**"
+              - "crates/loams-compat/**"
+              - "conformance/**"
 
   check:
     name: fmt, clippy, test
@@ -350,6 +363,36 @@ jobs:
           OPERON_BIN: target/debug/operon
           ES_ORACLE_URL: http://127.0.0.1:9250
         run: conformance/es-client/run.sh
+
+  # RT0 Task 1 (D310): model-check the router's TLA+ specs. Pull requests run
+  # the PR variants; the nightly schedule runs the larger bounds. Every result
+  # must match its `expect` in spec/tla/*/specs.toml, so the unsafe variants
+  # must fail for the declared reason. Then the PgDog provenance check (D318).
+  tla:
+    name: TLA+ specs
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.spec == 'true' || needs.changes.outputs.router == 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/loam/spec-tools
+          key: spec-tools-${{ hashFiles('scripts/spec/tools.lock') }}
+      - name: checker self-test
+        run: scripts/spec/check.sh --self-test
+      - name: specs (PR bounds)
+        if: github.event_name != 'schedule'
+        run: scripts/spec/check.sh --all
+      - name: specs (nightly bounds)
+        if: github.event_name == 'schedule'
+        run: scripts/spec/check.sh --all --nightly
+      - name: PgDog provenance
+        run: scripts/spec/provenance.sh
 
   sim:
     name: simulation seed sweep

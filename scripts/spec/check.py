@@ -30,6 +30,8 @@ SPEC_DIRS = [ROOT / "spec/tla/router", ROOT / "spec/tla/selftest"]
 LOCK = Path(__file__).with_name("tools.lock")
 CACHE = Path(os.environ.get("LOAMS_SPEC_TOOLS", Path.home() / ".cache/loam/spec-tools"))
 WORKERS = os.environ.get("TLC_WORKERS", "2")
+# TLC spills its state queue to the metadir; keep it off /tmp (often a small RAM tmpfs).
+WORK = Path(os.environ.get("LOAMS_SPEC_WORK", Path.home() / ".cache/loam/spec-work"))
 
 
 class ToolError(Exception):
@@ -98,7 +100,8 @@ VIOLATION = re.compile(r"Error: Invariant (\w+) is violated")
 
 
 def run_tlc(tla2tools: Path, d: Path, model: str, cfg: str) -> tuple[str, str]:
-    with tempfile.TemporaryDirectory(prefix="tlc-") as meta:
+    WORK.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="tlc-", dir=WORK) as meta:
         cmd = ["java", "-XX:+UseParallelGC", f"-Djava.io.tmpdir={meta}", "-cp", str(tla2tools),
                "tlc2.TLC", "-workers", WORKERS, "-deadlock", "-metadir", meta, "-config", cfg, model]
         out = subprocess.run(cmd, cwd=d, capture_output=True, text=True).stdout
@@ -114,7 +117,8 @@ def run_tlc(tla2tools: Path, d: Path, model: str, cfg: str) -> tuple[str, str]:
 
 
 def run_sany(tla2tools: Path, d: Path, model: str) -> tuple[str, str]:
-    with tempfile.TemporaryDirectory(prefix="sany-") as tmp:
+    WORK.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="sany-", dir=WORK) as tmp:
         cmd = ["java", f"-Djava.io.tmpdir={tmp}", "-cp", str(tla2tools), "tla2sany.SANY", model]
         p = subprocess.run(cmd, cwd=d, capture_output=True, text=True)
     out = p.stdout + p.stderr
@@ -123,7 +127,8 @@ def run_sany(tla2tools: Path, d: Path, model: str) -> tuple[str, str]:
 
 
 def run_apalache(apalache: Path, d: Path, model: str, cinit: str, inv: str, length: int) -> tuple[str, str]:
-    with tempfile.TemporaryDirectory(prefix="apalache-") as tmp:
+    WORK.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="apalache-", dir=WORK) as tmp:
         cmd = [str(apalache), "check", f"--out-dir={tmp}", f"--cinit={cinit}", "--init=Init",
                "--next=Next", f"--inv={inv}", f"--length={length}", model]
         p = subprocess.run(cmd, cwd=d, capture_output=True, text=True)
@@ -167,10 +172,10 @@ def check(specs, tl, only=None, variant=None, nightly=False, parse_only=False) -
 
 
 def report(name, variant, expect, actual, secs, out):
-    states = STATES.search(out)
+    states = STATES.findall(out)
     mark = "PASS" if expect == actual else "FAIL"
     print(f"{mark} {name} {variant}: expected {expect}, got {actual}, "
-          f"{states.group(1) if states else '-'} states, {secs:.1f}s", flush=True)
+          f"{states[-1] if states else '-'} states, {secs:.1f}s", flush=True)
     if expect != actual:
         print(out[-4000:], file=sys.stderr)
 

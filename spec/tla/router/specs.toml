@@ -54,3 +54,19 @@ nightly = true
 cfg = "MCReshardCutover_Nightly.cfg"
 expect = "ok"
 nightly = true
+
+# Skeletons: parsed (SANY) on every PR, model-checked from the phase named in each header.
+[[spec]]
+name = "CrossShardCommit"
+model = "CrossShardCommit.tla"
+parse_only = true
+
+[[spec]]
+name = "PrimaryFailover"
+model = "PrimaryFailover.tla"
+parse_only = true
+
+[[spec]]
+name = "RouterSession"
+model = "RouterSession.tla"
+parse_only = true
