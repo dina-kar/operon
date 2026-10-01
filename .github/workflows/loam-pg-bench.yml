@@ -19,7 +19,7 @@ on:
         default: "300"
       workloads:
         description: "Workloads (scripts/loam-pg-bench/workload.sh)"
-        default: "commit-1 commit-16 tpcb-16 tpcb-64 bulk"
+        default: "commit-1 commit-16 tpcb-16 tpcb-64 bulk bulk-burst"
 
 permissions:
   contents: read

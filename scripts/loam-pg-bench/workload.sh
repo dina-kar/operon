@@ -9,7 +9,9 @@
 #   commit-16  the same, 16 clients (group commit)
 #   tpcb-16    built-in TPC-B, 16 clients
 #   tpcb-64    built-in TPC-B, 64 clients (saturation)
-#   bulk       one transaction inserting ~256 MB (WAL throughput)
+#   bulk       one transaction inserting ~1 GB (sustained WAL throughput; gated)
+#   bulk-burst one transaction inserting ~250 MB (a burst the drive cache
+#              absorbs; reported, not gated)
 set -euo pipefail
 name=$1 duration=$2 warmup=$3 scale=$4
 export PGPASSWORD=${PGPASSWORD:-cloud_admin}
@@ -37,11 +39,13 @@ case $name in
     pgbench "${PG[@]}" -n -c "$clients" -j "$clients" -T "$duration" \
       -l --log-prefix=tx postgres > summary.txt 2>&1
     ;;
-  bulk)
+  bulk | bulk-burst)
+    rows=1000000
+    [ "$name" = bulk-burst ] && rows=250000
     sql "DROP TABLE IF EXISTS bulk; CREATE TABLE bulk(v text)"
     start=$(sql "SELECT pg_current_wal_lsn()")
     t0=$(date +%s%N)
-    sql "INSERT INTO bulk SELECT repeat('x', 1000) FROM generate_series(1, 250000)"
+    sql "INSERT INTO bulk SELECT repeat('x', 1000) FROM generate_series(1, $rows)"
     t1=$(date +%s%N)
     end=$(sql "SELECT pg_current_wal_lsn()")
     bytes=$(sql "SELECT pg_wal_lsn_diff('$end', '$start')")

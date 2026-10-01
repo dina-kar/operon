@@ -43,7 +43,7 @@ scripts/loam-pg-bench/run.sh --variant safekeepers --replicas 3
 scripts/loam-pg-bench/run.sh --variant loam --replicas 3
 # The gate: baseline and candidate interleaved three times, then the comparison.
 scripts/loam-pg-bench/gate.sh --replicas 3 --repeats 3 --duration 300 --warmup 60 \
-  --scale 50 --workloads "commit-1 commit-16 tpcb-16 tpcb-64 bulk"
+  --scale 50 --workloads "commit-1 commit-16 tpcb-16 tpcb-64 bulk bulk-burst"
 ```
 
 `run.sh` waits while `cargo` or `rustc` runs on the host (pass `--force` to skip this), because
@@ -61,7 +61,12 @@ logs, not from pgbench's averages.
 | `commit-1` | One single-row `INSERT` per transaction, 1 client | The pure commit round trip |
 | `commit-16` | The same, 16 clients | Group commit |
 | `tpcb-16` / `tpcb-64` | Built-in TPC-B at `--scale` | A realistic OLTP mix; saturation |
-| `bulk` | One transaction inserting about 250 MB | WAL throughput (MB/s) |
+| `bulk` | One transaction inserting about 1 GB | Sustained WAL throughput (MB/s); **gated** |
+| `bulk-burst` | One transaction inserting about 250 MB | A burst the drive cache absorbs; reported, **not gated** |
+
+`bulk` is a sustained 1 GB write because a 250 MB burst measures the drive's cache, not the WAL: on
+the laptop the stock safekeepers reach 118 to 182 MB/s on 250 MB but 22 to 26 MB/s on 1 GB, on the
+same disk. The gate verdict counts `bulk`; `bulk-burst` stays in the results as a reported number.
 
 ## Results
 

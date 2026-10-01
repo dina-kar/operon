@@ -8,8 +8,9 @@ baseline's run-to-run noise band:
   mean p99(candidate) <= max p99 over the baseline repeats, and
   mean tps(candidate) >= min tps over the baseline repeats.
 The noise column shows the baseline spread ((max - min) / mean). `bulk`
-compares WAL MB/s as throughput. Prints a Markdown table; exits 1 if the gate
-fails.
+(a sustained 1 GB write) compares WAL MB/s as throughput and gates.
+`bulk-burst` (250 MB, which the drive cache absorbs) is reported but does not
+count toward pass or fail. Prints a Markdown table; exits 1 if the gate fails.
 """
 import argparse
 import json
@@ -55,16 +56,25 @@ def main():
             ok = False
             continue
         b, c = base[name], cand[name]
-        keys = ["wal_mb_per_s"] if name == "bulk" else ["p99_ms", "tps"]
+        bulk = name in ("bulk", "bulk-burst")
+        keys = ["wal_mb_per_s"] if bulk else ["p99_ms", "tps"]
         if any(w.get(k) is None for w in b + c for k in keys):
             print(f"| {name} | – | incomplete | – | – | incomplete | FAIL |")
             ok = False
             continue
-        if name == "bulk":
+        if bulk:
             bt, ct = mean([w["wal_mb_per_s"] for w in b]), mean([w["wal_mb_per_s"] for w in c])
             nt = spread([w["wal_mb_per_s"] for w in b])
             passed = ct >= min(w["wal_mb_per_s"] for w in b)
-            print(f"| bulk (WAL MB/s) | – | – | {nt:.0%} | {bt:.1f} | {ct:.1f} | {'pass' if passed else 'FAIL'} |")
+            if name == "bulk-burst":
+                # Reported only: the drive cache absorbs a 250 MB burst.
+                label = f"bulk-burst (WAL MB/s, not gated)"
+                verdict = "reported"
+                passed = True
+            else:
+                label = "bulk (WAL MB/s, sustained 1 GB)"
+                verdict = "pass" if passed else "FAIL"
+            print(f"| {label} | – | – | {nt:.0%} | {bt:.1f} | {ct:.1f} | {verdict} |")
         else:
             bp, cp = mean([w["p99_ms"] for w in b]), mean([w["p99_ms"] for w in c])
             bt, ct = mean([w["tps"] for w in b]), mean([w["tps"] for w in c])
