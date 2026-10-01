@@ -1,0 +1,120 @@
+// Operations: the Connect face of D146's REST operations API (design §21
+// §6.4, §37 §8.2; AP0 Task 4).
+//
+// An operation is a durable promise: an import, a restore, a drop awaiting
+// approval. The REST routes and this service read the same state.
+syntax = "proto3";
+
+package loams.operations.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+service OperationsService {
+  rpc GetOperation(GetOperationRequest) returns (GetOperationResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc ListOperations(ListOperationsRequest) returns (ListOperationsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // A snapshot, then changes, then a heartbeat every 15 s (AP0 Ruling 3).
+  rpc WatchOperations(WatchOperationsRequest) returns (stream WatchOperationsResponse);
+  rpc CancelOperation(CancelOperationRequest) returns (CancelOperationResponse);
+}
+
+message Operation {
+  // "op-" + 26 hex characters (D146).
+  string id = 1;
+  // For example "collection.import", "collection.drop", "restore".
+  string kind = 2;
+  string namespace = 3;
+  // Structured target, for example {"collection": "docs"}.
+  map<string, string> target = 4;
+  OperationState state = 5;
+  Progress progress = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+  // The kind-specific result once SUCCEEDED.
+  google.protobuf.Struct result = 9;
+  OperationError error = 10;
+  // Set while AWAITING_APPROVAL (loams.approvals.v1).
+  string approval_id = 11;
+}
+
+enum OperationState {
+  OPERATION_STATE_UNSPECIFIED = 0;
+  OPERATION_STATE_PENDING = 1;
+  OPERATION_STATE_AWAITING_APPROVAL = 2;
+  OPERATION_STATE_RUNNING = 3;
+  OPERATION_STATE_SUCCEEDED = 4;
+  OPERATION_STATE_FAILED = 5;
+  OPERATION_STATE_CANCELED = 6;
+}
+
+message Progress {
+  uint64 done = 1;
+  // 0 when unknown.
+  uint64 total = 2;
+  // "documents", "bytes", "steps".
+  string unit = 3;
+  // A server-rendered phase label, for example "indexing".
+  string phase = 4;
+}
+
+message OperationError {
+  string code = 1;
+  string message = 2;
+}
+
+message GetOperationRequest {
+  string operation_id = 1;
+}
+
+message GetOperationResponse {
+  Operation operation = 1;
+}
+
+message ListOperationsRequest {
+  // Empty = every namespace the caller can see.
+  string namespace = 1;
+  repeated OperationState states = 2;
+  uint32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListOperationsResponse {
+  repeated Operation operations = 1;
+  string next_page_token = 2;
+}
+
+message WatchOperationsRequest {
+  string namespace = 1;
+  repeated OperationState states = 2;
+  string resume_cursor = 3;
+}
+
+message WatchOperationsResponse {
+  oneof event {
+    OperationSnapshot snapshot = 1;
+    Operation upsert = 2;
+    string remove = 3;
+    Heartbeat heartbeat = 4;
+  }
+  string cursor = 5;
+  bool snapshot_reset = 6;
+}
+
+message OperationSnapshot {
+  repeated Operation operations = 1;
+}
+
+message Heartbeat {}
+
+message CancelOperationRequest {
+  string operation_id = 1;
+  string idempotency_key = 2;
+}
+
+message CancelOperationResponse {
+  Operation operation = 1;
+}
