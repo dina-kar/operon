@@ -137,6 +137,8 @@ An OTLP endpoint for **logs only**, so log shippers write to Loam with no custom
 
 ### 7.2 Kafka wire-protocol gateway (M5, D74)
 
+> **Proposed amendment (2026-10-01, §32 D331–D332, Q331):** event ingestion moves to the Event Fabric (Apache Iggy and Apache Fluss, [§32](32-loam-flow-fabric-house.md) §5), and Kafka clients of the Fabric use Iggy's Kafka gateway with Loam's contributions; this gateway is deferred, not cancelled, until the owner answers Q331. Streams keep their roles for Loam's own objects, OTLP logs and trigger-rate CloudEvents (§7.1, §7.4).
+
 The Kafka protocol is Loam's long-term source-compatibility protocol. With it, Loam streams are readable and writable by RisingWave, Flink, Spark, Kafka Connect, Debezium, Fluent Bit's `kafka` output and Vector. WarpStream, AutoMQ and Bufstream show the model: a Kafka-compatible log on object storage, with stateless brokers. Nisshi (formerly Tansu; Apache-2.0, Rust, a Kafka broker on S3 or Postgres) is a reference (§11 §1.2).
 
 - **Mapping.** A Kafka topic is a Loam stream, a Kafka partition is a stream partition, and Kafka offsets are Loam's dense offsets. How topic names map to namespaces and how SASL carries the API key is Q26.
