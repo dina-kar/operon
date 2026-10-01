@@ -19,7 +19,7 @@
 **Spec:**
 - [`docs/design/36-loam-git.md`](../design/36-loam-git.md) §8 (tools, the two paths, the trust model), §9 (the mirror), §10, §11.
 - [`docs/design/15-agent-workspaces.md`](../design/15-agent-workspaces.md) §2 principle 5 (the public-packages namespace), §6 (the registry proxy), §7 (caches), §8 (credential vending).
-- [`docs/design/25-clever-cloud-stack.md`](../design/25-clever-cloud-stack.md) §5 (`ObjectStoreProvider::issue_credentials`); [§35](../design/35-cloudflare-target.md) D381 (the `r2` provider and R2 temporary credentials).
+- [`docs/design/25-clever-cloud-stack.md`](../design/25-clever-cloud-stack.md) §5 (`ObjectStoreProvider::issue_credentials`); [§36](../design/36-loam-git.md) §17, D381 (the `r2` provider and R2 temporary credentials).
 - sccache docs: `docs/Configuration.md`, `docs/S3.md`, `docs/Webdav.md`, `docs/MultiLevel.md` (v0.18.0). Cargo: https://doc.rust-lang.org/cargo/reference/registry-index.html, https://doc.rust-lang.org/cargo/reference/source-replacement.html, https://doc.rust-lang.org/cargo/reference/registry-authentication.html.
 
 ## Global Constraints
@@ -196,15 +196,9 @@ and `CARGO_REGISTRIES_LOAM_TOKEN`, with `CARGO_HTTP_PROXY` set to a refusing pro
 
 **Commit:** `registry: run cargo end to end through the mirror`.
 
-### Task 7: Cloudflare variants (only if CF1 says these workloads ship on Workers)
+### Task 7: (moved)
 
-**Files:** `deploy/cloudflare/operon-buildcache-worker/`, `deploy/cloudflare/operon-registry-worker/` (§35's workspace).
-
-**Semantics:** the same routes in thin-mode Workers over the R2 binding (`R2Fs` and an R2 `Store` adapter per CF1's Q399 answer), the Cache API for index files, and `loam-tail` for usage (§35 D385). The handler logic is shared with Tasks 1–5 through a `wasm32`-compatible core module in each crate (`--no-default-features --features core`); Task 0 of this task confirms the split builds for `wasm32-unknown-unknown`.
-
-**Tests:** the Task 1 and Task 5 suites run against `wrangler dev`.
-
-**Commit:** `cache, registry: deploy the cache and the mirror as Workers`.
+The Cloudflare variants of the cache and the mirror (Workers over the R2 binding) moved to a commercial Cloudflare target (`loam-platform`) with the former §35 on 2026-10-02 (§38 D440, PR #182). The number is kept so that Task 8 keeps its name.
 
 ### Task 8: Docs and close
 
