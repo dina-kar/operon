@@ -262,7 +262,7 @@ Upstream removed Raft HA on 2026-08-22 (§23 §4.2); the single-node WeSQL has n
 - **Terms are the fence.** An acceptor refuses an append from a term lower than the one it has promised (§28 §7.2, D264). The term is made durable in the acceptor's TiKV metadata before the vote is acknowledged (D268). A deposed primary's next sync stage therefore fails, its group is not acknowledged, and it sets `super_read_only` and exits.
 - **No acknowledged commit can be lost to a split brain.** A commit needs a majority at its term, and a new primary's election needs a majority at a higher term, so the two majorities intersect (the Paxos argument that walproposer already relies on, §28 §6.1).
 - **Stale reads from a deposed primary** are not covered by terms. The primary keeps a **lease**: it sends a heartbeat (an empty append) every `T/3`, and if no majority has answered for `T` it sets itself read-only. The control plane waits `T` plus a margin after the old primary stops answering before it routes to a new one. `T` is a deployment setting (**estimate:** 5–10 s; failover time is bounded below by it unless the old primary is known dead).
-- **The router follows the record.** Wire routing (§23 §6.3, D153) reads `x/<ns>/<db>`; after the compare-and-set the router sends new connections to the new primary and existing ones to the old one fail.
+- **The router follows the record.** Wire routing (§23 §6.3, D153) reads `x/<ns>/<db>`; after the compare-and-set the router sends new connections to the new primary and existing ones to the old one fail. *Proposed 2026-10-01 (D320, §31 §9.1):* where vtgate fronts WeSQL, the repoint is `vtctldclient TabletExternallyReparented <new-primary-tablet>` for the shard, beside the `x/` record change.
 
 ### 7.3 Promotion
 

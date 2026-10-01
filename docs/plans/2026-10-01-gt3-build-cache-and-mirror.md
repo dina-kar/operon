@@ -198,7 +198,7 @@ and `CARGO_REGISTRIES_LOAM_TOKEN`, with `CARGO_HTTP_PROXY` set to a refusing pro
 
 ### Task 7: (moved)
 
-The Cloudflare variants of the cache and the mirror (Workers over the R2 binding) moved to a commercial Cloudflare target (`loam-platform`) with the former §35 on 2026-10-02 (§38 D440, PR #182). The number is kept so that Task 8 keeps its name.
+The Cloudflare variants of the cache and the mirror (Workers over the R2 binding) moved to a commercial Cloudflare target (`loam-platform`, private) with the former §35 on 2026-10-02 (§38 D440, PR #182). The number is kept so that Task 8 keeps its name.
 
 ### Task 8: Docs and close
 
