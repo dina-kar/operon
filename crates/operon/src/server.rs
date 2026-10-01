@@ -213,6 +213,9 @@ pub struct ServerConfig {
     pub stream_grpc: Option<SocketAddr>,
     /// How Flight SQL bounds its statements and its ingest.
     pub flight: FlightConfig,
+    /// MySQL wire listener over collections, when the mysql-wire feature is on.
+    #[cfg(feature = "mysql-wire")]
+    pub mysql_wire: Option<crate::mysql_wire::MysqlConfig>,
     /// PostgreSQL wire listener over collections, when the pgwire feature is on.
     #[cfg(feature = "pgwire")]
     pub pg: Option<crate::pg::PgConfig>,
@@ -282,6 +285,8 @@ impl ServerConfig {
             #[cfg(feature = "stream-grpc")]
             stream_grpc: None,
             flight: FlightConfig::default(),
+            #[cfg(feature = "mysql-wire")]
+            mysql_wire: None,
             #[cfg(feature = "pgwire")]
             pg: None,
             cluster: None,
@@ -418,6 +423,12 @@ pub enum ServerError {
     Hot(#[from] operon_hot::TierError),
     #[error("listen on {addr}: {source}")]
     Listen {
+        addr: SocketAddr,
+        source: std::io::Error,
+    },
+    #[cfg(feature = "mysql-wire")]
+    #[error("MySQL wire listen on {addr}: {source}")]
+    MysqlListen {
         addr: SocketAddr,
         source: std::io::Error,
     },
@@ -591,6 +602,8 @@ pub struct Server {
     http: JoinHandle<()>,
     stop_http: oneshot::Sender<()>,
     flight: Option<Flight>,
+    #[cfg(feature = "mysql-wire")]
+    mysql_wire: Option<crate::mysql_wire::MysqlHandle>,
     #[cfg(feature = "pgwire")]
     pg: Option<crate::pg::PgHandle>,
     #[cfg(feature = "stream-grpc")]
@@ -671,6 +684,8 @@ struct Assembled {
     hot: Option<HotTierImpl>,
     app: axum::Router,
     flight: Option<Flight>,
+    #[cfg(feature = "mysql-wire")]
+    mysql_wire: Option<crate::mysql_wire::MysqlHandle>,
     #[cfg(feature = "pgwire")]
     pg: Option<crate::pg::PgHandle>,
     #[cfg(feature = "stream-grpc")]
@@ -1001,6 +1016,8 @@ impl Server {
             http,
             stop_http,
             flight: parts.flight,
+            #[cfg(feature = "mysql-wire")]
+            mysql_wire: parts.mysql_wire,
             #[cfg(feature = "pgwire")]
             pg: parts.pg,
             #[cfg(feature = "stream-grpc")]
@@ -1091,6 +1108,8 @@ impl Server {
                     http,
                     stop_http,
                     flight: parts.flight,
+                    #[cfg(feature = "mysql-wire")]
+                    mysql_wire: parts.mysql_wire,
                     #[cfg(feature = "pgwire")]
                     pg: parts.pg,
                     #[cfg(feature = "stream-grpc")]
@@ -1318,6 +1337,24 @@ impl Server {
                         tracing::warn!(%err, "closing the cache after a failed start");
                     }
                     return Err(err);
+                }
+            },
+            None => None,
+        };
+        // The MySQL wire listener, on gateways only: bound here, before any
+        // task is spawned, and served once the collection service exists.
+        #[cfg(feature = "mysql-wire")]
+        let mysql_listener = match config.mysql_wire.clone().filter(|_| roles.gateway) {
+            Some(mysql_config) => match crate::mysql_wire::listen(&mysql_config).await {
+                Ok(bound) => Some((bound, mysql_config)),
+                Err(source) => {
+                    if let Err(err) = cache.close().await {
+                        tracing::warn!(%err, "closing the cache after a failed start");
+                    }
+                    return Err(ServerError::MysqlListen {
+                        addr: mysql_config.listen,
+                        source,
+                    });
                 }
             },
             None => None,
@@ -1551,6 +1588,11 @@ impl Server {
         let worker = roles.worker.then(|| worker.start());
         #[cfg(feature = "pgwire")]
         let pg = pg.map(crate::pg::serve);
+        // After every fallible step, like the PostgreSQL accept loop.
+        #[cfg(feature = "mysql-wire")]
+        let mysql_wire = mysql_listener.map(|(bound, mysql_config)| {
+            crate::mysql_wire::start(collections.clone(), bound, mysql_config)
+        });
         #[cfg(feature = "qdrant")]
         let qdrant = match qdrant_listeners {
             Some((qdrant, (rest, grpc))) => {
@@ -1629,6 +1671,8 @@ impl Server {
             hot,
             app,
             flight,
+            #[cfg(feature = "mysql-wire")]
+            mysql_wire,
             #[cfg(feature = "pgwire")]
             pg,
             #[cfg(feature = "stream-grpc")]
@@ -1678,6 +1722,12 @@ impl Server {
     /// The address Flight SQL listens on, when it does.
     pub fn flight_sql_addr(&self) -> Option<SocketAddr> {
         self.flight.as_ref().map(|flight| flight.addr)
+    }
+
+    /// The MySQL wire listener, when configured.
+    #[cfg(feature = "mysql-wire")]
+    pub fn mysql_wire_addr(&self) -> Option<SocketAddr> {
+        self.mysql_wire.as_ref().map(|mysql| mysql.addr)
     }
 
     /// The PostgreSQL wire listener, when configured.
@@ -1788,6 +1838,10 @@ impl Server {
         shutdown_phase("flight");
         if let Some(flight) = self.flight {
             flight.stop().await;
+        }
+        #[cfg(feature = "mysql-wire")]
+        if let Some(mysql) = self.mysql_wire {
+            mysql.stop_within(HTTP_GRACE).await;
         }
         #[cfg(feature = "pgwire")]
         if let Some(pg) = self.pg {

@@ -5,6 +5,8 @@
 pub mod api;
 pub mod cluster;
 mod meta_backend;
+#[cfg(feature = "mysql-wire")]
+pub mod mysql_wire;
 #[cfg(feature = "pgwire")]
 pub mod pg;
 mod server;

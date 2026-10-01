@@ -20,6 +20,7 @@
 mod catalog;
 mod changes;
 mod gc;
+mod idempotency;
 mod invariants;
 mod keys;
 mod leases;

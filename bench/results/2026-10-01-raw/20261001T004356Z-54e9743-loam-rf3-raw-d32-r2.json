@@ -1,0 +1,65 @@
+{
+  "variant": "loam",
+  "replicas": 3,
+  "label": "raw-d32-r2",
+  "git_sha": "54e9743",
+  "date": "2026-10-01T00:43:56Z",
+  "host": {
+    "kernel": "7.2.4-3-cachyos",
+    "cpus": 14,
+    "disk": "BM9C1a Samsung 512GB"
+  },
+  "versions": {
+    "neon_image": "sha256:ead56a7b33925ca4df9f1ee0d29f55fa25e165a3fee6a4f19055050c68e8cad0",
+    "tikv": "v8.5.8"
+  },
+  "settings": {
+    "duration_s": 60,
+    "warmup_s": 10,
+    "scale": 10,
+    "shared_buffers": "2GB",
+    "compute_fsync": "off",
+    "wal": "127.0.0.1:5460",
+    "store": "tikv-raw",
+    "pipeline_depth": 32,
+    "tikv_config": "tikv.toml"
+  },
+  "workloads": [
+    {
+      "workload": "commit-1",
+      "n": 4411,
+      "tps": 73.5,
+      "p50_ms": 11.896,
+      "p90_ms": 21.75,
+      "p99_ms": 47.439,
+      "p999_ms": 120.29,
+      "max_ms": 913.098
+    },
+    {
+      "workload": "commit-16",
+      "n": 45676,
+      "tps": 761.2,
+      "p50_ms": 16.37,
+      "p90_ms": 34.501,
+      "p99_ms": 77.694,
+      "p999_ms": 460.061,
+      "max_ms": 1561.097
+    },
+    {
+      "workload": "tpcb-16",
+      "n": 21197,
+      "tps": 343.7,
+      "p50_ms": 27.391,
+      "p90_ms": 95.382,
+      "p99_ms": 271.166,
+      "p999_ms": 736.334,
+      "max_ms": 2753.168
+    },
+    {
+      "workload": "bulk",
+      "wal_bytes": 268862976,
+      "seconds": 19.628,
+      "wal_mb_per_s": 13.7
+    }
+  ]
+}

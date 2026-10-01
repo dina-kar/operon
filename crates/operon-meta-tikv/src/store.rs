@@ -8,7 +8,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use operon_common::meta::{
     AliasAction, AliasTargetAction, AliasTargets, Collection, CollectionHead, CollectionRoots,
-    Consistency, Fence, HotConfig, Lease, LeaseGrant, Link, LinkHead, LinkId, MetaChanges,
+    Consistency, Fence, HotConfig, IdempotencyClaim, IdempotencyCompletion, IdempotencyEntry,
+    IdempotencyKey, IdempotencyState, Lease, LeaseGrant, Link, LinkHead, LinkId, MetaChanges,
     MetaResult, MetaStore, NameTarget, Namespace, PartitionIndex, Pointer, PointerCas, Retention,
     SegmentSwap, Stream, StreamState, TargetRef, Tracked, WalClass, WalCommit,
 };
@@ -387,6 +388,40 @@ impl MetaStore for TikvMeta {
 
     async fn prune_wal_commits(&self, fence: Option<Fence>) -> MetaResult<u32> {
         self.prune_wal_commits_impl(fence).await
+    }
+
+    async fn claim_idempotency_keys(
+        &self,
+        claim: IdempotencyClaim,
+    ) -> MetaResult<Vec<IdempotencyState>> {
+        self.claim_idempotency_keys_impl(claim).await
+    }
+
+    async fn complete_idempotency_keys(&self, completion: IdempotencyCompletion) -> MetaResult<()> {
+        self.complete_idempotency_keys_impl(completion).await
+    }
+
+    async fn release_idempotency_keys(
+        &self,
+        stream: StreamId,
+        owner: &str,
+        keys: Vec<IdempotencyKey>,
+    ) -> MetaResult<()> {
+        self.release_idempotency_keys_impl(stream, owner, keys)
+            .await
+    }
+
+    async fn idempotency_key(
+        &self,
+        consistency: Consistency,
+        stream: StreamId,
+        key: IdempotencyKey,
+    ) -> MetaResult<Option<IdempotencyEntry>> {
+        self.idempotency_key_impl(consistency, stream, key).await
+    }
+
+    async fn prune_idempotency_keys(&self, fence: Option<Fence>) -> MetaResult<u32> {
+        self.prune_idempotency_keys_impl(fence).await
     }
 
     async fn orphan_wal_objects(

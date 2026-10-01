@@ -19,6 +19,7 @@ bytes.workspace = true
 clap.workspace = true
 datafusion = { workspace = true, optional = true }
 datafusion-postgres = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
 fail = { workspace = true, optional = true }
 http.workspace = true
 operon-cache.workspace = true
@@ -33,6 +34,7 @@ operon-link.workspace = true
 operon-log.workspace = true
 operon-meta.workspace = true
 operon-meta-tikv = { workspace = true, optional = true }
+opensrv-mysql = { workspace = true, optional = true }
 operon-qdrant = { workspace = true, optional = true }
 operon-query.workspace = true
 operon-store.workspace = true
@@ -76,8 +78,10 @@ durable = ["dep:operon-durable"]
 durable-mysql = ["durable", "operon-durable/mysql"]
 # The native TiKV durable store (`--durable-store tikv://…`).
 durable-tikv = ["durable", "operon-durable/tikv"]
+# The MySQL wire listener over collections (`--mysql-listen`).
+mysql-wire = ["dep:opensrv-mysql", "dep:datafusion"]
 # The PostgreSQL wire listener over collections (`--pg-listen`).
-pgwire = ["dep:datafusion-postgres", "dep:datafusion"]
+pgwire = ["dep:datafusion-postgres", "dep:datafusion", "dep:futures"]
 # The native stream gRPC endpoint used by Dapr protocol adapters.
 stream-grpc = ["dep:operon-stream-grpc"]
 # Builds the multi-process cluster tests (`tests/cluster.rs`, M1.3 Task 11;
@@ -111,6 +115,8 @@ prost.workspace = true
 prost-types.workspace = true
 tempfile.workspace = true
 time.workspace = true
+# The client of the PostgreSQL wire listener's tests (`pg::tests`).
+tokio-postgres = "0.7"
 tonic = { workspace = true, features = ["gzip"] }
 
 [lints]
