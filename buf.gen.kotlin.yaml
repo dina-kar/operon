@@ -1,0 +1,28 @@
+# Kotlin for Loams for Android (design §37 §8.4, AP2 Task 1). Not run in this
+# repository except as a CI smoke check into a scratch directory:
+# ostrium-labs/loams-mobile runs it against the git ref pinned in its
+# conformance/proto-ref.lock (see buf.gen.swift.yaml).
+#
+# Remote plugins (buf.build): protobuf-java lite messages and connect-kotlin
+# clients with coroutine methods only.
+version: v2
+inputs:
+  - directory: proto
+    paths:
+      - proto/loams/instance/v1
+      - proto/loams/devices/v1
+      - proto/loams/approvals/v1
+      - proto/loams/operations/v1
+      - proto/loams/notifications/v1
+      - proto/loams/errors/v1
+plugins:
+  - remote: buf.build/protocolbuffers/java
+    out: gen/kotlin/java
+    opt:
+      - lite
+  - remote: buf.build/connectrpc/kotlin
+    out: gen/kotlin/kotlin
+    opt:
+      - generateCallbackMethods=false
+      - generateCoroutineMethods=true
+      - generateBlockingUnaryMethods=false
