@@ -6,22 +6,24 @@
 # when it places a compute; the benchmark uses one rule for the keyspace.
 #
 #   scripts/loam-pg-bench/place-leaders.sh [--pd HOST:PORT] [--zone z1]
-#       [--keyspace loam_pgwal] [--timeout S]
+#       [--keyspace loam_pgwal] [--mode raw|txn] [--timeout S]
 #
 # On one host every store shares the disk and there is no network distance,
 # so this only matters once cross-AZ delays are modelled; it keeps the
 # candidate's topology the one §6.6 specifies.
 set -euo pipefail
-pd=127.0.0.1:19379 zone=z1 keyspace=loam_pgwal timeout=60
+pd=127.0.0.1:19379 zone=z1 keyspace=loam_pgwal timeout=60 mode=raw
 while [ $# -gt 0 ]; do
   case $1 in
     --pd) pd=$2; shift 2 ;;
     --zone) zone=$2; shift 2 ;;
     --keyspace) keyspace=$2; shift 2 ;;
+    --mode) mode=$2; shift 2 ;;
     --timeout) timeout=$2; shift 2 ;;
     *) sed -n '8,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
   esac
 done
+case $mode in raw) prefix=r ;; txn) prefix=x ;; *) echo "place-leaders: --mode raw|txn" >&2; exit 2 ;; esac
 api=http://$pd/pd/api
 
 # 1. One zone per store, in store id order.
@@ -36,9 +38,10 @@ for id in $ids; do
 done
 [ "$n" -ge 2 ] || { echo "place-leaders: $n store(s): nothing to place" >&2; exit 0; }
 
-# 2. The keyspace's raw key range, as PD sees it (memcomparable 'r' + id).
+# 2. The keyspace's key range, as PD sees it (memcomparable 'r' (raw) or 'x'
+#    (txn) + id).
 ks_id=$(curl -sf "$api/v2/keyspaces/$keyspace" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-read -r start end < <(python3 - "$ks_id" <<'PY'
+read -r start end < <(python3 - "$ks_id" "$prefix" <<'PY'
 import sys
 def enc(b):
     # TiKV's memcomparable encode_bytes: 8-byte groups + marker 0xFF - pad.
@@ -50,8 +53,8 @@ def enc(b):
         if pad:
             return out.hex()
         i += 8
-k = int(sys.argv[1])
-print(enc(b"r" + k.to_bytes(3, "big")), enc(b"r" + (k + 1).to_bytes(3, "big")))
+k, pre = int(sys.argv[1]), sys.argv[2].encode()
+print(enc(pre + k.to_bytes(3, "big")), enc(pre + (k + 1).to_bytes(3, "big")))
 PY
 )
 
@@ -74,6 +77,7 @@ import json, sys
 for s in json.load(sys.stdin)['stores']:
     if any(l['key'] == 'zone' and l['value'] == '$zone' for l in s['store'].get('labels', [])):
         print(s['store']['id'])")
+off=unknown
 for _ in $(seq 1 "$timeout"); do
   off=$(curl -sf "$api/v1/regions" | python3 -c "
 import json, sys
@@ -88,3 +92,4 @@ print(bad)")
   sleep 1
 done
 echo "place-leaders: $off region(s) of loam_pgwal still led outside $zone after ${timeout}s" >&2
+exit 1

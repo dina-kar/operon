@@ -47,15 +47,21 @@ while [ $# -gt 0 ]; do
     --out) out=$2; shift 2 ;;
     --keep) keep=1; shift ;;
     --force) force=1; shift ;;
-    --store) store=$2; shift 2 ;;
-    --depth) depth=$2; shift 2 ;;
-    --kv-config) kv_config=$(realpath "$2"); shift 2 ;;
+    --store | --depth | --kv-config)
+      case ${2-} in "" | --*) echo "run: $1 needs a value" >&2; exit 2 ;; esac
+      case $1 in
+        --store) store=$2 ;;
+        --depth) depth=$2 ;;
+        --kv-config) kv_config=$(realpath "$2") ;;
+      esac
+      shift 2 ;;
     --no-place) place=0; shift ;;
     *) sed -n '5,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
   esac
 done
 case $variant in safekeepers | loam) ;; *) echo "run: --variant safekeepers|loam" >&2; exit 2 ;; esac
 case $replicas in 1 | 3) ;; *) echo "run: --replicas 1|3" >&2; exit 2 ;; esac
+case $depth in "" | *[!0-9]* | 0) echo "run: --depth N (a positive integer)" >&2; exit 2 ;; esac
 case $store in tikv | tikv-raw) ;; *) echo "run: --store tikv|tikv-raw" >&2; exit 2 ;; esac
 kv_config=${kv_config:-$ROOT/deploy/loam-pg-bench/tikv.toml}
 out=$(realpath -m "$out")
@@ -139,7 +145,8 @@ else
     echo "$cfg_sum" >"$RUN_DIR/kv-config.sum"
   fi
   if [ "$place" = 1 ] && [ "$replicas" = 3 ]; then
-    "$ROOT/scripts/loam-pg-bench/place-leaders.sh" --pd "$PD" --zone z1 >&2
+    "$ROOT/scripts/loam-pg-bench/place-leaders.sh" --pd "$PD" --zone z1 \
+      --mode "$([ "$store" = tikv ] && echo txn || echo raw)" >&2
   fi
   RUST_LOG=${RUST_LOG:-info} setsid nohup "$LOAM_WAL" --listen-pg 127.0.0.1:5460 \
     --listen-http 127.0.0.1:7690 --store "$store" --pipeline-depth "$depth" \
@@ -147,6 +154,8 @@ else
     --feed-safekeeper 127.0.0.1:5457 >"$RUN_DIR/loam-wal.log" 2>&1 </dev/null 9>&- &
   echo $! >"$RUN_DIR/loam-wal.pid"
   for _ in $(seq 1 30); do curl -sf localhost:7690/v1/status >/dev/null && break; sleep 1; done
+  curl -sf localhost:7690/v1/status >/dev/null ||
+    { echo "run: loam-wal did not become ready (see $RUN_DIR/loam-wal.log)" >&2; exit 1; }
   SAFEKEEPERS=127.0.0.1:5460
 fi
 
