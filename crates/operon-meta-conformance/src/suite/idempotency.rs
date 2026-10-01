@@ -261,6 +261,10 @@ pub async fn ledger_requests_are_validated(backend: &dyn Backend) {
     );
 }
 
+/// A ledger prune under a stale lease epoch is refused with `Fenced` and
+/// removes nothing: pending claims, unexpired done entries and even lapsed
+/// ones stay. A prune under the current epoch then removes only the lapsed
+/// entry.
 pub async fn a_fenced_ledger_prune_is_refused_and_keeps_every_entry(backend: &dyn Backend) {
     let db = backend.start().await;
     let meta = db.first();
