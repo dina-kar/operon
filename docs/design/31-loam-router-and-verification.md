@@ -37,7 +37,7 @@ Markers, as in §28 and §29:
 | D317 | **A Loam-built Rust router is the recorded fallback, with named triggers** (§5, ADR-1): a PgDog change that config cannot replace and upstream refuses (D236 forbids patching); Vitess failing the RT3 gate on WeSQL with no fix in the WeSQL fork; or a correctness bug in a bought router that upstream will not fix. The fallback would be Apache-2.0, take no PgDog code, and may port Vitess code with its notices. The seams of §7.3 keep it possible | Proposed |
 | D318 | **Licenses** (§16): everything Loam links stays Apache-2.0 (D11). Vitess is Apache-2.0 and runs as a service (it may be forked under D302's rule); PgDog stays an unmodified service read only as a reference (D236), and no PgDog text, code or test is copied into Loam's code or specs. The chat dump's "router license: AGPL or Apache" question is answered: Apache-2.0 | Proposed |
 | D319 | **Track RT** (RT0–RT5) replaces the chat dump's M0–M5 (§17). RT runs beside M2 and the R, D and P tracks on the one-build machine, and adds crates without changing M-track code | Proposed |
-| D320 | **vtgate is the MySQL front end for WeSQL**, sharded or not, instead of the Loam-built handshake-and-splice proxy of §23 §6.3 (N6). Loam renders vtgate's static auth file and VSchema as it renders PgDog's files. **Proposes to amend D153's MySQL half**; the Loam splice stays the fallback if RT3's gate fails | Proposed |
+| D320 | **vtgate is the MySQL front end for WeSQL**, sharded or not, instead of the Loam-built handshake-and-splice proxy of §23 §6.3 (N6). Loam renders vtgate's static auth file and VSchema as it renders PgDog's files. **Proposes to amend D153's MySQL half**. If RT3's gate fails, the Loam splice is the fallback for **unsharded** WeSQL only; sharded MySQL is then unavailable until D317's Rust router exists | Proposed |
 | D321 | **The §18 namespace router is unchanged and separate.** It places namespaces and resources of the retrieval engine and never copies data (§18 §5.5). The SQL routers sit outside the engine; moving SQL data between shards copies rows (PgDog's logical replication, Vitess's VReplication) | Proposed |
 | D322 | **Isolation is promised per shard, never across shards** (§10): Postgres semantics on each Loam Postgres shard, §29 D274's semantics on each WeSQL shard; cross-shard reads may be fractured (Vitess documents this for its 2PC); no global snapshot. Every checker checks exactly these promises | Proposed |
 
@@ -208,7 +208,7 @@ An instance unreachable at step 2 or 5 cannot write to the source (step 3) and, 
 
 ### 6.5 The in-doubt monitor
 
-PgDog names prepared transactions `__pgdog_2pc_[<DEPLOYMENT_ID>_]<instance>_<random>` (`pgdog/.../two_pc/transaction.rs`), where the instance id is `NODE_ID` or, without it, 8 random hex digits per process (`pgdog/pgdog/src/util.rs`). Its coordinator log is a local WAL directory with no checksums ("We didn't add checksums", `two_pc/wal/README.md`), and without `PGDOG_TWO_PHASE_COMMIT_WAL_DIR` there is no log at all (verify that no default directory applies). So:
+PgDog names prepared transactions `__pgdog_2pc_[<DEPLOYMENT_ID>_]<instance>_<random>` (`pgdog/pgdog/src/frontend/client/query_engine/two_pc/transaction.rs`), where the instance id is `NODE_ID` or, without it, 8 random hex digits per process (`pgdog/pgdog/src/util.rs`). Its coordinator log is a local WAL directory with no checksums ("We didn't add checksums", `two_pc/wal/README.md`), and without `PGDOG_TWO_PHASE_COMMIT_WAL_DIR` there is no log at all (verify that no default directory applies). So:
 
 - **Deployment rule (D306):** a database with 2PC on runs PgDog as a StatefulSet with `NODE_ID` = the pod ordinal, `DEPLOYMENT_ID = <cluster>-<db>` and the WAL directory on the pod's persistent volume.
 - **The monitor** (a sans-I/O machine with a Postgres adapter) lists `pg_prepared_xacts` on every shard every 30 s, groups `__pgdog_2pc_` transactions by instance, and raises an alert for any older than `2pc_in_doubt_alert` (default 5 min) whose instance is gone or restarted. **It never commits or rolls back** a transaction: without the coordinator's log it cannot know the decision, and `CrossShardCommit.tla` shows that guessing violates atomicity (§11.2). An operator resolves with the shard data in view, through a documented runbook.
@@ -471,7 +471,7 @@ The inventory is the spec of what an engine must answer for a router. It is buil
 3. **Merge** the static and dynamic lists into one table keyed by digest, with the component that issues each statement.
 4. **Replay and classify** each digest (with its captured example and session state) against the target engine (WeSQL; Loam Postgres) and the reference: `same` (identical result, warnings and errors), `differs` (result or metadata differs), `error` (target errors), `unsupported` (target refuses by design, with the reason). Results compare by a canonical hash.
 5. **Suite pass rates.** Run the selected suites through the router against the target; record pass, fail and skip per test, and link each failure to inventory rows.
-6. **Bless** the tables as TSV files (`conformance/router/{vitess-wesql,pgdog-loampg}-statements.tsv` with columns `digest, component, source, example, class, note, issue`; `…-suites.tsv` with `suite, test, result, rows`). A PR that changes a pinned version re-runs the inventory and shows the diff.
+6. **Bless** the tables as TSV files (`conformance/router/{vitess-wesql,pgdog-loampg}-statements.tsv` with columns `digest, component, source, example, class, ref_hash, target_hash, note, issue`, where the two hashes are the canonical result hashes of step 4; `…-suites.tsv` with `suite, test, result, rows`). A PR that changes a pinned version re-runs the inventory and shows the diff.
 7. **Gate.** RT3's gate for D302 (proposed): no `error` or `differs` row in the components Loam uses (query service, health, schema engine, VReplication for MoveTables and Reshard), and the suite pass rates in §17's RT3 row. Rows in components Loam does not use are recorded, not gating.
 
 ## 16. Licenses (D318)
@@ -490,7 +490,7 @@ The inventory is the spec of what an engine must answer for a router. It is buil
 | Jepsen | EPL-1.0 (`jepsen/project.clj`) | Optional external tool (D315) |
 | toxiproxy | MIT | Test tool |
 | `des` 0.9 crate | MIT OR Apache-2.0 | Linked; `cargo deny` in RT0 Task 6 |
-| `xxhash-rust` 0.8 | BSL-1.0 | Already a workspace dependency (allowed by `deny.toml`) |
+| `xxhash-rust` 0.8 | BSL-1.0, the **Boost** Software License: permissive, not the Business Source License (BUSL-1.1) that D11 and `deny.toml` forbid | Already a workspace dependency. D318's rule is about copyleft and source-available licenses; a permissive non-Apache license linked into Loam's Apache-2.0 code is allowed, as for the MIT crates |
 
 ## 17. Roadmap: track RT (D319)
 
@@ -549,7 +549,7 @@ Each phase is small stacked PRs. RT adds crates and CI jobs and changes no M-tra
 | D236 (PgDog unmodified) | The chat dump's "clean Rust Postgres router, pgdog as reference" | D236 stands; D300; a Loam router only under D317 |
 | D11 (Apache-2.0) | The chat dump's "router license AGPL or Apache" | Apache-2.0 (D318) |
 | D28 (seeded, not bit-exact simulation) | The chat dump's madsim/turmoil DST | D313 adds a bit-exact tier for sans-I/O code; D28 unchanged for the engine |
-| D153, MySQL half (§23 §6.3, N6: Loam's handshake-and-splice proxy) | D320: vtgate | Proposed amendment; the splice is the fallback |
+| D153, MySQL half (§23 §6.3, N6: Loam's handshake-and-splice proxy) | D320: vtgate | Proposed amendment; the splice is the fallback for unsharded WeSQL only, and sharded MySQL waits for D317 |
 | §29 §7.2 ("the router follows the record") | With Vitess, the repoint is `TabletExternallyReparented` | Amended by D320 once §29 merges; noted for the integrator |
 | §18 §5.8 ("Loam avoids cross-shard atomicity") | D306 enables PgDog 2PC for SQL databases | No conflict: §18 is about the retrieval engine's metadata; SQL databases opt in under D306's rule |
 | §18 §5.5 ("Loam never copies data") | SQL resharding copies rows | No conflict: D321 scopes §18 to the retrieval engine |

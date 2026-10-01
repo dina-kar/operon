@@ -124,7 +124,7 @@ docs/design/31-loam-router-and-verification.md  docs/plans/README.md  CHANGELOG.
   ```
 
 - `scripts/spec/provenance.sh`: fails if any file under `spec/`, `conformance/` or `crates/operon-sqlrouter/` contains `GNU AFFERO`, `pgdog::`, `use pgdog` or a line PgDog's source has verbatim (a list of 20 distinctive identifiers from PgDog's 2PC and resharding modules, kept in the script, chosen in this task); run in the `tla` job.
-- CI: the `changes` job gains filters `spec` (`spec/**`, `scripts/spec/**`) and `router` (`crates/operon-sqlrouter/**`, `crates/operon-compat/**`, `conformance/router/**`). Job `tla` (needs `changes`, runs when `spec` changed or on schedule): Temurin 21, cache `~/.cache/loam/spec-tools`, `scripts/spec/check.sh --all` (PR variants) or `--all --nightly` on schedule, then `provenance.sh`.
+- CI: the `changes` job gains filters `spec` (`spec/**`, `scripts/spec/**`) and `router` (`crates/operon-sqlrouter/**`, `crates/operon-compat/**`, `conformance/**`). Job `tla` (needs `changes`; runs when `spec` or `router` changed, or on schedule): Temurin 21, cache `~/.cache/loam/spec-tools`, `scripts/spec/check.sh --all` (PR variants) or `--all --nightly` on schedule, then `provenance.sh`, which covers `spec/`, `conformance/` and `crates/operon-sqlrouter/`.
 
 **Semantics:** `spec/tla/selftest/Selftest.tla` is a three-line counter with an invariant that the counter stays under 3; `MCSelftest_Violation.cfg` sets the bound so TLC must find the violation. It proves the job detects failures and is listed with `expect = "violation:Small"`.
 
@@ -277,7 +277,7 @@ pub fn vitess_xxhash(bytes: &[u8]) -> KeyspaceId;
 - `ShardFn.lean`: `shardOfModulo (n : Nat) (h : Nat) : Fin n` for `n > 0`, `modulo_partition`; `shardOfRange` through `lookup`; `shardOf_deterministic`.
 - `Oracle.lean` and `Main.lean`: the `loam-router-oracle` executable reads JSON lines `{"op":"partition_check","ranges":[[lo,hi|null],…]}`, `{"op":"lookup","ranges":…,"id":n}`, `{"op":"split",…}`, `{"op":"merge",…}` and writes `{"ok":true,"result":…}` or `{"ok":false,"error":"Gap"|"Overlap"|"NotSorted"|"Empty","at":n}` per line, with the same error vocabulary as `PartitionError`.
 - Plausible properties for split and merge on random partitions (`#test` in the modules, run by `lake test`).
-- CI job `lean` (path-filtered on `spec/lean/**` and `crates/operon-sqlrouter/src/{ranges.rs,reference/**}`): elan with `lean-toolchain`, cache `spec/lean/.lake` keyed by `lean-toolchain` and `lake-manifest.json`, `lake build`, `lake test`, then `cargo test -p operon-sqlrouter --test it lean_oracle` with the oracle on `PATH`.
+- CI job `lean` (path-filtered on `spec/lean/**`, `crates/operon-sqlrouter/src/ranges.rs` and `crates/operon-sqlrouter/src/reference/**`, listed as three separate patterns): elan with `lean-toolchain`, cache `spec/lean/.lake` keyed by `lean-toolchain` and `lake-manifest.json`, `lake build`, `lake test`, then `cargo test -p operon-sqlrouter --test it lean_oracle` with the oracle on `PATH`.
 
 **Tests:** `lake build` (the theorems are checked by building); `lake test`; `partition_matches_lean_oracle` (10 000 random cases, valid and invalid partitions, lookups, splits and merges; Rust and Lean must agree on result or error kind), skipped with `skipped: needs loam-router-oracle` when the binary is absent.
 
