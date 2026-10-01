@@ -868,7 +868,8 @@ mod tests {
             .unwrap()
             .unwrap();
         let s2 = s.clone();
-        let later = tokio::spawn(async move { s2.append(&tl(), &batch(1, 105, b"world", 0)).await });
+        let later =
+            tokio::spawn(async move { s2.append(&tl(), &batch(1, 105, b"world", 0)).await });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(!later.is_finished(), "waits for the WAL before it");
         s.append(&tl(), &batch(1, 100, b"hello", 0))
