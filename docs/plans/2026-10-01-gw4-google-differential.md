@@ -20,7 +20,7 @@
 **Spec:**
 - [§34](../design/34-protocol-gateway-and-standards.md) §6, §8.3, §13 rows 3, 4, 6, 8.
 - `openrtb2.x/proto/src/main/com/iabtechlab/openrtb/v2/openrtb.proto` and `proto/README.md` (bools for integer flags; integers for enumerations; extension ranges, 1000–1999 Google).
-- Google Authorized Buyers: `openrtb.proto` (OpenRTB 2.6, proto2), `openrtb-adx.proto` (v.205, 2026-03-13; beta v.213) from developers.google.com/authorized-buyers/rtb/downloads; the OpenRTB migration guide's field mappings.
+- Google Authorized Buyers: `openrtb.proto` (OpenRTB 2.6, proto2), `openrtb-adx.proto` (stable v.210, 2026-08-04; open beta v.220, 2026-09-16; `openrtb.proto` 2.6 last updated 2026-09-23 — read 2026-10-01 at developers.google.com/authorized-buyers/rtb/data; Task 0 pins the stable version current at execution) from developers.google.com/authorized-buyers/rtb/downloads; the OpenRTB migration guide's field mappings.
 - As built after GW3.
 
 ## Global Constraints

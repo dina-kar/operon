@@ -149,7 +149,7 @@ impl DecodeError { pub fn code(&self) -> &'static str; }   // "body_too_large", 
 
 **Semantics:** Integer flags stay integers (GW1 Ruling 6); string arrays stay strings; a JSON `null` is treated as absent. A price that is a JSON string (`"1.5"`, seen from non-conforming senders) is accepted with `Warning::CoercedValue`.
 
-**Tests:** `deserializes_every_spec_example` (the files Task 5 vendors; until then, two inline examples from §6); `price_is_parsed_from_decimal_text` (`1.5`, `0.15`, `12.000001`, `1e-3` refused); `price_rounding_is_half_even`; `price_string_is_coerced_with_warning`; `null_is_absent`; `ext_is_kept_byte_exact`; `gzip_bomb_is_refused`; `no_f64_in_price_paths` (reads `src/model/*.rs` and fails if any field named `price`, `bidfloor` or `*floor*` has type `f64`).
+**Tests:** `deserializes_every_spec_example` (the files Task 5 vendors; until then, two inline examples from §6); `price_is_parsed_from_decimal_text` (`1.5`, `0.15`, `12.000001`, and exponent forms `1e-3` → 1 000 micros and `2.5E1` → 25 000 000, which RFC 8259 allows and OpenRTB's `float` fields may carry, all parsed exactly without `f64`); `price_rounding_is_half_even`; `price_string_is_coerced_with_warning`; `null_is_absent`; `ext_is_kept_byte_exact`; `gzip_bomb_is_refused`; `no_f64_in_price_paths` (reads `src/model/*.rs` and fails if any field named `price`, `bidfloor` or `*floor*` has type `f64`).
 
 **Commit:** `rtb: add the OpenRTB 2.x superset model with exact prices`.
 
@@ -171,13 +171,13 @@ pub fn response_from_canonical(r: &AuctionResponse, profile: &Profile) -> Result
 ```
 
 **Semantics:**
-- Required fields per 2.6: `BidRequest.id`, at least one `imp` with `id`; exactly one of `site`, `app`, `dooh` (2.6 §3.2.1: a DOOH request must not contain site or app); `BidResponse.id`; `SeatBid.bid` non-empty; `Bid.id`, `Bid.impid`, `Bid.price`. Missing → `DecodeError::MissingRequired`.
+- Required fields per 2.6: `BidRequest.id`, at least one `imp` with `id`; **at most one** of `site`, `app`, `dooh` (2.6 §3.2.1: `site` and `app` are *recommended*, not required, and "a bid request with a DOOH object must not contain a site or app object"); a request with none of them is valid and decodes with no distribution set; `BidResponse.id`; `SeatBid.bid` non-empty; `Bid.id`, `Bid.impid`, `Bid.price`. Missing → `DecodeError::MissingRequired`.
 - **Ext promotion in 2.6:** 2.6 senders that still use the 2.5 convention (`regs.ext.gdpr`, `regs.ext.us_privacy`, `user.ext.consent`, `user.ext.eids`, `source.ext.schain`) are promoted when the first-class field is absent (`Warning::PromotedFromExt`); when both are present, the first-class value wins (`Warning::ConflictingLocations`) and the `ext` member stays in `ext` unchanged.
 - Currency: `imp.bidfloorcur` (default `USD`) attaches to `imp.bidfloor`; `deal.bidfloorcur` (default `USD`) to the deal's; `BidResponse.cur` (default `USD`) to every `bid.price` in it.
 - `Provenance { protocol: "openrtb", version: "2.6", partner, received_unix_ns }`.
 - `from_canonical` at 2.6 is lossless: `LossReport` is empty unless the canonical message carries `Legacy` fields 2.6 removed (those are written back only for 2.4/2.5 in GW3; at 2.6 they are dropped and reported).
 
-**Tests:** `required_fields_are_enforced`; `dooh_with_site_is_invalid`; `promotes_25_style_ext_in_26`; `first_class_wins_over_ext`; `currency_defaults_to_usd`; `deal_floor_currency_is_its_own`; `canonical_back_to_26_is_identity_on_spec_examples`; `legacy_fields_are_reported_at_26`.
+**Tests:** `required_fields_are_enforced`; `dooh_with_site_is_invalid`; `site_and_app_together_is_invalid`; `no_distribution_object_is_valid`; `promotes_25_style_ext_in_26`; `first_class_wins_over_ext`; `currency_defaults_to_usd`; `deal_floor_currency_is_its_own`; `canonical_back_to_26_is_identity_on_spec_examples`; `legacy_fields_are_reported_at_26`.
 
 **Commit:** `rtb: canonicalize OpenRTB 2.6 requests and responses`.
 
@@ -200,7 +200,7 @@ pub fn response_from_canonical(r: &AuctionResponse, profile: &Profile) -> Result
 **Produces:**
 - `SOURCES.toml`: per source, `name`, `url`, `tag` (`2.6-202606`), `commit`, `sha256`, `licence` (`CC-BY-3.0`), `fetched` (date).
 - `NOTICE.md`: "Examples in `openrtb/2.6/valid/spec-*` are from the OpenRTB 2.6 specification by IAB Tech Lab, licensed under CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/), at tag `2.6-202606`; changes: extracted from the document, whitespace normalized."
-- Corpus layout: `valid/<name>.json` with `valid/<name>.expected.json` (the canonical message in proto3 JSON, `Provenance.received_unix_ns` fixed at 0 by the harness); `invalid/<name>.json` with `invalid/<name>.expected.json` = `{"error": "<code>", "path": "<path or null>"}`. Hand-written files: at least `banner-minimal`, `video-pod-26`, `native-12`, `audio`, `dooh`, `app-with-eids`, `site-with-schain`, `gdpr-first-class`, `gdpr-in-ext-25-style`, `multi-currency-floors`, `deal-floors`; invalid: `no-imp`, `site-and-dooh`, `price-exponent`, `truncated-json`, `wrong-type-imp`, `gzip-bomb` (generated by the test, not checked in).
+- Corpus layout: `valid/<name>.json` with `valid/<name>.expected.json` (the canonical message in proto3 JSON, `Provenance.received_unix_ns` fixed at 0 by the harness); `invalid/<name>.json` with `invalid/<name>.expected.json` = `{"error": "<code>", "path": "<path or null>"}`. Hand-written files: at least `banner-minimal`, `video-pod-26`, `native-12`, `audio`, `dooh`, `app-with-eids`, `site-with-schain`, `gdpr-first-class`, `gdpr-in-ext-25-style`, `multi-currency-floors`, `deal-floors`; invalid: `no-imp`, `site-and-dooh`, `price-not-a-number`, `truncated-json`, `wrong-type-imp`, `gzip-bomb` (generated by the test, not checked in).
 - `golden::run(dir, adapter) -> GoldenReport` and `UPDATE_GOLDEN=1` rewriting `.expected.json`; `corpus::files(protocol, version, kind)`.
 
 **Tests:** `golden_26_valid` (each valid file decodes to its expected canonical JSON and re-encodes equal to the input by JSON value); `golden_26_invalid` (each invalid file gives its expected code and path); `corpus_sources_are_recorded` (every corpus file under `spec-*` names a source in `SOURCES.toml`); `oracle_iab_specs_agrees` (every valid file also decodes with `iab_specs`' 2.6 model; for each field both models set, values agree, prices compared as decimals; disagreements listed, the test fails on any).
