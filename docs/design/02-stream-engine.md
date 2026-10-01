@@ -149,7 +149,7 @@ The Kafka protocol is Loam's long-term source-compatibility protocol. With it, L
   2. Idempotent producers: `InitProducerId` maps onto the native producer ids and epochs (§7), so the sequencer's dedupe applies unchanged.
   3. Consumer groups with committed offsets: the classic group protocol (`FindCoordinator`, `JoinGroup`, `SyncGroup`, `Heartbeat`, `OffsetCommit`, `OffsetFetch`) first, then KIP-848 server-side assignment (`ConsumerGroupHeartbeat`). A group's coordinator runs on the rendezvous owner of `(ns, group)` (§18 §5.3); its committed offsets live in the metastore like a named consumer's, and commits are conditional on the group's generation, so a stale coordinator cannot commit.
 - **Not in M5:** Kafka transactions (transactional ids, `AddPartitionsToTxn`, `EndTxn`, read-committed isolation). A later milestone adds them on demand (Q4).
-- **Companion.** The RisingWave companion integration (D22) returns in M5 over this gateway: RisingWave reads streams and changelog streams through its Kafka source and writes back through its Kafka sink.
+- **Companion.** The RisingWave companion integration (D22) returns in M5 over this gateway (pending Q331: if the gateway is deferred, RisingWave reads the Event Fabric instead, §32 D341): RisingWave reads streams and changelog streams through its Kafka source and writes back through its Kafka sink.
 - **Gate.** The Kafka client test suites (librdkafka, franz-go or the Java client) pass against Loam, stage by stage; RisingWave, Flink and Kafka Connect run end to end (§12).
 - **Rejected alternatives.** A Kinesis-compatible subset reaches fewer tools and would become redundant once Kafka exists. A RisingWave-only native connector is not needed: the Kafka gateway covers RisingWave.
 
@@ -168,12 +168,12 @@ Tools that read or write Loam with no code of ours in them:
 | RisingWave, Elasticsearch sink | Documents into a collection | ES `_bulk` subset (§06) | M1.5 | Planned; the requests it sends are checked against the subset (verify) |
 | RisingWave, HTTP sink | Records into Loam | Native HTTP produce, plain-JSON body (§7) | M2 | Planned; the sink sends one `varchar` or `jsonb` column per row (verify batching) |
 | RisingWave, Iceberg sink | Rows into a table | Iceberg REST through Lakekeeper (§08) | M4 | Planned |
-| RisingWave, Kafka source and sink | Streams in and out | Kafka (§7.2) | M5 | Planned (D22, D74) |
-| Apache Flink, Kafka connector | Streams in and out | Kafka (§7.2) | M5 | Planned (D74) |
-| Spark Structured Streaming, Kafka source and sink | Streams in and out | Kafka (§7.2) | M5 | Planned (D74) |
-| Kafka Connect, Debezium | Streams in (CDC) and out | Kafka (§7.2) | M5 | Planned (D74); Connect's internal topics need compacted streams (§5) and consumer groups (verify) |
-| Fluent Bit, `kafka` output | Records into Loam | Kafka (§7.2) | M5 | Planned (D74) |
-| Vector, `kafka` source and sink | Streams in and out | Kafka (§7.2) | M5 | Planned (D74) |
+| RisingWave, Kafka source and sink | Streams in and out | Kafka (§7.2) | M5 | Planned (D22, D74); pending Q331: may move to Iggy's Kafka gateway (§32 D332) |
+| Apache Flink, Kafka connector | Streams in and out | Kafka (§7.2) | M5 | Planned (D74); pending Q331: may move to Iggy's Kafka gateway (§32 D332) |
+| Spark Structured Streaming, Kafka source and sink | Streams in and out | Kafka (§7.2) | M5 | Planned (D74); pending Q331: may move to Iggy's Kafka gateway (§32 D332) |
+| Kafka Connect, Debezium | Streams in (CDC) and out | Kafka (§7.2) | M5 | Planned (D74; pending Q331, §32 D332); Connect's internal topics need compacted streams (§5) and consumer groups (verify) |
+| Fluent Bit, `kafka` output | Records into Loam | Kafka (§7.2) | M5 | Planned (D74); pending Q331: may move to Iggy's Kafka gateway (§32 D332) |
+| Vector, `kafka` source and sink | Streams in and out | Kafka (§7.2) | M5 | Planned (D74); pending Q331: may move to Iggy's Kafka gateway (§32 D332) |
 
 ### 7.4 CloudEvents 1.0 (D270)
 
