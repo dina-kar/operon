@@ -2,6 +2,8 @@
 
 Status: **Proposed** · 2026-09-26. Decision numbers are assigned at merge; until then they are P1–P10. This document builds on §18 §6–§8 (D64–D66) and amends one line of D65 (the tenancy model, P2).
 
+> **Amended 2026-10-02** by [§38](38-knative-authentik-gitops.md) (proposed): Authentik's open-source edition is the documented and tested IdP in front of Loam, replacing Keycloak as the SAML broker in P7 and §6 (D447, D450). People sign in through it; the gateway exchanges its token for a Loam access token (RFC 8693, §5.2 flow 1) and stays the authority for Loam tokens; agents, vending and §5.3 are unchanged (D449). The single binary keeps built-in sign-in (D450). §3's hosted identity ("Clerk or Keycloak") is not changed here; it is `loam-platform`'s decision (Q442).
+
 Markers: **(verify)** is not checked against a primary source; the plan that builds it resolves it.
 
 ---

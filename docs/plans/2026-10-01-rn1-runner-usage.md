@@ -2,14 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists the interfaces it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (names, paths, headers, field numbers, metric names, defaults), use them verbatim. The code is not pre-written in this plan (M0.3 Ruling 1).
 
-> **Status: Planned** (2026-10-01). **Track RN** (design [§34](../design/34-protocol-gateway-and-standards.md) §11–§12, D375, D376; amends [§24](../design/24-cpu-time-runtime.md) §16 and [§27](../design/27-usage-hooks.md) §3.6). Build-order item 7, and the open half of item 6. **Not covered by track F:** §24's F1 builds the node supervisor and its tiers but no runner abstraction, no external runner and no host-report emitter crate; RN1 builds those, and F1's supervisor then uses RN1's `operon-meter` to report. RN1 does **not** build the metering ledger: rating, aggregation and reconciliation are `loam-platform`'s (D190, D202; §34 §15 row 5). Tasks 1–5 depend on nothing new; Task 6 depends on GW1 Tasks 3–5. Branches `rn1-t<N>`, stacked; PRs target `main`. RN1 adds crates only; nothing is linked into `operon`'s default build.
+> **Status: Planned** (2026-10-01; amended 2026-10-02 by [§38](../design/38-knative-authentik-gitops.md) D440: the protocol gateway, the Cloudflare runner and the usage-event form moved to `loam-platform`, and this plan builds hooks only). **Track RN** (D375, D376; design [§24](../design/24-cpu-time-runtime.md) §16 and [§27](../design/27-usage-hooks.md) §3.6; [§34](../design/34-protocol-gateway-and-standards.md) is now a stub). Build-order item 7, and the open half of item 6. **Not covered by track F:** §24's F1 builds the node supervisor and its tiers but no runner abstraction, no external runner and no host-report emitter crate; RN1 builds those, and F1's supervisor then uses RN1's `operon-meter` to report. RN1 does **not** build the metering ledger: rating, aggregation and reconciliation are `loam-platform`'s (D190, D202; §34 §15 row 5). Tasks 1–5 depend on nothing new. The former Task 6 (usage as CloudEvents and Arrow) moved to `loam-platform` with GW1 (D440). Branches `rn1-t<N>`, stacked; PRs target `main`. RN1 adds crates only; nothing is linked into `operon`'s default build.
 
 **Goal:**
 - `loam.meter.v1`, the §27 usage contract, as a protobuf package with the §27 §3.6 additions and the socket envelope, in `proto/loam/meter/v1/` (D201, D376).
 - `operon-meter`: the host-side reporter of §27 §3.3 (sequence numbers, bounded buffer, resend until acknowledged, drop counting) and a test consumer.
 - `operon-runner`: the `Runner` trait (D375), `RunnerHost` with the one-reporter rule, and a runner conformance kit.
 - `ProcessRunner` (development and tests) and `LambdaRunner` with Loam's Lambda bootstrap (`operon-lambda-bootstrap`), tested locally against the AWS Lambda Runtime Interface Emulator.
-- The CloudEvents form of usage (`dev.loam.meter.usage.v1`) and its Arrow schema (D376 item 4), off by default.
 
 **Architecture:**
 - **One consumer contract.** Every usage record reaches the consumer as a `HostReport` on `/run/loam/meter.sock` (§27 §3.3). The supervisor (F1) reports its own tiers; `RunnerHost` reports for every other runner. A runner implementation never writes reports itself.
@@ -20,9 +19,9 @@
 **Tech Stack:** Rust 1.97.1, edition 2024, workspace lints. Workspace crates: `tokio` (net, `UnixStream`), `bytes`, `buffa`, `connectrpc-build` (messages only), `http` 1, `hyper` 1 and `hyper-util` (the UDS client), `async-trait`, `thiserror`, `tracing`, `rand`, `proptest`. New (Task 0 checks versions, licences, `cargo deny`, and a cold build-time delta for the Lambda crate): `aws-sdk-lambda` and `aws-config` (Apache-2.0), `lambda_runtime` and `lambda_http` (Apache-2.0, from `awslabs/aws-lambda-rust-runtime`), `rustix` (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT, for `getrusage`; or `libc` if already in the tree). Test tool: the AWS Lambda Runtime Interface Emulator (`aws/aws-lambda-runtime-interface-emulator`, Apache-2.0), pinned release, downloaded by the test script.
 
 **Spec:**
-- [§34](../design/34-protocol-gateway-and-standards.md) §11 (runners), §12 (metering), §15 rows 5, 6, 16–18, §18 Q362, Q366, Q367, Q373.
+- [§24](../design/24-cpu-time-runtime.md) §16 (runners, the trait), [§34](../design/34-protocol-gateway-and-standards.md) §1 (D375, D376) and §5 (Q362 answered, Q366, Q367); [§38](../design/38-knative-authentik-gitops.md) D440, D444 (no metering in OSS).
 - [§27](../design/27-usage-hooks.md) §3.3 (the socket, delivery, CPU accuracy) and §3.6 (external runners); [§24](../design/24-cpu-time-runtime.md) §4 (contracts), §7, §16.
-- As built: `operon-cloudevents`, and after GW1 `operon_cloudevents::{profile, proto_data}` and `operon-events-arrow`.
+- As built: `operon-cloudevents`.
 
 ## Global Constraints
 
@@ -45,11 +44,11 @@ Same as the M1 overview §8, plus:
 | 6 | **`LambdaRunner` splits control from invocation**: `LambdaControl` (deploy, undeploy) with `AwsLambdaControl` (CreateFunction / UpdateFunctionCode / PublishVersion / alias `loam-<version>`) and `StaticLambdaControl` (a pre-deployed function name; used with the emulator); invocation always goes through `aws-sdk-lambda`'s `Invoke`, with `endpoint_url` overridden for the emulator | The emulator only implements invoke | Deploy paths are tested only by the optional real-AWS job |
 | 7 | **Lambda invocations carry the HTTP request as an API Gateway v2 (HTTP API) event**, so the tenant's handler is an ordinary `lambda_http` handler, and the response is the matching v2 response | `lambda_http` already maps v2 events to `http::Request`; Loam's `fetch` contract is an HTTP request (§24 D181) | Binary bodies are base64 in the event, which costs ~33% on large payloads; documented |
 | 8 | **`ProcessRunner` measures CPU per process** (cgroup v2 `cpu.stat` when the runner has a delegated subtree, else `/proc/<pid>/stat` `utime + stime`), and apportions it across invocations that overlapped, setting `cpu_estimated = true` whenever more than one was in flight | Development parity with T0's apportioning (§27 §3.3) | Development only; never used for billing |
-| 9 | **`WorkersRunner` and `SupervisorRunner` are not built here.** The supervisor comes with F1 (it implements the trait in F1's plan); the thin Workers runner waits for the unified auth plan and the Cloudflare document (Q373) | Scope | None |
+| 9 | **`SupervisorRunner` is not built here**; it comes with F1 (it implements the trait in F1's plan). `KnativeRunner` is MT2's. A Cloudflare Workers runner is part of the commercial Cloudflare target in `loam-platform` and plugs in as `RunnerKind::External` (D440) | Scope | None |
 
 ## Carried in
 
-From §27: the `HostReport`/`Invocation`/`HostReportAck` fields 1–11 as published, unchanged, plus §3.6's fields 12–16. From §34 §11: the `Runner` trait sketch, refined here.
+From §27: the `HostReport`/`Invocation`/`HostReportAck` fields 1–11 as published, unchanged, plus §3.6's fields 12–16. From §24 §16: the `Runner` trait sketch, refined here.
 
 ## Review Focus
 
@@ -65,8 +64,8 @@ From §27: the `HostReport`/`Invocation`/`HostReportAck` fields 1–11 as publis
 proto/loam/meter/v1/meter.proto
 crates/operon-meter/                         # new (Tasks 1–2, 6)
   Cargo.toml  build.rs
-  src/{lib.rs,codec.rs,reporter.rs,buffer.rs,testing.rs,events.rs,metrics.rs}
-  tests/{codec.rs,reporter.rs,events.rs}
+  src/{lib.rs,codec.rs,reporter.rs,buffer.rs,testing.rs,metrics.rs}
+  tests/{codec.rs,reporter.rs}
 crates/operon-runner/                        # new (Tasks 3–4)
   src/{lib.rs,types.rs,error.rs,host.rs,registry.rs,process.rs,cpu.rs,conformance.rs}
   tests/{host.rs,process.rs,conformance_process.rs}
@@ -84,14 +83,14 @@ docs/design/27-usage-hooks.md  docs/design/34-protocol-gateway-and-standards.md 
 
 ### Task 0: Reconcile and check
 
-**Files:** read §24 and §27 as merged, the status of F1 (is a supervisor or any `/run/loam/meter.sock` consumer on `main`?), GW1's state, `Cargo.toml`. Fill "Rulings made during execution".
+**Files:** read §24 and §27 as merged, the status of F1 (is a supervisor or any `/run/loam/meter.sock` consumer on `main`?), `Cargo.toml`. Fill "Rulings made during execution".
 
 **Checks:**
 - Whether any code on `main` already defines `loam.meter.v1` or writes to `/run/loam/meter.sock`; if so, RN1 adopts it and lists the differences.
 - `aws-sdk-lambda`, `aws-config`, `lambda_runtime`, `lambda_http` latest versions and licences; `cargo deny check` with them; **one measured cold build of `operon-runner-lambda`** (time and target-dir growth), recorded and the artifacts deleted.
 - The Runtime Interface Emulator's latest release, its arm64 and x86 binaries, and whether `Invoke` with `LogType::Tail` returns a `LogResult` from it (expected: no).
 - AWS Lambda's memory-to-vCPU rule (Ruling 5) and whether the `REPORT` line appears in the 4 KB log tail of a synchronous `Invoke`.
-- Q362, Q366 and Q367's status. **Q366 gates Task 5.**
+- Q366 and Q367's status (Q362 is answered: no metering in OSS). **Q366 gates Task 5.**
 
 **Commit:** `docs: reconcile RN1 with main`.
 
@@ -99,9 +98,9 @@ docs/design/27-usage-hooks.md  docs/design/34-protocol-gateway-and-standards.md 
 
 **Files:** `proto/loam/meter/v1/meter.proto`, `crates/operon-meter/{Cargo.toml,build.rs,src/lib.rs,src/codec.rs,tests/codec.rs}`.
 
-**Produces:** `meter.proto` with `HostReport` (fields 1–3), `Invocation` (fields 1–11 exactly as §27 §3.3, then 12 `runner`, 13 `region`, 14 `provider_billed_ms`, 15 `compile_usec`, 16 `overhead_usec` as §27 §3.6), `HostReportAck`, `SandboxFinished { string cgroup_path = 1; string org = 2; string namespace = 3; int64 finished_unix_ms = 4; }`, `SandboxReadAck { string cgroup_path = 1; }`, `HostMessage`, `ConsumerMessage` (Ruling 1); `Invocation` carries `option (loam.events.v1.event) = { type: "dev.loam.meter.usage.v1" };` once GW1 Task 3 has merged (until then a comment and Task 6 adds it). `codec::{write_frame(&mut impl AsyncWrite, &impl buffa::Message), read_frame::<M>(&mut impl AsyncRead, max: usize) -> Result<Option<M>, CodecError>}` with a 16 MiB frame limit.
+**Produces:** `meter.proto` with `HostReport` (fields 1–3), `Invocation` (fields 1–11 exactly as §27 §3.3, then 12 `runner`, 13 `region`, 14 `provider_billed_ms`, 15 `compile_usec`, 16 `overhead_usec` as §27 §3.6), `HostReportAck`, `SandboxFinished { string cgroup_path = 1; string org = 2; string namespace = 3; int64 finished_unix_ms = 4; }`, `SandboxReadAck { string cgroup_path = 1; }`, `HostMessage`, `ConsumerMessage` (Ruling 1); no CloudEvents option on `Invocation` (the event form moved to `loam-platform`, D440). `codec::{write_frame(&mut impl AsyncWrite, &impl buffa::Message), read_frame::<M>(&mut impl AsyncRead, max: usize) -> Result<Option<M>, CodecError>}` with a 16 MiB frame limit.
 
-**Tests:** `fields_1_to_11_match_section_27` (names, numbers and types against a table copied from §27); `frame_roundtrip`; `oversize_frame_is_refused`; `truncated_frame_is_an_error_not_a_hang`; `buf lint` and `buf breaking` (the package joins GW1 Task 1's gate).
+**Tests:** `fields_1_to_11_match_section_27` (names, numbers and types against a table copied from §27); `frame_roundtrip`; `oversize_frame_is_refused`; `truncated_frame_is_an_error_not_a_hang`; `buf lint` and `buf breaking` (the package joins the `buf breaking` gate of D363).
 
 **Commit:** `meter: add the loam.meter.v1 usage contract and its framing`.
 
@@ -139,7 +138,7 @@ pub mod testing { pub struct Consumer { /* binds the socket, records frames, ack
 
 ```rust
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum RunnerKind { Supervisor, Process, Lambda, Workers, CloudRun, ContainerApps }
+pub enum RunnerKind { Supervisor, Process, Lambda, Knative, CloudRun, ContainerApps, External(&'static str) } // External: runners outside this repository
 impl RunnerKind { pub fn as_str(&self) -> &'static str; }       // "supervisor", "process", "lambda", …
 pub struct RunnerCapabilities { pub contracts: Vec<Contract> /* Fetch, HttpPort, Static */, pub max_cpu: Duration, pub max_wall: Duration, pub max_body: usize, pub streaming: bool, pub websockets: bool, pub suspend: bool }
 pub struct TenantCx { pub org: String, pub namespace: String }
@@ -151,7 +150,7 @@ pub struct InvokeRequest(pub http::Request<Bytes>);
 pub struct Usage { pub cpu_usec: u64, pub cpu_estimated: bool, pub wall_usec: u64, pub provider_billed_ms: u64, pub region: Option<String>, pub start_unix_ms: i64, pub end_unix_ms: i64 } // every field maps to a loam.meter.v1.Invocation field
 pub struct InvokeResponse { pub response: http::Response<Bytes>, pub usage: Option<Usage> }
 pub enum RunnerError { NotFound(DeploymentRef), Unsupported(Contract), DeadlineExceeded, Throttled { retry_after: Option<Duration> }, Provider(String), Artifact(String), Internal(String) }
-#[async_trait] pub trait Runner { /* exactly §34 §11 */ }
+#[async_trait] pub trait Runner { /* exactly §24 §16 */ }
 pub struct RunnerHost { /* Arc<dyn Runner>, Reporter */ }
 impl RunnerHost { pub async fn invoke(&self, cx: &InvocationCx, dep: &DeploymentRef, req: InvokeRequest) -> Result<http::Response<Bytes>, RunnerError>; }
 #[macro_export] macro_rules! runner_conformance { ($factory:expr) => { … } }   // one #[tokio::test] per case
@@ -200,19 +199,9 @@ pub mod report_line { pub struct Report { pub duration_ms: f64, pub billed_ms: u
 
 **Commit:** `runner: add the Lambda runner and Loam's Lambda bootstrap`.
 
-### Task 6: Usage as CloudEvents and Arrow (needs GW1 Tasks 3–5)
-
-**Files:** `proto/loam/meter/v1/meter.proto` (the event option on `Invocation`), `crates/operon-meter/src/events.rs`, `crates/operon-meter/tests/events.rs`.
-
-**Produces:** `pub struct UsageEventSink { /* EventSink-style bounded queue over a StreamProducer, off unless configured */ }` with `UsageEventSink::new(target: (String, String), producer: Arc<dyn StreamProducer>, cfg)`; `pub fn usage_event(host_id: &str, seq: u64, index: usize, inv: &Invocation) -> CloudEvent` (§27 §3.6: `id` `<host_id>:<seq>:<index>`, `source` `/hosts/<host_id>`, `tenantid` `<org>/<namespace>`, `type` `dev.loam.meter.usage.v1`, `dataschema` `urn:loam:proto:loam.meter.v1.Invocation`, `datacontenttype` `application/protobuf`, `time` from `end_unix_ms`). The `Reporter` gains `with_events(UsageEventSink)`: every report is also emitted as events after it is recorded, never instead of the socket. `StreamProducer` is GW2's trait; if GW2 has not merged, RN1 defines the same trait in `operon-meter` and GW2 re-exports it (recorded as a ruling).
-
-**Tests:** `usage_event_is_profile_valid` (GW1's `profile::validate`); `usage_event_ids_are_unique_and_stable` (a resend produces the same ids, so the event table dedupes); `usage_arrow_schema_matches_golden` (GW1's `event_schema` over `loam.meter.v1.Invocation`); `events_off_by_default`.
-
-**Commit:** `meter: emit usage reports as CloudEvents when configured`.
-
 ### Task 7: Docs and close
 
-**Files:** `docs/design/27-usage-hooks.md` (§3.3's framing as built, Ruling 1; §3.6 as built), `docs/design/34-protocol-gateway-and-standards.md` (§11–§12 as built), `CHANGELOG.md`.
+**Files:** `docs/design/27-usage-hooks.md` (§3.3's framing as built, Ruling 1; §3.6 as built), `docs/design/24-cpu-time-runtime.md` (§16 as built), `CHANGELOG.md`.
 
 **Tests:** the `runner` and `runner-lambda` jobs green; `cargo deny check`; `buf breaking`.
 
@@ -223,10 +212,11 @@ pub mod report_line { pub struct Report { pub duration_ms: f64, pub billed_ms: u
 | Item | Where |
 |---|---|
 | `SupervisorRunner` (the node supervisor implementing `Runner`, reporting through `operon-meter`) | F1 plan (§24 §11) |
-| `WorkersRunner` (thin) | after D111; the Cloudflare document's spike (Q373) |
+| `KnativeRunner` | MT2 |
+| A Cloudflare Workers runner, and usage as CloudEvents and Arrow (the former Task 6) | `loam-platform` (D440) |
 | Cloud Run and Container Apps runners | on demand (Q367) |
 | The consumer that aggregates reports, rating, the ledger, invoices, reconciliation against provider invoices | `loam-platform` (D190, D202) |
-| Showback dashboards over the hooks | proposed open (Q362); after Q362 |
+| Showback or metering of any kind | not in this repository (D444; Q362 answered) |
 
 ## PR sizes
 
@@ -237,7 +227,6 @@ pub mod report_line { pub struct Report { pub duration_ms: f64, pub billed_ms: u
 | 3 | ~900 lines |
 | 4 | ~700 lines |
 | 5 | ~1 300 lines across two crates plus scripts |
-| 6 | ~400 lines |
 | 7 | docs |
 
 ## Rulings made during execution
