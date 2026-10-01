@@ -1,9 +1,9 @@
-// The Loam Live catalog records (design §20 §4.1–§4.3; R1 plan Task 8).
+// The Loams Live catalog records (design §20 §4.1–§4.3; R1 plan Task 8).
 // Internal: stored in TiKV by the server under the catalog prefix `0x01`
 // and never sent to clients, so the TypeScript client does not generate it.
 syntax = "proto3";
 
-package loam.live.v1;
+package loams.live.v1;
 
 // A table: the value of its catalog record `0x01 ‖ 0x02 ‖ id:u32 BE`. The
 // built-in indexes `by_id` (id 0, the document key itself) and

@@ -1,11 +1,11 @@
-// The Loam Live idempotency record (design §20 §5.1, §4.3; R1 plan Task 10).
+// The Loams Live idempotency record (design §20 §5.1, §4.3; R1 plan Task 10).
 // Internal: stored in TiKV by the server under the tag `0x05` and never sent
 // to clients, so the TypeScript client does not generate it.
 syntax = "proto3";
 
-package loam.live.v1;
+package loams.live.v1;
 
-import "loam/live/v1/value.proto";
+import "loams/live/v1/value.proto";
 
 // The record of one idempotent mutation: the value of
 // `0x05 ‖ first 16 bytes of SHA-256(idempotency key)`, written in the

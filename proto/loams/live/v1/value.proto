@@ -1,4 +1,4 @@
-// Loam Live values and stored documents (design §20 §4.1, §4.3; D121).
+// Loams Live values and stored documents (design §20 §4.1, §4.3; D121).
 //
 // One definition serves storage, the wire and every generated client, so a
 // value means the same everywhere. `int64` and `double` are distinct types:
@@ -6,9 +6,9 @@
 // is a string ("-9223372036854775808"), so it stays lossless in JavaScript.
 syntax = "proto3";
 
-package loam.live.v1;
+package loams.live.v1;
 
-// A Loam Live value.
+// A Loams Live value.
 message Value {
   // Exactly one kind is set; a Value with none set is invalid.
   oneof kind {

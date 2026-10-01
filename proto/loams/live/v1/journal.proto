@@ -1,9 +1,9 @@
-// The Loam Live commit journal (design §20 §5.3, D119). Internal: stored in
+// The Loams Live commit journal (design §20 §5.3, D119). Internal: stored in
 // TiKV by the server and never sent to clients, so the TypeScript client does
 // not generate it.
 syntax = "proto3";
 
-package loam.live.v1;
+package loams.live.v1;
 
 // One mutation's changes, written at `seq = head + 1` of one journal shard in
 // the mutation's own transaction.

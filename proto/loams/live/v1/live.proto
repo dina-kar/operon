@@ -1,4 +1,4 @@
-// The Loam Live sync API (design §20 §7, D121).
+// The Loams Live sync API (design §20 §7, D121).
 //
 // A server stream (`Watch`) plus unary calls, never bidi: browsers cannot
 // stream full duplex over fetch, and connect-rust sends no response on
@@ -8,9 +8,9 @@
 // R1 has no authentication (D111): the server binds loopback only.
 syntax = "proto3";
 
-package loam.live.v1;
+package loams.live.v1;
 
-import "loam/live/v1/value.proto";
+import "loams/live/v1/value.proto";
 
 service LiveService {
   // Opens a session. The first Transition starts from the zero version and
