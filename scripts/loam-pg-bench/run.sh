@@ -173,7 +173,7 @@ log "variant=$variant replicas=$replicas tenant=$TENANT_ID timeline=$TIMELINE_ID
 results=()
 for w in $workloads; do
   log "workload $w (${duration}s after ${warmup}s warm-up)"
-  "$ENGINE" exec "$container" bash /bench/workload.sh "$w" "$duration" "$warmup" "$scale" >&2
+  timeout "${WORKLOAD_TIMEOUT:-$((duration + warmup + 900))}" "$ENGINE" exec "$container" bash /bench/workload.sh "$w" "$duration" "$warmup" "$scale" >&2
   rm -rf "$RUN_DIR/$w"
   "$ENGINE" cp "$container:/tmp/bench/$w" "$RUN_DIR/$w"
   results+=("$(python3 "$ROOT/scripts/loam-pg-bench/stats.py" "$RUN_DIR/$w" "$w")")
