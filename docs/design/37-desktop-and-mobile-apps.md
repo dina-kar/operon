@@ -319,7 +319,7 @@ D220 stands: everything a single organisation needs to self-host is open, and th
 
 | Set | Where it lives | Contents |
 |---|---|---|
-| `oss` | This repository: `web/apps/console/catalog/base.yml` | Shell, identity (org, teams, projects, environments, members), agents, keys, audit (the short-retention open audit of D221), collections, engine views, jobs, durable, live, flow, connectors, gateway, approvals, devices, plugins management |
+| `oss` | This repository: `web/apps/console/catalog/base.yml` | Shell, identity (org, teams, projects, environments, members), agents, keys, audit (the short-retention open audit of D221), collections, engine views, jobs, durable, live, flow, connectors, approvals, devices, plugins management |
 | `desktop` | This repository: `web/apps/desktop/catalog/desktop.patch.yml` | `oss` + `platform-tauri`, stacks, MCP install, desktop notifications, updates |
 | hosted | The private repositories (not designed here) | `oss` + private plugins, built by the private repositories' CI from this repository's published host and plugins |
 

@@ -76,7 +76,7 @@ Design reference: [22 Loam Commons: an open-source showcase suite on Loam](../de
 
 | Plan | Scope | Depends on | Status |
 |---|---|---|---|
-| [SC1: Loam Commons](2026-09-28-sc1-showcase-suite.md) | Suite repo and license check; Keycloak realm and SSO for every app (Plane through Forgejo, PostHog behind forward-auth); the cross-app OpenFGA model; provisioning sagas and reconcile on Loam Durable; RustFS storage; Forgejo's issue search on Loam's ES API; OTLP logs; unified search, the Live activity feed and the MCP assistant; Compose and Helm; the dogfooding cutover | v1.0 (M1 + M2), the unified auth plan (Q30) implemented, §19 OIDC login, M2 OTLP logs (D73), D2 durable tenancy, R1/R2 sync API | Not started |
+| [SC1: Loam Commons](2026-09-28-sc1-showcase-suite.md) | Suite repo and license check; Keycloak realm and SSO for every app (Plane through Forgejo); the cross-app OpenFGA model; provisioning sagas and reconcile on Loam Durable; RustFS storage; Forgejo's issue search on Loam's ES API; OTLP logs; unified search, the Live activity feed and the MCP assistant; Compose and Helm; the dogfooding cutover | v1.0 (M1 + M2), the unified auth plan (Q30) implemented, §19 OIDC login, M2 OTLP logs (D73), D2 durable tenancy, R1/R2 sync API | Not started |
 | SC2+ | The owner's 2026-09-28 directions (D-SC-12, D-SC-13): apps moved onto Loam's Postgres write surface, one at a time; the OpenPanel fork on Loam's Iceberg analytics in place of ClickHouse (D-SC-15) | the engine's Postgres-write design over TiKV, M4 (Iceberg) | Not yet planned |
 
 ## Track W: WeSQL as the MySQL-on-the-bucket OLTP engine (fork and this repository)

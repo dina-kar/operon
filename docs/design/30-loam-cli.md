@@ -13,7 +13,7 @@ Markers: **(verified 2026-10-01)** means checked against a primary source on tha
 | # | Decision | Status |
 |---|---|---|
 | D281 | **One binary.** The `loams` binary holds the server commands (today's `operon dev`, `standalone`, `cluster`, `warm`, `durable`, unchanged), the client CLI and a stdio MCP server. The client CLI is a new library crate, `operon-cli`, with one module per command group, flattened into the binary's clap tree. It is not one crate per group (§4) | Proposed |
-| D282 | **The command tree is `loam <group> <verb>`**, in the AWS CLI's shape, with one set of flag names across every group (§5) | Proposed |
+| D282 | **The command tree is `loams <group> <verb>`**, in the AWS CLI's shape, with one set of flag names across every group (§5) | Proposed |
 | D283 | **An output and exit-code contract.** `--output table\|json\|text` (default `table`, also set by `LOAM_OUTPUT` or the profile). In `json` mode stdout holds exactly one JSON document and errors go to stderr as one JSON object. There are ten stable exit codes (0–9, plus 130) and stable snake_case error codes. Prompts never appear without a TTY. Destructive commands need `--yes` (§6) | Proposed |
 | D284 | **Local state lives in `LOAM_HOME`** (default `~/.loam`): `bin/`, `config.toml` (profiles), `credentials.toml` (0600), `stacks/<name>/`, `variants/`, `receipt.json`. **The CLI sends no telemetry.** The only automatic network call is a daily update check, which can be turned off and never runs in `json` mode or under `mcp serve` (§7) | Proposed |
 | D285 | **A stack is a supervised local server process**, described by `stack.toml`. An **engine registry** maps each engine to a cargo feature, server flags, a port and environment variables (§8.2). Engines that were not asked for are switched off with the server's existing `--no-*` flags. **`pg` is the Postgres wire over collections** (D-PG-1, analytics). **`postgres` is OLTP Postgres, a companion service (D299)**, and is the only engine that sets `DATABASE_URL` (§8) | Proposed |
@@ -207,13 +207,13 @@ In `table` and `text` modes the same error prints as `error: <message>` and `hin
 
 ```
 $LOAM_HOME (default ~/.loam; mode 0700)
-├── bin/loam                        # the installed binary (install.sh, self-update)
+├── bin/loams                       # the installed binary (install.sh, self-update)
 ├── bin/loams.prev                   # the previous binary, kept by self-update for --rollback
 ├── env  env.fish                   # PATH snippets, sourced from shell rc files
 ├── receipt.json                    # {version, variant, target, installed_at, install_method: "install.sh", source_url}
 ├── config.toml                     # profiles (no secrets)
 ├── credentials.toml                # 0600; CLI3: login tokens per profile
-├── variants/<version>/<variant>/loam   # downloaded server variants (D286)
+├── variants/<version>/<variant>/loams  # downloaded server variants (D286)
 ├── cache/update-check.json         # {checked_at, latest}
 ├── mcp-installs.json               # what `mcp install` wrote, and where (D290)
 └── stacks/<name>/
@@ -353,7 +353,7 @@ Building `operon` with release settings takes tens of minutes and several GB of 
 1. Compute the features the requested engines need (§8.2).
 2. If the running binary's compiled-in features (`env!`-baked by `build.rs` into `operon_cli::version::FEATURES`) cover them, the stack uses the running binary.
 3. Otherwise, take the smallest variant in the release manifest that covers them, at the same version as the running binary. If it is already in `variants/<version>/<variant>/`, use it. If not, download it with the self-update verification path (§17.3), with consent (`--allow-download`, or a prompt).
-4. If no variant covers them, exit 6 (`feature_not_in_variant`) and name the missing features. `--from-source` then runs `cargo install --locked --git https://github.com/ostrium-labs/loams --tag v<version> operon --no-default-features --features <list> --root ~/.loam/variants/<version>/src-<hash>/`, after warning about time and memory. It needs a Rust toolchain and is never chosen automatically.
+4. If no variant covers them, exit 6 (`feature_not_in_variant`) and name the missing features. `--from-source` then runs `cargo install --locked --git https://github.com/ostrium-labs/loams --tag v<version> loams --no-default-features --features <list> --root ~/.loam/variants/<version>/src-<hash>/`, after warning about time and memory. It needs a Rust toolchain and is never chosen automatically.
 
 ## 10. NVMe and the cache (D287)
 
