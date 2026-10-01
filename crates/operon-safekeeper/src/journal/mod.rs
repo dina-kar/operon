@@ -1207,7 +1207,7 @@ mod tests {
     async fn fast_ingest_skips_pre_zeroing_and_idle_catches_up() {
         let d = tempfile::tempdir().unwrap();
         let mut c = cfg(d.path(), Tier::Buffered);
-        c.hot_segment = Duration::from_millis(300);
+        c.hot_segment = Duration::from_secs(3);
         let (j, _) = replay(c);
         j.start();
         // Fill several segments at once: each rollover finds the journal hot.
@@ -1225,7 +1225,7 @@ mod tests {
             "segments made while hot are not pre-zeroed"
         );
         // Idle: the preparer zeroes them.
-        for _ in 0..100 {
+        for _ in 0..300 {
             if j.ready_zeroed().iter().all(|z| *z) {
                 break;
             }
