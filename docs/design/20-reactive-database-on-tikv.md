@@ -404,6 +404,8 @@ TiKV keeps old versions until a GC safe point passes them. TiDB advances it for 
 
 ## 10. TiDB SQL coexistence (D123): superseded by D260
 
+> **Proposed 2026-10-01** ([§31](31-loam-router-and-verification.md), Q314): OLTP MySQL wire access comes from vtgate in front of WeSQL (§29, PR #172; D320), so Q260 would narrow to whether Loam also serves read-only MySQL wire access over DataFusion. Not decided.
+>
 > **Superseded 2026-09-29 by D260.** Loam deploys no TiDB, so there is no TiDB SQL beside Live. The subsections below are kept for their TiDB and keyspace facts. What replaces them is **open (Q260)**, with two candidates and no decision:
 >
 > 1. **Loam's own MySQL wire front end over DataFusion**: a read-only analytics listener over collections and tables, the MySQL counterpart of the Postgres wire listener (D-PG-1, `datafusion-postgres`). It would serve SELECTs to MySQL clients and BI tools, with no writes and no interactive transactions. It adds a protocol to D42's footprint and needs a MySQL wire library checked against D11.

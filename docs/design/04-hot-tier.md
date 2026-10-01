@@ -18,6 +18,8 @@ Status: **Approved** · 2026-09-22 · amended 2026-09-26 (M1.2 as built) · amen
 
 Fragment prefetch fills H1 (the range cache that Lance reads through); it is not an H2 structure (M1.3 Ruling 9).
 
+**H1's disk tier (D287, §30 §10).** As built, H1 is `operon_cache::RangeCache` and is RAM-only unless `RangeCacheConfig.disk` is set, and no flag sets it. CLI1 Task 3 adds `--cache-dir`, `--cache-disk-bytes` and `--cache-ram-bytes` to `dev`, `standalone` and `cluster`. `loam stack create --storage nvme:…|mount:…` places H1 (`cache/`) and H2 (`--hot-dir`, `hot/`) on the prepared NVMe mount.
+
 **Coherence is trivial by construction:** durable objects are immutable, so H0/H1 never need invalidation. Only *pointers* (manifest pointer, Iceberg current snapshot) change; nodes learn about them through meta watch streams (Operon-written objects) or Lakekeeper change events/polling (externally written Iceberg tables). From M2 the watch is a scoped change feed (`changes_since(catalog_version)`, or one namespace's changes), so a node refreshes only what changed instead of re-reading the catalog (D63, §18 §5.4).
 
 The layering is the pattern StarRocks' Data Cache established for Iceberg on S3 (stateless compute over open files, a RAM + NVMe cache), applied uniformly to Parquet, Lance pages, Tantivy splits and graph sidecars.

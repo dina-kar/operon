@@ -708,6 +708,8 @@ The results of the Arm A gate runs are in §7.3.
 
 ## 8. PgDog routing (D236)
 
+> **Proposed 2026-10-01** ([§31](31-loam-router-and-verification.md), D304–D307): sharded Loam Postgres databases use PgDog's own sharding, with the shard map in Loam's metastore rendered into `pgdog.toml`; cutover across several PgDog instances is orchestrated by Loam with a fence in Postgres (`ALTER ROLE … NOLOGIN`), because PgDog's open-source `RESHARD` cuts over one instance only; PgDog's 2PC is off by default and allowed only with a durable coordinator log (StatefulSet, `NODE_ID`, `DEPLOYMENT_ID`, the WAL directory on a volume); computes of 2PC databases get `max_prepared_transactions` in their spec. D236 is unchanged: PgDog stays unmodified.
+
 **Verified 2026-09-29.**
 
 - **License:** `pgdogdev/pgdog` is **AGPL-3.0** (`LICENSE` is the GNU AGPL v3 text; `gh api repos/pgdogdev/pgdog`). There is no CLA. A closed **Enterprise Edition** exists (control plane, query monitoring, QoS), built from a private repo (docs.pgdog.dev/enterprise_edition).
