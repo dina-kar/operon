@@ -51,24 +51,27 @@ def main():
     print("| workload | safekeepers p99 (ms) | Loam p99 (ms) | noise | safekeepers TPS | Loam TPS | gate |")
     print("|---|---|---|---|---|---|---|")
     for name in base:
+        # Reported only: the drive cache absorbs a 250 MB burst, so a missing
+        # or incomplete bulk-burst never fails the gate.
+        reported_only = name == "bulk-burst"
+        miss = "reported" if reported_only else "FAIL"
         if name not in cand:
-            print(f"| {name} | – | missing | – | – | missing | FAIL |")
-            ok = False
+            print(f"| {name} | – | missing | – | – | missing | {miss} |")
+            ok &= reported_only
             continue
         b, c = base[name], cand[name]
         bulk = name in ("bulk", "bulk-burst")
         keys = ["wal_mb_per_s"] if bulk else ["p99_ms", "tps"]
         if any(w.get(k) is None for w in b + c for k in keys):
-            print(f"| {name} | – | incomplete | – | – | incomplete | FAIL |")
-            ok = False
+            print(f"| {name} | – | incomplete | – | – | incomplete | {miss} |")
+            ok &= reported_only
             continue
         if bulk:
             bt, ct = mean([w["wal_mb_per_s"] for w in b]), mean([w["wal_mb_per_s"] for w in c])
             nt = spread([w["wal_mb_per_s"] for w in b])
             passed = ct >= min(w["wal_mb_per_s"] for w in b)
-            if name == "bulk-burst":
-                # Reported only: the drive cache absorbs a 250 MB burst.
-                label = f"bulk-burst (WAL MB/s, not gated)"
+            if reported_only:
+                label = "bulk-burst (WAL MB/s, not gated)"
                 verdict = "reported"
                 passed = True
             else:
