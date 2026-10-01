@@ -388,23 +388,28 @@ impl Cluster {
             .flatten()
     }
 
-    /// The owner of `name` once every live node names the same one. Each
-    /// node's live set is refreshed on its own timer, so right after a start
-    /// the nodes can briefly disagree (and a node that has not seen the owner
-    /// yet serves the read itself).
-    async fn agreed_owner(&self, name: &str) -> u64 {
+    /// The owner of `name` once every live node names the one the full live
+    /// set gives. Each node's live set is refreshed on its own timer, so
+    /// right after a start the nodes can briefly disagree (and a node that
+    /// has not seen the owner yet serves the read itself). They can also
+    /// briefly *agree* on a partial set: every node may still be missing a
+    /// learner that just joined, name an owner among the others, and then
+    /// move ownership to the learner once it shows up. Waiting for the owner
+    /// the whole live set gives, not for any agreement, rules that out.
+    async fn agreed_owner(&self, ns: NamespaceId, cid: CollectionId, name: &str) -> u64 {
+        let expected = expected_owner(ns, cid, self.alive());
         let deadline = Instant::now() + WAIT;
         loop {
             let mut named = BTreeSet::new();
             for id in self.alive() {
                 named.insert(self.owner(id, name).await);
             }
-            if let [Some(owner)] = named.into_iter().collect::<Vec<_>>()[..] {
-                return owner;
+            if named.len() == 1 && named.contains(&Some(expected)) {
+                return expected;
             }
             assert!(
                 Instant::now() < deadline,
-                "the nodes never agreed on {name}'s owner"
+                "the nodes never agreed that {name}'s owner is {expected}: {named:?}"
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -645,7 +650,7 @@ async fn a_restarted_learner_rejoins_without_a_membership_change() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reads_route_to_the_owner_and_survive_its_death() {
     let mut cluster = Cluster::start().await;
-    cluster.namespace(4).await;
+    let ns = cluster.namespace(4).await;
     let leader = cluster.leader().await;
     // A collection whose owner is not the metastore leader, so killing the
     // owner tests routing, not a metastore failover. The owner is the one
@@ -653,8 +658,8 @@ async fn reads_route_to_the_owner_and_survive_its_death() {
     let mut chosen = None;
     for i in 0..10 {
         let name = format!("c{i}");
-        cluster.collection(4, &name).await;
-        let owner = cluster.agreed_owner(&name).await;
+        let cid = cluster.collection(4, &name).await;
+        let owner = cluster.agreed_owner(ns, cid, &name).await;
         if owner != leader {
             chosen = Some((name, owner));
             break;
