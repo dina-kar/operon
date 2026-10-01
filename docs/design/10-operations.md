@@ -17,6 +17,8 @@ Status: **Approved** · 2026-09-22 · revised 2026-09-25 (architecture review: s
 
 **Cluster mode as built (M1.3).** Every node runs a metastore replica: voters on `meta` nodes, non-voting learners elsewhere (§01 §3.2). The lowest-id peer in `--peers` initializes the cluster, and every node joins through the peers; a learner leaves on graceful shutdown, and one whose `node/<id>` lease has been expired for 10 minutes is removed by the `meta-membership` task. Adding or removing voters is M2. The internal routes (`/internal/v1/raft/*`, `/internal/v1/meta/*`, `/internal/v1/reads/*`, `/internal/v1/hot/*`, `/internal/v1/node/*`) share `--listen` with the API, are unauthenticated in M1 like every other listener, and **must be on a private network**.
 
+**On a laptop** (D285, §30 §8), `loam stack create` runs `dev` or `standalone` as a supervised local process. The engine registry generates the flags, every address is loopback, and the endpoints are written to `.env.loam`. `sudo loam storage prepare` sets up an NVMe disk for the cache (D287).
+
 Lakekeeper is deployed next to Operon, not inside it (bundled in the Helm chart and the `docker-compose` examples from M4). RustFS (`rustfs/rustfs:1.0.x`, Apache-2.0) is the default self-hosted object store in the docs, the docker-compose dev stack, the Helm chart and the agent-fleet demo; it replaces MinIO, whose community edition is archived (D61).
 
 All roles ship in one binary. Kubernetes: `meta` is the only StatefulSet (small PVCs for the Raft log), and it disappears with an external metastore backend; every other role is a Deployment with local NVMe (ephemeral) for cache, autoscaled by HPA/KEDA on role-specific signals (§01 §3.1). The operator (M2) deploys and scales roles, replaces lost nodes and drives rolling upgrades (§7); its end-to-end tests run on kind (deploy, scale, upgrade, node loss).
@@ -89,6 +91,7 @@ client_ca = "/etc/operon/tls/ca.crt"      # set to require client certificates (
 | `[meta] peers` | `--peers id=host:port,…` |
 | `[cache] nvme_path` / `nvme` | `--hot-dir` / `--hot-nvme-bytes` |
 | `[cache] ram` | `--hot-ram-bytes` |
+| `[cache]` H1 disk tier (D287, planned in CLI1 Task 3) | `--cache-dir` / `--cache-disk-bytes`; H1 RAM: `--cache-ram-bytes` |
 
 Each node also takes `--node-id`, `--roles`, `--listen`, `--advertise`, `--data-dir` and `--replication`, plus the hot flags (`--hot`, `--hot-pin-all`) and the backpressure flags (`--backpressure`, `--max-unapplied-records`, `--max-unapplied-bytes`).
 
