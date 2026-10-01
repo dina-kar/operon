@@ -230,6 +230,8 @@ impl Ledger {
 }
 ```
 
+**Scope.** Each Fabric topic is its own deduplication scope, the counterpart of a D270 stream: `topic_id` is a `u64` assigned once when the topic is created (Task 4's `create_topic`) and recorded in `_fabric.flow_objects` (`kind = 'topic'`), never reused after a drop, and independent of which Iggy stream holds the topic. The same `source` + `id` posted to two topics is two events, as on two Loam streams (D270); within one topic it is one event whatever the partition.
+
 **Semantics:** D270's protocol, with Fluss as the store. The owner of `(topic, partition)` is the only writer of its keys (Ruling 6), so `claim` is lookup-then-upsert under an owner-local mutex per key shard; a key pending under a live claim answers `InFlight`; a lapsed claim (past `until`) is re-claimed. An Iggy send that **definitely** failed releases; one that timed out keeps the claims, which lapse after `claim_ttl`. `complete` writes `state = 2` with the offsets and `until = now + window`. `prune` deletes expired keys in batches of 10 000 every minute.
 
 **Tests:** `retry_within_window_answers_duplicate`; `concurrent_retry_answers_in_flight`; `timed_out_send_keeps_claim`; `claim_lapses_after_two_minutes` (a test clock); `failed_send_releases`; `window_expiry_allows_reappend`; `prune_removes_only_expired`; `ledger_survives_fluss_tablet_restart` (stack).
@@ -324,7 +326,7 @@ pub async fn create_table(clients: &StackClients, spec: &TableSpec) -> Result<()
 
 **Semantics:** a seeded load generator posts CloudEvents to `ingest` (mixed binary and batched, 5 % retries of already-acknowledged requests, 1 % invalid events) into `profiles` and `events` at a fixed rate for 10 minutes, while `kill_matrix.sh` kills, at seeded random times, one of: the Iggy container (`docker kill`, then start), the Fluss tablet server, the Fluss coordinator, the Flink taskmanager, the connectors runtime, `loam-fabric ingest`. After the load stops and the stack settles (tiering caught up), the checker reads: every acknowledged response, the Iggy topics (all messages), the Fluss tables (scan), the Iceberg tables (pyiceberg). It asserts:
 1. every acknowledged event is in Iggy, in Fluss and in Iceberg;
-2. no event id appears twice in Iggy among events acknowledged within one dedup window of each other (except the documented node-death case: a pending claim lapsed after an `ingest` kill between append and complete, which the checker counts and reports separately);
+2. no event id appears twice in Iggy among events acknowledged within one dedup window of each other except two documented cases, which the checker counts and reports separately: (a) node death, a pending claim lapsed after an `ingest` kill between append and complete; (b) commit-unknown, an Iggy send that timed out but had appended, whose claim lapsed and whose retry appended again (Task 6's `timed_out_send_keeps_claim`);
 3. `user_profile` in Fluss and Iceberg equals the checker's model (max version per key);
 4. invalid events never appear anywhere;
 5. no event appears that was never sent.
