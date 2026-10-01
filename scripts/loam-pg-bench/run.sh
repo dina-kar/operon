@@ -69,8 +69,9 @@ cd "$DEPLOY"
 
 # One benchmark at a time per host: the compose project, the ports and the
 # p99s are shared (a second run.sh waits here).
-mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}"
-exec 9>"${XDG_CACHE_HOME:-$HOME/.cache}/loam-pg-bench.lock"
+LOCK=${LOAM_BENCH_LOCK:-$HOME/.cache/loam-pg-bench.lock}
+mkdir -p "$(dirname "$LOCK")"
+exec 9>"$LOCK"
 flock 9
 
 # p99s on a shared machine: wait until no build runs (--force skips this).

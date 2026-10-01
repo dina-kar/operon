@@ -27,20 +27,20 @@ case $mode in raw) prefix=r ;; txn) prefix=x ;; *) echo "place-leaders: --mode r
 api=http://$pd/pd/api
 
 # 1. One zone per store, in store id order.
-ids=$(curl -sf "$api/v1/stores" | python3 -c '
+ids=$(curl -sf -m 10 "$api/v1/stores" | python3 -c '
 import json, sys
 print(" ".join(str(s["store"]["id"]) for s in sorted(json.load(sys.stdin)["stores"], key=lambda s: s["store"]["id"])))')
 n=0
 for id in $ids; do
   n=$((n + 1))
-  curl -sf -X POST -H 'Content-Type: application/json' -d "{\"zone\": \"z$n\"}" \
+  curl -sf -m 10 -X POST -H 'Content-Type: application/json' -d "{\"zone\": \"z$n\"}" \
     "$api/v1/store/$id/label" >/dev/null
 done
 [ "$n" -ge 2 ] || { echo "place-leaders: $n store(s): nothing to place" >&2; exit 0; }
 
 # 2. The keyspace's key range, as PD sees it (memcomparable 'r' (raw) or 'x'
 #    (txn) + id).
-ks_id=$(curl -sf "$api/v2/keyspaces/$keyspace" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+ks_id=$(curl -sf -m 10 "$api/v2/keyspaces/$keyspace" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 read -r start end < <(python3 - "$ks_id" "$prefix" <<'PY'
 import sys
 def enc(b):
@@ -60,11 +60,12 @@ PY
 
 # 3. A rule group (one per store mode, so that both ranges keep their own
 #    leader and follower rules) that overrides the default rule on the range.
-curl -sf -X DELETE "$api/v1/config/rule_group/loam_pgwal" >/dev/null 2>&1 || true # the pre-mode group
-curl -sf -X POST -H 'Content-Type: application/json' \
+#    (A playground from before the per-mode groups has a stale `loam_pgwal`
+#    group: stop the playground to clear it.)
+curl -sf -m 10 -X POST -H 'Content-Type: application/json' \
   -d "{\"id\": \"loam_pgwal_$mode\", \"index\": 10, \"override\": true}" "$api/v1/config/rule_group" >/dev/null
 rule() {
-  curl -sf -X POST -H 'Content-Type: application/json' -d "$1" "$api/v1/config/rule" >/dev/null
+  curl -sf -m 10 -X POST -H 'Content-Type: application/json' -d "$1" "$api/v1/config/rule" >/dev/null
 }
 rule "{\"group_id\": \"loam_pgwal_$mode\", \"id\": \"leader\", \"start_key\": \"$start\", \"end_key\": \"$end\",
   \"role\": \"leader\", \"count\": 1,
@@ -74,14 +75,14 @@ rule "{\"group_id\": \"loam_pgwal_$mode\", \"id\": \"followers\", \"start_key\":
   \"label_constraints\": [{\"key\": \"zone\", \"op\": \"notIn\", \"values\": [\"$zone\"]}]}"
 
 # 4. Wait until PD reports every region of the range led from the zone.
-leader_store=$(curl -sf "$api/v1/stores" | python3 -c "
+leader_store=$(curl -sf -m 10 "$api/v1/stores" | python3 -c "
 import json, sys
 for s in json.load(sys.stdin)['stores']:
     if any(l['key'] == 'zone' and l['value'] == '$zone' for l in s['store'].get('labels', [])):
         print(s['store']['id'])")
 off=unknown
 for _ in $(seq 1 "$timeout"); do
-  off=$(curl -sf "$api/v1/regions" | python3 -c "
+  off=$(curl -sf -m 10 "$api/v1/regions" | python3 -c "
 import json, sys
 start, end, want = bytes.fromhex('$start'), bytes.fromhex('$end'), $leader_store
 bad = 0

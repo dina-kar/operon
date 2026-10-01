@@ -117,8 +117,9 @@ p99 70 -> 41 ms and TPS 731 -> 1361 (txn -> raw d8), tpcb-16 TPS 465 -> 543-599,
 bulk 21 -> 50 MB/s. At rf3 the raw store is within noise of the transactional
 store on most rows (rf3 bulk and tpcb-16 improve, 9 -> 11-18 MB/s and 263 ->
 291-344 TPS) and the 3-replica baseline is itself slow (p99 40 ms, noisy).
-Depth 8 and 32 are indistinguishable (32 is not better), depth 1 loses the
-concurrent workloads, so the default stays 8.
+Depth 8 and 32 are indistinguishable (32 is not better). At rf1 depth 1 loses
+the concurrent workloads; at rf3 depth 1 is not worse than 8 or 32 (within the
+noise, and the replicated commit path is the bottleneck), so the default stays 8.
 
 commit-1 and the Raft fsync: this host's NVMe (Samsung BM9C1a, no PLP) does an
 8 KiB write + fdatasync in p50 2.65 ms, p90 9.9 ms, p99 48 ms, max 395 ms
