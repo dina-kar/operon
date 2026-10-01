@@ -47,7 +47,7 @@ pub mod tikv_raw;
 pub mod types;
 
 pub use acceptor::Acceptor;
-pub use store::{AppendBatch, Deposed, Durable, MemWalStore, Pending, WalStore};
+pub use store::{AppendBatch, Deposed, MemWalStore, WalStore};
 pub use types::{AcceptorState, Lsn, Term, TimelineId};
 
 /// Errors of the WAL service.

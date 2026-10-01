@@ -212,7 +212,15 @@ impl JournalConfig {
     }
 }
 
-pub use crate::store::Durable;
+/// The journal's durable position: every unit up to and including `unit` is
+/// on disk.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Durable {
+    /// Every unit up to and including this one is durable (0: none yet).
+    pub unit: u64,
+    /// The journal stopped after a failed write: nothing more becomes durable.
+    pub failed: bool,
+}
 
 /// Where [`Journal::append`] put a record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

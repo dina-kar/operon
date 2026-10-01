@@ -6,9 +6,10 @@
 //!   lock against the in-memory head. A vote or an election first waits until
 //!   the timeline's written WAL is durable, then stores the new head in the
 //!   [`MetaStore`] before answering.
-//! - **Appends are pipelined** ([`WalStore::append_nowait`]): the record is
-//!   packed into the journal's open unit and the call returns with the unit
-//!   as its ticket; [`WalStore::durability`] reports when it is on disk.
+//! - **Appends are pipelined** ([`WalStore::max_in_flight`]): an append
+//!   packs its WAL into the journal's open unit under the timeline's lock,
+//!   then waits for the unit outside it, so several appends of one timeline
+//!   share flush units and the response reports the contiguous durable end.
 //!   Reads and `load` only ever see durable WAL.
 //! - **Recovery** rebuilds each timeline from its stored head and a replay of
 //!   the journal: Append records extend the WAL contiguous from the trimmed
@@ -20,7 +21,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, Notify};
 use tracing::{debug, info};
 
 use crate::Error;
@@ -29,8 +30,8 @@ use crate::journal::{Journal, JournalConfig};
 use crate::meta::MetaStore;
 use crate::proto::ProposerElected;
 use crate::store::{
-    AppendBatch, Deposed, Durable, Pending, WalStore, apply_append, apply_commit_lsn,
-    apply_elected, apply_vote, remaining_chunks, trim_bound,
+    AppendBatch, Deposed, WalStore, apply_append, apply_commit_lsn, apply_elected, apply_vote,
+    remaining_chunks, trim_bound,
 };
 use crate::types::{AcceptorState, Configuration, Lsn, ServerInfo, Term, TimelineId};
 
@@ -166,7 +167,15 @@ pub struct NvmeWalStore {
     trimmed: StdMutex<HashMap<TimelineId, u64>>,
     /// Timelines with Progress records not yet stored in their heads.
     dirty: StdMutex<HashSet<TimelineId>>,
+    /// Woken after every write, for appends waiting on a predecessor.
+    applied: Notify,
 }
+
+/// Appends of one timeline the service may have in flight.
+const MAX_IN_FLIGHT: usize = 16;
+
+/// How long an append that leaves a gap waits for its predecessor.
+const GAP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl std::fmt::Debug for NvmeWalStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -251,6 +260,7 @@ impl NvmeWalStore {
             tls: StdMutex::new(tls),
             trimmed: StdMutex::new(trimmed),
             dirty: StdMutex::new(HashSet::new()),
+            applied: Notify::new(),
         })
     }
 
@@ -326,6 +336,84 @@ impl NvmeWalStore {
             }
         }
         Ok(())
+    }
+
+    /// Pack a batch into the journal under the timeline's lock. The ticket
+    /// is the unit to wait for, `None` when everything is already durable.
+    fn write(
+        &self,
+        tl: &TimelineId,
+        t: &mut Tl,
+        batch: &AppendBatch,
+    ) -> Result<Result<Option<u64>, Deposed>, Error> {
+        let mut next = t.head.clone();
+        let plan = match apply_append(&mut next, batch)? {
+            Err(d) => return Ok(Err(d)),
+            Ok(plan) => plan,
+        };
+        let chunks = remaining_chunks(batch, &plan);
+        let mut at = plan.write_from.0;
+        let mut ticket = None;
+        let max = self.journal.config().max_payload();
+        // Pack the chunks into records of at most `max` bytes each.
+        let mut group: Vec<Bytes> = Vec::new();
+        let mut group_len = 0usize;
+        let mut flush_group = |group: &mut Vec<Bytes>,
+                               group_len: &mut usize,
+                               t: &mut Tl,
+                               at: &mut u64|
+         -> Result<(), Error> {
+            if *group_len == 0 {
+                return Ok(());
+            }
+            let h = record(
+                Kind::Append,
+                tl,
+                batch.term,
+                Lsn(*at),
+                next.commit_lsn.0,
+                next.peer_horizon_lsn.0,
+                *group_len,
+            );
+            let slices: Vec<&[u8]> = group.iter().map(|b| &b[..]).collect();
+            let p = self.journal.append(&h, &slices)?;
+            t.index.push_back(Entry {
+                lsn: *at,
+                len: *group_len as u64,
+                seq: p.seq,
+                off: p.payload_off,
+                unit: p.unit,
+            });
+            *at += *group_len as u64;
+            t.pending.push_back((p.unit, Lsn(*at)));
+            t.last_unit = p.unit;
+            ticket = Some(p.unit);
+            group.clear();
+            *group_len = 0;
+            Ok(())
+        };
+        for c in chunks {
+            let mut c = c;
+            while !c.is_empty() {
+                let room = max - group_len;
+                if room == 0 {
+                    flush_group(&mut group, &mut group_len, t, &mut at)?;
+                    continue;
+                }
+                let take = room.min(c.len());
+                group.push(c.split_to(take));
+                group_len += take;
+            }
+        }
+        flush_group(&mut group, &mut group_len, t, &mut at)?;
+        if ticket.is_none() {
+            // A retry of WAL already written: it is acknowledged once what is
+            // still pending is durable.
+            t.settle(self.journal.durable().unit);
+            ticket = t.pending.back().map(|&(unit, _)| unit);
+        }
+        t.head = next;
+        Ok(Ok(ticket))
     }
 
     /// Close the journal (tests and shutdown).
@@ -430,98 +518,51 @@ impl WalStore for NvmeWalStore {
         Ok(Ok(t.durable_head()))
     }
 
+    fn max_in_flight(&self) -> usize {
+        MAX_IN_FLIGHT
+    }
+
     async fn append(
         &self,
         tl: &TimelineId,
         batch: &AppendBatch,
     ) -> Result<Result<AcceptorState, Deposed>, Error> {
-        if let Err(d) = self.append_nowait(tl, batch).await? {
-            return Ok(Err(d));
-        }
-        // Durable on return: wait for everything the timeline wrote, which
-        // covers this batch and any pipelined writes before it.
         let t = self.get(tl)?;
-        let mut t = t.lock().await;
-        self.flush(&mut t).await?;
-        Ok(Ok(t.durable_head()))
-    }
-
-    async fn append_nowait(
-        &self,
-        tl: &TimelineId,
-        batch: &AppendBatch,
-    ) -> Result<Result<Pending, Deposed>, Error> {
-        let t = self.get(tl)?;
-        let mut t = t.lock().await;
-        let mut next = t.head.clone();
-        let plan = match apply_append(&mut next, batch)? {
-            Err(d) => return Ok(Err(d)),
-            Ok(plan) => plan,
-        };
-        let chunks = remaining_chunks(batch, &plan);
-        let mut at = plan.write_from.0;
-        let mut ticket = None;
-        let max = self.journal.config().max_payload();
-        // Pack the chunks into records of at most `max` bytes each.
-        let mut group: Vec<Bytes> = Vec::new();
-        let mut group_len = 0usize;
-        let mut flush_group = |group: &mut Vec<Bytes>,
-                               group_len: &mut usize,
-                               t: &mut Tl,
-                               at: &mut u64|
-         -> Result<(), Error> {
-            if *group_len == 0 {
-                return Ok(());
-            }
-            let h = record(
-                Kind::Append,
-                tl,
-                batch.term,
-                Lsn(*at),
-                next.commit_lsn.0,
-                next.peer_horizon_lsn.0,
-                *group_len,
-            );
-            let slices: Vec<&[u8]> = group.iter().map(|b| &b[..]).collect();
-            let p = self.journal.append(&h, &slices)?;
-            t.index.push_back(Entry {
-                lsn: *at,
-                len: *group_len as u64,
-                seq: p.seq,
-                off: p.payload_off,
-                unit: p.unit,
-            });
-            *at += *group_len as u64;
-            t.pending.push_back((p.unit, Lsn(*at)));
-            t.last_unit = p.unit;
-            ticket = Some(p.unit);
-            group.clear();
-            *group_len = 0;
-            Ok(())
-        };
-        for c in chunks {
-            let mut c = c;
-            while !c.is_empty() {
-                let room = max - group_len;
-                if room == 0 {
-                    flush_group(&mut group, &mut group_len, &mut t, &mut at)?;
-                    continue;
+        // Writes are issued in LSN order, but the tasks that carry them may
+        // reach the store out of order: one that leaves a gap waits for its
+        // predecessor.
+        let ticket = loop {
+            let arrived = self.applied.notified();
+            tokio::pin!(arrived);
+            arrived.as_mut().enable();
+            {
+                let mut g = t.lock().await;
+                let gap = !batch.is_empty()
+                    && g.head.term == batch.term
+                    && g.head.flush_lsn != Lsn::INVALID
+                    && batch.begin_lsn > g.head.flush_lsn;
+                if !gap {
+                    let r = self.write(tl, &mut g, batch)?;
+                    self.applied.notify_waiters();
+                    match r {
+                        Err(d) => return Ok(Err(d)),
+                        Ok(ticket) => break ticket,
+                    }
                 }
-                let take = room.min(c.len());
-                group.push(c.split_to(take));
-                group_len += take;
             }
+            if tokio::time::timeout(GAP_WAIT, arrived).await.is_err() {
+                return Err(Error::Protocol(format!(
+                    "AppendRequest at {} leaves a gap that nothing filled",
+                    batch.begin_lsn
+                )));
+            }
+        };
+        if let Some(unit) = ticket {
+            self.journal.wait(unit).await?;
         }
-        flush_group(&mut group, &mut group_len, &mut t, &mut at)?;
-        t.head = next;
-        Ok(Ok(Pending {
-            state: t.head.clone(),
-            ticket,
-        }))
-    }
-
-    fn durability(&self, _tl: &TimelineId) -> Option<watch::Receiver<Durable>> {
-        Some(self.journal.subscribe())
+        let mut g = t.lock().await;
+        g.settle(self.journal.durable().unit);
+        Ok(Ok(g.durable_head()))
     }
 
     async fn record_commit_lsn(
@@ -768,38 +809,75 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pipelined_appends_return_before_they_are_durable_and_reads_wait() {
+    async fn an_append_returns_when_durable_and_a_retry_waits_for_it_too() {
         let d = tempfile::tempdir().unwrap();
-        // No engine: nothing becomes durable.
+        // No engine: nothing becomes durable until the test drives it.
         let meta = Arc::new(LocalMeta::open(&d.path().join("meta")).unwrap());
-        let s = NvmeWalStore::open(cfg(d.path(), Tier::Uring { depth: 1 }), meta)
-            .await
-            .unwrap();
+        let s = Arc::new(
+            NvmeWalStore::open(cfg(d.path(), Tier::Uring { depth: 1 }), meta)
+                .await
+                .unwrap(),
+        );
         s.create(&tl(), ServerInfo::default(), Lsn::INVALID)
             .await
             .unwrap();
-        // The vote waits for durability only of what was written: nothing yet.
         s.vote(&tl(), 1).await.unwrap();
         s.elected(&tl(), &elected(1, 0, &[(1, 0)]))
             .await
             .unwrap()
             .unwrap();
-        let p = s
-            .append_nowait(&tl(), &batch(1, 0, b"hello", 0))
+        let append = |s: &Arc<NvmeWalStore>| {
+            let s = s.clone();
+            tokio::spawn(async move { s.append(&tl(), &batch(1, 0, b"hello", 0)).await })
+        };
+        let first = append(&s);
+        // Placed in a unit, not durable: the call has not returned.
+        let u = loop {
+            if let Some(u) = s.journal().try_take() {
+                break u;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert!(!first.is_finished());
+        assert_eq!(s.load(&tl()).await.unwrap().unwrap().flush_lsn, Lsn(0));
+        assert!(read_all(&s, 0).await.is_empty());
+        // A retry of the same WAL waits for that unit as well.
+        let retry = append(&s);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!retry.is_finished(), "a retry is not acknowledged early");
+        crate::journal::pwrite_dsync(&u.seg.write, &u.buf, u.off).unwrap();
+        s.journal().complete(vec![u], Ok(()));
+        for h in [first, retry] {
+            let st = h.await.unwrap().unwrap().unwrap();
+            assert_eq!(st.flush_lsn, Lsn(5));
+        }
+        assert_eq!(read_all(&s, 0).await, b"hello");
+        s.close();
+    }
+
+    #[tokio::test]
+    async fn appends_that_arrive_out_of_order_are_applied_in_order() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Arc::new(open(d.path(), Tier::Buffered).await);
+        s.create(&tl(), ServerInfo::default(), Lsn::INVALID)
+            .await
+            .unwrap();
+        s.vote(&tl(), 1).await.unwrap();
+        s.elected(&tl(), &elected(1, 100, &[(1, 100)]))
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(p.state.flush_lsn, Lsn(5));
-        let ticket = p.ticket.unwrap();
-        assert_eq!(s.load(&tl()).await.unwrap().unwrap().flush_lsn, Lsn(0));
-        assert!(read_all(&s, 0).await.is_empty());
-        // Drive the journal by hand, as an engine would.
-        let u = s.journal().try_take().unwrap();
-        crate::journal::pwrite_dsync(&u.seg.write, &u.buf, u.off).unwrap();
-        s.journal().complete(vec![u], Ok(()));
-        assert!(s.journal().durable().unit >= ticket);
-        assert_eq!(s.load(&tl()).await.unwrap().unwrap().flush_lsn, Lsn(5));
-        assert_eq!(read_all(&s, 0).await, b"hello");
+        let s2 = s.clone();
+        let later = tokio::spawn(async move { s2.append(&tl(), &batch(1, 105, b"world", 0)).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!later.is_finished(), "waits for the WAL before it");
+        s.append(&tl(), &batch(1, 100, b"hello", 0))
+            .await
+            .unwrap()
+            .unwrap();
+        let st = later.await.unwrap().unwrap().unwrap();
+        assert_eq!(st.flush_lsn, Lsn(110));
+        assert_eq!(read_all(&s, 100).await, b"helloworld");
         s.close();
     }
 
