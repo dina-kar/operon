@@ -40,6 +40,8 @@ pub mod pgwire;
 pub mod proto;
 #[cfg(feature = "server")]
 pub mod service;
+#[cfg(feature = "compio")]
+pub mod shard;
 pub mod store;
 #[cfg(feature = "tikv")]
 pub mod tikv;

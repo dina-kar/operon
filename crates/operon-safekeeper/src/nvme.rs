@@ -213,7 +213,21 @@ impl NvmeWalStore {
     /// and the replay. Thread-tier engines are started; a
     /// [`crate::journal::Tier::Uring`] journal waits for its shard.
     pub async fn open(cfg: JournalConfig, meta: Arc<dyn MetaStore>) -> Result<NvmeWalStore, Error> {
-        let heads = meta.load_all().await?;
+        Self::open_owning(cfg, meta, |_| true).await
+    }
+
+    /// [`Self::open`] for one shard: only the timelines `owns` accepts.
+    pub async fn open_owning(
+        cfg: JournalConfig,
+        meta: Arc<dyn MetaStore>,
+        owns: impl Fn(&TimelineId) -> bool,
+    ) -> Result<NvmeWalStore, Error> {
+        let heads: Vec<_> = meta
+            .load_all()
+            .await?
+            .into_iter()
+            .filter(|(tl, _)| owns(tl))
+            .collect();
         let mut tls: HashMap<TimelineId, Tl> = heads
             .into_iter()
             .map(|(tl, mut head)| {
