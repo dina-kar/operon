@@ -1,6 +1,6 @@
 # 15 — Agent Workspaces (Sandboxes on Operon)
 
-Status: **Approved** (user) · 2026-09-24. Items marked (verify) are unconfirmed and are resolved in the W-phase plans.
+Status: **Approved** (user) · 2026-09-24. Items marked (verify) are unconfirmed and are resolved in the W-phase plans. Amendments proposed 2026-10-01 by [§36 Loam Git](36-loam-git.md) (D388–D390, D394, D398, D399) are marked inline; they await the owner because this document is approved.
 
 Coding agents such as Claude Code and Codex run inside **sandboxes**: an isolated process or microVM, a checkout of a repository, installed dependencies and a network policy. The runtime (the VM or namespace jail) is compute. Everything else — code, branches, checkpoints, dependencies, caches, transcripts, memory — is state that must be fast to materialize, cheap to fork and must survive the sandbox. That is Operon's model: stateless compute over a bucket.
 
@@ -46,12 +46,14 @@ ns/<ns>/repos/<repo_id>/
 ```
 
 - **Refs are a CAS'd document, not metastore state.** A deployment may hold tens of millions of repos (Cloudflare's stated target is tens of millions per namespace), and pushes are user data. The per-repo document pattern is the one the Resonate blob server uses (§14): one conditional PUT commits a ref transaction atomically.
-- **Fork = a new `refs` document naming its parent.** Reads fall through to the parent's packs (Git "alternates"), so a fork costs one PUT and no data copy. Per-agent forks or per-agent branches both work.
+> **Amended (proposed), D388–D390 (§36 §4):** the single `refs` document becomes a per-repository WAL of create-only segments (`wal/<seq>.lgw`, the commit point) plus checkpoints (`checkpoints/<seq>.lgc`) and a `head` hint; a push's pack and index become one object, `packs/<checksum>.lpk`. A fork is a checkpoint 0 naming its parent and seq, still one PUT.
+
+- **Fork = a new `refs` document naming its parent** *(superseded by D388: a checkpoint 0 naming the parent repository and seq)*. Reads fall through to the parent's packs (Git "alternates"), so a fork costs one PUT and no data copy. Per-agent forks or per-agent branches both work.
 
 ### 3.2 Protocol
 
-- **Smart HTTP, protocol v2**, in the `gateway` role, for stock `git`, gitoxide, libgit2 and JGit clients.
-- **Push (receive-pack):** stream the pack → verify it (index, connectivity, object limits) → PUT pack + idx (create-only) → CAS the `refs` document with per-ref old-oid checks, fast-forward rules and branch protection → append a record to the repo's event stream → acknowledge. The event record is written after the commit, at least once, with a repair sweep, so links (§4) see every push.
+- **Smart HTTP, protocol v2**, in the `gateway` role, for stock `git`, gitoxide, libgit2 and JGit clients. *(D394, §36 §6.1: v2 upload-pack; receive-pack stays v0/v1 because v2 has no push; plans GT1–GT2.)*
+- **Push (receive-pack):** stream the pack → verify it (index, connectivity, object limits) → PUT pack + idx (create-only) → CAS the `refs` document with per-ref old-oid checks, fast-forward rules and branch protection *(superseded by D389–D391, §36 §4.4 and §6.3: one `packs/<checksum>.lpk` PUT, then the transaction joins the sequencer's next create-only WAL segment)* → append a record to the repo's event stream → acknowledge. The event record is written after the commit, at least once, with a repair sweep, so links (§4) see every push.
 - **Fetch/clone (upload-pack):** negotiation uses the commit-graph cached on query nodes; existing packs are reused whole when the wants cover them, otherwise a pack is generated. **Partial clone** (`--filter=blob:none`, `tree:0`) and shallow clones let sandboxes start with trees only and fetch blobs on demand.
 - **Contention:** pushes to one repo contend on its `refs` document. Repo-affinity routing (§04) lets one node group-commit concurrent pushes, as Resonate does per origin.
 - **Git LFS:** batch API with objects in the namespace CAS (§5.2).
@@ -103,14 +105,14 @@ Mount the namespace's caches for `uv` (`UV_CACHE_DIR`), pnpm (`store-dir`), Carg
 
 ## 6. Registry proxy: egress control
 
-- Read-through endpoints in the `gateway` role for **PyPI** (simple API, PEP 503/691), **npm**, **crates.io** (sparse index), **Go** (`GOPROXY`). Artifacts are fetched from upstream once, stored immutably in the CAS and served from cache.
+- Read-through endpoints in the `gateway` role for **PyPI** (simple API, PEP 503/691), **npm**, **crates.io** (sparse index), **Go** (`GOPROXY`). *(D399, §36 §9: the crates.io mirror comes first, in GT3.)* Artifacts are fetched from upstream once, stored immutably in the CAS and served from cache.
 - **Policy:** allowlists, version pinning, a quarantine window for newly published versions (supply-chain defense), and an audit record per download to a stream.
 - A sandbox's network policy then needs only Operon and the model API. That matches how Claude Code's sandbox runtime (a proxy with a domain allowlist) and Codex (network off by default) already work.
 - **OCI images:** run an existing registry (`distribution` or `zot`, both Apache-2.0) with its S3 driver on the bucket instead of implementing OCI distribution.
 
 ## 7. Build and test caches
 
-- **sccache** (Apache-2.0) has an S3 backend: point it at `ns/<ns>/cache/sccache/` with vended credentials. No Operon code.
+- **sccache** (Apache-2.0) has an S3 backend: point it at `ns/<ns>/cache/sccache/` with vended credentials. No Operon code. *(D398, §36 §8: keys become per repository and trust class, `ns/<ns>/cache/sccache/<repo>/<class>/`, and an optional gateway path over sccache's WebDAV backend adds metering, approximate LRU and server-enforced trust; plan GT3.)*
 - **Bazel / Buck2 / Pants:** `bazel-remote` (Apache-2.0) with its S3 backend now; Operon's own REAPI CAS + ActionCache on the namespace CAS is Phase C.
 - **Turborepo / Nx** remote-cache HTTP APIs: small, Phase B.
 
@@ -227,13 +229,13 @@ Agents with many MCP servers pay for every tool definition in every request. The
 ## 11. Object layout additions
 
 ```
-ns/<ns>/repos/<repo_id>/{refs, packs/, commit-graph/}
+ns/<ns>/repos/<repo_id>/{refs, packs/, commit-graph/}   # amended by D388–D390: {head, wal/, checkpoints/, packs/<checksum>.lpk, midx/, commit-graph/} (§36 §4.1)
 ns/<ns>/cas/packs/<ulid>.{pack,idx}          # chunks: env images, LFS, package caches, artifacts
 ns/<ns>/envs/<env_key>/manifest               # environment image manifest (nydus bootstrap)
 ns/<ns>/cache/<tool>/…                       # sccache, bazel-remote, turbo
 ```
 
-GC: reachability from `refs` documents and env manifests (env images retained by last use), cache entries by age (§03 §7).
+GC: reachability from `refs` documents (from D388: checkpoints within retention, §36 §7) and env manifests (env images retained by last use), cache entries by age (§03 §7).
 
 ## 12. Design targets (not measurements)
 
@@ -276,10 +278,10 @@ GC: reachability from `refs` documents and env manifests (env images retained by
 
 ## 16. Open questions
 
-1. Scope of the Git server Operon must build on gitoxide (protocol v2 only? v0/v1 for old clients?).
+1. Scope of the Git server Operon must build on gitoxide (protocol v2 only? v0/v1 for old clients?). *Proposed answer (D394, §36 §6.1): v2 upload-pack, v0/v1 receive-pack, v0 upload-pack only if a W1 matrix client lacks v2 (Q387).*
 2. Whether nydus can read chunks through `object_store` or needs an S3-compatible endpoint on Operon's cache.
 3. FUSE vs virtiofs vs EROFS + fscache per runtime, and privileges in Kubernetes pods.
 4. A cross-ecosystem definition of `env_key` (lockfile sets, native build steps, CPU architecture).
 5. Cross-namespace dedup policy for public packages.
 6. Rust MCP SDK license; OpenTelemetry coverage in Claude Code and Codex.
-7. Whether repos become a sixth object kind (with an implicit stream) or stay a service like durable execution.
+7. Whether repos become a sixth object kind (with an implicit stream) or stay a service like durable execution. *Proposed answer (D388, §36): a service with its own bucket WAL, its events mirrored into the `_git` stream.*
