@@ -1,8 +1,8 @@
 {
-  "name": "@loam/console",
+  "name": "@loams/console",
   "version": "0.1.0",
   "private": true,
-  "description": "The Loam console: one single-page app for OSS, Loam Cloud and BYOC (design §19 P1).",
+  "description": "The Loams console: one single-page app for OSS, Loams Cloud and BYOC (design §19 P1).",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -15,7 +15,7 @@
   "dependencies": {
     "@fontsource-variable/archivo": "5.3.0",
     "@fontsource-variable/martian-mono": "5.3.0",
-    "@loam/ui": "workspace:*",
+    "@loams/ui": "workspace:*",
     "lucide-react": "1.48.0",
     "openapi-fetch": "0.17.0",
     "react": "19.3.0",

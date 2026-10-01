@@ -1,5 +1,5 @@
 /**
- * The Loam mark and wordmark (the design system page, loam-cloud design/index.html). The mark is an L built
+ * The Loams mark and wordmark (the design system page, loam-cloud design/index.html). The mark is an L built
  * from strata: a stem (the log, and a root), a bedrock (object storage),
  * layers that widen as they settle (compaction), and one ochre seed on top
  * (the newest write). The wordmark is Archivo at width 118, outlined, so it
@@ -58,10 +58,10 @@ export function Wordmark({ height = 20, className }: { height?: number; classNam
 export function Logo({ height = 20, mono = false }: { height?: number; mono?: boolean }) {
   return (
     <span
-      className="loam-logo"
+      className="loams-logo"
       style={{ gap: height * 0.285, height }}
       role="img"
-      aria-label="Loam"
+      aria-label="Loams"
     >
       <Mark size={height} mono={mono} full={height >= 18} />
       <Wordmark height={height} />
