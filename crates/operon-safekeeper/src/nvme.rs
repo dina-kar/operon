@@ -175,7 +175,10 @@ pub struct NvmeWalStore {
 const MAX_IN_FLIGHT: usize = 16;
 
 /// How long an append that leaves a gap waits for its predecessor.
+#[cfg(not(test))]
 const GAP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+#[cfg(test)]
+const GAP_WAIT: std::time::Duration = std::time::Duration::from_millis(200);
 
 impl std::fmt::Debug for NvmeWalStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
