@@ -389,7 +389,21 @@ impl Journal {
                 held: None,
             });
         }
-        let mut max_seq = seqs.last().copied().unwrap_or(0);
+        // A `.free` file keeps the number it was last written under, and its
+        // later units may still validate under that number: start above every
+        // retired number too, so a crash between retiring empty segments and
+        // preparing new ones never brings a stale number back.
+        let free_max = free
+            .iter()
+            .filter_map(|r| {
+                r.path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .and_then(|s| u64::from_str_radix(s, 16).ok())
+            })
+            .max()
+            .unwrap_or(0);
+        let mut max_seq = seqs.last().copied().unwrap_or(0).max(free_max);
         // The first segments are prepared before the journal serves anything,
         // so pre-zeroing never competes with the first commits.
         while ready.len() < cfg.prepared + 1 {
@@ -1057,6 +1071,36 @@ mod tests {
         j2.close();
         let (_j3, got) = replay(cfg(d.path(), Tier::Buffered));
         assert!(got.iter().all(|(_, h, _)| h.lsn.0 >= 100), "{got:?}");
+    }
+
+    #[test]
+    fn retired_numbers_are_never_reused_after_a_crash() {
+        let d = tempfile::tempdir().unwrap();
+        let (j, _) = replay(cfg(d.path(), Tier::Buffered));
+        let made = j.live_segments();
+        j.close();
+        drop(j);
+        // A crash after `open` retired every empty segment but before it
+        // prepared new ones: only `.free` files are left.
+        let mut top = 0;
+        for e in std::fs::read_dir(d.path()).unwrap() {
+            let p = e.unwrap().path();
+            if p.extension().is_some_and(|x| x == "seg") {
+                let seq =
+                    u64::from_str_radix(p.file_stem().unwrap().to_str().unwrap(), 16).unwrap();
+                top = top.max(seq);
+                std::fs::rename(&p, p.with_extension("free")).unwrap();
+            }
+        }
+        assert!(top >= made.into_iter().max().unwrap());
+        let (j2, got) = replay(cfg(d.path(), Tier::Buffered));
+        assert!(got.is_empty());
+        assert!(
+            j2.live_segments().iter().all(|s| *s > top),
+            "{:?} reuses a number up to {top}",
+            j2.live_segments()
+        );
+        j2.close();
     }
 
     #[tokio::test]

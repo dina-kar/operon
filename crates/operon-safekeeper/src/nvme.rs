@@ -316,7 +316,8 @@ impl NvmeWalStore {
             .unwrap_or_else(|e| e.into_inner())
             .drain()
             .collect();
-        for tl in dirty {
+        let mut todo = dirty.into_iter();
+        while let Some(tl) = todo.next() {
             let Ok(t) = self.get(&tl) else {
                 continue;
             };
@@ -324,10 +325,11 @@ impl NvmeWalStore {
             let durable = self.journal.durable().unit;
             t.settle(durable);
             if let Err(e) = self.meta.put(&tl, &t.durable_head()).await {
-                self.dirty
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(tl);
+                // Keep the failed timeline and every one not reached yet, so
+                // the next trim persists them before any segment is freed.
+                let mut d = self.dirty.lock().unwrap_or_else(|e| e.into_inner());
+                d.insert(tl);
+                d.extend(todo);
                 return Err(e);
             }
             if t.last_unit > durable {
