@@ -28,12 +28,25 @@ enum StoreKind {
     /// TiKV RawKV: blind, pipelined appends fenced once per election
     /// (§28 §7.3; build with --features tikv).
     TikvRaw,
+    /// Local NVMe: Arm A's journal and acceptor metadata under --data-dir
+    /// (build with --features nvme; §28 §7.2).
+    Nvme,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum IoKind {
+    /// The best tier this directory and build allow.
+    Auto,
+    /// pwrite + back-to-back fdatasync.
+    Buffered,
+    /// O_DIRECT + pwritev2(RWF_DSYNC) from a thread pool.
+    Pwritev2,
 }
 
 #[derive(Debug, Parser)]
 #[command(
     version,
-    about = "Loam's WAL service: Neon's safekeeper protocol over TiKV"
+    about = "Loam's WAL service: Neon's safekeeper protocol over TiKV or local NVMe"
 )]
 struct Args {
     /// The Postgres-protocol listener walproposer and readers connect to.
@@ -56,6 +69,18 @@ struct Args {
     /// Appends in flight per timeline (store tikv-raw).
     #[arg(long, default_value_t = operon_safekeeper::tikv_raw::DEFAULT_PIPELINE_DEPTH)]
     pipeline_depth: usize,
+    /// Where the NVMe store keeps its journal and metadata (store nvme).
+    #[arg(long, default_value = "loam-wal-data")]
+    data_dir: std::path::PathBuf,
+    /// The journal's durable-write tier (store nvme).
+    #[arg(long, value_enum, default_value = "auto")]
+    io: IoKind,
+    /// Flush units in flight at once (store nvme, direct tiers).
+    #[arg(long, default_value_t = 4)]
+    io_depth: usize,
+    /// Journal segment size in MiB (store nvme).
+    #[arg(long, default_value_t = 64)]
+    segment_mb: u64,
     /// How often a heartbeat-only commit LSN is persisted, in ms.
     #[arg(long, default_value_t = 1000)]
     commit_flush_ms: u64,
@@ -132,6 +157,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     match args.store {
         StoreKind::Mem => run(Arc::new(MemWalStore::new()), &args).await,
+        StoreKind::Nvme => {
+            #[cfg(feature = "nvme")]
+            {
+                use operon_safekeeper::journal::segments::{DeviceCaps, FsKind};
+                use operon_safekeeper::journal::{JournalConfig, Tier};
+                std::fs::create_dir_all(&args.data_dir)?;
+                let fs = FsKind::of(&args.data_dir)?;
+                let caps = DeviceCaps::of(&args.data_dir);
+                let tier = match args.io {
+                    IoKind::Buffered => Tier::Buffered,
+                    IoKind::Auto | IoKind::Pwritev2 => Tier::Pwritev2 {
+                        depth: args.io_depth,
+                    },
+                };
+                tracing::info!(dir = %args.data_dir.display(), ?fs, ?caps, requested = ?args.io, ?tier, "I/O tier");
+                let cfg = JournalConfig {
+                    segment_size: args.segment_mb << 20,
+                    ..JournalConfig::new(args.data_dir.join("journal"), tier)
+                };
+                let meta = std::sync::Arc::new(operon_safekeeper::meta::LocalMeta::open(
+                    &args.data_dir.join("meta"),
+                )?);
+                let store = operon_safekeeper::nvme::NvmeWalStore::open(cfg, meta).await?;
+                tracing::info!(direct = store.journal().direct(), "journal ready");
+                run(Arc::new(store), &args).await
+            }
+            #[cfg(not(feature = "nvme"))]
+            {
+                Err("this loam-wal was built without the nvme feature".into())
+            }
+        }
         StoreKind::Tikv | StoreKind::TikvRaw => {
             #[cfg(feature = "tikv")]
             {
