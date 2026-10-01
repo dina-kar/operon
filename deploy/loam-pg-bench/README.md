@@ -95,8 +95,8 @@ fsync off. Raw JSON is in `bench/results/2026-10-01-raw/`.
 
 Each cell is p99 ms, median (min-max) over the 3 repeats, then median TPS.
 The run-to-run spread is the noise estimate: for the baseline's commit-1 p99 it
-is up to 40% at rf1 and 25% at rf3; commit-16 and tpcb-16 up to 70% / 15% at
-rf1 and rf3, and a single rf3 baseline commit-16 outlier of 398 ms. Differences
+is about 43% at rf1 and 23% at rf3; commit-16 54% at rf1, tpcb-16 22% at rf1 and 13% at rf3; at
+rf3, a single baseline commit-16 run hit 398 ms. Differences
 under those bands are not results.
 
 | run (p99 ms median (min-max) / TPS) | safekeepers | Loam txn | raw d1 | raw d8 | raw d32 |
