@@ -1,0 +1,22 @@
+[package]
+name = "loams-cloudevents"
+description = "CloudEvents 1.0 for Loams streams: the JSON and HTTP binary formats, validation, and the record layout of the Kafka binding (design §02 §7.4)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+base64.workspace = true
+bytes.workspace = true
+http.workspace = true
+loams-log.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+
+[lints]
+workspace = true
