@@ -96,9 +96,9 @@ export async function boot(options: BootOptions): Promise<ConsoleHandle>;
 export interface ConsoleHandle { ctx: Context; dispose(): Promise<void>; pending(): PendingReport[] }
 ```
 
-**Semantics:** §37 §5.2. The module table resolves a row's `name` to `import(url)` after checking `integrity` (fetch + `crypto.subtle.digest` when the browser cannot apply SRI to dynamic imports, verify in Task 0). The sweep lists fibers still pending with the services they wait for, excluding Ruling 6's silent gates.
+**Semantics:** §37 §5.2. The module table resolves a row's `name` to `import(url)`, and **the integrity check is bound to the bytes the browser executes**: every plugin module URL is listed in the import map's `integrity` section, which the browser enforces on the module fetch itself, dynamic imports included. Hashing a separate `fetch` and then calling `import(url)` is forbidden (the two reads can differ). Task 0 records import-map integrity support in each target engine (Chromium, Firefox, WebKit, WebKitGTK, WKWebView, WebView2); where it is missing, the host imports the verified bytes through a `blob:` URL created from the hashed response, and that build alone adds `blob:` to `script-src`. In Tauri, bundled modules are local assets of the signed app. The sweep lists fibers still pending with the services they wait for, excluding Ruling 6's silent gates.
 
-**Tests:** `boot_loads_rows_in_dependency_order`; `integrity_mismatch_refuses_row`; `pending_fiber_reported_with_missing_services`; `rpc_gate_is_not_reported`; `dispose_disposes_every_fiber`.
+**Tests:** `boot_loads_rows_in_dependency_order`; `integrity_mismatch_refuses_row`; `different_bytes_on_second_read_are_refused` (a test server returns the verified bytes once and different bytes after); `pending_fiber_reported_with_missing_services`; `rpc_gate_is_not_reported`; `dispose_disposes_every_fiber`.
 
 **Commit:** `web: boot the console as a cordis context`.
 

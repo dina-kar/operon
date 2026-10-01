@@ -101,7 +101,7 @@ public final class Clients: Sendable { public let instance: Loam_Instance_V1_Ins
 public enum TrustPolicy: Sendable { case system; case pinned(spki: Set<String>, host: String) }
 ```
 
-**Semantics:** `ProtocolClient(httpClient: URLSessionHTTPClient(configuration:), config: ProtocolClientConfig(host:, networkProtocol: .connect, codec: ProtoCodec(), interceptors: [Auth, DPoP, AcceptLanguage]))`; a dedicated `URLSession` per instance with the trust delegate; `waitsForConnectivity = true` for unary calls, not for streams.
+**Semantics:** `ProtocolClient(httpClient: URLSessionHTTPClient(configuration:), config: ProtocolClientConfig(host:, networkProtocol: .connect, codec: ProtoCodec(), interceptors: [Auth, DPoP, AcceptLanguage]))`; a dedicated `URLSession` per instance with the trust delegate; `waitsForConnectivity = true` for unary calls, not for streams; the delegate's `willPerformHTTPRedirection` refuses every redirect (§37 §6.4's rule).
 
 **Tests:** the AP2 Task 3 cases against the mock over TLS with a self-signed certificate.
 

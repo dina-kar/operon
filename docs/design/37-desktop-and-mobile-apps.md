@@ -1,6 +1,6 @@
 # 37 — Loams Desktop and Mobile Apps: a cordis Console, a Tauri Shell, Native Phones
 
-Status: **Proposed** · 2026-10-01. The direction is the owner's, given on 2026-10-01 in two messages:
+Status: **Proposed** · 2026-10-01, revised 2026-10-02 (the Authentik and D220 rulings). The direction is the owner's, given on 2026-10-01 in two messages:
 
 1. "I downloaded the DeepSeek Harness desktop and mobile app repos. They serve as the base for the Loams desktop app and mobile app, with Connect-RPC. The harness desktop's Rust backend is Tauri, so adapt our control-plane React to Tauri. Mobile is Kotlin, so use Connect-RPC natively in Swift (iOS) and Jetpack Compose (Android)."
 2. The same day's correction: "cordis" is the JavaScript meta-framework the harness is built on (contexts, services, a plugin lifecycle with scoped disposal and hot reload), not Tauri. The intent is to **adapt Loam's control-plane React to cordis so that any code can be loaded as a plugin**: console pages, panels, engine adapters, connectors, agent tools, and the integrations of §26, §30, §32–§34, each a cordis plugin with declared services and dependencies, loaded from a catalog like the harness's `cordis.yml`, in the browser and inside Tauri. **Tauri stays the desktop shell; cordis is the application architecture inside it.** "Native Connect-RPC" on mobile means connect-swift and connect-kotlin generated from the shared protos, with no web view or bridge, in native SwiftUI and Compose.
@@ -19,7 +19,7 @@ Markers: **(verified 2026-10-01)** means checked against a primary source on tha
 
 | # | Decision | Status |
 |---|---|---|
-| D420 | **Three apps, one contract.** Loams Desktop (Tauri 2, macOS, Linux, Windows), Loams for iOS (SwiftUI) and Loams for Android (Jetpack Compose). Every network call is Connect-RPC from the protos connect-rust serves, through connect-es, connect-swift and connect-kotlin; the console's existing OpenAPI surface stays REST until Q423 (§2, §8) | Proposed |
+| D420 | **Three apps, one contract.** Loams Desktop (Tauri 2, macOS, Linux, Windows), Loams for iOS (SwiftUI) and Loams for Android (Jetpack Compose). Every application call from an app to Loam is Connect-RPC from the protos connect-rust serves, through connect-es, connect-swift and connect-kotlin; the named exceptions are the console's OpenAPI `/api/v1` (REST until Q423), sign-in at Authentik and the Loam gateway's OAuth token endpoint (OIDC and OAuth over HTTP), the instance-to-gateway push API and APNs/FCM, the desktop's local CLI JSON contract (D283), and the updater's manifests (§2, §8) | Proposed |
 | D421 | **Borrow the harness repos' patterns; fork neither.** Both are MIT. The desktop's Rust host is about 160 lines and its value is the pattern; the mobile app talks a different protocol to a different server. Nothing is copied by default, so no attribution is owed; any copied file keeps its MIT notice in `THIRD_PARTY_NOTICES.md`. cordis itself is a direct MIT dependency (§3) | Proposed |
 | D422 | **The console becomes a cordis v4 application**, in the browser (served by the engine at `/ui`, §19 P1) and inside Tauri. A small host boots a cordis `Context` and the cordis loader; everything else (layout, pages, engine views, connector forms, approval renderers, the RPC clients themselves) is a plugin. cordis's client half is used; the harness's Node host half is replaced by the Rust engine and the Tauri host, and its Typert RPC by Connect (§5) | Proposed |
 | D423 | **The plugin manifest and the catalog.** A plugin is an ESM package whose `package.json` has a `loams.plugin` block (kind, entry, `inject`, `provides`, slots, permissions, trust tier, API requirements, editions). The catalog is a cordis v4 entry list, `loams.yml`, composed from a base file and edition patch files exactly as the harness composes bundles and profiles. **No `!!js` in any catalog** (§5.3) | Proposed |
@@ -381,7 +381,7 @@ Three ways a webview can reach a Loam instance were considered:
 | A Tauri custom URI scheme that proxies | In Rust | **No**: a scheme handler's responder takes a complete body | None | Rejected for Connect server streams |
 | **A `net_fetch` command with a `Channel`** | In Rust | Yes: head, chunks and end as channel events into a `ReadableStream` | None | **Chosen** |
 
-`tauriFetch` implements the standard `fetch` signature, so connect-es (`createConnectTransport({ fetch: tauriFetch })`) and `openapi-fetch` use it unchanged. The Rust side allows only origins in the active environment's endpoint set, adds `Authorization: Bearer` (and a DPoP proof once Q438 lands), strips `Cookie`, `Authorization` and `Proxy-*` headers set by JavaScript, uses HTTP/2 when the server offers it, and pins the TLS key for environments that came from a pairing (§7.2.3). AP1 Task 0's spike measures throughput and memory.
+`tauriFetch` implements the standard `fetch` signature, so connect-es (`createConnectTransport({ fetch: tauriFetch })`) and `openapi-fetch` use it unchanged. The Rust side allows only origins in the active environment's endpoint set, adds `Authorization: Bearer` (and a DPoP proof once Q438 lands), strips `Cookie`, `Authorization` and `Proxy-*` headers set by JavaScript, uses HTTP/2 when the server offers it, and pins the TLS key for environments that came from a pairing (§7.2.3). **Redirects never carry credentials to a new origin**: a 3xx to the same origin and scheme is followed at most 3 times; a redirect to another origin, or from `https` to `http`, is not followed and reaches JavaScript as an error, so no bearer or DPoP proof is ever sent to a location the allowlist did not admit. The phones' clients do the same (`followRedirects(false)` on OkHttp, a refusing redirect delegate on URLSession). AP1 Task 0's spike measures throughput and memory.
 
 ### 6.5 Sign-in and credentials (D431)
 
@@ -433,10 +433,10 @@ Three ways a webview can reach a Loam instance were considered:
 ```json
 {"v":1,"kind":"loams-pair","issuer":"https://loam.acme.example","instance_id":"01J9Z3…",
  "spki":["Rk9PQkFSLi4u…"],"jkt":"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
- "code":"7JQ2KX4M2ZB6V3NAQ6E5RW2HCA","user_code":"48213977","exp":1759301234}
+ "code":"7JQ2KX4M2ZB6V3NAQ6E5RW2HCA","user_code":"48213977","exp":1790899500}
 ```
 
-`issuer` is the Loam gateway (the authorization server for Loam tokens), not Authentik. `spki` is `null` for instances with publicly trusted certificates. `code` is 128 random bits, single use, valid 5 minutes, bound to the user who created it (`DeviceService.CreatePairing`). A reader refuses `v` other than 1, another `kind`, an expired payload or a non-`https` issuer.
+`issuer` is the Loam gateway (the authorization server for Loam tokens), not Authentik. `spki` is `null` for instances with publicly trusted certificates. `code` is 128 random bits, single use, valid 5 minutes, bound to the user who created it (`DeviceService.CreatePairing`); the example's `exp` is 2026-10-02 00:05 UTC. `user_code` is the typed alternative to `code` for the same pairing: the pairing grant accepts either `code` or `user_code` (never both), and a pairing is burned after 5 failed `user_code` attempts, so 8 digits within 5 minutes cannot be guessed (AP0 Task 2). A reader refuses `v` other than 1, another `kind`, an expired payload or a non-`https` issuer.
 
 #### 7.2.2 Three ways to pair
 
@@ -470,7 +470,7 @@ The harness's relay minted a new TLS key whenever its addresses changed, which f
 
 ### 7.4 Push notifications (D436)
 
-**The constraint.** An APNs key belongs to one Apple team and is scoped to the app's bundle id; FCM credentials belong to the app's Firebase project. Only the publisher of the store apps can push to them, so a self-hosted instance cannot push directly. Matrix (Sygnal), Mattermost (its push proxy), ntfy (upstream `poll_request`) and Home Assistant all solve this with a **push gateway** that the publisher runs (verified 2026-10-01). Loam does the same, with the gateway blind to content:
+**The constraint.** An APNs token-signing key belongs to one Apple developer team (Apple offers team-scoped and topic-specific keys), and a push is accepted only for a topic, the app's bundle id, that the team's key may send to; FCM credentials belong to the app's Firebase project. Only the publisher of the store apps can push to them, so a self-hosted instance cannot push directly. Matrix (Sygnal), Mattermost (its push proxy), ntfy (upstream `poll_request`) and Home Assistant all solve this with a **push gateway** that the publisher runs (verified 2026-10-01). Loam does the same, with the gateway blind to content:
 
 ```
  engine: CloudEvent io.loams.dev.approval.requested.v1 (or …operation.failed.v1, …job.dead_lettered.v1)
@@ -699,7 +699,7 @@ Order: AP0 first; AP1a and the two phone plans in parallel; AP1 after AP1a's hos
 |---|---|---|
 | **§19 P9** (the console contract is OpenAPI 3.1) and the owner's "Connect-RPC everywhere" | The apps use Connect | New surfaces are Connect (D438); the console's identity administration stays on the OpenAPI contract through the `api` service until Q423 decides |
 | **§19 P1** (one console for OSS, Cloud and BYOC) | `loam-cloud` has a separate Next.js console with Clerk | The cordis host with the open sets and private hosted plugins realizes P1 within D220 (D428); converging `loam-cloud` is Q436 |
-| **§19 P7, §6** (built-in passwords and TOTP, generic OIDC, Keycloak to broker SAML) and §19 §3's "Clerk or Keycloak" for Cloud | The owner's ruling: Authentik, open-source edition, is the identity provider; Clerk and Keycloak are gone | The apps sign in at Authentik and exchange at the Loam gateway (D431, D434); §19 needs the matching revision, which belongs to the identity work, not §37 |
+| **§19 P7, §6** (built-in passwords and TOTP, generic OIDC, Keycloak to broker SAML), §19 §3's "Clerk or Keycloak" for Cloud, and **D-SC-3** (Keycloak as the showcase suite's OIDC provider, §22 §4.4) | The owner's ruling: Authentik, open-source edition, is the identity provider; Clerk and Keycloak are gone | The apps sign in at Authentik and exchange at the Loam gateway (D431, D434); §19 needs the matching revision, which belongs to the identity work, not §37 |
 | **§19 §6** (cookie sessions with CSRF) | The desktop sends bearer tokens through the bridge | Browsers keep cookies; the auth plan must accept a bearer on `/api/v1/*` and return the principal from `GET /api/v1/session` |
 | **§19 §5.3** (DPoP is a follow-up for agents; users' refresh tokens are bound to the session) | Device-bound, DPoP-bound user tokens for phones | Q438 asks the auth plan to add both |
 | **§19 §5** (three principal kinds) | Phones | No new kind: a device is a credential of a user (D434) |
@@ -721,7 +721,7 @@ Order: AP0 first; AP1a and the two phone plans in parallel; AP1 after AP1a's hos
 
 ## 17. Sources
 
-Read on 2026-10-01.
+Read on 2026-10-01 and 2026-10-02.
 
 - **Harness desktop** (`dina-kar/deepseek-harness-desktop` at `2d1b505`): `LICENSE`, `README.md`, `AGENTS.md`, `THIRD_PARTY_NOTICES.md`, `apps/desktop/src-tauri/{src/lib.rs,tauri.conf.json,tauri.macos.conf.json,capabilities/default.json,Cargo.toml}`, `apps/desktop/scripts/prepare-runtime.mjs`, `.agents/notes/implemented/architecture/2026-08-14-tauri-desktop-sidecar-host.md` and `2026-07-23-client-plugin-loading-model.md`, `packages/client/connection/src/api-request-trust.ts`, `packages/client/web/src/boot.tsx`, `packages/client/ui-slots`, `packages/bundle/web-app/cordis.patch.yml`, `packages/boot/app-boot/src/profile.ts`, `vendor/README.md`, `vendor/loader/src/config/{entry.ts,tree.ts,utils.ts,isolate.ts}`, `vendor/cordis/src/registry.ts`, `scripts/gen-cordis-catalog.ts`, `docs/api-gateway.md`, `tsconfig*.json`.
 - **Harness mobile** (`dina-kar/deepseek-harness-mobile` at `68b6c2f`): `LICENSE`, `README.md`, `THIRD_PARTY_NOTICES.md`, `settings.gradle.kts`, `gradle/libs.versions.toml`, `docs/{PROTOCOL.md,SECURITY.md,COMPATIBILITY.md}`, `core/.../wire/{RelayPairing.kt,RelayTls.kt,ConnectionLoop.kt,RemoteStreamMux.kt}`, `app/.../data/{SessionStore.kt,RelayCredentialStore.kt,HarnessSessionStore.kt}`, `app/.../notify/*`, `app/src/main/res/xml/network_security_config.xml`, `mock-harness/`, `conformance/`, `.github/workflows/ci.yml`.
