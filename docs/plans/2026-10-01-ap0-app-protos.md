@@ -140,7 +140,7 @@ service DeviceService {
 //   environments filter, quiet_hours (start, end, tz), approvals_bypass_quiet_hours (default true).
 ```
 
-**Semantics:** the pairing exchange itself is **not** an RPC here: the phone redeems the pairing at the OAuth token endpoint with the extension grant `urn:loams:params:oauth:grant-type:pairing` (RFC 6749 §4.5) and a DPoP proof (RFC 9449), so tokens keep one issuance path (§19 §5.2). This task documents that grant in `devices.proto`'s header comment and in §37 §7.2; the unified auth plan implements it.
+**Semantics:** **`user_code` redemption:** the pairing grant accepts exactly one of `code` (from the QR) or `user_code` (typed), both identifying the same pairing; `user_code` is valid only during the pairing's 5 minutes, and 5 failed `user_code` attempts against an instance within that window burn the pairing (`pairing_used`) and are rate-limited per client address. The pairing exchange itself is **not** an RPC here: the phone redeems the pairing at the OAuth token endpoint with the extension grant `urn:loams:params:oauth:grant-type:pairing` (RFC 6749 §4.5) and a DPoP proof (RFC 9449), so tokens keep one issuance path (§19 §5.2). This task documents that grant in `devices.proto`'s header comment and in §37 §7.2; the unified auth plan implements it.
 
 **Tests:** `buf lint`; `buf build`.
 
@@ -228,7 +228,7 @@ pub fn load_scenario(yaml: &str) -> anyhow::Result<Scenario>;
 
 **Semantics:** stateful, unlike `operon-console-mock` (approvals change state when decided, so the apps' flows can be tested end to end). Fake bearer tokens map to seed principals. Decision proofs are verified for real against seed device keys (Ed25519 test keys checked into `seed/keys/`, labelled test-only). Serves Connect, gRPC and gRPC-Web on one listener (connect-rust). CORS allows `http://localhost:5173`, `tauri://localhost` and `http://tauri.localhost` for the console and desktop dev builds. Scenarios: `approvals-basic`, `approval-expiry`, `stream-drop-and-resume`, `device-revoked`, `operation-progress`, `notification-burst`.
 
-**Tests** (`tests/*.rs`, real sockets, a connect-rust client): every RPC of Tasks 1–4 answers over Connect (JSON and binary), gRPC and gRPC-Web; Task 3's six behaviour tests; `resume_after_drop_delivers_missed`; `expired_cursor_resets_snapshot`; `heartbeat_every_15s` (with `MockClock`); `pairing_code_single_use`; `pairing_code_expires`; `revoke_device_ends_its_streams`; `non_loopback_is_refused`.
+**Tests** (`tests/*.rs`, real sockets, a connect-rust client): every RPC of Tasks 1–4 answers over Connect (JSON and binary), gRPC and gRPC-Web; Task 3's six behaviour tests; `resume_after_drop_delivers_missed`; `expired_cursor_resets_snapshot`; `heartbeat_every_15s` (with `MockClock`); `pairing_code_single_use`; `pairing_code_expires`; `user_code_redeems_same_pairing`; `user_code_burns_after_5_failures`; `code_and_user_code_together_is_invalid_argument`; `revoke_device_ends_its_streams`; `non_loopback_is_refused`.
 
 **Commit:** `mock: add operon-apps-mock for the app protos`.
 
