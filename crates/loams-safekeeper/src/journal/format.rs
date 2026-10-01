@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! segment  = header block (4 KiB) | flush unit* | zeroes
-//! header   = magic b"LOAMSJNL1" | version u32 = 1 | block u32 | seq u64 | size u64
+//! header   = magic b"LOAMJNL1" | version u32 = 1 | block u32 | seq u64 | size u64
 //!            | crc32c(the 32 bytes before) u32 | zeroes to 4 KiB
 //! unit     = record+ | zeroes to the next 4 KiB boundary
 //! record   = len u32 | crc u32 | kind u8 | 7 zero bytes | timeline [32] | term u64
@@ -31,7 +31,7 @@ pub const SEGMENT_HEADER: usize = BLOCK;
 /// A record header's size.
 pub const RECORD_HEADER: usize = 80;
 
-const MAGIC: &[u8; 8] = b"LOAMSJNL1";
+const MAGIC: &[u8; 8] = b"LOAMJNL1";
 const VERSION: u32 = 1;
 
 /// A record's kind.
