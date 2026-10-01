@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Leader placement for the Loam WAL benchmark (docs/design/28-loam-postgres.md
+# Leader placement for the Loams WAL benchmark (docs/design/28-loams-postgres.md
 # §6.6, §7.3): label the TiKV stores zone=z1..zN and pin the Raft leaders of
-# the loam_pgwal keyspace to one zone, the compute's, with the followers in
-# the others. Loam's control plane writes the same rule per timeline range
+# the loams_pgwal keyspace to one zone, the compute's, with the followers in
+# the others. Loams's control plane writes the same rule per timeline range
 # when it places a compute; the benchmark uses one rule for the keyspace.
 #
-#   scripts/loam-pg-bench/place-leaders.sh [--pd HOST:PORT] [--zone z1]
-#       [--keyspace loam_pgwal] [--mode raw|txn] [--timeout S]
+#   scripts/loams-pg-bench/place-leaders.sh [--pd HOST:PORT] [--zone z1]
+#       [--keyspace loams_pgwal] [--mode raw|txn] [--timeout S]
 #
 # On one host every store shares the disk and there is no network distance,
 # so this only matters once cross-AZ delays are modelled; it keeps the
 # candidate's topology the one §6.6 specifies.
 set -euo pipefail
-pd=127.0.0.1:19379 zone=z1 keyspace=loam_pgwal timeout=60 mode=raw
+pd=127.0.0.1:19379 zone=z1 keyspace=loams_pgwal timeout=60 mode=raw
 while [ $# -gt 0 ]; do
   case $1 in
     --pd) pd=$2; shift 2 ;;
@@ -60,17 +60,17 @@ PY
 
 # 3. A rule group (one per store mode, so that both ranges keep their own
 #    leader and follower rules) that overrides the default rule on the range.
-#    (A playground from before the per-mode groups has a stale `loam_pgwal`
+#    (A playground from before the per-mode groups has a stale `loams_pgwal`
 #    group: stop the playground to clear it.)
 curl -sf -m 10 -X POST -H 'Content-Type: application/json' \
-  -d "{\"id\": \"loam_pgwal_$mode\", \"index\": 10, \"override\": true}" "$api/v1/config/rule_group" >/dev/null
+  -d "{\"id\": \"loams_pgwal_$mode\", \"index\": 10, \"override\": true}" "$api/v1/config/rule_group" >/dev/null
 rule() {
   curl -sf -m 10 -X POST -H 'Content-Type: application/json' -d "$1" "$api/v1/config/rule" >/dev/null
 }
-rule "{\"group_id\": \"loam_pgwal_$mode\", \"id\": \"leader\", \"start_key\": \"$start\", \"end_key\": \"$end\",
+rule "{\"group_id\": \"loams_pgwal_$mode\", \"id\": \"leader\", \"start_key\": \"$start\", \"end_key\": \"$end\",
   \"role\": \"leader\", \"count\": 1,
   \"label_constraints\": [{\"key\": \"zone\", \"op\": \"in\", \"values\": [\"$zone\"]}]}"
-rule "{\"group_id\": \"loam_pgwal_$mode\", \"id\": \"followers\", \"start_key\": \"$start\", \"end_key\": \"$end\",
+rule "{\"group_id\": \"loams_pgwal_$mode\", \"id\": \"followers\", \"start_key\": \"$start\", \"end_key\": \"$end\",
   \"role\": \"follower\", \"count\": $((n - 1)),
   \"label_constraints\": [{\"key\": \"zone\", \"op\": \"notIn\", \"values\": [\"$zone\"]}]}"
 
@@ -91,8 +91,8 @@ for r in json.load(sys.stdin).get('regions', []):
     if (not e or e > start) and s < end and r.get('leader', {}).get('store_id') != want:
         bad += 1
 print(bad)")
-  [ "$off" = 0 ] && { echo "place-leaders: loam_pgwal leaders on store $leader_store ($zone)" >&2; exit 0; }
+  [ "$off" = 0 ] && { echo "place-leaders: loams_pgwal leaders on store $leader_store ($zone)" >&2; exit 0; }
   sleep 1
 done
-echo "place-leaders: $off region(s) of loam_pgwal still led outside $zone after ${timeout}s" >&2
+echo "place-leaders: $off region(s) of loams_pgwal still led outside $zone after ${timeout}s" >&2
 exit 1

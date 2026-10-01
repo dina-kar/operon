@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""The P4b merge gate (design §28 §7): Loam WAL vs stock safekeepers.
+"""The P4b merge gate (design §28 §7): Loams WAL vs stock safekeepers.
 
-    compare.py [--name NAME] --baseline sk-a.json sk-b.json sk-c.json --candidate loam.json [...]
+    compare.py [--name NAME] --baseline sk-a.json sk-b.json sk-c.json --candidate loams.json [...]
 
 For every workload the gate holds when the candidate's mean is inside the
 baseline's run-to-run noise band:
@@ -44,7 +44,7 @@ def mean(xs):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--name", default="Loam")
+    ap.add_argument("--name", default="Loams")
     ap.add_argument("--baseline", nargs="+", required=True)
     ap.add_argument("--candidate", nargs="+", required=True)
     a = ap.parse_args()

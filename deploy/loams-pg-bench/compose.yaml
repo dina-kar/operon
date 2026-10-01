@@ -1,12 +1,12 @@
-# Loam WAL vs stock safekeepers: the P4b benchmark topology on one host
-# (docs/design/28-loam-postgres.md §7). Derived from deploy/neon (Apache-2.0,
+# Loams WAL vs stock safekeepers: the P4b benchmark topology on one host
+# (docs/design/28-loams-postgres.md §7). Derived from deploy/neon (Apache-2.0,
 # from neondatabase/neon docker-compose/).
 #
 # Everything runs on host networking so that the compute reaches both the
-# safekeepers (containers) and the Loam WAL service and TiKV (host processes,
-# started by scripts/loam-pg-bench/run.sh) the same way. Only one variant
-# runs at a time; scripts/loam-pg-bench/run.sh drives it.
-name: loam-pg-bench
+# safekeepers (containers) and the Loams WAL service and TiKV (host processes,
+# started by scripts/loams-pg-bench/run.sh) the same way. Only one variant
+# runs at a time; scripts/loams-pg-bench/run.sh drives it.
+name: loams-pg-bench
 
 x-neon-image: &neon-image ${NEON_REPOSITORY:-ghcr.io/neondatabase}/neon:${NEON_TAG:-latest}
 x-compute-image: &compute-image ${NEON_REPOSITORY:-ghcr.io/neondatabase}/compute-node-v${PG_VERSION:-16}:${NEON_TAG:-latest}
@@ -101,14 +101,14 @@ services:
         --broker-endpoint=http://127.0.0.1:50051 -D /data
         --remote-storage="{endpoint='http://127.0.0.1:9000', bucket_name='neon', bucket_region='us-east-1', prefix_in_bucket='/safekeeper/'}"
 
-  # The candidate's pageserver feed (crates/operon-safekeeper feeder.rs): a
-  # stock safekeeper that loam-wal streams committed WAL to, so that the
+  # The candidate's pageserver feed (crates/loams-safekeeper feeder.rs): a
+  # stock safekeeper that loams-wal streams committed WAL to, so that the
   # unmodified pageserver can ingest it. It stands in for the interpreted
   # sender the WAL service will link (§28 Q112), so it runs with --no-sync:
   # durability comes from TiKV, and it is off the commit path.
   feeder-safekeeper:
     <<: *safekeeper
-    profiles: ["loam"]
+    profiles: ["loams"]
     volumes: ["${SKF_DATA:-skf-data}:/data"]
     command:
       - >
@@ -116,7 +116,7 @@ services:
         --broker-endpoint=http://127.0.0.1:50051 -D /data
         --remote-storage="{endpoint='http://127.0.0.1:9000', bucket_name='neon', bucket_region='us-east-1', prefix_in_bucket='/safekeeper/'}"
 
-  # One compute; SAFEKEEPERS picks the variant (the safekeepers, or the Loam
+  # One compute; SAFEKEEPERS picks the variant (the safekeepers, or the Loams
   # WAL service at 127.0.0.1:5460). pgbench runs inside it.
   compute:
     image: *compute-image
@@ -130,7 +130,7 @@ services:
     volumes:
       - ./compute/config.json:/var/db/postgres/configs/config.json:ro
       - ./compute/start.sh:/shell/start.sh:ro
-      - ../../scripts/loam-pg-bench:/bench:ro
+      - ../../scripts/loams-pg-bench:/bench:ro
     entrypoint: ["/bin/bash", "/shell/start.sh"]
     depends_on: [pageserver]
 

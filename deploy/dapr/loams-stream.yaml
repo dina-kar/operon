@@ -3,7 +3,7 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: operon-stream-data
+  name: loams-stream-data
 spec:
   accessModes: [ReadWriteOnce]
   resources:
@@ -13,29 +13,29 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: operon-stream
+  name: loams-stream
 spec:
   replicas: 1
   strategy:
     type: Recreate
   selector:
     matchLabels:
-      app: operon-stream
+      app: loams-stream
   template:
     metadata:
       labels:
-        app: operon-stream
+        app: loams-stream
       annotations:
         dapr.io/enabled: "true"
-        dapr.io/app-id: operon-stream
+        dapr.io/app-id: loams-stream
         dapr.io/app-port: "8091"
         dapr.io/app-protocol: grpc
-        dapr.io/config: operon-stream
+        dapr.io/config: loams-stream
     spec:
-      serviceAccountName: operon-trigger-edge
+      serviceAccountName: loams-trigger-edge
       initContainers:
         - name: reject-dapr-workflow
-          image: operon-trigger-edge:dev
+          image: loams-trigger-edge:dev
           args: [--check-config]
           env:
             - name: POD_NAMESPACE
@@ -43,10 +43,10 @@ spec:
                 fieldRef:
                   fieldPath: metadata.namespace
             - name: DAPR_CONFIG_NAME
-              value: operon-stream
+              value: loams-stream
       containers:
-        - name: operon
-          image: operon:tikv-stream-grpc-durable-tikv
+        - name: loams
+          image: loams:tikv-stream-grpc-durable-tikv
           args:
             - dev
             - --data-dir
@@ -56,9 +56,9 @@ spec:
             - --stream-grpc-listen
             - 127.0.0.1:8091
             - --meta
-            - tikv://pd.operon.svc.cluster.local:2379/operon-meta
+            - tikv://pd.loams.svc.cluster.local:2379/loams-meta
             - --durable-store
-            - tikv://pd.operon.svc.cluster.local:2379/operon-durable
+            - tikv://pd.loams.svc.cluster.local:2379/loams-durable
           ports:
             - name: native-http
               containerPort: 8080
@@ -79,4 +79,4 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: operon-stream-data
+            claimName: loams-stream-data

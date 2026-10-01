@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Runs inside the benchmark compute (deploy/loam-pg-bench): one workload, with
+# Runs inside the benchmark compute (deploy/loams-pg-bench): one workload, with
 # a warm-up, and pgbench per-transaction logs under /tmp/bench/<name>/. It
 # prints MEASURE_START and MEASURE_END around the measured phase, where
 # run.sh samples the WAL tier's CPU time.
 #
 #   workload.sh <name> <duration-s> <warmup-s> <scale>
 #
-# Workloads (docs/design/28-loam-postgres.md §7):
+# Workloads (docs/design/28-loams-postgres.md §7):
 #   commit-1   one single-row INSERT per transaction, 1 client (the commit RTT)
 #   commit-16  the same, 16 clients (group commit)
 #   tpcb-16    built-in TPC-B, 16 clients

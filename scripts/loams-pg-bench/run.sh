@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# The P4b benchmark (docs/design/28-loam-postgres.md §7): pgbench through a
-# Neon compute whose WAL goes to stock safekeepers (the baseline) or to Loam's
+# The P4b benchmark (docs/design/28-loams-postgres.md §7): pgbench through a
+# Neon compute whose WAL goes to stock safekeepers (the baseline) or to Loams's
 # WAL service, on the same host and topology.
 #
-#   scripts/loam-pg-bench/run.sh --variant VARIANT [--replicas 1|3]
+#   scripts/loams-pg-bench/run.sh --variant VARIANT [--replicas 1|3]
 #       [--duration S] [--warmup S] [--scale N] [--workloads "commit-1 ..."]
 #       [--label L] [--out DIR] [--disk-root DIR] [--feeder-root DIR]
 #       [--io-depth N] [--keep] [--force]
@@ -11,8 +11,8 @@
 #
 # Variants:
 #   safekeepers    stock Neon safekeepers (the baseline)
-#   loam           loam-wal --store tikv on a TiKV playground (P4a, §7.1)
-#   nvme-buffered  Arm A (§7.2): <replicas> loam-wal acceptors, local journal,
+#   loams           loams-wal --store tikv on a TiKV playground (P4a, §7.1)
+#   nvme-buffered  Arm A (§7.2): <replicas> loams-wal acceptors, local journal,
 #                  pwrite + fdatasync, tokio front end
 #   nvme-pwritev2  Arm A, O_DIRECT + pwritev2(RWF_DSYNC), tokio front end
 #   nvme-uring     Arm A, compio shards with io_uring
@@ -21,37 +21,37 @@
 # Each run uses a fresh tenant and timeline and a fresh compute, and writes
 # <out>/<date>-<git-sha>-<variant>-rf<replicas>[-<label>].json with TPS,
 # latency percentiles and the WAL tier's CPU time per commit. Compare runs
-# with scripts/loam-pg-bench/compare.py.
+# with scripts/loams-pg-bench/compare.py.
 #
-# Candidate topology: compute -> loam-wal (host process, --store tikv-raw by
+# Candidate topology: compute -> loams-wal (host process, --store tikv-raw by
 # default: blind pipelined appends, --depth in flight per timeline; or the
 # P4a transactional store with --store tikv) -> TiKV playground (<replicas>
-# stores, --kv-config, default deploy/loam-pg-bench/tikv.toml). With 3
-# stores, place-leaders.sh labels them z1..z3 and pins the loam_pgwal leaders
+# stores, --kv-config, default deploy/loams-pg-bench/tikv.toml). With 3
+# stores, place-leaders.sh labels them z1..z3 and pins the loams_pgwal leaders
 # to z1, the compute's zone (--no-place skips it). The
 # pageserver still ingests through one stock safekeeper (--no-sync) that
-# loam-wal feeds with committed WAL off the commit path (crates/
-# operon-safekeeper feeder.rs), until the WAL service serves the interpreted
+# loams-wal feeds with committed WAL off the commit path (crates/
+# loams-safekeeper feeder.rs), until the WAL service serves the interpreted
 # protocol itself (§28 Q112).
 #
 # --disk-root puts every WAL tier's data (the safekeepers' volumes, the
 # acceptors' journals) under one directory, to compare filesystems (for
 # example an ext4 partition against btrfs). Without it, safekeepers use
-# podman volumes and the acceptors' journals go to target/loam-pg-bench/nvme,
+# podman volumes and the acceptors' journals go to target/loams-pg-bench/nvme,
 # on the same filesystem as those volumes.
 #
 # The Arm A variants feed the pageserver through one stock --no-sync
 # safekeeper that acceptor 1 streams committed WAL to (feeder.rs, D271); its
 # data goes to --feeder-root, on another filesystem than the journals.
 #
-# Needs: podman (or docker) with docker-compose, and the loam-wal binary:
-#   cargo build --release -p operon-safekeeper --features server,tikv,nvme \
-#     --bin loam-wal         (add compio for nvme-uring and nvme-sqpoll)
-# The loam variant also needs tiup (scripts/tikv).
+# Needs: podman (or docker) with docker-compose, and the loams-wal binary:
+#   cargo build --release -p loams-safekeeper --features server,tikv,nvme \
+#     --bin loams-wal         (add compio for nvme-uring and nvme-sqpoll)
+# The loams variant also needs tiup (scripts/tikv).
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-DEPLOY=$ROOT/deploy/loam-pg-bench
+DEPLOY=$ROOT/deploy/loams-pg-bench
 
 variant= replicas=1 duration=60 warmup=10 scale=10 label= keep=0 force=0
 store=tikv-raw depth=8 kv_config= place=1
@@ -86,7 +86,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 case $variant in
-  safekeepers | loam) ;;
+  safekeepers | loams) ;;
   nvme-buffered) nvme_args=(--io buffered) ;;
   nvme-pwritev2) nvme_args=(--io pwritev2 --io-depth "$io_depth") ;;
   nvme-uring) nvme_args=(--runtime compio --io uring --io-depth "$io_depth") ;;
@@ -96,13 +96,13 @@ esac
 case $replicas in 1 | 3) ;; *) echo "run: --replicas 1|3" >&2; exit 2 ;; esac
 case $depth in "" | *[!0-9]* | 0) echo "run: --depth N (a positive integer)" >&2; exit 2 ;; esac
 case $store in tikv | tikv-raw) ;; *) echo "run: --store tikv|tikv-raw" >&2; exit 2 ;; esac
-kv_config=${kv_config:-$ROOT/deploy/loam-pg-bench/tikv.toml}
+kv_config=${kv_config:-$ROOT/deploy/loams-pg-bench/tikv.toml}
 out=$(realpath -m "$out")
 cd "$DEPLOY"
 
 # One benchmark at a time per host: the compose project, the ports and the
 # p99s are shared (a second run.sh waits here).
-LOCK=${LOAM_BENCH_LOCK:-$HOME/.cache/loam-pg-bench.lock}
+LOCK=${LOAMS_BENCH_LOCK:-$HOME/.cache/loams-pg-bench.lock}
 mkdir -p "$(dirname "$LOCK")"
 exec 9>"$LOCK"
 flock 9
@@ -124,35 +124,35 @@ command -v docker-compose >/dev/null || COMPOSE=(docker compose)
 ENGINE=docker
 case ${DOCKER_HOST:-} in *podman*) ENGINE=podman ;; esac
 command -v "$ENGINE" >/dev/null || ENGINE=podman
-LOAM_WAL=${LOAM_WAL:-$(cargo metadata --format-version 1 --no-deps 2>/dev/null |
-  python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/loam-wal}
+LOAMS_WAL=${LOAMS_WAL:-$(cargo metadata --format-version 1 --no-deps 2>/dev/null |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/loams-wal}
 PD=127.0.0.1:19379
-TAG=loam-bench
-RUN_DIR=$ROOT/target/loam-pg-bench
+TAG=loams-bench
+RUN_DIR=$ROOT/target/loams-pg-bench
 # The feeder's data, by default inside the repository's target directory.
 feeder_root=${feeder_root:-$RUN_DIR/feeder}
 mkdir -p "$RUN_DIR" "$out"
 log() { echo "run: $*" >&2; }
 
-stop_loam_wal() {
-  if [ -f "$RUN_DIR/loam-wal.pids" ]; then
+stop_loams_wal() {
+  if [ -f "$RUN_DIR/loams-wal.pids" ]; then
     # shellcheck disable=SC2046
-    kill $(cat "$RUN_DIR/loam-wal.pids") 2>/dev/null || true
+    kill $(cat "$RUN_DIR/loams-wal.pids") 2>/dev/null || true
     for _ in $(seq 1 50); do
       # shellcheck disable=SC2046
-      kill -0 $(cat "$RUN_DIR/loam-wal.pids") 2>/dev/null || break
+      kill -0 $(cat "$RUN_DIR/loams-wal.pids") 2>/dev/null || break
       sleep 0.1
     done
-    rm -f "$RUN_DIR/loam-wal.pids"
+    rm -f "$RUN_DIR/loams-wal.pids"
   fi
 }
 cleanup() {
   [ "$keep" = 1 ] && return
   "${COMPOSE[@]}" rm -sf compute >/dev/null 2>&1 || true
-  stop_loam_wal
+  stop_loams_wal
 }
 trap cleanup EXIT
-stop_loam_wal
+stop_loams_wal
 
 # A fresh, world-writable directory (the containers run as user neon; under
 # rootless podman their files belong to a subuid, so remove them from inside
@@ -165,7 +165,7 @@ fresh_dir() {
 
 # 1. Storage: RustFS, broker, pageserver; the baseline's safekeepers, or the
 #    candidate's feeder safekeeper. Only one variant's WAL tier runs at a time.
-ALL=(--profile sk --profile sk3 --profile loam)
+ALL=(--profile sk --profile sk3 --profile loams)
 "${COMPOSE[@]}" "${ALL[@]}" rm -sf safekeeper1 safekeeper2 safekeeper3 feeder-safekeeper >/dev/null 2>&1 || true
 if [ -n "$disk_root" ]; then
   for n in 1 2 3; do fresh_dir "$disk_root/sk$n"; done
@@ -176,7 +176,7 @@ if [ "$variant" = safekeepers ]; then
   [ "$replicas" = 3 ] && wal_services="safekeeper1 safekeeper2 safekeeper3"
 else
   wal_services="feeder-safekeeper"
-  if [ "$variant" != loam ]; then
+  if [ "$variant" != loams ]; then
     fresh_dir "$feeder_root"
     export SKF_DATA=$feeder_root
   fi
@@ -191,8 +191,8 @@ case $variant in
     if [ "$replicas" = 3 ]; then SAFEKEEPERS=127.0.0.1:5454,127.0.0.1:5455,127.0.0.1:5456
     else SAFEKEEPERS=127.0.0.1:5454; fi
     ;;
-  loam)
-    [ -x "$LOAM_WAL" ] || { echo "run: no loam-wal at $LOAM_WAL (see the header)" >&2; exit 1; }
+  loams)
+    [ -x "$LOAMS_WAL" ] || { echo "run: no loams-wal at $LOAMS_WAL (see the header)" >&2; exit 1; }
     stores=$(curl -sf "http://$PD/pd/api/v1/stores" 2>/dev/null |
       python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])' 2>/dev/null || echo 0)
     # A playground started with another store count or TiKV config is restarted.
@@ -208,49 +208,49 @@ case $variant in
       echo "$cfg_sum" >"$RUN_DIR/kv-config.sum"
     fi
     if [ "$place" = 1 ] && [ "$replicas" = 3 ]; then
-      "$ROOT/scripts/loam-pg-bench/place-leaders.sh" --pd "$PD" --zone z1 \
+      "$ROOT/scripts/loams-pg-bench/place-leaders.sh" --pd "$PD" --zone z1 \
         --mode "$([ "$store" = tikv ] && echo txn || echo raw)" >&2
     fi
-    RUST_LOG=${RUST_LOG:-info} setsid nohup "$LOAM_WAL" --listen-pg 127.0.0.1:5460 \
+    RUST_LOG=${RUST_LOG:-info} setsid nohup "$LOAMS_WAL" --listen-pg 127.0.0.1:5460 \
       --listen-http 127.0.0.1:7690 --store "$store" --pipeline-depth "$depth" \
-      --pd "$PD" --keyspace loam_pgwal \
-      --feed-safekeeper 127.0.0.1:5457 >"$RUN_DIR/loam-wal.log" 2>&1 </dev/null 9>&- &
-    echo $! >"$RUN_DIR/loam-wal.pids"
+      --pd "$PD" --keyspace loams_pgwal \
+      --feed-safekeeper 127.0.0.1:5457 >"$RUN_DIR/loams-wal.log" 2>&1 </dev/null 9>&- &
+    echo $! >"$RUN_DIR/loams-wal.pids"
     for _ in $(seq 1 30); do curl -sf localhost:7690/v1/status >/dev/null && break; sleep 1; done
     curl -sf localhost:7690/v1/status >/dev/null ||
-      { echo "run: loam-wal did not become ready (see $RUN_DIR/loam-wal.log)" >&2; exit 1; }
+      { echo "run: loams-wal did not become ready (see $RUN_DIR/loams-wal.log)" >&2; exit 1; }
     SAFEKEEPERS=127.0.0.1:5460
     ;;
   nvme-*)
-    [ -x "$LOAM_WAL" ] || { echo "run: no loam-wal at $LOAM_WAL (see the header)" >&2; exit 1; }
+    [ -x "$LOAMS_WAL" ] || { echo "run: no loams-wal at $LOAMS_WAL (see the header)" >&2; exit 1; }
     wal_root=${disk_root:-$RUN_DIR/nvme}
     SAFEKEEPERS=
-    : >"$RUN_DIR/loam-wal.pids"
+    : >"$RUN_DIR/loams-wal.pids"
     for i in $(seq 1 "$replicas"); do
       fresh_dir "$wal_root/wal$i"
       feed=()
       [ "$i" = 1 ] && feed=(--feed-safekeeper 127.0.0.1:5457)
-      RUST_LOG=${RUST_LOG:-info} setsid nohup "$LOAM_WAL" --id "$i" \
+      RUST_LOG=${RUST_LOG:-info} setsid nohup "$LOAMS_WAL" --id "$i" \
         --listen-pg "127.0.0.1:$((5459 + i))" --listen-http "127.0.0.1:$((7689 + i))" \
         --store nvme --data-dir "$wal_root/wal$i" "${nvme_args[@]}" "${feed[@]}" \
-        >"$RUN_DIR/loam-wal-$i.log" 2>&1 </dev/null 9>&- &
-      echo $! >>"$RUN_DIR/loam-wal.pids"
+        >"$RUN_DIR/loams-wal-$i.log" 2>&1 </dev/null 9>&- &
+      echo $! >>"$RUN_DIR/loams-wal.pids"
       SAFEKEEPERS=${SAFEKEEPERS:+$SAFEKEEPERS,}127.0.0.1:$((5459 + i))
     done
     for i in $(seq 1 "$replicas"); do
       for _ in $(seq 1 30); do curl -sf "localhost:$((7689 + i))/v1/status" >/dev/null && break; sleep 1; done
     done
-    grep -h 'I/O tier\|journal ready' "$RUN_DIR"/loam-wal-1.log | sed 's/\x1b\[[0-9;]*m//g' >&2 || true
+    grep -h 'I/O tier\|journal ready' "$RUN_DIR"/loams-wal-1.log | sed 's/\x1b\[[0-9;]*m//g' >&2 || true
     ;;
 esac
 
-# The WAL tier's processes, for CPU time: the acceptors (and, for loam, TiKV)
+# The WAL tier's processes, for CPU time: the acceptors (and, for loams, TiKV)
 # and, separately, the feeder safekeeper that stands in for the decoder.
 wal_pids() {
   case $variant in
     safekeepers) pgrep -f 'safekeeper --listen-pg=127.0.0.1:545[456]' || true ;;
-    loam) cat "$RUN_DIR/loam-wal.pids"; pgrep -x tikv-server || true ;;
-    nvme-*) cat "$RUN_DIR/loam-wal.pids" ;;
+    loams) cat "$RUN_DIR/loams-wal.pids"; pgrep -x tikv-server || true ;;
+    nvme-*) cat "$RUN_DIR/loams-wal.pids" ;;
   esac
 }
 feeder_pids() { pgrep -f 'safekeeper --listen-pg=127.0.0.1:5457' || true; }
@@ -307,7 +307,7 @@ for w in $workloads; do
   [ "$seen" = 3 ] || { echo "run: workload $w did not report both MEASURE_START and MEASURE_END" >&2; exit 1; }
   rm -rf "$RUN_DIR/$w"
   "$ENGINE" cp "$container:/tmp/bench/$w" "$RUN_DIR/$w"
-  r=$(python3 "$ROOT/scripts/loam-pg-bench/stats.py" "$RUN_DIR/$w" "$w")
+  r=$(python3 "$ROOT/scripts/loams-pg-bench/stats.py" "$RUN_DIR/$w" "$w")
   r=$(W="$((w1 - w0))" F="$((f1 - f0))" HZ="$HZ" python3 -c '
 import json, os, sys
 r = json.loads(sys.argv[1])
@@ -332,8 +332,8 @@ wal_fs=$(stat -f -c %T "${disk_root:-$HOME/.local/share/containers}" 2>/dev/null
 printf '%s\n' "${results[@]}" | V="$variant" R="$replicas" L="$label" SHA="$sha" \
   DATE="$(date -u +%FT%TZ)" DISK="$disk" IMG="$neon_image" DUR="$duration" WARM="$warmup" \
   SCALE="$scale" SB="${SHARED_BUFFERS:-2GB}" CF="${COMPUTE_FSYNC:-off}" SK="$SAFEKEEPERS" \
-  STORE="$([ "$variant" = loam ] && echo "$store" || echo -)" DEPTH="$depth" IODEPTH="$io_depth" FS="$wal_fs" \
-  KVCFG="$([ "$variant" = loam ] && basename "$kv_config" || echo -)" \
+  STORE="$([ "$variant" = loams ] && echo "$store" || echo -)" DEPTH="$depth" IODEPTH="$io_depth" FS="$wal_fs" \
+  KVCFG="$([ "$variant" = loams ] && basename "$kv_config" || echo -)" \
   python3 -c '
 import json, sys, platform, os
 workloads = [json.loads(l) for l in sys.stdin if l.strip()]

@@ -20,7 +20,7 @@ reviews:
     - "!Cargo.lock"
     - "!**/pnpm-lock.yaml"
     - "!web/apps/console/src/api/schema.d.ts"
-    - "!crates/operon-quickwit/src/**"
+    - "!crates/loams-quickwit/src/**"
   path_instructions:
     - path: "crates/**/*.rs"
       instructions: |
@@ -28,8 +28,7 @@ reviews:
         saying why it cannot fail), cancellation and lock safety across .await, bounded memory and retries, and that
         object-storage and metastore writes stay fenced and idempotent. New behavior needs tests; storage, log and
         metastore changes need simulation or fault-injection coverage. Public items need doc comments. Flag new
-        dependencies whose license is not Apache-2.0 compatible (see deny.toml). Do not ask to rename operon-* crates;
-        the rename is planned separately.
+        dependencies whose license is not Apache-2.0 compatible (see deny.toml).
     - path: "crates/*/Cargo.toml"
       instructions: |
         Check that new dependencies use workspace versions where one exists, that optional dependencies sit behind a

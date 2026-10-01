@@ -1,4 +1,4 @@
-# TiKV for the Loam WAL benchmark (design §28 §6.6), on one host.
+# TiKV for the Loams WAL benchmark (design §28 §6.6), on one host.
 # deploy/tikv/tikv.toml plus the WAL settings; smaller caches so that three
 # stores fit next to the Neon stack on a 16 GB machine. Durability settings are
 # TiKV's defaults and are never relaxed: every Raft log write is fsynced

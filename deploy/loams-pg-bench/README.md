@@ -1,8 +1,8 @@
-# Loam WAL vs safekeepers: the P4b benchmark
+# Loams WAL vs safekeepers: the P4b benchmark
 
-The harness behind the merge gate in [§28 §7](../../docs/design/28-loam-postgres.md). It runs
+The harness behind the merge gate in [§28 §7](../../docs/design/28-loams-postgres.md). It runs
 pgbench through a Neon compute whose WAL goes either to **stock safekeepers** (the baseline)
-or to **Loam's WAL service on TiKV** (the candidate), on the same host and topology. The Loam
+or to **Loams's WAL service on TiKV** (the candidate), on the same host and topology. The Loams
 WAL replaces the safekeepers only if, for every workload:
 
 - its p99 commit latency is at or below the safekeepers' (within the baseline's run-to-run
@@ -13,46 +13,46 @@ Derived from [`deploy/neon`](../neon) (Apache-2.0, from `neondatabase/neon` `doc
 
 ## Topology
 
-| Tier | Baseline (`--variant safekeepers`) | Candidate (`--variant loam`) |
+| Tier | Baseline (`--variant safekeepers`) | Candidate (`--variant loams`) |
 |---|---|---|
 | Compute | `compute-node-v16`, `shared_buffers = 2GB`, one per run on a fresh timeline | same |
-| WAL | `safekeeper1` (`--replicas 1`) or `safekeeper1..3` (`--replicas 3`), fsync on, each on its own volume | `loam-wal --store tikv` + a TiKV playground with 1 or 3 stores ([`tikv.toml`](tikv.toml)) |
-| Pageserver feed | the safekeepers | `feeder-safekeeper`: a stock safekeeper with `--no-sync` that `loam-wal` streams committed WAL to, off the commit path |
+| WAL | `safekeeper1` (`--replicas 1`) or `safekeeper1..3` (`--replicas 3`), fsync on, each on its own volume | `loams-wal --store tikv` + a TiKV playground with 1 or 3 stores ([`tikv.toml`](tikv.toml)) |
+| Pageserver feed | the safekeepers | `feeder-safekeeper`: a stock safekeeper with `--no-sync` that `loams-wal` streams committed WAL to, off the commit path |
 | Storage | pageserver, storage broker, RustFS | same |
 | Client | pgbench inside the compute container | same |
 
-`loam-wal` refuses to listen beyond loopback unless it has `--auth-token` and `--trusted-network`
+`loams-wal` refuses to listen beyond loopback unless it has `--auth-token` and `--trusted-network`
 (it has no TLS yet, so the token is cleartext; the benchmark uses
 loopback only). Everything uses host networking, so the compute reaches containers and host processes the
 same way.
 
 The **feeder** exists because the pageserver only ingests Neon's *interpreted* WAL protocol,
-which the WAL service does not speak yet (§28 Q112; see `crates/operon-safekeeper/src/feeder.rs`).
+which the WAL service does not speak yet (§28 Q112; see `crates/loams-safekeeper/src/feeder.rs`).
 The feeder safekeeper stands in for that decoder. It adds disk and CPU work to the candidate
 that the final design does not have, so it can only make the candidate look worse.
 
 ## Run
 
-Build `loam-wal` once, with podman's socket (or Docker) and tiup available (see
+Build `loams-wal` once, with podman's socket (or Docker) and tiup available (see
 [`scripts/tikv`](../../scripts/tikv)):
 
 ```sh
-cargo build --release -p operon-safekeeper --features server,tikv --bin loam-wal
+cargo build --release -p loams-safekeeper --features server,tikv --bin loams-wal
 # One run of one variant: writes bench/results/<date>-<sha>-<variant>-rf<n>-<label>.json
-scripts/loam-pg-bench/run.sh --variant safekeepers --replicas 3
-scripts/loam-pg-bench/run.sh --variant loam --replicas 3
+scripts/loams-pg-bench/run.sh --variant safekeepers --replicas 3
+scripts/loams-pg-bench/run.sh --variant loams --replicas 3
 # The gate: baseline and candidate interleaved three times, then the comparison.
-scripts/loam-pg-bench/gate.sh --replicas 3 --repeats 3 --duration 300 --warmup 60 \
+scripts/loams-pg-bench/gate.sh --replicas 3 --repeats 3 --duration 300 --warmup 60 \
   --scale 50 --workloads "commit-1 commit-16 tpcb-16 tpcb-64 bulk bulk-burst"
 ```
 
 `run.sh` waits while `cargo` or `rustc` runs on the host (pass `--force` to skip this), because
-a build ruins p99s. The manual workflow [`loam-pg-bench.yml`](../../.github/workflows/loam-pg-bench.yml)
+a build ruins p99s. The manual workflow [`loams-pg-bench.yml`](../../.github/workflows/loams-pg-bench.yml)
 runs the gate on a dedicated self-hosted runner. Shared CI runners are too noisy for p99s.
 
 ## Workloads
 
-These are defined in [`scripts/loam-pg-bench/workload.sh`](../../scripts/loam-pg-bench/workload.sh).
+These are defined in [`scripts/loams-pg-bench/workload.sh`](../../scripts/loams-pg-bench/workload.sh).
 Each one has a warm-up, then `pgbench -l` per-transaction logs. Percentiles come from those
 logs, not from pgbench's averages.
 
@@ -76,7 +76,7 @@ Each run writes one JSON file with:
 - settings;
 - per workload: TPS and p50, p90, p99, p99.9 and max.
 
-`scripts/loam-pg-bench/compare.py --baseline … --candidate …` prints the gate table. The
+`scripts/loams-pg-bench/compare.py --baseline … --candidate …` prints the gate table. The
 single-host results in [`bench/results`](../../bench/results) are laptop data points, not the
 gate. The gate needs server hardware:
 
@@ -187,7 +187,7 @@ is about 43% at rf1 and 23% at rf3; commit-16 54% at rf1, tpcb-16 22% at rf1 and
 rf3, a single baseline commit-16 run hit 398 ms. Differences
 under those bands are not results.
 
-| run (p99 ms median (min-max) / TPS) | safekeepers | Loam txn (rf3: leaders not placed, see below) | raw d1 | raw d8 | raw d32 |
+| run (p99 ms median (min-max) / TPS) | safekeepers | Loams txn (rf3: leaders not placed, see below) | raw d1 | raw d8 | raw d32 |
 |---|---|---|---|---|---|
 | rf1 commit-1 | 16.6 (16.5-23.6) / 197 | 45.6 (36.0-73.9) / 117 | 46.2 (24.1-48.9) / 138 | 44.0 (36.1-44.3) / 120 | 44.6 (40.3-45.1) / 133 |
 | rf1 commit-16 | 31.2 (22.0-38.8) / 2129 | 69.7 (68.8-124.8) / 731 | 72.3 (44.9-75.0) / 919 | 40.7 (33.4-49.7) / 1361 | 57.6 (44.9-59.5) / 1388 |
@@ -198,7 +198,7 @@ under those bands are not results.
 | rf3 tpcb-16 | 213.7 (185.5-214.0) / 434 | 297.0 (292.8-358.6) / 263 | 243.3 (238.4-299.8) / 322 | 302.4 (223.2-313.3) / 291 | 271.2 (238.0-293.6) / 344 |
 | rf3 bulk MB/s | 44.3 (32.8-57.0) | 9.3 (8.2-11.5) | 18.1 (9.0-18.1) | 11.4 (10.0-15.0) | 13.7 (10.0-14.8) |
 
-Verdict: **the gate fails** in every configuration; Loam is behind the stock
+Verdict: **the gate fails** in every configuration; Loams is behind the stock
 safekeepers on commit-1 p99 by 2.7x at rf1 (44 vs 17 ms) and about 1.25x at rf3.
 What the raw store and pipelining do buy, outside the noise at rf1: commit-16
 p99 70 -> 41 ms and TPS 731 -> 1361 (txn -> raw d8), tpcb-16 TPS 465 -> 543-599,
@@ -233,7 +233,7 @@ The transactional store is the superseded design, so it was not chased further;
 the raw rows (placed) are unaffected.
 
 Caveats: one laptop (14 CPUs, 16 GB, one shared consumer SSD), Neon and TiKV
-and loam-wal all on it; n=3; the baseline's own spread is large; compute fsync
+and loams-wal all on it; n=3; the baseline's own spread is large; compute fsync
 off; one TiKV store at rf1 (no replication).
 
 Bug found by the gate: with a backlog (pgbench -i at depth 32) the feeder read
