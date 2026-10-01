@@ -28,6 +28,8 @@ clap = { version = "4", features = ["derive"] }
 connectrpc = "0.9.1"
 connectrpc-build = "0.9"
 # CRC-16 of Loam Live document ids (R1 plan Task 8).
+# The Arm A WAL data path (§28 §7.2, D263): thread-per-core, io_uring.
+compio = { version = "0.19.2", default-features = false, features = ["runtime", "io-uring", "polling", "net", "fs", "io", "time"] }
 crc = "3"
 crc32c = "0.6"
 # Crockford base32 of Loam Live document ids (R1 plan Task 8).

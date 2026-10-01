@@ -218,3 +218,82 @@ async fn pipelined_appends_are_acknowledged_when_durable_and_survive_a_restart()
         s.close();
     }
 }
+
+/// The compio data path (§28 §7.2, D263): the tokio prelude hands the WAL
+/// push to the timeline's shard, whose io_uring engine makes it durable.
+#[cfg(feature = "compio")]
+#[tokio::test]
+async fn the_push_runs_on_a_compio_shard_with_io_uring() {
+    use operon_safekeeper::shard::{ShardConfig, ShardedStore, Shards, UringSync, shard_of};
+    for (sync, sqpoll) in [
+        (UringSync::Dsync, None),
+        (UringSync::Fsync, Some(Duration::from_millis(20))),
+    ] {
+        let d = tempfile::tempdir().unwrap();
+        let n = 2;
+        let meta = Arc::new(LocalMeta::open(&d.path().join("meta")).unwrap());
+        let mut stores = Vec::new();
+        for k in 0..n {
+            let cfg = JournalConfig {
+                segment_size: 1 << 20,
+                unit_capacity: 256 << 10,
+                ..JournalConfig::new(
+                    d.path().join(format!("shard-{k}")),
+                    Tier::Uring { depth: 4 },
+                )
+            };
+            stores.push(Arc::new(
+                NvmeWalStore::open_owning(cfg, meta.clone(), |t| shard_of(t, n) == k)
+                    .await
+                    .unwrap(),
+            ));
+        }
+        let cfg = ShardConfig {
+            shards: n,
+            depth: 4,
+            sync,
+            uring: true,
+            sqpoll,
+            node_id: 1,
+            commit_flush_interval: Duration::from_millis(100),
+        };
+        let (shards, starter) = Shards::start(stores.clone(), cfg).unwrap();
+        let router = Arc::new(ShardedStore::new(stores.clone()));
+        let svc = WalService::new(
+            router.clone(),
+            WalServiceConfig {
+                poll_interval: Duration::from_millis(5),
+                handoff: Some(shards.handoff()),
+                ..Default::default()
+            },
+        );
+        starter.run(svc.clone()).unwrap();
+        let pg = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = pg.local_addr().unwrap();
+        tokio::spawn(svc.serve(pg, std::future::pending()));
+
+        let mut p = elect(addr, 1, START, &[(1, START)]).await;
+        let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        let mut at = START;
+        for chunk in payload.chunks(5000) {
+            send(&mut p, append(1, at, chunk, START)).await;
+            at += chunk.len() as u64;
+        }
+        acked(&mut p, at).await;
+        let got: Vec<u8> = router
+            .read(&tl(), Lsn(START), usize::MAX)
+            .await
+            .unwrap()
+            .into_iter()
+            .flat_map(|(_, b)| b.to_vec())
+            .collect();
+        assert_eq!(got, payload);
+        // Non-push commands stay on tokio.
+        let mut q = connect(addr).await;
+        let rows = client::query_rows(&mut q, "TIMELINE_STATUS").await.unwrap();
+        assert_eq!(rows[0][0], Some(Lsn(at).to_string()));
+        for s in &stores {
+            s.close();
+        }
+    }
+}
