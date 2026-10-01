@@ -58,16 +58,18 @@ print(enc(pre + k.to_bytes(3, "big")), enc(pre + (k + 1).to_bytes(3, "big")))
 PY
 )
 
-# 3. A rule group that overrides the default rule on that range.
+# 3. A rule group (one per store mode, so that both ranges keep their own
+#    leader and follower rules) that overrides the default rule on the range.
+curl -sf -X DELETE "$api/v1/config/rule_group/loam_pgwal" >/dev/null 2>&1 || true # the pre-mode group
 curl -sf -X POST -H 'Content-Type: application/json' \
-  -d '{"id": "loam_pgwal", "index": 10, "override": true}' "$api/v1/config/rule_group" >/dev/null
+  -d "{\"id\": \"loam_pgwal_$mode\", \"index\": 10, \"override\": true}" "$api/v1/config/rule_group" >/dev/null
 rule() {
   curl -sf -X POST -H 'Content-Type: application/json' -d "$1" "$api/v1/config/rule" >/dev/null
 }
-rule "{\"group_id\": \"loam_pgwal\", \"id\": \"leader\", \"start_key\": \"$start\", \"end_key\": \"$end\",
+rule "{\"group_id\": \"loam_pgwal_$mode\", \"id\": \"leader\", \"start_key\": \"$start\", \"end_key\": \"$end\",
   \"role\": \"leader\", \"count\": 1,
   \"label_constraints\": [{\"key\": \"zone\", \"op\": \"in\", \"values\": [\"$zone\"]}]}"
-rule "{\"group_id\": \"loam_pgwal\", \"id\": \"followers\", \"start_key\": \"$start\", \"end_key\": \"$end\",
+rule "{\"group_id\": \"loam_pgwal_$mode\", \"id\": \"followers\", \"start_key\": \"$start\", \"end_key\": \"$end\",
   \"role\": \"follower\", \"count\": $((n - 1)),
   \"label_constraints\": [{\"key\": \"zone\", \"op\": \"notIn\", \"values\": [\"$zone\"]}]}"
 
