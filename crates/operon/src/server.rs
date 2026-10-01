@@ -758,11 +758,13 @@ impl StreamGrpc {
         listener: tokio::net::TcpListener,
         addr: SocketAddr,
         streams: Arc<dyn StreamProducer>,
+        events: Arc<dyn operon_stream_grpc::EventProducer>,
     ) -> Self {
         let stop = CancellationToken::new();
         let task_stop = stop.clone();
         let task = tokio::spawn(async move {
-            if let Err(err) = operon_stream_grpc::serve(listener, streams, task_stop).await {
+            if let Err(err) = operon_stream_grpc::serve(listener, streams, events, task_stop).await
+            {
                 tracing::error!(%err, "native stream gRPC server failed");
             }
         });
@@ -1664,7 +1666,14 @@ impl Server {
                 meta: meta_store.clone(),
                 writer: writer.clone(),
             });
-            StreamGrpc::start(listener, addr, streams)
+            let events: Arc<dyn operon_stream_grpc::EventProducer> =
+                Arc::new(api::events::NativeEventProducer {
+                    meta: meta_store.clone(),
+                    writer: writer.clone(),
+                    config: config.cloudevents,
+                    node_id,
+                });
+            StreamGrpc::start(listener, addr, streams, events)
         });
         Ok(Assembled {
             writer,

@@ -10,9 +10,26 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tonic::{Request, transport::Channel};
 
-mod stream {
-    tonic::include_proto!("loam.stream.v1");
+// The generated code names the CloudEvents package by relative paths, so
+// both packages live at their own module paths, as prost expects.
+#[allow(dead_code, clippy::all)]
+mod generated {
+    pub mod io {
+        pub mod cloudevents {
+            pub mod v1 {
+                tonic::include_proto!("io.cloudevents.v1");
+            }
+        }
+    }
+    pub mod loam {
+        pub mod stream {
+            pub mod v1 {
+                tonic::include_proto!("loam.stream.v1");
+            }
+        }
+    }
 }
+use generated::loam::stream::v1 as stream;
 use stream::{Header, ProduceRequest, Record, stream_service_client::StreamServiceClient};
 
 #[derive(Clone)]

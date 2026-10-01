@@ -7173,11 +7173,15 @@ name = "operon-stream-grpc"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bytes",
+ "operon-cloudevents",
  "operon-common",
  "operon-log",
  "operon-query",
  "prost 0.14.4",
+ "prost-types",
+ "time",
  "tokio",
  "tokio-stream",
  "tokio-util",
