@@ -122,10 +122,12 @@ What this shows, and what it does not:
   The tokio `pwritev2` fallback fails `commit-1` on throughput, not latency: its mean p99 (39 ms)
   is inside the baseline's range (26 to 39 ms), but its mean of 88 TPS is below the baseline's
   slowest repeat (92), dragged down by one 64 TPS run. It passes `commit-16` and `tpcb-16`.
-- **The gate as a whole fails, for every tier, on `bulk`.** One 250 MB transaction runs at
+- **Before the journal fix, the gate as a whole failed, for every tier, on `bulk`.** One 250 MB transaction runs at
   11 to 14 MB/s on Arm A against 118 MB/s on the safekeepers. The same figure on all three tiers
   points at a cause above the I/O tier (how the journal seals units or how the acceptor batches
-  appends under a streaming walproposer), not at the runtime. It is not fixed here.
+  appends under a streaming walproposer), not at the runtime. These are the results before the
+  journal fix; [Why `bulk` was slow, and what changed](#why-bulk-was-slow-and-what-changed) below
+  has the cause and the numbers after it.
 - SQPOLL buys a little latency (p99 tpcb-16 118 ms against 206 ms) and costs 18 times the CPU per
   commit, because the poller thread spins. It is worth it only on a core that has nothing else to do.
 - This is a laptop, so read the numbers as direction, not as the gate. The noise column of the gate
@@ -156,8 +158,8 @@ So the journal now pre-zeroes only when it is not busy: a segment that filled in
 `hot_segment` (2 s) means fast ingest, and new segments are prepared without pre-zeroing; the preparer
 zeroes them later, once the journal goes quiet. `commit-1` is unchanged (p50 1.16 ms, p99 9.1 ms, against
 1.17 and 8.6 before). A 1 GB `bulk` goes from 12 to 20 to 26 MB/s on three acceptors, which is where the
-three stock safekeepers land on the same disk (22 to 26 MB/s). The 118 and 182 MB/s figures above for a
-250 MB `bulk` are the drive absorbing a short burst, not sustained throughput.
+three stock safekeepers land on the same disk (22 to 26 MB/s). The 117.6 and 74.1 MB/s baseline figures above
+for a 250 MB `bulk` are the drive absorbing a short burst, not sustained throughput.
 
 ## Not modelled yet
 

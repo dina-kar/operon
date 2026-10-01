@@ -875,7 +875,10 @@ impl Journal {
                     st = self
                         .inner
                         .prep
-                        .wait_timeout(st, self.inner.cfg.hot_segment)
+                        .wait_timeout(
+                            st,
+                            self.inner.cfg.hot_segment.max(Duration::from_millis(100)),
+                        )
                         .unwrap_or_else(|p| p.into_inner())
                         .0;
                 }
@@ -1207,7 +1210,7 @@ mod tests {
     async fn fast_ingest_skips_pre_zeroing_and_idle_catches_up() {
         let d = tempfile::tempdir().unwrap();
         let mut c = cfg(d.path(), Tier::Buffered);
-        c.hot_segment = Duration::from_secs(3);
+        c.hot_segment = Duration::from_secs(5);
         let (j, _) = replay(c);
         j.start();
         // Fill several segments at once: each rollover finds the journal hot.
@@ -1220,12 +1223,20 @@ mod tests {
                 .unit;
         }
         j.wait(last).await.unwrap();
-        assert!(
-            j.ready_zeroed().contains(&false),
-            "segments made while hot are not pre-zeroed"
-        );
+        // The preparer makes the replacements after the rollovers that took
+        // the pre-zeroed ones, so `ready` can briefly hold none of them: poll
+        // (well inside the hot window) rather than look once.
+        let mut saw_unzeroed = false;
+        for _ in 0..40 {
+            if j.ready_zeroed().contains(&false) {
+                saw_unzeroed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(saw_unzeroed, "segments made while hot are not pre-zeroed");
         // Idle: the preparer zeroes them.
-        for _ in 0..300 {
+        for _ in 0..400 {
             if j.ready_zeroed().iter().all(|z| *z) {
                 break;
             }
