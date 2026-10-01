@@ -609,78 +609,90 @@ impl TikvMeta {
     ) -> MetaResult<Option<CollectionId>> {
         self.reach_now().await;
         let name = name.to_string();
-        self.write_plain("meta.drop_collection", move |txn| {
-            let name = name.clone();
-            Box::pin(async move {
-                let now_ms = Tikv::physical_ms(&txn.start_ts());
-                let name_key = keys::collection_name(ns, &name);
-                let Some(id) = load_id(txn, "collection name", &name_key).await? else {
-                    return Ok(Ok(None));
-                };
-                let id = CollectionId(id);
-                let Some(collection) = load_collection(txn, id).await? else {
-                    return Ok(Ok(None));
-                };
-                // Rule 3 of M1.5 Task 0a: the collection leaves every alias,
-                // and each changed alias goes to its canonical map.
-                let mut aliases = load_aliases(txn, ns).await?;
-                let before = aliases.clone();
-                aliases.aliases.retain(|_, target| *target != id);
-                let changed: Vec<String> = aliases
-                    .targets
-                    .iter()
-                    .filter(|(_, t)| t.members.contains_key(&id))
-                    .map(|(alias, _)| alias.clone())
-                    .collect();
-                for alias in changed {
-                    let mut members = aliases.members(&alias);
-                    members.remove(&id);
-                    aliases.put(alias, members);
-                }
-                if aliases != before {
-                    aliases.version += 1;
-                    txn.put(&keys::aliases(ns), keys::encode(&aliases)).await?;
-                }
-                txn.delete(&keys::hot(id)).await?;
-                // The implicit stream, its heads and index entries. Every
-                // partition's head is deleted, present or not, so a
-                // concurrent first commit into a partition (which creates its
-                // head under a pessimistic lock) conflicts with the drop
-                // instead of leaving entries behind it (row T5-3).
-                let implicit = implicit_name(&collection.name, id);
-                txn.delete(&keys::stream(collection.stream)).await?;
-                txn.delete(&keys::stream_name(ns, &implicit)).await?;
-                for p in 0..collection.partitions {
-                    txn.delete(&keys::head(collection.stream, p)).await?;
-                }
-                let entries = txn
-                    .scan_prefix(&keys::index_entries(collection.stream))
-                    .await?;
-                let mut released = Vec::with_capacity(entries.len());
-                for (key, value) in entries {
-                    let entry: IndexEntry = keys::decode("index entry", &value).map_err(fatal)?;
-                    txn.delete(&key).await?;
-                    released.push(entry);
-                }
-                release_entries(txn, &released, now_ms).await?;
-                // The implicit link and its pointer, the manifest pointer,
-                // the collection.
-                txn.delete(&keys::link(collection.link)).await?;
-                txn.delete(&keys::link_name(ns, &implicit)).await?;
-                txn.delete(&keys::pointer(ns, &link_pointer_key(collection.link)))
-                    .await?;
-                txn.delete(&keys::pointer(ns, &collection_pointer_key(id)))
-                    .await?;
-                txn.delete(&keys::collection(id)).await?;
-                txn.delete(&name_key).await?;
-                for prefix in [collection_prefix(ns, id), collection_pk_prefix(ns, id)] {
-                    txn.put(&keys::retired(&prefix), keys::encode_u64(now_ms))
+        let dropped = self
+            .write_plain("meta.drop_collection", move |txn| {
+                let name = name.clone();
+                Box::pin(async move {
+                    let now_ms = Tikv::physical_ms(&txn.start_ts());
+                    let name_key = keys::collection_name(ns, &name);
+                    let Some(id) = load_id(txn, "collection name", &name_key).await? else {
+                        return Ok(Ok(None));
+                    };
+                    let id = CollectionId(id);
+                    let Some(collection) = load_collection(txn, id).await? else {
+                        return Ok(Ok(None));
+                    };
+                    // Rule 3 of M1.5 Task 0a: the collection leaves every alias,
+                    // and each changed alias goes to its canonical map.
+                    let mut aliases = load_aliases(txn, ns).await?;
+                    let before = aliases.clone();
+                    aliases.aliases.retain(|_, target| *target != id);
+                    let changed: Vec<String> = aliases
+                        .targets
+                        .iter()
+                        .filter(|(_, t)| t.members.contains_key(&id))
+                        .map(|(alias, _)| alias.clone())
+                        .collect();
+                    for alias in changed {
+                        let mut members = aliases.members(&alias);
+                        members.remove(&id);
+                        aliases.put(alias, members);
+                    }
+                    if aliases != before {
+                        aliases.version += 1;
+                        txn.put(&keys::aliases(ns), keys::encode(&aliases)).await?;
+                    }
+                    txn.delete(&keys::hot(id)).await?;
+                    // The implicit stream, its heads and index entries. Every
+                    // partition's head is deleted, present or not, so a
+                    // concurrent first commit into a partition (which creates its
+                    // head under a pessimistic lock) conflicts with the drop
+                    // instead of leaving entries behind it (row T5-3).
+                    let implicit = implicit_name(&collection.name, id);
+                    txn.delete(&keys::stream(collection.stream)).await?;
+                    txn.delete(&keys::stream_name(ns, &implicit)).await?;
+                    for p in 0..collection.partitions {
+                        txn.delete(&keys::head(collection.stream, p)).await?;
+                    }
+                    let entries = txn
+                        .scan_prefix(&keys::index_entries(collection.stream))
                         .await?;
-                }
-                Ok(Ok(Some(id)))
+                    let mut released = Vec::with_capacity(entries.len());
+                    for (key, value) in entries {
+                        let entry: IndexEntry =
+                            keys::decode("index entry", &value).map_err(fatal)?;
+                        txn.delete(&key).await?;
+                        released.push(entry);
+                    }
+                    release_entries(txn, &released, now_ms).await?;
+                    // The implicit link and its pointer, the manifest pointer,
+                    // the collection.
+                    txn.delete(&keys::link(collection.link)).await?;
+                    txn.delete(&keys::link_name(ns, &implicit)).await?;
+                    txn.delete(&keys::pointer(ns, &link_pointer_key(collection.link)))
+                        .await?;
+                    txn.delete(&keys::pointer(ns, &collection_pointer_key(id)))
+                        .await?;
+                    txn.delete(&keys::collection(id)).await?;
+                    txn.delete(&name_key).await?;
+                    for prefix in [collection_prefix(ns, id), collection_pk_prefix(ns, id)] {
+                        txn.put(&keys::retired(&prefix), keys::encode_u64(now_ms))
+                            .await?;
+                    }
+                    Ok(Ok(Some((id, collection.stream))))
+                })
             })
-        })
-        .await
+            .await?;
+        let Some((id, stream)) = dropped else {
+            return Ok(None);
+        };
+        // The stream's ledger entries go in pages after the drop commits: a
+        // busy stream holds too many for the drop's own transaction. A
+        // concurrent claim conflicts with the drop through the stream
+        // record and then finds no stream; entries this misses (an error here is
+        // ignored) lapse and are pruned.
+        let _ = self.purge_idempotency_stream(stream).await;
+        Ok(Some(id))
     }
 
     pub(crate) async fn update_collection_schema_impl(

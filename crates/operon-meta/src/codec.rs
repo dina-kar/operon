@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 use std::io;
 
-use operon_common::meta::{AliasTargets, HotConfig};
-use operon_common::{CollectionId, NamespaceId};
+use operon_common::meta::{AliasTargets, HotConfig, IdempotencyEntry, IdempotencyKey};
+use operon_common::{CollectionId, NamespaceId, StreamId};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -22,7 +22,12 @@ const SNAPSHOT_MAGIC: &[u8; 8] = b"OPNMETA\0";
 /// without any is still written as before.
 /// Version 7 (M1.5) appends the multi-target alias map; a state without one
 /// is still written as version 5 or 6 (M1.5 Ruling 22).
-const SNAPSHOT_FORMAT_VERSION: u32 = 7;
+/// Version 8 (D270) appends the stream ingest ledger; a state without one is
+/// still written as version 5, 6 or 7.
+const SNAPSHOT_FORMAT_VERSION: u32 = 8;
+/// The version a state with multi-target aliases and without a ledger is
+/// written in.
+const ALIAS_FORMAT_VERSION: u32 = 7;
 /// The version a state with hot configuration and without multi-target
 /// aliases is written in (M1.3 Ruling 20).
 const HOT_FORMAT_VERSION: u32 = 6;
@@ -69,10 +74,16 @@ struct SnapshotBody {
 pub(crate) fn encode_snapshot(meta: &SnapshotMeta, state: &MetaState) -> io::Result<Vec<u8>> {
     let hot = state.collection_hot_map();
     let alias_targets = state.alias_targets_map();
-    let version = match (hot.is_empty(), alias_targets.is_empty()) {
-        (true, true) => BASE_FORMAT_VERSION,
-        (false, true) => HOT_FORMAT_VERSION,
-        (_, false) => SNAPSHOT_FORMAT_VERSION,
+    let idempotency = state.idempotency_map();
+    let version = match (
+        hot.is_empty(),
+        alias_targets.is_empty(),
+        idempotency.is_empty(),
+    ) {
+        (_, _, false) => SNAPSHOT_FORMAT_VERSION,
+        (true, true, true) => BASE_FORMAT_VERSION,
+        (false, true, true) => HOT_FORMAT_VERSION,
+        (_, false, true) => ALIAS_FORMAT_VERSION,
     };
     let mut out = Vec::new();
     out.extend_from_slice(SNAPSHOT_MAGIC);
@@ -81,8 +92,11 @@ pub(crate) fn encode_snapshot(meta: &SnapshotMeta, state: &MetaState) -> io::Res
     if version >= HOT_FORMAT_VERSION {
         postcard::to_io(hot, &mut out).map_err(invalid_data)?;
     }
-    if version >= SNAPSHOT_FORMAT_VERSION {
+    if version >= ALIAS_FORMAT_VERSION {
         postcard::to_io(alias_targets, &mut out).map_err(invalid_data)?;
+    }
+    if version >= SNAPSHOT_FORMAT_VERSION {
+        postcard::to_io(idempotency, &mut out).map_err(invalid_data)?;
     }
     let crc = crc32c::crc32c(&out);
     out.extend_from_slice(&crc.to_le_bytes());
@@ -119,7 +133,7 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> io::Result<(SnapshotMeta, MetaSta
             state.set_collection_hot_map(hot);
             Ok((body.meta, state))
         }
-        SNAPSHOT_FORMAT_VERSION => {
+        ALIAS_FORMAT_VERSION => {
             // The version-6 layout, whose hot map may be empty here: only
             // the map this version adds must be non-empty.
             let (body, rest): (SnapshotBody, _) =
@@ -135,6 +149,25 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> io::Result<(SnapshotMeta, MetaSta
             let mut state = body.state;
             state.set_collection_hot_map(hot);
             state.set_alias_targets_map(alias_targets);
+            Ok((body.meta, state))
+        }
+        SNAPSHOT_FORMAT_VERSION => {
+            // The version-7 layout, whose maps may be empty here: only the
+            // ledger this version adds must be non-empty.
+            let (body, rest): (SnapshotBody, _) =
+                postcard::take_from_bytes(body).map_err(invalid_data)?;
+            let (hot, rest): (BTreeMap<CollectionId, HotConfig>, _) =
+                postcard::take_from_bytes(rest).map_err(invalid_data)?;
+            let (alias_targets, rest): (BTreeMap<(NamespaceId, String), AliasTargets>, _) =
+                postcard::take_from_bytes(rest).map_err(invalid_data)?;
+            let idempotency: BTreeMap<(StreamId, IdempotencyKey), IdempotencyEntry> = decode(rest)?;
+            if idempotency.is_empty() {
+                return Err(invalid_data("a version 8 snapshot without a ledger"));
+            }
+            let mut state = body.state;
+            state.set_collection_hot_map(hot);
+            state.set_alias_targets_map(alias_targets);
+            state.set_idempotency_map(idempotency);
             Ok((body.meta, state))
         }
         _ => Err(io::Error::new(

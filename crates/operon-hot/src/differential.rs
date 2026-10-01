@@ -916,22 +916,45 @@ pub struct DiffHarness {
     ids: Option<(NamespaceId, CollectionId)>,
 }
 
-/// A phase's recall counts, for the pool of phases too small to judge.
+/// A phase's recall counts, for the pools of phases too small to judge.
 #[derive(Clone, Copy, Debug, Default)]
 struct Pooled {
     queries: u64,
     hot_found: usize,
     cold_found: usize,
     expected: usize,
-    judged: bool,
+    /// The hot tier's recall was judged on the phase alone
+    /// ([`MIN_JUDGED`]).
+    hot_judged: bool,
+    /// The cold tier's recall was judged on the phase alone
+    /// ([`MIN_POOLED`]).
+    cold_judged: bool,
+}
+
+/// One tier's pool of phases too small to judge on their own.
+#[derive(Clone, Copy, Debug, Default)]
+struct Pool {
+    queries: u64,
+    found: usize,
+    expected: usize,
+}
+
+impl Pool {
+    fn add(&mut self, queries: u64, found: usize, expected: usize) {
+        self.queries += queries;
+        self.found += found;
+        self.expected += expected;
+    }
 }
 
 /// A phase's recall is judged on its own from this many approximate
 /// queries.
 const MIN_JUDGED: u64 = 20;
 
-/// The pool judges the cold tier's recall only from this many approximate
-/// queries (Ruling C4); it judges the hot tier's from any number.
+/// The cold tier's recall is judged only from this many approximate
+/// queries, in a phase alone or in the pool of smaller phases (Ruling C4);
+/// the hot tier's is judged from [`MIN_JUDGED`] in a phase and from any
+/// number in the pool.
 ///
 /// The seeds fix every document, query and third-pass pick, but Lance
 /// 12.0.0 trains the cold tier's IVF centroids and PQ codebooks with
@@ -946,13 +969,42 @@ const MIN_JUDGED: u64 = 20;
 /// queries (500 hits) 0.95 needs 25 misses, against 6-12 at the measured
 /// rates.
 ///
+/// Judging the cold tier on a phase alone from [`MIN_JUDGED`] queries
+/// failed the same way: the default phases hold 25-40 approximate queries,
+/// and the `applied` phase read 0.948 in CI twice (seed 3 with 33 queries,
+/// seed 1 with 27: 17 and 14 misses where 16 and 13 pass) while the same
+/// runs' other phases read 0.979-0.995. So a phase's cold recall is judged
+/// alone only from [`MIN_POOLED`] queries too (the 139- and 1000-query
+/// `applied` phases of `random_per_request_disabling_matches_cold` still
+/// are), and the default phases pool: about 170 queries at 0.977-0.986 in
+/// those runs, where 0.95 needs about twice their misses.
+///
 /// The hot tier keeps the old rule: it is what the harness guards, and
 /// its test engines are deterministic (`FlatEngine` is exact, so hot
 /// recall is 1.0). The broken tiers are caught by it on small pools: the
 /// deleted-row tier reads 0.0 over about 20 queries. The cold tier's ANN
 /// recall has its own tests (`operon-query` `ann`), and its larger phases
-/// are still judged on their own from [`MIN_JUDGED`] queries.
+/// are still judged on their own from [`MIN_POOLED`] queries.
 const MIN_POOLED: u64 = 50;
+
+/// Which tiers a phase with `approximate` approximate queries is judged on
+/// by itself: `(hot, cold)`.
+fn tiers_judged(approximate: u64) -> (bool, bool) {
+    (approximate >= MIN_JUDGED, approximate >= MIN_POOLED)
+}
+
+#[cfg(test)]
+mod judged_tests {
+    use super::*;
+
+    #[test]
+    fn the_thresholds_are_inclusive_and_the_cold_tier_needs_more() {
+        assert_eq!(tiers_judged(MIN_JUDGED - 1), (false, false));
+        assert_eq!(tiers_judged(MIN_JUDGED), (true, false));
+        assert_eq!(tiers_judged(MIN_POOLED - 1), (true, false));
+        assert_eq!(tiers_judged(MIN_POOLED), (true, true));
+    }
+}
 
 /// One answer, as compared.
 struct Answer {
@@ -1009,7 +1061,7 @@ impl DiffHarness {
         self.create(config).await;
         let mut docs = Gen::new(config.seed, "documents", config.dim);
         let debug = std::env::var("DIFF_DEBUG").is_ok();
-        let mut unjudged = Pooled::default();
+        let (mut hot_pool, mut cold_pool) = (Pool::default(), Pool::default());
         for phase in PHASES {
             let started = Instant::now();
             match phase {
@@ -1027,11 +1079,11 @@ impl DiffHarness {
             }
             let prepared = started.elapsed();
             let (phase_report, mismatches, pooled) = self.compare(config, phase).await;
-            if !pooled.judged {
-                unjudged.queries += pooled.queries;
-                unjudged.hot_found += pooled.hot_found;
-                unjudged.cold_found += pooled.cold_found;
-                unjudged.expected += pooled.expected;
+            if !pooled.hot_judged {
+                hot_pool.add(pooled.queries, pooled.hot_found, pooled.expected);
+            }
+            if !pooled.cold_judged {
+                cold_pool.add(pooled.queries, pooled.cold_found, pooled.expected);
             }
             if debug {
                 eprintln!(
@@ -1042,13 +1094,13 @@ impl DiffHarness {
             report.phases.push(phase_report);
             report.mismatches.extend(mismatches);
         }
-        if unjudged.expected > 0 {
-            let mut tiers = vec![("hot", unjudged.hot_found)];
-            if unjudged.queries >= MIN_POOLED {
-                tiers.push(("cold", unjudged.cold_found));
-            }
-            for (tier, found) in tiers {
-                let value = found as f64 / unjudged.expected as f64;
+        let mut tiers = vec![("hot", hot_pool, MIN_JUDGED)];
+        if cold_pool.queries >= MIN_POOLED {
+            tiers.push(("cold", cold_pool, MIN_POOLED));
+        }
+        for (tier, pool, below) in tiers {
+            if pool.expected > 0 {
+                let value = pool.found as f64 / pool.expected as f64;
                 if value < config.min_recall {
                     report.mismatches.push(Mismatch {
                         phase: "pooled",
@@ -1059,7 +1111,7 @@ impl DiffHarness {
                         },
                         reason: format!(
                             "recall@{RECALL_AT} of the {tier} tier over the phases with fewer \
-                             than {MIN_JUDGED} approximate queries is {value:.3} < {}",
+                             than {below} approximate queries is {value:.3} < {}",
                             config.min_recall
                         ),
                         hot: String::new(),
@@ -1541,10 +1593,13 @@ impl DiffHarness {
         report.hot_recall = recall(hot_found);
         report.cold_recall = recall(cold_found);
         // A phase with few approximate queries is judged only in the pool
-        // of such phases (row 12.5; the cold tier only from `MIN_POOLED`
-        // queries, Ruling C4): one miss in three queries is 0.933.
-        let judged = approximate >= MIN_JUDGED;
-        for (tier, value) in [("hot", report.hot_recall), ("cold", report.cold_recall)] {
+        // of such phases (row 12.5; the cold tier from `MIN_POOLED` queries,
+        // Ruling C4): one miss in three queries is 0.933.
+        let (hot_judged, cold_judged) = tiers_judged(approximate);
+        for (tier, value, judged) in [
+            ("hot", report.hot_recall, hot_judged),
+            ("cold", report.cold_recall, cold_judged),
+        ] {
             if judged && value < config.min_recall {
                 let example = queries
                     .iter()
@@ -1582,7 +1637,8 @@ impl DiffHarness {
             hot_found,
             cold_found,
             expected,
-            judged,
+            hot_judged,
+            cold_judged,
         };
         (report, mismatches, pooled)
     }
