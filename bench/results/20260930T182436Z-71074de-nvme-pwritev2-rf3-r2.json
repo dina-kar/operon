@@ -1,0 +1,76 @@
+{
+  "variant": "nvme-pwritev2",
+  "replicas": 3,
+  "label": "r2",
+  "git_sha": "71074de",
+  "date": "2026-09-30T18:24:36Z",
+  "host": {
+    "kernel": "7.2.4-3-cachyos",
+    "cpus": 14,
+    "disk": "BM9C1a Samsung 512GB",
+    "wal_fs": "btrfs"
+  },
+  "versions": {
+    "neon_image": "sha256:ead56a7b33925ca4df9f1ee0d29f55fa25e165a3fee6a4f19055050c68e8cad0",
+    "tikv": "v8.5.8"
+  },
+  "settings": {
+    "duration_s": 60,
+    "warmup_s": 10,
+    "scale": 10,
+    "shared_buffers": "2GB",
+    "compute_fsync": "off",
+    "wal": "127.0.0.1:5460,127.0.0.1:5461,127.0.0.1:5462",
+    "io_depth": 4
+  },
+  "workloads": [
+    {
+      "workload": "commit-1",
+      "n": 6255,
+      "tps": 104.3,
+      "p50_ms": 7.414,
+      "p90_ms": 14.666,
+      "p99_ms": 51.2,
+      "p999_ms": 72.198,
+      "max_ms": 811.658,
+      "wal_cpu_s": 11.28,
+      "feeder_cpu_s": 6.13,
+      "wal_cpu_us_per_tx": 1803.4
+    },
+    {
+      "workload": "commit-16",
+      "n": 90948,
+      "tps": 1516.1,
+      "p50_ms": 6.028,
+      "p90_ms": 20.336,
+      "p99_ms": 56.564,
+      "p999_ms": 316.634,
+      "max_ms": 854.495,
+      "wal_cpu_s": 36.67,
+      "feeder_cpu_s": 18.61,
+      "wal_cpu_us_per_tx": 403.2
+    },
+    {
+      "workload": "tpcb-16",
+      "n": 49821,
+      "tps": 827.9,
+      "p50_ms": 13.088,
+      "p90_ms": 39.086,
+      "p99_ms": 97.561,
+      "p999_ms": 185.587,
+      "max_ms": 335.497,
+      "wal_cpu_s": 41.03,
+      "feeder_cpu_s": 20.1,
+      "wal_cpu_us_per_tx": 823.5
+    },
+    {
+      "workload": "bulk",
+      "wal_bytes": 268862976,
+      "seconds": 18.162,
+      "wal_mb_per_s": 14.8,
+      "wal_cpu_s": 2.0,
+      "feeder_cpu_s": 1.11,
+      "wal_cpu_ms_per_mb": 7.44
+    }
+  ]
+}

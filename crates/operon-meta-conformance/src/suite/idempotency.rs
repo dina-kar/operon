@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use operon_common::StreamId;
 use operon_common::meta::{
-    ApplyError, Consistency, IdempotencyClaim, IdempotencyCompletion, IdempotencyEntry,
+    ApplyError, Consistency, Fence, IdempotencyClaim, IdempotencyCompletion, IdempotencyEntry,
     IdempotencyKey, IdempotencyState, MAX_IDEMPOTENCY_KEYS, MAX_IDEMPOTENCY_TTL_MS, MetaStore,
 };
 
@@ -259,4 +259,76 @@ pub async fn ledger_requests_are_validated(backend: &dyn Backend) {
         ),
         ApplyError::StreamNotFound(missing)
     );
+}
+
+/// A ledger prune under a stale lease epoch is refused with `Fenced` and
+/// removes nothing: pending claims, unexpired done entries and even lapsed
+/// ones stay. A prune under the current epoch then removes only the lapsed
+/// entry.
+pub async fn a_fenced_ledger_prune_is_refused_and_keeps_every_entry(backend: &dyn Backend) {
+    let db = backend.start().await;
+    let meta = db.first();
+    let s = one_stream(meta, "idem-fenced").await;
+    meta.claim_idempotency_keys(claim(s, "req-1", &[1, 2, 3], TTL_MS))
+        .await
+        .expect("claim");
+    meta.complete_idempotency_keys(completion(s, "req-1", &[(1, 0, 1)]))
+        .await
+        .expect("complete");
+    // Key 3 is done with a 1 ms window: it lapses before the prunes.
+    let mut brief = completion(s, "req-1", &[(3, 0, 3)]);
+    brief.window_ms = 1;
+    meta.complete_idempotency_keys(brief)
+        .await
+        .expect("complete");
+    let_it_lapse().await;
+    let lease = "idem-fenced/lease";
+    let grant = meta
+        .acquire_lease(lease, "retention", Duration::from_secs(30))
+        .await
+        .expect("acquire");
+    let fence = |epoch| {
+        Some(Fence {
+            lease: lease.to_string(),
+            epoch,
+        })
+    };
+    // A holder that lost the lease prunes nothing.
+    assert_eq!(
+        rejected(meta.prune_idempotency_keys(fence(grant.epoch + 1)).await),
+        ApplyError::Fenced {
+            lease: lease.to_string()
+        }
+    );
+    // The refusal removed nothing: the lapsed entry is still readable.
+    assert!(
+        meta.idempotency_key(L, s, key(3))
+            .await
+            .expect("read")
+            .is_some()
+    );
+    // The right holder prunes exactly the lapsed entry; live ones (pending
+    // and done) stay.
+    assert_eq!(
+        db.last()
+            .prune_idempotency_keys(fence(grant.epoch))
+            .await
+            .expect("prune"),
+        1
+    );
+    assert_eq!(
+        meta.idempotency_key(L, s, key(3)).await.expect("read"),
+        None
+    );
+    for n in [1, 2] {
+        assert!(
+            meta.idempotency_key(L, s, key(n))
+                .await
+                .expect("read")
+                .is_some()
+        );
+    }
+    meta.release_lease(lease, "retention", grant.epoch)
+        .await
+        .expect("release");
 }

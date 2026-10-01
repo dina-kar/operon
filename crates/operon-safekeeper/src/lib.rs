@@ -13,6 +13,9 @@
 //! - `tikv` (feature `tikv`): the TiKV store, one 1PC transaction per call.
 //! - [`tikv_raw`]: the raw TiKV store, blind pipelined appends fenced once
 //!   per election (`TikvRawKv` with feature `tikv`).
+//! - `journal`, `meta`, `nvme` (feature `nvme`): Arm A's local-NVMe store
+//!   (§28 §7.2): a shared, preallocated journal with tiered durable writes,
+//!   pipelined appends, and acceptor metadata off the commit path.
 //! - [`pgwire`]: the slice of the Postgres protocol a safekeeper speaks.
 //! - `service`, `http` (feature `server`): the listener walproposer connects
 //!   to, the control plane's HTTP API, and the `loam-wal` binary; `feeder`,
@@ -27,10 +30,18 @@ pub mod acceptor;
 pub mod feeder;
 #[cfg(feature = "server")]
 pub mod http;
+#[cfg(feature = "nvme")]
+pub mod journal;
+#[cfg(feature = "nvme")]
+pub mod meta;
+#[cfg(feature = "nvme")]
+pub mod nvme;
 pub mod pgwire;
 pub mod proto;
 #[cfg(feature = "server")]
 pub mod service;
+#[cfg(feature = "compio")]
+pub mod shard;
 pub mod store;
 #[cfg(feature = "tikv")]
 pub mod tikv;

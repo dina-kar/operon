@@ -11,6 +11,12 @@ authors.workspace = true
 # The TiKV WalStore (the production hot tier). Off by default, so the crate
 # builds without the tikv-client git dependency.
 tikv = ["dep:operon-tikv", "dep:futures"]
+# Arm A's local-NVMe store (§28 §7.2): the journal, its I/O tiers and the
+# acceptor metadata.
+nvme = ["dep:rustix", "dep:crc32c"]
+# Arm A's compio data path (§28 §7.2, D263): thread-per-core shards with the
+# io_uring journal engine.
+compio = ["nvme", "server", "dep:compio", "dep:futures"]
 # The network service, its HTTP API and the loam-wal binary.
 server = ["dep:axum", "dep:clap", "dep:serde_json", "dep:tracing-subscriber"]
 
@@ -28,10 +34,13 @@ async-trait.workspace = true
 axum = { workspace = true, optional = true }
 bytes.workspace = true
 clap = { workspace = true, optional = true, features = ["env"] }
+compio = { workspace = true, optional = true }
+crc32c = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 hex.workspace = true
 operon-tikv = { workspace = true, optional = true }
 postcard.workspace = true
+rustix = { workspace = true, optional = true, features = ["fs"] }
 serde.workspace = true
 serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
@@ -42,6 +51,7 @@ tracing-subscriber = { workspace = true, optional = true }
 [dev-dependencies]
 postcard.workspace = true
 proptest.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

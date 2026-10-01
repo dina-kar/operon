@@ -211,6 +211,7 @@ Target spec: **MCP 2026-07-28**, which makes the protocol stateless: no `initial
 - Tools: `search` (hybrid over collections, including code, with graph `expand` from M3), `sql` (including `graph_expand`), `memory_write`, `repo_read` / `repo_diff` / `repo_log` at a ref, `session_search` (past sessions).
 - Stateless by the spec, so any gateway node answers any request; OAuth maps to a namespace. Library: the official Rust MCP SDK (`rmcp`; license and 2026-07-28 support to verify).
 - Small and immediately useful to every Claude Code, Codex and opencode user, so it is proposed for M1, independent of the rest of this document.
+- **Beside it** is the CLI's stdio bootstrap server, `loam mcp serve` (D289, §30 §12). It offers docs search, SDK snippets, stack status and creation, and `.env.loam` export, and holds no data tools. `loam mcp install` registers both servers in the agent's config (D290).
 
 ### 10.2 MCP gateway with tool retrieval (W1)
 

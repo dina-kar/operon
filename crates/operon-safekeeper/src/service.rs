@@ -58,6 +58,22 @@ pub struct WalServiceConfig {
     /// Feed committed WAL to this stock safekeeper, which serves the
     /// pageserver (the interim path of [`crate::feeder`]).
     pub feeder: Option<crate::feeder::FeederConfig>,
+    /// Hand `START_WAL_PUSH` connections to the timeline's compio shard
+    /// after the startup packet and authentication (§28 §7.2, D263).
+    pub handoff: Option<Handoff>,
+}
+
+/// Takes a connection whose next message is `START_WAL_PUSH` for the
+/// timeline, with startup and authentication done.
+#[derive(Clone)]
+pub struct Handoff(
+    pub Arc<dyn Fn(TimelineId, std::net::TcpStream) -> Result<(), Error> + Send + Sync>,
+);
+
+impl std::fmt::Debug for Handoff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Handoff")
+    }
 }
 
 impl Default for WalServiceConfig {
@@ -69,6 +85,7 @@ impl Default for WalServiceConfig {
             poll_interval: Duration::from_millis(20),
             feeder: None,
             auth_token: None,
+            handoff: None,
         }
     }
 }
@@ -257,6 +274,9 @@ pub struct WalService<S> {
     store: Arc<S>,
     config: WalServiceConfig,
     registry: Registry,
+    /// The runtime the service was made on: tasks that outlive a call from a
+    /// compio shard thread (the feeder) are spawned here.
+    rt: Option<tokio::runtime::Handle>,
 }
 
 impl<S: WalStore> WalService<S> {
@@ -265,6 +285,7 @@ impl<S: WalStore> WalService<S> {
             store,
             config,
             registry: Registry::default(),
+            rt: tokio::runtime::Handle::try_current().ok(),
         })
     }
 
@@ -321,6 +342,31 @@ impl<S: WalStore> WalService<S> {
         self.registry.sender(tl).subscribe()
     }
 
+    /// A proposer session starts (`+1`) or ends (`-1`) on this process (for
+    /// front ends outside this module: the compio shards).
+    #[cfg(feature = "compio")]
+    pub(crate) fn session(&self, tl: TimelineId, delta: i32) {
+        self.registry.session(tl, delta);
+    }
+
+    /// Publish a proposer's progress to local readers.
+    #[cfg(feature = "compio")]
+    pub(crate) fn publish(&self, tl: TimelineId, st: &AcceptorState) {
+        self.registry.publish(tl, Progress::of(st));
+    }
+
+    /// Keep WAL just written in the in-memory tail for local readers.
+    #[cfg(feature = "compio")]
+    pub(crate) fn tail_push(&self, tl: TimelineId, begin: Lsn, data: bytes::Bytes) {
+        self.registry.tail(tl, |t| t.push(begin, data));
+    }
+
+    /// Drop tail WAL at and above `at` (an election truncated it).
+    #[cfg(feature = "compio")]
+    pub(crate) fn tail_truncate(&self, tl: TimelineId, at: Lsn) {
+        self.registry.tail(tl, |t| t.truncate(at));
+    }
+
     /// Start the feeder for `tl`, once per process.
     pub fn ensure_feeder(self: &Arc<Self>, tl: TimelineId) {
         let Some(cfg) = self.config.feeder.clone() else {
@@ -328,7 +374,18 @@ impl<S: WalStore> WalService<S> {
         };
         let mut fed = self.registry.fed.lock().unwrap_or_else(|p| p.into_inner());
         if fed.insert(tl) {
-            tokio::spawn(crate::feeder::run(self.clone(), tl, cfg));
+            let fut = crate::feeder::run(self.clone(), tl, cfg);
+            match tokio::runtime::Handle::try_current() {
+                Ok(h) => drop(h.spawn(fut)),
+                Err(_) => match &self.rt {
+                    Some(h) => drop(h.spawn(fut)),
+                    None => {
+                        // Let a later call, from tokio, start it.
+                        fed.remove(&tl);
+                        warn!(%tl, "no tokio runtime to run the feeder on");
+                    }
+                },
+            }
         }
     }
 
@@ -355,12 +412,14 @@ impl<S: WalStore> WalService<S> {
         }
     }
 
-    async fn handle(self: Arc<Self>, stream: TcpStream) -> Result<(), Error> {
+    async fn handle(self: Arc<Self>, mut stream: TcpStream) -> Result<(), Error> {
         let _ = stream.set_nodelay(true);
-        let (rd, wr) = stream.into_split();
-        let mut rd = BufReader::new(rd);
-        let mut wr = BufWriter::new(wr);
-        let Some(startup) = pgwire::read_startup(&mut rd, &mut wr).await? else {
+        // The prelude reads the socket directly (no read-ahead), so that a
+        // WAL push can still be handed to a shard with its bytes unread.
+        let Some(startup) = ({
+            let (mut rd, mut wr) = stream.split();
+            pgwire::read_startup(&mut rd, &mut wr).await?
+        }) else {
             return Ok(());
         };
         let tl = timeline_of(&startup)?;
@@ -369,8 +428,8 @@ impl<S: WalStore> WalService<S> {
             // walproposer and the pageserver send their token as the password
             // (NEON_AUTH_TOKEN), which libpq answers a cleartext request with.
             pgwire::put_message(&mut buf, b'R', &3u32.to_be_bytes());
-            send(&mut wr, &mut buf).await?;
-            let ok = match pgwire::read_message(&mut rd).await? {
+            send(&mut stream, &mut buf).await?;
+            let ok = match pgwire::read_message(&mut stream).await? {
                 Some((b'p', body)) => {
                     let got = body.strip_suffix(b"\0").unwrap_or(&body);
                     constant_time_eq(got, token.as_bytes())
@@ -379,12 +438,21 @@ impl<S: WalStore> WalService<S> {
             };
             if !ok {
                 pgwire::put_error(&mut buf, "28P01", "authentication failed");
-                let _ = send(&mut wr, &mut buf).await;
+                let _ = send(&mut stream, &mut buf).await;
                 return Err(Error::Protocol("authentication failed".into()));
             }
         }
         pgwire::put_login_ok(&mut buf);
-        send(&mut wr, &mut buf).await?;
+        send(&mut stream, &mut buf).await?;
+        if let (Some(h), Some(tl)) = (&self.config.handoff, tl)
+            && next_is_wal_push(&stream).await?
+        {
+            let std = stream.into_std().map_err(|e| Error::Io(e.to_string()))?;
+            return (h.0)(tl, std);
+        }
+        let (rd, wr) = stream.into_split();
+        let mut rd = BufReader::new(rd);
+        let mut wr = BufWriter::new(wr);
 
         loop {
             let Some((tag, body)) = pgwire::read_message(&mut rd).await? else {
@@ -951,6 +1019,64 @@ async fn read_feedback<R: AsyncRead + Unpin>(mut rd: R, tx: mpsc::Sender<Lsn>) {
     }
 }
 
+/// Whether the next message on the socket is a `START_WAL_PUSH` query,
+/// without consuming it.
+async fn next_is_wal_push(stream: &TcpStream) -> Result<bool, Error> {
+    // A peer that stalls before sending its query is left to the ordinary
+    // path, which has its own read handling.
+    match tokio::time::timeout(PEEK_DEADLINE, peek_wal_push(stream)).await {
+        Ok(r) => r,
+        Err(_) => Ok(false),
+    }
+}
+
+/// How long [`next_is_wal_push`] waits for the next message to arrive.
+const PEEK_DEADLINE: Duration = Duration::from_secs(5);
+
+async fn peek_wal_push(stream: &TcpStream) -> Result<bool, Error> {
+    let mut head = [0u8; 5];
+    loop {
+        let n = stream
+            .peek(&mut head)
+            .await
+            .map_err(|e| Error::Io(e.to_string()))?;
+        if n == 0 {
+            return Ok(false);
+        }
+        if n == head.len() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    if head[0] != b'Q' {
+        return Ok(false);
+    }
+    let len = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;
+    if len < 4 {
+        return Ok(false);
+    }
+    let want = (1 + len).min(64);
+    let mut msg = vec![0u8; want];
+    loop {
+        let n = stream
+            .peek(&mut msg)
+            .await
+            .map_err(|e| Error::Io(e.to_string()))?;
+        if n == 0 {
+            return Ok(false);
+        }
+        if n == want {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let text = String::from_utf8_lossy(&msg[5..]);
+    Ok(text
+        .trim_start()
+        .to_ascii_uppercase()
+        .starts_with("START_WAL_PUSH"))
+}
+
 /// The timeline named in the startup options (`tenant_id` / `ztenantid`,
 /// `timeline_id` / `ztimelineid`).
 fn timeline_of(startup: &Startup) -> Result<Option<TimelineId>, Error> {
@@ -1038,5 +1164,47 @@ mod tests {
             r.tail(tl, |t| t.read(Lsn(10), 10)).is_none(),
             "stale after the last one"
         );
+    }
+
+    #[tokio::test]
+    async fn the_feeder_can_be_started_from_a_thread_outside_tokio() {
+        // A compio shard calls ensure_feeder from its own thread.
+        let svc = WalService::new(
+            Arc::new(crate::store::MemWalStore::new()),
+            WalServiceConfig {
+                feeder: Some(crate::feeder::FeederConfig {
+                    safekeeper: "127.0.0.1:1".into(),
+                    retry: Duration::from_secs(60),
+                    poll: Duration::from_secs(60),
+                }),
+                ..Default::default()
+            },
+        );
+        let s2 = svc.clone();
+        std::thread::spawn(move || s2.ensure_feeder(TimelineId::default()))
+            .join()
+            .expect("no panic off the tokio runtime");
+    }
+
+    #[test]
+    fn a_feeder_refused_for_want_of_a_runtime_can_start_later() {
+        let svc = WalService::new(
+            Arc::new(crate::store::MemWalStore::new()),
+            WalServiceConfig {
+                feeder: Some(crate::feeder::FeederConfig {
+                    safekeeper: "127.0.0.1:1".into(),
+                    retry: Duration::from_secs(60),
+                    poll: Duration::from_secs(60),
+                }),
+                ..Default::default()
+            },
+        );
+        // Made outside tokio: there is no runtime to fall back on.
+        let tl = TimelineId::default();
+        svc.ensure_feeder(tl);
+        assert!(!svc.registry.fed.lock().unwrap().contains(&tl));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async { svc.ensure_feeder(tl) });
+        assert!(svc.registry.fed.lock().unwrap().contains(&tl));
     }
 }
