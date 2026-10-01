@@ -2,37 +2,37 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists the interfaces it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (names, paths, flags, constants), use them verbatim. The code is not pre-written in this plan (M0.3 Ruling 1).
 
-> **Status: Planned** (2026-10-01). Track RT, phase RT1 (design [§31](../design/31-loam-router-and-verification.md) §17). Branches `rt1-t<N>`, stacked; PRs target `main`. Depends on [RT0](2026-10-01-rt0-foundations-and-specs.md) (the kernel crate, `ShardMap.tla`, the spec tooling). The real-engine half runs on `postgres:17.11` shards in CI; Loam Postgres computes join the contract suite when §28's P2b and P3 are merged (Task 0 checks). RT1 adds the crates `operon-detsim` and `operon-sqlrouter-io`, extends `operon-sqlrouter`, and adds a compose stack and two CI jobs. It changes no M-track code path.
+> **Status: Planned** (2026-10-01). Track RT, phase RT1 (design [§31](../design/31-loams-router-and-verification.md) §17). Branches `rt1-t<N>`, stacked; PRs target `main`. Depends on [RT0](2026-10-01-rt0-foundations-and-specs.md) (the kernel crate, `ShardMap.tla`, the spec tooling). The real-engine half runs on `postgres:17.11` shards in CI; Loams Postgres computes join the contract suite when §28's P2b and P3 are merged (Task 0 checks). RT1 adds the crates `loams-detsim` and `loams-sqlrouter-io`, extends `loams-sqlrouter`, and adds a compose stack and two CI jobs. It changes no M-track code path.
 
-**Goal:** The chat dump's M1, as reconciled in §31: **single-shard routing for a sharded Loam Postgres database through PgDog**, driven by Loam's shard map, with **the deterministic simulator running** and **`ShardMap` checked against the implementation's traces**:
-- `operon-detsim`: a bit-exact, seeded, single-threaded scheduler with simulated time, a network model, fault points, swarm runs, trace hashes and shrinking (D313);
+**Goal:** The chat dump's M1, as reconciled in §31: **single-shard routing for a sharded Loams Postgres database through PgDog**, driven by Loams's shard map, with **the deterministic simulator running** and **`ShardMap` checked against the implementation's traces**:
+- `loams-detsim`: a bit-exact, seeded, single-threaded scheduler with simulated time, a network model, fault points, swarm runs, trace hashes and shrinking (D313);
 - the shard map record in TiKV with compare-and-set (`ShardMapStore`), PgDog config rendering, the `ConfigPush` machine, the PgDog admin adapter and the Postgres backend adapter (§31 §6.1–§6.3, §7);
 - models of PgDog instances, Postgres shards and the record store, held to the same contract suites as the real ones (D316);
 - trace validation of `ShardMap` (D311) and the action-coverage test;
 - a compose stack (PgDog v0.1.60 and two Postgres shards) with a differential test of single-shard queries against an unsharded Postgres.
 
 **Architecture:**
-- **Machines in `operon-sqlrouter`** (`push::ConfigPush`), pure and traced. **Adapters in `operon-sqlrouter-io`** (TiKV store, PgDog admin, Postgres backend, ConfigMap or file sink) execute the machines' outputs with tokio. **A driver** (`operon_sqlrouter_io::driver::run`) feeds adapter results back as inputs, with the real clock and `rand::rngs::OsRng`. In simulation, `operon-detsim` is the driver.
-- **Models live in `operon-detsim::models`**, implement the same traits as the adapters (behind a sync facade the scheduler calls), and pass the same contract suites.
-- **Where it runs.** RT1 builds a library and tests; no `operon` CLI or server wiring yet. The control plane's place in the `operon` binary is RT4's (with the cutover saga).
+- **Machines in `loams-sqlrouter`** (`push::ConfigPush`), pure and traced. **Adapters in `loams-sqlrouter-io`** (TiKV store, PgDog admin, Postgres backend, ConfigMap or file sink) execute the machines' outputs with tokio. **A driver** (`loams_sqlrouter_io::driver::run`) feeds adapter results back as inputs, with the real clock and `rand::rngs::OsRng`. In simulation, `loams-detsim` is the driver.
+- **Models live in `loams-detsim::models`**, implement the same traits as the adapters (behind a sync facade the scheduler calls), and pass the same contract suites.
+- **Where it runs.** RT1 builds a library and tests; no `loams` CLI or server wiring yet. The control plane's place in the `loams` binary is RT4's (with the cutover saga).
 
 **Tech Stack:**
-- Rust 1.97.1, edition 2024, workspace lints. Dependencies: `rand_chacha` 0.9, `sha2`, `serde_json` (workspace) for `operon-detsim`; `tokio`, `tokio-postgres` 0.7 (with `tokio-postgres-rustls` or the TLS connector Task 0 checks against `deny.toml`), `async-trait`, `toml` (workspace if present; else MIT OR Apache-2.0, checked), `operon-tikv` (workspace) for `operon-sqlrouter-io`. Test-only: `testcontainers` is **not** used; tests use the compose stack started by a script, skipping without it (R1's cluster-test convention).
+- Rust 1.97.1, edition 2024, workspace lints. Dependencies: `rand_chacha` 0.9, `sha2`, `serde_json` (workspace) for `loams-detsim`; `tokio`, `tokio-postgres` 0.7 (with `tokio-postgres-rustls` or the TLS connector Task 0 checks against `deny.toml`), `async-trait`, `toml` (workspace if present; else MIT OR Apache-2.0, checked), `loams-tikv` (workspace) for `loams-sqlrouter-io`. Test-only: `testcontainers` is **not** used; tests use the compose stack started by a script, skipping without it (R1's cluster-test convention).
 - PgDog v0.1.60 (AGPL-3.0, image by digest, unmodified; D236). `postgres:17.11`. TiKV via `tiup playground v8.5.8` with R1's port offset 17000 for the store tests.
 - TLC v1.7.4 and CommunityModules (RT0's `tools.lock`) for trace validation.
 
 **Spec:**
-- [`docs/design/31-loam-router-and-verification.md`](../design/31-loam-router-and-verification.md): §6.1–§6.3, §7, §11.2–§11.3, §13, §14.1–§14.2.
-- [`docs/design/28-loam-postgres.md`](../design/28-loam-postgres.md) §8 (rendering, TLS, auth, `RELOAD`).
-- As built: RT0 (`operon_sqlrouter::{record,ranges,hash,machine,trace}`, `spec/tla/router/ShardMap.tla`), R1 (`operon_tikv::{TxnRunner, testing::cluster}`), `operon_meta_conformance::linearizability`.
+- [`docs/design/31-loams-router-and-verification.md`](../design/31-loams-router-and-verification.md): §6.1–§6.3, §7, §11.2–§11.3, §13, §14.1–§14.2.
+- [`docs/design/28-loams-postgres.md`](../design/28-loams-postgres.md) §8 (rendering, TLS, auth, `RELOAD`).
+- As built: RT0 (`loams_sqlrouter::{record,ranges,hash,machine,trace}`, `spec/tla/router/ShardMap.tla`), R1 (`loams_tikv::{TxnRunner, testing::cluster}`), `loams_meta_conformance::linearizability`.
 
 ## Global Constraints
 
 Same as RT0, plus:
-- **PgDog is configured, never changed** (D236). Everything Loam does to it is files and admin-database commands: `RELOAD`, `PAUSE <db>`, `RESUME <db>`, `SHOW VERSION`, `SHOW PEERS`, `SHOW CONFIG`, `SHOW POOLS`. A behaviour that needs more is recorded as a question, not worked around in code that imitates PgDog.
+- **PgDog is configured, never changed** (D236). Everything Loams does to it is files and admin-database commands: `RELOAD`, `PAUSE <db>`, `RESUME <db>`, `SHOW VERSION`, `SHOW PEERS`, `SHOW CONFIG`, `SHOW POOLS`. A behaviour that needs more is recorded as a question, not worked around in code that imitates PgDog.
 - **TLS on both hops in the compose stack and in tests** (§28 §8): clients reach PgDog over TLS with `sslmode=verify-full` against a test CA generated by `scripts/router/certs.sh`; PgDog reaches the shards over TLS. No plaintext listener is published from the compose network.
-- **Bit-exact simulation.** No test in `operon-sqlrouter/tests/sim/` may read the wall clock, spawn threads or use an unseeded RNG; `operon-detsim` asserts at run start that it is on the thread that created the scheduler.
-- **Cluster and stack tests skip without their environment**: TiKV tests need `OPERON_TEST_PD`; stack tests need `ROUTER_STACK=1` (set by `scripts/router/stack.sh up`), and print `skipped: <test> needs ROUTER_STACK` otherwise. CI sets both in the `router` job.
+- **Bit-exact simulation.** No test in `loams-sqlrouter/tests/sim/` may read the wall clock, spawn threads or use an unseeded RNG; `loams-detsim` asserts at run start that it is on the thread that created the scheduler.
+- **Cluster and stack tests skip without their environment**: TiKV tests need `LOAMS_TEST_PD`; stack tests need `ROUTER_STACK=1` (set by `scripts/router/stack.sh up`), and print `skipped: <test> needs ROUTER_STACK` otherwise. CI sets both in the `router` job.
 - **The build machine.** One cargo build at a time; the compose stack and the playground are stopped before a build.
 - **Commit areas:** `router`, `sim`, `spec`, `ci`, `docs`.
 
@@ -40,11 +40,11 @@ Same as RT0, plus:
 
 | # | Ruling | Why | Cost if wrong |
 |---|---|---|---|
-| 1 | **`operon-detsim` is its own crate**, not a module of `operon-sim` | `operon-sim` pulls in Lance and DataFusion; the router's tests must not (§31 §13.1). `operon-sim` re-exports its checkers later (D314) | Two simulation crates; their scopes are stated in each crate's doc comment |
+| 1 | **`loams-detsim` is its own crate**, not a module of `loams-sim` | `loams-sim` pulls in Lance and DataFusion; the router's tests must not (§31 §13.1). `loams-sim` re-exports its checkers later (D314) | Two simulation crates; their scopes are stated in each crate's doc comment |
 | 2 | **The record lives under `xs/<ns>/<db>` in the metastore's TiKV keyspace** unless Task 0 finds that prefix taken or §23's `x/` records built with a place for it | Keeps RT1 independent of N2's record layout | A later move is one migration of a small key range |
 | 3 | **The fence is `ALTER ROLE <app_role> NOLOGIN` plus `pg_terminate_backend`** for that role's sessions (Q307, proposed); unfence is `ALTER ROLE <app_role> LOGIN` | Works on any Postgres without extensions; after the fence a routed connection fails with 28000 and in-flight sessions end with 57P01, so neither a write nor a stale read reaches the source, which is what `NoStrayWrite` needs. `default_transaction_read_only` is rejected because `BEGIN READ WRITE` overrides it | Every shard needs its own app role (dedicated computes have one); the reverse stream must use a separate replication role, which Task 0 checks in PgDog's config |
 | 4 | **Single-shard means queries carrying the sharding key**, on a two-shard database; scatter is RT2 | The smallest slice that exercises routing, rendering, generations and the fence | — |
-| 5 | **The observed generation of a PgDog instance is what Loam last applied and `RELOAD` acknowledged**, cross-checked by `SHOW CONFIG` if it reports the loaded file's annotation-free contents (Task 4 checks) | PgDog has no field for a Loam generation | After an unobserved restart the instance runs the ConfigMap's generation, which the protocol already treats as safe (§31 §6.3) |
+| 5 | **The observed generation of a PgDog instance is what Loams last applied and `RELOAD` acknowledged**, cross-checked by `SHOW CONFIG` if it reports the loaded file's annotation-free contents (Task 4 checks) | PgDog has no field for a Loams generation | After an unobserved restart the instance runs the ConfigMap's generation, which the protocol already treats as safe (§31 §6.3) |
 | 6 | **Simulated time unit is the millisecond**; the scheduler's clock starts at 1 000 000 ms | Matches `Millis`; non-zero start catches code that treats 0 as unset | — |
 | 7 | **The PR seed budget is 2 000 per scenario**, `ROUTER_SIM_SEEDS` overrides it; nightly 1 000 000 across scenarios (Q310) | §31 §13.5 | Raised or lowered after Task 9 measures it |
 
@@ -59,26 +59,26 @@ Same as RT0, plus:
 ## File structure
 
 ```
-crates/operon-detsim/{Cargo.toml,src/lib.rs,src/sched.rs,src/net.rs,src/fault.rs,src/trace.rs,src/shrink.rs,src/report.rs}
-crates/operon-detsim/src/models/{mod.rs,pgdog.rs,postgres.rs,store.rs}
-crates/operon-detsim/src/checkers/{mod.rs,liveness.rs,stray.rs}
-crates/operon-detsim/tests/it/{main.rs,sched.rs,net.rs,shrink.rs,models.rs}
-crates/operon-sqlrouter/src/{push.rs,render/mod.rs,render/pgdog.rs}
-crates/operon-sqlrouter/tests/it/{render.rs,push.rs,coverage.rs}
-crates/operon-sqlrouter/tests/fixtures/render/{two_shards_hash.pgdog.toml,two_shards_hash.users.toml,branch.pgdog.toml}
-crates/operon-sqlrouter/tests/sim/{main.rs,shardmap.rs,corpus/*.seed}
-crates/operon-sqlrouter-io/{Cargo.toml,src/lib.rs,src/store.rs,src/store_tikv.rs,src/pgdog.rs,src/postgres.rs,src/sink.rs,src/driver.rs,src/conformance.rs}
-crates/operon-sqlrouter-io/tests/it/{main.rs,store.rs,pgdog.rs,postgres.rs,stack.rs,differential.rs}
+crates/loams-detsim/{Cargo.toml,src/lib.rs,src/sched.rs,src/net.rs,src/fault.rs,src/trace.rs,src/shrink.rs,src/report.rs}
+crates/loams-detsim/src/models/{mod.rs,pgdog.rs,postgres.rs,store.rs}
+crates/loams-detsim/src/checkers/{mod.rs,liveness.rs,stray.rs}
+crates/loams-detsim/tests/it/{main.rs,sched.rs,net.rs,shrink.rs,models.rs}
+crates/loams-sqlrouter/src/{push.rs,render/mod.rs,render/pgdog.rs}
+crates/loams-sqlrouter/tests/it/{render.rs,push.rs,coverage.rs}
+crates/loams-sqlrouter/tests/fixtures/render/{two_shards_hash.pgdog.toml,two_shards_hash.users.toml,branch.pgdog.toml}
+crates/loams-sqlrouter/tests/sim/{main.rs,shardmap.rs,corpus/*.seed}
+crates/loams-sqlrouter-io/{Cargo.toml,src/lib.rs,src/store.rs,src/store_tikv.rs,src/pgdog.rs,src/postgres.rs,src/sink.rs,src/driver.rs,src/conformance.rs}
+crates/loams-sqlrouter-io/tests/it/{main.rs,store.rs,pgdog.rs,postgres.rs,stack.rs,differential.rs}
 spec/tla/router/{ShardMapTrace.tla,MCShardMapTrace.tla}
 scripts/spec/validate-trace.sh
 scripts/router/{stack.sh,certs.sh,compose.stack.yml}
 .github/workflows/ci.yml                        # jobs router-sim and router; changes filters
-docs/design/31-loam-router-and-verification.md  docs/plans/README.md  CHANGELOG.md
+docs/design/31-loams-router-and-verification.md  docs/plans/README.md  CHANGELOG.md
 ```
 
 ### Task 0: Reconcile with RT0 and the Postgres track
 
-**Files:** read RT0's "Rulings made during execution", `crates/operon-sqlrouter/`, `spec/tla/router/ShardMap.tla`, `crates/operon-tikv/src/{runner.rs,testing.rs}`, `crates/operon-meta-tikv/src/` (key prefixes in use), §28 P2b/P3 status, `deploy/neon/`. Fill this plan's "Rulings made during execution" table.
+**Files:** read RT0's "Rulings made during execution", `crates/loams-sqlrouter/`, `spec/tla/router/ShardMap.tla`, `crates/loams-tikv/src/{runner.rs,testing.rs}`, `crates/loams-meta-tikv/src/` (key prefixes in use), §28 P2b/P3 status, `deploy/neon/`. Fill this plan's "Rulings made during execution" table.
 
 **Checks:**
 - The as-built `Machine`, `Ctx`, `SpecEvent` and `ShardMapRecord` from RT0, and any deviation from §31 §7.1.
@@ -90,9 +90,9 @@ docs/design/31-loam-router-and-verification.md  docs/plans/README.md  CHANGELOG.
 
 **Commit:** `docs: reconcile RT1 with RT0 and main`.
 
-### Task 1: `operon-detsim`: the scheduler, time, randomness and the trace hash
+### Task 1: `loams-detsim`: the scheduler, time, randomness and the trace hash
 
-**Files:** `crates/operon-detsim/{Cargo.toml,src/{lib.rs,sched.rs,trace.rs,report.rs}}`, `crates/operon-detsim/tests/it/{main.rs,sched.rs}`.
+**Files:** `crates/loams-detsim/{Cargo.toml,src/{lib.rs,sched.rs,trace.rs,report.rs}}`, `crates/loams-detsim/tests/it/{main.rs,sched.rs}`.
 
 **Produces:**
 
@@ -107,7 +107,7 @@ pub trait Node {
     fn on_crash(&mut self) {}              // drop volatile state
     fn on_restart(&mut self, cx: &mut NodeCx<'_, Self::Msg>) {}
 }
-pub struct NodeCx<'a, M> { pub now: Millis, pub rng: &'a mut dyn rand::RngCore, pub trace: &'a mut dyn operon_sqlrouter::TraceSink, /* send, set_timer */ }
+pub struct NodeCx<'a, M> { pub now: Millis, pub rng: &'a mut dyn rand::RngCore, pub trace: &'a mut dyn loams_sqlrouter::TraceSink, /* send, set_timer */ }
 impl Sim {
     pub fn new(config: SimConfig) -> Self;
     pub fn add_node<N: Node + 'static>(&mut self, node: N) -> NodeId;
@@ -115,7 +115,7 @@ impl Sim {
 }
 pub struct SimReport { pub seed: u64, pub steps: u32, pub trace_hash: [u8; 32], pub events: Vec<ScheduledEvent>,
     pub violations: Vec<Violation>, pub faults_enabled: Vec<&'static str> }
-impl SimReport { pub fn is_ok(&self) -> bool; pub fn describe(&self) -> String; } // seed, faults, schedule, as operon-sim's report
+impl SimReport { pub fn is_ok(&self) -> bool; pub fn describe(&self) -> String; } // seed, faults, schedule, as loams-sim's report
 ```
 
 **Semantics:**
@@ -130,7 +130,7 @@ impl SimReport { pub fn is_ok(&self) -> bool; pub fn describe(&self) -> String; 
 
 ### Task 2: The network model, fault points, swarm selection and shrinking
 
-**Files:** `crates/operon-detsim/src/{net.rs,fault.rs,shrink.rs}`, `crates/operon-detsim/tests/it/{net.rs,shrink.rs}`.
+**Files:** `crates/loams-detsim/src/{net.rs,fault.rs,shrink.rs}`, `crates/loams-detsim/tests/it/{net.rs,shrink.rs}`.
 
 **Produces:**
 
@@ -154,28 +154,28 @@ pub fn shrink(config: &SimConfig, failing: &SimReport, scenario: &dyn Fn(&SimCon
 
 ### Task 3: `ShardMapStore` with memory and TiKV implementations
 
-**Files:** `crates/operon-sqlrouter-io/{Cargo.toml,src/{lib.rs,store.rs,store_tikv.rs,conformance.rs}}`, `crates/operon-sqlrouter-io/tests/it/{main.rs,store.rs}`, `crates/operon-detsim/src/models/store.rs`.
+**Files:** `crates/loams-sqlrouter-io/{Cargo.toml,src/{lib.rs,store.rs,store_tikv.rs,conformance.rs}}`, `crates/loams-sqlrouter-io/tests/it/{main.rs,store.rs}`, `crates/loams-detsim/src/models/store.rs`.
 
-**Produces:** the `ShardMapStore` trait of §31 §7.2, verbatim; `MemoryShardMapStore`; `TikvShardMapStore { runner: operon_tikv::TxnRunner, root: Vec<u8> }` with key `<root>xs/<ns>/<db>` (Ruling 2), value `ShardMapRecord::encode`; `StoreError::{Conflict { current: Option<u64> }, NotFound, Corrupt, Unavailable, Undetermined}`; `shard_map_store_conformance!` macro; `StoreModel` in `operon-detsim` (linearizable CAS register with injectable `Undetermined` outcomes).
+**Produces:** the `ShardMapStore` trait of §31 §7.2, verbatim; `MemoryShardMapStore`; `TikvShardMapStore { runner: loams_tikv::TxnRunner, root: Vec<u8> }` with key `<root>xs/<ns>/<db>` (Ruling 2), value `ShardMapRecord::encode`; `StoreError::{Conflict { current: Option<u64> }, NotFound, Corrupt, Unavailable, Undetermined}`; `shard_map_store_conformance!` macro; `StoreModel` in `loams-detsim` (linearizable CAS register with injectable `Undetermined` outcomes).
 
 **Semantics:** `cas(expect = None)` creates only if absent; `cas(expect = Some(v))` writes only if the stored version is `v`, and the written record's `version` must be `v + 1` (else `InvalidArgument`); `generation` must not decrease. `watch(after)` returns once `version > after` (TiKV: poll every 100 ms, as R1's watch). A lost acknowledgement is `Undetermined`; callers re-read.
 
-**Tests:** the conformance cases `create_only_if_absent`, `cas_succeeds_on_expected_version`, `cas_conflict_reports_current`, `version_must_increment_by_one`, `generation_never_decreases`, `watch_wakes_on_change`, `concurrent_cas_is_linearizable` (16 writers, history checked with `operon_meta_conformance::linearizability::CasRegisterModel`), expanded for memory, TiKV (skips without `OPERON_TEST_PD`) and the model.
+**Tests:** the conformance cases `create_only_if_absent`, `cas_succeeds_on_expected_version`, `cas_conflict_reports_current`, `version_must_increment_by_one`, `generation_never_decreases`, `watch_wakes_on_change`, `concurrent_cas_is_linearizable` (16 writers, history checked with `loams_meta_conformance::linearizability::CasRegisterModel`), expanded for memory, TiKV (skips without `LOAMS_TEST_PD`) and the model.
 
 **Commit:** `router: add the shard map store on TiKV`.
 
 ### Task 4: PgDog rendering and the PgDog admin adapter
 
-**Files:** `crates/operon-sqlrouter/src/render/{mod.rs,pgdog.rs}`, `crates/operon-sqlrouter/tests/it/render.rs`, fixtures under `tests/fixtures/render/`, `crates/operon-sqlrouter-io/src/{pgdog.rs,sink.rs}`, `crates/operon-sqlrouter-io/tests/it/pgdog.rs`.
+**Files:** `crates/loams-sqlrouter/src/render/{mod.rs,pgdog.rs}`, `crates/loams-sqlrouter/tests/it/render.rs`, fixtures under `tests/fixtures/render/`, `crates/loams-sqlrouter-io/src/{pgdog.rs,sink.rs}`, `crates/loams-sqlrouter-io/tests/it/pgdog.rs`.
 
 **Produces:**
 
 ```rust
-// operon-sqlrouter (pure)
+// loams-sqlrouter (pure)
 pub struct RenderInput<'a> { pub record: &'a ShardMapRecord, pub users: &'a [RouterUser], pub tls: &'a TlsPaths, pub branches: &'a [BranchRoute] }
 pub struct RenderedFiles { pub generation: u64, pub pgdog_toml: String, pub users_toml: String, pub sha256: [u8; 32] }
 pub fn render_pgdog(input: &RenderInput<'_>) -> Result<RenderedFiles, RenderError>;
-// operon-sqlrouter-io
+// loams-sqlrouter-io
 pub struct PgDogInstance { id: InstanceId, admin: tokio_postgres::Config }
 impl RouterInstance for PgDogInstance { /* apply = sink.write + RELOAD; pause; resume; observe = SHOW VERSION, SHOW PEERS */ }
 #[async_trait] pub trait ConfigSink: Send + Sync { async fn write(&self, files: &RenderedFiles) -> Result<(), SinkError>; }
@@ -194,17 +194,17 @@ pub struct ConfigMapSink { /* RT4: Kubernetes; a stub returning Unsupported in R
 
 ### Task 5: The Postgres backend adapter, the models and the contract suites
 
-**Files:** `crates/operon-sqlrouter-io/src/{postgres.rs,conformance.rs}`, `crates/operon-sqlrouter-io/tests/it/postgres.rs`, `crates/operon-detsim/src/models/{pgdog.rs,postgres.rs}`, `crates/operon-detsim/tests/it/models.rs`.
+**Files:** `crates/loams-sqlrouter-io/src/{postgres.rs,conformance.rs}`, `crates/loams-sqlrouter-io/tests/it/postgres.rs`, `crates/loams-detsim/src/models/{pgdog.rs,postgres.rs}`, `crates/loams-detsim/tests/it/models.rs`.
 
-**Produces:** `PostgresShard` implementing `ShardBackend` (§31 §7.2): `status` (`pg_is_in_recovery()`, `pg_current_wal_lsn()`, and whether the app role can log in, from `pg_roles.rolcanlogin`), `fence_writes(role)` and `unfence_writes(role)` (Ruling 3), `prepared` (`pg_prepared_xacts`), `checksum(table, by)` (ordered by primary key, SHA-256 of each row's text form, per shard of `by`; RT2 uses it). `PgDogModel` (instances with `applied` generation, pause queue, restart reading the sink's latest files, routing by `operon_sqlrouter::record::shard_for`) and `PostgresModel` (rows per key, fence flag, crash). Macros `shard_backend_conformance!` and `router_fleet_conformance!`.
+**Produces:** `PostgresShard` implementing `ShardBackend` (§31 §7.2): `status` (`pg_is_in_recovery()`, `pg_current_wal_lsn()`, and whether the app role can log in, from `pg_roles.rolcanlogin`), `fence_writes(role)` and `unfence_writes(role)` (Ruling 3), `prepared` (`pg_prepared_xacts`), `checksum(table, by)` (ordered by primary key, SHA-256 of each row's text form, per shard of `by`; RT2 uses it). `PgDogModel` (instances with `applied` generation, pause queue, restart reading the sink's latest files, routing by `loams_sqlrouter::record::shard_for`) and `PostgresModel` (rows per key, fence flag, crash). Macros `shard_backend_conformance!` and `router_fleet_conformance!`.
 
-**Tests:** the contract cases `status_reports_role_and_lsn`, `fence_then_connect_fails_28000`, `fence_ends_in_flight_sessions_57p01`, `unfence_restores_writes`, `fence_survives_reconnect`, `prepared_lists_gids`, `checksum_equal_for_equal_rows`; `apply_then_route_uses_new_generation`, `pause_queues_until_resume`, `restart_reads_latest_files`. Expanded for the models (always) and for real Postgres and PgDog (`ROUTER_STACK`); Loam Postgres computes are added as a third target when Task 0 found P2b merged.
+**Tests:** the contract cases `status_reports_role_and_lsn`, `fence_then_connect_fails_28000`, `fence_ends_in_flight_sessions_57p01`, `unfence_restores_writes`, `fence_survives_reconnect`, `prepared_lists_gids`, `checksum_equal_for_equal_rows`; `apply_then_route_uses_new_generation`, `pause_queues_until_resume`, `restart_reads_latest_files`. Expanded for the models (always) and for real Postgres and PgDog (`ROUTER_STACK`); Loams Postgres computes are added as a third target when Task 0 found P2b merged.
 
 **Commit:** `router: add the Postgres backend adapter and the models with shared contracts`.
 
 ### Task 6: The `ConfigPush` machine
 
-**Files:** `crates/operon-sqlrouter/src/push.rs`, `crates/operon-sqlrouter/tests/it/push.rs`, `crates/operon-sqlrouter-io/src/driver.rs`.
+**Files:** `crates/loams-sqlrouter/src/push.rs`, `crates/loams-sqlrouter/tests/it/push.rs`, `crates/loams-sqlrouter-io/src/driver.rs`.
 
 **Produces:**
 
@@ -215,7 +215,7 @@ pub enum PushInput { RecordChanged(ShardMapRecord), CasDone(Result<u64, CasOutco
 pub enum PushOutput { Cas(ShardMapRecord), WriteSink(RenderedFiles), Reload { instance: InstanceId, files: RenderedFiles },
     Fence { shard: u32, role: String }, Unfence { shard: u32, role: String }, Alert(PushAlert) }
 impl Machine for ConfigPush { type Input = PushInput; type Output = PushOutput; /* … */ }
-pub async fn run<M: Machine>(machine: M, adapters: Adapters, inputs: mpsc::Receiver<M::Input>); // operon-sqlrouter-io::driver
+pub async fn run<M: Machine>(machine: M, adapters: Adapters, inputs: mpsc::Receiver<M::Input>); // loams-sqlrouter-io::driver
 ```
 
 **Semantics:** RT1's generation changes are adding a shard entry with no keys, changing a shard's host (repoint), and moving keys only through a cutover, which is RT4; RT1's `ConfigPush` therefore handles generations that **do not move keys** and refuses one that does with `PushAlert::NeedsCutover`. For each generation: CAS the record; render; write the sink; reload every instance, retrying failed reloads with exponential backoff from 100 ms to 10 s (jitter from `Ctx::rng`); an instance not reloaded within 60 s raises `PushAlert::InstanceBehind`. The fence and catch-up preconditions of `ShardMap.tla`'s `ConfigMapSafe` are implemented now, so RT4 reuses them: **a repoint emits `Fence` for the old host and writes the sink only after `FenceDone { ok: true }`**; if the fence fails or the old host cannot be reached, the sink is not written, the machine retries the fence with the same backoff and raises `PushAlert::FenceBlocked` after 60 s. A repoint away from a dead primary after a failover is not RT1's: there the fence is the WAL quorum's term (RT4's `FailoverRepoint`, `PrimaryFailover.tla`). Generations that change no host and move no keys (an added empty shard) need no fence and keep the order above. Every transition emits the `SpecEvent` named in §31 §11.3.
@@ -226,9 +226,9 @@ pub async fn run<M: Machine>(machine: M, adapters: Adapters, inputs: mpsc::Recei
 
 ### Task 7: Checkers for RT1
 
-**Files:** `crates/operon-detsim/src/checkers/{mod.rs,liveness.rs,stray.rs}`.
+**Files:** `crates/loams-detsim/src/checkers/{mod.rs,liveness.rs,stray.rs}`.
 
-**Produces:** `checkers::stray::check(history, record_history) -> Result<(), Violation>` (every accepted write landed on a shard that owned the key in a generation not yet superseded on the instance that routed it, and was not fenced); `checkers::liveness::check(history, healed_at, bound_ms)` (every operation invoked after `healed_at` completes within `bound_ms`); per-key linearizability through `operon_meta_conformance::linearizability` with a register model. `Violation` reuses the checker crate's type.
+**Produces:** `checkers::stray::check(history, record_history) -> Result<(), Violation>` (every accepted write landed on a shard that owned the key in a generation not yet superseded on the instance that routed it, and was not fenced); `checkers::liveness::check(history, healed_at, bound_ms)` (every operation invoked after `healed_at` completes within `bound_ms`); per-key linearizability through `loams_meta_conformance::linearizability` with a register model. `Violation` reuses the checker crate's type.
 
 **Tests:** `stray_write_is_caught` (a hand-built history with a write to a fenced shard); `late_operation_is_a_liveness_violation`; `linearizable_register_history_passes`.
 
@@ -236,12 +236,12 @@ pub async fn run<M: Machine>(machine: M, adapters: Adapters, inputs: mpsc::Recei
 
 ### Task 8: Trace validation of `ShardMap` and the action-coverage test
 
-**Files:** `spec/tla/router/{ShardMapTrace.tla,MCShardMapTrace.tla}`, `scripts/spec/validate-trace.sh`, `crates/operon-sqlrouter/tests/it/coverage.rs`, `specs.toml`.
+**Files:** `spec/tla/router/{ShardMapTrace.tla,MCShardMapTrace.tla}`, `scripts/spec/validate-trace.sh`, `crates/loams-sqlrouter/tests/it/coverage.rs`, `specs.toml`.
 
 **Produces:**
 - `ShardMapTrace.tla`: `EXTENDS ShardMap, Json, TLC`; `Trace == ndJsonDeserialize(IOEnv.TRACE)`; a variable `l` (the trace position); `TraceNext` = for the event at `l`, the disjunction of the `ShardMap` actions whose name and parameters match the event, `l' = l + 1`; unobserved variables existentially chosen; the temporal formula `TraceMatched == <>(l = Len(Trace) + 1)` listed under `PROPERTY` in `MCShardMapTrace.cfg` (`TraceNext` must progress while trace events remain, with weak fairness `WF_vars(TraceNext)` or an equivalent guard, so TLC cannot stutter before the trace is consumed; it may stutter only once `l = Len(Trace) + 1`), so TLC reports the first event no behaviour explains; `INVARIANT` entries in that file are state predicates only (`TypeOK`).
 - `validate-trace.sh <trace.jsonl>` runs TLC on the trace model with `TRACE` set and prints `trace validated (<n> events)` or the first unexplained event index and its JSON.
-- `coverage.rs`: parses the `\* action:` list in each spec header under `spec/tla/router/` and every `SpecEvent { spec, action, .. }` emitted in `operon-sqlrouter/src/` (a `const ACTIONS: &[(&str, &str)]` table per machine, asserted to match the emitted names in unit tests); fails on a spec action with no emitter in a spec marked `coverage = "full"` in `specs.toml`, or an emitter naming an unknown action.
+- `coverage.rs`: parses the `\* action:` list in each spec header under `spec/tla/router/` and every `SpecEvent { spec, action, .. }` emitted in `loams-sqlrouter/src/` (a `const ACTIONS: &[(&str, &str)]` table per machine, asserted to match the emitted names in unit tests); fails on a spec action with no emitter in a spec marked `coverage = "full"` in `specs.toml`, or an emitter naming an unknown action.
 
 **Tests:** `validate-trace.sh` on a committed good trace (passes) and on a mutated copy (a `Reload` with a generation never published: fails at that index), both in the `tla` job; `every_spec_action_has_an_emitter`; `no_emitter_names_an_unknown_action`.
 
@@ -249,11 +249,11 @@ pub async fn run<M: Machine>(machine: M, adapters: Adapters, inputs: mpsc::Recei
 
 ### Task 9: The `shardmap` DST scenario and the `router-sim` job
 
-**Files:** `crates/operon-sqlrouter/tests/sim/{main.rs,shardmap.rs,corpus/}`, `.github/workflows/ci.yml` (job `router-sim`).
+**Files:** `crates/loams-sqlrouter/tests/sim/{main.rs,shardmap.rs,corpus/}`, `.github/workflows/ci.yml` (job `router-sim`).
 
 **Produces:** scenario `shardmap`: one record store model, `ConfigPush`, 2–4 PgDog models (by seed), 2–3 Postgres models, 1–4 workload clients writing and reading keys through random instances; random generation changes that do not move keys (repoints, added empty shards) plus, from the seed, one RT0-style key move driven by a test-only cutover stub that follows `ShardMap.tla`'s safe order (so stray-write checks exercise fences before RT4's machine exists). Faults: network (drop, delay, reorder, duplicate, partitions, resets), instance crash and restart, shard crash, store `Undetermined` outcomes, stale instances. Checkers: per-key linearizability, stray writes, liveness after heal, and `ShardMap` trace validation on 1 run in 20 (the trace written to the test's temp directory).
 
-**CI:** job `router-sim` (path-filtered on `crates/operon-sqlrouter*/**`, `crates/operon-detsim/**`): `cargo test -p operon-sqlrouter --release --test sim` with the corpus twice (hash equality) plus `ROUTER_SIM_SEEDS=2000`; nightly `ROUTER_SIM_SEEDS=1000000` split over a 4-way matrix by `ROUTER_SIM_SHARD=<i>/4`; a failing nightly seed files an issue with `gh issue create --label sim-failure` containing `SimReport::describe()` of the shrunk run.
+**CI:** job `router-sim` (path-filtered on `crates/loams-sqlrouter*/**`, `crates/loams-detsim/**`): `cargo test -p loams-sqlrouter --release --test sim` with the corpus twice (hash equality) plus `ROUTER_SIM_SEEDS=2000`; nightly `ROUTER_SIM_SEEDS=1000000` split over a 4-way matrix by `ROUTER_SIM_SHARD=<i>/4`; a failing nightly seed files an issue with `gh issue create --label sim-failure` containing `SimReport::describe()` of the shrunk run.
 
 **Tests:** the scenario itself; `corpus_replays_identically`; a deliberately broken `ConfigPush` (feature `sim-mutant-unsafe-sink`, writing the sink before the fence) must be caught within 2 000 seeds (`mutant_is_caught`), proving the checkers and faults reach the rule.
 
@@ -261,12 +261,12 @@ pub async fn run<M: Machine>(machine: M, adapters: Adapters, inputs: mpsc::Recei
 
 ### Task 10: The compose stack and the single-shard differential
 
-**Files:** `scripts/router/{stack.sh,certs.sh,compose.stack.yml}`, `crates/operon-sqlrouter-io/tests/it/{stack.rs,differential.rs}`, `.github/workflows/ci.yml` (job `router`).
+**Files:** `scripts/router/{stack.sh,certs.sh,compose.stack.yml}`, `crates/loams-sqlrouter-io/tests/it/{stack.rs,differential.rs}`, `.github/workflows/ci.yml` (job `router`).
 
 **Produces:**
 - `compose.stack.yml`: `postgres:17.11` ×3 (`shard0`, `shard1`, `unsharded`), PgDog v0.1.60 by digest with its config directory mounted from `$STACK_DIR/pgdog/`, a test CA from `certs.sh`; ports bound to 127.0.0.1 only.
 - `stack.sh up|down|reset`: starts the stack, creates the app role `app` (no `CREATEROLE`) and the schema `CREATE TABLE kv (id bigint PRIMARY KEY, v text, n bigint)` on every Postgres, renders the PgDog files from a `ShardMapRecord` (`PgHash { column: "id", data_type: Int8, shards: 2 }`) through `render_pgdog` and `FileSink`, sends `RELOAD`, and exports `ROUTER_STACK=1` and the URLs into `$STACK_DIR/env`.
-- Job `router` (path-filtered as `router-sim`; Docker): `stack.sh up`, `cargo test -p operon-sqlrouter-io --test it`, `stack.sh down`.
+- Job `router` (path-filtered as `router-sim`; Docker): `stack.sh up`, `cargo test -p loams-sqlrouter-io --test it`, `stack.sh down`.
 
 **Semantics:** the differential runs a seeded stream (proptest, 256 cases × 50 statements) of single-shard statements (`INSERT … ON CONFLICT (id) DO UPDATE`, `SELECT … WHERE id = $1`, `UPDATE … WHERE id = $1`, `DELETE … WHERE id = $1`, `BEGIN; …; COMMIT` on one key) through PgDog and directly against `unsharded`, and compares every result and the final table (by `checksum`). It also checks placement: each row is on the shard `pg_partition_index` predicts, which validates RT0's hash port against PgDog end to end.
 
@@ -282,7 +282,7 @@ pub async fn run<M: Machine>(machine: M, adapters: Adapters, inputs: mpsc::Recei
 - `router-sim` green: the corpus replays identically; 2 000 seeds clean; `mutant_is_caught` passes.
 - `router` green: the differential, placement, repoint, fence, TLS and auth tests pass on the stack.
 - `tla` green, including trace validation of a committed trace and of sampled simulation traces.
-- Contract suites pass on models and real systems (and on Loam Postgres if P2b merged).
+- Contract suites pass on models and real systems (and on Loams Postgres if P2b merged).
 - Q307 and Q309 answered or reworded with what Tasks 5 and 8 found; Q310 with Task 9's measured run time.
 
 **Commit:** `docs: record RT1 as built and close RT1`.

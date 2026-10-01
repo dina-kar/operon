@@ -1,8 +1,8 @@
-# 31 — Loam Router and Verification: Sharded Loam SQL and Loam Postgres, Specified, Simulated and Tested
+# 31 — Loams Router and Verification: Sharded Loams SQL and Loams Postgres, Specified, Simulated and Tested
 
-Status: **Proposed** · 2026-10-01. This document folds the chat-dump plan "Loam SQL, Loam Postgres, and Loam Router: Build and Verification Plan" (`chatdump.md`, lines 54–322, owner request of 2026-10-01) into Loam's design, and reconciles it with what has been decided since that plan was written: D260 (no TiDB), D236 (PgDog, unmodified), §28 (Loam Postgres, Arm A) and the pending §29 (WeSQL as the MySQL OLTP engine, PR #172, D273–D280). Decisions are **D300–D322** and open questions **Q300–Q314**, all proposals. It changes no code; the work is track **RT** (RT0–RT5, §17), with plans [RT0](../plans/2026-10-01-rt0-foundations-and-specs.md), [RT1](../plans/2026-10-01-rt1-postgres-slice-and-sim.md) and [RT2](../plans/2026-10-01-rt2-scatter-oracle-2pc.md).
+Status: **Proposed** · 2026-10-01. This document folds the chat-dump plan "Loams SQL, Loams Postgres, and Loams Router: Build and Verification Plan" (`chatdump.md`, lines 54–322, owner request of 2026-10-01) into Loams's design, and reconciles it with what has been decided since that plan was written: D260 (no TiDB), D236 (PgDog, unmodified), §28 (Loams Postgres, Arm A) and the pending §29 (WeSQL as the MySQL OLTP engine, PR #172, D273–D280). Decisions are **D300–D322** and open questions **Q300–Q314**, all proposals. It changes no code; the work is track **RT** (RT0–RT5, §17), with plans [RT0](../plans/2026-10-01-rt0-foundations-and-specs.md), [RT1](../plans/2026-10-01-rt1-postgres-slice-and-sim.md) and [RT2](../plans/2026-10-01-rt2-scatter-oracle-2pc.md).
 
-The chat dump's own milestones M0–M5 are renamed **RT0–RT5**, so they do not clash with Loam's M0–M6 (D319).
+The chat dump's own milestones M0–M5 are renamed **RT0–RT5**, so they do not clash with Loams's M0–M6 (D319).
 
 Markers, as in §28 and §29:
 
@@ -17,45 +17,45 @@ Markers, as in §28 and §29:
 
 | # | Decision | Status |
 |---|---|---|
-| D300 | **"Loam Router" is Loam's sharding control plane over unmodified, bought routers**: PgDog for Postgres (D236) and Vitess for MySQL (D302). Loam builds the shard map, config rendering, cutover and failover orchestration, the in-doubt monitor and the verification program. **Loam builds no SQL parser, planner or router data path** in RT0–RT5. Replaces the chat dump's ADR rows "Rust rewrite" and "clean Postgres router" (§5, ADR-1, ADR-4) | Proposed |
-| D301 | **The MySQL shard is WeSQL** (§29, D273), not a new "InnoDB semantics on TiKV" engine. That engine would be TiDB rebuilt, which D260 rules out, at TiDB's cost. "Loam SQL" names the product (Vitess in front of WeSQL shards), not an engine | Proposed |
+| D300 | **"Loams Router" is Loams's sharding control plane over unmodified, bought routers**: PgDog for Postgres (D236) and Vitess for MySQL (D302). Loams builds the shard map, config rendering, cutover and failover orchestration, the in-doubt monitor and the verification program. **Loams builds no SQL parser, planner or router data path** in RT0–RT5. Replaces the chat dump's ADR rows "Rust rewrite" and "clean Postgres router" (§5, ADR-1, ADR-4) | Proposed |
+| D301 | **The MySQL shard is WeSQL** (§29, D273), not a new "InnoDB semantics on TiKV" engine. That engine would be TiDB rebuilt, which D260 rules out, at TiDB's cost. "Loams SQL" names the product (Vitess in front of WeSQL shards), not an engine | Proposed |
 | D302 | **Vitess v24.x (Apache-2.0) vtgate and vttablet in unmanaged mode** front WeSQL primaries, unmodified, as separate Go services. Pinned to v24, the last Vitess release that supports MySQL 8.0 (WeSQL is 8.0.46); Vitess v25+ needs WeSQL on 8.4 (Q302). Adoption is gated by the RT3 compatibility gate (§15). Replaces the chat dump's "implement the tablet contract natively" (ADR-2) | Proposed |
-| D303 | **Shard keys use each router's native scheme.** MySQL: Vitess vindexes (`hash`, null-key DES of the 64-bit id into keyspace-ID ranges; `xxhash`). Postgres: PgDog's Postgres-compatible hash (`hashint8extended`, `hash_bytes_extended`) modulo the shard count, and its range and list mappings. Loam's shard map represents both (§6.1). Replaces the chat dump's "Vitess-compatible hashing everywhere" (ADR-5) | Proposed |
-| D304 | **The shard map record** (§6.1): one record per (namespace, database) in the TiKV metastore, versioned for compare-and-set, with a monotonic routing **generation**. It is the source of truth for PgDog-routed databases. For Vitess keyspaces, Vitess's topology is authoritative for its own workflows and Loam's record mirrors it | Proposed |
-| D305 | **Cutover across many PgDog instances is Loam's job, with a backend fence** (§6.4). PgDog's open-source `RESHARD` cuts over one instance only (`pgdog/docs/RESHARDING.md`; coordinated cutover is its closed Enterprise Edition). Loam pauses every instance, fences writes on the source shards in Postgres itself, cuts over, reloads every instance, and resumes, as a Resonate saga. Safety never depends on reaching every PgDog instance | Proposed |
+| D303 | **Shard keys use each router's native scheme.** MySQL: Vitess vindexes (`hash`, null-key DES of the 64-bit id into keyspace-ID ranges; `xxhash`). Postgres: PgDog's Postgres-compatible hash (`hashint8extended`, `hash_bytes_extended`) modulo the shard count, and its range and list mappings. Loams's shard map represents both (§6.1). Replaces the chat dump's "Vitess-compatible hashing everywhere" (ADR-5) | Proposed |
+| D304 | **The shard map record** (§6.1): one record per (namespace, database) in the TiKV metastore, versioned for compare-and-set, with a monotonic routing **generation**. It is the source of truth for PgDog-routed databases. For Vitess keyspaces, Vitess's topology is authoritative for its own workflows and Loams's record mirrors it | Proposed |
+| D305 | **Cutover across many PgDog instances is Loams's job, with a backend fence** (§6.4). PgDog's open-source `RESHARD` cuts over one instance only (`pgdog/docs/RESHARDING.md`; coordinated cutover is its closed Enterprise Edition). Loams pauses every instance, fences writes on the source shards in Postgres itself, cuts over, reloads every instance, and resumes, as a Resonate saga. Safety never depends on reaching every PgDog instance | Proposed |
 | D306 | **Cross-shard atomic commit only where its coordinator log is durable** (§10). Postgres: PgDog 2PC (`two_phase_commit`) is off by default, and may be enabled for a database only with PgDog as a StatefulSet (`NODE_ID` = ordinal, `DEPLOYMENT_ID` set, `PGDOG_TWO_PHASE_COMMIT_WAL_DIR` on a persistent volume) and after RT2's gate. MySQL: Vitess's 2PC requires semi-sync, which W2's quorum is not, so MySQL cross-shard writes are non-atomic (`transaction_mode = multi`) until Q303 is answered. **Never a transaction across engines** | Proposed |
-| D307 | **Loam Postgres needs configuration and verification, not engine work, to be a shard** (§8). Prepared transactions are stored by the pageserver (`neon/pageserver/src/pgdatadir_mapping.rs`, `TWOPHASEDIR_KEY`; `neon/test_runner/regress/test_twophase.py`), logical slots survive a compute replacement (§23 §9.1 spike), and a snapshot-consistent copy uses an exported snapshot. The chat dump's "Phase 2: hardening" becomes tests and compute-spec settings | Proposed |
-| D308 | **Verification by layer** (§11–§14): TLA+ for the protocols Loam builds or orchestrates; Lean 4 for pure kernels and as the oracle for cross-shard results; deterministic simulation for Loam's control plane; contract, differential and nemesis tests for the real engines and routers. **Bought routers are verified as black boxes**, by their observable behaviour, never by proving their code | Proposed |
-| D309 | **The compatibility inventory method** (§15): static extraction from the router's source, dynamic capture of the statements it sends to its backend, replay against Loam's engine with classification, and the router's own test suites with a tracked pass rate. Results are blessed tables in `conformance/router/` | Proposed |
+| D307 | **Loams Postgres needs configuration and verification, not engine work, to be a shard** (§8). Prepared transactions are stored by the pageserver (`neon/pageserver/src/pgdatadir_mapping.rs`, `TWOPHASEDIR_KEY`; `neon/test_runner/regress/test_twophase.py`), logical slots survive a compute replacement (§23 §9.1 spike), and a snapshot-consistent copy uses an exported snapshot. The chat dump's "Phase 2: hardening" becomes tests and compute-spec settings | Proposed |
+| D308 | **Verification by layer** (§11–§14): TLA+ for the protocols Loams builds or orchestrates; Lean 4 for pure kernels and as the oracle for cross-shard results; deterministic simulation for Loams's control plane; contract, differential and nemesis tests for the real engines and routers. **Bought routers are verified as black boxes**, by their observable behaviour, never by proving their code | Proposed |
+| D309 | **The compatibility inventory method** (§15): static extraction from the router's source, dynamic capture of the statements it sends to its backend, replay against Loams's engine with classification, and the router's own test suites with a tracked pass rate. Results are blessed tables in `conformance/router/` | Proposed |
 | D310 | **TLA+ specs live in `spec/tla/router/`**, checked by TLC (MIT) at stated bounds and by Apalache (Apache-2.0) for inductive invariants, in a path-filtered CI job `tla` (§11) | Proposed |
-| D311 | **Specs are linked to code by trace validation** (§11.3): Loam's control-plane machines emit structured events (`tracing` target `loam::spec`) that a trace spec checks against the protocol spec, on simulation and real runs. Each spec carries an action-to-code table, and a test fails when an action has no emitter | Proposed |
-| D312 | **Lean 4 kernels in `spec/lean/`** (Lake package `LoamRouter`, Lean v4.34.x, Plausible): range partition, shard lookup, k-way merge, `LIMIT`/`OFFSET` pushdown, aggregate decomposition. They compile to an executable oracle used by differential tests, mirrored by `proptest` properties in Rust. Hash functions are checked by reference vectors, not in Lean. Plan rewrites are out of scope (no Loam planner) (§12) | Proposed |
-| D313 | **Bit-exact deterministic simulation for sans-I/O control-plane code** (§13). Loam's router control plane is written as state machines that do no I/O and read time and randomness only from their inputs; `operon-detsim` drives them with models of PgDog, Vitess, shards and the metastore under one seeded RNG, with replay, trace hashes, shrinking, fault points and swarm runs. **Amends D28's scope**: D28's seeded simulation stays for the engine; madsim and turmoil are not used | Proposed |
-| D314 | **Checkers are shared, not duplicated** (§13.4): the Wing–Gong–Lowe checker from `operon-meta-conformance` (D28, M1.2a Ruling 14); new bank-conservation, unique-key, Elle-style list-append and liveness checkers in `operon-detsim::checkers`, the one implementation §20 §14 item 4 also uses. Elle (EPL-2.0) is never a dependency | Proposed |
-| D315 | **Real-system fault tests use a Rust nemesis harness** (`operon-nemesis`, test-only) with toxiproxy, container kill and pause, `tc netem` and clock skew, running the simulator's workloads and checkers. Jepsen (Clojure, EPL-1.0) may be run as an external tool for cross-checks only. Planned in RT5 | Proposed |
+| D311 | **Specs are linked to code by trace validation** (§11.3): Loams's control-plane machines emit structured events (`tracing` target `loams::spec`) that a trace spec checks against the protocol spec, on simulation and real runs. Each spec carries an action-to-code table, and a test fails when an action has no emitter | Proposed |
+| D312 | **Lean 4 kernels in `spec/lean/`** (Lake package `LoamsRouter`, Lean v4.34.x, Plausible): range partition, shard lookup, k-way merge, `LIMIT`/`OFFSET` pushdown, aggregate decomposition. They compile to an executable oracle used by differential tests, mirrored by `proptest` properties in Rust. Hash functions are checked by reference vectors, not in Lean. Plan rewrites are out of scope (no Loams planner) (§12) | Proposed |
+| D313 | **Bit-exact deterministic simulation for sans-I/O control-plane code** (§13). Loams's router control plane is written as state machines that do no I/O and read time and randomness only from their inputs; `loams-detsim` drives them with models of PgDog, Vitess, shards and the metastore under one seeded RNG, with replay, trace hashes, shrinking, fault points and swarm runs. **Amends D28's scope**: D28's seeded simulation stays for the engine; madsim and turmoil are not used | Proposed |
+| D314 | **Checkers are shared, not duplicated** (§13.4): the Wing–Gong–Lowe checker from `loams-meta-conformance` (D28, M1.2a Ruling 14); new bank-conservation, unique-key, Elle-style list-append and liveness checkers in `loams-detsim::checkers`, the one implementation §20 §14 item 4 also uses. Elle (EPL-2.0) is never a dependency | Proposed |
+| D315 | **Real-system fault tests use a Rust nemesis harness** (`loams-nemesis`, test-only) with toxiproxy, container kill and pause, `tc netem` and clock skew, running the simulator's workloads and checkers. Jepsen (Clojure, EPL-1.0) may be run as an external tool for cross-checks only. Planned in RT5 | Proposed |
 | D316 | **One contract suite per seam runs against both the model and the real system** (`shard_backend_conformance!`, `router_fleet_conformance!`), the pattern of `metastore_conformance!`, so simulation models cannot drift from the engines silently (§14.1) | Proposed |
-| D317 | **A Loam-built Rust router is the recorded fallback, with named triggers** (§5, ADR-1): a PgDog change that config cannot replace and upstream refuses (D236 forbids patching); Vitess failing the RT3 gate on WeSQL with no fix in the WeSQL fork; or a correctness bug in a bought router that upstream will not fix. The fallback would be Apache-2.0, take no PgDog code, and may port Vitess code with its notices. The seams of §7.3 keep it possible | Proposed |
-| D318 | **Licenses** (§16): Loam's own code stays Apache-2.0, and every third-party crate it links must carry a permissive license (D11); no copyleft or source-available code is linked, and `xxhash-rust` (Boost, BSL-1.0) is the recorded permissive non-Apache case (§16). Vitess is Apache-2.0 and runs as a service (it may be forked under D302's rule); PgDog stays an unmodified service read only as a reference (D236), and no PgDog text, code or test is copied into Loam's code or specs. The chat dump's "router license: AGPL or Apache" question is answered: Apache-2.0 | Proposed |
+| D317 | **A Loams-built Rust router is the recorded fallback, with named triggers** (§5, ADR-1): a PgDog change that config cannot replace and upstream refuses (D236 forbids patching); Vitess failing the RT3 gate on WeSQL with no fix in the WeSQL fork; or a correctness bug in a bought router that upstream will not fix. The fallback would be Apache-2.0, take no PgDog code, and may port Vitess code with its notices. The seams of §7.3 keep it possible | Proposed |
+| D318 | **Licenses** (§16): Loams's own code stays Apache-2.0, and every third-party crate it links must carry a permissive license (D11); no copyleft or source-available code is linked, and `xxhash-rust` (Boost, BSL-1.0) is the recorded permissive non-Apache case (§16). Vitess is Apache-2.0 and runs as a service (it may be forked under D302's rule); PgDog stays an unmodified service read only as a reference (D236), and no PgDog text, code or test is copied into Loams's code or specs. The chat dump's "router license: AGPL or Apache" question is answered: Apache-2.0 | Proposed |
 | D319 | **Track RT** (RT0–RT5) replaces the chat dump's M0–M5 (§17). RT runs beside M2 and the R, D and P tracks on the one-build machine, and adds crates without changing M-track code | Proposed |
-| D320 | **vtgate is the MySQL front end for WeSQL**, sharded or not, instead of the Loam-built handshake-and-splice proxy of §23 §6.3 (N6). Loam renders vtgate's static auth file and VSchema as it renders PgDog's files. **Proposes to amend D153's MySQL half**. If RT3's gate fails, the Loam splice is the fallback for **unsharded** WeSQL only; sharded MySQL is then unavailable until D317's Rust router exists | Proposed |
+| D320 | **vtgate is the MySQL front end for WeSQL**, sharded or not, instead of the Loams-built handshake-and-splice proxy of §23 §6.3 (N6). Loams renders vtgate's static auth file and VSchema as it renders PgDog's files. **Proposes to amend D153's MySQL half**. If RT3's gate fails, the Loams splice is the fallback for **unsharded** WeSQL only; sharded MySQL is then unavailable until D317's Rust router exists | Proposed |
 | D321 | **The §18 namespace router is unchanged and separate.** It places namespaces and resources of the retrieval engine and never copies data (§18 §5.5). The SQL routers sit outside the engine; moving SQL data between shards copies rows (PgDog's logical replication, Vitess's VReplication) | Proposed |
-| D322 | **Isolation is promised per shard, never across shards** (§10): Postgres semantics on each Loam Postgres shard, §29 D274's semantics on each WeSQL shard; cross-shard reads may be fractured (Vitess documents this for its 2PC); no global snapshot. Every checker checks exactly these promises | Proposed |
+| D322 | **Isolation is promised per shard, never across shards** (§10): Postgres semantics on each Loams Postgres shard, §29 D274's semantics on each WeSQL shard; cross-shard reads may be fractured (Vitess documents this for its 2PC); no global snapshot. Every checker checks exactly these promises | Proposed |
 
 ## 2. Goals and non-goals
 
 ### 2.1 Goals
 
-1. **Sharded MySQL and Postgres for apps that outgrow one primary**, on engines Loam already runs: Loam Postgres (§28) and WeSQL (§29).
-2. **One shard map and one control plane** for both engines: placement, routing generations, cutover, failover and in-doubt monitoring, driven from Loam's metastore and Resonate sagas.
-3. **Buy the routers.** PgDog and Vitess already parse, plan, route, scatter, merge, aggregate, pool, reshard and (with conditions) commit atomically. Loam builds what neither gives it: multi-instance coordination, a fence in the backend, and evidence.
-4. **Evidence, not only tests**, as the chat dump asked: TLA+ for the protocols, Lean 4 for pure kernels, deterministic simulation for Loam's control plane, and fault tests on the real systems.
+1. **Sharded MySQL and Postgres for apps that outgrow one primary**, on engines Loams already runs: Loams Postgres (§28) and WeSQL (§29).
+2. **One shard map and one control plane** for both engines: placement, routing generations, cutover, failover and in-doubt monitoring, driven from Loams's metastore and Resonate sagas.
+3. **Buy the routers.** PgDog and Vitess already parse, plan, route, scatter, merge, aggregate, pool, reshard and (with conditions) commit atomically. Loams builds what neither gives it: multi-instance coordination, a fence in the backend, and evidence.
+4. **Evidence, not only tests**, as the chat dump asked: TLA+ for the protocols, Lean 4 for pure kernels, deterministic simulation for Loams's control plane, and fault tests on the real systems.
 
 ### 2.2 Non-goals
 
 - **A new MySQL engine** (D301), **a new SQL router** (D300) or **a Vitess tablet re-implementation** (D302), unless D317's triggers fire.
 - **Transactions across engines** (kept from the chat dump).
 - **Cross-shard joins beyond what the bought routers do** (kept, and now defined by them).
-- **Proving PgDog or Vitess correct.** Loam proves its own kernels and protocols, and tests the routers' behaviour.
+- **Proving PgDog or Vitess correct.** Loams proves its own kernels and protocols, and tests the routers' behaviour.
 - **Modifying PgDog** (D236), or **TiKV/PD** (D126).
 - **Upstream contributions** without the owner's go-ahead (as §28 and §29).
 
@@ -65,19 +65,19 @@ Each claim of the chat dump that the current design or the sources change, check
 
 | Chat dump | Finding | Resolution |
 |---|---|---|
-| "Loam SQL: MySQL-compatible engine (InnoDB semantics on TiKV, binlog to S3)" | InnoDB semantics over a transactional KV store is what TiDB is (Percolator over TiKV, §29 §9). D260 (owner, 2026-09-29) forbids TiDB anywhere, and Q260 left MySQL wire access open. §29 (PR #172) proposes WeSQL, MySQL 8.0.46 with SmartEngine on the bucket, which is a real `mysqld` with a real row binlog and GTIDs (§29 §4, §6) | **D301: WeSQL is the MySQL shard.** A new engine would rebuild TiDB's executor, locking and DDL, years of work, and still not be InnoDB (TiKV has no gap locks, §29 §4.2) |
+| "Loams SQL: MySQL-compatible engine (InnoDB semantics on TiKV, binlog to S3)" | InnoDB semantics over a transactional KV store is what TiDB is (Percolator over TiKV, §29 §9). D260 (owner, 2026-09-29) forbids TiDB anywhere, and Q260 left MySQL wire access open. §29 (PR #172) proposes WeSQL, MySQL 8.0.46 with SmartEngine on the bucket, which is a real `mysqld` with a real row binlog and GTIDs (§29 §4, §6) | **D301: WeSQL is the MySQL shard.** A new engine would rebuild TiDB's executor, locking and DDL, years of work, and still not be InnoDB (TiKV has no gap locks, §29 §4.2) |
 | "Implement the tablet gRPC contract natively; vttablet assumes a real mysqld" | WeSQL *is* a real `mysqld`, so the reason disappears. Vitess runs **unmanaged tablets** against externally managed MySQL (RDS, Aurora, CloudSQL) with `--unmanaged`, `--db-host`, `--db-port` (vitess.io/docs/24.0 "unmanaged tablet"). Vitess v24 supports MySQL 8.0 and 8.4 and is "the final release with support for MySQL 8.0" (vitess.io/docs/24.0 "supported databases") | **D302: real vttablet, unmanaged, pinned to v24.** The compatibility inventory (§15) is the spec of what WeSQL must answer |
-| "Router language: Rust, because deterministic simulation is easier" | DST is easier for code Loam owns. The routers' hard parts (parsing, planning, merging, pooling, resharding) already exist in PgDog (Rust, AGPL-3.0, v0.1.60) and Vitess (Go, Apache-2.0, v24). The owner prefers buying (memory: buy over build) and approved PgDog unmodified (D236) | **D300**: no Loam-built router; DST applies to Loam's control plane (D313). **D317** records when to build one |
-| "Postgres router: clean implementation, pgdog as design reference only" | D236 already decided: PgDog runs unmodified as a service. PgDog has sharding (hash, list, range, schema), cross-shard queries with partial aggregates, 2PC and online resharding (`pgdog/docs/SHARDING.md`, `RESHARDING.md`) | **D300 + D236**: PgDog routes. Loam adds multi-instance cutover (D305), which PgDog's open-source build lacks |
-| "Router license: AGPL 3.0 vs Apache 2.0, decide with counsel" | D11: no AGPL in what Loam links. PgDog-derived code would make Loam's code AGPL | **D318**: Apache-2.0; no PgDog code |
+| "Router language: Rust, because deterministic simulation is easier" | DST is easier for code Loams owns. The routers' hard parts (parsing, planning, merging, pooling, resharding) already exist in PgDog (Rust, AGPL-3.0, v0.1.60) and Vitess (Go, Apache-2.0, v24). The owner prefers buying (memory: buy over build) and approved PgDog unmodified (D236) | **D300**: no Loams-built router; DST applies to Loams's control plane (D313). **D317** records when to build one |
+| "Postgres router: clean implementation, pgdog as design reference only" | D236 already decided: PgDog runs unmodified as a service. PgDog has sharding (hash, list, range, schema), cross-shard queries with partial aggregates, 2PC and online resharding (`pgdog/docs/SHARDING.md`, `RESHARDING.md`) | **D300 + D236**: PgDog routes. Loams adds multi-instance cutover (D305), which PgDog's open-source build lacks |
+| "Router license: AGPL 3.0 vs Apache 2.0, decide with counsel" | D11: no AGPL in what Loams links. PgDog-derived code would make Loams's code AGPL | **D318**: Apache-2.0; no PgDog code |
 | "Vitess-compatible `hash` and range keyspace IDs for both engines" | PgDog shards by Postgres's own partition hash modulo N (`pgdog/docs/SHARDING.md`, "the same shard as PostgreSQL's own hash partitioning would"); Vitess by keyspace-ID ranges (`vitess/go/vt/vtgate/vindexes/hash.go`, null-key DES) | **D303**: native scheme per router; one shard-map type for both |
-| "Phase 2: build a logical change stream, prepared transactions with durable recovery, health endpoints, snapshot copy for Loam Postgres" | Neon stores `pg_twophase` in the pageserver (`TWOPHASEDIR_KEY`) and tests branching with prepared transactions (`test_twophase.py`); logical replication works and slots survive a compute replacement (§23 §9.1, spike); `compute_ctl` reports status | **D307**: configuration and tests; no engine change |
+| "Phase 2: build a logical change stream, prepared transactions with durable recovery, health endpoints, snapshot copy for Loams Postgres" | Neon stores `pg_twophase` in the pageserver (`TWOPHASEDIR_KEY`) and tests branching with prepared transactions (`test_twophase.py`); logical replication works and slots survive a compute replacement (§23 §9.1, spike); `compute_ctl` reports status | **D307**: configuration and tests; no engine change |
 | "Deterministic async runtime (madsim or turmoil); ban wall clock in router crates" | D28 chose a seeded, not bit-exact, simulation for the engine because openraft, redb and `object_store` do real I/O. madsim's last release is 0.2.34 (2025-10-11) and it needs patched tokio-ecosystem crates; turmoil 0.7.2 (2026-04-24, MIT) simulates tokio's network only | **D313**: sans-I/O machines are bit-exact without any runtime port; lints ban clocks and unseeded randomness in the kernel crate; D28 stays for the engine |
-| "Elle-style cycle detection" | Elle is EPL-2.0 (`jepsen-io/elle`); §20 §14 item 4 already plans an Elle-style checker in Loam | **D314**: one Loam implementation, shared |
+| "Elle-style cycle detection" | Elle is EPL-2.0 (`jepsen-io/elle`); §20 §14 item 4 already plans an Elle-style checker in Loams | **D314**: one Loams implementation, shared |
 | "Jepsen-style tests on real clusters" | Jepsen is Clojure, EPL-1.0 (`jepsen/project.clj`) | **D315**: a Rust nemesis harness with the same checkers; Jepsen optional and external |
-| "Run a subset of Vitess's end-to-end tests against Loam SQL" | Still right, but against vttablet in front of WeSQL, not against a tablet re-implementation | §15, RT3 |
-| "Lean: plan rewrites preserve semantics" | Loam has no planner under D300 | Out of scope (D312) |
-| Milestones M0–M5 with week estimates | They clash with Loam's M0–M6, and Loam's plans size work in PRs, not weeks | **D319**: RT0–RT5, sized in PRs (§17) |
+| "Run a subset of Vitess's end-to-end tests against Loams SQL" | Still right, but against vttablet in front of WeSQL, not against a tablet re-implementation | §15, RT3 |
+| "Lean: plan rewrites preserve semantics" | Loams has no planner under D300 | Out of scope (D312) |
+| Milestones M0–M5 with week estimates | They clash with Loams's M0–M6, and Loams's plans size work in PRs, not weeks | **D319**: RT0–RT5, sized in PRs (§17) |
 
 ## 4. Architecture
 
@@ -95,7 +95,7 @@ Each claim of the chat dump that the current design or the sources change, check
             ▼                                          │ Postgres protocol (TLS)
  ┌─────────────────────────────┐                       ▼
  │ vttablet ×shard (unmanaged) │            ┌─────────────────────────────────┐
- │ query service, VReplication │            │ Loam Postgres computes per shard│
+ │ query service, VReplication │            │ Loams Postgres computes per shard│
  └──────────┬──────────────────┘            │ (§28: pageserver, Arm A WAL)    │
             ▼                               │ Postgres 17.11 shards in CI     │
  ┌─────────────────────────────┐            └─────────────────────────────────┘
@@ -105,18 +105,18 @@ Each claim of the chat dump that the current design or the sources change, check
             ▲ vtctld gRPC: VSchema, Reshard,     │
             │ TabletExternallyReparented         │
  ┌──────────┴──────────────────────────────────────────────────────────────────┐
- │ Loam router control plane (in `operon`, D300)                                │
- │ operon-sqlrouter (sans-I/O machines: shard map, config push, cutover,        │
+ │ Loams router control plane (in `loams`, D300)                                │
+ │ loams-sqlrouter (sans-I/O machines: shard map, config push, cutover,         │
  │   in-doubt monitor; kernels: ranges, hashing, merge reference) ── traces ──► │
- │ operon-sqlrouter-io (adapters: TiKV records, PgDog admin, Postgres and       │
+ │ loams-sqlrouter-io (adapters: TiKV records, PgDog admin, Postgres and        │
  │   WeSQL backends, vtctld, Kubernetes ConfigMaps); sagas on Resonate (§21)    │
  └──────────┬───────────────────────────────────────────────────────────────────┘
             ▼
  TiKV metastore: shard map record (D304), §23 `x/` records, §29 W3 primary record
 
- Verification: spec/tla/router (TLC, Apalache) ◄── trace validation ── operon-detsim
-               spec/lean (LoamRouter oracle)  ◄── differential tests ── routers' results
-               operon-nemesis (RT5) on real processes, same workloads and checkers
+ Verification: spec/tla/router (TLC, Apalache) ◄── trace validation ── loams-detsim
+               spec/lean (LoamsRouter oracle) ◄── differential tests ── routers' results
+               loams-nemesis (RT5) on real processes, same workloads and checkers
 ```
 
 ### 4.1 Components
@@ -126,12 +126,12 @@ Each claim of the chat dump that the current design or the sources change, check
 | PgDog | `pgdogdev/pgdog` v0.1.60 (2026-09-24), image by digest | **AGPL-3.0** | Postgres router (D236). Unmodified service |
 | Vitess vtgate, vttablet, vtctld | `vitessio/vitess` v24.0.4 (2026-10-01) | Apache-2.0 | MySQL router (D302) |
 | etcd | `etcd-io/etcd` v3.7.2 (latest release as of 2026-10-01) | Apache-2.0 | Vitess topology store (Q301) |
-| Loam Postgres | `dina-kar/neon` (§28) | Apache-2.0 | Postgres shards |
+| Loams Postgres | `dina-kar/neon` (§28) | Apache-2.0 | Postgres shards |
 | WeSQL | `ostrium-labs/wesql` (§29) | GPL-2.0-only | MySQL shards. Separate process (D148) |
-| `operon-sqlrouter` | new crate, sans-I/O | Apache-2.0 | Kernels and machines (§7.1) |
-| `operon-sqlrouter-io` | new crate | Apache-2.0 | Adapters (§7.2) |
-| `operon-detsim` | new test-only crate | Apache-2.0 | Deterministic scheduler and checkers (§13) |
-| `operon-nemesis` | new test-only crate (RT5) | Apache-2.0 | Fault harness on real processes (D315) |
+| `loams-sqlrouter` | new crate, sans-I/O | Apache-2.0 | Kernels and machines (§7.1) |
+| `loams-sqlrouter-io` | new crate | Apache-2.0 | Adapters (§7.2) |
+| `loams-detsim` | new test-only crate | Apache-2.0 | Deterministic scheduler and checkers (§13) |
+| `loams-nemesis` | new test-only crate (RT5) | Apache-2.0 | Fault harness on real processes (D315) |
 | TLC, CommunityModules | `tlaplus/tlaplus` v1.7.4 stable (2024-08-05); v1.8.0 is a rolling pre-release, updated 2026-10-01 | MIT | Model checking, trace validation |
 | Apalache | `apalache-mc/apalache` v0.62.3 (2026-10-01) | Apache-2.0 | Symbolic checking |
 | Lean 4, Plausible | `leanprover/lean4` v4.34.1 (2026-09-24); `leanprover-community/plausible` | Apache-2.0 | Kernels and oracle |
@@ -140,13 +140,13 @@ Each claim of the chat dump that the current design or the sources change, check
 
 The chat dump asked for one ADR per row of its §2 before any code. Each is decided here, with the evidence of §3, and two are added.
 
-**ADR-1. Router language: Go fork of vtgate, or a Rust rewrite.** *Decision:* neither. Loam runs vtgate (Go) and PgDog (Rust) unmodified and writes its control plane in Rust (D300). *Why:* both routers exist, are maintained (Vitess releases monthly; PgDog weekly) and carry years of compatibility work Loam would otherwise repeat. DST, the chat dump's argument for Rust, applies to the code Loam writes (D313), and Loam writes the coordination code. *Consequences:* Loam's evidence about routing correctness is black-box (differential tests, D308); a router bug is fixed upstream or worked around in config. *Revisit when* any trigger of D317 fires.
+**ADR-1. Router language: Go fork of vtgate, or a Rust rewrite.** *Decision:* neither. Loams runs vtgate (Go) and PgDog (Rust) unmodified and writes its control plane in Rust (D300). *Why:* both routers exist, are maintained (Vitess releases monthly; PgDog weekly) and carry years of compatibility work Loams would otherwise repeat. DST, the chat dump's argument for Rust, applies to the code Loams writes (D313), and Loams writes the coordination code. *Consequences:* Loams's evidence about routing correctness is black-box (differential tests, D308); a router bug is fixed upstream or worked around in config. *Revisit when* any trigger of D317 fires.
 
-**ADR-2. Vitess compatibility level: real vttablet in front of the engine, or the tablet contract natively.** *Decision:* real vttablet, unmanaged, v24 (D302). *Why:* the engine is WeSQL, a real `mysqld` with binlog commands, GTIDs and `performance_schema`. *Consequences:* WeSQL's gaps surface as inventory rows (§9.2), not as Loam code; Vitess's MySQL 8.0 support ends after v24, so WeSQL's rebase to 8.4 becomes a dependency (Q302).
+**ADR-2. Vitess compatibility level: real vttablet in front of the engine, or the tablet contract natively.** *Decision:* real vttablet, unmanaged, v24 (D302). *Why:* the engine is WeSQL, a real `mysqld` with binlog commands, GTIDs and `performance_schema`. *Consequences:* WeSQL's gaps surface as inventory rows (§9.2), not as Loams code; Vitess's MySQL 8.0 support ends after v24, so WeSQL's rebase to 8.4 becomes a dependency (Q302).
 
-**ADR-3. Router license.** *Decision:* Apache-2.0 for everything Loam links (D11, D318). *Consequences:* no PgDog code anywhere; Vitess code may be ported only into an Apache-2.0 fallback with its notices (D317).
+**ADR-3. Router license.** *Decision:* Apache-2.0 for everything Loams links (D11, D318). *Consequences:* no PgDog code anywhere; Vitess code may be ported only into an Apache-2.0 fallback with its notices (D317).
 
-**ADR-4. Postgres router path: fork PgDog, or a clean implementation.** *Decision:* neither: PgDog unmodified (D236), with Loam's multi-instance cutover and fence (D305). *Why:* forking PgDog makes Loam's fork AGPL and a network service, which triggers AGPL §13 (§28 §8); a clean implementation duplicates what PgDog does. *Consequences:* PgDog's v0.1.x maturity is a product risk (Q305, risk 1 in this document's §18).
+**ADR-4. Postgres router path: fork PgDog, or a clean implementation.** *Decision:* neither: PgDog unmodified (D236), with Loams's multi-instance cutover and fence (D305). *Why:* forking PgDog makes Loams's fork AGPL and a network service, which triggers AGPL §13 (§28 §8); a clean implementation duplicates what PgDog does. *Consequences:* PgDog's v0.1.x maturity is a product risk (Q305, risk 1 in this document's §18).
 
 **ADR-5. Shard-key hashing.** *Decision:* native per router (D303). *Why:* Vitess tooling and docs transfer only for Vitess keyspaces; for Postgres, PgDog's choice is Postgres's own hash partitioning, so a sharded table matches a hash-partitioned one. *Consequences:* the shard map has two hash families (§6.1), and the Lean kernel covers both through the same partition lemma (§12).
 
@@ -181,11 +181,11 @@ pub struct ShardEntry { pub name: String, pub backend: BackendRef, pub fence: Fe
 ```
 
 - **Generation semantics.** A router instance that has applied generation *g* routes by *g*'s shard list. A backend accepts router writes only while its fence state allows them (§6.4). Generations are never reused.
-- **Vitess mirror.** For a Vitess keyspace the record mirrors `SrvKeyspace` (read through vtctld) after every Vitess workflow step, so Loam's checkers and the oracle know the current partition. Loam does not write Vitess's topology except through vtctld's API (VSchema apply, workflow commands).
+- **Vitess mirror.** For a Vitess keyspace the record mirrors `SrvKeyspace` (read through vtctld) after every Vitess workflow step, so Loams's checkers and the oracle know the current partition. Loams does not write Vitess's topology except through vtctld's API (VSchema apply, workflow commands).
 
 ### 6.2 Rendering
 
-- **PgDog** (`pgdog.toml`, `users.toml`): one `[[databases]]` entry per shard (`name = <db>`, `shard = i`, `host`, `port`, `database_name`, `role`), `[[sharded_tables]]` with `column` and `data_type`, and `[[sharded_mappings]]` for range and list schemes. The output is byte-deterministic (golden-file tests), carries the generation in a ConfigMap annotation `loam.dev/router-generation`, and keeps §28 §8's rules (TLS both hops, SCRAM terminated in PgDog, `<db>__<branch>` names). `cutover_save_config = false`: Loam's record, not PgDog's disk, is the truth.
+- **PgDog** (`pgdog.toml`, `users.toml`): one `[[databases]]` entry per shard (`name = <db>`, `shard = i`, `host`, `port`, `database_name`, `role`), `[[sharded_tables]]` with `column` and `data_type`, and `[[sharded_mappings]]` for range and list schemes. The output is byte-deterministic (golden-file tests), carries the generation in a ConfigMap annotation `loams.dev/router-generation`, and keeps §28 §8's rules (TLS both hops, SCRAM terminated in PgDog, `<db>__<branch>` names). `cutover_save_config = false`: Loams's record, not PgDog's disk, is the truth.
 - **Vitess**: VSchema JSON per keyspace (vindexes, tables, sequences), and vtgate's static auth file (`mysql_auth_server_static_file`) rendered from the auth plan's credentials (Q30), as `users.toml` is for PgDog.
 
 ### 6.3 Pushing a generation
@@ -194,7 +194,7 @@ The `ConfigPush` machine (§7.1) moves every router instance to the record's gen
 
 ### 6.4 Cutover with a backend fence (D305)
 
-PgDog's open-source `RESHARD` runs schema sync, parallel binary `COPY`, replication catch-up and a traffic swap on **one** instance (`pgdog/docs/RESHARDING.md`, "Traffic cutover via `RESHARD` is supported on single-node PgDog only"). Loam's orchestration for N instances, as a Resonate saga with deterministic step ids:
+PgDog's open-source `RESHARD` runs schema sync, parallel binary `COPY`, replication catch-up and a traffic swap on **one** instance (`pgdog/docs/RESHARDING.md`, "Traffic cutover via `RESHARD` is supported on single-node PgDog only"). Loams's orchestration for N instances, as a Resonate saga with deterministic step ids:
 
 1. **Copy and catch up** on a designated instance *d*: `RESHARD <source> <destination> <publication>` against *d*'s admin database; poll `SHOW TASKS` and `SHOW REPLICATION` until lag is under the stop threshold. The destination is a second database entry (`<db>__reshard_<g>`) rendered into every instance at generation *g* but unused by clients.
 2. **Pause** `<db>` on every instance (`PAUSE <db>`), so new queries queue (PgDog's own barrier).
@@ -204,7 +204,7 @@ PgDog's open-source `RESHARD` runs schema sync, parallel binary `COPY`, replicat
 6. **Resume** `<db>` on every instance.
 7. **Finalize or reverse.** Until finalize, the reverse stream keeps the old shards current; a rollback is steps 2–6 in the other direction. Finalize stops the reverse task (`STOP_TASK`), drops the old computes after a grace period, and clears the fence.
 
-An instance unreachable at step 2 or 5 cannot write to the source (step 3) and, if it restarts, reads the ConfigMap that step 5 wrote. Whether `CUTOVER` on *d* plus `RELOAD` elsewhere gives every instance the same routing is the first thing RT4 verifies on a real PgDog (Q306). Vitess keyspaces use Vitess's own `Reshard` and `SwitchTraffic`, which buffer in vtgate and use tablet controls; Loam drives them and mirrors the result (§6.1).
+An instance unreachable at step 2 or 5 cannot write to the source (step 3) and, if it restarts, reads the ConfigMap that step 5 wrote. Whether `CUTOVER` on *d* plus `RELOAD` elsewhere gives every instance the same routing is the first thing RT4 verifies on a real PgDog (Q306). Vitess keyspaces use Vitess's own `Reshard` and `SwitchTraffic`, which buffer in vtgate and use tablet controls; Loams drives them and mirrors the result (§6.1).
 
 ### 6.5 The in-doubt monitor
 
@@ -215,7 +215,7 @@ PgDog names prepared transactions `__pgdog_2pc_[<DEPLOYMENT_ID>_]<instance>_<ran
 
 ## 7. Trait seams
 
-### 7.1 Sans-I/O machines (`operon-sqlrouter`)
+### 7.1 Sans-I/O machines (`loams-sqlrouter`)
 
 The kernel crate has no dependency on tokio, sockets, files or clocks. Its `clippy.toml` (read from the crate directory) adds `disallowed-methods` for `std::time::{Instant, SystemTime}::now`, `rand::rng`, `rand::thread_rng`, `std::thread::spawn` and `std::env::var`, and the crate has no `tokio` in its `Cargo.toml`. Every protocol is a machine:
 
@@ -239,7 +239,7 @@ Machines in RT1–RT2: `ConfigPush` (§6.3), `InDoubtMonitor` (§6.5), and the k
 
 The chat dump's simulation seams map onto this: **Clock** and **Rng** are `Ctx` fields; **Network**, **Disk** and **Spawn** do not exist inside a machine, because outputs are commands that the driver executes (tokio adapters in production, the scheduler in simulation).
 
-### 7.2 I/O seams (`operon-sqlrouter-io`)
+### 7.2 I/O seams (`loams-sqlrouter-io`)
 
 ```rust
 #[async_trait]
@@ -266,7 +266,7 @@ pub trait ShardBackend: Send + Sync {
 }
 ```
 
-Implementations: `ShardMapStore` for memory and TiKV (`operon-tikv`'s `TxnRunner`); `RouterInstance` for PgDog's admin database (tokio-postgres, simple query protocol) and, in RT3, vtgate/vtctld; `ShardBackend` for Postgres (Loam Postgres computes and CNPG) and, in RT3, WeSQL. Each has a simulation model in `operon-detsim` and a contract suite (D316).
+Implementations: `ShardMapStore` for memory and TiKV (`loams-tikv`'s `TxnRunner`); `RouterInstance` for PgDog's admin database (tokio-postgres, simple query protocol) and, in RT3, vtgate/vtctld; `ShardBackend` for Postgres (Loams Postgres computes and CNPG) and, in RT3, WeSQL. Each has a simulation model in `loams-detsim` and a contract suite (D316).
 
 ### 7.3 Fallback seams (D317), specified and not built
 
@@ -282,21 +282,21 @@ pub trait BackendPool { fn checkout(&mut self, ctx: &mut Ctx<'_>, shard: u32, re
 
 They exist on paper so that RT1's seams do not paint the fallback into a corner.
 
-## 8. Loam Postgres as a shard (D307)
+## 8. Loams Postgres as a shard (D307)
 
-| Shard requirement (chat dump §5) | What Loam Postgres already has | What RT adds |
+| Shard requirement (chat dump §5) | What Loams Postgres already has | What RT adds |
 |---|---|---|
-| Prepared transactions with durable recovery | The pageserver stores two-phase state (`neon/pageserver/src/pgdatadir_mapping.rs`: `TWOPHASEDIR_KEY`, `twophase_file_key`, `list_twophase_files`); Neon's regression tests prepare transactions, branch, and commit them on the branch (`neon/test_runner/regress/test_twophase.py`: `test_twophase`, `test_twophase_nonzero_epoch`, `test_twophase_at_wal_segment_start`) **(source)** | `max_prepared_transactions` in the compute spec Loam renders (§28 §5.2, P2b); RT2 tests: a prepared transaction survives a compute restart, a pageserver restart and an Arm A acceptor kill, and `COMMIT PREPARED` works after each |
+| Prepared transactions with durable recovery | The pageserver stores two-phase state (`neon/pageserver/src/pgdatadir_mapping.rs`: `TWOPHASEDIR_KEY`, `twophase_file_key`, `list_twophase_files`); Neon's regression tests prepare transactions, branch, and commit them on the branch (`neon/test_runner/regress/test_twophase.py`: `test_twophase`, `test_twophase_nonzero_epoch`, `test_twophase_at_wal_segment_start`) **(source)** | `max_prepared_transactions` in the compute spec Loams renders (§28 §5.2, P2b); RT2 tests: a prepared transaction survives a compute restart, a pageserver restart and an Arm A acceptor kill, and `COMMIT PREPARED` works after each |
 | Logical change stream | `wal_level = logical`, pgoutput, slots that survive replacing the compute (§23 §9.1, spike); Neon's `test_logical_replication.py` (`test_restart_endpoint`, `test_slots_and_branching`) **(source)** | RT2: a pgoutput reader test over a compute restart, used by the split check and D154's bridge |
 | Snapshot-consistent bulk copy with a start LSN | Postgres: `CREATE_REPLICATION_SLOT … LOGICAL pgoutput (SNAPSHOT 'export')` returns the slot's consistent point and a snapshot name for `SET TRANSACTION SNAPSHOT`; PgDog's copy uses a temporary slot inside the copy's transaction (`RESHARDING.md`, Step 3) | RT2: an exact-boundary test under a continuous writer (no row lost or doubled, checksums equal) |
 | Health, role and replication status | `pg_is_in_recovery()`, `pg_stat_replication`, `compute_ctl`'s status endpoint | `ShardBackend::status` (§7.2) |
-| Failover | Arm A: walproposer terms over `loam-wal` acceptors (D264); Loam's control plane starts computes (D232) | RT4: `PrimaryFailover.tla` covers it; the repoint is a generation push (§6.3) |
+| Failover | Arm A: walproposer terms over `loams-wal` acceptors (D264); Loams's control plane starts computes (D232) | RT4: `PrimaryFailover.tla` covers it; the repoint is a generation push (§6.3) |
 
 ## 9. WeSQL as a shard behind Vitess (D301, D302)
 
 ### 9.1 Shape
 
-- **One unmanaged vttablet per WeSQL primary** (and per replica, as `replica` tablets, once W3 exists), with `--unmanaged`, `--db-host`, `--db-port`, the app and DBA users, `--init-keyspace`, `--init-shard`. Vitess does not manage WeSQL's process, backups or replication; Loam (§29) does.
+- **One unmanaged vttablet per WeSQL primary** (and per replica, as `replica` tablets, once W3 exists), with `--unmanaged`, `--db-host`, `--db-port`, the app and DBA users, `--init-keyspace`, `--init-shard`. Vitess does not manage WeSQL's process, backups or replication; Loams (§29) does.
 - **Binlog requirements** that VReplication needs, which §29 already sets: `binlog_format = ROW`, `binlog_row_image = FULL`, and `gtid_mode = ON` with `enforce_gtid_consistency` (W2 requires it, §29 §6.2). The §23 spike ran with `gtid_mode = OFF`, so the default changes for Vitess-fronted WeSQL.
 - **Failover**: W3 promotes a replica (§29 §7.3). Step 5, "repoint", becomes `vtctldclient TabletExternallyReparented <new-primary-tablet>` for the shard, plus the `x/` record change (D320 amends §29 §7.2's "router follows the record").
 - **Front end**: vtgate, also for unsharded keyspaces (D320). Database name = keyspace.
@@ -345,26 +345,26 @@ The DST and nemesis checkers check exactly this table: snapshot isolation per sh
 
 ### 11.3 Trace validation and the action-to-code map (D311)
 
-- **Emitting.** Every machine reports each transition it takes as a `SpecEvent` through `Ctx::trace`. Drivers write them as JSON lines (`{"spec":"ShardMap","action":"Reload","instance":"pgdog-1","gen":4,"ok":true,"t":1234}`): `operon-detsim` to its run directory, the production driver to `tracing` target `loam::spec` (off unless `LOAM_SPEC_TRACE=<path>`).
+- **Emitting.** Every machine reports each transition it takes as a `SpecEvent` through `Ctx::trace`. Drivers write them as JSON lines (`{"spec":"ShardMap","action":"Reload","instance":"pgdog-1","gen":4,"ok":true,"t":1234}`): `loams-detsim` to its run directory, the production driver to `tracing` target `loams::spec` (off unless `LOAMS_SPEC_TRACE=<path>`).
 - **Checking.** `spec/tla/router/<Spec>Trace.tla` reads the file with the CommunityModules `Json` module and constrains the spec's `Next` so each step matches the next event (the trace-validation method of Cirstea, Kuppe, Loillier, Merz and others, "Validating Traces of Distributed Programs Against TLA+ Specifications", 2024). TLC either finds a behaviour of the spec that explains the trace or reports the first event it cannot explain. Fields the code cannot observe (another instance's state) are left unconstrained.
-- **Coverage.** A test in `operon-sqlrouter` parses each spec's action list from its header and fails if an action has no `SpecEvent` emitter in code, or an emitter names an action the spec does not have.
+- **Coverage.** A test in `loams-sqlrouter` parses each spec's action list from its header and fails if an action has no `SpecEvent` emitter in code, or an emitter names an action the spec does not have.
 
 The map for `ShardMap` (the others follow the same form in their headers):
 
 | TLA+ action | Code | Event |
 |---|---|---|
-| `Publish(g)` | `operon_sqlrouter::push::ConfigPush::on(Input::RecordChanged)` → `Output::Cas` | `map.publish {db, gen, version}` |
-| `WriteConfigMap(g)` | `ConfigPush` → `Output::WriteConfigMap`; `operon_sqlrouter_io::kube::ConfigMapSink` | `map.configmap {db, gen}` |
-| `Reload(i, g)` | `ConfigPush` → `Output::Reload`; `operon_sqlrouter_io::pgdog::PgDogInstance::apply` | `fleet.reload {instance, gen, ok}` |
+| `Publish(g)` | `loams_sqlrouter::push::ConfigPush::on(Input::RecordChanged)` → `Output::Cas` | `map.publish {db, gen, version}` |
+| `WriteConfigMap(g)` | `ConfigPush` → `Output::WriteConfigMap`; `loams_sqlrouter_io::kube::ConfigMapSink` | `map.configmap {db, gen}` |
+| `Reload(i, g)` | `ConfigPush` → `Output::Reload`; `loams_sqlrouter_io::pgdog::PgDogInstance::apply` | `fleet.reload {instance, gen, ok}` |
 | `Restart(i)` | Simulation: `PgDogModel::restart`; real: a changed process start time in `observe` | `fleet.restart {instance}` |
 | `Fence(s)`, `Unfence(s)` | `Cutover` → `Output::Fence`; `PostgresShard::fence_writes` | `shard.fence {shard, on}` |
-| `ClientWrite(i, k)`, `Accept(s, k)`, `Reject(s, k)` | Workload clients in `operon-detsim` and `operon-nemesis` | `client.write {key, instance, shard, result}` |
+| `ClientWrite(i, k)`, `Accept(s, k)`, `Reject(s, k)` | Workload clients in `loams-detsim` and `loams-nemesis` | `client.write {key, instance, shard, result}` |
 
 ## 12. Lean 4 kernels and the differential oracle (D312)
 
 ### 12.1 Scope
 
-| Module (`spec/lean/LoamRouter/`) | Definitions | Theorems (proved) | Properties (Plausible) |
+| Module (`spec/lean/LoamsRouter/`) | Definitions | Theorems (proved) | Properties (Plausible) |
 |---|---|---|---|
 | `KeyRange.lean` | Keyspace ids as `Nat` below 2^64; `KeyRange` with optional upper bound; `IsPartition` (sorted, contiguous, first `lo` = 0, last `hi` = none) | `lookup_total_unique` (every id is in exactly one range of a partition); `split_preserves`; `merge_preserves` | Random splits and merges keep `IsPartition` |
 | `ShardFn.lean` | `shardOf` for modulo (PgDog) and range (Vitess) schemes over an abstract hash | `modulo_partition` (n shards partition the id space); `shardOf_deterministic` | — |
@@ -376,14 +376,14 @@ Hash functions (DES, Postgres's Jenkins hash, xxhash) are **not** modelled in Le
 
 ### 12.2 The oracle
 
-- `lake build oracle` builds `loam-router-oracle`, which reads JSON lines on stdin (`{"op":"merge","order":[…],"shards":[[…],…]}`, `{"op":"aggregate",…}`, `{"op":"partition_check",…}`) and writes one result per line.
-- **Rust side.** `operon_sqlrouter::reference` implements the same functions; `proptest` properties mirror the Lean theorems for fast CI; a differential test (`reference_matches_lean_oracle`, 10 000 cases on PRs that touch either side, 100 000 nightly) feeds both the same random inputs. Without the oracle binary on `PATH` the test prints `skipped: needs loam-router-oracle` (the cluster-test convention of R1).
+- `lake build oracle` builds `loams-router-oracle`, which reads JSON lines on stdin (`{"op":"merge","order":[…],"shards":[[…],…]}`, `{"op":"aggregate",…}`, `{"op":"partition_check",…}`) and writes one result per line.
+- **Rust side.** `loams_sqlrouter::reference` implements the same functions; `proptest` properties mirror the Lean theorems for fast CI; a differential test (`reference_matches_lean_oracle`, 10 000 cases on PRs that touch either side, 100 000 nightly) feeds both the same random inputs. Without the oracle binary on `PATH` the test prints `skipped: needs loams-router-oracle` (the cluster-test convention of R1).
 - **Against the routers** (RT2): a query runs on unsharded Postgres, through PgDog over 2 and 4 shards, and its per-shard results go through the oracle; three answers are compared. Deviations a router documents are listed in `conformance/router/pgdog-cross-shard-allowlist.toml` with the source of the documentation.
-- **The gap, stated as the chat dump asked.** Lean proves the model; the differential tests are what connect the model to Loam's Rust reference and to the routers' behaviour. Neither router's code is proved.
+- **The gap, stated as the chat dump asked.** Lean proves the model; the differential tests are what connect the model to Loams's Rust reference and to the routers' behaviour. Neither router's code is proved.
 
 ### 12.3 CI
 
-Job `lean` (path-filtered on `spec/lean/**` and `crates/operon-sqlrouter/src/reference/**`): elan with the pinned `lean-toolchain`, `lake build`, `lake exe plausible-check`, then the differential test. Lake's build directory is cached by `lean-toolchain` and `lake-manifest.json` (Q308).
+Job `lean` (path-filtered on `spec/lean/**` and `crates/loams-sqlrouter/src/reference/**`): elan with the pinned `lean-toolchain`, `lake build`, `lake exe plausible-check`, then the differential test. Lake's build directory is cached by `lean-toolchain` and `lake-manifest.json` (Q308).
 
 ## 13. Deterministic simulation (D313, D314)
 
@@ -391,11 +391,11 @@ Job `lean` (path-filtered on `spec/lean/**` and `crates/operon-sqlrouter/src/ref
 
 | Tier | What runs | Deterministic | Where |
 |---|---|---|---|
-| **1. Control-plane DST** (new) | `operon-sqlrouter` machines, driven by `operon-detsim`'s scheduler, against models of PgDog instances, Vitess, shards, the TiKV record store and the saga runner | Bit-exact: same seed, same trace hash | `crates/operon-detsim`, scenarios in `crates/operon-sqlrouter/tests/sim/` |
-| **2. Engine simulation** (D28, unchanged) | Metastore, log, links, collections on one single-threaded runtime with real I/O | Seeded, not bit-exact | `crates/operon-sim` |
-| **3. Real-system nemesis** (RT5, D315) | PgDog, Vitess, Loam Postgres, WeSQL, TiKV, RustFS as processes | No | `crates/operon-nemesis` |
+| **1. Control-plane DST** (new) | `loams-sqlrouter` machines, driven by `loams-detsim`'s scheduler, against models of PgDog instances, Vitess, shards, the TiKV record store and the saga runner | Bit-exact: same seed, same trace hash | `crates/loams-detsim`, scenarios in `crates/loams-sqlrouter/tests/sim/` |
+| **2. Engine simulation** (D28, unchanged) | Metastore, log, links, collections on one single-threaded runtime with real I/O | Seeded, not bit-exact | `crates/loams-sim` |
+| **3. Real-system nemesis** (RT5, D315) | PgDog, Vitess, Loams Postgres, WeSQL, TiKV, RustFS as processes | No | `crates/loams-nemesis` |
 
-`operon-detsim` is its own small crate (rand_chacha, serde_json, `operon-meta-conformance` for the linearizability checker) so the router's tests do not build `operon-sim`'s Lance and DataFusion dependencies. `operon-sim` re-exports its checkers.
+`loams-detsim` is its own small crate (rand_chacha, serde_json, `loams-meta-conformance` for the linearizability checker) so the router's tests do not build `loams-sim`'s Lance and DataFusion dependencies. `loams-sim` re-exports its checkers.
 
 ### 13.2 The scheduler
 
@@ -410,7 +410,7 @@ Job `lean` (path-filtered on `spec/lean/**` and `crates/operon-sqlrouter/src/ref
 
 The chat dump's catalog (§7.2), each fault mapped to where it is injected and when it arrives.
 
-| Category | Fault | Tier 1 (`operon-detsim`) | Tier 2 / existing | Tier 3 (`operon-nemesis`) | RT |
+| Category | Fault | Tier 1 (`loams-detsim`) | Tier 2 / existing | Tier 3 (`loams-nemesis`) | RT |
 |---|---|---|---|---|---|
 | Network | Drop, delay, reorder, duplicate | Network model | `Router` isolate/heal (D28) | toxiproxy `latency`, `timeout`; `tc netem` | RT1 |
 | Network | Partition, symmetric and asymmetric | Network model | `Isolate`, `Heal` | iptables per container | RT1 |
@@ -418,7 +418,7 @@ The chat dump's catalog (§7.2), each fault mapped to where it is injected and w
 | Node | Router instance crash and restart (reads ConfigMap) | `PgDogModel::restart` | — | `docker kill` / pod delete | RT1 |
 | Node | Shard primary crash; replica crash | `ShardModel::crash` | Worker crash (D28) | `docker kill` the compute or `mysqld` | RT2 (Postgres), RT4 (WeSQL) |
 | Node | Coordinator crash between prepare and commit, log kept or lost | `PgDogModel` 2PC with `wal_dir` kept or wiped | — | kill PgDog; delete its PVC | RT2 |
-| Node | Saga crash during a cutover step | Saga-runner model restarts the machine from its record | Resonate's own tests (§21) | kill `operon` | RT4 |
+| Node | Saga crash during a cutover step | Saga-runner model restarts the machine from its record | Resonate's own tests (§21) | kill `loams` | RT4 |
 | Time | Clock skew and jumps; lease expiry races | Per-node clock offsets in `Ctx::now` | — | `libfaketime`, chrony step | RT4 |
 | Time | Timeout storms | Delay bursts beyond client timeouts | — | toxiproxy latency spike | RT2 |
 | Storage | Torn writes; fsync failure; delayed durability | Model of PgDog's 2PC WAL (torn tail, lost unsynced records) | `FaultyStore::random` (D28); Arm A journal tests (§28 §7.2) | `dm-flakey` on the PVC (verify availability on CI) | RT2 |
@@ -432,8 +432,8 @@ The chat dump's catalog (§7.2), each fault mapped to where it is injected and w
 
 | Workload | Checker | Implementation |
 |---|---|---|
-| Single-key read/write registers per key | Linearizability per key | `operon_meta_conformance::linearizability` (WGL), reused |
-| Bank transfers across shards (2PC on) | Conservation of the total after recovery; no partial transfer visible after quiescence | `operon_detsim::checkers::bank` (new) |
+| Single-key read/write registers per key | Linearizability per key | `loams_meta_conformance::linearizability` (WGL), reused |
+| Bank transfers across shards (2PC on) | Conservation of the total after recovery; no partial transfer visible after quiescence | `loams_detsim::checkers::bank` (new) |
 | Unique-key inserts | No duplicate, no lost acknowledged insert | `checkers::unique` (new) |
 | Append-only lists per key | Snapshot isolation per shard; cross-shard fractured reads allowed (D322); G0, G1c, G-single cycles reported | `checkers::list_append` (new, Elle-style; the checker §20 §14 item 4 uses) |
 | Writes during a cutover or split | `NoLostWrite`, `NoDuplicateEffect` against the final shards; table checksums | `checkers::split` (new) with `ShardBackend::checksum` |
@@ -444,7 +444,7 @@ Every run asserts that no acknowledged commit is lost and no committed transacti
 
 ### 13.5 CI policy
 
-- **Pull requests** (job `router-sim`, path-filtered on `crates/operon-sqlrouter*/**` and `crates/operon-detsim/**`): the regression corpus (`crates/operon-sqlrouter/tests/sim/corpus/*.seed`) twice each with trace-hash equality, plus 2 000 fresh seeds per scenario (`ROUTER_SIM_SEEDS`), within 10 minutes (estimate: a pure machine step costs microseconds; a 500-step run, a few milliseconds).
+- **Pull requests** (job `router-sim`, path-filtered on `crates/loams-sqlrouter*/**` and `crates/loams-detsim/**`): the regression corpus (`crates/loams-sqlrouter/tests/sim/corpus/*.seed`) twice each with trace-hash equality, plus 2 000 fresh seeds per scenario (`ROUTER_SIM_SEEDS`), within 10 minutes (estimate: a pure machine step costs microseconds; a 500-step run, a few milliseconds).
 - **Nightly**: 1 000 000 seeds across scenarios with swarm configuration, split over the matrix (Q310); 100 sampled traces through trace validation; the Lean differential at 100 000 cases; Apalache at nightly bounds.
 - **A failing nightly seed** files an issue (`gh issue create`, label `sim-failure`) with the seed, the enabled faults and the shrunk schedule. The fix's PR adds the seed to the corpus; a seed is never removed.
 
@@ -452,7 +452,7 @@ Every run asserts that no acknowledged commit is lost and no committed transacti
 
 ### 14.1 Contract suites (D316)
 
-`shard_backend_conformance!(Backend)` and `router_fleet_conformance!(Fleet)` expand the same cases against the model and the real thing: role and read-only reporting, fence then write fails with the documented error, unfence restores, prepared transactions listed with their gids, checksums equal for equal data, `RELOAD` applies a generation, `PAUSE` queues and `RESUME` releases. Real backends: Postgres 17.11 in CI, Loam Postgres computes from `deploy/neon` once P2b is merged, WeSQL in RT3.
+`shard_backend_conformance!(Backend)` and `router_fleet_conformance!(Fleet)` expand the same cases against the model and the real thing: role and read-only reporting, fence then write fails with the documented error, unfence restores, prepared transactions listed with their gids, checksums equal for equal data, `RELOAD` applies a generation, `PAUSE` queues and `RESUME` releases. Real backends: Postgres 17.11 in CI, Loams Postgres computes from `deploy/neon` once P2b is merged, WeSQL in RT3.
 
 ### 14.2 Differential tests
 
@@ -460,7 +460,7 @@ The same seeded SQL stream against an unsharded engine and the sharded stack, re
 
 ### 14.3 Nemesis runs (RT5)
 
-`operon-nemesis` composes the stack (compose for the PR-sized run, k3d nightly), runs Tier 1's workloads through real clients (tokio-postgres, `mysql_async`), injects Tier 3 faults, and runs the same checkers on the recorded history. Online resharding under load checks table checksums at each step. Performance baselines (routing overhead, scatter latency, cutover duration, commit latency on the bucket-backed logs) are recorded, not gated, at first.
+`loams-nemesis` composes the stack (compose for the PR-sized run, k3d nightly), runs Tier 1's workloads through real clients (tokio-postgres, `mysql_async`), injects Tier 3 faults, and runs the same checkers on the recorded history. Online resharding under load checks table checksums at each step. Performance baselines (routing overhead, scatter latency, cutover duration, commit latency on the bucket-backed logs) are recorded, not gated, at first.
 
 ## 15. The compatibility inventory method (D309)
 
@@ -469,23 +469,23 @@ The inventory is the spec of what an engine must answer for a router. It is buil
 1. **Static extraction.** List every statement and command the router or its tablet sends to the backend, from its source: string constants and query builders, flavor files, sidecar DDL, health checks, replication and schema-engine queries. For Vitess: `go/mysql/flavor_mysql*.go`, `go/vt/vttablet/tabletserver/schema/`, `go/vt/vttablet/tabletmanager/`, `go/vt/vttablet/tabletserver/vstreamer/`, `go/vt/vttablet/tabletmanager/vreplication/`, `go/vt/sidecardb/schema/**`. For PgDog: `pgdog/src/backend/{replication,schema,pool}/` and the 2PC module (read as a reference; the inventory records statements and source paths, never PgDog code).
 2. **Dynamic capture.** Run the router's own suites against the reference engine with statement logging: Vitess's `examples/local` and selected `go/test/endtoend/` packages against MySQL 8.0.46 with `performance_schema.events_statements_summary_by_digest`; PgDog's `integration/` suites (`resharding`, `logical`, `failover`, `pgbench`, `rewrite`) against Postgres 17.11 with `log_statement = 'all'` and `pg_stat_statements`. Normalize to digests.
 3. **Merge** the static and dynamic lists into one table keyed by digest, with the component that issues each statement.
-4. **Replay and classify** each digest (with its captured example and session state) against the target engine (WeSQL; Loam Postgres) and the reference: `same` (identical result, warnings and errors), `differs` (result or metadata differs), `error` (target errors), `unsupported` (target refuses by design, with the reason). Results compare by a canonical hash.
+4. **Replay and classify** each digest (with its captured example and session state) against the target engine (WeSQL; Loams Postgres) and the reference: `same` (identical result, warnings and errors), `differs` (result or metadata differs), `error` (target errors), `unsupported` (target refuses by design, with the reason). Results compare by a canonical hash.
 5. **Suite pass rates.** Run the selected suites through the router against the target; record pass, fail and skip per test, and link each failure to inventory rows.
-6. **Bless** the tables as TSV files (`conformance/router/{vitess-wesql,pgdog-loampg}-statements.tsv` with columns `digest, component, source, example, class, ref_hash, target_hash, note, issue`, where the two hashes are the canonical result hashes of step 4; `…-suites.tsv` with `suite, test, result, rows`). A PR that changes a pinned version re-runs the inventory and shows the diff.
-7. **Gate.** RT3's gate for D302 (proposed): no `error` or `differs` row in the components Loam uses (query service, health, schema engine, VReplication for MoveTables and Reshard), and the suite pass rates in §17's RT3 row. Rows in components Loam does not use are recorded, not gating.
+6. **Bless** the tables as TSV files (`conformance/router/{vitess-wesql,pgdog-loamspg}-statements.tsv` with columns `digest, component, source, example, class, ref_hash, target_hash, note, issue`, where the two hashes are the canonical result hashes of step 4; `…-suites.tsv` with `suite, test, result, rows`). A PR that changes a pinned version re-runs the inventory and shows the diff.
+7. **Gate.** RT3's gate for D302 (proposed): no `error` or `differs` row in the components Loams uses (query service, health, schema engine, VReplication for MoveTables and Reshard), and the suite pass rates in §17's RT3 row. Rows in components Loams does not use are recorded, not gating.
 
 ## 16. Licenses (D318)
 
 | Component | License | Rule |
 |---|---|---|
-| Loam's crates, specs, oracle, inventory tables | Apache-2.0 | D11 |
+| Loams's crates, specs, oracle, inventory tables | Apache-2.0 | D11 |
 | PgDog | AGPL-3.0 | Unmodified service; read as a reference; nothing copied, including into specs and inventory rows beyond statement text the engine receives (D236, §28 §8) |
 | Vitess | Apache-2.0 | Service; may be forked or ported only by a recorded decision, with its NOTICE (D302, D317); test vectors copied with the notice (§12.1) |
 | WeSQL | GPL-2.0-only | Separate process (D148, §29 §10) |
-| PostgreSQL `hashfn.c` (ported hash functions) | PostgreSQL License | Ported with the notice into `operon-sqlrouter::hash` |
+| PostgreSQL `hashfn.c` (ported hash functions) | PostgreSQL License | Ported with the notice into `loams-sqlrouter::hash` |
 | etcd | Apache-2.0 | Service |
 | TLC, CommunityModules | MIT | Tools, not linked |
-| Apalache, Lean 4, Plausible | Apache-2.0 | Tools; the Lean oracle is Loam's code |
+| Apalache, Lean 4, Plausible | Apache-2.0 | Tools; the Lean oracle is Loams's code |
 | Elle | EPL-2.0 | Not used as a dependency; optional external cross-check (D314) |
 | Jepsen | EPL-1.0 (`jepsen/project.clj`) | Optional external tool (D315) |
 | toxiproxy | MIT | Test tool |
@@ -498,12 +498,12 @@ Each phase is small stacked PRs. RT adds crates and CI jobs and changes no M-tra
 
 | Phase | Was (chat dump) | Scope | Depends on | Done when |
 |---|---|---|---|---|
-| **RT0** | M0 | This document's decisions; `spec/` scaffolding with `ShardMap` and `ReshardCutover` checked at small bounds and skeletons of the others; the compatibility inventory, static half for both routers and dynamic half against reference engines; `operon-sqlrouter` kernel types, ranges and hash vectors; the Lean project with the range-partition proofs and the oracle skeleton; the kernel crate's lints. About 9 PRs ([plan](../plans/2026-10-01-rt0-foundations-and-specs.md)) | — | Specs pass TLC at the stated bounds in CI; the partition lemma is proved; Rust and Lean agree on 10 000 partition checks; the inventory TSVs exist with every row classified or `pending-target` |
-| **RT1** | M1 | `operon-detsim`; `ShardMapStore` (memory, TiKV); PgDog rendering; `RouterInstance` and `ShardBackend` with models and contract suites; the `ConfigPush` machine; trace validation of `ShardMap`; the DST scenario; the compose slice (PgDog, two Postgres shards); single-shard differential. About 10 PRs ([plan](../plans/2026-10-01-rt1-postgres-slice-and-sim.md)) | RT0; P3 for Loam Postgres computes (CI uses Postgres 17.11 until then) | Single-shard routing passes the differential; the DST scenario is clean on the PR corpus and 2 000 seeds, and replay is deterministic; traces validate |
-| **RT2** | M2 | Lean merge, limit and aggregate kernels and the oracle; cross-shard differential through PgDog; Loam Postgres 2PC settings and tests; PgDog 2PC deployment rule; `CrossShardCommit` checked; the in-doubt monitor; the change stream and exact-boundary snapshot copy; an offline split verified by checksums. About 10 PRs ([plan](../plans/2026-10-01-rt2-scatter-oracle-2pc.md)) | RT1; P2b for the Loam Postgres tests | Theorems proved; differential clean or allowlisted; 2PC fault tests pass with the deployment rule; split checksums equal |
+| **RT0** | M0 | This document's decisions; `spec/` scaffolding with `ShardMap` and `ReshardCutover` checked at small bounds and skeletons of the others; the compatibility inventory, static half for both routers and dynamic half against reference engines; `loams-sqlrouter` kernel types, ranges and hash vectors; the Lean project with the range-partition proofs and the oracle skeleton; the kernel crate's lints. About 9 PRs ([plan](../plans/2026-10-01-rt0-foundations-and-specs.md)) | — | Specs pass TLC at the stated bounds in CI; the partition lemma is proved; Rust and Lean agree on 10 000 partition checks; the inventory TSVs exist with every row classified or `pending-target` |
+| **RT1** | M1 | `loams-detsim`; `ShardMapStore` (memory, TiKV); PgDog rendering; `RouterInstance` and `ShardBackend` with models and contract suites; the `ConfigPush` machine; trace validation of `ShardMap`; the DST scenario; the compose slice (PgDog, two Postgres shards); single-shard differential. About 10 PRs ([plan](../plans/2026-10-01-rt1-postgres-slice-and-sim.md)) | RT0; P3 for Loams Postgres computes (CI uses Postgres 17.11 until then) | Single-shard routing passes the differential; the DST scenario is clean on the PR corpus and 2 000 seeds, and replay is deterministic; traces validate |
+| **RT2** | M2 | Lean merge, limit and aggregate kernels and the oracle; cross-shard differential through PgDog; Loams Postgres 2PC settings and tests; PgDog 2PC deployment rule; `CrossShardCommit` checked; the in-doubt monitor; the change stream and exact-boundary snapshot copy; an offline split verified by checksums. About 10 PRs ([plan](../plans/2026-10-01-rt2-scatter-oracle-2pc.md)) | RT1; P2b for the Loams Postgres tests | Theorems proved; differential clean or allowlisted; 2PC fault tests pass with the deployment rule; split checksums equal |
 | **RT3** | M3 | Vitess v24 with WeSQL: dynamic inventory against WeSQL, the RT3 gate (§15 step 7), vtgate as the MySQL front end (D320), VSchema rendering, unsharded then two-shard keyspaces, MySQL differential, Vitess end-to-end subset pass rates (target: `vtgate/queries/*` and `vreplication` MoveTables/Reshard basic cases, numbers fixed in the plan) | RT0 inventory; §29 W2 for durability claims; Q302–Q304 | Gate met or D317's trigger recorded |
 | **RT4** | M4 | `PrimaryFailover` (Arm A and W3) and the Vitess `CrossShardCommit` variant checked; the multi-instance cutover orchestrator with trace validation; the full fault catalog in DST; `RouterSession` contract; Q303 decided | RT2, RT3; §28 P4c; §29 W3 | All specs pass at nightly bounds; DST clean across every category |
-| **RT5** | M5 | Resharding end to end on real clusters (PgDog across instances, Vitess `Reshard`); `operon-nemesis`; performance baselines; the published compatibility matrix | RT4 | Nemesis runs clean for the agreed durations; a live reshard with zero lost or duplicated rows; the matrix published |
+| **RT5** | M5 | Resharding end to end on real clusters (PgDog across instances, Vitess `Reshard`); `loams-nemesis`; performance baselines; the published compatibility matrix | RT4 | Nemesis runs clean for the agreed durations; a live reshard with zero lost or duplicated rows; the matrix published |
 
 ## 18. Risks
 
@@ -516,10 +516,10 @@ Each phase is small stacked PRs. RT adds crates and CI jobs and changes no M-tra
 | 5 | **PgDog's 2PC log** lacks checksums and lives on one pod's disk | D306's deployment rule; the monitor alarms and never decides; `CrossShardCommit`'s expected-violation variants document why |
 | 6 | **Specs drift from code** | Trace validation in CI; the action-coverage test (D311) |
 | 7 | **Models drift from engines and routers** | Contract suites against both (D316); nemesis runs (RT5) |
-| 8 | **Formal-methods effort grows** | Strict scope: TLA+ for protocols Loam builds or orchestrates, Lean for pure kernels only (D308, D312); RouterSession may be dropped (Q312) |
+| 8 | **Formal-methods effort grows** | Strict scope: TLA+ for protocols Loams builds or orchestrates, Lean for pure kernels only (D308, D312); RouterSession may be dropped (Q312) |
 | 9 | **License mistakes** (PgDog text in a spec, Vitess code without notice) | §16's rules; provenance in each spec header; review checklist in every RT plan |
 | 10 | **Team bandwidth across three engines** | Postgres first (RT1–RT2) to validate the control plane before MySQL (RT3); RT runs only when the build machine is free |
-| 11 | **The owner wants a Loam-built router** (Q300) | D317 keeps the seams; the RT0–RT2 work (specs, kernels, DST, inventory, control plane) is needed by either path |
+| 11 | **The owner wants a Loams-built router** (Q300) | D317 keeps the seams; the RT0–RT2 work (specs, kernels, DST, inventory, control plane) is needed by either path |
 
 ## 19. Open questions
 
@@ -530,8 +530,8 @@ Each phase is small stacked PRs. RT adds crates and CI jobs and changes no M-tra
 | Q302 | WeSQL's rebase to MySQL 8.4 before Vitess v24's support ends (estimate: about 2027-04); joint with §29 Q274 | Founder, Eng | RT3 plan |
 | Q303 | Atomic MySQL cross-shard commits: run a semi-sync replica so Vitess 2PC is allowed, or ship without MySQL cross-shard atomicity | Eng, Founder | RT4 plan |
 | Q304 | Vitess `_vt` sidecar tables on SmartEngine (default substitution) or InnoDB (`serverless_honor_innodb_engine`), and whether vttablet's sidecar diff loops on the engine | Eng | RT3 Task 0 |
-| Q305 | When sharded Loam Postgres through PgDog leaves beta | Founder | RT2 exit |
-| Q306 | Does `CUTOVER` on one PgDog plus `RELOAD` of the rendered swap on the others give identical routing, or does it need PgDog's Enterprise Edition (proprietary, not usable in OSS Loam) | Eng | RT4 plan |
+| Q305 | When sharded Loams Postgres through PgDog leaves beta | Founder | RT2 exit |
+| Q306 | Does `CUTOVER` on one PgDog plus `RELOAD` of the rendered swap on the others give identical routing, or does it need PgDog's Enterprise Edition (proprietary, not usable in OSS Loams) | Eng | RT4 plan |
 | Q307 | The Postgres fence: `ALTER ROLE <app_role> NOLOGIN` plus termination (proposed; it also stops stale reads), or revoking write privileges per table (races with DDL) | Eng | RT1 Task 0 |
 | Q308 | The Lean job on every relevant PR (proposed) or nightly only, given its build time | Eng | RT0 Task 7 |
 | Q309 | Trace validation with TLC and the trace-spec method (proposed), or Apalache, or a Rust port of each spec's `Next` | Eng | RT1 Task 8 |
@@ -539,23 +539,23 @@ Each phase is small stacked PRs. RT adds crates and CI jobs and changes no M-tra
 | Q311 | The nemesis harness in Rust (proposed) or Jepsen as an external tool | Eng | RT5 plan |
 | Q312 | Keep `RouterSession` (a black-box contract of bought routers) or drop it | Eng | RT4 plan |
 | Q313 | vtgate as the front end for unsharded WeSQL too (D320), retiring §23's N6 splice | Founder | RT3 plan |
-| Q314 | Narrow Q260 to analytics: OLTP MySQL wire access comes from vtgate in front of WeSQL (§29, D320); whether Loam also serves read-only MySQL wire over DataFusion stays open | Founder | With Q273 |
+| Q314 | Narrow Q260 to analytics: OLTP MySQL wire access comes from vtgate in front of WeSQL (§29, D320); whether Loams also serves read-only MySQL wire over DataFusion stays open | Founder | With Q273 |
 
 ## 20. Contradictions with earlier decisions, and how they are resolved
 
 | Earlier | Conflict | Resolution |
 |---|---|---|
-| D260 (no TiDB), Q260 | The chat dump's "Loam SQL, InnoDB semantics on TiKV" | Rejected (D301). WeSQL is the MySQL engine (§29); Q314 narrows Q260 |
-| D236 (PgDog unmodified) | The chat dump's "clean Rust Postgres router, pgdog as reference" | D236 stands; D300; a Loam router only under D317 |
+| D260 (no TiDB), Q260 | The chat dump's "Loams SQL, InnoDB semantics on TiKV" | Rejected (D301). WeSQL is the MySQL engine (§29); Q314 narrows Q260 |
+| D236 (PgDog unmodified) | The chat dump's "clean Rust Postgres router, pgdog as reference" | D236 stands; D300; a Loams router only under D317 |
 | D11 (Apache-2.0) | The chat dump's "router license AGPL or Apache" | Apache-2.0 (D318) |
 | D28 (seeded, not bit-exact simulation) | The chat dump's madsim/turmoil DST | D313 adds a bit-exact tier for sans-I/O code; D28 unchanged for the engine |
-| D153, MySQL half (§23 §6.3, N6: Loam's handshake-and-splice proxy) | D320: vtgate | Proposed amendment; the splice is the fallback for unsharded WeSQL only, and sharded MySQL waits for D317 |
+| D153, MySQL half (§23 §6.3, N6: Loams's handshake-and-splice proxy) | D320: vtgate | Proposed amendment; the splice is the fallback for unsharded WeSQL only, and sharded MySQL waits for D317 |
 | §29 §7.2 ("the router follows the record") | With Vitess, the repoint is `TabletExternallyReparented` | Amendment proposed by D320; a note is in §29 §7.2 |
-| §18 §5.8 ("Loam avoids cross-shard atomicity") | D306 enables PgDog 2PC for SQL databases | No conflict: §18 is about the retrieval engine's metadata; SQL databases opt in under D306's rule |
-| §18 §5.5 ("Loam never copies data") | SQL resharding copies rows | No conflict: D321 scopes §18 to the retrieval engine |
-| §20 §14 item 4 (the Elle-style checker in `operon-sim`'s checker module) | D314 puts it in `operon-detsim::checkers` | One implementation in `operon-detsim`, re-exported by `operon-sim` |
+| §18 §5.8 ("Loams avoids cross-shard atomicity") | D306 enables PgDog 2PC for SQL databases | No conflict: §18 is about the retrieval engine's metadata; SQL databases opt in under D306's rule |
+| §18 §5.5 ("Loams never copies data") | SQL resharding copies rows | No conflict: D321 scopes §18 to the retrieval engine |
+| §20 §14 item 4 (the Elle-style checker in `loams-sim`'s checker module) | D314 puts it in `loams-detsim::checkers` | One implementation in `loams-detsim`, re-exported by `loams-sim` |
 | §23 §6.4 (WeSQL binlog with `gtid_mode = OFF`, spike) | Vitess and W2 need GTIDs | `gtid_mode = ON` for Vitess-fronted WeSQL (§9.1), as §29 W2 already requires |
-| Chat dump milestones M0–M5 | Loam's M0–M6 | Renamed RT0–RT5 (D319). The `Q-RT-*` questions of §24–§25 are the runtime track's and are unrelated to track RT |
+| Chat dump milestones M0–M5 | Loams's M0–M6 | Renamed RT0–RT5 (D319). The `Q-RT-*` questions of §24–§25 are the runtime track's and are unrelated to track RT |
 | D2, D130 (OLTP out of scope for the retrieval engine) | Sharded OLTP | As §23 and §28: separate services beside the engine |
 
 ## 21. Sources
@@ -568,4 +568,4 @@ Read on 2026-10-01.
 - **Neon** (`neondatabase/neon`, Apache-2.0): `pageserver/src/pgdatadir_mapping.rs`; `test_runner/regress/{test_twophase.py,test_logical_replication.py}`; `safekeeper/spec/{ProposerAcceptorStatic.tla,ProposerAcceptorReconfig.tla,readme.md}`.
 - **WeSQL** (`ostrium-labs/wesql` at `eef34f452`): `mysql-test/suite/smartengine_consistent_snapshot/t/default_storage_engine.test`; semi-sync tests under `mysql-test/suite/smartengine_rpl_*`.
 - **Tools**: GitHub API for `tlaplus/tlaplus` (MIT; v1.7.4 stable, v1.8.0 rolling pre-release), `apalache-mc/apalache` (Apache-2.0; v0.62.3), `leanprover/lean4` (v4.34.1), `leanprover-community/plausible` (Apache-2.0), `madsim-rs/madsim` (Apache-2.0), `tokio-rs/turmoil` (MIT), `jepsen-io/elle` (EPL-2.0); crates.io for `madsim` 0.2.34, `turmoil` 0.7.2, `proptest` 1.11.0, `des` 0.9.0, `xxhash-rust` 0.8.19. Trace validation: H. Cirstea, M. A. Kuppe, B. Loillier, S. Merz et al., "Validating Traces of Distributed Programs Against TLA+ Specifications" (2024).
-- **Loam**: §12 §2; §18 §5; §20 §10, §14; §21; §23 §6.3, §6.4, §9; §28 §4, §5, §7.2, §8, §11; §29 (PR #172) §4, §6, §7, §9; D11, D28, D148, D153, D154, D236, D260, D264, D273–D280; Q260, Q274.
+- **Loams**: §12 §2; §18 §5; §20 §10, §14; §21; §23 §6.3, §6.4, §9; §28 §4, §5, §7.2, §8, §11; §29 (PR #172) §4, §6, §7, §9; D11, D28, D148, D153, D154, D236, D260, D264, D273–D280; Q260, Q274.

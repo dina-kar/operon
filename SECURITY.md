@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Loam has no stable release yet. Security fixes land on the `main` branch only. Once releases start, this section will list the supported release lines.
+Loams has no stable release yet. Security fixes land on the `main` branch only. Once releases start, this section will list the supported release lines.
 
 ## Reporting a vulnerability
 
@@ -17,7 +17,7 @@ If you cannot use GitHub, email **security@ostriumlabs.com**. Please don't put v
 
 Please include:
 
-- the affected component (for example a gateway, the log, the metastore, the query engine, Loam Live or Loam Durable) and the version or commit;
+- the affected component (for example a gateway, the log, the metastore, the query engine, Loams Live or Loams Durable) and the version or commit;
 - steps to reproduce, or a proof of concept;
 - your assessment of the impact, for example data exposure across namespaces, an authentication bypass, or loss of acknowledged writes.
 
@@ -37,4 +37,4 @@ Of particular interest:
 - server-side request forgery, for example through durable task delivery targets;
 - any path that could lose or corrupt acknowledged data.
 
-Out of scope: findings that need a compromised host or bucket, denial of service through unbounded requests on a loopback-bound, unauthenticated development server (the default for `operon dev`), and issues in third-party dependencies that are already public (please report those upstream; we track advisories with `cargo-deny`).
+Out of scope: findings that need a compromised host or bucket, denial of service through unbounded requests on a loopback-bound, unauthenticated development server (the default for `loams dev`), and issues in third-party dependencies that are already public (please report those upstream; we track advisories with `cargo-deny`).

@@ -10,7 +10,7 @@ The durable tier is the **only source of truth**. It consists of open formats on
 
 | Object | Primary format | Secondary structures | Pointer lives in |
 |---|---|---|---|
-| Stream | Operon WAL objects → segments (`kafka`: RecordBatch v2 bytes; `arrow`: Arrow IPC, §02 §5) | Sparse offset/timestamp index in footer; per-column ranges for `arrow` | Meta (offset index) |
+| Stream | Loams WAL objects → segments (`kafka`: RecordBatch v2 bytes; `arrow`: Arrow IPC, §02 §5) | Sparse offset/timestamp index in footer; per-column ranges for `arrow` | Meta (offset index) |
 | Table | **Apache Iceberg** v2/v3 (Parquet data, deletion vectors in Puffin) | PK index (SlateDB) for keyed tables | **Lakekeeper** (Iceberg REST catalog) |
 | Collection | **Lance** dataset (docs, vectors, scalar + IVF indexes) | **Tantivy splits** + per-split deletion bitmaps; PK index | Meta → collection manifest (S3) |
 | Graph | Source tables/collections | CSR/CSC adjacency sidecars; vertex-ID map (SlateDB) | Meta → graph manifest (S3) |
@@ -19,22 +19,22 @@ The durable tier is the **only source of truth**. It consists of open formats on
 ## 2. Tables — Iceberg via Lakekeeper
 
 ### 2.1 Catalog
-- **Lakekeeper** (Rust, Apache-2.0) is the Iceberg REST catalog. It is bundled in Operon deployments and is also the endpoint external engines (Spark, Trino, DuckDB, ClickHouse, Snowflake) use.
+- **Lakekeeper** (Rust, Apache-2.0) is the Iceberg REST catalog. It is bundled in Loams deployments and is also the endpoint external engines (Spark, Trino, DuckDB, ClickHouse, Snowflake) use.
 - Lakekeeper stores catalog state in Postgres today (verify pluggability). Options, in order of preference:
-  1. Implement Lakekeeper's catalog-backend trait on the Operon metastore (no extra dependency) — **verify the trait is pluggable**.
+  1. Implement Lakekeeper's catalog-backend trait on the Loams metastore (no extra dependency) — **verify the trait is pluggable**.
   2. Bundle a small managed Postgres for the catalog only (acceptable for large deployments).
-- Lakekeeper is **not on the query hot path** (§04): Operon caches table metadata and learns about commits from its own workers or from Lakekeeper change events (CloudEvents).
+- Lakekeeper is **not on the query hot path** (§04): Loams caches table metadata and learns about commits from its own workers or from Lakekeeper change events (CloudEvents).
 
 ### 2.2 Write path
 - Workers apply `stream → table` links: batch records → Arrow → Parquet (sorted by the table's sort order, row groups 128 MiB target, page index + bloom filters on configured columns) → Iceberg commit through Lakekeeper with optimistic concurrency.
 - **Commit cadence**: default every 30 s or 512 MiB per table (configurable 5 s–10 min). Freshness below cadence comes from the tail (§04), so commits can stay large and cheap.
-- Snapshot summary records `operon.link.<link_id>.offsets = {partition: offset}` ⇒ exactly-once apply and restart safety.
+- Snapshot summary records `loams.link.<link_id>.offsets = {partition: offset}` ⇒ exactly-once apply and restart safety.
 
 ### 2.3 Keyed tables (upsert/delete)
 - Keyed tables maintain a **PK index**: SlateDB instance mapping `pk → (data_file, row_position)`, updated by the worker that writes each data file (it knows positions).
 - Upsert = write new row + add old position to the **deletion vector** of its data file (Iceberg v3 Puffin DV). This keeps reads merge-on-read-cheap.
 - Fallback for engines/versions without v3: equality deletes, converted to DVs/rewrites by compaction.
-- **External upsert writers** (e.g., the Flink or RisingWave Iceberg upsert sinks) commit equality deletes and bypass the PK index. A keyed table therefore has **one writer class**: either Operon links or an external engine. Externally written tables are read with equality-delete support and are never targets of Operon links; compaction converts their equality deletes to DVs without building a PK index.
+- **External upsert writers** (e.g., the Flink or RisingWave Iceberg upsert sinks) commit equality deletes and bypass the PK index. A keyed table therefore has **one writer class**: either Loams links or an external engine. Externally written tables are read with equality-delete support and are never targets of Loams links; compaction converts their equality deletes to DVs without building a PK index.
 - **Changelog:** because the PK index locates the old row, the apply worker can emit before/after images to the table's changelog stream (§02 §8.1) at the cost of one cached read per update.
 - **Gap:** apache/iceberg-rust cannot yet write DVs or RowDelta commits (open PRs as of 2026-09). Plan: start from the **RisingWave iceberg-rust fork** (equality/position deletes, RewriteFiles), build the DV writer, and upstream it.
 
@@ -50,11 +50,11 @@ The durable tier is the **only source of truth**. It consists of open formats on
 - Typed fields are **not** Lance columns (M1.1 Ruling 4): they live in Tantivy (indexed and fast fields) and are always re-derivable from `_source`. Schema evolution of fields therefore never touches Lance; vector columns are added lazily, all-null, by a metadata-only commit (M1.1 Ruling 5).
 - File format pinned to **Lance 2.1** initially, set explicitly (`V2_1`); Lance 12 defaults to 2.2. 2.2 adoption after evaluation.
 - Indexes: vector index segments per §06 §5.1 (IVF_PQ default, IVF_RQ, IVF_HNSW_SQ), and a scalar BTREE only on `_pk`.
-- Operon does **not** use Lance's per-write commit path for small writes (expensive, contended). Workers write large fragments from batched stream data and commit once per batch.
+- Loams does **not** use Lance's per-write commit path for small writes (expensive, contended). Workers write large fragments from batched stream data and commit once per batch.
 - Lance FTS is **not** used; text is in Tantivy.
 
 ### 3.2 Tantivy splits
-- One **split** per indexing batch: an immutable, single-segment Tantivy index bundled into a single object with a **hotcache footer** (term dictionary skeleton, fast-field metadata, file offsets) — Quickwit's design, using Quickwit's `storage`/`directories`/split-bundle code vendored into `operon-quickwit` (R21).
+- One **split** per indexing batch: an immutable, single-segment Tantivy index bundled into a single object with a **hotcache footer** (term dictionary skeleton, fast-field metadata, file offsets) — Quickwit's design, using Quickwit's `storage`/`directories`/split-bundle code vendored into `loams-quickwit` (R21).
 - Splits carry Quickwit's footer trailer; open = one GET of `footer_range`, recorded in the manifest's `SplitRef`. Then range reads for postings/positions/fast fields. The workspace builds Tantivy `=0.26.2` with its `quickwit` feature (sstable term dictionary), so a split is not readable by a Tantivy built without it (M1.1 Ruling 10).
 - Each Tantivy doc stores `_pk` (canonical bytes, indexed and fast) and the Lance stable row id (`_rowid` fast field); `SplitRef.row_id_ranges` map row ids to doc ids. Documents are added in ascending row-id order, so doc id *i* is the *i*-th document and row id → (split, doc id) is a binary search (M1.1 Ruling 8).
 - Fast fields hold aggregation/sort columns (keywords, numerics, dates) for ES aggregations. A JSON field `n` is five Tantivy fields: `n`, `_text.n`, `_date.n`, `_null.n`, `_count.n` (M1.1 Ruling 26).
@@ -63,7 +63,7 @@ The durable tier is the **only source of truth**. It consists of open formats on
 - Merge policy: log-structured tiers by doc count (Quickwit's `StableLogMergePolicy`, vendored), bounded by split size (target 1–5 GiB for search-heavy collections), grouped by schema version; by default a split with ≥ 30 % (and at least 1 000) deleted docs is rewritten alone (`MaintenanceConfig::{purge_deleted_ppm, purge_min_deleted}`). M1.3 bounds one merge at 10 M docs and 1 GiB of input.
 
 ### 3.3 Collection manifest
-Immutable, protobuf-encoded inside the `OPCM` v1 envelope (§3.4), at `collections/<cid>/manifests/<version:020>-<ulid>.pb`. The fields are defined by [`crates/operon-collection/proto/collection_manifest.proto`](../../crates/operon-collection/proto/collection_manifest.proto) (package `operon.collection.v1`): the version and its parent (by version and by full path), the schema version, `created_at_ms`, the detached `lance_version`, the `SplitRef`s (with footer range, row-id ranges and delete-bitmap path), the vector and scalar index segments, hot artifacts (M1.3), the `applied` offsets per partition of the implicit stream, the live doc count, the commit kind, and this commit's PK delta and dead-letter paths.
+Immutable, protobuf-encoded inside the `OPCM` v1 envelope (§3.4), at `collections/<cid>/manifests/<version:020>-<ulid>.pb`. The fields are defined by [`crates/loams-collection/proto/collection_manifest.proto`](../../crates/loams-collection/proto/collection_manifest.proto) (package `loams.collection.v1`): the version and its parent (by version and by full path), the schema version, `created_at_ms`, the detached `lance_version`, the `SplitRef`s (with footer range, row-id ranges and delete-bitmap path), the vector and scalar index segments, hot artifacts (M1.3), the `applied` offsets per partition of the implicit stream, the live doc count, the commit kind, and this commit's PK delta and dead-letter paths.
 
 **Commit protocol** (the collection link-apply task, one per collection; plan M1.1 Task 10 rule 3):
 1. The task loads the parent manifest *v* and reads the schema. A PK handle is reused only while its watermark equals the parent's `applied`; otherwise the index is reopened (fencing any other writer) and repaired before any key is resolved.
@@ -75,29 +75,29 @@ Immutable, protobuf-encoded inside the `OPCM` v1 envelope (§3.4), at `collectio
 
 `hot_artifacts` hold one HNSW artifact reference per vector column; a maintenance commit (split merge, Lance compaction, hot artifact) is `CommitKind::Maintenance` and rebases on conflict (R9).
 
-A reader that loads manifest *v* sees a mutually consistent Lance version, split set and delete bitmaps. Lance's own cleanup is never run; Operon GC computes Lance reachability from the Lance manifests of the retained chain (M1.1 Ruling 2, §7).
+A reader that loads manifest *v* sees a mutually consistent Lance version, split set and delete bitmaps. Lance's own cleanup is never run; Loams GC computes Lance reachability from the Lance manifests of the retained chain (M1.1 Ruling 2, §7).
 
 **External readers** (Ray Data, Polars, PySpark, the torch loader, any Lance reader) get a pinned Lance version only through **scan pinning** (D53, §17 §3): the dataset's mainline is the empty version 1, so opening the dataset root shows no rows. A scan plan names the manifest version, the Lance dataset URI with the manifest's detached version id, the fragments with their row counts and whether a tail exists; the reader reads those fragments (which carry `_source`, system columns and vectors, not the typed fields) or falls back to Flight.
 
-### 3.4 Operon-defined collection formats
-Each Operon format below is `magic (4 bytes) ‖ u16 LE format version ‖ body ‖ crc32c (u32 LE) of every preceding byte` (M1.1 Ruling 19):
+### 3.4 Loams-defined collection formats
+Each Loams format below is `magic (4 bytes) ‖ u16 LE format version ‖ body ‖ crc32c (u32 LE) of every preceding byte` (M1.1 Ruling 19):
 
 | Magic | Object | Body (version 1) |
 |---|---|---|
-| `OPCM` | collection manifest, `manifests/<version:020>-<ulid>.pb` | protobuf `operon.collection.v1.CollectionManifest` |
+| `OPCM` | collection manifest, `manifests/<version:020>-<ulid>.pb` | protobuf `loams.collection.v1.CollectionManifest` |
 | `OPDB` | delete bitmap, `text/deletes/<split_ulid>/<ulid>.bitmap` | split ULID (u128 BE) ‖ split doc count (u32 LE) ‖ cardinality (u64 LE) ‖ roaring portable serialization |
 | `OPPD` | PK delta, `pkdelta/<version:020>-<ulid>.pkd` | postcard `Vec<(key bytes, Option<row id u64>)>`, keys strictly ascending, `None` = deleted |
-| `OPDL` | dead letters, `deadletters/<version:020>-<ulid>.dlq` | postcard `Vec<DeadLetter { partition: u32, offset: u64, key: Option<bytes>, value: Option<bytes>, reason: String }>` ([`deadletter.rs`](../../crates/operon-collection/src/deadletter.rs)) |
+| `OPDL` | dead letters, `deadletters/<version:020>-<ulid>.dlq` | postcard `Vec<DeadLetter { partition: u32, offset: u64, key: Option<bytes>, value: Option<bytes>, reason: String }>` ([`deadletter.rs`](../../crates/loams-collection/src/deadletter.rs)) |
 
 Not enveloped:
-- **Implicit-stream records** (overview §6.2), defined in [`codec.rs`](../../crates/operon-collection/src/codec.rs):
+- **Implicit-stream records** (overview §6.2), defined in [`codec.rs`](../../crates/loams-collection/src/codec.rs):
   - The key is the canonical PK bytes (`0x01` ‖ u64 BE, `0x02` ‖ 16-byte UUID, or `0x03` ‖ UTF-8). A key's partition is `xxh3_64(canonical) mod partitions`.
   - The value is `0x01` (codec version) ‖ postcard `WireOp`, at most 16 MiB with the version byte. Variant order and field order are the format:
     - `WireOp`: variant 0 `Upsert(WireDoc)`; variant 1 `Delete(pk)`; variant 2 `Patch { pk, mode, source, delete_keys, vectors, sparse_vectors, upsert: Option<WireDoc> }`.
     - `WireDoc { pk, source, vectors, sparse_vectors }`.
     - `source` is a JSON object as UTF-8 bytes, because postcard cannot carry `serde_json::Value`. `vectors` maps a name to `[f32]`, and `sparse_vectors` maps a name to `{ indices: [u32], values: [f32] }`; both maps are in ascending name order. In a `Patch`, each map value is an `Option`, where `None` removes the vector. `mode` is `PatchMode` (0 `MergeDeep`, 1 `MergeTop`, 2 `Replace`), and `delete_keys` is a list of dot-separated paths.
     - The `pk` inside `WireOp` is `PrimaryKey`'s derived serde enum in postcard (0 `U64` varint, 1 `Uuid` 16 bytes with no length, 2 `Str` varint length ‖ UTF-8). It is not the canonical bytes (M1.1 ruling P23).
-  - The golden test `every_record_variant_has_a_pinned_encoding` in [`tests/it/codec.rs`](../../crates/operon-collection/tests/it/codec.rs) pins one byte literal per variant (M1.1 ruling P24).
+  - The golden test `every_record_variant_has_a_pinned_encoding` in [`tests/it/codec.rs`](../../crates/loams-collection/tests/it/codec.rs) pins one byte literal per variant (M1.1 ruling P24).
 - **PK index values** (inside SlateDB, which checksums its blocks): `0x01 ‖ row id u64 BE`; the watermark under the key `0x00 "watermark"` is `0x01 ‖ postcard(PkWatermark { manifest_version, applied })`.
 - **Splits**: Quickwit's bundle: the index files, then the footer = bundle metadata ‖ its length (u32 LE) ‖ hotcache ‖ its length (u32 LE) ‖ the 16-byte trailer (footer start u64 LE ‖ trailer version u32 LE = 1 ‖ `QWFT`). `SplitRef.footer_range` spans the whole footer, trailer included (M1.1 Ruling 9).
 
@@ -130,9 +130,9 @@ A single abstraction (`PkIndex`) backed by **SlateDB** (object-storage-native LS
 
 ## 6. Format versioning and compatibility
 
-- Every Operon-defined format (WAL object, segment, split footer extensions, manifests, sidecars) carries `magic + format_version`; readers support N and N−1.
+- Every Loams-defined format (WAL object, segment, split footer extensions, manifests, sidecars) carries `magic + format_version`; readers support N and N−1.
 - WAL chunks and segments also carry an `encoding` field from their first version, so adding `arrow` (§02 §5) is not a format break.
-- Durable-execution documents use the Resonate blob format (header `v`, currently 1) unchanged; Operon does not extend it, so upstream tools can read Operon's `durable/` prefix.
+- Durable-execution documents use the Resonate blob format (header `v`, currently 1) unchanged; Loams does not extend it, so upstream tools can read Loams's `durable/` prefix.
 - Third-party formats are pinned: Lance file format 2.1, Iceberg spec v2 with v3 features enabled per table, Tantivy index version as shipped by the pinned fork.
 - Upgrades that change formats are opt-in per object and rolled forward by compaction.
 

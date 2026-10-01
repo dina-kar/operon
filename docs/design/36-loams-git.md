@@ -1,8 +1,8 @@
-# 36 — Loam Git: a WAL on the Bucket, Smart HTTP, Agent Scopes and a Build Cache
+# 36 — Loams Git: a WAL on the Bucket, Smart HTTP, Agent Scopes and a Build Cache
 
-Status: **Proposed** · 2026-10-01. Source: §14 "Loam Git (hosting, WAL, build cache)" and the related open questions in §15 of the owner's draft "Loam Serverless Runtime — Consolidated Plan" (2026-09-30, `chatdump.md` lines 868–946). The owner asked on 2026-10-01 to fold that draft into the design docs, the decision log and the plans. This document **extends §15 §3 (repos on the bucket)**; it does not fork that design. Where it changes an approved part of §15, the change is marked with its D-number and listed in §15 "Conflicts". The `Fs` trait is §17 below. Running Loam Git on Cloudflare (Workers, Durable Objects, Containers) is a commercial Cloudflare target (`loam-platform`): since the owner's ruling of 2026-10-02 ("move Cloudflare, OpenRTB etc. commercial to private repos"; §38 D440 on PR #182) the former §35 lives there (private). This repository's Git core stays portable to it but does not depend on it.
+Status: **Proposed** · 2026-10-01. Source: §14 "Loams Git (hosting, WAL, build cache)" and the related open questions in §15 of the owner's draft "Loams Serverless Runtime — Consolidated Plan" (2026-09-30, `chatdump.md` lines 868–946). The owner asked on 2026-10-01 to fold that draft into the design docs, the decision log and the plans. This document **extends §15 §3 (repos on the bucket)**; it does not fork that design. Where it changes an approved part of §15, the change is marked with its D-number and listed in §15 "Conflicts". The `Fs` trait is §17 below. Running Loams Git on Cloudflare (Workers, Durable Objects, Containers) is a commercial Cloudflare target (`loam-platform`): since the owner's ruling of 2026-10-02 ("move Cloudflare, OpenRTB etc. commercial to private repos"; §38 D440 on PR #182) the former §35 lives there (private). This repository's Git core stays portable to it but does not depend on it.
 
-Decisions **D388–D399**; open questions **Q384–Q395** (the range D380–D399 / Q380–Q399 was shared with the former §35; D381 and D382 stay here, in §17, and D380, D383–D387 moved to `loam-platform`, private). Plans: [GT1](../plans/2026-10-01-gt1-wal-git-core.md) (the WAL git core and `git-remote-loam`), [GT2](../plans/2026-10-01-gt2-smart-http.md) (Smart HTTP for stock git) and [GT3](../plans/2026-10-01-gt3-build-cache-and-mirror.md) (the sccache backend and the crates mirror). GT4 and GT5 are not yet planned.
+Decisions **D388–D399**; open questions **Q384–Q395** (the range D380–D399 / Q380–Q399 was shared with the former §35; D381 and D382 stay here, in §17, and D380, D383–D387 moved to `loam-platform`, private). Plans: [GT1](../plans/2026-10-01-gt1-wal-git-core.md) (the WAL git core and `git-remote-loams`), [GT2](../plans/2026-10-01-gt2-smart-http.md) (Smart HTTP for stock git) and [GT3](../plans/2026-10-01-gt3-build-cache-and-mirror.md) (the sccache backend and the crates mirror). GT4 and GT5 are not yet planned.
 
 Markers: **(source)** means read in the upstream repository or documentation on 2026-10-01, at the URL in §18. **(verify)** means the plan that builds it checks it first. **(estimate)** means computed, not measured. **(draft)** means the figure comes from the owner's draft and was not re-checked.
 
@@ -12,17 +12,17 @@ Markers: **(source)** means read in the upstream repository or documentation on 
 
 | # | Decision | Status |
 |---|---|---|
-| D388 | **Loam Git extends §15 §3.** A repository's refs move from §15's single CAS'd `refs` document to a **per-repository write-ahead log of create-only segments plus periodic checkpoints**, under the same `ns/<ns>/repos/<repo_id>/` prefix. Packs stay immutable and content-addressed. Forks stay O(1). Repos stay a service with their own bucket WAL, not a sixth object kind and not a Loam stream (proposed answer to Q15). Track **GT** (GT1–GT5) delivers W1's repository scope and parts of W2 (§13) | Proposed |
+| D388 | **Loams Git extends §15 §3.** A repository's refs move from §15's single CAS'd `refs` document to a **per-repository write-ahead log of create-only segments plus periodic checkpoints**, under the same `ns/<ns>/repos/<repo_id>/` prefix. Packs stay immutable and content-addressed. Forks stay O(1). Repos stay a service with their own bucket WAL, not a sixth object kind and not a Loams stream (proposed answer to Q15). Track **GT** (GT1–GT5) delivers W1's repository scope and parts of W2 (§13) | Proposed |
 | D389 | **The commit point is the create-only PUT of the next segment**, `wal/<seq:020>.lgw` with `If-None-Match: *`. There is no separately CAS'd head pointer: `head` is a hint, written at most once a second. Exactly one batch can own a sequence number on every supported store (S3, R2, GCS `ifGenerationMatch=0`, Azure `If-None-Match: *`, RustFS) | Proposed |
-| D390 | **Formats.** A WAL record is a **CloudEvent 1.0** in the protobuf format (D270) with the extensions `tenantid`, `idempotencykey`, `traceparent`, `schemaversion` and `loamseq`, whose data is a `loam.git.v1` message; a segment frames one `CloudEventBatch` with magic, version and CRC32C (§03 §6) and is at most 1 MiB; a checkpoint holds the full ref state, the live pack set, the fork parent and the idempotency window; a push is stored as **one object**, `packs/<checksum>.lpk` (pack ‖ index ‖ footer), named by the pack's trailer checksum | Proposed |
+| D390 | **Formats.** A WAL record is a **CloudEvent 1.0** in the protobuf format (D270) with the extensions `tenantid`, `idempotencykey`, `traceparent`, `schemaversion` and `loamsseq`, whose data is a `loams.git.v1` message; a segment frames one `CloudEventBatch` with magic, version and CRC32C (§03 §6) and is at most 1 MiB; a checkpoint holds the full ref state, the live pack set, the fork parent and the idempotency window; a push is stored as **one object**, `packs/<checksum>.lpk` (pack ‖ index ‖ footer), named by the pack's trailer checksum | Proposed |
 | D391 | **One sequencer per repository, with group commit.** The rendezvous owner of `(ns, repo)` (D75) under a lease (on a commercial Cloudflare target (`loam-platform`), a Durable Object per repository). One segment PUT in flight at a time; every transaction that arrives meanwhile joins the next segment. **Correctness never depends on there being one sequencer**: two writers for one repository fence each other on the segment name. Target **30 pushes/s per hot repository** (draft) | Proposed |
-| D392 | **Four traits in `operon-git`, with exact semantics** (§5): `WalStore` (fenced, monotonic append, idempotent on the batch id; contiguous reads), `RefLog` (atomic multi-ref transactions, linearizable commits and reads, idempotent on the idempotency key within a 1 h window), `BlobStore` (create-only, content-named blobs; range reads) and `Materializer` (scoped, on-demand blob fetch for agents) | Proposed |
+| D392 | **Four traits in `loams-git`, with exact semantics** (§5): `WalStore` (fenced, monotonic append, idempotent on the batch id; contiguous reads), `RefLog` (atomic multi-ref transactions, linearizable commits and reads, idempotent on the idempotency key within a 1 h window), `BlobStore` (create-only, content-named blobs; range reads) and `Materializer` (scoped, on-demand blob fetch for agents) | Proposed |
 | D393 | **Usage is exposed through §27's hooks only.** Git, the build cache and the package mirror export metric families per namespace (§11) and append a CloudEvent per committed transaction to the repository's event stream. No meter events and no ledger in this repository. Amends the draft's "CloudEvents feeding the metering ledger" (D190, D200–D202) | Proposed |
-| D394 | **Smart HTTP.** `git-upload-pack` speaks **protocol v2** (`ls-refs`, `fetch` with `filter`, `shallow` and `wait-for-done`, `object-info`); a v0/v1 upload-pack is added in GT2 only if a client in W1's matrix lacks v2. `git-receive-pack` speaks v0/v1, since protocol v2 has no push (`report-status`, `report-status-v2`, `atomic`, `delete-refs`, `side-band-64k`, `ofs-delta`, `push-options`, `quiet`). The server loop is Loam's, on gitoxide primitives. **Stock `git` runs only as an unmodified separate process**: the test oracle, the repack worker (D396) and, on the client, the pack steps of `git-remote-loam`'s pushes (D395). Answers §15 Q1 and the draft's last open question | Proposed |
-| D395 | **`git-remote-loam`.** In GT1 it is a serverless helper that reads and writes the bucket directly through the core (capabilities `fetch`, `push`, `option`; `loam::<store-url>` addresses). In GT2 it adds `stateless-connect` to tunnel protocol v2 to an in-process upload-pack, which is what partial clone and lazy fetch need, and `loam://<host>/<ns>/<repo>` addresses that reach a Loam server | Proposed |
+| D394 | **Smart HTTP.** `git-upload-pack` speaks **protocol v2** (`ls-refs`, `fetch` with `filter`, `shallow` and `wait-for-done`, `object-info`); a v0/v1 upload-pack is added in GT2 only if a client in W1's matrix lacks v2. `git-receive-pack` speaks v0/v1, since protocol v2 has no push (`report-status`, `report-status-v2`, `atomic`, `delete-refs`, `side-band-64k`, `ofs-delta`, `push-options`, `quiet`). The server loop is Loams's, on gitoxide primitives. **Stock `git` runs only as an unmodified separate process**: the test oracle, the repack worker (D396) and, on the client, the pack steps of `git-remote-loams`'s pushes (D395). Answers §15 Q1 and the draft's last open question | Proposed |
+| D395 | **`git-remote-loams`.** In GT1 it is a serverless helper that reads and writes the bucket directly through the core (capabilities `fetch`, `push`, `option`; `loams::<store-url>` addresses). In GT2 it adds `stateless-connect` to tunnel protocol v2 to an in-process upload-pack, which is what partial clone and lazy fetch need, and `loams://<host>/<ns>/<repo>` addresses that reach a Loams server | Proposed |
 | D396 | **Compaction is never on the push path.** Checkpoints every 256 segments or 8 MiB of replay; geometric repack with bitmaps and a multi-pack index by **stock `git repack`** on a worker's local mirror (gitoxide cannot yet write deltas or bitmaps); pack-set changes are committed through the WAL like pushes; one compactor per repository, by lease; GC by fork-family reachability after the §03 §7 grace period | Proposed |
-| D397 | **`loam-vfs` is §15 §5.1's `/workspace` lower layer** (GT4). A scope is a list of cone-mode sparse-checkout paths carried in the agent's vended token; blobs are fetched on first read; **write admission** refuses a commit that changes paths outside the scope; a commit is one WAL record whatever the folders it touches. **No per-scope WAL partitions** until GT4 measures that the per-repository sequencer is the bottleneck (Q391) | Proposed |
-| D398 | **Build cache: sccache** (Apache-2.0, v0.18.0) is the primary cache. Loam serves it two ways: **direct** (sccache's S3 backend against R2, RustFS or S3 with vended prefix-scoped credentials; no Loam code on the path) and **through the gateway** (sccache's WebDAV backend against a Loam endpoint that meters hits and misses, refreshes entries on hit for approximate LRU and enforces trust). **Trust model:** trusted branches write; forks, pull requests and agent sandboxes read only, with an optional private scratch prefix. BuildCache (zlib) only if a toolchain sccache cannot handle needs it | Proposed |
+| D397 | **`loams-vfs` is §15 §5.1's `/workspace` lower layer** (GT4). A scope is a list of cone-mode sparse-checkout paths carried in the agent's vended token; blobs are fetched on first read; **write admission** refuses a commit that changes paths outside the scope; a commit is one WAL record whatever the folders it touches. **No per-scope WAL partitions** until GT4 measures that the per-repository sequencer is the bottleneck (Q391) | Proposed |
+| D398 | **Build cache: sccache** (Apache-2.0, v0.18.0) is the primary cache. Loams serves it two ways: **direct** (sccache's S3 backend against R2, RustFS or S3 with vended prefix-scoped credentials; no Loams code on the path) and **through the gateway** (sccache's WebDAV backend against a Loams endpoint that meters hits and misses, refreshes entries on hit for approximate LRU and enforces trust). **Trust model:** trusted branches write; forks, pull requests and agent sandboxes read only, with an optional private scratch prefix. BuildCache (zlib) only if a toolchain sccache cannot handle needs it | Proposed |
 | D399 | **Package mirror: a crates.io sparse-index read-through** in the `gateway` role (§15 §6): index files cached with ETag revalidation, `.crate` files content-addressed by their SHA-256 `cksum` in the public-packages namespace, the §15 §6 policy (allowlists, quarantine, audit records). The index lives in the object store, **not** in a Durable Object or D1 | Proposed |
 
 ## 2. Goals and non-goals
@@ -47,14 +47,14 @@ Markers: **(source)** means read in the upstream repository or documentation on 
 
 ## 3. Reference systems
 
-| System | What it does | What Loam takes |
+| System | What it does | What Loams takes |
 |---|---|---|
 | **Cursor Continuity** ("Git at any scale", Vicent Martí, cursor.com, 2026-08; InfoQ, Leela Kumili, 2026-09-30) | An S3-backed WAL is the source of truth; NVMe repositories are warm caches; "we never acknowledge a push until it has been fully persisted"; batching hides PUT latency; rendezvous hashing picks preferred nodes; compare-and-swap on S3 lets any server accept a push; UDP gossip is a hint and conditional reads verify state; only the primary compacts, replicas download packs. **Reported, synthetic, not independently verified** (InfoQ's words): about 120 pushes/s on S3 Standard and over 300 on S3 Express One Zone, with compaction the bottleneck at the top rate (source) | The WAL as truth, ack-after-persist, batching, rendezvous placement, primary-only compaction. Not gossip or any-node writes yet (GT5) |
-| **GitHub Spokes** (DGit, 2016; "Stretching Spokes", 2017, updated 2025-06-03) | Three replicas on three servers; writes stream to all three and commit when a quorum confirms; updates use a three-phase commit that doubles as a distributed lock; four round trips to distant replicas (source) | The contrast: Loam keeps no stateful replicas; the bucket is the quorum |
+| **GitHub Spokes** (DGit, 2016; "Stretching Spokes", 2017, updated 2025-06-03) | Three replicas on three servers; writes stream to all three and commit when a quorum confirms; updates use a three-phase commit that doubles as a distributed lock; four round trips to distant replicas (source) | The contrast: Loams keeps no stateful replicas; the bucket is the quorum |
 | **Delta Lake's transaction log** | Commits are files `_delta_log/<version>.json` created with put-if-absent; the next version number is the fence | The commit protocol of D389: a sequential, create-only object name is the compare-and-swap |
 | **§15 §3** (approved) | One CAS'd `refs` document per repository, packs create-only, forks by alternates, Smart HTTP v2 in the `gateway` role, repo-affinity group commit | Everything except the single document (D388) |
 | `git-remote-object-store` (Apache-2.0), `awslabs/git-remote-s3` (Apache-2.0, last push 2026-08-20), Cloudflare Artifacts (closed) | Client-side helpers that use a bucket as a serverless Git remote; a Git server on Durable Objects and R2 | GT1's serverless helper (D395); the Durable Object sequencer of a commercial Cloudflare target (`loam-platform`) |
-| **go-git** (Apache-2.0, v5.19.2 2026-07-29) | Server-side `upload-pack` and `receive-pack` with a pluggable `storage.Storer`; its v6 `main` has v2 code while its compatibility table still lists v2 as unsupported (source) | A reference for the server loop. Not a dependency (Go; Loam's core is Rust and must run in Workers) |
+| **go-git** (Apache-2.0, v5.19.2 2026-07-29) | Server-side `upload-pack` and `receive-pack` with a pluggable `storage.Storer`; its v6 `main` has v2 code while its compatibility table still lists v2 as unsupported (source) | A reference for the server loop. Not a dependency (Go; Loams's core is Rust and must run in Workers) |
 
 ## 4. The WAL on the bucket (D388–D391)
 
@@ -88,7 +88,7 @@ PUT wal/<n+1>.lgw   If-None-Match: *     body = segment(n+1, batch_id, events)
         own batch_id → committed;  another batch_id → as 412;  404 → resend the same bytes
 ```
 
-- **Exactly one batch per sequence number.** Every store Loam supports refuses a second create of the same name: S3 (`If-None-Match`, 2024-08-20), R2 (S3 API and the Workers binding's `onlyIf`), GCS (`ifGenerationMatch=0`), Azure (`If-None-Match: *`) and RustFS (412 under a write lock; source). D178's `ObjectStoreProvider` already refuses a provider without conditional writes.
+- **Exactly one batch per sequence number.** Every store Loams supports refuses a second create of the same name: S3 (`If-None-Match`, 2024-08-20), R2 (S3 API and the Workers binding's `onlyIf`), GCS (`ifGenerationMatch=0`), Azure (`If-None-Match: *`) and RustFS (412 under a write lock; source). D178's `ObjectStoreProvider` already refuses a provider without conditional writes.
 - **Why no head pointer.** The draft advanced a head pointer by conditional write after each segment. That costs a second PUT per batch, adds a second linearization point, and contends on one key. **R2 limits writes to the same key to one per second** (R2 limits page, updated 2026-06-08), which would cap a CAS'd head at one commit a second. Sequential segment names are written once each by a successful writer, so the limit applies only when fenced writers race one name, and their `429` is resolved by the GET above; `head` is coalesced to at most one write a second and only speeds up readers.
 - **Contiguity.** A writer appends `n+1` only after it has read or written segment `n`. Readers read forward from a checkpoint and stop at the first missing number, so a segment written above a gap (which a correct writer never does) is unreachable, and GC deletes it after the grace period.
 - **Strong reads.** S3 and R2 give read-after-write and list consistency (R2 consistency page), so "GET `wal/<n+1>` returns 404" proves that `n` is the tail at that instant. A linearizable read costs one GET past the state a node holds.
@@ -115,20 +115,20 @@ Readers accept format versions N and N−1 (§03 §6). A body over 1 MiB is refu
 | `specversion` | `1.0` |
 | `id` | `<repo_id>/<seq>/<index>` |
 | `source` | `/ns/<ns>/repos/<repo_id>` |
-| `type` | `io.loams.dev.git.reftxn.v1`, `io.loams.dev.git.packset.v1` (compaction, D396), `io.loams.dev.git.config.v1` (`HEAD`, protection rules), under the owner's prefix `io.loams.dev.<domain>.<name>.v1` (ruling of 2026-10-01; the draft's §6 had `io.loam.<domain>.<name>.v1`) |
+| `type` | `io.loams.dev.git.reftxn.v1`, `io.loams.dev.git.packset.v1` (compaction, D396), `io.loams.dev.git.config.v1` (`HEAD`, protection rules), under the owner's prefix `io.loams.dev.<domain>.<name>.v1` (ruling of 2026-10-01; the draft's §6 had `io.loams.<domain>.<name>.v1`) |
 | `time` | the sequencer's clock at commit, RFC 3339 |
-| `datacontenttype` / `dataschema` | `application/protobuf` / `loam.git.v1.RefTransaction` (or `PackSetChange`, `ConfigChange`) |
+| `datacontenttype` / `dataschema` | `application/protobuf` / `loams.git.v1.RefTransaction` (or `PackSetChange`, `ConfigChange`) |
 | `tenantid` | `<org>/<ns>`, from the credential, never from the request (D182's rule) |
 | `idempotencykey` | the transaction's key (§4.5) |
 | `traceparent` | the receive request's W3C trace context, if any |
 | `schemaversion` | `1` |
-| `loamseq` | the segment's sequence number, as a decimal string (CloudEvents integers are 32-bit) |
+| `loamsseq` | the segment's sequence number, as a decimal string (CloudEvents integers are 32-bit) |
 
-**Data messages** (`proto/loam/git/v1/wal.proto`):
+**Data messages** (`proto/loams/git/v1/wal.proto`):
 
 ```protobuf
 syntax = "proto3";
-package loam.git.v1;
+package loams.git.v1;
 
 enum ObjectFormat { OBJECT_FORMAT_UNSPECIFIED = 0; SHA1 = 1; SHA256 = 2; }
 
@@ -204,7 +204,7 @@ loop:
 - **One PUT in flight.** Transactions that arrive during a PUT form the next group, so the group size grows with load and no fixed linger is needed (`group_linger`, default 0 ms, exists for benchmarks).
 - **What the sequencer does not do.** Pack upload, pack indexing, fast-forward checks and connectivity checks happen in the receive path *before* a transaction is queued (§6.3). Fast-forward is a property of the old and new commits, not of the ref state: if `old_oid` still matches at commit, a new commit that descends from it is a fast-forward. The sequencer therefore checks only object ids, protections and scopes, in memory.
 - **Throughput (estimate).** With a segment PUT latency `L`, the sequencer commits `1/L` groups a second. At `L` = 50–150 ms that is 7–20 groups/s, so 30 pushes/s needs an average group of 2–5 transactions, which forms on its own at that load. A push's acknowledgement waits for its pack PUT, up to one in-flight PUT, and its own segment PUT: 3 × `L` plus transfer time. GT1 measures `L` on R2, S3 Standard, S3 Express One Zone and RustFS (Q384).
-- **Placement.** The sequencer runs on the rendezvous owner of the placement key `(ns, repo, repo_id)` (D75) under the metastore lease `task/git-seq/<ns>/<repo_id>`, and nodes that receive a push for a repository they do not own forward the transaction to the owner, as §15 §3.2's repo-affinity routing describes. On a commercial Cloudflare target (`loam-platform`) the sequencer is a Durable Object instead. A wrong owner, a zombie after a lease loss, or a `git-remote-loam` client writing the bucket directly is fenced by §4.2, never trusted.
+- **Placement.** The sequencer runs on the rendezvous owner of the placement key `(ns, repo, repo_id)` (D75) under the metastore lease `task/git-seq/<ns>/<repo_id>`, and nodes that receive a push for a repository they do not own forward the transaction to the owner, as §15 §3.2's repo-affinity routing describes. On a commercial Cloudflare target (`loam-platform`) the sequencer is a Durable Object instead. A wrong owner, a zombie after a lease loss, or a `git-remote-loams` client writing the bucket directly is fenced by §4.2, never trusted.
 - **Idle repositories** keep no sequencer. The first push loads the hint, the checkpoint and the segments after it.
 
 ### 4.5 Idempotency
@@ -222,7 +222,7 @@ loop:
 | `AtLeast(seq)` | as `Latest`, but a node whose state is at or past `seq` answers without the probe | 0–1 GET |
 | `Exactly(seq)` | the latest checkpoint at or below `seq` plus segments up to `seq` (retained 24 h, as collections keep manifests, D38) | — |
 
-A push returns its sequence number as a consistency token, `git:<repo_id>:<seq>`, so an agent that pushes and then reads (`ls-refs` with `server-option=loam-at-least=<seq>`, or a code-index search, §15 §4) sees its own push.
+A push returns its sequence number as a consistency token, `git:<repo_id>:<seq>`, so an agent that pushes and then reads (`ls-refs` with `server-option=loams-at-least=<seq>`, or a code-index search, §15 §4) sees its own push.
 
 ### 4.7 Forks
 
@@ -230,11 +230,11 @@ Forking repository A at sequence `s` writes repository B's `checkpoints/00000000
 
 ### 4.8 The event-stream mirror
 
-After a segment commits, the sequencer appends each transaction's CloudEvent to the namespace stream `_git` (partition key `repo_id`) through `ProduceCloudEvents` (D270), deduplicated by `source` + `id`. This is §15 §3.2's "append a record to the repo's event stream", at least once with a repair sweep that compares `head` with the stream's last `loamseq`. Code-index links (§15 §4) and usage consumers (§11) read it. On a commercial Cloudflare target (`loam-platform`) the sequencer posts to a Queue whose consumer calls `ProduceCloudEvents`.
+After a segment commits, the sequencer appends each transaction's CloudEvent to the namespace stream `_git` (partition key `repo_id`) through `ProduceCloudEvents` (D270), deduplicated by `source` + `id`. This is §15 §3.2's "append a record to the repo's event stream", at least once with a repair sweep that compares `head` with the stream's last `loamsseq`. Code-index links (§15 §4) and usage consumers (§11) read it. On a commercial Cloudflare target (`loam-platform`) the sequencer posts to a Queue whose consumer calls `ProduceCloudEvents`.
 
 ## 5. The traits (D392)
 
-All four live in `crates/operon-git` and are object-safe (`Arc<dyn …>`). On `wasm32` targets they use `async_trait(?Send)`, because Workers futures are not `Send` (§17).
+All four live in `crates/loams-git` and are object-safe (`Arc<dyn …>`). On `wasm32` targets they use `async_trait(?Send)`, because Workers futures are not `Send` (§17).
 
 ### 5.1 `WalStore`
 
@@ -243,7 +243,7 @@ All four live in `crates/operon-git` and are object-safe (`Arc<dyn …>`). On `w
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Seq(pub u64);
 
-pub struct WalBatch { pub batch_id: [u8; 16], pub events: Vec<CloudEvent> }   // operon_cloudevents::CloudEvent
+pub struct WalBatch { pub batch_id: [u8; 16], pub events: Vec<CloudEvent> }   // loams_cloudevents::CloudEvent
 pub struct WalSegment { pub seq: Seq, pub batch: WalBatch, pub created_unix_ms: i64 }
 pub struct Hint { pub seq: Seq, pub checkpoint: Seq, pub written_unix_ms: i64 }
 
@@ -380,9 +380,9 @@ Routes in the `gateway` role, loopback-only until the unified auth plan (D111, Q
 
 | Route | Protocol |
 |---|---|
-| `GET /git/<ns>/<repo>.git/info/refs?service=git-upload-pack` with `Git-Protocol: version=2` | v2 capability advertisement: `agent=loam/<version>`, `ls-refs=unborn`, `fetch=shallow wait-for-done filter`, `server-option`, `object-format=sha1`, `object-info` |
+| `GET /git/<ns>/<repo>.git/info/refs?service=git-upload-pack` with `Git-Protocol: version=2` | v2 capability advertisement: `agent=loams/<version>`, `ls-refs=unborn`, `fetch=shallow wait-for-done filter`, `server-option`, `object-format=sha1`, `object-info` |
 | `POST /git/<ns>/<repo>.git/git-upload-pack` | v2 commands `ls-refs`, `fetch`, `object-info` (gitprotocol-v2) |
-| `GET …/info/refs?service=git-receive-pack` | v0 advertisement with `report-status report-status-v2 delete-refs side-band-64k quiet atomic ofs-delta push-options object-format=sha1 agent=loam/<version>` |
+| `GET …/info/refs?service=git-receive-pack` | v0 advertisement with `report-status report-status-v2 delete-refs side-band-64k quiet atomic ofs-delta push-options object-format=sha1 agent=loams/<version>` |
 | `POST …/git-receive-pack` | commands, then the pack (gitprotocol-pack, gitprotocol-http) |
 
 HTTP/2 is accepted where the client negotiates it (git over libcurl with `http.version=HTTP/2`). `packfile-uris` (pre-signed bucket URLs for whole-pack reuse on clone) is a GT2 option, worthwhile on R2 because R2 egress is free.
@@ -391,16 +391,16 @@ HTTP/2 is accepted where the client negotiates it (git over libcurl with `http.v
 
 **Push.** §6.3.
 
-**Why gitoxide primitives and not `git upload-pack` on every request.** The serving path must run on nodes with no local repository (and stay portable to Workers, for a commercial Cloudflare target (`loam-platform`)), with object reads that go through range GETs and the H1 cache. `gix-pack` builds for `wasm32-unknown-unknown` in gitoxide's CI; the `git` binary does not run in Workers. gitoxide's server-side upload-pack/receive-pack plumbing is still unchecked in its `crate-status.md` (read 2026-10-01), as §15 §3.4 found, so the loop is Loam's. Pack *encoding* without delta compression and *bitmap writing* are also unchecked there, so repacking uses stock `git` (D396), which is GPL-2.0 and runs as an unmodified separate process, never linked, as WeSQL (D148) and PgDog (D236) do.
+**Why gitoxide primitives and not `git upload-pack` on every request.** The serving path must run on nodes with no local repository (and stay portable to Workers, for a commercial Cloudflare target (`loam-platform`)), with object reads that go through range GETs and the H1 cache. `gix-pack` builds for `wasm32-unknown-unknown` in gitoxide's CI; the `git` binary does not run in Workers. gitoxide's server-side upload-pack/receive-pack plumbing is still unchecked in its `crate-status.md` (read 2026-10-01), as §15 §3.4 found, so the loop is Loams's. Pack *encoding* without delta compression and *bitmap writing* are also unchecked there, so repacking uses stock `git` (D396), which is GPL-2.0 and runs as an unmodified separate process, never linked, as WeSQL (D148) and PgDog (D236) do.
 
-### 6.2 `git-remote-loam` (D395)
+### 6.2 `git-remote-loams` (D395)
 
 | Phase | Address | Capabilities | What it does |
 |---|---|---|---|
-| GT1 | `loam::s3://bucket/prefix/ns/<ns>/repos/<repo_id>` (any `object_store` URL; git's `<transport>::<address>` form runs `git-remote-loam`) | `fetch`, `push`, `option` | **Serverless**: lists refs from `RefLog::snapshot(Latest)`; fetches the live packs the local repository lacks and writes each with its stored index into `.git/objects/pack/`; pushes by running `git pack-objects` for the refspecs, writing one `.lpk`, and committing a `RefTxn` through its own `BucketRefLog` (the client is its own sequencer, fenced by §4.2) |
-| GT2 | adds `loam://<host>/<ns>/<repo>` | adds `stateless-connect` | Tunnels protocol v2 to the server (or to an in-process upload-pack over the bucket for `loam::` addresses), so `--filter=blob:none`, sparse checkout and lazy fetch of promisor objects work. Whether git drives lazy fetch through a helper's `stateless-connect` (documented as "experimental; for internal use only") is checked first (Q386) |
+| GT1 | `loams::s3://bucket/prefix/ns/<ns>/repos/<repo_id>` (any `object_store` URL; git's `<transport>::<address>` form runs `git-remote-loams`) | `fetch`, `push`, `option` | **Serverless**: lists refs from `RefLog::snapshot(Latest)`; fetches the live packs the local repository lacks and writes each with its stored index into `.git/objects/pack/`; pushes by running `git pack-objects` for the refspecs, writing one `.lpk`, and committing a `RefTxn` through its own `BucketRefLog` (the client is its own sequencer, fenced by §4.2) |
+| GT2 | adds `loams://<host>/<ns>/<repo>` | adds `stateless-connect` | Tunnels protocol v2 to the server (or to an in-process upload-pack over the bucket for `loams::` addresses), so `--filter=blob:none`, sparse checkout and lazy fetch of promisor objects work. Whether git drives lazy fetch through a helper's `stateless-connect` (documented as "experimental; for internal use only") is checked first (Q386) |
 
-Credentials: the `object_store` environment (`AWS_*`, `GOOGLE_*`, `AZURE_*`), or a vended token from `loam` (§15 §8). The helper links only Apache-2.0/MIT code and runs `git` subcommands as processes, as every remote helper does.
+Credentials: the `object_store` environment (`AWS_*`, `GOOGLE_*`, `AZURE_*`), or a vended token from `loams` (§15 §8). The helper links only Apache-2.0/MIT code and runs `git` subcommands as processes, as every remote helper does.
 
 ### 6.3 The receive path (GT2; the helper's push in GT1 uses the same steps)
 
@@ -409,13 +409,13 @@ Credentials: the `object_store` environment (`AWS_*`, `GOOGLE_*`, `AZURE_*`), or
 3. Verify: every object hashes to its id; every new tip's closure is present in the new pack plus the pack set (connectivity); fast-forward unless the update is forced and allowed; ref names valid; protections; the token's scope (D397).
 4. PUT `packs/<checksum>.lpk` (create-only, D390). An empty push (deletes only) has no pack.
 5. Queue a `RefTxn`: one for an `atomic` push, else one per ref, all in the same group, so each ref gets its own status.
-6. Answer `report-status`/`report-status-v2` after the segment commits, with the sequence number in a `loam-seq=<n>` progress line on side-band 2.
+6. Answer `report-status`/`report-status-v2` after the segment commits, with the sequence number in a `loams-seq=<n>` progress line on side-band 2.
 
 A pack older than the GC grace period (1 h, §03 §7) at commit is refused (`Stale`), so a long push cannot rely on a pack that compaction retired meanwhile.
 
-### 6.4 `loam-vfs` and per-folder scopes (D397, GT4, not yet planned)
+### 6.4 `loams-vfs` and per-folder scopes (D397, GT4, not yet planned)
 
-`loam-vfs` is the lazy lower layer of §15 §5.1's `/workspace`, not a second filesystem design:
+`loams-vfs` is the lazy lower layer of §15 §5.1's `/workspace`, not a second filesystem design:
 
 - **Mount.** A FUSE (or virtiofs, §15 Q3) filesystem over a `Materializer`: the tree of the agent's commit is listed at mount, blobs are fetched on first read or write, and writes go to the local upper layer (overlay).
 - **Scopes.** The agent's vended token (§15 §8) names its cones. Paths outside the cones are listed but unreadable (`EACCES`), and the receive path and `RefLog` refuse a commit that changes a path outside them (`OutOfScope`). This is write admission for agents, enforced on the server, not trust in the client.
@@ -441,17 +441,17 @@ Only one compactor runs per repository, and never on the push path. The sequence
 |---|---|---|
 | **sccache** | Apache-2.0, v0.18.0 (2026-09-14) | **Primary.** Wraps C/C++, Rust and CUDA compilers. Backends: local disk, S3, R2, Redis, Memcached, GCS, Azure, GitHub Actions, WebDAV, Alibaba OSS, Tencent COS. A multi-level cache (`SCCACHE_MULTILEVEL_CHAIN`, docs/MultiLevel.md, added 2026-04-17, first released in v0.16.0 (verify)); read-only modes per backend (`SCCACHE_S3_RW_MODE`, `SCCACHE_WEBDAV_RW_MODE`, `SCCACHE_LOCAL_RW_MODE`, `rw_mode`); `SCCACHE_BASEDIRS` since v0.14.0 (source) |
 | **BuildCache** | zlib, v0.33.1 (2026-09-23; moved to gitlab.com/bits-n-bites/buildcache) | Optional. C/C++ and rustc; local cache plus an `http`, `redis` or `s3` second level. Overlaps sccache; adopt only if a toolchain sccache cannot handle needs it |
-| **mozilla-actions/sccache-action** | Apache-2.0, v0.0.11 | Wires sccache to GitHub's cache on GitHub-hosted runners only; Loam's endpoint replaces it elsewhere |
-| bazel-remote, REAPI | Apache-2.0 | §15 §7 stands: bazel-remote on the bucket now, Loam's REAPI CAS in W3 |
+| **mozilla-actions/sccache-action** | Apache-2.0, v0.0.11 | Wires sccache to GitHub's cache on GitHub-hosted runners only; Loams's endpoint replaces it elsewhere |
+| bazel-remote, REAPI | Apache-2.0 | §15 §7 stands: bazel-remote on the bucket now, Loams's REAPI CAS in W3 |
 
 Known sccache limits, from its README: crates that invoke the linker (`bin`, `dylib`, `cdylib`, `proc-macro`) and incrementally compiled crates are not cached; absolute paths must match unless `SCCACHE_BASEDIRS` is set.
 
 ### 8.2 Two ways in
 
-| Path | sccache config | Loam code on the path | What it gives |
+| Path | sccache config | Loams code on the path | What it gives |
 |---|---|---|---|
-| **Direct** | S3 backend: `SCCACHE_BUCKET`, `SCCACHE_ENDPOINT` (R2: `https://<account>.r2.cloudflarestorage.com`, region `auto`), `SCCACHE_S3_KEY_PREFIX=ns/<ns>/cache/sccache/<repo>/trusted/`, vended credentials; `SCCACHE_S3_RW_MODE=READ_ONLY` for untrusted builds | none (§15 §7's "no Operon code" path) | Isolation by credential scope: R2 temporary credentials take `prefixes` and `object-read-only`, up to 7 days (Cloudflare API, read 2026-10-01); RustFS and S3 through `ObjectStoreProvider::issue_credentials` (§25 §5). Eviction by age since write only |
-| **Gateway** | WebDAV backend: `SCCACHE_WEBDAV_ENDPOINT=https://<gateway>/cache/sccache/<ns>/<repo>/`, a token | `operon-buildcache` in the `gateway` role | Hit, miss and put counts (§11); quotas; trust enforced on the server; **approximate LRU**: a hit on an entry older than `refresh_after` (7 days) rewrites its timestamp with an in-place copy, at most one copy per entry per week. The WebDAV subset sccache needs is checked first (Q394) |
+| **Direct** | S3 backend: `SCCACHE_BUCKET`, `SCCACHE_ENDPOINT` (R2: `https://<account>.r2.cloudflarestorage.com`, region `auto`), `SCCACHE_S3_KEY_PREFIX=ns/<ns>/cache/sccache/<repo>/trusted/`, vended credentials; `SCCACHE_S3_RW_MODE=READ_ONLY` for untrusted builds | none (§15 §7's "no Loams code" path) | Isolation by credential scope: R2 temporary credentials take `prefixes` and `object-read-only`, up to 7 days (Cloudflare API, read 2026-10-01); RustFS and S3 through `ObjectStoreProvider::issue_credentials` (§25 §5). Eviction by age since write only |
+| **Gateway** | WebDAV backend: `SCCACHE_WEBDAV_ENDPOINT=https://<gateway>/cache/sccache/<ns>/<repo>/`, a token | `loams-buildcache` in the `gateway` role | Hit, miss and put counts (§11); quotas; trust enforced on the server; **approximate LRU**: a hit on an entry older than `refresh_after` (7 days) rewrites its timestamp with an in-place copy, at most one copy per entry per week. The WebDAV subset sccache needs is checked first (Q394) |
 
 CI templates (GT3) set `RUSTC_WRAPPER=sccache`, `CARGO_INCREMENTAL=0`, `SCCACHE_BASEDIRS=<workspace root>` and either path's variables. With `SCCACHE_MULTILEVEL_CHAIN=disk,webdav` (or `disk,s3`), a local disk cache sits in front, and on Cloudflare R2 is the edge level; a regional S3 level is a third link only where a deployment has one.
 
@@ -476,7 +476,7 @@ The crates.io part of §15 §6's registry proxy; PyPI, npm and Go stay in W2.
 - **`.crate` files** are fetched once from `static.crates.io`, checked against the index's `cksum` (SHA-256), and stored create-only at `ns/_public/packages/crates/sha256/<cksum>`. The designated public-packages namespace is §15 principle 5's exception to per-namespace dedup.
 - **Policy** (§15 §6): allowlists and denylists, version pinning, a quarantine window that hides versions younger than N days (needs a publish time per version: the index's `pubtime` field where present (verify), else the crates.io API), and an audit record per download to the stream `_packages`.
 - **Where state lives.** Index files and crates are objects; policy is namespace configuration. The draft's "index in a Durable Object or D1" is not needed: the object store plus H1 serve the index (D399).
-- **Buy vs build.** kellnr (Apache-2.0, v6.9.0, 2026-09-23) is a private registry; panamax (Apache-2.0, last release 2024-06-06) and ktra (Apache-2.0) are mirrors or registries with their own storage. None runs in Workers or stores into a Loam namespace, and the proxy is three routes, so it is built; kellnr is the documented choice for a self-hosted private registry with publishing (GT3 Task 0 checks its crates.io proxy and S3 storage).
+- **Buy vs build.** kellnr (Apache-2.0, v6.9.0, 2026-09-23) is a private registry; panamax (Apache-2.0, last release 2024-06-06) and ktra (Apache-2.0) are mirrors or registries with their own storage. None runs in Workers or stores into a Loams namespace, and the proxy is three routes, so it is built; kellnr is the documented choice for a self-hosted private registry with publishing (GT3 Task 0 checks its crates.io proxy and S3 storage).
 
 ## 10. Security
 
@@ -492,15 +492,15 @@ Exported per §27 (Prometheus, or OTLP delta metrics for per-repository cardinal
 
 | Family | Meaning |
 |---|---|
-| `loam_git_pushes_total{result}` | committed, rejected, replayed |
-| `loam_git_received_bytes_total`, `loam_git_sent_bytes_total` | pack bytes in and out |
-| `loam_git_stored_bytes` | live pack set, per namespace (gauge, from checkpoints) |
-| `loam_git_wal_segments_total`, `loam_git_group_txns` (histogram) | sequencer activity; group size |
-| `loam_git_cpu_seconds_total{op}` | `receive`, `upload`, `compact`, from the thread CPU clock around each request (as §27 §3.3 measures T1) |
-| `loam_buildcache_requests_total{result}` | `hit`, `miss`, `put`, `denied` (gateway path only) |
-| `loam_buildcache_bytes_total{direction}`, `loam_buildcache_stored_bytes` | |
-| `loam_packages_requests_total{ecosystem,source}` | `cache`, `upstream`, `denied` |
-| `loam_packages_bytes_total{ecosystem}` | |
+| `loams_git_pushes_total{result}` | committed, rejected, replayed |
+| `loams_git_received_bytes_total`, `loams_git_sent_bytes_total` | pack bytes in and out |
+| `loams_git_stored_bytes` | live pack set, per namespace (gauge, from checkpoints) |
+| `loams_git_wal_segments_total`, `loams_git_group_txns` (histogram) | sequencer activity; group size |
+| `loams_git_cpu_seconds_total{op}` | `receive`, `upload`, `compact`, from the thread CPU clock around each request (as §27 §3.3 measures T1) |
+| `loams_buildcache_requests_total{result}` | `hit`, `miss`, `put`, `denied` (gateway path only) |
+| `loams_buildcache_bytes_total{direction}`, `loams_buildcache_stored_bytes` | |
+| `loams_packages_requests_total{ecosystem,source}` | `cache`, `upstream`, `denied` |
+| `loams_packages_bytes_total{ecosystem}` | |
 
 Storage bytes for the direct cache path come from the namespace's logical-bytes accounting (D103). Turning these into invoices is `loam-platform`'s job (D190, D202).
 
@@ -512,10 +512,10 @@ R2 prices read 2026-10-01: storage $0.015/GB-month, Class A $4.50 per million, C
 
 | Phase | Scope | Exit gate | Plan |
 |---|---|---|---|
-| **GT1** | `operon-git`: formats, `BlobStore`, `WalStore`, `Odb`, `BucketRefLog` with group commit and idempotency, checkpoints, forks; `git-remote-loam` (serverless `fetch`/`push`) | Stock git clones, fetches and pushes through `loam::` on RustFS and in-memory; 8 concurrent pushers never lose an acknowledged push; the linearizability checker passes RefLog histories under store faults; pushes/s and push latency measured on RustFS, R2 and S3 | [GT1](../plans/2026-10-01-gt1-wal-git-core.md) |
+| **GT1** | `loams-git`: formats, `BlobStore`, `WalStore`, `Odb`, `BucketRefLog` with group commit and idempotency, checkpoints, forks; `git-remote-loams` (serverless `fetch`/`push`) | Stock git clones, fetches and pushes through `loams::` on RustFS and in-memory; 8 concurrent pushers never lose an acknowledged push; the linearizability checker passes RefLog histories under store faults; pushes/s and push latency measured on RustFS, R2 and S3 | [GT1](../plans/2026-10-01-gt1-wal-git-core.md) |
 | **GT2** | Smart HTTP v2 upload-pack, v0/v1 receive-pack, the receive path, negotiation and pack assembly, compaction with stock git, `stateless-connect` in the helper (partial clone, lazy fetch) | §15 W1's client matrix (git, gitoxide, libgit2, JGit): clone, fetch, push, partial clone, shallow; differential tests against `git upload-pack` on the same objects | [GT2](../plans/2026-10-01-gt2-smart-http.md) |
-| **GT3** | `operon-buildcache` (WebDAV subset, trust classes, refresh-on-hit, sweeper), the direct-path credential recipe, CI templates; `operon-registry` crates mirror | A cold and a warm `cargo build` of a fixture workspace through each path (the Loam workspace nightly), with the warm hit rate reported; an untrusted build cannot write `trusted/`; `cargo fetch` of the workspace through the mirror with egress limited to Loam | [GT3](../plans/2026-10-01-gt3-build-cache-and-mirror.md) |
-| **GT4** | `loam-vfs`, `Materializer`, scopes and write admission (§6.4) | Not yet planned | — |
+| **GT3** | `loams-buildcache` (WebDAV subset, trust classes, refresh-on-hit, sweeper), the direct-path credential recipe, CI templates; `loams-registry` crates mirror | A cold and a warm `cargo build` of a fixture workspace through each path (the Loams workspace nightly), with the warm hit rate reported; an untrusted build cannot write `trusted/`; `cargo fetch` of the workspace through the mirror with egress limited to Loams | [GT3](../plans/2026-10-01-gt3-build-cache-and-mirror.md) |
+| **GT4** | `loams-vfs`, `Materializer`, scopes and write admission (§6.4) | Not yet planned | — |
 | **GT5** | Continuity-style NVMe replica caches, gossip as a hint, any-node writes, compaction at scale | Not yet planned | — |
 
 GT1–GT2 are §15 W1's repository scope; GT3 is W2's sccache wiring and the crates part of the registry proxy; GT4 is W2's lazy workspace mount. §15 §13 places W1 after M3. Starting GT1 earlier, as its own track beside M and R like tracks R, D and J, is an owner decision (Q395).
@@ -529,9 +529,9 @@ GT1–GT2 are §15 W1's repository scope; GT3 is W2's sccache wiring and the cra
 | 3 | **Pack GC and repacking** bugs lose objects | Removal only through `PackSetChange` after the replacement pack is durable; deletion only after grace with GC claims; a nightly `git fsck` of mirrors of sampled repositories |
 | 4 | **gitoxide memory in Workers** (128 MB per isolate) | Relevant only to a commercial Cloudflare target (`loam-platform`), which measures it |
 | 5 | **Cache poisoning** | §8.3 trust classes, enforced by credential scope or the gateway, never by client configuration |
-| 6 | **Unverified third-party throughput** (Continuity's 120 and 300 pushes/s are synthetic) | Loam's own target (30/s) is measured in GT1 on each store |
+| 6 | **Unverified third-party throughput** (Continuity's 120 and 300 pushes/s are synthetic) | Loams's own target (30/s) is measured in GT1 on each store |
 | 7 | **Segment PUT latency** on R2 or S3 Standard is too high for 30 pushes/s at small group sizes | Group commit grows with load; S3 Express One Zone as an `express`-like class for hot repositories (§02 §2), if its conditional create is confirmed (Q384) |
-| 8 | **A direct-writing `git-remote-loam` client** and the server race on one repository | Both are fenced by §4.2; the server re-reads and re-validates; tested in GT1 Task 9 |
+| 8 | **A direct-writing `git-remote-loams` client** and the server race on one repository | Both are fenced by §4.2; the server re-reads and re-validates; tested in GT1 Task 9 |
 | 9 | **Stock git as a process dependency** (GPL-2.0) | Never linked or vendored; invoked as a binary only in the repack worker and tests; recorded in the licence check like PgDog (D236) |
 | 10 | **gitoxide API churn** (0.x releases every few weeks) | Pin `gix-*` versions; the core touches gix only behind `Odb` and the protocol module |
 
@@ -546,13 +546,13 @@ GT1–GT2 are §15 W1's repository scope; GT3 is W2's sccache wiring and the cra
 | The draft §14.5: per-scope WAL partitions | D397: one WAL per repository; scopes are read and write admission | §15 principle 2 (one writer per workspace) and atomic cross-folder commits; Q391 reopens it on measurement |
 | The draft §14.7: metering CloudEvents feed the ledger | D393: §27 hooks only | D190, D200–D202: billing is in `loam-platform` |
 | The draft §13.3: package index "in a Durable Object or D1" | D399: in the object store | D1 (object storage is the source of truth); fewer services |
-| §15 §7: sccache with "no Operon code" | D398 adds an optional gateway path | The direct path stays code-free; the gateway path is for metering, LRU and server-enforced trust |
+| §15 §7: sccache with "no Loams code" | D398 adds an optional gateway path | The direct path stays code-free; the gateway path is for metering, LRU and server-enforced trust |
 | D11: no copyleft dependencies | D394, D396: stock `git` (GPL-2.0) | An unmodified separate process, never linked, as D148 (WeSQL) and D236 (PgDog) |
 | §15 §13: W1 after M3 | GT1–GT3 could start earlier | Owner decision (Q395) |
-| Q15: repos as a sixth object kind | D388: a service with its own bucket WAL | Proposed answer to Q15; a repo's WAL is not a Loam stream, and its events are mirrored into one (§4.8) |
+| Q15: repos as a sixth object kind | D388: a service with its own bucket WAL | Proposed answer to Q15; a repo's WAL is not a Loams stream, and its events are mirrored into one (§4.8) |
 | §15 §16 Q1: protocol v2 only? | D394 | Answered: v2 upload-pack, v0/v1 receive-pack, v0 upload-pack only if a matrix client needs it |
 | The draft §2/§3/§4.3: Resonate on TiDB | Not used by Git | D260/D261: Resonate on TiKV; Git needs no durable-execution store |
-| The draft §6: event types `io.loam.<domain>.<name>.v1` | `io.loams.dev.git.*.v1` | The owner's ruling of 2026-10-01: the prefix is `io.loams.dev.<domain>.<name>.v1` |
+| The draft §6: event types `io.loams.<domain>.<name>.v1` | `io.loams.dev.git.*.v1` | The owner's ruling of 2026-10-01: the prefix is `io.loams.dev.<domain>.<name>.v1` |
 
 ## 16. Open questions
 
@@ -573,19 +573,19 @@ GT1–GT2 are §15 W1's repository scope; GT3 is W2's sccache wiring and the cra
 
 ## 17. The `Fs` trait and object-store providers (D381, D382; moved from the former §35)
 
-When the Cloudflare target moved to `loam-platform` (2026-10-02, §38 D440), its two vendor-neutral decisions stayed here, because Loam Git needs them.
+When the Cloudflare target moved to `loam-platform` (2026-10-02, §38 D440), its two vendor-neutral decisions stayed here, because Loams Git needs them.
 
-**D381: no Loam-built S3 service.** RustFS is the store where Loam runs its own storage (D61, D178); any S3-compatible service (S3, R2, Cellar, MinIO) is a provider behind `ObjectStoreProvider` (§25 §5), and `operon-store` stays the client. Tenants are isolated by **vended, prefix-scoped credentials** (`ObjectStoreProvider::issue_credentials`); on R2 these are temporary credentials with `prefixes` and `object-read-only` or `object-read-write`, up to 7 days, which GT3's `r2` vendor requests. D178's provider list gains `r2`.
+**D381: no Loams-built S3 service.** RustFS is the store where Loams runs its own storage (D61, D178); any S3-compatible service (S3, R2, Cellar, MinIO) is a provider behind `ObjectStoreProvider` (§25 §5), and `loams-store` stays the client. Tenants are isolated by **vended, prefix-scoped credentials** (`ObjectStoreProvider::issue_credentials`); on R2 these are temporary credentials with `prefixes` and `object-read-only` or `object-read-write`, up to 7 days, which GT3's `r2` vendor requests. D178's provider list gains `r2`.
 
-**D382: an `Fs` trait for warm, rebuildable state and scratch.** Loam code that keeps spill buffers (a pack arriving on a push), local caches (pack indexes, scope caches, §5.4) or small mutable metadata (a sequencer's idempotency index) uses `Fs`, so the same code can run where there is no `std::fs`. **Durable truth stays in the object store behind conditional writes (D1)**; an `Fs` is a cache and scratch, never the source of truth.
+**D382: an `Fs` trait for warm, rebuildable state and scratch.** Loams code that keeps spill buffers (a pack arriving on a push), local caches (pack indexes, scope caches, §5.4) or small mutable metadata (a sequencer's idempotency index) uses `Fs`, so the same code can run where there is no `std::fs`. **Durable truth stays in the object store behind conditional writes (D1)**; an `Fs` is a cache and scratch, never the source of truth.
 
 ### 17.1 Where it lives
 
-`crates/operon-fs` (Apache-2.0, no cloud dependency) holds the trait, `NativeFs` (`tokio::fs` under a root directory; `rename(2)`; fsync of file and directory when `survives_restart`; Kubernetes, Lambda `/tmp` (not surviving), laptops) and `MemFs` (tests, and the conformance suite's reference). Cloudflare backends (Durable Object SQLite, R2 blobs) are part of the commercial Cloudflare target in `loam-platform`. One conformance suite, `operon-fs::conformance`, runs against every backend, with capability flags selecting the append and rename cases: read-after-write, `CreateNew` races, range reads at boundaries, list pagination, rename atomicity under a crash, and the limits.
+`crates/loams-fs` (Apache-2.0, no cloud dependency) holds the trait, `NativeFs` (`tokio::fs` under a root directory; `rename(2)`; fsync of file and directory when `survives_restart`; Kubernetes, Lambda `/tmp` (not surviving), laptops) and `MemFs` (tests, and the conformance suite's reference). Cloudflare backends (Durable Object SQLite, R2 blobs) are part of the commercial Cloudflare target in `loam-platform`. One conformance suite, `loams-fs::conformance`, runs against every backend, with capability flags selecting the append and rename cases: read-after-write, `CreateNew` races, range reads at boundaries, list pagination, rename atomicity under a crash, and the limits.
 
 ### 17.2 The trait
 
-`crates/operon-fs` (Apache-2.0, no Cloudflare dependency):
+`crates/loams-fs` (Apache-2.0, no Cloudflare dependency):
 
 ```rust
 /// Relative, '/'-separated, no empty, '.' or '..' segments, at most 1,024 bytes (R2's key limit).
@@ -640,8 +640,8 @@ pub trait Fs: fmt::Debug {
 
 Read on 2026-10-01 unless noted.
 
-- The owner's draft "Loam Serverless Runtime — Consolidated Plan" (2026-09-30), §13–§15 (`chatdump.md` lines 814–946).
-- Repository: §01 §5, §02 §2–§3 and §7.4 (D270), §03 §6–§7, §04, §09, §15 (all), §18 §5.3 (D75), §24, §25 §5 (`ObjectStoreProvider`), §27; `crates/operon-store/src/store.rs` (`put_if_absent`, `put_if_match`, `get_range`), `crates/operon-cloudevents`, `crates/operon-meta-conformance/src/linearizability.rs`, `crates/operon-log/src/wal.rs` (format conventions).
+- The owner's draft "Loams Serverless Runtime — Consolidated Plan" (2026-09-30), §13–§15 (`chatdump.md` lines 814–946).
+- Repository: §01 §5, §02 §2–§3 and §7.4 (D270), §03 §6–§7, §04, §09, §15 (all), §18 §5.3 (D75), §24, §25 §5 (`ObjectStoreProvider`), §27; `crates/loams-store/src/store.rs` (`put_if_absent`, `put_if_match`, `get_range`), `crates/loams-cloudevents`, `crates/loams-meta-conformance/src/linearizability.rs`, `crates/loams-log/src/wal.rs` (format conventions).
 - Cursor: "Git at any scale", Vicent Martí, https://cursor.com/blog/git-at-any-scale (2026-08). InfoQ: "Cursor Uses S3 WAL to Scale Git Storage to More than 300 Pushes per Second", Leela Kumili, https://www.infoq.com/news/2026/09/cursor-continuity-git-storage/ (2026-09-30).
 - GitHub: "Introducing DGit", https://github.blog/news-insights/the-library/introducing-dgit/ (2016-04-05); "Stretching Spokes", https://github.blog/engineering/infrastructure/stretching-spokes/ (2017-10-13, updated 2025-06-03).
 - Git: https://git-scm.com/docs/protocol-v2 (`ls-refs`, `fetch` with `filter`, `packfile-uris`, `wait-for-done`; `object-info`; no push command), https://git-scm.com/docs/gitprotocol-http, https://git-scm.com/docs/gitremote-helpers (`connect`, `stateless-connect` "experimental; for internal use only", `fetch`, `push`, `option from-promisor`).
