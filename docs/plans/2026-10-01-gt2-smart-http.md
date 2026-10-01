@@ -13,7 +13,7 @@
 
 **Architecture:**
 - **Routes** in `crates/operon/src/api/git.rs` under the off-by-default feature `git`, mounted in the `gateway` role, **loopback only** until the unified auth plan (D111; Q389): `--git-listen` refuses any non-loopback address with `git listen on <addr>: only loopback addresses are served until the unified auth plan (D111)`.
-- **Protocol** in `crates/operon-git/src/protocol/` (`pktline.rs`, `advertise.rs`, `lsrefs.rs`, `fetch.rs`, `negotiate.rs`, `assemble.rs`, `receive.rs`, `report.rs`): transport-free, over `AsyncRead`/`AsyncWrite` of pkt-lines, so the gateway, the helper's in-process server (Task 8) and the Cloudflare Worker (§35) share it.
+- **Protocol** in `crates/operon-git/src/protocol/` (`pktline.rs`, `advertise.rs`, `lsrefs.rs`, `fetch.rs`, `negotiate.rs`, `assemble.rs`, `receive.rs`, `report.rs`): transport-free, over `AsyncRead`/`AsyncWrite` of pkt-lines, so the gateway, the helper's in-process server (Task 8) and the Worker of a commercial Cloudflare target (`loam-platform`) can share it.
 - **Reads** through `RangeOdb` (Task 3): pack idx sections and objects by range GET through the H1 cache (`operon-cache`), never whole-pack downloads on the serving path.
 - **Writes** through GT1's `BlobStore` and `BucketRefLog`. The gateway node runs a `BucketRefLog` per active repository it owns (rendezvous owner of `(ns, repo, repo_id)`, D75) and forwards pushes for other repositories to their owner (§36 §4.4).
 - **Stock `git`** runs only in the compaction worker and in tests (D394, D396).
@@ -30,7 +30,7 @@
 Same as the M1 overview §8 and GT1's, plus:
 - **Loopback only** (D111), as above. A request whose namespace does not exist answers `404` with no body detail.
 - **Limits** (in `operon_git::limits`, documented on the limits page per D88): `max_pack_bytes` 2 GiB, `max_refs_per_push` 4096, `max_wants` 65 536, `max_haves_per_round` 256, `max_negotiation_rounds` 64, `receive_idle_timeout` 60 s, `upload_deadline` 30 min. Each has a test at the limit and one past it.
-- **Every response is streamed.** No handler buffers a whole pack in memory; spill goes to the node's `Fs` (`operon-fs`'s `NativeFs`, §35) under a per-request directory removed on completion.
+- **Every response is streamed.** No handler buffers a whole pack in memory; spill goes to the node's `Fs` (`operon-fs`'s `NativeFs`, §36 §17) under a per-request directory removed on completion.
 - **Commit areas:** `git`, `api`, `worker`, `ci`, `docs`.
 
 ## Rulings made while writing this plan
@@ -46,7 +46,7 @@ Same as the M1 overview §8 and GT1's, plus:
 
 ## Carried in
 
-From §36: Q386 and Q387 (Task 0), Q389 (loopback until the auth plan; Task 0 records the owner's answer for Cloudflare). From GT1: its as-built rulings and measured latencies.
+From §36: Q386 and Q387 (Task 0), Q389 (loopback until the auth plan, MT1 on PR #182). From GT1: its as-built rulings and measured latencies.
 
 ## Review Focus
 
@@ -83,7 +83,7 @@ docs/design/36-loam-git.md  docs/guides/limits.md (via the limits table)  CHANGE
 3. The git release that made v2 the default over HTTP (for Ruling 1's message).
 4. `gix-pack`'s output pipeline: the counting and entry-iteration options that reuse stored deltas ("pack copy" of entries), whether it emits `ofs-delta`, and whether it can write a thin pack; `gix-commitgraph` read API for generation numbers.
 5. How `operon-worker` registers a new task kind with a lease key (`task/git-compact/<ns>/<repo_id>`), and how the gateway learns the rendezvous owner of a placement key (M1.3's routing as built).
-6. The owner's answer to Q389 for Cloudflare (recorded only; the Worker is §35's).
+6. The owner's answer to Q389 (recorded only; a Cloudflare Worker belongs to a commercial Cloudflare target (`loam-platform`)).
 
 **Commit:** `docs: reconcile GT2 with main and record the client checks`.
 

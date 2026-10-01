@@ -10,7 +10,7 @@
 - the GT1 gates: fault runs, linearizable `RefLog` histories, concurrent pushers through stock git, and the first pushes/s and latency numbers per store.
 
 **Architecture:**
-- **One core, two callers.** `BucketRefLog` is the sequencer of §36 §4.4. In GT1 its callers are the helper (each `git push` process is its own short-lived sequencer) and the tests (many sequencers on one store, the worst case). GT2 adds the gateway, and §35 adds the Durable Object. Every caller is fenced by the create-only segment PUT (§36 §4.2), so none needs a lease for correctness.
+- **One core, two callers.** `BucketRefLog` is the sequencer of §36 §4.4. In GT1 its callers are the helper (each `git push` process is its own short-lived sequencer) and the tests (many sequencers on one store, the worst case). GT2 adds the gateway; a commercial Cloudflare target (`loam-platform`) may add a Durable Object. Every caller is fenced by the create-only segment PUT (§36 §4.2), so none needs a lease for correctness.
 - **Storage through `operon-store`.** `StoreBlobStore` and `StoreWalStore` take an `operon_store::Store` (already a `PrefixStore` when opened from a URL with a prefix) and a `RepoPaths`. Fault injection is `operon_store::FaultyStore`, unchanged.
 - **gitoxide only behind `Odb` and `ids`.** `gix-hash` (object ids), `gix-validate` (ref names), `gix-pack` (reading packs and indexes in tests and in the pack cache). Pack writing in the helper uses the `git` binary (`pack-objects`, `index-pack`), as every remote helper does.
 - **CloudEvents through `operon-cloudevents`.** Events are `operon_cloudevents::CloudEvent`; the protobuf format comes from where PR #171 (`ProduceCloudEvents`, D270) put it, or a vendored `io.cloudevents.v1` proto if it has not merged (Task 0).
