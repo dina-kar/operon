@@ -24,7 +24,7 @@ def main():
     d, name = sys.argv[1], sys.argv[2]
     summary = open(os.path.join(d, "summary.txt")).read()
     out = {"workload": name}
-    if name == "bulk":
+    if name in ("bulk", "bulk-burst"):
         m = re.search(r"wal_bytes=(\d+) nanos=(\d+)", summary)
         b, s = int(m.group(1)), int(m.group(2)) / 1e9
         out.update(wal_bytes=b, seconds=round(s, 3), wal_mb_per_s=round(b / s / 1e6, 2))

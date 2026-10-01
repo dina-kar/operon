@@ -515,7 +515,10 @@ On a single host, `tc netem` adds a fixed delay between containers to model AZs:
 | `commit-16` | same | 16 | Group commit |
 | `tpcb-16` | built-in TPC-B, `-s 50` | 16 | A realistic OLTP mix |
 | `tpcb-64` | same | 64 | Saturation, which decides the throughput criterion |
-| `bulk` | `COPY` of 1 GiB | 1 | WAL throughput (MB/s) |
+| `bulk` | One transaction inserting about 1 GB | 1 | Sustained WAL throughput (MB/s); counts toward pass or fail |
+| `bulk-burst` | One transaction inserting about 250 MB | 1 | A burst, reported only; it does not count toward pass or fail |
+
+The `bulk` gate is a sustained write (owner decision, 2026-10-01) because a 250 MB burst measures the drive cache: on the same disk the stock safekeepers reach 118 to 182 MB/s on 250 MB and 22 to 26 MB/s on 1 GB.
 
 Each run lasts 5 minutes after a 1-minute warm-up, with `pgbench -l` per-transaction logs. p50, p90, p99 and p99.9 come from the logs, not from pgbench's averages. The spike's scripts, `pgb.sh` and `pgb-async.sh`, are the starting point.
 

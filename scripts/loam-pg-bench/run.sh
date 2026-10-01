@@ -55,7 +55,7 @@ DEPLOY=$ROOT/deploy/loam-pg-bench
 
 variant= replicas=1 duration=60 warmup=10 scale=10 label= keep=0 force=0
 store=tikv-raw depth=8 kv_config= place=1
-workloads="commit-1 commit-16 tpcb-16 bulk"
+workloads="commit-1 commit-16 tpcb-16 bulk bulk-burst"
 out=$ROOT/bench/results disk_root= feeder_root=
 io_depth=4
 while [ $# -gt 0 ]; do
