@@ -222,6 +222,8 @@ jobs:
         run: 'cargo test -p operon --features mysql-wire --lib --locked mysql_wire::'
       - name: operon's PostgreSQL wire listener (pgwire feature)
         run: 'cargo test -p operon --features pgwire --lib --locked pg::'
+      - name: ProduceCloudEvents over gRPC
+        run: cargo test -p operon --features stream-grpc --test stream_grpc_events --locked
       - name: metastore encoding
         run: 'cargo test -p operon-meta --test it encoding:: --locked'
       - name: metastore conformance
