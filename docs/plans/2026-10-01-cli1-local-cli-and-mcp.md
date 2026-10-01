@@ -217,7 +217,7 @@ const FEATURES: &[&str] = &[/* "es" if cfg!(feature = "es"), …: built by a con
 - Output format resolution: `--output` > `LOAM_OUTPUT` > profile `output` (Task 2; until then skipped) > `table`. Never from TTY detection (design §6.1).
 - `emit`: JSON → `serde_json::to_writer(out, &value)` + `\n`; table → `Render::table`; text → `Render::text`. Errors → stderr: JSON object in json mode, else `error: …` / `hint: …`. Colour (`Style`) only when `--color always`, or `auto` with stdout a TTY and `NO_COLOR` unset.
 - `version`: `{"name": "operon", "version", "target", "git_sha", "variant", "features", "output_schema": 1, "docs_version"}` (`docs_version` = `version` until Task 8 sets the bundle's). Table: `operon 0.0.1 (custom; x86_64-unknown-linux-gnu)` then the features.
-- `completions <shell>` writes `clap_complete::generate` output for the whole `Cli` (server commands included) as `RawOutput`.
+- `completions <shell>` writes `clap_complete::generate` output for the whole `Cli` (server commands included) as `RawOutput`. With `--output json` it instead goes through `emit` as `{"shell", "script"}` (design §6.1), so `RawOutput` is only the non-JSON path. A `Completions` type derives `Render` and `JsonSchema` for it.
 - Ctrl-C during a command: exit 130 with `interrupted` (a `tokio::signal::ctrl_c` race in `run`).
 - **Auth stubs** (D295): every `keys` verb (`create`, `list`, `rotate`, `revoke`, with design §5's flags so `--help` documents them), `login` (`--endpoint`) and `logout` parse their arguments and exit 6 with `auth_not_available` and the hint `this build has no auth (D111); local stacks are loopback-only`. `src/keys.rs` holds the clap types, so CLI3 replaces only the bodies.
 
