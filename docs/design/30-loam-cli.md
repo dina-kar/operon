@@ -166,7 +166,8 @@ Rules shared by every group:
 - **`json`**. Exactly one JSON document on stdout, followed by a newline. Keys are snake_case. A list command returns an object (`{"stacks": [...]}`), never a bare array, so fields can be added. Times are RFC 3339 UTC, sizes are integer bytes, durations are integer milliseconds with an `_ms` suffix. Nothing else is written to stdout. Notices, progress and update checks are suppressed, and logs go to stderr only with `-v`.
 - **`text`**. Tab-separated rows without headers, one record per line, for `cut` and `awk` (as the AWS CLI's `text` output).
 - **Default selection.** `--output`, then `LOAM_OUTPUT`, then the profile's `output`, then `table`. The format is never inferred from whether stdout is a TTY: a script must get what it asked for.
-- **Commands that emit a file format** (`env export`, `completions`, and `mcp serve`, which speaks JSON-RPC) emit that format unless `--output json` is given explicitly. With `--output json`, `env export` returns `{"stack", "path", "variables": {...}}`.
+- **Commands that emit a file format** (`env export`, `completions`) emit that format unless `--output json` is given explicitly. With `--output json`, `env export` returns `{"stack", "path", "variables": {...}}`.
+- **`mcp serve` always writes JSON-RPC to stdout** (§12.1). `--output` does not change its transport. A startup error before the transport opens follows §6.2.
 
 Every JSON output type derives `schemars::JsonSchema`. The schemas are snapshotted in `crates/operon-cli/tests/schemas/*.json` and a test fails on any change that is not additive. `loam version --output json` reports `"output_schema": 1`, which is bumped only by a breaking change, announced one minor release ahead.
 
@@ -551,7 +552,7 @@ The container runtime is Docker or Podman, whichever is found first; `LOAM_CONTA
   github-attestations = true
   hosting = "github"
   install-path = "~/.loam/bin"
-  build-global-artifacts-jobs = ["./release-manifest"]   # signs loam-release.json (verify that its outputs upload)
+  global-artifacts-jobs = ["./release-manifest"]   # runs in the build-global-artifacts phase; signs loam-release.json (verify that its outputs upload)
   [dist.github-custom-runners]
   x86_64-unknown-linux-gnu = "ubuntu-22.04"
   aarch64-unknown-linux-gnu = "ubuntu-22.04-arm"
@@ -587,6 +588,8 @@ curl -fsSL https://loams.dev/install.sh | sh -s -- --variant full --version 0.4.
 4. **Archive.** It downloads the archive for the variant (`--variant`, `LOAM_VARIANT`, default `standard`) and target, and checks its SHA-256 against the manifest. A mismatch exits 9.
 5. **Install.** It writes `$LOAM_HOME/bin/loam` (`LOAM_HOME` default `~/.loam`) and the receipt `receipt.json`. It appends `. "$HOME/.loam/env"` to `~/.profile`, `~/.bashrc` and `~/.zshrc` (those that exist) and adds `~/.config/fish/conf.d/loam.fish`, unless `--no-modify-path` is given. A line is never added twice.
 6. **Init.** If `/dev/tty` is readable (stdin is the pipe) and neither `--no-init` nor `--yes` was given, it asks "Run `loam init` now? [Y/n]" and reads the answer from `/dev/tty`.
+
+**Verification policy.** The archive's SHA-256 check against the manifest is always mandatory. The manifest's **signature** is checked by `install.sh` only when `minisign` is installed, or always with `--require-signature`. This is the only verification path that may skip the signature, because a POSIX script has no portable Ed25519 verifier. Every download the binary makes (`self-update`, variant downloads) always verifies the signature (§17.3).
 
 **Trust model, stated in the guide.** The first install trusts TLS and GitHub, which is the usual trust-on-first-use of `curl | sh`. From then on, the binary carries the public keys, so every `self-update` and every variant download is signature-checked whatever the host serves.
 
@@ -695,7 +698,7 @@ Read on 2026-10-01.
   - the pending §29 (PR #172, D273–D280) for numbering.
 - **`chatdump.md`** lines 1–51 (the owner's 2026-10-01 source).
 - **`loam-cloud` `origin/main`** (2026-10-01): no MCP server; the brand names `loams.dev`; `NEXT_PUBLIC_SITE_URL` example `https://loam.dev`.
-- **cargo-dist:** GitHub `axodotdev/cargo-dist` (releases v0.33.0 of 2026-09-11 and v0.32.0; license MIT OR Apache-2.0 in `Cargo.toml`; not archived; last push 2026-10-01). The config reference (`features`, `default-features`, `checksum`, `install-path`, `installers`, `github-custom-runners`, `targets`, `hosting`, `min-glibc-version`, `github-attestations`) and the customizing-CI page (`plan-jobs`, `build-local-artifacts-jobs`, `build-global-artifacts-jobs`, `host-jobs`, `publish-jobs`, `post-announce-jobs`) at axodotdev.github.io/cargo-dist.
+- **cargo-dist:** GitHub `axodotdev/cargo-dist` (releases v0.33.0 of 2026-09-11 and v0.32.0; license MIT OR Apache-2.0 in `Cargo.toml`; not archived; last push 2026-10-01). The config reference (`features`, `default-features`, `checksum`, `install-path`, `installers`, `github-custom-runners`, `targets`, `hosting`, `min-glibc-version`, `github-attestations`) and the customizing-CI page (the config keys `plan-jobs`, `local-artifacts-jobs`, `global-artifacts-jobs`, `host-jobs`, `publish-jobs` and `post-announce-jobs`; `global-artifacts-jobs` adds jobs to the build-global-artifacts phase, verified in the config reference's anchors on 2026-10-01) at axodotdev.github.io/cargo-dist.
 - **axoupdater:** GitHub `axodotdev/axoupdater` (v0.10.2, 2026-08-12, MIT OR Apache-2.0).
 - **crates.io API** (2026-10-01): `minisign-verify` 0.3.0 (MIT), `self-replace` 1.5.0 (Apache-2.0), `clap` 4.6.7, `clap_complete` 4.6.11, `rmcp` 3.5.0 (Apache-2.0), `toml_edit` 0.25.15, `comfy-table` 8.0.1, `dialoguer` 0.12.0, `fs4` 1.1.0, `nix` 0.31.3 (MIT); `loam` (2026-08-04, "File-based tree storage") and `loam-cli` (2025-01-22, "Loam CLI for building smart contracts") are taken; `loamdb` is free.
 - **npm registry and PyPI** (2026-10-01): `loamdb`, `@loam/sdk`, `@loam/bullmq` and `@loam/durable` return 404 on npm; the `@loam` org lists no packages; `loamdb` is free on PyPI and `loam` is taken.

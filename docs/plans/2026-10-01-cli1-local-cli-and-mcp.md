@@ -88,7 +88,7 @@ crates/operon-cli/
   src/env.rs  src/secret.rs  src/project.rs  src/http.rs
   src/docs/{mod.rs,bundle.rs,index.rs,snippet.rs}
   src/mcp/{mod.rs,server.rs,tools.rs,install.rs,agents/{claude_code.rs,codex.rs,cursor.rs,windsurf.rs}}
-  src/init.rs  src/version.rs
+  src/init.rs  src/version.rs  src/keys.rs
   tests/{tree.rs,output.rs,home.rs,config.rs,engines.rs,ports.rs,spec.rs,storage.rs,env.rs,docs.rs,agents.rs,mcp_tools.rs}
   tests/fixtures/{lsblk/*.json,blkid/*.txt,agents/**}  tests/golden/{help/*.txt,args/*.txt,agents/**}  tests/schemas/*.json
 crates/operon/Cargo.toml                     # operon-cli dep; dev: assert_cmd
@@ -116,7 +116,7 @@ docs/design/04-hot-tier.md  docs/design/10-operations.md  CHANGELOG.md
 
 ### Task 1: The crate, the global flags and the output contract
 
-**Files:** `crates/operon-cli/{Cargo.toml,src/{lib.rs,context.rs,output.rs,error.rs,version.rs}}`, `crates/operon-cli/tests/{tree.rs,output.rs}`, `crates/operon/{Cargo.toml,src/main.rs}`, `Cargo.toml`, `clippy.toml`. **PR size:** about 900 lines with tests.
+**Files:** `crates/operon-cli/{Cargo.toml,src/{lib.rs,context.rs,output.rs,error.rs,version.rs,keys.rs}}`, `crates/operon-cli/tests/{tree.rs,output.rs}`, `crates/operon/{Cargo.toml,src/main.rs}`, `Cargo.toml`, `clippy.toml`. **PR size:** about 900 lines with tests.
 
 **Produces:**
 
@@ -145,6 +145,10 @@ pub enum ClientCommand {
     Env { #[command(subcommand)] command: env::EnvCommand },
     /// API keys (needs the unified auth plan).
     Keys { #[command(subcommand)] command: keys::KeysCommand },
+    /// Sign in to a Loam endpoint (needs the unified auth plan).
+    Login(keys::LoginArgs),
+    /// Sign out of the profile's endpoint (needs the unified auth plan).
+    Logout,
     /// The MCP server for coding agents, and its installation.
     Mcp { #[command(subcommand)] command: mcp::McpCommand },
     /// Search the docs and SDK snippets built into this binary.
@@ -215,10 +219,11 @@ const FEATURES: &[&str] = &[/* "es" if cfg!(feature = "es"), …: built by a con
 - `version`: `{"name": "operon", "version", "target", "git_sha", "variant", "features", "output_schema": 1, "docs_version"}` (`docs_version` = `version` until Task 8 sets the bundle's). Table: `operon 0.0.1 (custom; x86_64-unknown-linux-gnu)` then the features.
 - `completions <shell>` writes `clap_complete::generate` output for the whole `Cli` (server commands included) as `RawOutput`.
 - Ctrl-C during a command: exit 130 with `interrupted` (a `tokio::signal::ctrl_c` race in `run`).
+- **Auth stubs** (D295): every `keys` verb (`create`, `list`, `rotate`, `revoke`, with design §5's flags so `--help` documents them), `login` (`--endpoint`) and `logout` parse their arguments and exit 6 with `auth_not_available` and the hint `this build has no auth (D111); local stacks are loopback-only`. `src/keys.rs` holds the clap types, so CLI3 replaces only the bodies.
 
 **Tests:**
 - `tests/tree.rs`: `command_tree_is_valid` (`Cli::command().debug_assert()` through a tiny test-only `Cli` mirror that flattens `ClientCommand`); `client_groups_never_shadow_server_commands` (Ruling 1); `help_goldens_match` (renders `--help` for every client command and compares with `tests/golden/help/<path>.txt`; `UPDATE_GOLDEN=1` rewrites).
-- `tests/output.rs`: `error_codes_are_unique_snake_case_with_documented_exit_codes`; `json_mode_success_writes_one_document_to_stdout`; `json_mode_errors_go_to_stderr_as_one_object` (stdout empty, stderr parses, `exit_code` field equals the process code); `table_mode_error_prints_error_and_hint`; `output_resolution_order` (flag over env over default); `version_json_matches_schema` (against `tests/schemas/version.json`); `color_only_on_tty_without_no_color`.
+- `tests/output.rs`: `error_codes_are_unique_snake_case_with_documented_exit_codes`; `json_mode_success_writes_one_document_to_stdout`; `json_mode_errors_go_to_stderr_as_one_object` (stdout empty, stderr parses, `exit_code` field equals the process code); `table_mode_error_prints_error_and_hint`; `output_resolution_order` (flag over env over default); `version_json_matches_schema` (against `tests/schemas/version.json`); `color_only_on_tty_without_no_color`; `auth_stubs_exit_6` (`keys create`, `keys list`, `keys rotate k1`, `keys revoke k1 --yes`, `login`, `logout`, each in `json` mode → exit 6, stderr `code: "auth_not_available"`).
 - `crates/operon/tests/cli/main.rs`: `usage_error_in_json_mode_is_json` (`operon stack frobnicate -o json` → exit 2, stderr JSON with `code: "usage"`); `server_commands_still_parse` (`operon dev --help` and `operon cluster --help` succeed; `features_list_matches_cargo_toml` parses `crates/operon/Cargo.toml`'s `[features]` and checks every feature except `failpoints` and `cluster-tests` appears in the `FEATURES` table).
 
 **Commit:** `cli: add operon-cli with the output and exit-code contract`.
@@ -566,7 +571,7 @@ pub fn apply(ctx: &Context, plan: &InstallPlan, dry_run: bool) -> Result<Install
 | Design §30 requirement | Task |
 |---|---|
 | D281 one binary, `operon-cli` crate, server commands unchanged | 1 |
-| D282 the command tree (CLI1 part: init, configure, stack, storage, env, mcp, docs, version, completions; `keys`/`login` stubs exiting 6) | 1, 2, 4–11 (`keys` stub in Task 1: every `keys` verb → `auth_not_available`) |
+| D282 the command tree (CLI1 part: init, configure, stack, storage, env, mcp, docs, version, completions; `keys`, `login` and `logout` stubs exiting 6) | 1 (the stubs and `auth_stubs_exit_6`), 2, 4–11 |
 | D283 output, errors, exit codes, prompts | 1 (and every task's schema tests) |
 | D284 `LOAM_HOME`, profiles, no telemetry | 2 (update check: CLI2) |
 | D285 stacks, engine registry, `pg` vs `postgres`, loopback | 4, 5 |
