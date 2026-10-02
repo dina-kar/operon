@@ -12,8 +12,8 @@ def shardOfModulo (n : Nat) (hn : 0 < n) (h : Nat) : Fin n := ⟨h % n, Nat.mod_
 
 /-- The modulus scheme partitions the hashes: each lands in exactly one shard. -/
 theorem modulo_partition (n : Nat) (hn : 0 < n) (h : Nat) :
-    ∃! i : Fin n, i.val = h % n :=
-  ⟨shardOfModulo n hn h, rfl, fun j hj => Fin.ext hj⟩
+    (∃ i : Fin n, i.val = h % n) ∧ ∀ i j : Fin n, i.val = h % n → j.val = h % n → i = j :=
+  ⟨⟨shardOfModulo n hn h, rfl⟩, fun _ _ hi hj => Fin.ext (hi.trans hj.symm)⟩
 
 /-- The shard of keyspace id `id` in a range partition: the range containing it. -/
 def shardOfRange (rs : List KeyRange) (id : Nat) : Option Nat := lookup rs id
