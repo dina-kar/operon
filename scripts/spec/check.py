@@ -64,6 +64,10 @@ def fetch(name: str, version: str, url: str, sha: str) -> Path:
         print(f"downloading {name} {version}", file=sys.stderr)
         tmp = dest.with_suffix(dest.suffix + ".part")
         urllib.request.urlretrieve(url, tmp)
+        # Verify before publishing into the cache, so a bad download is never reused.
+        if sha256(tmp) != sha:
+            tmp.unlink()
+            raise ToolError(f"checksum mismatch for {name}")
         tmp.rename(dest)
     if sha256(dest) != sha:
         raise ToolError(f"checksum mismatch for {name}")
@@ -145,10 +149,12 @@ STATES = re.compile(r"(\d[\d,]*) distinct states found")
 
 def check(specs, tl, only=None, variant=None, nightly=False, parse_only=False) -> bool:
     all_ok = True
+    ran = 0
     for d, spec in specs:
         if only and spec["name"] != only:
             continue
         if parse_only or spec.get("parse_only"):
+            ran += 1
             result, out = run_sany(tl["tla2tools"], d, spec["model"])
             report(spec["name"], "(parse)", "ok", result, 0.0, out)
             all_ok &= result == "ok"
@@ -158,6 +164,7 @@ def check(specs, tl, only=None, variant=None, nightly=False, parse_only=False) -
                 continue
             if not variant and not (v.get("nightly") if nightly else v.get("pr")):
                 continue
+            ran += 1
             t0 = time.monotonic()
             result, out = run_tlc(tl["tla2tools"], d, spec["model"], v["cfg"])
             report(spec["name"], v["cfg"], v["expect"], result, time.monotonic() - t0, out)
@@ -168,6 +175,10 @@ def check(specs, tl, only=None, variant=None, nightly=False, parse_only=False) -
                                            v.get("apalache_length", 8))
                 report(spec["name"], f"{v['cfg']} apalache {inv}", "ok", result, time.monotonic() - t0, out)
                 all_ok &= result == "ok"
+    if ran == 0:
+        # An unknown spec or variant name must not pass silently.
+        print(f"no spec or variant matched (spec={only!r}, variant={variant!r})", file=sys.stderr)
+        return False
     return all_ok
 
 
