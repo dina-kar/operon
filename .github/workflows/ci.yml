@@ -417,6 +417,16 @@ jobs:
           ES_ORACLE_URL: http://127.0.0.1:9250
         run: conformance/es-client/run.sh
 
+  docs:
+    name: decision log IDs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Decision ID checker self-test
+        run: scripts/docs/check-decision-ids.sh --self-test
+      - name: Unique decision and question declarations
+        run: scripts/docs/check-decision-ids.sh
+
   # RT0 Task 1 (D310): model-check the router's TLA+ specs. Pull requests run
   # the PR variants; the nightly schedule runs the larger bounds. Every result
   # must match its `expect` in spec/tla/*/specs.toml, so the unsafe variants
@@ -952,6 +962,7 @@ jobs:
     if: always()
     needs:
       - changes
+      - docs
       - check
       - crash-gate
       - cluster
