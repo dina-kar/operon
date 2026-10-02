@@ -99,7 +99,7 @@ A Rust server that implements Dapr's own gRPC service (`dapr.proto.runtime.v1.Da
 | wasmtime host | Rust, Apache-2.0, wasmtime v49.0.1 (or Spin or wasmCloud as the host, D172) | T1: Wasm components (WASI 0.2 `wasi:http`) | F1 |
 | gVisor (`runsc`) | Go, Apache-2.0, `release-20260921.0` | T2: Bun, Node, Python and native binaries in the `http-port` contract; also the outer sandbox around workerd | F2 |
 | `loams-dapr` | Rust (new) | The Dapr API subset (§5) plus tenant identity, secrets (D189) and metering hooks, over Loams's internal gRPC | F1 |
-| Resonate | Rust, Apache-2.0; fork `dina-kar/resonate` | Durable promises for long waits (D173); embedded in dev, a Deployment in clusters (§21, §22 §13b item 4) | F1 |
+| Resonate | Rust, Apache-2.0; fork `ostrium-labs/resonate` | Durable promises for long waits (D173); embedded in dev, a Deployment in clusters (§21, §22 §13b item 4) | F1 |
 | Shared `daprd` | Go, Apache-2.0, v1.18.4 | Long-tail bindings only (D183) | F1 (optional) |
 | Firecracker | Rust, Apache-2.0 | T3, deferred (D174) | Later |
 

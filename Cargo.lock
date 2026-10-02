@@ -9509,7 +9509,7 @@ dependencies = [
 [[package]]
 name = "resonate-auth"
 version = "0.10.1"
-source = "git+https://github.com/dina-kar/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
+source = "git+https://github.com/ostrium-labs/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
 dependencies = [
  "jsonwebtoken",
  "reqwest 0.12.28",
@@ -9522,7 +9522,7 @@ dependencies = [
 [[package]]
 name = "resonate-base"
 version = "0.10.1"
-source = "git+https://github.com/dina-kar/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
+source = "git+https://github.com/ostrium-labs/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
 dependencies = [
  "async-trait",
  "lazy_static",
@@ -9537,7 +9537,7 @@ dependencies = [
 [[package]]
 name = "resonate-core"
 version = "0.10.1"
-source = "git+https://github.com/dina-kar/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
+source = "git+https://github.com/ostrium-labs/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -9553,7 +9553,7 @@ dependencies = [
 [[package]]
 name = "resonate-gateway-http"
 version = "0.10.1"
-source = "git+https://github.com/dina-kar/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
+source = "git+https://github.com/ostrium-labs/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
 dependencies = [
  "async-trait",
  "lazy_static",
@@ -9570,7 +9570,7 @@ dependencies = [
 [[package]]
 name = "resonate-plugin"
 version = "0.10.1"
-source = "git+https://github.com/dina-kar/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
+source = "git+https://github.com/ostrium-labs/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
 dependencies = [
  "axum 0.7.9",
  "figment",
@@ -9583,7 +9583,7 @@ dependencies = [
 [[package]]
 name = "resonate-sdk"
 version = "0.6.0"
-source = "git+https://github.com/dina-kar/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
+source = "git+https://github.com/ostrium-labs/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -9603,7 +9603,7 @@ dependencies = [
 [[package]]
 name = "resonate-sdk-macros"
 version = "0.1.0"
-source = "git+https://github.com/dina-kar/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
+source = "git+https://github.com/ostrium-labs/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -9614,7 +9614,7 @@ dependencies = [
 [[package]]
 name = "resonate-server-blob"
 version = "0.10.1"
-source = "git+https://github.com/dina-kar/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
+source = "git+https://github.com/ostrium-labs/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -9635,7 +9635,7 @@ dependencies = [
 [[package]]
 name = "resonate-server-mysql"
 version = "0.10.1"
-source = "git+https://github.com/dina-kar/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
+source = "git+https://github.com/ostrium-labs/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
 dependencies = [
  "async-trait",
  "resonate-core",
@@ -9652,7 +9652,7 @@ dependencies = [
 [[package]]
 name = "resonate-server-sqlite"
 version = "0.10.1"
-source = "git+https://github.com/dina-kar/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
+source = "git+https://github.com/ostrium-labs/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
 dependencies = [
  "async-trait",
  "resonate-core",
@@ -9670,7 +9670,7 @@ dependencies = [
 [[package]]
 name = "resonate-sql"
 version = "0.10.1"
-source = "git+https://github.com/dina-kar/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
+source = "git+https://github.com/ostrium-labs/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
 dependencies = [
  "async-trait",
  "lazy_static",
@@ -9689,7 +9689,7 @@ dependencies = [
 [[package]]
 name = "resonate-timer-wheel"
 version = "0.10.1"
-source = "git+https://github.com/dina-kar/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
+source = "git+https://github.com/ostrium-labs/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
 dependencies = [
  "tokio",
  "verus_builtin",
@@ -9700,7 +9700,7 @@ dependencies = [
 [[package]]
 name = "resonate-transport-http-poll"
 version = "0.10.1"
-source = "git+https://github.com/dina-kar/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
+source = "git+https://github.com/ostrium-labs/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -9717,7 +9717,7 @@ dependencies = [
 [[package]]
 name = "resonate-transport-http-push"
 version = "0.10.1"
-source = "git+https://github.com/dina-kar/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
+source = "git+https://github.com/ostrium-labs/resonate?rev=e3606698e6e3f2502bb018bba1e618deb63f907a#e3606698e6e3f2502bb018bba1e618deb63f907a"
 dependencies = [
  "async-trait",
  "reqwest 0.12.28",
@@ -11709,7 +11709,7 @@ dependencies = [
 [[package]]
 name = "tikv-client"
 version = "0.4.0"
-source = "git+https://github.com/dina-kar/client-rust?rev=1f8962b00b33ebc6f34b72d6c52d08b8a8e1906e#1f8962b00b33ebc6f34b72d6c52d08b8a8e1906e"
+source = "git+https://github.com/ostrium-labs/client-rust?rev=1f8962b00b33ebc6f34b72d6c52d08b8a8e1906e#1f8962b00b33ebc6f34b72d6c52d08b8a8e1906e"
 dependencies = [
  "async-recursion 0.3.2",
  "async-trait",

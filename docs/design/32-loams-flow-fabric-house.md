@@ -420,7 +420,7 @@ category  = "merge-timing"     # merge-timing | semantic | error-text | type-dis
 surface   = "1.0"
 reason    = "Fluss Versioned keeps the first row on equal versions; ClickHouse keeps the last inserted"
 owner     = "house"
-issue     = "dina-kar/operon#NNN"
+issue     = "ostrium-labs/loams#NNN"
 expires   = "chsurface-2.0"    # optional
 approved  = "owner 2026-10-15" # required when category = "semantic"
 ```
