@@ -226,7 +226,7 @@ export const a2aSubagentProvider: SubagentProvider = {
 
 **Files:** `crates/operon-bot/src/card.rs`, `tests/a2a_server.rs`.
 
-**Semantics (Q469):** with `--bot-a2a`, the bot listener also serves SF2's `A2aServer` for an agent `loams-bot`: skills `ask` (read, write by delegation), `status` (read), `start_run` (write); the card is signed and requires a token whose subject is a user or a service account with `bot:invoke`; each external call becomes a thread owned by the token's user, with the same policy and gates as a chat (a delegated destructive action still needs a human's approval, and the external caller cannot decide it). Rate limits per principal.
+**Semantics (Q469):** with `--bot-a2a`, the bot listener also serves SF2's `A2aServer` for an agent `loams-bot`: skills `ask` (read, write by delegation), `status` (read), `start_run` (write); the card is signed and requires a token whose subject is a user or a service account with `bot:invoke`; each external call becomes a thread owned by the token's principal: a user for a user token, and for a service-account token the **service account itself** (there is no user mapping; its threads are readable only by it and by holders of `bot:admin`, who see metadata, not content; user-scoped delegation is unavailable to it and its agent tokens carry the service account as `sub`), with the same policy and gates as a chat (a delegated destructive action still needs a human's approval, and the external caller cannot decide it). Rate limits per principal.
 
 **Tests:** `disabled_by_default`; `card_is_signed_and_schema_valid`; `external_call_creates_owned_thread`; `external_caller_cannot_decide_approvals`; `rate_limit_per_principal`; `python_client_interop`.
 

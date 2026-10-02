@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists the interfaces it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (names, paths, flags, header values), use them verbatim. The code is not pre-written in this plan; the tests are the specification.
 
-> **Status: Planned** (2026-10-02). **Slot: track SF, first plan** (proposed; D460). Branches `sf1-t<N>`, stacked; PRs target `main`. Depends on AP1a (the cordis console host and slots, for the browser console) being on `main`; the **desktop** tasks (5b and the GPUI halves of 6 and 7) depend on the native desktop shell, a fork of zeron (§37, amended for a native desktop, D440-series pending), and until it lands they build as standalone GPUI crates with a test harness. Tasks 0–2 and 9 depend on neither (they are edge configuration, a spike and a proto). Mobile work (Task 8) depends on AP0's protos and AP2/AP3's app shells. **Phase 1 of D460: Zulip, Plane and Forgejo, in full, before any phase-2 app.**
+> **Status: Planned** (2026-10-02). **Slot: track SF, first plan** (proposed; D460). Branches `sf1-t<N>`, stacked; PRs target `main`. Depends on AP1a (the cordis console host and slots, for the browser console) being on `main`; the **desktop** tasks (5b and the GPUI halves of 6 and 7) depend on the native desktop shell, a fork of zeron (§37, amended for a native desktop, D440-series pending), and until it lands they build as standalone GPUI crates with a test harness. Tasks 0–2 depend on neither (a spike, a proto and edge configuration). Task 9 is the exit gate and needs Tasks 1–8: its browser-console checks need AP1a, its desktop checks run against the standalone GPUI crates until the fork lands, and its mobile check is an external prerequisite (the `loams-mobile` repository's own CI, pinned to this repository's ref, whose green run the exit report links). Mobile work (Task 8) depends on AP0's protos and AP2/AP3's app shells. **Phase 1 of D460: Zulip, Plane and Forgejo, in full, before any phase-2 app.**
 
 **Goal:** Put Zulip, Plane and Forgejo into Loams in three ways, in the browser console, in the native desktop app and on phones, with no change to any app:
 - **Full app UI.** Browser console: each app's own web UI in a sandboxed iframe, signed in by Authentik, framed through edge configuration only (design §3.3, §3.4). Desktop: the system browser (top-level, the person's Authentik session) and, if the spike allows, an optional in-app sidebar browser (design §3.4 tiers 2 and 3).
@@ -159,10 +159,10 @@ service CollabService {
 ```rust
 #[async_trait]
 pub trait ZulipApi: Send + Sync {
-    async fn streams(&self, cred: &AppCredential) -> Result<Vec<Stream>, AppError>;
-    async fn topics(&self, cred: &AppCredential, stream: StreamId) -> Result<Vec<Topic>, AppError>;
-    async fn messages(&self, cred: &AppCredential, narrow: Narrow, anchor: Anchor, limit: u16) -> Result<Vec<Message>, AppError>;
-    async fn post(&self, cred: &AppCredential, to: Target, content: &str, idem: &IdempotencyKey) -> Result<MessageId, AppError>;
+    async fn streams(&self, permit: CallPermit) -> Result<Vec<Stream>, AppError>;
+    async fn topics(&self, permit: CallPermit, stream: StreamId) -> Result<Vec<Topic>, AppError>;
+    async fn messages(&self, permit: CallPermit, narrow: Narrow, anchor: Anchor, limit: u16) -> Result<Vec<Message>, AppError>;
+    async fn post(&self, permit: CallPermit, to: Target, content: &str, idem: &IdempotencyKey) -> Result<MessageId, AppError>;
 }
 
 /// Hands out per-call credential *handles*; the secret never leaves the broker.
@@ -173,11 +173,11 @@ impl CredentialBroker {
 }
 ```
 
-**`AppCredential` is an opaque, secret-free handle** (an id, the app, the scope and an expiry); it contains no secret bytes and has no accessor for any. An adapter builds a request, hands it with the `AppCredential` to `CredentialBroker::execute`, and the broker attaches the secret inside its own boundary and performs the call; so every adapter call runs through a broker-owned `CallPermit`, and adapter code cannot read, log or copy the secret.
+**One flow:** the service calls `CredentialBroker::authorize(...)`, which returns a `CallPermit`; the service passes the permit to the adapter method; the adapter builds an `AppRequest` and calls `permit.execute(request)`, which attaches the secret inside the broker's boundary, performs the HTTP call and returns an `AppResponse`. A `CallPermit` is opaque and secret-free (an id, the app, the scope, the object, an expiry; single use or short-lived), has no accessor for the secret, and is the only way an adapter reaches an app, so adapter code cannot read, log or copy a secret. (There is no separate `AppCredential` type.)
 
 **Semantics:** Zulip over its REST API as the agent's bot user (design §6.1). `idem` becomes a Zulip `local_id`-style dedupe: the service keeps `(idempotency key → message id)` in the `ControlStore` for 24 h so a replay returns the first message. The OpenFGA filter (`fga.rs`) asks `ListObjects(user, can_read, zulip_stream)` with a seconds-long cache (as §22 §8.1) and filters streams, topics and messages; **an object the user cannot read is `NOT_FOUND`**, never `PERMISSION_DENIED`, so existence does not leak. Untrusted text (message content) is returned in a field marked `untrusted` and capped at 64 KiB.
 
-**Tests:** fixtures-backed fakes (`wiremock`): `list_streams_and_topics`; `thread_read_paginates`; `post_is_idempotent_on_key`; `list_filters_by_openfga`; `unlisted_object_is_404_not_403`; `broker_refuses_unlisted_action`; `broker_requires_settled_approval_for_destructive`; `permit_has_no_secret_accessor` and `app_credential_has_no_secret_accessor` (compile-fail tests); `canary_secret_never_appears` (§30's canary extended: the `loam_cnry_…` value is the Zulip API key; every method, error and `tracing` output is scanned); `app_error_maps_to_stable_reason` (`APP_UNREACHABLE`, `APP_AUTH`, `APP_RATE_LIMITED`).
+**Tests:** fixtures-backed fakes (`wiremock`): `list_streams_and_topics`; `thread_read_paginates`; `post_is_idempotent_on_key`; `list_filters_by_openfga`; `unlisted_object_is_404_not_403`; `broker_refuses_unlisted_action`; `broker_requires_settled_approval_for_destructive`; `permit_has_no_secret_accessor` and `adapter_cannot_reach_app_without_permit` (compile-fail tests); `canary_secret_never_appears` (§30's canary extended: the `loam_cnry_…` value is the Zulip API key; every method, error and `tracing` output is scanned); `app_error_maps_to_stable_reason` (`APP_UNREACHABLE`, `APP_AUTH`, `APP_RATE_LIMITED`).
 
 **Commit:** `collab: the Zulip adapter, the credential broker and OpenFGA filtering`.
 
@@ -206,13 +206,13 @@ impl CredentialBroker {
 export interface EmbedService {
   open(app: AppId, path?: string): EmbedHandle;                 // a sandboxed iframe in the browser console
   close(handle: EmbedHandle): void;
-  onState(handle: EmbedHandle, cb: (s: "loading" | "ready" | "signin" | "error") => void): Dispose;
+  onState(handle: EmbedHandle, cb: (s: "loading" | "ready" | "slow" | "error") => void): Dispose;
 }
 ```
 
-**Semantics (design §3.4, browser console):** `iframe.ts` sets the sandbox attribute of design §3.4 and the `allow` attribute to `clipboard-write; fullscreen` only; the URL must be in `ListApps`' `embed_url` set for the active environment; messages from frames are ignored; the toolbar offers back, reload, open in a new tab and copy link; the state is `signin` when the frame lands on Authentik's origin (detected by a load timeout and the app registry's issuer, never by reading the frame).
+**Semantics (design §3.4, browser console):** `iframe.ts` sets the sandbox attribute of design §3.4 and the `allow` attribute to `clipboard-write; fullscreen` only; the URL must be in `ListApps`' `embed_url` set for the active environment; messages from frames are ignored; the toolbar offers back, reload, open in a new tab and copy link; the parent cannot read a cross-origin frame, so the states are only what it can observe: `loading` until the frame's `load` event, `ready` after it, `slow` if no `load` arrives within 8 s (the toolbar then says "If you see a sign-in page, finish signing in there, or open in a new tab"), and `error` on a failed registry check. No attempt is made to detect which origin the frame is on.
 
-**Tests (Vitest and Playwright against the Task 2 harness):** `service_opens_sandboxed_iframe`; `unlisted_app_is_refused`; `sandbox_attribute_is_exact`; `allow_attribute_is_exact`; `frame_messages_are_ignored`; `state_signin_on_authentik_origin`; `no_token_in_frame_url_or_name`.
+**Tests (Vitest and Playwright against the Task 2 harness):** `service_opens_sandboxed_iframe`; `unlisted_app_is_refused`; `sandbox_attribute_is_exact`; `allow_attribute_is_exact`; `frame_messages_are_ignored`; `state_slow_after_8_seconds_without_load`; `state_ready_on_load`; `no_token_in_frame_url_or_name`.
 
 **Commit:** `embed: the browser pane service and iframe host`.
 
