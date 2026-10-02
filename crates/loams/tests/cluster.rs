@@ -3,11 +3,12 @@
 //! its own `loams` process on `127.0.0.1`, over one `file://` bucket. Run
 //! with `cargo test -p loams --features cluster-tests --test cluster`
 //! (each test starts five or six processes: run them one at a time).
-#![cfg(feature = "cluster-tests")]
+#![cfg(all(feature = "cluster-tests", unix))]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener};
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -28,12 +29,9 @@ const QUERY: &str = "query,gateway";
 const TTL_MS: u64 = 1500;
 const LEARNER_EXPIRY_MS: u64 = 3000;
 
-/// A port nobody listens on now (bound and released).
-fn reserve_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .and_then(|listener| listener.local_addr())
-        .expect("reserve a port")
-        .port()
+/// Hold the bound socket until the cluster is dropped, including restarts.
+fn reserve_listener() -> TcpListener {
+    TcpListener::bind("127.0.0.1:0").expect("reserve a listener")
 }
 
 struct Node {
@@ -43,7 +41,7 @@ struct Node {
 
 struct Cluster {
     dir: TempDir,
-    ports: BTreeMap<u64, u16>,
+    listeners: BTreeMap<u64, TcpListener>,
     nodes: BTreeMap<u64, Node>,
     http: reqwest::Client,
 }
@@ -53,7 +51,7 @@ impl Cluster {
     async fn start() -> Self {
         let mut cluster = Self {
             dir: TempDir::new().expect("temp dir"),
-            ports: (1..=6).map(|id| (id, reserve_port())).collect(),
+            listeners: (1..=6).map(|id| (id, reserve_listener())).collect(),
             nodes: BTreeMap::new(),
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(20))
@@ -73,7 +71,10 @@ impl Cluster {
     }
 
     fn addr(&self, id: u64) -> String {
-        format!("127.0.0.1:{}", self.ports[&id])
+        self.listeners[&id]
+            .local_addr()
+            .expect("reserved address")
+            .to_string()
     }
 
     fn base(&self, id: u64) -> String {
@@ -134,7 +135,12 @@ impl Cluster {
             .append(true)
             .open(self.log_path(id))
             .expect("log file");
+        let listener = self.listeners[&id]
+            .try_clone()
+            .expect("clone reserved listener");
         let child = Self::command(self.dir.path(), id, roles, &self.addr(id), &self.peers())
+            .arg("--listen-stdin")
+            .stdin(Stdio::from(OwnedFd::from(listener)))
             .stderr(log)
             .spawn()
             .expect("spawn loams");
@@ -155,6 +161,9 @@ impl Cluster {
             let _ = child.kill();
             let _ = child.wait();
         }
+        // A permanently dead node must refuse new connections. Otherwise a
+        // forwarded read can hang in the parent's unserved accept queue.
+        self.listeners.remove(&id);
     }
 
     /// SIGTERM, then waits for the exit; whether it exited cleanly.
@@ -169,18 +178,26 @@ impl Cluster {
         let deadline = Instant::now() + WAIT;
         while sent && Instant::now() < deadline {
             if let Ok(Some(status)) = child.try_wait() {
+                self.listeners.remove(&id);
                 return status.success();
             }
             std::thread::sleep(Duration::from_millis(50));
         }
         let _ = child.kill();
         let _ = child.wait();
+        self.listeners.remove(&id);
         false
     }
 
     fn restart(&mut self, id: u64) {
         let roles = self.nodes[&id].roles;
+        // Keep a clone bound while kill drops the old reservation, so no
+        // other process can claim the address before the replacement starts.
+        let listener = self.listeners[&id]
+            .try_clone()
+            .expect("clone listener for restart");
         self.kill(id);
+        self.listeners.insert(id, listener);
         self.spawn(id, roles);
     }
 
@@ -493,6 +510,52 @@ fn expected_owner(ns: NamespaceId, cid: CollectionId, ids: impl IntoIterator<Ite
     owners(ns, cid, &nodes, 1)[0].node_id
 }
 
+/// A node accepts HTTP on the listener that the parent keeps bound.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cluster_node_serves_on_an_inherited_listener() {
+    let dir = TempDir::new().expect("temp dir");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve listener");
+    let addr = listener.local_addr().expect("listener address");
+    let log = File::create(dir.path().join("node.log")).expect("log file");
+    let mut child = Cluster::command(dir.path(), 1, FULL, &addr.to_string(), &format!("1={addr}"))
+        .arg("--listen-stdin")
+        .stdin(Stdio::from(OwnedFd::from(
+            listener.try_clone().expect("clone listener"),
+        )))
+        .stderr(log)
+        .spawn()
+        .expect("spawn loams");
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("readiness client");
+    let deadline = Instant::now() + WAIT;
+    let ready = loop {
+        if child.try_wait().expect("child status").is_some() {
+            break false;
+        }
+        if http
+            .get(format!("http://{addr}/ready"))
+            .send()
+            .await
+            .is_ok_and(|response| response.status() == StatusCode::OK)
+        {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        ready,
+        "node did not serve on inherited {addr}:\n{}",
+        std::fs::read_to_string(dir.path().join("node.log")).unwrap_or_default()
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_three_meta_cluster_with_two_query_nodes_starts_and_serves() {
     let mut cluster = Cluster::start().await;
@@ -766,14 +829,15 @@ async fn a_learner_that_stays_down_is_evicted() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_misconfigured_node_refuses_to_start() {
     let dir = TempDir::new().expect("temp dir");
-    let port = reserve_port();
-    let listen = format!("127.0.0.1:{port}");
+    let listener = reserve_listener();
+    let peer = reserve_listener();
+    let listen = listener.local_addr().expect("listener address").to_string();
     let output = Cluster::command(
         dir.path(),
         9,
         FULL,
         &listen,
-        &format!("1=127.0.0.1:{}", reserve_port()),
+        &format!("1={}", peer.local_addr().expect("peer address")),
     )
     .stderr(Stdio::piped())
     .output()
