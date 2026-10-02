@@ -40,6 +40,8 @@ use crate::sidecar::{SidecarConfig, SidecarState, Supervisor};
 /// Everything the commands share.
 pub struct AppState {
     pub supervisor: Supervisor,
+    /// The sidecar binary in use, shown on the stacks page.
+    pub sidecar_binary: Option<String>,
     pub envs: Mutex<Envs>,
     pub net: Net,
     pub keystore: Box<dyn KeyStore>,
@@ -132,14 +134,9 @@ impl AppState {
 
 type CmdResult<T> = Result<T, String>;
 
-fn sidecar_binary_label(state: &AppState) -> Option<String> {
-    let _ = state;
-    std::env::var("LOAMS_DESKTOP_SIDECAR").ok()
-}
-
 #[tauri::command]
 async fn sidecar_status(state: State<'_, AppState>) -> CmdResult<SidecarStatus> {
-    Ok(state.sidecar_status(sidecar_binary_label(&state)).await)
+    Ok(state.sidecar_status(state.sidecar_binary.clone()).await)
 }
 
 #[tauri::command]
@@ -147,14 +144,14 @@ async fn sidecar_start(state: State<'_, AppState>) -> CmdResult<SidecarStatus> {
     let result = state.supervisor.start().await;
     state.local_ready().await;
     result.map_err(|e| e.to_string())?;
-    Ok(state.sidecar_status(sidecar_binary_label(&state)).await)
+    Ok(state.sidecar_status(state.sidecar_binary.clone()).await)
 }
 
 #[tauri::command]
 async fn sidecar_stop(state: State<'_, AppState>) -> CmdResult<SidecarStatus> {
     state.supervisor.stop().await;
     state.local_ready().await;
-    Ok(state.sidecar_status(sidecar_binary_label(&state)).await)
+    Ok(state.sidecar_status(state.sidecar_binary.clone()).await)
 }
 
 #[tauri::command]
@@ -162,7 +159,7 @@ async fn sidecar_restart(state: State<'_, AppState>) -> CmdResult<SidecarStatus>
     let result = state.supervisor.restart().await;
     state.local_ready().await;
     result.map_err(|e| e.to_string())?;
-    Ok(state.sidecar_status(sidecar_binary_label(&state)).await)
+    Ok(state.sidecar_status(state.sidecar_binary.clone()).await)
 }
 
 /// Starts a request; its events stream over `on_event`. Returns an id for
@@ -386,6 +383,7 @@ pub fn run() {
                 .map_err(|e| e.to_string())?;
             app.manage(AppState {
                 supervisor: supervisor_for(&handle),
+                sidecar_binary: sidecar_binary().map(|p| p.display().to_string()),
                 envs: Mutex::new(envs),
                 net,
                 keystore: keychain::best_available(),
