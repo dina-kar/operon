@@ -1,9 +1,9 @@
 name: CI
 
-# Docs-only changes run no CI at all. The nightly schedule is unfiltered.
+# Docs-only changes still run the required CI summary. The nightly schedule is unfiltered.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     paths-ignore:
       - "docs/**"
       - "**/*.md"
@@ -12,13 +12,6 @@ on:
       - "LICENSE*"
       - ".coderabbit*"
   pull_request:
-    paths-ignore:
-      - "docs/**"
-      - "**/*.md"
-      - "deploy/**/*.md"
-      - ".superpowers/**"
-      - "LICENSE*"
-      - ".coderabbit*"
   schedule:
     # Nightly: the long simulation sweep (M0.4 plan Task 6), the tail-merge
     # property test (M1.2 plan Task 15), the TiKV suites (R1 plan Task 1) and
@@ -783,3 +776,34 @@ jobs:
       - name: the manifests render
         working-directory: .
         run: kubectl kustomize deploy/dapr > /dev/null
+
+  required:
+    name: CI required
+    if: always()
+    needs:
+      - changes
+      - check
+      - crash-gate
+      - cluster
+      - qdrant-client
+      - es-client
+      - sim
+      - tikv
+      - tikv-nightly
+      - durable
+      - durable-tidb
+      - live-protos
+      - app-protos
+      - deny
+      - web
+      - dapr-edge
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all selected CI jobs to pass
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          if jq -e '[.[] | .result] | any(. == "failure" or . == "cancelled")' <<< "$NEEDS_JSON"; then
+            echo "A CI job failed or was cancelled" >&2
+            exit 1
+          fi
