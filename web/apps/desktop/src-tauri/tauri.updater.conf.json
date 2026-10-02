@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "TODO(owner): the public half of the dedicated updater key from `tauri signer generate` (separate from the CLI's release key, Q282)",
+      "endpoints": ["https://loams.dev/desktop/{{target}}/{{arch}}/{{current_version}}"]
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "The only capability (design §37 §6.3, D430): the bundled console in the main window may call the app's own commands and a few scoped plugin permissions. No shell, fs, http, process or dialog permission, ever; scripts/desktop/check-capabilities.mjs enforces this list in CI.",
+  "local": true,
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "deep-link:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://loams.dev/**" }, { "url": "https://github.com/ostrium-labs/**" }]
+    },
+    "allow-sidecar-status",
+    "allow-sidecar-start",
+    "allow-sidecar-stop",
+    "allow-sidecar-restart",
+    "allow-net-fetch",
+    "allow-net-abort",
+    "allow-envs-list",
+    "allow-envs-active",
+    "allow-envs-select",
+    "allow-auth-sign-in",
+    "allow-auth-sign-out",
+    "allow-auth-status",
+    "allow-deeplink-take"
+  ]
+}

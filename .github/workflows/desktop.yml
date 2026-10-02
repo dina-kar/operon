@@ -1,0 +1,189 @@
+name: Desktop
+
+# Loams Desktop (design §37 §6, plan AP1): the capability check, the Tauri
+# crate's fmt, clippy and tests, and a build on Linux, Windows and macOS.
+# Runs only when the desktop, the console it embeds, or their packages change.
+# Pull requests build without bundling; pushes to main and manual runs also
+# produce unsigned bundles as artifacts (for hand testing on Linux and
+# Windows). Signing and the updater are owner actions (see the release job).
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/desktop.yml"
+      - "rust-toolchain.toml"
+      - "rustfmt.toml"
+      - "scripts/desktop/**"
+      - "proto/**"
+      - "web/apps/desktop/**"
+      - "web/apps/console/**"
+      - "web/packages/**"
+      - "web/plugins/**"
+      - "web/examples/**"
+      - "web/package.json"
+      - "web/pnpm-lock.yaml"
+      - "web/pnpm-workspace.yaml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/desktop.yml"
+      - "rust-toolchain.toml"
+      - "rustfmt.toml"
+      - "scripts/desktop/**"
+      - "proto/**"
+      - "web/apps/desktop/**"
+      - "web/apps/console/**"
+      - "web/packages/**"
+      - "web/plugins/**"
+      - "web/examples/**"
+      - "web/package.json"
+      - "web/pnpm-lock.yaml"
+      - "web/pnpm-workspace.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  capabilities:
+    name: capabilities and CSP
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: node scripts/desktop/check-capabilities.mjs
+
+  rust:
+    name: fmt, clippy, test (Linux)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web/apps/desktop/src-tauri
+    steps:
+      - uses: actions/checkout@v7
+      - name: webkit2gtk and friends
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: the frontend (embedded at compile time)
+        working-directory: web
+        run: pnpm install --frozen-lockfile && pnpm --filter @loams/desktop build:web
+      - name: a placeholder sidecar
+        working-directory: .
+        run: node scripts/desktop/prepare-sidecar.mjs --placeholder
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: web/apps/desktop/src-tauri -> target
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
+  build:
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bundles: deb,rpm,appimage
+          - os: windows-latest
+            bundles: nsis
+          - os: macos-latest
+            bundles: app,dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: webkit2gtk and friends
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev patchelf
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: install
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      # CI bundles no real engine (it would build DataFusion and the rest):
+      # a placeholder on Linux and macOS; Windows bundles none (remote-only,
+      # Q437). A release replaces it with the CLI release archive
+      # (prepare-sidecar.mjs --from-release, its SHA-256 checked).
+      - name: a placeholder sidecar
+        run: node scripts/desktop/prepare-sidecar.mjs --placeholder
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: web/apps/desktop/src-tauri -> target
+      - name: test the Tauri crate
+        working-directory: web/apps/desktop/src-tauri
+        run: |
+          pnpm --dir ../../.. --filter @loams/desktop build:web
+          cargo test --locked
+      - name: tauri build (no bundle)
+        if: github.event_name == 'pull_request'
+        working-directory: web/apps/desktop
+        run: pnpm tauri build --no-bundle
+      # Unsigned: macOS has no Developer ID and Windows no Authenticode
+      # certificate yet (owner actions Q420, Q421).
+      - name: tauri build (unsigned bundles)
+        if: github.event_name != 'pull_request'
+        working-directory: web/apps/desktop
+        run: pnpm tauri build --bundles ${{ matrix.bundles }}
+      - name: upload the bundles
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: loams-desktop-${{ runner.os }}-unsigned
+          if-no-files-found: warn
+          path: |
+            web/apps/desktop/src-tauri/target/release/bundle/**/*.deb
+            web/apps/desktop/src-tauri/target/release/bundle/**/*.rpm
+            web/apps/desktop/src-tauri/target/release/bundle/**/*.AppImage
+            web/apps/desktop/src-tauri/target/release/bundle/**/*.exe
+            web/apps/desktop/src-tauri/target/release/bundle/**/*.dmg
+
+  # The signed release (AP1 Task 11), on tags desktop-v*. Disabled until the
+  # owner actions are done; nothing here holds or needs a secret yet.
+  #
+  # TODO(owner, Q420): an Apple Developer ID Application certificate and
+  #   notarization credentials as secrets APPLE_CERTIFICATE,
+  #   APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, APPLE_ID,
+  #   APPLE_PASSWORD, APPLE_TEAM_ID (tauri-action reads them), and
+  #   `bundle.macOS.signingIdentity` in tauri.macos.conf.json.
+  # TODO(owner, Q421): Windows code signing: Azure Artifact Signing or a Key
+  #   Vault certificate through `bundle.windows.signCommand` in
+  #   tauri.windows.conf.json, with its credentials as secrets.
+  # TODO(owner, Q282): the updater key from `tauri signer generate`
+  #   (TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD; the
+  #   public half in tauri.updater.conf.json), separate from the CLI's key,
+  #   and the `loams.dev/desktop/...` manifest redirect.
+  # TODO(AP1 Task 11): the real sidecar from the CLI release archive
+  #   (prepare-sidecar.mjs --from-release) and signing it with the app.
+  release:
+    name: release (disabled until signing exists)
+    if: false
+    needs: [capabilities, rust, build]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "see the TODOs above"

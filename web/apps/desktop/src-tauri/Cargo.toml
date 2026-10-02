@@ -1,0 +1,56 @@
+[package]
+name = "loams-desktop"
+version = "0.1.0"
+description = "Loams Desktop: the Tauri 2 shell around the cordis console. It supervises a bundled loams sidecar on loopback, carries every console request through a Rust bridge, and keeps credentials in the OS keychain (design §37 §6, AP1)."
+authors = ["The Loams Authors"]
+license = "Apache-2.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+# Its own workspace and lockfile: Tauri's dependency tree never enters the
+# engine's Cargo.lock, and `cargo build` at the repository root never builds
+# this crate (AP1 Global Constraints).
+[workspace]
+
+[lib]
+name = "loams_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+default = []
+# The signed auto-updater (tauri-plugin-updater). Off until the updater key
+# and the release channel exist (owner actions, see docs/guides/desktop.md).
+updater = ["dep:tauri-plugin-updater"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.1", features = [] }
+
+[dependencies]
+base64 = "0.22"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+keyring = "4.2"
+rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "stream", "http2", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tauri = { version = "2.12.1", features = [] }
+tauri-plugin-deep-link = "2.6.1"
+tauri-plugin-opener = "2.7.0"
+tauri-plugin-single-instance = { version = "2.5.2", features = ["deep-link"] }
+tauri-plugin-updater = { version = "2.13.1", optional = true }
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+url = "2.5"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["signal"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time", "test-util"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

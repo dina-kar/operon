@@ -1,0 +1,4 @@
+# The bundled `loams` sidecar per target triple (loams-<triple>[.exe]),
+# written by scripts/desktop/prepare-sidecar.mjs. Never committed.
+*
+!.gitignore
