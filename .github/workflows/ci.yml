@@ -305,6 +305,9 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
         run: |
+          # Fail if a rename removes the exact tests from the repeated gate.
+          cargo test -p loams-safekeeper --features server,nvme --lib --locked -- --list | grep -Fx 'journal::tests::records_are_durable_readable_and_replayed: test'
+          cargo test -p loams-safekeeper --features server,nvme --test nvme_service --locked -- --list | grep -Fx 'pipelined_appends_are_acknowledged_when_durable_and_survive_a_restart: test'
           for run in $(seq 1 20); do
             echo "WAL restart regression run $run/20"
             cargo test -p loams-safekeeper --features server,nvme --lib --locked journal::tests::records_are_durable_readable_and_replayed -- --exact
@@ -964,10 +967,15 @@ jobs:
       - changes
       - docs
       - check
+      - rust-tests
+      - feature-tests
       - crash-gate
       - cluster
       - qdrant-client
       - es-client
+      - tla
+      - lean
+      - specview
       - sim
       - tikv
       - tikv-nightly
