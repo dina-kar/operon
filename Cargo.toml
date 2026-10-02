@@ -149,7 +149,7 @@ tonic = "0.14"
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
 tower = "0.5"
-tower-http = { version = "0.6", default-features = false, features = ["fs"] }
+tower-http = { version = "0.7", default-features = false, features = ["fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ulid = "3"
