@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# The unmodified PgDog binary from the pinned image, on the host network, run in the caller's working
+# directory (PgDog's scripts set PGDOG_BIN to this file). The checkout is mounted at its own path so that
+# absolute config paths resolve. The image digest comes from PGDOG_DIGEST.
+set -euo pipefail
+digest="${PGDOG_DIGEST:-sha256:25d1908886f595a2e3b00ec59783326712e3c0f75f91d29f032ff712b30f2266}"
+src="${PGDOG_SRC:-$HOME/.cache/loam/pgdog-v0.1.60}"
+exec podman run --rm --network host -v "$src:$src" -w "$PWD" "ghcr.io/pgdogdev/pgdog@${digest}" /usr/local/bin/pgdog "$@"

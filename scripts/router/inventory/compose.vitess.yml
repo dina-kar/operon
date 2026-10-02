@@ -1,0 +1,216 @@
+# The MySQL half of the compatibility inventory (RT0 plan Task 6, §31 §15).
+#
+#   etcd      quay.io/coreos/etcd v3.7.2 (the topology server)
+#   my-a/b/c  the backends, three of them because vttablet's sidecar database (_vt, or the
+#             keyspace's custom name) must not be shared by two primaries of one keyspace
+#             (profile `ref`: mysql:8.0.46; profile `wesql`: WeSQL, wesql-a/b/c)
+#   vtctld, vtgate, vttablet-{commerce,customer,customer-80,customer-80-}
+#             Vitess v24.0.4, unmodified; the tablets run `--unmanaged` against the backend (D302)
+#
+# Layout: A hosts commerce/0 (db vt_commerce) and customer/-80 (db vt_customer); B hosts
+# customer/0; C hosts customer/80-. Aliases `backend-a/b/c` point at whichever profile runs.
+#
+# Run one stack at a time (15 GB machine): `ref` or `wesql`, never together with compose.pg.yml.
+#   docker compose -f compose.vitess.yml --profile ref up -d        (or podman, through its socket)
+name: loams-inv-vt
+
+x-vitess: &vitess
+  image: docker.io/vitess/lite:v24.0.4
+  user: vitess
+  restart: "no"
+  environment: &vtenv
+    TOPO: >-
+      --topo-implementation etcd2 --topo-global-server-address etcd:2379 --topo-global-root /vitess/global
+  mem_limit: 700m
+
+x-mysql: &mysql
+  image: docker.io/library/mysql:8.0.46
+  profiles: ["ref"]
+  environment:
+    MYSQL_ROOT_PASSWORD: loam-dev
+    MYSQL_ROOT_HOST: "%"
+  # Binlog and GTID settings of §31 §9.1; semi-sync source for Vitess 2PC (C-2);
+  # performance_schema is what the capture reads.
+  command: >
+    mysqld
+    --server-id=${SERVER_ID:-1}
+    --log-bin=mysql-bin
+    --log-replica-updates=ON
+    --binlog-format=ROW
+    --binlog-row-image=FULL
+    --gtid-mode=ON
+    --enforce-gtid-consistency=ON
+    --performance-schema=ON
+    --performance-schema-max-digest-length=4096
+    --performance-schema-max-sql-text-length=4096
+    --max-digest-length=4096
+    --max-connections=500
+    --default-authentication-plugin=mysql_native_password
+    --plugin-load-add=semisync_source.so
+    --loose-rpl-semi-sync-source-enabled=ON
+    --loose-rpl-semi-sync-source-timeout=1000
+    --loose-rpl-semi-sync-source-wait-for-replica-count=0
+    --sql-mode=ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION
+    --innodb-buffer-pool-size=128M
+  mem_limit: 700m
+
+x-wesql: &wesql
+  image: docker.io/apecloud/wesql-server:${WESQL_TAG:-8.0.35-0.1.0_beta5.40}
+  profiles: ["wesql"]
+  depends_on:
+    create-buckets:
+      condition: service_completed_successfully
+  mem_limit: 1g
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.7.2
+    command: >
+      etcd --name inv --data-dir /etcd-data --listen-client-urls http://0.0.0.0:2379
+      --advertise-client-urls http://etcd:2379
+    mem_limit: 200m
+
+  my-a: { <<: *mysql, volumes: ["sock-a:/var/run/mysqld"], ports: ["127.0.0.1:13306:3306"], networks: { default: { aliases: [backend-a] } } }
+  my-b: { <<: *mysql, volumes: ["sock-b:/var/run/mysqld"], ports: ["127.0.0.1:13307:3306"], networks: { default: { aliases: [backend-b] } } }
+  my-c: { <<: *mysql, volumes: ["sock-c:/var/run/mysqld"], ports: ["127.0.0.1:13308:3306"], networks: { default: { aliases: [backend-c] } } }
+
+  # WeSQL on RustFS as in deploy/wesql/compose.yaml, once per backend. gtid_mode = ON,
+  # enforce_gtid_consistency and the binlog settings are passed as mysqld arguments.
+  rustfs:
+    image: docker.io/rustfs/rustfs:1.0.0
+    profiles: ["wesql"]
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_SERVER_DOMAINS: rustfs,rustfs:9000
+    networks:
+      default:
+        aliases: [wesql-a.rustfs, wesql-b.rustfs, wesql-c.rustfs]
+  create-buckets:
+    image: docker.io/curlimages/curl:8.16.0
+    profiles: ["wesql"]
+    depends_on: [rustfs]
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        for b in wesql-a wesql-b wesql-c; do
+        until curl -sf -o /dev/null -H "x-amz-content-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        --aws-sigv4 aws:amz:us-east-1:s3 --user "rustfsadmin:rustfsadmin" -X PUT http://rustfs:9000/$$b
+        || curl -sf -o /dev/null -H "x-amz-content-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        --aws-sigv4 aws:amz:us-east-1:s3 --user "rustfsadmin:rustfsadmin" -I http://rustfs:9000/$$b;
+        do sleep 1; done; done; echo buckets ready
+  wesql-a: &wesql-node
+    <<: *wesql
+    environment: &wesql-env
+      WESQL_CLUSTER_MEMBER: wesql-a:13306
+      WESQL_OBJECTSTORE_PROVIDER: minio
+      WESQL_OBJECTSTORE_REGION: us-east-1
+      WESQL_OBJECTSTORE_ENDPOINT: http://rustfs:9000
+      WESQL_OBJECTSTORE_BUCKET: wesql-a
+      WESQL_OBJECTSTORE_ACCESS_KEY: rustfsadmin
+      WESQL_OBJECTSTORE_SECRET_KEY: rustfsadmin
+      MYSQL_ROOT_PASSWORD: loam-dev
+    command: ["--server-id=1", "--gtid-mode=ON", "--enforce-gtid-consistency=ON", "--binlog-format=ROW", "--binlog-row-image=FULL", "--performance-schema=ON", "--max-connections=500"]
+    ports: ["127.0.0.1:13316:3306"]
+    networks: { default: { aliases: [backend-a] } }
+    volumes: ["wesql-a:/data/mysql", "wsock-a:/var/run/mysqld"]
+  wesql-b:
+    <<: *wesql-node
+    environment: { <<: *wesql-env, WESQL_CLUSTER_MEMBER: "wesql-b:13306", WESQL_OBJECTSTORE_BUCKET: wesql-b }
+    ports: ["127.0.0.1:13317:3306"]
+    networks: { default: { aliases: [backend-b] } }
+    volumes: ["wesql-b:/data/mysql", "wsock-b:/var/run/mysqld"]
+  wesql-c:
+    <<: *wesql-node
+    environment: { <<: *wesql-env, WESQL_CLUSTER_MEMBER: "wesql-c:13306", WESQL_OBJECTSTORE_BUCKET: wesql-c }
+    ports: ["127.0.0.1:13318:3306"]
+    networks: { default: { aliases: [backend-c] } }
+    volumes: ["wesql-c:/data/mysql", "wsock-c:/var/run/mysqld"]
+
+  vtctld:
+    <<: *vitess
+    depends_on: [etcd]
+    command: >
+      sh -c 'exec vtctld $$TOPO --service-map grpc-vtctl,grpc-vtctld --port 15000 --grpc-port 15999
+      --backup-storage-implementation file --file-backup-storage-root /tmp/backups --log-format text'
+
+  vtgate:
+    <<: *vitess
+    depends_on: [etcd]
+    ports: ["127.0.0.1:15306:15306"]
+    command: >
+      sh -c 'exec vtgate $$TOPO --port 15001 --grpc-port 15991 --mysql-server-port 15306
+      --mysql-server-bind-address 0.0.0.0 --cell zone1 --cells-to-watch zone1
+      --tablet-types-to-wait PRIMARY --service-map grpc-vtgateservice --mysql-auth-server-impl none
+      --enable-buffer --log-format text'
+
+  vttablet-commerce:
+    <<: *vitess
+    volumes: ["${SOCK_PREFIX:-sock}-a:/sock"]
+    depends_on: [etcd]
+    command: >
+      sh -c 'exec vttablet $$TOPO --tablet-path zone1-0000000100 --tablet-hostname vttablet-commerce
+      --init-keyspace commerce --init-shard=0 --init-tablet-type replica --init-db-name-override vt_commerce
+      --unmanaged --db-socket /sock/mysqld.sock --db-flavor mysql
+      --db-app-user root --db-app-password loam-dev --db-dba-user root --db-dba-password loam-dev
+      --db-filtered-user root --db-filtered-password loam-dev --db-repl-user root --db-repl-password loam-dev
+      --db-allprivs-user root --db-allprivs-password loam-dev
+      --port 15100 --grpc-port 16100 --service-map grpc-queryservice,grpc-tabletmanager,grpc-updatestream
+      --health-check-interval 5s --heartbeat-on-demand-duration 5s --log-format text'
+
+  vttablet-customer:
+    <<: *vitess
+    volumes: ["${SOCK_PREFIX:-sock}-b:/sock"]
+    depends_on: [etcd]
+    command: >
+      sh -c 'exec vttablet $$TOPO --tablet-path zone1-0000000200 --tablet-hostname vttablet-customer
+      --init-keyspace customer --init-shard=0 --init-tablet-type replica --init-db-name-override vt_customer
+      --unmanaged --db-socket /sock/mysqld.sock --db-flavor mysql
+      --db-app-user root --db-app-password loam-dev --db-dba-user root --db-dba-password loam-dev
+      --db-filtered-user root --db-filtered-password loam-dev --db-repl-user root --db-repl-password loam-dev
+      --db-allprivs-user root --db-allprivs-password loam-dev
+      --port 15200 --grpc-port 16200 --service-map grpc-queryservice,grpc-tabletmanager,grpc-updatestream
+      --health-check-interval 5s --heartbeat-on-demand-duration 5s --log-format text'
+
+  vttablet-customer-lo:
+    <<: *vitess
+    volumes: ["${SOCK_PREFIX:-sock}-a:/sock"]
+    depends_on: [etcd]
+    command: >
+      sh -c 'exec vttablet $$TOPO --tablet-path zone1-0000000300 --tablet-hostname vttablet-customer-lo
+      --init-keyspace customer --init-shard=-80 --init-tablet-type replica --init-db-name-override vt_customer
+      --unmanaged --db-socket /sock/mysqld.sock --db-flavor mysql
+      --db-app-user root --db-app-password loam-dev --db-dba-user root --db-dba-password loam-dev
+      --db-filtered-user root --db-filtered-password loam-dev --db-repl-user root --db-repl-password loam-dev
+      --db-allprivs-user root --db-allprivs-password loam-dev
+      --port 15300 --grpc-port 16300 --service-map grpc-queryservice,grpc-tabletmanager,grpc-updatestream
+      --health-check-interval 5s --heartbeat-on-demand-duration 5s --log-format text'
+
+  vttablet-customer-hi:
+    <<: *vitess
+    volumes: ["${SOCK_PREFIX:-sock}-c:/sock"]
+    depends_on: [etcd]
+    command: >
+      sh -c 'exec vttablet $$TOPO --tablet-path zone1-0000000400 --tablet-hostname vttablet-customer-hi
+      --init-keyspace customer --init-shard=80- --init-tablet-type replica --init-db-name-override vt_customer
+      --unmanaged --db-socket /sock/mysqld.sock --db-flavor mysql
+      --db-app-user root --db-app-password loam-dev --db-dba-user root --db-dba-password loam-dev
+      --db-filtered-user root --db-filtered-password loam-dev --db-repl-user root --db-repl-password loam-dev
+      --db-allprivs-user root --db-allprivs-password loam-dev
+      --port 15400 --grpc-port 16400 --service-map grpc-queryservice,grpc-tabletmanager,grpc-updatestream
+      --health-check-interval 5s --heartbeat-on-demand-duration 5s --log-format text'
+
+volumes:
+  sock-a:
+  sock-b:
+  sock-c:
+  wsock-a:
+  wsock-b:
+  wsock-c:
+  wesql-a:
+  wesql-b:
+  wesql-c:

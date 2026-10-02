@@ -1,0 +1,59 @@
+# The Postgres half of the compatibility inventory (RT0 plan Task 5, §31 §15).
+#
+#   shard0, shard1  the two backends PgDog fronts; shard0 listens on 127.0.0.1:5432 because
+#                   PgDog's integration/ layout expects a server there
+#   ref             the reference engine the replay compares against (127.0.0.1:15440)
+#   pgdog           PgDog v0.1.60 by digest, unmodified, with the two-shard config next to this
+#                   file (profile "baseline"; PgDog's own scenarios run its binary from the same
+#                   image, see pg-capture.sh)
+#
+# Works with docker compose and, through its socket, with podman. Start one stack at a time:
+# the machine has 15 GB of RAM (never together with compose.vitess.yml).
+name: loams-inv-pg
+
+x-postgres: &postgres
+  image: docker.io/library/postgres:17.11
+  environment:
+    POSTGRES_USER: pgdog
+    POSTGRES_PASSWORD: pgdog
+    POSTGRES_DB: postgres
+  # pg_stat_statements is what the capture reads; log_statement = all and
+  # log_replication_commands = on record what pg_stat_statements cannot (replication commands).
+  command: >
+    postgres
+    -c shared_preload_libraries=pg_stat_statements
+    -c pg_stat_statements.track=all
+    -c pg_stat_statements.max=10000
+    -c track_activity_query_size=8192
+    -c log_statement=all
+    -c log_replication_commands=on
+    -c max_prepared_transactions=1000
+    -c wal_level=logical
+    -c max_connections=1000
+    -c max_wal_senders=32
+    -c max_replication_slots=32
+    -c max_worker_processes=64
+    -c fsync=off
+    -c synchronous_commit=off
+  volumes:
+    - ./pg-init.sql:/docker-entrypoint-initdb.d/00-pg-init.sql:ro
+  mem_limit: 1g
+
+services:
+  shard0:
+    <<: *postgres
+    ports: ["127.0.0.1:5432:5432"]
+  shard1:
+    <<: *postgres
+    ports: ["127.0.0.1:15433:5432"]
+  ref:
+    <<: *postgres
+    ports: ["127.0.0.1:15440:5432"]
+  pgdog:
+    # v0.1.60's image index (amd64 manifest sha256:1bf5346d…); its revision label is 0d040f92, the v0.1.60 tag.
+    image: ghcr.io/pgdogdev/pgdog@${PGDOG_DIGEST:-sha256:25d1908886f595a2e3b00ec59783326712e3c0f75f91d29f032ff712b30f2266}
+    profiles: ["baseline"]
+    depends_on: [shard0, shard1]
+    volumes:
+      - ./pgdog-two-shard:/pgdog:ro
+    ports: ["127.0.0.1:6432:6432"]

@@ -1,0 +1,10 @@
+suite	test	result	rows
+resharding	integration/resharding/dev.sh - timed out at 20 min (scenario limit 16): catch-up did not finish under the pgbench load [reference: fail]	pending-target	129
+pgbench	integration/pgbench/run.sh [reference: pass]	pending-target	57
+schema_sync	integration/schema_sync/dev.sh [reference: pass]	pending-target	266
+data_sync	integration/copy_data/data_sync/run.sh [reference: pass]	pending-target	170
+two_pc	integration/two_pc/crash_recovery.py [reference: pass]	pending-target	14
+baseline	scripts/router/inventory/pg-baseline.sql [reference: pass]	pending-target	32
+rewrite	integration/rewrite - config only in this checkout; the rewrite specs are Ruby and Rust suites [reference: skip]	pending-target	0
+logical	integration/logical - needs a downloaded dataset (gutenberg) and a manual walk-through [reference: skip]	pending-target	0
+failover	integration/failover - interactive dev-server scripts [reference: skip]	pending-target	0

@@ -1,0 +1,28 @@
+# Dropped next to PgDog's integration/resharding/docker-compose.yaml for the run (it is outside this
+# repository): Postgres 17.11 instead of 16, with pg_stat_statements and statement logging on.
+# `${INV_DIR}` is this directory.
+x-capture: &capture
+  image: docker.io/library/postgres:17.11
+  command: >
+    postgres
+    -c wal_level=logical
+    -c shared_preload_libraries=pg_stat_statements
+    -c pg_stat_statements.track=all
+    -c pg_stat_statements.max=10000
+    -c track_activity_query_size=8192
+    -c log_replication_commands=on
+    -c max_prepared_transactions=100
+    -c max_connections=500
+    -c max_wal_senders=32
+    -c max_replication_slots=32
+    -c fsync=off
+    -c synchronous_commit=off
+  volumes:
+    - ${INV_DIR}/pg-init.sql:/docker-entrypoint-initdb.d/00-pg-init.sql:ro
+  mem_limit: 1g
+
+services:
+  source_0: *capture
+  source_1: *capture
+  destination_0: *capture
+  destination_1: *capture
