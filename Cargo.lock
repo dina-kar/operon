@@ -6504,7 +6504,7 @@ dependencies = [
  "loams-hnsw",
  "qdrant-edge",
  "rand 0.9.5",
- "rand_chacha 0.9.0",
+ "rand_chacha 0.10.0",
  "roaring",
  "serde",
  "tempfile",
@@ -6542,7 +6542,7 @@ dependencies = [
  "postcard",
  "proptest",
  "rand 0.9.5",
- "rand_chacha 0.9.0",
+ "rand_chacha 0.10.0",
  "reqwest 0.12.28",
  "roaring",
  "serde",
@@ -6658,7 +6658,7 @@ dependencies = [
  "postcard",
  "proptest",
  "rand 0.9.5",
- "rand_chacha 0.9.0",
+ "rand_chacha 0.10.0",
  "redb",
  "reqwest 0.12.28",
  "serde",
@@ -6676,7 +6676,7 @@ dependencies = [
  "async-trait",
  "loams-common",
  "rand 0.9.5",
- "rand_chacha 0.9.0",
+ "rand_chacha 0.10.0",
  "tokio",
 ]
 
@@ -6773,7 +6773,7 @@ dependencies = [
  "proptest",
  "prost 0.14.4",
  "rand 0.9.5",
- "rand_chacha 0.9.0",
+ "rand_chacha 0.10.0",
  "roaring",
  "serde",
  "serde_json",
@@ -6869,7 +6869,7 @@ dependencies = [
  "loams-worker",
  "object_store 0.14.2",
  "rand 0.9.5",
- "rand_chacha 0.9.0",
+ "rand_chacha 0.10.0",
  "serde_json",
  "tempfile",
  "tokio",
@@ -6906,7 +6906,7 @@ dependencies = [
  "postcard",
  "proptest",
  "rand 0.9.5",
- "rand_chacha 0.9.0",
+ "rand_chacha 0.10.0",
  "rand_core 0.9.5",
  "serde",
  "serde_json",
@@ -6923,7 +6923,7 @@ dependencies = [
  "futures",
  "object_store 0.14.2",
  "rand 0.9.5",
- "rand_chacha 0.9.0",
+ "rand_chacha 0.10.0",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -9130,6 +9130,16 @@ checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
 dependencies = [
  "ppv-lite86",
  "rand_core 0.9.5",
+]
+
+[[package]]
+name = "rand_chacha"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e6af7f3e25ded52c41df4e0b1af2d047e45896c2f3281792ed68a1c243daedb"
+dependencies = [
+ "ppv-lite86",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
