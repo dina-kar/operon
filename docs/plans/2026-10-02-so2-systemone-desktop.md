@@ -10,7 +10,7 @@
 - a **Decisions** settings panel and a **Model Manager** (download, verify, keep resident, delete, self-test, calibration status, the opt-in Cloud section);
 - **Loams Bot** using decisions for routing, urgency, needs-person and an LLM pre-filter, shown on the thread card;
 - a read-only **`systemone_decide`** tool injected beside `zeron mcp`;
-- optionally, the **browser** plugin (a cordis plugin running `laya-ts` in an isolated worker), Windows and Linux CPU paths, and the MLX adapter.
+- optionally, the **browser** plugin (a cordis plugin running `laya-ts` in a plain Web Worker), Windows and Linux CPU paths, and the MLX adapter.
 
 **Architecture:**
 - **`loams-desktop/sidecars/coreml/`** (SwiftPM executable `loams-coreml`, Swift 6, macOS 14+): depends on `FluidInference/FluidUse` pinned by revision (or the Laya files vendored, Task 0); serves `POST /v1/systemone` and `GET /health` of `laya-serve`'s shape over a Unix domain socket (mode 0600) with a per-launch bearer key. Loads buckets from paths our model manager provides.
@@ -34,7 +34,7 @@
 - **No TCP port for the Core ML sidecar.** A Unix socket in `$LOAMS_HOME/run/` at mode 0600 and a per-launch bearer key. A non-loopback address is refused for every other sidecar.
 - **The sidecar never downloads.** Models arrive through the model manager (verified, pinned, consented). `LayaManager.load()`'s own download path is not used.
 - **A decision is advisory (D537).** Loams Bot's use never approves, merges, deploys or answers an approval; a SystemOne route is a hint that a person or a gated agent can override.
-- **No telemetry.** Nothing in the app reports usage; the decision log is local and opt-in.
+- **No telemetry from the app.** The app sends no usage data to Loams or anyone else; the decision log is local, opt-in and off by default. When signed in, A2A trace metadata (`systemone.backend`, `systemone.latency_ms`, no content) goes to the operator's own collector like every other span (§39 D470), and the instance's own `io.loams.dev.systemone.decided.v1` event is the operator's.
 - **Credentials:** no Loams token is passed to the sidecar, the browser plugin or an agent subprocess (§37 D489). The injected MCP tool carries chat identity only.
 - **Names:** `loams-*` crates, `LOAMS_*` env vars, `loams.systemone.v1`. The zeron data directory names stay (§37 Q489).
 - **The build machine.** Rust builds one at a time on Linux for everything but the Swift sidecar and macOS-only tests; Swift builds and notarisation only on the Mac runner; the GPUI app builds are slow, so run `cargo check -p <crate>` and the crate's tests, not the whole app, until the last task.
@@ -158,9 +158,9 @@ ostrium-labs/loams: web/plugins/systemone-local/{package.json,src/*,worker/*}, d
 - `needs_person` (`noul`: does this need a person's attention before any action);
 - `needs_llm` (`noul`: does this message need a language model at all; false for acknowledgements and thanks).
 
-**Semantics:** before each `SendMessage`, the shim asks `LocalSystemOne::decide` with `min_confidence = 0.6` (Ruling 6) and `locality = LOCAL_ONLY`. A confident route sets the A2A `to` hint and the thread card shows "routed to forgejo, 0.91, local"; a `low_confidence` or absent decision sends the message unrouted for Loams Bot to decide, as today. `needs_person` raises the notification priority only (never auto-answers). `needs_llm = false` with confidence above 0.9 may short-circuit to a canned acknowledgement only if the user enabled "quick replies"; off by default. The decision, backend, calibrated confidence and latency go into A2A metadata (`systemone.*`, no content). **No decision can create, approve or answer an approval, a question or a destructive skill.** If SystemOne is unavailable the shim behaves exactly as before.
+**Semantics:** before each `SendMessage`, the shim asks `LocalSystemOne::decide` with `min_confidence = 0.6` (Ruling 6) and `locality = LOCAL_ONLY`. A confident route sets the A2A `to` hint and the thread card shows "routed to forgejo, 0.91, local"; a `low_confidence` or absent decision sends the message unrouted for Loams Bot to decide, as today. `needs_person` raises the notification priority only (never auto-answers). `needs_llm = false` with confidence above 0.9 may short-circuit to a canned acknowledgement only if the user enabled "quick replies" (off by default) **and** an independent rule-based check agrees (the message is under 40 characters, is not a question and has no `?`, and matches a per-language allowlist of thanks and acknowledgements); otherwise the message goes on to the LLM. The decision, backend, calibrated confidence and latency go into A2A metadata (`systemone.*`, no content). **No decision can create, approve or answer an approval, a question or a destructive skill.** If SystemOne is unavailable the shim behaves exactly as before.
 
-**Tests:** `confident_route_sets_hint_and_card`; `low_confidence_sends_unrouted`; `unavailable_behaves_as_today`; `decision_cannot_approve` (the approval path is unreachable from `decisions.rs`; checked by a compile-time module-visibility test plus a runtime test that the shim rejects a decision-sourced approval); `needs_person_only_raises_priority`; `quick_replies_off_by_default`; `metadata_has_no_content`; `questions_are_versioned` (a snapshot of the four definitions).
+**Tests:** `confident_route_sets_hint_and_card`; `low_confidence_sends_unrouted`; `unavailable_behaves_as_today`; `decision_cannot_approve` (the approval path is unreachable from `decisions.rs`; checked by a compile-time module-visibility test plus a runtime test that the shim rejects a decision-sourced approval); `needs_person_only_raises_priority`; `quick_replies_off_by_default`; `canned_reply_needs_independent_check` (a model-confident `needs_llm = false` on a question still goes to the LLM); `metadata_has_no_content`; `questions_are_versioned` (a snapshot of the four definitions).
 
 **Commit:** `bot: route, urgency, needs-person and pre-filter decisions`.
 
@@ -176,11 +176,11 @@ ostrium-labs/loams: web/plugins/systemone-local/{package.json,src/*,worker/*}, d
 
 ### Task 7: The browser plugin (optional; owner go-ahead, Q530)
 
-**Files (in `ostrium-labs/loams`):** `web/plugins/systemone-local/*`, `web/apps/console/public/systemone-worker.html` (own headers).
+**Files (in `ostrium-labs/loams`):** `web/plugins/systemone-local/*`.
 
-**Semantics:** a cordis plugin `@loams/plugin-systemone-local` that provides the `systemone` service with a `LayaWasmBackend` in a Web Worker running `laya-ts` (Apache-2.0) on `onnxruntime-web` (WebGPU, then WASM); weights from the pinned mirror with SHA-256 checks in the worker before use; the worker document is cross-origin isolated (COOP `same-origin`, COEP `require-corp`) and embedded by `postMessage`, so the console never enables COEP; the plugin is `trusted-first-party`, off by default, with a size warning (524 MB int8) and a consent prompt; falls back to the instance route.
+**Semantics:** a cordis plugin `@loams/plugin-systemone-local` that provides the `systemone` service with a `LayaWasmBackend` in a plain Web Worker running `laya-ts` (Apache-2.0) on `onnxruntime-web` (WebGPU, then single-threaded WASM, about 6x slower); weights from the pinned mirror with SHA-256 checks in the worker before use; **no cross-origin isolation is requested** (an isolated iframe cannot live in a non-isolated console, and `require-corp` would block the framed app UIs), so threaded WASM is not offered; Task 7 also measures the real size of the pinned `laya-ts` export; the plugin is `trusted-first-party`, off by default, with a size warning (524 MB int8) and a consent prompt; falls back to the instance route.
 
-**Tests:** `worker_never_runs_on_main_thread`; `console_headers_unchanged` (no COEP on the console document); `weights_verified_before_use`; `consent_before_download`; `falls_back_to_server_when_declined`; `answers_match_server_within_0_02` (Playwright, needs the weights; `ignore` in CI without them).
+**Tests:** `worker_never_runs_on_main_thread`; `console_headers_unchanged` (no COEP or COOP on the console document); `no_threaded_wasm_requested`; `weights_verified_before_use`; `consent_before_download`; `falls_back_to_server_when_declined`; `answers_match_server_within_0_02` (Playwright, needs the weights; `ignore` in CI without them).
 
 **Commit:** `plugin: opt-in local decisions in the browser`.
 

@@ -30,7 +30,7 @@ Backend per host, in one table (rules in §6):
 | Desktop or CLI, CPU only | `laya-native` (kevala) if SO1 Task 0 passes, else `laya-torch` on CPU | Upstream measures 193 to 464 ms per question for torch on CPU; the native number is to be measured |
 | Loams server (gateway role) | NVIDIA if present, else CPU, as above | The same sidecar manager runs server-side |
 | Browser console | The instance's `/v1/systemone` | Local WASM is an opt-in plugin, and COOP/COEP makes it awkward (§7.5) |
-| Any host, explicit opt-in | `jev` | Data leaves the machine; terms not yet read by anyone with authority (Q520) |
+| Any host, explicit opt-in | `jev` | Data leaves the machine; TypeSafe's agreement forbids a standalone service and distillation; OSS-client fit unconfirmed (Q520) |
 
 ## 2. What was verified, and what the note got wrong (2026-10-02)
 
@@ -48,7 +48,7 @@ Every row below was checked on 2026-10-02 against the named page or API. "Vendor
 | `nvkudva/laya-web` | **No licence.** The repository has no `LICENSE`, and GitHub reports none, so by default all rights are reserved: **we do not copy or depend on it.** Facts it states: 524 MB int8 weights (1.69 GB fp32), onnxruntime-web, COOP `same-origin` and COEP `require-corp` for threaded WASM, main thread in production, about 340 ms on short states and 2.4 s at 512 tokens, single-thread fallback "roughly 6x slower" | github.com/nvkudva/laya-web |
 | Better browser sources | Official **`laya-ts`** (inside `NandhaKishorM/laya`, Apache-2.0): split `encoder.onnx` + `head.onnx`, Node and browser, "WebGPU to WASM fallback", `onnxruntime-web` an optional peer dependency. **`bvolpato/kevala`** (Apache-2.0): Rust with zero dependencies compiled to WASM plus WebGPU kernels and a **native CPU CLI**; Laya int8 pack 479 MB; "works from any origin and needs no special headers". **`vishalmysore/layaForWeb`** (Apache-2.0) | github.com/NandhaKishorM/laya (`laya-ts/`), github.com/bvolpato/kevala |
 | `browser-use/jev-ultrafast` | **MIT.** It is a browser-agent sample that **calls** the Jev API. Its licence says nothing about the API's terms | github.com/browser-use/jev-ultrafast |
-| **Jev API terms** | TypeSafe publishes Terms of Use, a Privacy Policy and an Acceptable Use Policy on typesafe.ai. The Terms of Use govern **the website only** and say a separate agreement governs products and services. The Privacy Policy says TypeSafe "will not train or fine tune" models on Input and "will not disclose any Input to a third party other than our service providers". **We found no API terms, rate limits or option limits**, nothing on resale or embedding in a product, and the model is closed. **An owner action** (Q520) | typesafe.ai/legal/*, docs.typesafe.ai |
+| **Jev API terms** | TypeSafe publishes Terms of Use (website only), a Privacy Policy, an Acceptable Use Policy and a **Master Customer Agreement** (published 2026-09-28) at typesafe.ai/legal. The MCA covers the API: the licence "includes the right to include the API into one or more software applications developed and operated by Customer"; the customer "will not ... offer or make the Services available as a standalone service", and "will not use the Services or any Output to perform model distillation, train a model to imitate the output of the Services, or develop a similar or competing product". TypeSafe will not put Customer Data in a training dataset without prior consent. Rate limits and option limits are not published, and the model is closed. **Consequences for us:** each user brings their own agreement and key; a Loams-hosted pass-through looks like a "standalone service" and is not planned; **Jev outputs must never be used as training labels** for Laya or any Loams model (§9.4). Whether an OSS client with a user-supplied key and a selectable-backend listing fit is for TypeSafe to confirm: **owner action** (Q520). This corrects an earlier reading of this row that found no API terms | typesafe.ai/legal/mca, /terms, /privacy-policy, docs.typesafe.ai |
 
 ### 2.2 The API surface
 
@@ -89,13 +89,13 @@ The note asked whether "cordis engine" meant Core ML. **It does not.** **cordis 
 
 **Goals.** One decision API for the engine, CLI, desktop, browser and agents; the best local backend per host chosen automatically and overridable; no data leaves the machine unless the owner of the data said so; calibrated, comparable confidences across backends; verified, pinned, resumable model downloads; a clean seam for fine-tuned checkpoints; the desktop integration the owner asked for.
 
-**Non-goals.** Text generation; training inside the engine (fine-tuning stays upstream's notebooks, §9.4); a Loams-hosted multi-tenant inference API (that is `loam-platform`, §11); GPU kernels of our own; replacing LLMs (SystemOne decides, it does not write); a decision that approves anything (D537).
+**Non-goals.** Text generation; distilling or imitating Jev (forbidden by its agreement); training inside the engine (fine-tuning stays upstream's notebooks, §9.4); a Loams-hosted multi-tenant inference API (that is `loam-platform`, §11); GPU kernels of our own; replacing LLMs (SystemOne decides, it does not write); a decision that approves anything (D537).
 
 ## 4. The API (D520, D521, D522)
 
 ### 4.1 `loams.systemone.v1` (Connect)
 
-File `proto/loams/systemone/v1/systemone.proto`. The messages follow the Jev/Laya JSON one to one so the HTTP form is the proto's canonical JSON with the field names below.
+File `proto/loams/systemone/v1/systemone.proto`. The messages mirror the Jev/Laya JSON, but **the HTTP form of §4.2 is a separate, hand-specified JSON dialect, not ProtoJSON**: Connect clients that use JSON get standard ProtoJSON (lowerCamelCase names, enum names such as `ALLOW_CLOUD`, `budget` as a nested object), while `POST /v1/systemone` uses the Jev/Laya names (snake_case, lowercase enum strings, `max_len` and `head_max_len` at the top level). `wire.rs` translates between the two, once, and SO1 Task 2 tests the mapping in both directions.
 
 ```proto
 syntax = "proto3";
@@ -117,7 +117,7 @@ message DecideRequest {
   string lang = 4;                               // optional BCP 47 hint ("de", "en-US")
   optional double min_confidence = 5;            // abstain below this calibrated confidence (D536)
   Budget budget = 6;                             // optional max_len / head_max_len
-  Locality locality = 7;                         // LOCAL_ONLY (default) or ALLOW_CLOUD (D525)
+  Locality locality = 7;                         // LOCALITY_UNSPECIFIED is treated as LOCAL_ONLY everywhere (D525)
   string idempotency_key = 8;                    // optional; for logs only, decisions are pure
 }
 
@@ -175,7 +175,15 @@ message Provenance {
 
 ### 4.2 HTTP `POST /v1/systemone` (D521)
 
-The path, request and response are Jev's and `laya-serve`'s, so a client written for either works by changing its base URL. Loams adds optional fields; it never removes or renames one.
+The path, request and response follow **Jev's documented fields** (and `laya-serve`'s, which follows Jev's), so a client that uses only those works by changing its base URL. Loams adds optional fields and never renames or removes a Jev-defined one. Where this surface differs from `laya-serve`, it is listed here, not promised away:
+
+| Laya feature | Here |
+|---|---|
+| Request `task`, `lang_guess` | Accepted; forwarded to Laya backends, ignored by others |
+| Request hook arguments (`hooks`, `on_predict_start`, ...) | `422`, as Laya does |
+| Response `routing`, `action` | Not returned (our `loams` block replaces `routing`; `act_probability` is never exposed) |
+| `model` | Accepted and ignored (the router picks); a Jev id is never an error |
+| `min_confidence` | Applied to `calibrated_confidence`, not to Laya's `answer_confidence` |
 
 ```json
 POST /v1/systemone
@@ -197,7 +205,7 @@ Authorization: Bearer <loams token>        // required except on a loopback desk
 }
 ```
 
-`criteria` for `choice` may be a map (key to description) or a list of keys, and for `score` a list, exactly as Laya accepts them. Option order is the map's order as sent.
+`criteria` for `choice` may be a map (key to description), a list of keys, or **the Loams canonical form, a list of `{"key", "description"}` objects**; for `score` a list. JSON objects are unordered by RFC 8259, but Python-based Jev and Laya clients rely on member order, so for the map form we preserve the order of members as received, and we recommend the list forms, whose order is defined. The proto uses the repeated form. Option order feeds the prompt, so it is part of the request's meaning.
 
 ```json
 200 OK
@@ -236,6 +244,8 @@ Rules:
 Native by default on every backend. Two quirks are handled **inside the adapter**, invisible to callers:
 - **Laya `noul` stuck on its labels** (upstream issue 156). Each Laya backend carries a flag `noul_mode: native | choice_ab`. The self-test (§9.2) includes a pair of `noul` cases with opposite correct answers; if a checkpoint answers both the same way with confidence above 0.9, the adapter switches that checkpoint to `choice_ab` (a two-option `choice` with neutral keys `A` yes and `B` no, upstream's workaround) and reports `warnings: ["noul_via_choice_ab"]`. Operators can force either mode in config.
 - **Jev needs no mapping.** Its `noul` and `score` are native (§2.2); the note's "map them onto choices for Jev" is dropped.
+
+**Locality default.** proto3 gives an omitted enum the zero value, `LOCALITY_UNSPECIFIED`. The service, the HTTP adapter and every client library treat it as `LOCAL_ONLY`; only an explicit `ALLOW_CLOUD` can make a cloud backend eligible. A test pins this for both transports (SO1 Task 2).
 
 ## 5. The backend registry and trait (D523)
 
@@ -335,10 +345,10 @@ Detection never loads a model and never runs inference. A GPU that exists but wh
 | Rule | Behaviour |
 |---|---|
 | Locality | Default `LOCAL_ONLY`. A cloud backend is eligible only if the request says `ALLOW_CLOUD` **and** the instance, org or user setting allows cloud decisions **and** a key is configured. A forced `backend: "jev"` with locality `LOCAL_ONLY` is an error (`CLOUD_NOT_ALLOWED`), not a quiet fallback |
-| Options over a backend's cap | More than 32 options on any `choice`: exclude `laya-coreml` (its bucket has 32 slots). Over 100: exclude `laya-torch` (the HTTP cap) and use Jev if allowed, else `INVALID_QUESTION` suggesting a two-step hierarchy |
-| More than about 20 options | Laya's accuracy falls off sharply (0.425 on 77 labels vs Jev's 0.870 on 72). Order: `laya-torch` with a widened `head_max_len`/`max_len` (upstream's fix) first if local-only; Jev preferred if cloud is allowed and the caller did not say `quality: local`; warning `options_over_20` either way. No quality claim for the widened path until SO1's self-test adds a 40-option case and the numbers are measured (Q528) |
+| Options over a backend's cap | More than 32 options on any `choice`: exclude `laya-coreml` (its bucket has 32 slots). Over 100 is rejected at validation for every backend (`laya-serve`'s cap, which also bounds Jev use in v1): `INVALID_QUESTION` suggesting a two-step hierarchy |
+| More than about 20 options | Laya's accuracy falls off sharply (0.425 on 77 labels vs Jev's 0.870 on 72). Order: `laya-torch` with a widened `head_max_len`/`max_len` (upstream's fix) first if local-only; Jev preferred only if cloud is allowed (the request's `locality` and the instance switch), otherwise stay local; warning `options_over_20` either way. No quality claim for the widened path until SO1's self-test adds a 40-option case and the numbers are measured (Q528) |
 | Language | Only the English checkpoint is English-only. Use it only when the state is detected as English (explicit `lang`, else script and language detection: Latin script and detector says English). **Anything else, including undecided Latin text, goes to the multilingual checkpoint.** A backend that ships only the English checkpoint (`laya-wasm` English, the note's `laya-mlx` English weights) is excluded for non-English text. The cost of the safe default is accuracy on English (MASSIVE intent 0.783 English vs 0.657 multilingual), so on Apple silicon the English-quality gap is Q522 |
-| State over the window | Core ML: the smallest loaded bucket that fits; if even 1024 does not fit, `truncated` is reported and the warning `state_truncated` is added. Laya sidecar: `usage.truncated` becomes the same warning, and `on_truncate: warn | widen | error` (default `warn`; `widen` retries once with a larger `max_len` up to `LAYA_MAX_TOKEN_BUDGET`). The state is never silently cut |
+| State over the window | Core ML: the smallest loaded bucket that fits; if even 1024 does not fit, `truncated` is reported and the warning `state_truncated` is added. Laya sidecar: `usage.truncated` becomes the same warning, and `on_truncate` set to `warn`, `widen` or `error` (default `warn`; `widen` retries once with a larger `max_len` up to `LAYA_MAX_TOKEN_BUDGET`). The state is never silently cut |
 | Question types | All three are native on every backend; `noul_mode` per §4.3 |
 | Error | Primary fails with a retryable error: the fallback (if set and allowed) once; the response carries `fell_back_to:<id>` |
 | Readiness | A backend whose self-test failed is `Degraded` and is skipped unless it is the only one, in which case the answer carries `warnings: ["self_test_failed"]` |
@@ -384,8 +394,8 @@ The desktop wants a CPU path without a multi-gigabyte Python environment. SO1 Ta
 ### 7.5 `laya-wasm`: the browser as a cordis plugin (D530)
 
 - **Default in the browser is the server.** The console already talks to an instance; `POST /v1/systemone` returns in tens of milliseconds on a server GPU and nothing is downloaded.
-- **Opt-in local inference** is a cordis plugin `@loams/plugin-systemone-local` (loaded from the catalog like any other, §37 D423): a dedicated Web Worker running **official `laya-ts`** on `onnxruntime-web` (WebGPU, then WASM), with weights from our pinned mirror (§9.5). `kevala` (WASM plus WebGPU, needs no special headers, 479 MB pack) is the alternative if SO1's native spike picks it. `nvkudva/laya-web` is not used (no licence).
-- **COOP/COEP.** Threaded WASM in onnxruntime-web needs cross-origin isolation (`Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: require-corp`); without it the same note says about 6x slower. The Loams console **frames app UIs from sibling subdomains** (§39 D461, D462), and `require-corp` blocks any framed resource that does not send `Cross-Origin-Resource-Policy`. So the console itself must not turn COEP on. The plugin therefore runs in a **separate cross-origin-isolated document** (a static `/ui/systemone-worker.html` on its own origin or path with its own headers, embedded by `postMessage`) or uses a WebGPU or isolation-free engine (kevala). Which is Q530; v1 ships neither unless the owner asks for in-browser inference.
+- **Opt-in local inference** is a cordis plugin `@loams/plugin-systemone-local` (loaded from the catalog like any other, §37 D423): a dedicated Web Worker running **official `laya-ts`** on `onnxruntime-web` (WebGPU, then single-threaded WASM), with weights from our pinned mirror (§9.5). `kevala` (WASM plus WebGPU, needs no special headers, 479 MB pack) is the alternative if SO1's native spike picks it. `nvkudva/laya-web` is not used (no licence).
+- **COOP/COEP.** Threaded WASM in onnxruntime-web needs cross-origin isolation (`Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: require-corp`); without it the same note says about 6x slower. The Loams console **frames app UIs from sibling subdomains** (§39 D461, D462), and `require-corp` blocks any framed resource that does not send `Cross-Origin-Resource-Policy`. So the console itself must not turn COEP on. An iframe can only be cross-origin isolated if every ancestor is, so an isolated worker document **embedded in the console is not an option**. The compatible choices are: (a) a WebGPU or isolation-free engine in a plain Web Worker (kevala, or `laya-ts` on onnxruntime-web's WebGPU provider), (b) single-threaded WASM in a plain worker, about 6x slower (the figure is laya-web's), or (c) opening the model page as a **top-level isolated window** that the console talks to over a `MessageChannel`, which is awkward. v1 picks (a) with (b) as the fallback, and ships none of them unless the owner asks for in-browser inference (Q530).
 - Main-thread execution (as laya-web does in production) would freeze the console for 340 ms to 2.4 s per call; the plugin always uses a worker.
 
 ## 8. The desktop integration (D538)
@@ -412,7 +422,7 @@ Loams Desktop is the zeron fork (§37 §18, `ostrium-labs/loams-desktop`). Syste
 - **Settings, "Decisions" panel** (GPUI, in `loams-panels`): the active backend and why (`route_reason`), a table of backends with status and a one-line fix for each `NotInstalled`, model sizes, download/verify/delete, residency, a "run self-test" button with the result, calibration status per question type, and a **Cloud decisions** section: off by default, a Jev key field stored in the OS keychain (never in config), the consent text from §10 and a per-org policy override from the instance.
 - **Loams Bot uses it** (D538): (1) before dispatch, `route.agent` (choice over the five platform agents), `urgency` (score) and `needs_person` (noul) decide which A2A agent gets a message and whether to interrupt; (2) as a cheap pre-filter, "does this message need the LLM at all" (noul), which saves a model call for acknowledgements; (3) as the policy for notification priority on phones. The decision, its probabilities and the backend are shown on the thread's card ("routed to forgejo, 0.91") and sent into the A2A message metadata for tracing (`systemone.backend`, `systemone.latency_ms`, no content, §39 D470). **A SystemOne answer is advisory and never approves or authorises anything** (D537).
 - **Agent surface.** A read-only MCP tool `systemone_decide` is added to the MCP server the engine injects into every run (as `zeron mcp` is), so coding agents can ask local questions; it has no network path and is off if no local backend is ready.
-- **Telemetry.** None, matching zeron and D284. The decision log (§9.4) is local and opt-in.
+- **Telemetry.** The desktop sends nothing to Loams or anyone else (zeron has none; D284). Two separate things stay local: the decision log (§9.4), opt-in and off by default, and, when the desktop talks to an instance, the usage event `io.loams.dev.systemone.decided.v1` (§11) is emitted **by the instance's server path only** into that operator's own stream (counts, backend, latency, locality; never content), enabled when the operator runs the route; the local sidecar path emits no event. A2A trace metadata (`systemone.*`, no content) travels to the operator's own collector like every other §39 span.
 
 ## 9. Calibration, self-test, fine-tuning, models, cache
 
@@ -427,9 +437,9 @@ The checkpoints are over-confident out of the box (§2.2). Loams fits a **temper
 
 ### 9.2 Self-test (D533)
 
-A fixed set of **16 cases** embedded in the crate (state, questions, expected argmax or interval), covering: English choice with 3 options, a 12-option choice, a 40-option choice (marked `expected: informational`), score, `noul` true and `noul` false (the opposite pair for the stuck-label check), Hindi and German states (must route multilingual), a state at the window edge (truncation reported), JSON state, and an empty-options error. Rules:
+A fixed set of **16 cases** embedded in the crate (state, questions, expected argmax or interval), covering: English choice with 3 options, a 12-option choice, a 40-option choice (`informational`, `requires: min_options 33`), score, `noul` true and `noul` false (the opposite pair for the stuck-label check), Hindi and German states (must route multilingual), a state at the window edge (truncation reported) and a JSON state. (The empty-options error is covered by validation tests.) Rules:
 - Runs at backend start and after a model or revision change, in the background; the backend is `Starting` until it passes. It runs in under 2 s locally.
-- It asserts structure always (shapes, probabilities sum to 1 within 1e-3, `output_tokens == 0`) and **argmax only on cases the base checkpoint is known to get right** (an allowlist we maintain from measurements, because the base checkpoints are below majority-class on hard benchmarks, §2.2). A failure sets `Degraded`, and `/health` and `loams systemone status` say which case.
+- It asserts structure always (shapes, probabilities sum to 1 within 1e-3, `output_tokens == 0`) and **argmax only on cases the base checkpoint is known to get right** (an allowlist we maintain from measurements, because the base checkpoints are below majority-class on hard benchmarks, §2.2). Each case declares `requires` (for example `min_options: 33`) and a backend that cannot serve it, such as Core ML on the 40-option case, reports it as `not_applicable`, never as a failure; the empty-options case is a validation test, not a backend case. A real failure sets `Degraded`, and `/health` and `loams systemone status` say which case.
 - It is also the parity test between backends in CI.
 
 ### 9.3 Gating (D536)
@@ -449,7 +459,7 @@ Zero-shot quality is modest and the base checkpoints sit below the majority-clas
 - **Location:** `$LOAMS_HOME/models/systemone/<backend>/<checkpoint>/<revision>/`. One copy per revision; a revision directory is immutable.
 - **Lock:** `crates/loams-systemone/models.lock.toml`, compiled into the binary: per artefact its source (Hugging Face repo and **commit SHA**), file list with **SHA-256**, size, licence and `NOTICE` text. A mirror URL list follows (our RustFS bucket, Q535) so a Hugging Face outage or removal does not break installs. Updating the lock is a reviewed PR that reruns the self-test and parity tests.
 - **Download:** only on user consent (CLI prompt or desktop dialog showing the size), resumable by byte range, written to `*.part`, SHA-256 verified **before** the atomic rename and before any parser touches the bytes, then `chmod -w`. A digest mismatch deletes the part and fails with `MODEL_CORRUPT`.
-- **Sizes shown:** Laya English 808 MB, multilingual 647 MB (upstream), Core ML fp16 about 614 MB per bucket (the sidecar needs 1 to 2 buckets), `laya-ts` ONNX int8 524 MB (laya-web figure; fp32 1 688 MB), kevala Laya pack 479 MB.
+- **Sizes shown:** Laya English 808 MB, multilingual 647 MB (upstream), Core ML fp16 about 614 MB per bucket (the sidecar needs 1 to 2 buckets), `laya-ts` ONNX: not yet measured (the 524 MB int8 and 1 688 MB fp32 figures belong to `laya-web`, which we do not use; SO2 Task 7 measures the pinned `laya-ts` export), kevala Laya pack 479 MB.
 - **Eviction:** never automatic; `loams systemone model rm`, and the desktop panel shows the disk use. Unused revisions older than the current and previous one are listed for removal.
 - **Offline:** `LOAMS_OFFLINE=1` (and `HF_HUB_OFFLINE=1` for the sidecar) never downloads; `NotInstalled` carries the offline hint.
 - **Licence handling:** weights are Apache-2.0; we download from the source, we do not bundle them in the installer by default (size), and the lock carries the required notice, shown in "About" and in `THIRD_PARTY_NOTICES.md`.
@@ -458,9 +468,10 @@ Zero-shot quality is modest and the base checkpoints sit below the majority-clas
 
 - **An adapter, not a dependency.** `JevBackend` posts to `https://api.typesafe.ai/v1/systemone` (configurable base URL, so also usable against `laya-serve`, `1Panel-dev/laya-server` or a private gateway), `Authorization: Bearer <key>`, body `{model, state, questions}` (the model defaults to `jev-latest`; `jev-1.13.0` and others may be pinned), and decodes `answers`, `model`, `usage`. It sends nothing else, no identifiers, no headers beyond the standard ones.
 - **Off by default.** It is enabled by a key in the OS keychain (desktop) or the secret store (server), by an explicit setting, and, per call, by `locality: ALLOW_CLOUD`. Cloud is **never** an automatic fallback for private data; `LOAMS_SYSTEMONE_FALLBACK=jev` works only with `allow_cloud_fallback = true` at instance level (default false) and still honours the request's locality.
-- **What the user is told** when enabling it: the state and questions are sent to TypeSafe; TypeSafe's Privacy Policy states it will not train on Input or disclose it beyond service providers; no API terms or retention period for API calls were found; the model is closed; the price is $0.042 per million input tokens per third-party reports (unverified).
+- **What the user is told** when enabling it: the state and questions are sent to TypeSafe; TypeSafe's Privacy Policy states it will not train on Input or disclose it beyond service providers; no API terms or retention period for API calls were found; the model is closed; the MCA's restrictions apply to the user (no standalone service, no distillation or training on Output); the price is $0.042 per million input tokens per third-party reports (unverified).
 - **Failure handling:** 429 and 5xx back off with jitter and a circuit breaker; auth errors disable the backend and surface once; the request body is never logged.
-- **Terms.** We have not read an API agreement and the website terms disclaim covering the API. Before the adapter ships enabled for anyone beyond the owner, the owner asks TypeSafe whether (a) calling the API on behalf of end users from an OSS client, (b) listing Jev as a selectable backend, and (c) a Loams-hosted pass-through are within their terms. Q520, Q521. Until then it is documented as "bring your own key; you accept TypeSafe's terms".
+- **Terms.** TypeSafe's Master Customer Agreement (2026-09-28) covers the API and allows a customer to include it in "software applications developed and operated by Customer", but forbids offering the Services "as a standalone service" and using Output for distillation or to train an imitating or competing model. The open questions are narrower than "no terms": does an OSS client with a user-supplied key, listed as a selectable backend, stay inside the licence, and may a Loams-hosted pass-through ever exist (our reading: no). The owner asks TypeSafe before the adapter ships enabled for anyone beyond the owner (Q520, Q521). Until then it is documented as "bring your own key; you accept TypeSafe's agreement". **Rule (D531): Jev outputs are never written to the decision log's label fields and never used as training or calibration labels.**
+- **Transport.** The base URL must be `https` for any non-loopback host; plain `http` is accepted only for a loopback host (a local `laya-serve`). Redirects are not followed with the key attached: a redirect to a different host or scheme fails the request. The key is sent only to the configured base.
 
 ## 11. Open source versus commercial (D539, D220)
 
@@ -485,7 +496,7 @@ Self-hosting a single organisation with local backends is fully open; nothing in
 ## 13. Testing
 
 Per plan task (see the plans). The cross-cutting ones:
-- **Wire fixtures.** The Laya sample request and response from its HTTP API doc and Jev's documented shapes are golden files; our JSON round-trips them byte-compatibly for the fields they define.
+- **Wire fixtures.** The Laya sample request and response from its HTTP API doc and Jev's documented shapes are golden files; our JSON parses them and renders responses that are **semantically equal** for the fields they define (parsed-value equality, with option members compared as sequences); byte equality is not claimed.
 - **Routing table tests** (pure function): every rule in §6.3, with host profiles for each row of §1.
 - **Fake `laya-serve`** (an axum test server obeying the documented limits and error codes) for the adapter and supervisor; one `#[ignore]` real-model test per backend, run on a labelled self-hosted runner.
 - **Parity.** The self-test cases run through every available backend; probabilities agree within 0.02 on the same checkpoint (Core ML claims accuracy parity with PyTorch on 3 899 questions, to be re-measured).
@@ -512,9 +523,9 @@ The track is **SO** (new label `track:so`, "SystemOne").
 | 6 | Cloud use leaks private data | Local-only default at three levels (instance, request, backend); fail-closed fallback; consent copy; tests |
 | 7 | Hugging Face outage, removal or a force-pushed revision | Pinned SHAs, our mirror, digests |
 | 8 | An unlicensed or restrictive third-party port slips in | Licence table (§2.1) is a CI check for `THIRD_PARTY_NOTICES.md` entries; `nvkudva/laya-web` banned by name |
-| 9 | COEP/COOP for in-browser WASM conflicts with framed app UIs | Server path by default; isolated worker document; Q530 |
+| 9 | COEP/COOP for in-browser WASM conflicts with framed app UIs | Server path by default; no COEP on the console; WebGPU worker or single-threaded WASM; Q530 |
 | 10 | "System One" and "SystemOne" are TypeSafe's wording; `/v1/systemone` is their path | Our feature name is Loams SystemOne (the owner's name); path compatibility is deliberate and documented as wire compatibility; Q537 asks for a trademark check |
-| 11 | Jev API terms unknown | Off by default; owner action Q520 |
+| 11 | Jev terms: the MCA forbids a standalone service and distillation, and the OSS-client question is open | Off by default; no pass-through; Jev outputs never used as labels; owner action Q520 |
 | 12 | Model memory on small laptops (Core ML 614 MB per bucket, torch 808 MB) | Lazy residency, idle stop, int8 variants, a limit shown in settings |
 
 ## 16. Contradictions with earlier decisions, and how they are resolved
