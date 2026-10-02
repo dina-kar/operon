@@ -30,6 +30,21 @@ updates:
       - dependency-name: "tantivy"
       - dependency-name: "qdrant-edge"
       - dependency-name: "openraft"
+      # Major bumps that break compilation; do them by hand, together where noted.
+      # arrow*/datafusion*: Lance 12 re-exports Arrow 58, so they move with Lance.
+      - dependency-name: "arrow-array"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "arrow-schema"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "arrow-flight"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "datafusion*"
+        update-types: ["version-update:semver-major"]
+      # rand and rand_chacha 0.10 change the Rng traits and move together.
+      - dependency-name: "rand"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "rand_chacha"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
