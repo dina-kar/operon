@@ -1,0 +1,39 @@
+// Error details shared by every app-facing Loams service (design §37 §8.3,
+// AP0 Ruling 6).
+//
+// A failed RPC carries a Connect code (`failed_precondition`,
+// `permission_denied`, ...) and one `ErrorInfo` in its details. Apps branch
+// on `reason`, never on the message text, as the CLI's scripts branch on its
+// stable error codes (§30 D283).
+syntax = "proto3";
+
+package loams.errors.v1;
+
+// The stable, machine-readable cause of a failed RPC.
+//
+// Reasons defined so far (snake_case, never renamed once released):
+//
+// | reason                     | Connect code          | Raised by |
+// |----------------------------|-----------------------|-----------|
+// | `approval_expired`         | failed_precondition   | DecideApproval |
+// | `approval_already_decided` | failed_precondition   | DecideApproval |
+// | `approval_stale_revision`  | failed_precondition   | DecideApproval |
+// | `requester_cannot_approve` | permission_denied     | DecideApproval |
+// | `decision_proof_invalid`   | permission_denied     | DecideApproval |
+// | `step_up_required`         | unauthenticated       | DecideApproval, CreatePairing |
+// | `reason_required`          | invalid_argument      | DecideApproval |
+// | `invalid_decision`         | invalid_argument      | DecideApproval |
+// | `pairing_expired`          | failed_precondition   | the pairing grant |
+// | `pairing_used`             | failed_precondition   | the pairing grant |
+// | `device_revoked`           | unauthenticated       | every RPC from a revoked device |
+// | `push_target_unknown`      | not_found             | UnregisterPushTarget |
+// | `cursor_expired`           | (never an error: the stream resets) | Watch* |
+// | `not_implemented`          | unimplemented         | stub handlers before AP4 |
+message ErrorInfo {
+  // The stable cause, for example `approval_expired`.
+  string reason = 1;
+  // Structured context, for example {"approval_id": "apr_..."}. Never secrets.
+  map<string, string> metadata = 2;
+  // A short, human-readable next step, in the caller's locale.
+  string hint = 3;
+}

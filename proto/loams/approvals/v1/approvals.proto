@@ -1,0 +1,205 @@
+// Approvals: the shared face of §21 §6.5's approval promises (design §37
+// §7.3, D435; AP0 Task 3).
+//
+// A destructive operation (a collection or namespace drop, an erasure, a
+// restore over live data) or a `requires_approval` agent action becomes an
+// operation whose first step waits on an approval promise. Deciding the
+// approval settles the promise (approve → resolve, reject → reject) once the
+// policy's count is met. Approvals time out after 72 hours by default.
+//
+// A decision proves a person on a known device (AP0 Ruling 7):
+// `decision_proof` is a compact JWS (ES256 from the Secure Enclave or
+// StrongBox; EdDSA for software keys) over the canonical `DecisionClaims`,
+// signed by the device's user-presence key and verified against the key
+// registered at pairing. A desktop or browser decision without a device key
+// is accepted only from a session younger than 5 minutes, or when the
+// policy's `step_up` is STEP_UP_NONE; otherwise the server answers
+// `unauthenticated` with reason `step_up_required`. The requester (or the
+// user an agent acts for) cannot approve their own request unless the policy
+// allows it (Q432). There are no offline, queued or "always allow"
+// decisions.
+syntax = "proto3";
+
+package loams.approvals.v1;
+
+import "google/protobuf/timestamp.proto";
+import "loams/instance/v1/instance.proto";
+
+service ApprovalService {
+  rpc ListApprovals(ListApprovalsRequest) returns (ListApprovalsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc GetApproval(GetApprovalRequest) returns (GetApprovalResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // A snapshot of the approvals the caller may see, then changes, then a
+  // heartbeat every 15 s (AP0 Ruling 3).
+  rpc WatchApprovals(WatchApprovalsRequest) returns (stream WatchApprovalsResponse);
+  rpc DecideApproval(DecideApprovalRequest) returns (DecideApprovalResponse);
+}
+
+message Approval {
+  // "apr_" + a ULID.
+  string id = 1;
+  // Bumps on every change; a decision names the revision it saw.
+  uint64 revision = 2;
+  // The operation waiting on this approval (D146).
+  string operation_id = 3;
+  // The approval promise (§21 §6.5).
+  string promise_id = 4;
+  // "collection.drop", "namespace.drop", "erasure", "restore",
+  // "agent.action", "key.create", ... Apps render unknown kinds generically.
+  string kind = 5;
+  loams.instance.v1.Environment environment = 6;
+  loams.instance.v1.Principal requested_by = 7;
+  // The RFC 8693 actor chain: an agent acting for a user lists both.
+  repeated loams.instance.v1.Principal actor_chain = 8;
+  // Server-rendered in the caller's locale (AP0 Ruling 8).
+  string summary = 9;
+  repeated string detail_lines = 10;
+  // Structured target, for example {"collection": "docs"}. For RISK_DESTRUCTIVE
+  // the app asks the user to type `target["name"]` before approving.
+  map<string, string> target = 11;
+  Risk risk = 12;
+  ApprovalPolicy policy = 13;
+  repeated Decision decisions = 14;
+  ApprovalState state = 15;
+  google.protobuf.Timestamp created_at = 16;
+  google.protobuf.Timestamp expires_at = 17;
+}
+
+enum Risk {
+  RISK_UNSPECIFIED = 0;
+  RISK_LOW = 1;
+  RISK_MEDIUM = 2;
+  RISK_HIGH = 3;
+  RISK_DESTRUCTIVE = 4;
+}
+
+enum ApprovalState {
+  APPROVAL_STATE_UNSPECIFIED = 0;
+  APPROVAL_STATE_PENDING = 1;
+  APPROVAL_STATE_APPROVED = 2;
+  APPROVAL_STATE_REJECTED = 3;
+  APPROVAL_STATE_EXPIRED = 4;
+  APPROVAL_STATE_CANCELED = 5;
+}
+
+message ApprovalPolicy {
+  // How many approvals settle the promise.
+  uint32 required_approvals = 1;
+  // Roles that may approve, for example "project_admin".
+  repeated string approver_roles = 2;
+  // Default false (Q432).
+  bool requester_may_approve = 3;
+  StepUp step_up = 4;
+}
+
+enum StepUp {
+  STEP_UP_UNSPECIFIED = 0;
+  // A device decision proof is required.
+  STEP_UP_DEVICE = 1;
+  // A device proof, or a session younger than 5 minutes.
+  STEP_UP_SESSION = 2;
+  // No step-up (non-protected environments only).
+  STEP_UP_NONE = 3;
+}
+
+enum DecisionKind {
+  DECISION_KIND_UNSPECIFIED = 0;
+  DECISION_KIND_APPROVE = 1;
+  DECISION_KIND_REJECT = 2;
+}
+
+message Decision {
+  loams.instance.v1.Principal by = 1;
+  DecisionKind decision = 2;
+  string reason = 3;
+  google.protobuf.Timestamp at = 4;
+  // The device that signed the proof, if any.
+  loams.instance.v1.DeviceRef device = 5;
+}
+
+// The claims a decision proof signs. The canonical form is the JSON object
+// with exactly these keys in this order, no whitespace, `revision` and `iat`
+// as JSON numbers: {"approval_id":…,"revision":…,"decision":"approve"|"reject",
+// "iat":…,"jti":…}. Golden bytes live in the shared fixtures (§37 §12).
+message DecisionClaims {
+  string approval_id = 1;
+  uint64 revision = 2;
+  DecisionKind decision = 3;
+  // Seconds since the Unix epoch.
+  int64 iat = 4;
+  // A single-use ULID; the server refuses a replay.
+  string jti = 5;
+}
+
+message ListApprovalsRequest {
+  // Environment ids; empty = every environment the caller can see.
+  repeated string environments = 1;
+  // Default: APPROVAL_STATE_PENDING only.
+  repeated ApprovalState states = 2;
+  uint32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListApprovalsResponse {
+  repeated Approval approvals = 1;
+  string next_page_token = 2;
+}
+
+message GetApprovalRequest {
+  string approval_id = 1;
+}
+
+message GetApprovalResponse {
+  Approval approval = 1;
+}
+
+message WatchApprovalsRequest {
+  repeated string environments = 1;
+  // Default: APPROVAL_STATE_PENDING only.
+  repeated ApprovalState states = 2;
+  // The `cursor` of the last response received. A valid cursor skips the
+  // snapshot; an expired one gets a fresh snapshot with `snapshot_reset`.
+  string resume_cursor = 3;
+}
+
+message WatchApprovalsResponse {
+  oneof event {
+    // The first response: every matching approval.
+    ApprovalSnapshot snapshot = 1;
+    // An approval was created or changed (a new revision).
+    Approval upsert = 2;
+    // An approval left the filter (decided, expired); its id.
+    string remove = 3;
+    // Every 15 s, so proxies keep the stream open (§37 §8.3).
+    Heartbeat heartbeat = 4;
+  }
+  // Pass back as `resume_cursor` to resume after a drop.
+  string cursor = 5;
+  // True when `resume_cursor` was too old and this is a fresh snapshot.
+  bool snapshot_reset = 6;
+}
+
+message ApprovalSnapshot {
+  repeated Approval approvals = 1;
+}
+
+message Heartbeat {}
+
+message DecideApprovalRequest {
+  string approval_id = 1;
+  // The revision the user saw; a newer one is `approval_stale_revision`.
+  uint64 revision = 2;
+  DecisionKind decision = 3;
+  // Required for DECISION_KIND_REJECT and for RISK_DESTRUCTIVE.
+  string reason = 4;
+  // A compact JWS over `DecisionClaims`; empty for a fresh-session decision.
+  string decision_proof = 5;
+  string idempotency_key = 6;
+}
+
+message DecideApprovalResponse {
+  Approval approval = 1;
+}
