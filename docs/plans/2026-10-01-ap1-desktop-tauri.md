@@ -1,5 +1,7 @@
 # AP1 — Loams Desktop on Tauri 2 Implementation Plan
 
+> **Superseded 2026-10-02** by [AP1n, the native desktop on a zeron fork](2026-10-02-ap1n-native-desktop-zeron.md), per the owner's ruling "instead of Tauri go native for desktop apps also" (§37 §18, D480–D499). Nothing below is to be built. Its stack-supervision design survives as D488 and AP1n Task 3, its sign-in as D486 and AP1n Task 2, its approvals as AP1n Task 6. Kept for history.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists the interfaces it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (identifiers, command names, paths, exit codes), use them verbatim. The code is not pre-written in this plan (M0.3 Ruling 1).
 
 > **Status: Planned** (2026-10-01). **Slot: track AP, after AP1a Task 3 (the cordis host) and CLI1 Tasks 1–6 (the CLI's output contract and stacks).** Branches `ap1-t<N>`, stacked; PRs target `main`. Tasks 1–6 need nothing from the auth plan. Tasks 7–9 (sign-in, keychain, approvals) need AP0 and, against a real server, the unified auth plan (D111, Q30); before it they run against `loams-apps-mock`. Publishing (Task 11) waits for D33's rename, the move to `ostrium-labs/loams`, signing identities (Q420, Q421) and the updater key.
