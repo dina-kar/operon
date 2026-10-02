@@ -1,5 +1,5 @@
 elasticsearch==8.19.3
-pytest==8.3.5
+pytest==9.0.3
 numpy==2.1.3
 # The helper's maximal_marginal_relevance needs simsimd too (the
 # vectorstore_mmr extra of elasticsearch 8.19.3).

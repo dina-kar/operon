@@ -8,16 +8,16 @@ Status: **Stub** · 2026-10-02. The protocol gateway is a commercial component, 
 
 | # | Decision | Where it lives now |
 |---|---|---|
-| D360 | **The standards charter**: every external standard Loams speaks is pinned to a spec version behind one crate, so replacing it touches one crate (HTTP/2 and mTLS, Connect/gRPC/gRPC-Web, CloudEvents 1.0.2, Arrow/Parquet/Iceberg, protobuf with Avro only at schema-registry sinks, OTel and W3C Trace Context, the Resonate protocol, `loams.meter.v1`). A decision-log row per standards choice; deprecation is announce → dual-run for at least one minor release → sunset; open formats only in stored data; crypto agility through key and algorithm ids; `cargo deny`, `cargo vet` on new data-plane crates, CycloneDX SBOMs, reproducible release builds | Here |
+| D360 | **The standards charter**: every external standard Loams speaks is pinned to a spec version behind one crate, so replacing it touches one crate (HTTP/2 and mTLS, Connect/gRPC/gRPC-Web, CloudEvents 1.0.2, Arrow/Parquet/Iceberg, protobuf with Avro only at schema-registry sinks, OTel and W3C Trace Context, the Resonate protocol; `loams.meter.v1` moved to `loam-platform` on 2026-10-02, D548). A decision-log row per standards choice; deprecation is announce → dual-run for at least one minor release → sunset; open formats only in stored data; crypto agility through key and algorithm ids; `cargo deny`, `cargo vet` on new data-plane crates, CycloneDX SBOMs, reproducible release builds | Here |
 | D361 | **Transports**: HTTP/2 with mTLS (ALPN `h2`) between Loams components, h2c only on loopback; HTTP/3 only at the Envoy edge (D176, D184) until an internal-mesh flag | Here |
 | D362 | **Connect-RPC through connect-rust** (`connectrpc` 0.9.1, Apache-2.0, the official Connect project's Rust implementation) for every new service (D128, D206) | Here |
-| D363 | **The narrow waist is `loams.stream.v1.StreamService`**: `Produce` and `ProduceCloudEvents` (D270) are the one internal ingress for async events; Dapr pub/sub, HTTP push, runner hosts and runtime hooks are adapters into it. `buf breaking` (`FILE`) on `proto/loams/{stream,events,meter}` | Here |
+| D363 | **The narrow waist is `loams.stream.v1.StreamService`**: `Produce` and `ProduceCloudEvents` (D270) are the one internal ingress for async events; Dapr pub/sub, HTTP push, runner hosts and runtime hooks are adapters into it. `buf breaking` (`FILE`) on `proto/loams/{stream,events}` (`meter` moved to `loam-platform`, D548; `control` added by §41) | Here |
 | D364 | **The Loams CloudEvents profile** | §2 below |
 | D365 | **High-rate events bypass the dedup ledger** | §3 below |
 | D372 | **Events → Arrow**: one Arrow schema per event type, derived from the `data` message's protobuf descriptor | §4 below |
 | D374 | **State rules**: the tenant scope on every stored key in Loams's existing forms (`ns/<ns>/` in the bucket, keyspace plus prefix in TiKV); money as integer micros plus an ISO 4217 currency; `int64` ns UTC in new protobuf contracts; TiKV only through transactions or atomic CAS | Here |
 | D375 | **One `Runner` trait** (`SupervisorRunner` default; process, Lambda and Knative runners) | [§24 §16](24-cpu-time-runtime.md); plan [RN1](../plans/2026-10-01-rn1-runner-usage.md) |
-| D376 | **Usage from every runner reaches §27's contract**: one reporter per invocation, fields 12–16 of `loams.meter.v1.Invocation`. Hooks only: the ledger, rating and reconciliation are `loam-platform`'s | [§27 §3.6](27-usage-hooks.md) |
+| D376 | **Usage from every runner reaches §27's contract**: one reporter per invocation, fields 12–16 of `loams.meter.v1.Invocation`. **Superseded 2026-10-02 (D548):** the billing-grade record and the reporter moved to `loam-platform` (doc 06); every runner calls the open `InvocationObserver` instead | [§27 §3.7](27-usage-hooks.md), [§41 §10](41-multitenant-byoc-control-plane.md) |
 | D378 | **Languages**: Rust for the data plane; other languages through `buf`-generated Connect clients; in-process embedding only after profiling; no core path depends on Go or Java SIMD | Here |
 
 ## 2. The Loams CloudEvents profile (D364)
@@ -65,11 +65,11 @@ The `data` struct is derived at build time from the protobuf descriptor (scalars
 | # | Question | Owner | Needed by |
 |---|---|---|---|
 | Q362 | Showback and single-organisation billing in the open repository, or `loam-platform` only. **Answered by the owner on 2026-10-02: no metering in OSS** (D440, D444); open dashboards over the hooks remain possible for anyone to build | Founder | Resolved |
-| Q366 | Lambda CPU attribution: the bootstrap's `getrusage` delta capped by billed duration × `memory_mb / 1 769`, or billed duration (§27 §3.6) | Founder | RN1 Task 5 |
-| Q367 | Cloud Run and Container Apps runners: build or document only | Founder | After RN1 |
-| Q368 | Iceberg v3 `timestamptz_ns` by M4, or the `time_ns` column (§4) | Eng | Event-table plan |
-| Q369 | Move `loams-stream-grpc` from tonic/prost to connect-rust/buffa (D128), and when | Eng | M2 stream API plan |
-| Q372 | Internal HTTP/3: the condition that enables it | Eng | Later |
-| Q450 | Give §1's decisions their own document, and split GW1's vendor-neutral tasks (`buf breaking`, the CloudEvents profile, the event Arrow mapping) into an open plan | Founder | Before GW1 starts in `loam-platform` (private) |
+| Q366 | ~~Lambda CPU attribution~~ Moved to `loam-platform` (doc 06 PD66, default: billed duration) on 2026-10-02 (D548); no longer an RN1 Task 5 dependency | Founder | Resolved here |
+| Q367 | ~~Cloud Run and Container Apps runners: build or document only~~ Answered 2026-10-02 by the owner: the recommended default — document only; build on demand (§24 §16, RN1) | Founder | Resolved |
+| Q368 | ~~Iceberg v3 `timestamptz_ns` by M4, or the `time_ns` column (§4)~~ Answered 2026-10-02 by the owner: the chosen default (the doc gives no recommendation) — the `time_ns` column until Iceberg v3 `timestamptz_ns` is on the pinned iceberg-rust and Lakekeeper (§34 §4); why: it works on today's stack and migrates additively | Eng | Resolved |
+| Q369 | ~~Move `loams-stream-grpc` from tonic/prost to connect-rust/buffa (D128), and when~~ Answered 2026-10-02 by the owner: the chosen default (the doc gives no recommendation) — yes, move to connect-rust/buffa in the M2 stream API plan (D128, D419); why: one RPC stack for the console, the apps (§37) and streams | Eng | Resolved |
+| Q372 | ~~Internal HTTP/3: the condition that enables it~~ Answered 2026-10-02 by the owner: the chosen default (the doc gives no recommendation) — off; internal traffic stays HTTP/2 until a cross-region link measures loss where head-of-line blocking costs latency; why: no cross-region links exist yet | Eng | Resolved |
+| Q450 | ~~Give §1's decisions their own document, and split GW1's vendor-neutral tasks (`buf breaking`, the CloudEvents profile, the event Arrow mapping) into an open plan~~ Answered 2026-10-02 by the owner: the chosen default (the doc gives no recommendation) — §34 itself is that document (it now holds only the retained vendor-neutral decisions), and GW1's vendor-neutral tasks (`buf breaking`, the CloudEvents profile, the event Arrow mapping) become an open plan here, written when GW1 starts; why: D220 keeps standards open, with no new file | Founder | Resolved |
 
 Q360, Q363–Q365, Q370, Q371, Q373 and Q374 moved to `loam-platform` with the gateway and the Cloudflare runner.

@@ -1,0 +1,34 @@
+# kind	component	example -- canonical examples written for Loams (not taken from PgDog), one per static kind that has a replayable statement.
+# ' ;; ' separates commands sent one at a time on the same connection.
+IDENTIFY_SYSTEM	replication	IDENTIFY_SYSTEM
+CREATE_REPLICATION_SLOT	replication	CREATE_REPLICATION_SLOT loams_inv_slot TEMPORARY LOGICAL pgoutput
+DROP_REPLICATION_SLOT	replication	CREATE_REPLICATION_SLOT loams_inv_slot TEMPORARY LOGICAL pgoutput ;; DROP_REPLICATION_SLOT loams_inv_slot
+START_REPLICATION	replication	CREATE PUBLICATION loams_inv_pub FOR ALL TABLES ;; CREATE_REPLICATION_SLOT loams_inv_slot TEMPORARY LOGICAL pgoutput ;; START_REPLICATION SLOT loams_inv_slot LOGICAL 0/0 (proto_version '1', publication_names 'loams_inv_pub')
+PREPARE TRANSACTION	2pc	BEGIN ;; SELECT 1 ;; PREPARE TRANSACTION 'loams_inv_gid'
+COMMIT PREPARED	2pc	BEGIN ;; SELECT 1 ;; PREPARE TRANSACTION 'loams_inv_gid' ;; COMMIT PREPARED 'loams_inv_gid'
+ROLLBACK PREPARED	2pc	BEGIN ;; SELECT 1 ;; PREPARE TRANSACTION 'loams_inv_gid' ;; ROLLBACK PREPARED 'loams_inv_gid'
+pg_prepared_xacts	2pc	SELECT gid, owner, database FROM pg_prepared_xacts ORDER BY gid
+pg_is_in_recovery	health	SELECT pg_is_in_recovery()
+pg_current_wal_lsn	health	SELECT pg_current_wal_lsn()
+pg_last_wal_replay_lsn	health	SELECT pg_last_wal_replay_lsn()
+pg_stat_activity	health	SELECT count(*) FROM pg_stat_activity WHERE state <> 'idle'
+pg_terminate_backend	pool	SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE false
+pg_cancel_backend	pool	SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE false
+pg_advisory	pool	SELECT pg_try_advisory_lock(7331), pg_advisory_unlock(7331)
+pg_replication_slots	replication	SELECT slot_name, plugin, slot_type, active, confirmed_flush_lsn FROM pg_replication_slots ORDER BY slot_name
+pg_stat_replication	replication	SELECT application_name, state, sent_lsn FROM pg_stat_replication ORDER BY application_name
+pg_publication	replication	SELECT pubname, puballtables FROM pg_publication ORDER BY pubname
+pg_subscription	replication	SELECT subname, subenabled FROM pg_subscription ORDER BY subname
+pg_export_snapshot	replication	BEGIN ISOLATION LEVEL REPEATABLE READ ;; SELECT pg_export_snapshot() IS NOT NULL
+pg_logical_slot	replication	SELECT slot_name FROM pg_create_logical_replication_slot('loams_inv_logical', 'pgoutput', true)
+pg_create_logical_replication_slot	replication	SELECT slot_name FROM pg_create_logical_replication_slot('loams_inv_logical', 'pgoutput', true)
+FORMAT BINARY	copy	COPY (SELECT 1::int8 AS a, 'x'::text AS b) TO STDOUT (FORMAT BINARY)
+information_schema	schema-sync	SELECT table_schema, table_name, table_type FROM information_schema.tables WHERE table_schema = 'public' ORDER BY 1, 2
+pg_catalog	schema-sync	SELECT nspname FROM pg_catalog.pg_namespace WHERE nspname NOT LIKE 'pg_%' AND nspname <> 'information_schema' ORDER BY 1
+pg_class	schema-sync	SELECT c.relname, c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' ORDER BY 1
+pg_namespace	schema-sync	SELECT nspname FROM pg_namespace WHERE nspname = 'public'
+pg_attribute	schema-sync	SELECT a.attname, a.atttypid::regtype::text FROM pg_attribute a WHERE a.attrelid = 'pg_class'::regclass AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum LIMIT 5
+pg_index	schema-sync	SELECT indexrelid::regclass::text, indisprimary FROM pg_index WHERE indrelid = 'pg_class'::regclass ORDER BY 1
+pg_constraint	schema-sync	SELECT conname, contype FROM pg_constraint WHERE conrelid = 'pg_class'::regclass ORDER BY 1
+pg_sequence	schema-sync	SELECT seqrelid::regclass::text FROM pg_sequence ORDER BY 1
+LISTEN	pool	LISTEN loams_inv_channel
