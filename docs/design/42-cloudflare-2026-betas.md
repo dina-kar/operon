@@ -1,12 +1,12 @@
 # 42 — Cloudflare's Birthday Week 2026 Betas: Open Adapters for Loams
 
-Status: **Proposed** · 2026-10-02. The owner's direction of 2026-10-02: "search the latest beta features in the Cloudflare blog and use them." This note folds the betas into the **open** side of Loams only. Hosted-service choices (Containers, Dynamic Workers, the Monetization Gateway, the Data Platform as a hosted analytics backend) are in the private `loam-platform` repository, docs 03 to 07, and follow [open-core.md](../open-core.md). Decisions **D560–D579** and questions **Q560–Q579** are staged in [`_pending/42-log.md`](_pending/42-log.md).
+Status: **Proposed** · 2026-10-02. The owner's direction of 2026-10-02: "search the latest beta features in the Cloudflare blog and use them." This note folds the betas into the **open** side of Loams only. Hosted-service choices (Containers, Dynamic Workers, the Monetization Gateway, the Data Platform as a hosted analytics backend) are in the private `loam-platform` repository, docs 03 to 07, and follow [open-core.md](../open-core.md). Decisions **D560–D578** and questions **Q560–Q572** (the ranges D560–D579 and Q560–Q579 are reserved; IDs not listed are unused) are staged in [`_pending/42-log.md`](_pending/42-log.md).
 
 Rule for this note: nothing below is relied on until its status, limits, pricing and licence were read on Cloudflare's own blog or documentation. Every fact carries the date it was read (**verified 2026-10-02**); a fact a primary page did not state is marked **(unverified)**. Cloudflare's betas change fast: re-check the row before an adapter ships.
 
 ## 1. Summary
 
-Four betas become open adapters, each behind a trait Loams already has or is about to have, so none of them is a dependency of self-hosting (D560):
+Four Cloudflare integrations (three betas or drafts, and one GA product) become open adapters, each behind a trait Loams already has or is about to have, so none of them is a dependency of self-hosting (D560):
 
 | Beta | Open adapter | Default |
 |---|---|---|
@@ -52,7 +52,7 @@ Artifacts is "a versioned file system that speaks Git": repositories, forks, fil
 1. **Credentialed work uses the client-tool relay** (the person's own desktop runs the bridge tool; credentials never leave their machine). 
 2. **Unattended, public-web or app-with-service-account work uses a `remote` provider**: same tool contract as the local Tauri bridge (§18.14.2: snapshot with uids, `find`, `click`, `fill`, `wait_for`, no cookie or storage tools), implemented over a remote browser's CDP endpoint.
 
-**D566: the adapter targets Browser Run's CDP and Playwright endpoints**, which are documented and stable, not Kitesurf's own API. Kitesurf is selectable *inside* Browser Run, so it works when the account has it, but it is closed source with an unspecified future licence, so nothing may depend on it (a Playwright MCP container remains the self-host provider, Apache-2.0, as §18.14.6 D512 already says). **D567: a remote browser is a third party**, so the provider refuses `secret_ref` fills of user credentials by default, keeps no persistent profile unless the organisation enables one, and records every call in the same audit and trace path (§39 §9). The provider is a trait implementation in `loams-web-bridge`'s core; running it as a hosted service is private (loam-platform doc 04).
+**D566: the adapter targets Browser Run's CDP and Playwright endpoints**, which are documented and stable, not Kitesurf's own API. Kitesurf is selectable *inside* Browser Run, so it works when the account has it, but it is closed source with an unspecified future licence, so nothing may depend on it (a Playwright MCP container remains the self-host provider, Apache-2.0, as §18.14.6 D512 already says). **D567: a remote browser is a third party**, so the provider refuses `secret_ref` fills of user credentials by default. Service-account `secret_ref` fills require a configured hostname allowlist, and the provider rejects `fill` on a non-allowlisted page; D507 redaction applies to these fills and to snapshots, logs, traces and console output. It keeps no persistent profile unless the organisation enables one, and records every call in the same audit and trace path (§39 §9). The provider is a trait implementation in `loams-web-bridge`'s core; running it as a hosted service is private (loam-platform doc 04).
 
 ## 5. WebMCP in the console and plugins (D568–D570)
 
