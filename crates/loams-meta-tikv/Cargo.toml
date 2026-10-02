@@ -1,0 +1,33 @@
+[package]
+name = "loams-meta-tikv"
+description = "Loams's MetaStore on TiKV: the catalog, leases, pointers and the TSO clock over loams-tikv's transaction runner (design §20 §11)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+# loams-tikv depends on tikv-client by git (R1 plan row R4), which crates.io
+# refuses.
+publish = false
+
+[dependencies]
+async-trait.workspace = true
+futures.workspace = true
+loams-common.workspace = true
+loams-tikv.workspace = true
+postcard.workspace = true
+serde.workspace = true
+tokio.workspace = true
+xxhash-rust.workspace = true
+
+[dev-dependencies]
+# tikv-client's own failpoints (after-prewrite, before-rollback), for the
+# fault matrix's large-drop test; only test builds enable them.
+fail = { version = "0.4", features = ["failpoints"] }
+loams-meta-conformance.workspace = true
+# The conformance backend's lose_next_ack is a FaultPlan on the handle.
+loams-tikv = { workspace = true, features = ["faults"] }
+tokio.workspace = true
+
+[lints]
+workspace = true

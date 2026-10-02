@@ -4,7 +4,7 @@
 
 ## How it was tested
 
-<!-- The commands you ran, for example `cargo test -p operon-log`. -->
+<!-- The commands you ran, for example `cargo test -p loams-log`. -->
 
 ## Checklist
 

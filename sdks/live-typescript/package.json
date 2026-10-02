@@ -1,7 +1,7 @@
 {
-  "name": "@operon/live",
+  "name": "@loams/live",
   "version": "0.0.1",
-  "description": "The Loam Live TypeScript client: generated loam.live.v1 Connect stubs and a reactive layer.",
+  "description": "The Loams Live TypeScript client: generated loams.live.v1 Connect stubs and a reactive layer.",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",

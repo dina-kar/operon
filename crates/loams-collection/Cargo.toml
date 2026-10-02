@@ -1,0 +1,86 @@
+[package]
+name = "loams-collection"
+description = "Loams collections: documents, the collection catalog client, Lance and Tantivy storage under one manifest, and the collection link target."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+arrow-array.workspace = true
+arrow-schema.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+crc32c.workspace = true
+fail = { workspace = true, optional = true }
+futures.workspace = true
+lance.workspace = true
+lance-file.workspace = true
+lance-index.workspace = true
+lance-io.workspace = true
+lance-linalg.workspace = true
+lance-table.workspace = true
+moka = { workspace = true, features = ["sync"] }
+object_store.workspace = true
+loams-cache.workspace = true
+loams-common.workspace = true
+loams-link.workspace = true
+loams-log.workspace = true
+loams-pk.workspace = true
+loams-quickwit.workspace = true
+loams-store.workspace = true
+loams-text.workspace = true
+loams-worker.workspace = true
+postcard.workspace = true
+prost.workspace = true
+roaring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tantivy.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+ulid.workspace = true
+url.workspace = true
+uuid.workspace = true
+xxhash-rust.workspace = true
+
+[features]
+# Test hooks (holding a commit at a step). Not part of the stable API.
+test-util = []
+# Named failpoints for the crash gate (`collection.after_*`,
+# `collection.index.after_*`, and M1.3's `merge.after_split_put`,
+# `merge.after_manifest_put`, `merge.after_cas`, `compaction.after_lance_commit`,
+# `compaction.after_manifest_put`, `compaction.after_cas`). Off by default:
+# without it the failpoints compile to nothing.
+failpoints = [
+    "dep:fail",
+    "fail/failpoints",
+    "loams-link/failpoints",
+    "loams-log/failpoints",
+]
+
+[build-dependencies]
+prost-build.workspace = true
+
+[dev-dependencies]
+loams-collection = { path = ".", features = ["test-util"] }
+loams-link = { workspace = true, features = ["test-util"] }
+loams-meta = { workspace = true, features = ["test-util"] }
+loams-worker = { workspace = true, features = ["test-util"] }
+proptest.workspace = true
+tempfile.workspace = true
+
+# The named-failpoint tests are process-global (arming a failpoint would
+# crash every other test running alongside), so they are their own binary;
+# `#![cfg(feature = "failpoints")]` in tests/it_failpoints/target_failpoints.rs
+# already compiles it to nothing without the feature, and this makes cargo
+# skip building the binary entirely in that case.
+[[test]]
+name = "it_failpoints"
+path = "tests/it_failpoints/main.rs"
+required-features = ["failpoints"]
+
+[lints]
+workspace = true

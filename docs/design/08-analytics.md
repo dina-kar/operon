@@ -1,8 +1,8 @@
 # 08 — Analytics (Iceberg)
 
-Status: **Approved** · 2026-09-22 · revised 2026-09-25 (Iceberg only, no ClickHouse surface, D45; M4) · proposed amendment 2026-10-01 ([§32](32-loam-flow-fabric-house.md) D347, pending Q333: a declared ClickHouse surface on the separate Loam House service, over the Event Fabric's Fluss tables and Iceberg snapshots; the tables of this document stay Iceberg-only through Flight SQL and the native API)
+Status: **Approved** · 2026-09-22 · revised 2026-09-25 (Iceberg only, no ClickHouse surface, D45; M4) · proposed amendment 2026-10-01 ([§32](32-loams-flow-fabric-house.md) D347, pending Q333: a declared ClickHouse surface on the separate Loams House service, over the Event Fabric's Fluss tables and Iceberg snapshots; the tables of this document stay Iceberg-only through Flight SQL and the native API)
 
-Tables serve AI-app analytics (product analytics, LLM usage and cost, traces, evals, observability). Storage is **Apache Iceberg** through Lakekeeper, open to every lakehouse engine; speed comes from DataFusion and the Iceberg hot tier (§04 §3); freshness comes from the tail. Operon's SQL surface is DataFusion SQL over Arrow Flight SQL and the native API. External engines, ClickHouse among them, query the same tables through Lakekeeper's Iceberg REST catalog (§8); Operon has no ClickHouse HTTP interface, dialect or MergeTree-engine DDL (D45).
+Tables serve AI-app analytics (product analytics, LLM usage and cost, traces, evals, observability). Storage is **Apache Iceberg** through Lakekeeper, open to every lakehouse engine; speed comes from DataFusion and the Iceberg hot tier (§04 §3); freshness comes from the tail. Loams's SQL surface is DataFusion SQL over Arrow Flight SQL and the native API. External engines, ClickHouse among them, query the same tables through Lakekeeper's Iceberg REST catalog (§8); Loams has no ClickHouse HTTP interface, dialect or MergeTree-engine DDL (D45).
 
 ---
 
@@ -32,7 +32,7 @@ WITH (retention = '180 days' ON ts, dictionary = 'tenant, model');
 -- ⇒ Iceberg table: partition day(ts), sort order (tenant, model, ts), Parquet dictionary pages on tenant and model
 ```
 
-`CREATE TABLE` with these clauses is an Operon DDL extension to DataFusion SQL; the native API has the same resource (`POST|GET /v1/namespaces/{ns}/tables`, `GET|DELETE /v1/namespaces/{ns}/tables/{t}`). A table has one writer class (§03 §2.3): Operon links and ingest, or an external engine (§8).
+`CREATE TABLE` with these clauses is a Loams DDL extension to DataFusion SQL; the native API has the same resource (`POST|GET /v1/namespaces/{ns}/tables`, `GET|DELETE /v1/namespaces/{ns}/tables/{t}`). A table has one writer class (§03 §2.3): Loams links and ingest, or an external engine (§8).
 
 ## 2. Types
 
@@ -49,7 +49,7 @@ Arrow/DataFusion types map to Iceberg types:
 | UUID (extension type) | `uuid` | |
 | `List`, `Map`, `Struct` | `list`, `map`, `struct` | |
 | JSON | `variant` | requires an Iceberg v3 table |
-| Aggregate state (§4) | `binary` (serialized state) | Operon-readable only; external engines see opaque bytes |
+| Aggregate state (§4) | `binary` (serialized state) | Loams-readable only; external engines see opaque bytes |
 
 ## 3. Ingest paths
 
@@ -90,17 +90,17 @@ SELECT day, tenant, finalize(cost), finalize(calls), finalize(p95) FROM cost_dai
 
 ## 5. SQL surface
 
-- **Dialect:** DataFusion SQL with Operon's DDL extensions and UDFs (§05 §8). One dialect for tables, collections, streams and graphs.
+- **Dialect:** DataFusion SQL with Loams's DDL extensions and UDFs (§05 §8). One dialect for tables, collections, streams and graphs.
 - **Transports:** Arrow Flight SQL (ADBC drivers for Python, Go, Java and C; the Flight SQL JDBC driver), the native API (`POST /v1/namespaces/{ns}/sql`) and the Python/TypeScript SDKs.
 - **BI and dashboards:** tools with a Flight SQL or ADBC connector (for example Grafana's Flight SQL data source, Superset and Metabase through the Flight SQL JDBC driver; verify per tool). Tools that only speak another engine's protocol use that engine over the Iceberg REST catalog (§8).
-- **System tables:** `information_schema`, `system.tables`, `system.columns`, `system.files` (Iceberg data files and DVs of the current snapshot), `system.snapshots`, `system.query_log` (from Operon's query-log stream).
+- **System tables:** `information_schema`, `system.tables`, `system.columns`, `system.files` (Iceberg data files and DVs of the current snapshot), `system.snapshots`, `system.query_log` (from Loams's query-log stream).
 - Time travel: `SELECT … FROM t FOR SYSTEM_TIME AS OF <timestamp>` and `FOR SYSTEM_VERSION AS OF <snapshot_id>` read an older Iceberg snapshot (verify syntax against DataFusion's parser).
 
 ## 6. Mutations and deletes
 
 - `DELETE FROM t WHERE …` → deletion-vector writes for matching rows (a worker job; synchronous for small predicates).
 - `UPDATE t SET … WHERE …` → upserts on keyed tables; on append tables, a DV for the old rows plus appended new rows (merge-on-read).
-- Deletion vectors are Iceberg v3 Puffin DVs written by Operon's DV writer (§03 §2.3); compaction folds them into rewritten files.
+- Deletion vectors are Iceberg v3 Puffin DVs written by Loams's DV writer (§03 §2.3); compaction folds them into rewritten files.
 - Schema evolution: `ALTER TABLE … ADD/DROP/RENAME COLUMN`, type widening → Iceberg schema evolution (no rewrite). Partition and sort-order evolution for new data.
 
 ## 7. Performance strategy
@@ -125,11 +125,11 @@ Targets: ClickBench (hot, on hot projections) median query within 2–3× of Cli
 
 ## 8. External engine access
 
-Every table is a standard Iceberg table in Lakekeeper. DuckDB, Trino, Spark, Sail (a named M4 gate reader; Operon contributes its deletion-vector reads upstream, D55), ClickHouse (through its Iceberg REST catalog support; verify version), Snowflake, StarRocks, PyIceberg, Ray Data and Polars read it (retained dataset tags are Iceberg tag refs, D52), and may write it; Operon's T0 cache detects external snapshots via Lakekeeper events or polling. External writers bypass Operon's tail and links; Operon treats their commits as new snapshots. A table has one writer class (§03 §2.3): tables written by an external engine, such as a Spark or Flink job, are not Operon link targets. They still get the Iceberg hot tier and Operon's SQL surface, with freshness equal to the external engine's commit cadence. Access control for external engines is Lakekeeper's (credential vending and its authorization model); how Operon's namespace RBAC maps onto it is settled in the M4 plan (verify).
+Every table is a standard Iceberg table in Lakekeeper. DuckDB, Trino, Spark, Sail (a named M4 gate reader; Loams contributes its deletion-vector reads upstream, D55), ClickHouse (through its Iceberg REST catalog support; verify version), Snowflake, StarRocks, PyIceberg, Ray Data and Polars read it (retained dataset tags are Iceberg tag refs, D52), and may write it; Loams's T0 cache detects external snapshots via Lakekeeper events or polling. External writers bypass Loams's tail and links; Loams treats their commits as new snapshots. A table has one writer class (§03 §2.3): tables written by an external engine, such as a Spark or Flink job, are not Loams link targets. They still get the Iceberg hot tier and Loams's SQL surface, with freshness equal to the external engine's commit cadence. Access control for external engines is Lakekeeper's (credential vending and its authorization model); how Loams's namespace RBAC maps onto it is settled in the M4 plan (verify).
 
 ## 9. Benchmarks and gates (M4, §12)
 
 - ClickBench (hot) over Flight SQL: median query within 2–3× of ClickHouse OSS on equal hardware.
 - TPC-H SF100 completes.
-- Spark, Trino, DuckDB and ClickHouse read Operon tables through Lakekeeper's Iceberg REST catalog.
+- Spark, Trino, DuckDB and ClickHouse read Loams tables through Lakekeeper's Iceberg REST catalog.
 - Query results match DuckDB over the same Iceberg tables (differential, §12 §2).

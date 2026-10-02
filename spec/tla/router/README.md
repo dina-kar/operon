@@ -1,6 +1,6 @@
 # Router specs (TLA+)
 
-The formal specifications of the Loams router's sharding control plane (design [§31](../../../docs/design/31-loam-router-and-verification.md) §11, D310). Plan: [RT0](../../../docs/plans/2026-10-01-rt0-foundations-and-specs.md) Tasks 1–4.
+The formal specifications of the Loams router's sharding control plane (design [§31](../../../docs/design/31-loams-router-and-verification.md) §11, D310). Plan: [RT0](../../../docs/plans/2026-10-01-rt0-foundations-and-specs.md) Tasks 1–4.
 
 Run them with `scripts/spec/check.sh` (needs Java 21+ and Python 3.11+; it downloads the pinned tools into `~/.cache/loam/spec-tools/` and checks their SHA-256):
 

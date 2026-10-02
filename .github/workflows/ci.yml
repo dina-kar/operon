@@ -69,7 +69,7 @@ jobs:
               - ".cargo/**"
               - ".github/workflows/**"
             # Any Rust change: fmt, clippy, the workspace tests.
-            # operon-console-mock embeds api/console/openapi.json.
+            # loams-console-mock embeds api/console/openapi.json.
             rust:
               - *toolchain
               - "crates/**"
@@ -77,76 +77,76 @@ jobs:
               - "api/**"
               - "clippy.toml"
               - "rustfmt.toml"
-            # The crates in operon's default build (no tikv, no durable):
+            # The crates in loams's default build (no tikv, no durable):
             # the crash gate, the cluster tests and the client suites.
             # A new crate the binary depends on must be added here.
             engine: &engine
               - *toolchain
-              - "crates/operon/**"
-              - "crates/operon-cache/**"
-              - "crates/operon-collection/**"
-              - "crates/operon-common/**"
-              - "crates/operon-es/**"
-              - "crates/operon-hnsw/**"
-              - "crates/operon-hot/**"
-              - "crates/operon-link/**"
-              - "crates/operon-log/**"
-              - "crates/operon-meta/**"
-              - "crates/operon-meta-conformance/**"
-              - "crates/operon-pk/**"
-              - "crates/operon-qdrant/**"
-              - "crates/operon-query/**"
-              - "crates/operon-quickwit/**"
-              - "crates/operon-store/**"
-              - "crates/operon-text/**"
-              - "crates/operon-worker/**"
+              - "crates/loams/**"
+              - "crates/loams-cache/**"
+              - "crates/loams-collection/**"
+              - "crates/loams-common/**"
+              - "crates/loams-es/**"
+              - "crates/loams-hnsw/**"
+              - "crates/loams-hot/**"
+              - "crates/loams-link/**"
+              - "crates/loams-log/**"
+              - "crates/loams-meta/**"
+              - "crates/loams-meta-conformance/**"
+              - "crates/loams-pk/**"
+              - "crates/loams-qdrant/**"
+              - "crates/loams-query/**"
+              - "crates/loams-quickwit/**"
+              - "crates/loams-store/**"
+              - "crates/loams-text/**"
+              - "crates/loams-worker/**"
             es:
               - *engine
               - "conformance/es-client/**"
-            # operon-sim and the crates it depends on.
+            # loams-sim and the crates it depends on.
             sim:
               - *toolchain
-              - "crates/operon-sim/**"
-              - "crates/operon-cache/**"
-              - "crates/operon-collection/**"
-              - "crates/operon-common/**"
-              - "crates/operon-link/**"
-              - "crates/operon-log/**"
-              - "crates/operon-meta/**"
-              - "crates/operon-meta-conformance/**"
-              - "crates/operon-pk/**"
-              - "crates/operon-query/**"
-              - "crates/operon-quickwit/**"
-              - "crates/operon-store/**"
-              - "crates/operon-text/**"
-              - "crates/operon-worker/**"
+              - "crates/loams-sim/**"
+              - "crates/loams-cache/**"
+              - "crates/loams-collection/**"
+              - "crates/loams-common/**"
+              - "crates/loams-link/**"
+              - "crates/loams-log/**"
+              - "crates/loams-meta/**"
+              - "crates/loams-meta-conformance/**"
+              - "crates/loams-pk/**"
+              - "crates/loams-query/**"
+              - "crates/loams-quickwit/**"
+              - "crates/loams-store/**"
+              - "crates/loams-text/**"
+              - "crates/loams-worker/**"
             tikv:
               - *toolchain
-              - "crates/operon-tikv/**"
-              - "crates/operon-meta-tikv/**"
-              - "crates/operon-meta/**"
-              - "crates/operon-meta-conformance/**"
-              - "crates/operon-common/**"
-              - "crates/operon-live*/**"
-              - "crates/operon-durable/**"
-              - "crates/operon-safekeeper/**"
-              - "crates/operon/Cargo.toml"
-              - "crates/operon/src/server.rs"
-              - "crates/operon/src/meta_backend.rs"
-              - "crates/operon/src/main.rs"
-              - "crates/operon/tests/meta_tikv.rs"
+              - "crates/loams-tikv/**"
+              - "crates/loams-meta-tikv/**"
+              - "crates/loams-meta/**"
+              - "crates/loams-meta-conformance/**"
+              - "crates/loams-common/**"
+              - "crates/loams-live*/**"
+              - "crates/loams-durable/**"
+              - "crates/loams-safekeeper/**"
+              - "crates/loams/Cargo.toml"
+              - "crates/loams/src/server.rs"
+              - "crates/loams/src/meta_backend.rs"
+              - "crates/loams/src/main.rs"
+              - "crates/loams/tests/meta_tikv.rs"
               - "deploy/tikv/**"
               - "scripts/tikv/**"
-              - "proto/loam/**"
+              - "proto/loams/**"
             durable:
               - *toolchain
-              - "crates/operon-durable/**"
-              - "crates/operon/src/api/operations.rs"
-              - "crates/operon/src/api/import.rs"
-              - "crates/operon/src/main.rs"
-              - "crates/operon/src/server.rs"
-              - "crates/operon/Cargo.toml"
-              - "crates/operon/tests/durable.rs"
+              - "crates/loams-durable/**"
+              - "crates/loams/src/api/operations.rs"
+              - "crates/loams/src/api/import.rs"
+              - "crates/loams/src/main.rs"
+              - "crates/loams/src/server.rs"
+              - "crates/loams/Cargo.toml"
+              - "crates/loams/tests/durable.rs"
               - "scripts/durable/**"
             deny:
               - *toolchain
@@ -163,12 +163,12 @@ jobs:
               - "web/**"
               - "api/**"
             # deploy/dapr/edge is its own crate and lock, outside the
-            # workspace; it compiles operon-stream-grpc's stream.proto.
+            # workspace; it compiles loams-stream-grpc's stream.proto.
             dapr-edge:
               - ".github/workflows/**"
               - "rust-toolchain*"
               - "deploy/dapr/**"
-              - "crates/operon-stream-grpc/proto/**"
+              - "crates/loams-stream-grpc/proto/**"
             # The router's TLA+ specs and their checker (RT0, D310).
             spec:
               - ".github/workflows/**"
@@ -195,38 +195,38 @@ jobs:
         run: cargo fmt --all --check
       - name: clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # Owner ruling T7-3: the TiKV metastore is behind operon's `tikv`
+      # Owner ruling T7-3: the TiKV metastore is behind loams's `tikv`
       # feature (off by default), so lint that code too, and keep the default
       # build free of the git-pinned tikv-client.
-      - name: clippy (operon with the tikv and optional listener features)
-        run: cargo clippy -p operon --all-targets --features tikv,durable-tikv,stream-grpc,pgwire,mysql-wire --locked -- -D warnings
-      - name: clippy (operon-durable with the native TiKV store)
-        run: cargo clippy -p operon-durable --all-targets --features tikv --locked -- -D warnings
-      - name: clippy (operon-safekeeper with the service, the TiKV store and the NVMe store)
-        run: cargo clippy -p operon-safekeeper --all-targets --features server,tikv,nvme --locked -- -D warnings
-      - name: operon's default build has no tikv-client
+      - name: clippy (loams with the tikv and optional listener features)
+        run: cargo clippy -p loams --all-targets --features tikv,durable-tikv,stream-grpc,pgwire,mysql-wire --locked -- -D warnings
+      - name: clippy (loams-durable with the native TiKV store)
+        run: cargo clippy -p loams-durable --all-targets --features tikv --locked -- -D warnings
+      - name: clippy (loams-safekeeper with the service, the TiKV store and the NVMe store)
+        run: cargo clippy -p loams-safekeeper --all-targets --features server,tikv,nvme --locked -- -D warnings
+      - name: loams's default build has no tikv-client
         run: |
-          if cargo tree -p operon -e normal --prefix none --locked | grep -q '^tikv-client v'; then
-            echo "operon's default features depend on tikv-client (owner ruling T7-3)"; exit 1
+          if cargo tree -p loams -e normal --prefix none --locked | grep -q '^tikv-client v'; then
+            echo "loams's default features depend on tikv-client (owner ruling T7-3)"; exit 1
           fi
       # The gateway's module doc holds its divergences from Qdrant (M1.4
       # Task 11); its links must resolve.
       - name: qdrant gateway docs
-        run: cargo doc -p operon-qdrant --no-deps --locked
+        run: cargo doc -p loams-qdrant --no-deps --locked
         env:
           RUSTDOCFLAGS: "-D warnings"
       - name: metastore boundary
         run: |
-          for c in operon-worker operon-log operon-link operon-collection operon-query operon-hnsw operon-hot; do
-            if cargo tree -p "$c" -e normal --prefix none --locked | grep -q '^operon-meta v'; then
-              echo "$c depends on operon-meta outside dev-dependencies (D47)"; exit 1
+          for c in loams-worker loams-log loams-link loams-collection loams-query loams-hnsw loams-hot; do
+            if cargo tree -p "$c" -e normal --prefix none --locked | grep -q '^loams-meta v'; then
+              echo "$c depends on loams-meta outside dev-dependencies (D47)"; exit 1
             fi
           done
-          deps=$(cargo tree -p operon-common -e normal --depth 1 --prefix none --locked | tail -n +2 | awk '{print $1}' | sort -u | tr '\n' ' ')
-          test "$deps" = "async-trait serde thiserror tracing " || { echo "operon-common dependencies changed: $deps"; exit 1; }
+          deps=$(cargo tree -p loams-common -e normal --depth 1 --prefix none --locked | tail -n +2 | awk '{print $1}' | sort -u | tr '\n' ' ')
+          test "$deps" = "async-trait serde thiserror tracing " || { echo "loams-common dependencies changed: $deps"; exit 1; }
           # A missing path must fail the step: grep exits 2 for it, which an
           # `if` would read as "no match" (row 0.87).
-          paths="crates/operon-worker/src crates/operon-log/src crates/operon-link/src crates/operon-collection/src crates/operon-query/src crates/operon-hnsw/src crates/operon-hot/src crates/operon/src/api"
+          paths="crates/loams-worker/src crates/loams-log/src crates/loams-link/src crates/loams-collection/src crates/loams-query/src crates/loams-hnsw/src crates/loams-hot/src crates/loams/src/api"
           for p in $paths; do
             test -e "$p" || { echo "metastore boundary path $p does not exist"; exit 1; }
           done
@@ -239,24 +239,24 @@ jobs:
           esac
       - name: test
         run: cargo test --workspace --locked
-      - name: operon's MySQL wire listener (mysql-wire feature)
-        run: 'cargo test -p operon --features mysql-wire --lib --locked mysql_wire::'
-      - name: operon's PostgreSQL wire listener (pgwire feature)
-        run: 'cargo test -p operon --features pgwire --lib --locked pg::'
+      - name: loams's MySQL wire listener (mysql-wire feature)
+        run: 'cargo test -p loams --features mysql-wire --lib --locked mysql_wire::'
+      - name: loams's PostgreSQL wire listener (pgwire feature)
+        run: 'cargo test -p loams --features pgwire --lib --locked pg::'
       - name: ProduceCloudEvents over gRPC
-        run: cargo test -p operon --features stream-grpc --test stream_grpc_events --locked
+        run: cargo test -p loams --features stream-grpc --test stream_grpc_events --locked
       - name: metastore encoding
-        run: 'cargo test -p operon-meta --test it encoding:: --locked'
+        run: 'cargo test -p loams-meta --test it encoding:: --locked'
       - name: metastore conformance
-        run: 'cargo test -p operon-meta --test it conformance:: --locked'
+        run: 'cargo test -p loams-meta --test it conformance:: --locked'
       - name: log with failpoints
-        run: cargo test -p operon-log --features failpoints --locked
+        run: cargo test -p loams-log --features failpoints --locked
       - name: link with failpoints
-        run: cargo test -p operon-link --features failpoints --locked
+        run: cargo test -p loams-link --features failpoints --locked
       - name: collection with failpoints
-        run: cargo test -p operon-collection --features failpoints --locked
-      - name: WAL service over TCP and the NVMe store (operon-safekeeper, features server, nvme)
-        run: cargo test -p operon-safekeeper --features server,nvme --locked
+        run: cargo test -p loams-collection --features failpoints --locked
+      - name: WAL service over TCP and the NVMe store (loams-safekeeper, features server, nvme)
+        run: cargo test -p loams-safekeeper --features server,nvme --locked
 
   crash-gate:
     name: kill -9 crash gate
@@ -269,9 +269,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
       - name: clippy with failpoints
-        run: cargo clippy -p operon --all-targets --features failpoints --locked -- -D warnings
+        run: cargo clippy -p loams --all-targets --features failpoints --locked -- -D warnings
       - name: crash gate
-        run: cargo test -p operon --features failpoints --test crash --locked
+        run: cargo test -p loams --features failpoints --test crash --locked
 
   cluster:
     name: multi-process cluster
@@ -284,12 +284,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
       - name: build
-        run: cargo build -p operon --locked
+        run: cargo build -p loams --locked
       - name: clippy with cluster tests
-        run: cargo clippy -p operon --all-targets --features cluster-tests --locked -- -D warnings
-      # Each test starts five or six `operon` processes: one at a time.
+        run: cargo clippy -p loams --all-targets --features cluster-tests --locked -- -D warnings
+      # Each test starts five or six `loams` processes: one at a time.
       - name: cluster tests
-        run: cargo test -p operon --features cluster-tests --test cluster --locked -- --test-threads=1
+        run: cargo test -p loams --features cluster-tests --test cluster --locked -- --test-threads=1
 
   qdrant-client:
     name: Python qdrant-client smoke
@@ -302,31 +302,31 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
       - name: build
-        run: cargo build -p operon --locked
-      - name: start operon dev
+        run: cargo build -p loams --locked
+      - name: start loams dev
         run: |
-          nohup target/debug/operon dev --data-dir "$RUNNER_TEMP/operon" \
+          nohup target/debug/loams dev --data-dir "$RUNNER_TEMP/loams" \
             --qdrant-listen 127.0.0.1:6333 --qdrant-grpc-listen 127.0.0.1:6334 --no-es \
-            > "$RUNNER_TEMP/operon.log" 2>&1 &
+            > "$RUNNER_TEMP/loams.log" 2>&1 &
           for _ in $(seq 1 60); do
             curl -sf http://127.0.0.1:6333/ && exit 0
             sleep 1
           done
-          echo "operon dev did not answer on 6333 within 60 s"; exit 1
+          echo "loams dev did not answer on 6333 within 60 s"; exit 1
       - uses: astral-sh/setup-uv@v7
       # Each run prints `qdrant-client <version> <mode>: <n> checks passed`
       # last; the step fails unless it does.
       - name: qdrant-client 1.15.1 (legacy)
         run: |
-          crates/operon-qdrant/tests/python/run.sh 1.15.1 legacy | tee "$RUNNER_TEMP/legacy.log"
+          crates/loams-qdrant/tests/python/run.sh 1.15.1 legacy | tee "$RUNNER_TEMP/legacy.log"
           grep -q '^qdrant-client 1.15.1 legacy: [0-9]* checks passed$' "$RUNNER_TEMP/legacy.log"
       - name: qdrant-client 1.19.1 (modern)
         run: |
-          crates/operon-qdrant/tests/python/run.sh 1.19.1 modern | tee "$RUNNER_TEMP/modern.log"
+          crates/loams-qdrant/tests/python/run.sh 1.19.1 modern | tee "$RUNNER_TEMP/modern.log"
           grep -q '^qdrant-client 1.19.1 modern: [0-9]* checks passed$' "$RUNNER_TEMP/modern.log"
-      - name: operon log
+      - name: loams log
         if: failure()
-        run: tail -n 200 "$RUNNER_TEMP/operon.log" || true
+        run: tail -n 200 "$RUNNER_TEMP/loams.log" || true
 
   es-client:
     name: Elasticsearch client suite
@@ -354,13 +354,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
       - name: build
-        run: cargo build -p operon --locked
+        run: cargo build -p loams --locked
       - uses: astral-sh/setup-uv@v7
-      # The suite starts `operon dev` on ephemeral ports (conftest.py) and
+      # The suite starts `loams dev` on ephemeral ports (conftest.py) and
       # runs the oracle checks against the service above.
-      - name: elasticsearch-py 8.19.3 against operon dev
+      - name: elasticsearch-py 8.19.3 against loams dev
         env:
-          OPERON_BIN: target/debug/operon
+          LOAMS_BIN: target/debug/loams
           ES_ORACLE_URL: http://127.0.0.1:9250
         run: conformance/es-client/run.sh
 
@@ -406,15 +406,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: simulation (32 seeds x 300 steps)
         if: github.event_name != 'schedule'
-        run: cargo test -p operon-sim --release --locked
+        run: cargo test -p loams-sim --release --locked
       - name: simulation (1000 seeds x 300 steps, nightly)
         if: github.event_name == 'schedule'
-        run: 'cargo test -p operon-sim --release --locked --test it sim::'
+        run: 'cargo test -p loams-sim --release --locked --test it sim::'
         env:
           SIM_SEEDS: "1000"
       - name: tail merge against a full rebuild (256 cases, nightly)
         if: github.event_name == 'schedule'
-        run: 'cargo test -p operon-query --release --locked --test it tail_vs_rebuild::'
+        run: 'cargo test -p loams-query --release --locked --test it tail_vs_rebuild::'
         env:
           TAIL_PROP_CASES: "256"
 
@@ -437,16 +437,16 @@ jobs:
         # The TiKV crates that exist so far (later R1 tasks add the rest).
         run: |
           args=
-          for c in operon-tikv operon-meta-tikv operon-live operon-live-js; do
+          for c in loams-tikv loams-meta-tikv loams-live loams-live-js; do
             if [ -d "crates/$c" ]; then args="$args -p $c"; fi
           done
           echo "args=$args" >> "$GITHUB_OUTPUT"
       - name: build the suites
         run: |
           cargo test ${{ steps.packages.outputs.args }} --locked --no-run
-          cargo test -p operon --features tikv --test meta_tikv --locked --no-run
-          cargo test -p operon-durable --features tikv --lib --test tikv --locked --no-run
-          cargo test -p operon-safekeeper --features tikv --test tikv --locked --no-run
+          cargo test -p loams --features tikv --test meta_tikv --locked --no-run
+          cargo test -p loams-durable --features tikv --lib --test tikv --locked --no-run
+          cargo test -p loams-safekeeper --features tikv --test tikv --locked --no-run
       - uses: actions/cache@v6
         with:
           path: ~/.tiup/components
@@ -457,15 +457,15 @@ jobs:
           echo "$HOME/.tiup/bin" >> "$GITHUB_PATH"
           "$HOME/.tiup/bin/tiup" install playground pd:v8.5.8 tikv:v8.5.8
       - name: start the playground
-        run: scripts/tikv/playground.sh start --tag loam-ci --timeout 120
+        run: scripts/tikv/playground.sh start --tag loams-ci --timeout 120
       - name: TiKV suites
         env:
-          OPERON_TEST_PD: 127.0.0.1:19379
+          LOAMS_TEST_PD: 127.0.0.1:19379
         run: |
           cargo test ${{ steps.packages.outputs.args }} --locked
-          cargo test -p operon --features tikv --test meta_tikv --locked
-          cargo test -p operon-durable --features tikv --lib --test tikv --locked
-          cargo test -p operon-safekeeper --features tikv --test tikv --locked
+          cargo test -p loams --features tikv --test meta_tikv --locked
+          cargo test -p loams-durable --features tikv --lib --test tikv --locked
+          cargo test -p loams-safekeeper --features tikv --test tikv --locked
       - name: playground logs
         if: failure()
         uses: actions/upload-artifact@v7
@@ -473,11 +473,11 @@ jobs:
           name: tikv-playground-logs-${{ github.job }}
           path: |
             target/tikv-playground/*.log
-            ~/.tiup/data/loam-ci/**/*.log
+            ~/.tiup/data/loams-ci/**/*.log
           if-no-files-found: ignore
       - name: stop the playground
         if: always()
-        run: scripts/tikv/playground.sh stop --tag loam-ci
+        run: scripts/tikv/playground.sh stop --tag loams-ci
 
   # The same suites every night, plus the nightly-only TiKV suites later R1
   # tasks add.
@@ -501,7 +501,7 @@ jobs:
         # The TiKV crates that exist so far (later R1 tasks add the rest).
         run: |
           args=
-          for c in operon-tikv operon-meta-tikv operon-live operon-live-js; do
+          for c in loams-tikv loams-meta-tikv loams-live loams-live-js; do
             if [ -d "crates/$c" ]; then args="$args -p $c"; fi
           done
           echo "args=$args" >> "$GITHUB_OUTPUT"
@@ -509,8 +509,8 @@ jobs:
         if: steps.paths.outputs.run == 'true'
         run: |
           cargo test ${{ steps.packages.outputs.args }} --locked --no-run
-          cargo test -p operon --features tikv --test meta_tikv --locked --no-run
-          cargo test -p operon --features failpoints,tikv --test crash --locked --no-run
+          cargo test -p loams --features tikv --test meta_tikv --locked --no-run
+          cargo test -p loams --features failpoints,tikv --test crash --locked --no-run
       - uses: actions/cache@v6
         if: steps.paths.outputs.run == 'true'
         with:
@@ -524,27 +524,27 @@ jobs:
           "$HOME/.tiup/bin/tiup" install playground pd:v8.5.8 tikv:v8.5.8
       - name: start the playground
         if: steps.paths.outputs.run == 'true'
-        run: scripts/tikv/playground.sh start --tag loam-ci --timeout 120
+        run: scripts/tikv/playground.sh start --tag loams-ci --timeout 120
       - name: TiKV suites
         if: steps.paths.outputs.run == 'true'
         env:
-          OPERON_TEST_PD: 127.0.0.1:19379
-          # Nightly-only cases (operon_tikv::testing::nightly), such as
+          LOAMS_TEST_PD: 127.0.0.1:19379
+          # Nightly-only cases (loams_tikv::testing::nightly), such as
           # old_versions_dropped_after_gc.
-          OPERON_TEST_NIGHTLY: "1"
+          LOAMS_TEST_NIGHTLY: "1"
         run: |
           cargo test ${{ steps.packages.outputs.args }} --locked
-          cargo test -p operon --features tikv --test meta_tikv --locked
+          cargo test -p loams --features tikv --test meta_tikv --locked
       # R1 plan Task 6: the M1.1 gates on the TiKV metastore. The kill -9
-      # crash gate runs `operon dev --meta tikv://…` (its snapshot rows are
+      # crash gate runs `loams dev --meta tikv://…` (its snapshot rows are
       # openraft-only and skip); the object-store fault matrix and the
       # simulation stay on openraft (row T6-8).
       - name: crash gate on the TiKV metastore
         if: steps.paths.outputs.run == 'true'
         env:
-          OPERON_TEST_PD: 127.0.0.1:19379
-          OPERON_GATE_META: tikv://127.0.0.1:19379/loam_test_meta
-        run: cargo test -p operon --features failpoints,tikv --test crash --locked
+          LOAMS_TEST_PD: 127.0.0.1:19379
+          LOAMS_GATE_META: tikv://127.0.0.1:19379/loams_test_meta
+        run: cargo test -p loams --features failpoints,tikv --test crash --locked
       - name: playground logs
         if: failure() && steps.paths.outputs.run == 'true'
         uses: actions/upload-artifact@v7
@@ -552,14 +552,14 @@ jobs:
           name: tikv-playground-logs-${{ github.job }}
           path: |
             target/tikv-playground/*.log
-            ~/.tiup/data/loam-ci/**/*.log
+            ~/.tiup/data/loams-ci/**/*.log
           if-no-files-found: ignore
       - name: stop the playground
         if: always() && steps.paths.outputs.run == 'true'
-        run: scripts/tikv/playground.sh stop --tag loam-ci
+        run: scripts/tikv/playground.sh stop --tag loams-ci
 
   # D1 plan Task 5: the embedded durable server's tests and Resonate's
-  # linearizability check (porcupine) against `operon dev` on SQLite. Pull
+  # linearizability check (porcupine) against `loams dev` on SQLite. Pull
   # requests run it only when they touch the durable crate, its routes or
   # scripts, the workflows, or the workspace manifests (the `durable` filter
   # in the changes job). `durable` is an opt-in feature (O1).
@@ -582,12 +582,12 @@ jobs:
         with:
           go-version: "1.24"
           cache: false
-      - name: operon-durable tests
-        run: cargo test -p operon-durable --locked
-      - name: operon durable tests
+      - name: loams-durable tests
+        run: cargo test -p loams-durable --locked
+      - name: loams durable tests
         # The binary's tests also cover the optional listener flags (the
         # extra feature reuses this build).
-        run: cargo test -p operon --features durable,stream-grpc --test durable --bin operon --locked
+        run: cargo test -p loams --features durable,stream-grpc --test durable --bin loams --locked
       - name: checker self-test
         run: scripts/durable/conformance.sh --self-test
       - name: linearizability on SQLite (8 clients x 600 ops)
@@ -601,7 +601,7 @@ jobs:
           if-no-files-found: ignore
 
   # D1 plan Task 5, nightly: the TiDB backend's suite and the linearizability
-  # check against `operon dev --durable-store mysql://…` on a throwaway TiDB
+  # check against `loams dev --durable-store mysql://…` on a throwaway TiDB
   # v8.5.8 (the optimistic-mode test flips a global variable). The TiDB leg
   # drops 503 answers as not applied (porc-503.sh) until upstream PR 0b; the
   # job summary shows how many there were.
@@ -624,10 +624,10 @@ jobs:
           go-version: "1.24"
           cache: false
       # Everything is built before TiDB starts.
-      - name: build the TiDB suite and operon
+      - name: build the TiDB suite and loams
         run: |
-          cargo test -p operon-durable --features mysql --test tidb --locked --no-run
-          cargo build --release --locked -p operon --features durable-mysql
+          cargo test -p loams-durable --features mysql --test tidb --locked --no-run
+          cargo build --release --locked -p loams --features durable-mysql
       - uses: actions/cache@v6
         with:
           path: ~/.tiup/components
@@ -639,17 +639,17 @@ jobs:
           "$HOME/.tiup/bin/tiup" install playground pd:v8.5.8 tikv:v8.5.8 tidb:v8.5.8
       - name: start TiDB
         run: |
-          scripts/durable/tidb.sh up --tag loam-ci-durable --port-offset 27000 --timeout 180 | tee "$RUNNER_TEMP/tidb.out"
-          sed -n 's/^export \(OPERON_TEST_TIDB=.*\)$/\1/p' "$RUNNER_TEMP/tidb.out" >> "$GITHUB_ENV"
+          scripts/durable/tidb.sh up --tag loams-ci-durable --port-offset 27000 --timeout 180 | tee "$RUNNER_TEMP/tidb.out"
+          sed -n 's/^export \(LOAMS_TEST_TIDB=.*\)$/\1/p' "$RUNNER_TEMP/tidb.out" >> "$GITHUB_ENV"
       - name: TiDB suite
-        run: cargo test -p operon-durable --features mysql --test tidb --locked
+        run: cargo test -p loams-durable --features mysql --test tidb --locked
       - name: linearizability on TiDB (8 clients x 600 ops)
-        run: scripts/durable/conformance.sh --store tidb --clients 8 --ops 600 --operon-bin target/release/operon
+        run: scripts/durable/conformance.sh --store tidb --clients 8 --ops 600 --loams-bin target/release/loams
       - name: linearizability on TiDB (16 clients x 400 ops, seeds 11, 12, 13)
         run: |
           for seed in 11 12 13; do
             scripts/durable/conformance.sh --store tidb --clients 16 --ops 400 --seed "$seed" \
-              --operon-bin target/release/operon
+              --loams-bin target/release/loams
           done
       - name: conformance output and TiDB logs
         if: failure()
@@ -659,19 +659,19 @@ jobs:
           path: |
             target/durable-conformance/
             target/durable-tidb/*.log
-            ~/.tiup/data/loam-ci-durable/**/*.log
+            ~/.tiup/data/loams-ci-durable/**/*.log
           if-no-files-found: ignore
       - name: stop TiDB
         if: always()
-        run: scripts/durable/tidb.sh down --tag loam-ci-durable
+        run: scripts/durable/tidb.sh down --tag loams-ci-durable
 
-  # R1 plan Task 7: the loam.live.v1 protos pass `buf lint` (STANDARD), and
+  # R1 plan Task 7: the loams.live.v1 protos pass `buf lint` (STANDARD), and
   # the checked-in TypeScript in sdks/live-typescript/src/gen is what
   # `buf generate` writes from them. buf and protoc-gen-es are pinned in
   # sdks/live-typescript/package.json. The Rust code is generated at build
-  # time (operon-live-proto's build.rs), so the check job covers it.
+  # time (loams-live-proto's build.rs), so the check job covers it.
   live-protos:
-    name: loam.live.v1 protos and generated TypeScript
+    name: loams.live.v1 protos and generated TypeScript
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.protos == 'true') }}
     runs-on: ubuntu-latest
@@ -710,7 +710,7 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   web:
-    name: console and @loam/ui
+    name: console and @loams/ui
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.web == 'true') }}
     runs-on: ubuntu-latest

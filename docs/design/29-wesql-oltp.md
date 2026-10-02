@@ -1,6 +1,6 @@
-# 29 — WeSQL as Loam's MySQL-on-the-Bucket OLTP Engine
+# 29 — WeSQL as Loams's MySQL-on-the-Bucket OLTP Engine
 
-Status: **Proposed** · 2026-10-01. This document comes from the owner's question, "will wesql become usable with proper transaction support, refer tidb (go) or starrocks (java), implement all starrocks features on wesql, both use rocksdb+iceberg on s3", and from the direction the owner approved in answer: verify the transaction model, then close WeSQL's gaps in four milestones (W1–W4), keep analytics on Iceberg beside it, and do not port StarRocks. Everything here is a **proposal**: decisions **D273–D280** and open questions **Q271–Q279**. It extends [§23](23-neon-and-wesql.md) (D148, D154, D156, Q50, Q51) and builds on [§28](28-loam-postgres.md) §7.2 (Arm A). It changes no code in Loam; the code work is in the fork `ostrium-labs/wesql` and, for W2, in `operon-safekeeper`.
+Status: **Proposed** · 2026-10-01. This document comes from the owner's question, "will wesql become usable with proper transaction support, refer tidb (go) or starrocks (java), implement all starrocks features on wesql, both use rocksdb+iceberg on s3", and from the direction the owner approved in answer: verify the transaction model, then close WeSQL's gaps in four milestones (W1–W4), keep analytics on Iceberg beside it, and do not port StarRocks. Everything here is a **proposal**: decisions **D273–D280** and open questions **Q271–Q279**. It extends [§23](23-neon-and-wesql.md) (D148, D154, D156, Q50, Q51) and builds on [§28](28-loams-postgres.md) §7.2 (Arm A). It changes no code in Loams; the code work is in the fork `ostrium-labs/wesql` and, for W2, in `loams-safekeeper`.
 
 Markers, as in §23 and §28:
 
@@ -16,14 +16,14 @@ Markers, as in §23 and §28:
 
 | # | Decision | Status |
 |---|---|---|
-| D273 | **WeSQL (the fork `ostrium-labs/wesql`) is Loam's candidate MySQL OLTP engine whose storage lives entirely on the bucket, built as milestones W1–W4** (§11). It stays a separate, unmodified-by-Loam process (D148) and the choice against TiDB is made by the rule in D280. **Proposes to amend D156**: WeSQL stops being "dev compose only" only once W1 and W2 pass their acceptance tests; until then D156 and the Q50 gate stand | Proposed |
-| D274 | **Transactions: claim only what the source verifies** (§4). Loam documents WeSQL as single-node ACID with READ COMMITTED and REPEATABLE READ (snapshot isolation with first-committer-wins on locked keys), point locks and no gap or next-key locks, no SERIALIZABLE, no `ROLLBACK TO SAVEPOINT` after a write, and user-level XA untested. Closing those gaps is backlog (T1–T4, §4.3), not a milestone, except where W1 needs one | Proposed |
+| D273 | **WeSQL (the fork `ostrium-labs/wesql`) is Loams's candidate MySQL OLTP engine whose storage lives entirely on the bucket, built as milestones W1–W4** (§11). It stays a separate, unmodified-by-Loams process (D148) and the choice against TiDB is made by the rule in D280. **Proposes to amend D156**: WeSQL stops being "dev compose only" only once W1 and W2 pass their acceptance tests; until then D156 and the Q50 gate stand | Proposed |
+| D274 | **Transactions: claim only what the source verifies** (§4). Loams documents WeSQL as single-node ACID with READ COMMITTED and REPEATABLE READ (snapshot isolation with first-committer-wins on locked keys), point locks and no gap or next-key locks, no SERIALIZABLE, no `ROLLBACK TO SAVEPOINT` after a write, and user-level XA untested. Closing those gaps is backlog (T1–T4, §4.3), not a milestone, except where W1 needs one | Proposed |
 | D275 | **W1: foreign keys are enforced in the SQL layer of the fork, not inside SmartEngine** (§5), in the handler wrappers (`ha_write_row`, `ha_update_row`, `ha_delete_row`), behind `wesql_enforce_foreign_keys` (default `OFF`, so today's strip-with-warning stays the default). Checks are current reads with a **shared lock on the parent's primary-key row**. Referential actions run as nested row operations that **are written to the row binlog**, and applier threads do not re-cascade. TiDB's implementation is the reference design | Proposed |
-| D276 | **W2: the binlog, not SmartEngine's redo, is the log that is made durable in the Loam WAL quorum before a commit is acknowledged** (§6). The shipping point is the sync stage of MySQL's ordered commit. SmartEngine's own WAL stays local and may be flushed lazily in this mode | Proposed |
-| D277 | **The protocol boundary is a wire protocol, and the client in WeSQL is GPL-2.0-only code** (§6.4, §10). The acceptors are `loam-wal` (Apache-2.0, separate process, Arm A). The client lives in the fork, is written there, and copies no Apache-2.0 Loam source. The protocol is the safekeeper v3 message set (§28 §6.9) carrying a timeline kind `mysql-binlog` over TLS | Proposed |
+| D276 | **W2: the binlog, not SmartEngine's redo, is the log that is made durable in the Loams WAL quorum before a commit is acknowledged** (§6). The shipping point is the sync stage of MySQL's ordered commit. SmartEngine's own WAL stays local and may be flushed lazily in this mode | Proposed |
+| D277 | **The protocol boundary is a wire protocol, and the client in WeSQL is GPL-2.0-only code** (§6.4, §10). The acceptors are `loams-wal` (Apache-2.0, separate process, Arm A). The client lives in the fork, is written there, and copies no Apache-2.0 Loams source. The protocol is the safekeeper v3 message set (§28 §6.9) carrying a timeline kind `mysql-binlog` over TLS | Proposed |
 | D278 | **W3: failover is rebuilt on the same quorum** (§7): terms in the acceptors (metadata in TiKV, as in D268), a primary record in `x/<ns>/<db>` changed by compare-and-set, a lease that makes a deposed primary stop, and a replica that catches up from the snapshot, the archived binlog in the bucket and the WAL tail. Single writer; no multi-primary | Proposed |
-| D279 | **W4: analytics through Iceberg, not through a port of StarRocks** (§8). The binlog bridge (D154) writes a changelog stream per table, and links (§09) maintain a keyed Iceberg table in Lakekeeper on RustFS. StarRocks or Loam's own engine read that table as a sidecar. Porting StarRocks' features into the MySQL row executor is **rejected** | Proposed |
-| D280 | **TiDB is the alternative, and the rule for choosing it is stated** (§9): WeSQL only if the requirement is that the OLTP engine's storage lives entirely on the bucket. TiDB on Loam's TiKV already has distributed transactions, foreign keys and HA, but D260 (no TiDB anywhere) is the owner's, and choosing TiDB reverses it. This document does not | Proposed |
+| D279 | **W4: analytics through Iceberg, not through a port of StarRocks** (§8). The binlog bridge (D154) writes a changelog stream per table, and links (§09) maintain a keyed Iceberg table in Lakekeeper on RustFS. StarRocks or Loams's own engine read that table as a sidecar. Porting StarRocks' features into the MySQL row executor is **rejected** | Proposed |
+| D280 | **TiDB is the alternative, and the rule for choosing it is stated** (§9): WeSQL only if the requirement is that the OLTP engine's storage lives entirely on the bucket. TiDB on Loams's TiKV already has distributed transactions, foreign keys and HA, but D260 (no TiDB anywhere) is the owner's, and choosing TiDB reverses it. This document does not | Proposed |
 
 ## 2. Goals and non-goals
 
@@ -31,7 +31,7 @@ Markers, as in §23 and §28:
 
 1. **A MySQL engine for apps that need one,** with real transactions, foreign keys, and a durability and failover story that holds when the local volume is lost.
 2. **Storage entirely on the bucket.** Snapshots, SmartEngine's extents and the log live in RustFS, and no committed transaction depends on a local disk surviving (§6).
-3. **Reuse Loam's pieces, build only the join.** Arm A's acceptors (§28 §7.2), the TiKV metadata and `x/` records (§23 §6.2), the binlog bridge (D154), Iceberg and Lakekeeper (§08).
+3. **Reuse Loams's pieces, build only the join.** Arm A's acceptors (§28 §7.2), the TiKV metadata and `x/` records (§23 §6.2), the binlog bridge (D154), Iceberg and Lakekeeper (§08).
 4. **An honest record** of what SmartEngine, TiDB and StarRocks are (§3), because the owner's question rested on a mixed-up picture of the three.
 
 ### 2.2 Non-goals
@@ -39,7 +39,7 @@ Markers, as in §23 and §28:
 - **Porting StarRocks or TiDB code into WeSQL** (§8.3).
 - **Multi-primary or distributed transactions** in WeSQL. It is one writer at a time (D278).
 - **Making WeSQL the default MySQL answer.** TiDB is better on every axis except the bucket-only storage (§9).
-- **Linking WeSQL into Loam,** or patching it in a way that makes Loam's code GPL (D11, D148, §10).
+- **Linking WeSQL into Loams,** or patching it in a way that makes Loams's code GPL (D11, D148, §10).
 - **Upstream contributions** without the owner's go-ahead.
 
 ## 3. Correcting the record
@@ -55,7 +55,7 @@ Each claim in the question, checked against primary sources on 2026-10-01.
 | "WeSQL is RocksDB plus Iceberg on S3" | WeSQL is MySQL 8.0 with **SmartEngine**, a RocksDB-derived LSM engine (its `LICENSE` is RocksDB's BSD text; `core/` keeps `db/`, `memtable/`, `write_batch/` and a RocksDB-style `transactions/`), on S3. Its README says all data, binlog and WAL are "**entirely** (**not partially!**)" in S3. There is **no Iceberg** anywhere in the repository outside vendored `extra/` (`git grep -il iceberg` finds nothing) | `wesql/README.md`; `wesql/storage/smartengine/core/LICENSE`; `wesql/storage/smartengine/core/` |
 | "StarRocks and TiDB both use RocksDB+Iceberg on S3" | Neither does. **No one of the three combines RocksDB, Iceberg and S3 as one design.** WeSQL has the RocksDB lineage and S3, and no Iceberg. StarRocks has Iceberg (external) and its own storage. TiDB has TiKV and, in TiDB X, S3 | the rows above |
 
-**What the corrected picture means.** Iceberg is where WeSQL, TiDB and StarRocks meet only if something *writes* Iceberg. None of the three does that for OLTP data. Loam does it for collections and tables (§08), which is why D279 puts the bridge in Loam.
+**What the corrected picture means.** Iceberg is where WeSQL, TiDB and StarRocks meet only if something *writes* Iceberg. None of the three does that for OLTP data. Loams does it for collections and tables (§08), which is why D279 puts the bridge in Loams.
 
 ## 4. Transactions in SmartEngine, verified in the source
 
@@ -100,7 +100,7 @@ Read on 2026-10-01 from `wesql/storage/smartengine/` and `wesql/mysql-test/suite
 - **T1, `smartengine_lock_wait_timeout` default.** One second is a bench default, not an OLTP default. The deployment sets it (for example 50 s, as InnoDB) and sets `smartengine_deadlock_detect = ON`.
 - **T2, savepoints.** The engine already has `SetSavePoint`/`RollbackToSavePoint` per statement. Implementing `ROLLBACK TO SAVEPOINT` with writes on top is plausible (**estimate:** small, one PR), and ORMs use savepoints for nested transactions (Django `atomic()`, Hibernate). It is the first item after W1 (Q276).
 - **T3, SERIALIZABLE.** Not planned. Apps that need it use explicit `FOR UPDATE`, and the matrix says so.
-- **T4, user XA.** Not planned; Loam needs the internal 2PC only.
+- **T4, user XA.** Not planned; Loams needs the internal 2PC only.
 - **W1 depends on one transaction property:** a locking read that does **not** validate the snapshot (a *current read*). The engine has it: `TryLock` skips `ValidateSnapshot` when `validate_snapshot` is false or no snapshot exists (`core/transactions/transaction_impl.cc` ~line 590). Whether `ha_smartengine` can request it for an arbitrary key without going through a row read needs a short spike (verify, §11 W1).
 
 ## 5. W1: foreign keys (D275)
@@ -145,7 +145,7 @@ Read from `tidb/docs/design/2022-06-22-foreign-key.md` and `tidb/pkg/executor/fo
 5. **Referential actions** run as nested operations on the child table through the same handler wrappers, so the cascaded row changes are **ordinary row operations**: they take locks, run FK checks of their own, and appear in the binlog. Depth is limited to 15 as in InnoDB (`ER_FK_DEPTH_EXCEEDED`), with cycle detection through a per-statement set of `(table, primary key)`.
 6. **The binlog contract (the part InnoDB does differently).** With InnoDB and row-based logging, cascaded changes are **not** logged as rows; a replica re-derives them by enforcing the same FKs. That breaks the binlog bridge (D154, D279): a consumer that sees only the logged rows would never see cascaded deletes, and its collection and Iceberg table would diverge from the database. So in W1:
    - cascaded rows **are** logged as row events inside the parent statement's transaction;
-   - **applier threads (replica, fork PR 3's replay, the W3 replica) do not enforce or cascade**: they run with FK enforcement off, since the logged rows already contain everything. This is a deliberate difference from InnoDB. It means a WeSQL binlog applied by InnoDB would double-apply cascades; Loam does not do that (§23 §14, no mixed replication).
+   - **applier threads (replica, fork PR 3's replay, the W3 replica) do not enforce or cascade**: they run with FK enforcement off, since the logged rows already contain everything. This is a deliberate difference from InnoDB. It means a WeSQL binlog applied by InnoDB would double-apply cascades; Loams does not do that (§23 §14, no mixed replication).
 7. **DDL.**
    - `ADD FOREIGN KEY` on an existing table validates under a metadata lock with the check query above (a `COPY`-style path), failing with `1452`/`3780` as MySQL does. Concurrent DML is blocked for the duration, which is the cost of not having TiDB's online schema states (**estimate:** minutes for ten million rows; the deployment target is app metadata schemas, §5.6).
    - Dropping or renaming a referenced table or column, truncating a parent, and type changes of FK columns follow MySQL's existing dictionary rules (`3730`, `1553`, `3780`).
@@ -170,7 +170,7 @@ PR 2 (merged) keeps an explicit `ENGINE=InnoDB` table on InnoDB, with real FKs, 
 
 W1 is for **application metadata schemas** (Forgejo, Matomo-style apps, ORMs): thousands to millions of rows, modest write rates. It is not for bulk data with FK-heavy fan-out. That is the same scope PR 2 gave the InnoDB option.
 
-## 6. W2: durable commits in a Loam WAL quorum (D276, D277)
+## 6. W2: durable commits in a Loams WAL quorum (D276, D277)
 
 ### 6.1 The gap
 
@@ -218,21 +218,21 @@ MySQL's ordered commit has a flush stage (write the transactions' binlog caches 
 
 | Side | What it is | License |
 |---|---|---|
-| **Acceptors** | `loam-wal` (`operon-safekeeper`, Arm A, §28 §7.2). Compio shards, a shared journal per shard, term and history metadata in TiKV (D268), offload to the bucket (D269) | Apache-2.0, a separate process |
+| **Acceptors** | `loams-wal` (`loams-safekeeper`, Arm A, §28 §7.2). Compio shards, a shared journal per shard, term and history metadata in TiKV (D268), offload to the bucket (D269) | Apache-2.0, a separate process |
 | **Protocol** | The safekeeper v3 messages of §28 §6.9 (`ProposerGreeting`, `VoteRequest`, `ProposerElected`, `AppendRequest` and responses, `START_REPLICATION`), carrying a **timeline kind** (`pg-wal` or `mysql-binlog`) and, for `mysql-binlog`, a stream id derived from `SHA-256("wesql/" + ns + "/" + db)` | Specified in this repository (Apache-2.0); a wire format, not code |
 | **Client** | A C++ module of the fork (`sql/wesql_wal_client.{h,cc}`): the proposer role for one stream, over TCP with TLS (OpenSSL, which MySQL already links), with a reader for the replica side (W3) | **GPL-2.0-only**, written in the fork, as the rest of the tree |
 
 Rules that keep D11 and D148 intact:
 
-- **The client copies no Loam source.** It is written from the protocol specification. Apache-2.0 code cannot be combined into a GPL-2.0-only work (the FSF treats Apache-2.0 as compatible with GPL-3.0 and not with GPL-2.0), so nothing from `operon-safekeeper` is pasted or translated line by line into the fork. Where Neon's walproposer C code (PostgreSQL License, permissive and GPL-compatible) would help, it is read as a specification, not copied, to keep provenance simple (**verify** with the owner's counsel, Q271).
+- **The client copies no Loams source.** It is written from the protocol specification. Apache-2.0 code cannot be combined into a GPL-2.0-only work (the FSF treats Apache-2.0 as compatible with GPL-3.0 and not with GPL-2.0), so nothing from `loams-safekeeper` is pasted or translated line by line into the fork. Where Neon's walproposer C code (PostgreSQL License, permissive and GPL-compatible) would help, it is read as a specification, not copied, to keep provenance simple (**verify** with the owner's counsel, Q271).
 - **The acceptors do not link anything GPL.** They speak the protocol over a socket. A separate program communicating over a socket is not a combined work under the usual reading of the GPL (**verify**, Q271).
-- **WeSQL is still never linked into Loam**, so Loam's code stays Apache-2.0 (D11). The fork's source is published as GPL-2.0 requires, from `ostrium-labs/wesql`.
+- **WeSQL is still never linked into Loams**, so Loams's code stays Apache-2.0 (D11). The fork's source is published as GPL-2.0 requires, from `ostrium-labs/wesql`.
 - **Dependencies of the client** are limited to what the MySQL tree already carries (OpenSSL, zstd, protobuf if used), all GPL-2.0-compatible.
 
 **Transport and authorization (required, not optional).** Term fencing orders writers; it does not say who may write. So:
 
 - **Mutual TLS.** The client verifies the acceptor's certificate chain against a configured CA and **matches the endpoint's identity** (the configured name or SAN); it refuses the connection if either check fails. Acceptors require a client certificate. No plaintext mode, including on a cluster network (the rule §23 §6.3 sets for the MySQL hop).
-- **Per-stream authorization.** The client certificate's identity (or a short-lived token bound to it) names the `(ns, db)` stream it may propose to. The acceptor checks that binding **before** it processes `START_WAL_PUSH`, votes or appends for that stream, and refuses other streams. The existing global `--auth-token` and `--trusted-network` options of `loam-wal` (§28 §7.2) do not bind a caller to a stream and are not enough for this kind (Q279).
+- **Per-stream authorization.** The client certificate's identity (or a short-lived token bound to it) names the `(ns, db)` stream it may propose to. The acceptor checks that binding **before** it processes `START_WAL_PUSH`, votes or appends for that stream, and refuses other streams. The existing global `--auth-token` and `--trusted-network` options of `loams-wal` (§28 §7.2) do not bind a caller to a stream and are not enough for this kind (Q279).
 - **Read side.** The replica and the bridge authenticate the same way, with read-only rights on the stream.
 - **Credentials** come from the unified auth plan (Q30), rotate without a restart, and are never in the binlog or the metastore (§23 §6.2).
 
@@ -242,7 +242,7 @@ The acceptors offload committed bytes to the bucket (D269: `pgwal/…` objects f
 
 ### 6.6 Cost (estimate)
 
-The commit adds one quorum round trip to the path that today is a local binlog fsync. §28 §7.2's Arm A is designed to be at or better than the safekeepers' commit latency (which §28 §6.1 estimates at 1–3 ms p50 across AZs, an estimate, not a measurement); the Arm A gate runs are PRs #165 and #166, open when this was written, so this document treats Arm A's numbers as pending (verify). Arm B (TiKV on the commit path) failed the laptop gate in §28 §7.1 and is not an option here. **W2's target is a p99 commit within the same budget as Loam Postgres** (the owner's < 5 ms p99 target, which is a server-hardware number, §28 §7.1). MySQL group commit amortizes the round trip across concurrent clients, so a single-client `INSERT` loop pays it in full and a 16-client one does not.
+The commit adds one quorum round trip to the path that today is a local binlog fsync. §28 §7.2's Arm A is designed to be at or better than the safekeepers' commit latency (which §28 §6.1 estimates at 1–3 ms p50 across AZs, an estimate, not a measurement); the Arm A gate runs are PRs #165 and #166, open when this was written, so this document treats Arm A's numbers as pending (verify). Arm B (TiKV on the commit path) failed the laptop gate in §28 §7.1 and is not an option here. **W2's target is a p99 commit within the same budget as Loams Postgres** (the owner's < 5 ms p99 target, which is a server-hardware number, §28 §7.1). MySQL group commit amortizes the round trip across concurrent clients, so a single-client `INSERT` loop pays it in full and a 16-client one does not.
 
 ## 7. W3: failover on the same quorum (D278)
 
@@ -254,8 +254,8 @@ Upstream removed Raft HA on 2026-08-22 (§23 §4.2); the single-node WeSQL has n
 |---|---|
 | **Primary** | One `mysqld`, writable, the proposer of the stream's current term |
 | **Replica** | A `mysqld` in read-only mode that applies the binlog: from the snapshot and the bucket, then from the acceptors. It is a candidate for promotion |
-| **Acceptors** | Three `loam-wal` processes (§28 §7.2). A majority fences and persists |
-| **Control plane** | Loam: the `x/<ns>/<db>` record in the TiKV metastore (§23 §6.2) gains `primary` (node id, endpoint), `term` and `state`; changes are compare-and-set on its version; promotion runs as a Resonate saga (§21 §6.3) with deterministic step ids |
+| **Acceptors** | Three `loams-wal` processes (§28 §7.2). A majority fences and persists |
+| **Control plane** | Loams: the `x/<ns>/<db>` record in the TiKV metastore (§23 §6.2) gains `primary` (node id, endpoint), `term` and `state`; changes are compare-and-set on its version; promotion runs as a Resonate saga (§21 §6.3) with deterministic step ids |
 
 ### 7.2 Fencing
 
@@ -295,7 +295,7 @@ D154 already specifies that the row binlog becomes `DocOp`s on a collection's im
                                                   └─► link ──► keyed Iceberg table in Lakekeeper (RustFS)
                                                                  ▲                      ▲
                                                                  │                      │
-                                                    StarRocks external catalog   Loam analytics (DataFusion)
+                                                    StarRocks external catalog   Loams analytics (DataFusion)
                                                     (sidecar, reads in place)    Trino, DuckDB, Spark, …
 ```
 
@@ -308,8 +308,8 @@ D154 already specifies that the row binlog becomes `DocOp`s on a collection's im
 
 ### 8.2 The readers
 
-- **Loam analytics** (§08) reads the table in place, with the hot tier of §04.
-- **StarRocks**, if a deployment wants it, runs as a **sidecar**: `CREATE EXTERNAL CATALOG … iceberg` against Lakekeeper's REST catalog on RustFS, and queries the table in place (§3). Loam never links or embeds it. StarRocks is Apache-2.0 (GitHub license API), so the sidecar carries no license concern; whether the Iceberg catalog's deletion-vector reads match Loam's writes is a conformance test (**verify**, §11 W4).
+- **Loams analytics** (§08) reads the table in place, with the hot tier of §04.
+- **StarRocks**, if a deployment wants it, runs as a **sidecar**: `CREATE EXTERNAL CATALOG … iceberg` against Lakekeeper's REST catalog on RustFS, and queries the table in place (§3). Loams never links or embeds it. StarRocks is Apache-2.0 (GitHub license API), so the sidecar carries no license concern; whether the Iceberg catalog's deletion-vector reads match Loams's writes is a conformance test (**verify**, §11 W4).
 - Any other Iceberg engine reads the same table (§08 §8).
 
 ### 8.3 Why "implement all StarRocks features on WeSQL" is rejected
@@ -317,12 +317,12 @@ D154 already specifies that the row binlog becomes `DocOp`s on a collection's im
 1. **Different engines.** StarRocks' speed comes from a vectorized C++ executor over its own columnar segments, with a cost-based optimizer and materialized views in a Java frontend. WeSQL's executor is MySQL's row-at-a-time executor over an LSM. Features such as vectorized joins, runtime filters, colocate groups and MPP exchange are not additions to MySQL's executor; they are another executor. That is a rewrite, not a port, in two languages and two licenses of code.
 2. **Different storage.** StarRocks' features assume columnar segments with per-column indexes and delete vectors. SmartEngine's rows are LSM key-value pairs; the layouts do not match, and OLTP and OLAP access patterns pull the LSM's compaction in opposite directions.
 3. **License.** WeSQL is GPL-2.0-only; StarRocks is Apache-2.0. Apache-2.0 code can be taken into a GPL-3.0 work, but not into a GPL-2.0-only one (§6.4). Porting StarRocks code into the fork would need either a separate Apache component (which is the sidecar again) or a re-implementation.
-4. **Maintenance.** StarRocks ships frequent releases. A port would diverge from upstream on day one, and Loam would own the divergence, on top of the MySQL and SmartEngine forks already owned.
-5. **The cheaper way exists and is already in the design.** Iceberg is the contract. OLTP writes stay in WeSQL, analytics reads come from an Iceberg table that StarRocks, Loam, DuckDB or Trino scan in place. That gives the owner the combination in the question (a row engine on the bucket and a columnar engine reading Iceberg on the bucket) with Loam writing the Iceberg half.
+4. **Maintenance.** StarRocks ships frequent releases. A port would diverge from upstream on day one, and Loams would own the divergence, on top of the MySQL and SmartEngine forks already owned.
+5. **The cheaper way exists and is already in the design.** Iceberg is the contract. OLTP writes stay in WeSQL, analytics reads come from an Iceberg table that StarRocks, Loams, DuckDB or Trino scan in place. That gives the owner the combination in the question (a row engine on the bucket and a columnar engine reading Iceberg on the bucket) with Loams writing the Iceberg half.
 
 ## 9. The alternative: TiDB on our TiKV (D280)
 
-TiDB on Loam's TiKV already has what W1–W3 would add: **distributed transactions** (Percolator over TiKV), **foreign keys** (§5.2), and **HA** (TiKV's Raft and PD, TiDB servers are stateless). It speaks the MySQL protocol, and a TiCDC changefeed is the standard binlog-like bridge. Honestly stated:
+TiDB on Loams's TiKV already has what W1–W3 would add: **distributed transactions** (Percolator over TiKV), **foreign keys** (§5.2), and **HA** (TiKV's Raft and PD, TiDB servers are stateless). It speaks the MySQL protocol, and a TiCDC changefeed is the standard binlog-like bridge. Honestly stated:
 
 | Question | WeSQL fork | TiDB on TiKV |
 |---|---|---|
@@ -332,26 +332,26 @@ TiDB on Loam's TiKV already has what W1–W3 would add: **distributed transactio
 | Scale-out writes | No (one writer) | Yes |
 | **Where the data lives** | **Entirely on the bucket** (SmartEngine extents, snapshots, binlog), local disks are caches | **Local NVMe on TiKV nodes** in the self-hosted or classic form, replicated three ways; object storage only for backups. TiDB X is the object-storage form, in TiDB Cloud (§3), not verified as self-hostable |
 | Cost shape | Storage at S3 price; compute for one primary and replicas | Three TiKV replicas on local disks (3× the data on NVMe) |
-| Maturity | Beta, one vendor, long gaps in commits (§23 §4.2), plus a fork we own | A mature system under the Apache-2.0 license; Loam's TiKV is unmodified (D126) |
-| Work for Loam | Four milestones (§11) | TiDB servers and operator pieces, and **a reversal of D260** |
+| Maturity | Beta, one vendor, long gaps in commits (§23 §4.2), plus a fork we own | A mature system under the Apache-2.0 license; Loams's TiKV is unmodified (D126) |
+| Work for Loams | Four milestones (§11) | TiDB servers and operator pieces, and **a reversal of D260** |
 
 **The rule (D280).** Choose WeSQL only if the requirement is *OLTP storage that lives entirely on the bucket*: the same property that D1 gives the retrieval engine, a stateless engine over S3 with disks as caches, for apps whose data is modest and whose operators want one durable place. Choose TiDB for anything that needs scale-out writes, more than one write node, distributed transactions across data, or mature HA, and accept that its data sits on TiKV disks.
 
-**D260 is in the way, and this document does not remove it.** D260 (2026-09-29, owner) says "no TiDB anywhere in the engine or Loam cloud," and that it supersedes D123 (§23's "D123 is paused" is the weaker earlier statement). §23 §14 says WeSQL does not revive D123. If the owner wants TiDB for MySQL, that is a decision on D260 and Q260 (MySQL wire access), made there. W1–W4 are the cost of *not* reversing it for the one case where bucket-only storage is the requirement. The owner may reasonably conclude that the four milestones cost more than reversing D260 for a single use case; that is Q273.
+**D260 is in the way, and this document does not remove it.** D260 (2026-09-29, owner) says "no TiDB anywhere in the engine or Loams cloud," and that it supersedes D123 (§23's "D123 is paused" is the weaker earlier statement). §23 §14 says WeSQL does not revive D123. If the owner wants TiDB for MySQL, that is a decision on D260 and Q260 (MySQL wire access), made there. W1–W4 are the cost of *not* reversing it for the one case where bucket-only storage is the requirement. The owner may reasonably conclude that the four milestones cost more than reversing D260 for a single use case; that is Q273.
 
 ## 10. Licensing (D277)
 
 | Component | License | What the design does |
 |---|---|---|
-| WeSQL, SmartEngine (the fork) | **GPL-2.0-only** (`wesql/README.md` "Licensing": without the "any later version" clause); SmartEngine carries RocksDB's BSD notice | A separate process, never linked into Loam (D148, D11). Fork changes are published as GPL-2.0 requires, from `ostrium-labs/wesql` |
-| The WAL client in the fork (§6.4) | GPL-2.0-only | Written in the fork. No Apache-2.0 Loam source copied in; OpenSSL, zstd and similar come from the MySQL tree |
-| `loam-wal` acceptors (`operon-safekeeper`) | Apache-2.0 | A separate process that WeSQL reaches over a socket. Links nothing GPL |
+| WeSQL, SmartEngine (the fork) | **GPL-2.0-only** (`wesql/README.md` "Licensing": without the "any later version" clause); SmartEngine carries RocksDB's BSD notice | A separate process, never linked into Loams (D148, D11). Fork changes are published as GPL-2.0 requires, from `ostrium-labs/wesql` |
+| The WAL client in the fork (§6.4) | GPL-2.0-only | Written in the fork. No Apache-2.0 Loams source copied in; OpenSSL, zstd and similar come from the MySQL tree |
+| `loams-wal` acceptors (`loams-safekeeper`) | Apache-2.0 | A separate process that WeSQL reaches over a socket. Links nothing GPL |
 | The protocol specification | Apache-2.0 (in this repository) | A wire format; both sides implement it independently |
-| The bridge, links, Iceberg tables | Apache-2.0 (Loam) | Read WeSQL's binlog over MySQL's replication protocol, which is a protocol use, as D154 already does |
+| The bridge, links, Iceberg tables | Apache-2.0 (Loams) | Read WeSQL's binlog over MySQL's replication protocol, which is a protocol use, as D154 already does |
 | StarRocks (sidecar) | Apache-2.0 | Unmodified, optional, a separate service |
 | TiDB, TiKV (alternative) | Apache-2.0 | As in §20 |
 
-D11 (no copyleft dependencies in Loam) and D148 (WeSQL is a separate process) are unchanged. The two questions that need a lawyer rather than an engineer are in Q271.
+D11 (no copyleft dependencies in Loams) and D148 (WeSQL is a separate process) are unchanged. The two questions that need a lawyer rather than an engineer are in Q271.
 
 ## 11. Milestones and acceptance tests
 
@@ -360,22 +360,22 @@ Each milestone is a small stack of PRs, in the fork (F) and in this repository (
 | Milestone | Scope | Depends on | Acceptance test (must pass to call it done) |
 |---|---|---|---|
 | **W1: foreign keys** | F: `HTON_SUPPORTS_FOREIGN_KEYS` behind `wesql_enforce_foreign_keys`; `sql/wesql_fk.{h,cc}` and the handler-wrapper hook; shared-lock current-read parent checks; child probes; CASCADE, SET NULL, RESTRICT, NO ACTION; depth limit; cascaded rows logged and appliers not re-cascading; `ADD FOREIGN KEY` validation; `foreign_key_checks`. Spike first: a current read from `ha_smartengine` (§4.3). About 4–6 PRs | PR 3's fork baseline | (1) **The Forgejo migrations pass on WeSQL** (Forgejo 16.0.5 and the current release), from an empty database to the last migration, with `Error 1235` and the strip warning gone, and Forgejo's `make test-mysql` passes against the build. **First check Forgejo's minimum MySQL version: §23 §9.2 records that Forgejo documents 8.4+ while WeSQL is 8.0.x. If it is enforced, either the build is rebased to 8.4 or the version check is accepted as a documented deviation (Q274).** (2) The ported InnoDB foreign-key MTR suites (`innodb.foreign_key*`, replication variants) pass on SmartEngine. (3) A concurrency test: N sessions insert children of one parent while another deletes it, over 10 000 rounds; **no orphan** remains, and every failure is `1451`/`1452`/`1205`/`1213`. (4) A binlog test: a CASCADE delete is in the binlog as rows, and replaying the binlog with FK enforcement off reproduces the same table (hash comparison). (5) Deadlock stress with `deadlock_detect = ON`. (6) `ENGINE=InnoDB` honour option still works |
-| **W2: durability** | L: the `mysql-binlog` timeline kind in `loam-wal` (greeting, vote, elected, append, read, trim, offload prefix); the protocol specification; fault tests. F: `sql/wesql_wal_client.{h,cc}`; the sync-stage hook; start-time reconciliation; PR 3's replay extended to read the tail from the acceptors; read-only on quorum loss. About 5–7 PRs | Arm A gate passed (§28 §7.2, PRs #165/#166); W1 not required | (1) **Volume loss survives with nothing committed lost:** a client commits rows in a loop and records each acknowledged row id; `kill -9` the primary, **delete its volume** (data directory and binlog), start a new `mysqld` against the same bucket and acceptors; after recovery **every acknowledged row is present**, with no extra rows beyond those that were in flight; repeated 200 times with kills at random points (before the quorum ack, after it, during the engine commit, during a snapshot). (2) Kill one acceptor: commits continue. Kill two: commits stall and are **not acknowledged**; they resume when one returns. (2b) With `smartengine_flush_log_at_trx_commit` = 0, 1 and 2, a simulated power loss (the engine WAL's unsynced tail discarded at random points, with and without then deleting the volume) loses no acknowledged row and applies no row twice; the recovered marker `M` (§6.3) equals the end offset of the last transaction visible in the engine, and every recovered prepare was rolled back and re-applied by replay or was not on the quorum. (2c) **Data survives, GTID marker does not:** commits with no binlog rotation and no clean shutdown since them, then power loss with the engine WAL intact; check first that `mysql.gtid_executed` lacks those GTIDs while SmartEngine holds the rows (the failure the marker exists for), then that recovery applies none of them twice. A crash during replay, repeated, converges to the same state. (3) The primary's local binlog is ahead of the quorum at the crash: after restart the unacknowledged tail is either re-proposed or truncated and no transaction is half-applied (checked with XA recovery logs). (4) Partition the primary from two acceptors: it stops acknowledging and goes read-only. (5) p50 and p99 commit latency, `commit-1` and `commit-16`-style runs, recorded against the same hardware as §28's gate (a report, with the budget of §6.6 as the target) |
+| **W2: durability** | L: the `mysql-binlog` timeline kind in `loams-wal` (greeting, vote, elected, append, read, trim, offload prefix); the protocol specification; fault tests. F: `sql/wesql_wal_client.{h,cc}`; the sync-stage hook; start-time reconciliation; PR 3's replay extended to read the tail from the acceptors; read-only on quorum loss. About 5–7 PRs | Arm A gate passed (§28 §7.2, PRs #165/#166); W1 not required | (1) **Volume loss survives with nothing committed lost:** a client commits rows in a loop and records each acknowledged row id; `kill -9` the primary, **delete its volume** (data directory and binlog), start a new `mysqld` against the same bucket and acceptors; after recovery **every acknowledged row is present**, with no extra rows beyond those that were in flight; repeated 200 times with kills at random points (before the quorum ack, after it, during the engine commit, during a snapshot). (2) Kill one acceptor: commits continue. Kill two: commits stall and are **not acknowledged**; they resume when one returns. (2b) With `smartengine_flush_log_at_trx_commit` = 0, 1 and 2, a simulated power loss (the engine WAL's unsynced tail discarded at random points, with and without then deleting the volume) loses no acknowledged row and applies no row twice; the recovered marker `M` (§6.3) equals the end offset of the last transaction visible in the engine, and every recovered prepare was rolled back and re-applied by replay or was not on the quorum. (2c) **Data survives, GTID marker does not:** commits with no binlog rotation and no clean shutdown since them, then power loss with the engine WAL intact; check first that `mysql.gtid_executed` lacks those GTIDs while SmartEngine holds the rows (the failure the marker exists for), then that recovery applies none of them twice. A crash during replay, repeated, converges to the same state. (3) The primary's local binlog is ahead of the quorum at the crash: after restart the unacknowledged tail is either re-proposed or truncated and no transaction is half-applied (checked with XA recovery logs). (4) Partition the primary from two acceptors: it stops acknowledging and goes read-only. (5) p50 and p99 commit latency, `commit-1` and `commit-16`-style runs, recorded against the same hardware as §28's gate (a report, with the budget of §6.6 as the target) |
 | **W3: HA** | L: `x/` record fields for primary and term; the promotion saga; router follows the record; lease heartbeats. F: replica mode that reads the acceptors' tail; fencing on lower terms; lease self-fence. About 4–5 PRs | W2 | (1) **Failover after killing the primary under load:** a new primary is writable within the target (**estimate:** warm replica < 15 s with `T` = 5 s; the real number is the test's output) and **no acknowledged commit is lost**. (2) The deposed primary, resumed after a pause longer than `T`, cannot acknowledge any commit and stops serving. (3) A cold replica built from an empty volume catches up from the snapshot, the archive and the tail, and reaches the same checksum as the primary. (4) Two simultaneous promotion attempts: exactly one wins (compare-and-set and terms). (5) A crashed control plane mid-promotion resumes and finishes with one primary |
-| **W4: analytics** | L: the binlog-to-changelog bridge reading `START_REPLICATION`; links to a keyed Iceberg table in Lakekeeper; schema handling; the initial snapshot copy. No fork change unless the bridge needs one. About 3–4 PRs | W2 for the acceptor source; W1 for FK cascades to be complete; D154's N6 before that | (1) **The Iceberg table equals the MySQL table** (row-for-row checksum) after a mixed workload of inserts, updates, deletes and CASCADE deletes, with kills of the bridge between append and confirm (exactly-once, as D129's fault set). (2) StarRocks (a pinned release, as a sidecar) reads the table through an external Iceberg catalog on Lakekeeper and returns the same checksum, including after deletes. (3) Loam analytics returns the same checksum. (3b) Commits that race with the snapshot handshake are neither lost nor duplicated (a continuous writer during 100 initial copies; checksums equal). (4) A DDL adding a nullable column propagates; an incompatible change halts the table's link with an alert. (5) Bridge lag under a steady write rate is reported (the **estimate** in §8.1 is replaced by a number) |
+| **W4: analytics** | L: the binlog-to-changelog bridge reading `START_REPLICATION`; links to a keyed Iceberg table in Lakekeeper; schema handling; the initial snapshot copy. No fork change unless the bridge needs one. About 3–4 PRs | W2 for the acceptor source; W1 for FK cascades to be complete; D154's N6 before that | (1) **The Iceberg table equals the MySQL table** (row-for-row checksum) after a mixed workload of inserts, updates, deletes and CASCADE deletes, with kills of the bridge between append and confirm (exactly-once, as D129's fault set). (2) StarRocks (a pinned release, as a sidecar) reads the table through an external Iceberg catalog on Lakekeeper and returns the same checksum, including after deletes. (3) Loams analytics returns the same checksum. (3b) Commits that race with the snapshot handshake are neither lost nor duplicated (a continuous writer during 100 initial copies; checksums equal). (4) A DDL adding a nullable column propagates; an incompatible change halts the table's link with an alert. (5) Bridge lag under a steady write rate is reported (the **estimate** in §8.1 is replaced by a number) |
 
-**Ordering.** W1 has no dependency on the Loam side and can start now. W2 waits for the Arm A gate. W3 follows W2. W4's first half can start from D154's N6 before W2.
+**Ordering.** W1 has no dependency on the Loams side and can start now. W2 waits for the Arm A gate. W3 follows W2. W4's first half can start from D154's N6 before W2.
 
 ## 12. Risks
 
 | # | Risk | Mitigation |
 |---|---|---|
-| 1 | **Four milestones in a fork of an unmaintained upstream** (§23 §4.2): Loam owns MySQL, SmartEngine and the patches | Each PR is small and regenerates the patch against a pinned base (PRs 1–4's method); D280 gives an exit to TiDB; nothing here is posted upstream |
+| 1 | **Four milestones in a fork of an unmaintained upstream** (§23 §4.2): Loams owns MySQL, SmartEngine and the patches | Each PR is small and regenerates the patch against a pinned base (PRs 1–4's method); D280 gives an exit to TiDB; nothing here is posted upstream |
 | 2 | **W1's hook misses a DML path** and a constraint silently fails | The test matrix (§11 W1), and a startup self-test that creates FK tables and tries each path |
 | 3 | **Snapshot isolation surprises apps** with `1213` where InnoDB would not fail | Documented (§4); the FK probe is a current read; T2 savepoints and a retry guide in the deployment notes |
 | 4 | **Commit latency** from the quorum round trip is too high on cheap disks | W2's acceptance test records it; group commit amortizes; acceptors on PLP NVMe (§28 §6.6) |
 | 5 | **Two archives** (fork binlog slices and acceptors' offload) diverge | One position map, tests in W2, Q272 |
-| 6 | **The GPL client's license boundary is wrong** | Q271 before W2; no Loam code in the fork; an interface-only protocol |
+| 6 | **The GPL client's license boundary is wrong** | Q271 before W2; no Loams code in the fork; an interface-only protocol |
 | 7 | **Replay is slow** for a long window after a snapshot | Snapshot cadence, measured in W3; this is the lever PR 3's note flagged |
 | 8 | **A stale lease** lets a deposed primary serve reads | The lease `T`, the router wait, and a documented bound (§7.2) |
 | 9 | **The owner decides D260 is wrong** and the milestones are wasted | They are small, and W4's Iceberg bridge works for any MySQL source. W1 and W3 are the part that would be wasted |
@@ -385,7 +385,7 @@ Each milestone is a small stack of PRs, in the fork (F) and in this repository (
 
 | # | Question | Needed by |
 |---|---|---|
-| Q271 | **Legal review of the licensing boundary** (§6.4): is a GPL-2.0-only client in `mysqld` that speaks a documented protocol to an Apache-2.0 server a combined work under the GPL (we say no), and is writing the client from the specification, without copying Loam's Apache-2.0 code, enough? | Owner and counsel, before the W2 plan |
+| Q271 | **Legal review of the licensing boundary** (§6.4): is a GPL-2.0-only client in `mysqld` that speaks a documented protocol to an Apache-2.0 server a combined work under the GPL (we say no), and is writing the client from the specification, without copying Loams's Apache-2.0 code, enough? | Owner and counsel, before the W2 plan |
 | Q272 | One archive or two (§6.5): keep the fork's `binlog_archive` slices beside the acceptors' offload, or let the offload replace it and have recovery read only the acceptors' objects | Eng, W2 plan |
 | Q273 | Given §9, do W1–W4 beat reversing D260 for the bucket-only requirement? (A decision, not a question for engineering.) | Owner, before W2 starts |
 | Q274 | Forgejo's minimum MySQL version versus WeSQL's 8.0.x base (§11 W1): rebase to 8.4, or accept the documented deviation | Eng, W1 plan |
@@ -393,16 +393,16 @@ Each milestone is a small stack of PRs, in the fork (F) and in this repository (
 | Q276 | Implement `ROLLBACK TO SAVEPOINT` with writes (T2) before or after W1, given ORM usage | Eng, after W1's spike |
 | Q277 | Consistency tokens for replica reads (§7.4): carry the binlog offset in D76's token | Eng, W3 plan |
 | Q278 | Timeline kind encoding in the safekeeper v3 greeting: reuse and extend the greeting (compatible with the pageserver path), or a separate listener port for non-Postgres kinds | Eng, W2 plan |
-| Q279 | Stream-scoped authentication for `loam-wal`'s `mysql-binlog` kind (§6.4): client certificates with the stream in the SAN, or tokens minted by the control plane. The Postgres path's global token stays as it is | Eng, W2 plan |
+| Q279 | Stream-scoped authentication for `loams-wal`'s `mysql-binlog` kind (§6.4): client certificates with the stream in the SAN, or tokens minted by the control plane. The Postgres path's global token stays as it is | Eng, W2 plan |
 
 ## 14. Contradictions with earlier decisions, and how they are resolved
 
 | Earlier | Conflict | Resolution |
 |---|---|---|
 | D156 (§23): WeSQL gated and lower priority; dev compose only | D273 | **Proposed amendment**: D156 and the Q50 gate stand until W1 and W2 pass their acceptance tests; then WeSQL may serve the apps it fits. W2's design is the proposed answer to Q50, not its closure; Q51 (Matomo) is unchanged |
-| D148 (§23): separate, unmodified services | The fork is modified | Unchanged in the sense D148 uses it: **Loam** never links or modifies it; the fork is a separate process, as §23 §7 says for "a patched WeSQL (which Loam does not plan)", now planned and GPL-compliant. §23 §7's sentence is updated by D273 |
+| D148 (§23): separate, unmodified services | The fork is modified | Unchanged in the sense D148 uses it: **Loams** never links or modifies it; the fork is a separate process, as §23 §7 says for "a patched WeSQL (which Loams does not plan)", now planned and GPL-compliant. §23 §7's sentence is updated by D273 |
 | D154 (§23): binlog bridge into collections | W4 adds Iceberg | **Extended**: the same bridge, one more link target |
-| D11: no copyleft dependencies | A GPL client in the fork | The client is part of the GPL fork, which Loam does not link (D148, §10) |
+| D11: no copyleft dependencies | A GPL client in the fork | The client is part of the GPL fork, which Loams does not link (D148, §10) |
 | D260: no TiDB anywhere | D280's alternative | Not reversed here; §9 states the cost and Q273 asks the owner |
 | D123, D-SC-14, §23 §14 | TiDB for MySQL | D123 is already superseded by D260. D-SC-14 (Matomo on MariaDB) stands until W1–W2 |
 | D2 / D130: OLTP is out of scope for the retrieval engine | WeSQL is OLTP | As in §23 §14: a separate service. D130's exception for TiKV-backed OLTP does not cover WeSQL; WeSQL's own durability is W2's quorum |
@@ -417,4 +417,4 @@ Read on 2026-10-01.
 - **MySQL** (`mysql-8.0.46`, `976e5da9`): `sql/binlog.cc` (`ordered_commit`, `process_flush_stage_queue`, `sync_binlog_file`, `process_commit_stage_queue`), `sql/sql_base.cc` (`process_table_fks`), `sql/sql_table.cc` (`HTON_SUPPORTS_FOREIGN_KEYS`).
 - **TiDB** (`pingcap/tidb` at `8936d7b`): `docs/design/2022-06-22-foreign-key.md`; `pkg/executor/foreign_key.go` (`FKCheckExec`, `FKCascadeExec`); `pkg/meta/model/table.go` (`FKInfo`, `ReferredFKInfo`); docs.pingcap.com/tidb/stable/foreign-key/, /tidb/stable/tidb-architecture/, /tidbcloud/tidb-x-architecture/.
 - **StarRocks:** docs.starrocks.io (Architecture; Primary Key table; Catalog overview and the Iceberg catalog page, found by search); `StarRocks/starrocks` (`fe/`, `be/src/storage/{kv_store.h, tablet_meta_manager.h, persistent_index.cpp, persistent_index.h, local_primary_key_recover.h}`; GitHub license and languages APIs).
-- **Loam:** §23 (D148–D157, Q50, Q51, §4.2, §9.2); §28 §6.1, §6.9, §7.1, §7.2 (D263–D271, Q261–Q264); §08, §09, §03, §21 §6.3, §20 §12 (D129); D1, D2, D11, D21, D76, D126, D130, D260; Q260.
+- **Loams:** §23 (D148–D157, Q50, Q51, §4.2, §9.2); §28 §6.1, §6.9, §7.1, §7.2 (D263–D271, Q261–Q264); §08, §09, §03, §21 §6.3, §20 §12 (D129); D1, D2, D11, D21, D76, D126, D130, D260; Q260.

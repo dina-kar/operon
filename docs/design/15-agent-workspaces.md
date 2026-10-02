@@ -1,18 +1,18 @@
-# 15 — Agent Workspaces (Sandboxes on Operon)
+# 15 — Agent Workspaces (Sandboxes on Loams)
 
-Status: **Approved** (user) · 2026-09-24. Items marked (verify) are unconfirmed and are resolved in the W-phase plans. Amendments proposed 2026-10-01 by [§36 Loam Git](36-loam-git.md) (D388–D390, D394, D398, D399) are marked inline; they await the owner because this document is approved.
+Status: **Approved** (user) · 2026-09-24. Items marked (verify) are unconfirmed and are resolved in the W-phase plans. Amendments proposed 2026-10-01 by [§36 Loams Git](36-loams-git.md) (D388–D390, D394, D398, D399) are marked inline; they await the owner because this document is approved.
 
-Coding agents such as Claude Code and Codex run inside **sandboxes**: an isolated process or microVM, a checkout of a repository, installed dependencies and a network policy. The runtime (the VM or namespace jail) is compute. Everything else — code, branches, checkpoints, dependencies, caches, transcripts, memory — is state that must be fast to materialize, cheap to fork and must survive the sandbox. That is Operon's model: stateless compute over a bucket.
+Coding agents such as Claude Code and Codex run inside **sandboxes**: an isolated process or microVM, a checkout of a repository, installed dependencies and a network policy. The runtime (the VM or namespace jail) is compute. Everything else — code, branches, checkpoints, dependencies, caches, transcripts, memory — is state that must be fast to materialize, cheap to fork and must survive the sandbox. That is Loams's model: stateless compute over a bucket.
 
-**Operon is the state plane for sandboxes, not the sandbox runtime.** It never executes agent code in its own processes.
+**Loams is the state plane for sandboxes, not the sandbox runtime.** It never executes agent code in its own processes.
 
 ---
 
 ## 1. What a coding-agent sandbox needs
 
-| Need | Typical today | Operon piece |
+| Need | Typical today | Loams piece |
 |---|---|---|
-| Isolation (process, microVM) | Firecracker, gVisor, bubblewrap, Landlock | **Not Operon** — integrate runtimes (§8) |
+| Isolation (process, microVM) | Firecracker, gVisor, bubblewrap, Landlock | **Not Loams** — integrate runtimes (§8) |
 | Source checkout, a branch per agent, commits, diffs, rewind | GitHub + a full clone per sandbox | **Repos**: Git on the bucket, O(1) forks, partial clone (§3) |
 | Dependencies and toolchains ready at start | Reinstall per sandbox, or a fat image per project | **Environment images**: content-addressed, lazily loaded, copy-on-write (§5) |
 | Package downloads under egress control | Direct internet access, or a proxy allowlist | **Registry proxy** in the gateway (§6) |
@@ -20,12 +20,12 @@ Coding agents such as Claude Code and Codex run inside **sandboxes**: an isolate
 | Crash recovery of a long run | Start over | Every session is a **durable execution** (§14) with workspace and session-state checkpoints (§9) |
 | Search over code, docs and past runs | Separate vector DB + grep | **Code-index links** into collections and graphs (§4) |
 | Transcripts, tool calls, token cost | Log files, vendor dashboards | Streams → tables (§9) |
-| Tools for the agent | Ad-hoc MCP servers | **Operon MCP server** (§10) |
+| Tools for the agent | Ad-hoc MCP servers | **Loams MCP server** (§10) |
 | Scoped credentials | Long-lived tokens in the sandbox | Credential vending per sandbox (§8) |
 
 ## 2. Principles
 
-1. **State plane, not runtime.** Operon stores and serves; sandbox runtimes execute.
+1. **State plane, not runtime.** Loams stores and serves; sandbox runtimes execute.
 2. **One writer per workspace; share by commit.** Agents exchange work as commits and branches (the Git model), not through a shared POSIX filesystem. This removes distributed locking and cache coherence from the design.
 3. **Immutable, content-addressed lower layers + a local writable upper layer.** Code trees and environment images are immutable and deduplicated; each sandbox writes to a local copy-on-write layer. A fork is a new pointer, never a copy.
 4. **Lazy and cached.** Nothing is downloaded before it is read; every read goes through the node-local H1 cache (§04), so sandboxes on one host share it.
@@ -65,13 +65,13 @@ A worker task repacks small packs into larger ones with bitmaps and a commit-gra
 
 ### 3.4 Buy vs build
 
-- **gitoxide** (`gix-pack`, `gix-protocol`, `gix-packetline`, `gix-hash` with SHA-1 and SHA-256, `gix-commitgraph`; Apache-2.0/MIT, very active) provides the object and pack machinery. Its own status page lists **server-side upload-pack/receive-pack plumbing as not implemented**, so Operon builds the server loop on gix primitives. That is the build part.
+- **gitoxide** (`gix-pack`, `gix-protocol`, `gix-packetline`, `gix-hash` with SHA-1 and SHA-256, `gix-commitgraph`; Apache-2.0/MIT, very active) provides the object and pack machinery. Its own status page lists **server-side upload-pack/receive-pack plumbing as not implemented**, so Loams builds the server loop on gix primitives. That is the build part.
 - References: `git-remote-object-store` (Apache-2.0, Rust: `bundle` and `packchain` engines on S3/Azure with GC and compaction), `awslabs/git-remote-s3` (Apache-2.0, Python: bundles + LFS on S3), Cloudflare Artifacts (closed; a Zig/WASM Git server on Durable Objects + R2).
-- **Later option — Jujutsu:** `jj` (Apache-2.0, Rust) has pluggable backends for commits, the operation log, op heads and the index (Google runs it against cloud storage). `jj` snapshots the working copy on every command and keeps an undoable operation log, which suits agents. An Operon backend is Phase C.
+- **Later option — Jujutsu:** `jj` (Apache-2.0, Rust) has pluggable backends for commits, the operation log, op heads and the index (Google runs it against cloud storage). `jj` snapshots the working copy on every command and keeps an undoable operation log, which suits agents. A Loams backend is Phase C.
 
-## 4. Code intelligence: why this belongs in Operon
+## 4. Code intelligence: why this belongs in Loams
 
-A Git host stores code; Operon also makes it searchable the moment it is pushed.
+A Git host stores code; Loams also makes it searchable the moment it is pushed.
 
 - **`repo → collection` link:** each push event → changed blobs → tree-sitter (MIT) parse → chunks by symbol → Tantivy text + `embed()` vectors → a collection keyed by `(repo, ref, path, symbol)`. The default branch and branches with open agent work are indexed.
 - **`repo → graph` link:** files, symbols, imports and calls as a graph, so "who calls `parse_config`" is one `graph_neighbors` call (§07 §5.1).
@@ -82,7 +82,7 @@ A Git host stores code; Operon also makes it searchable the moment it is pushed.
 ### 5.1 The sandbox filesystem
 
 ```
-/workspace   upper: local NVMe (overlayfs)      lower: repo tree @ commit (lazy, from Operon)
+/workspace   upper: local NVMe (overlayfs)      lower: repo tree @ commit (lazy, from Loams)
 /env         upper: local NVMe                  lower: environment image @ env_key (lazy, CAS)
 /cache       upper: local, written back async   lower: namespace package caches (CAS)
 /tmp         local only
@@ -95,7 +95,7 @@ A Git host stores code; Operon also makes it searchable the moment it is pushed.
 
 - **Key:** `env_key = hash(lockfiles, toolchain versions, platform, setup script)`. Identical projects on identical lockfiles share one image.
 - **Format:** content-defined chunks (FastCDC, BLAKE3 digests) packed into 16–64 MiB pack objects with an index, plus a filesystem manifest. Small files are never one PUT each. This is the **nydus RAFS** model.
-- **Buy: nydus** (Apache-2.0, Rust, CNCF Dragonfly): RAFS v6 images (EROFS-compatible), cross-layer chunk dedup, lazy fetch through FUSE, virtiofs or in-kernel EROFS + fscache. Operon stores the chunk packs and serves them through its cache; nydus builds and mounts images (verify that nydus's storage backend can point at Operon's bucket or cache endpoint).
+- **Buy: nydus** (Apache-2.0, Rust, CNCF Dragonfly): RAFS v6 images (EROFS-compatible), cross-layer chunk dedup, lazy fetch through FUSE, virtiofs or in-kernel EROFS + fscache. Loams stores the chunk packs and serves them through its cache; nydus builds and mounts images (verify that nydus's storage backend can point at Loams's bucket or cache endpoint).
 - **Build once:** a sandbox that misses its `env_key` triggers an **env build** worker task that installs into a builder sandbox, converts the result to an image and publishes it. Concurrent misses on one key share one build through a metastore lease on the key.
 - **Why lazy:** a sandbox touches a small fraction of its environment at start. The SOCI paper (arXiv 2607.06868) reports 7.4–9.3× lower cold-start pull time for lazy loading versus full pulls, and Mintlify reports session creation dropping from about 46 s to about 100 ms with a virtual filesystem.
 
@@ -107,13 +107,13 @@ Mount the namespace's caches for `uv` (`UV_CACHE_DIR`), pnpm (`store-dir`), Carg
 
 - Read-through endpoints in the `gateway` role for **PyPI** (simple API, PEP 503/691), **npm**, **crates.io** (sparse index), **Go** (`GOPROXY`). *(D399, §36 §9: the crates.io mirror comes first, in GT3.)* Artifacts are fetched from upstream once, stored immutably in the CAS and served from cache.
 - **Policy:** allowlists, version pinning, a quarantine window for newly published versions (supply-chain defense), and an audit record per download to a stream.
-- A sandbox's network policy then needs only Operon and the model API. That matches how Claude Code's sandbox runtime (a proxy with a domain allowlist) and Codex (network off by default) already work.
+- A sandbox's network policy then needs only Loams and the model API. That matches how Claude Code's sandbox runtime (a proxy with a domain allowlist) and Codex (network off by default) already work.
 - **OCI images:** run an existing registry (`distribution` or `zot`, both Apache-2.0) with its S3 driver on the bucket instead of implementing OCI distribution.
 
 ## 7. Build and test caches
 
-- **sccache** (Apache-2.0) has an S3 backend: point it at `ns/<ns>/cache/sccache/` with vended credentials. No Operon code. *(D398, §36 §8: keys become per repository and trust class, `ns/<ns>/cache/sccache/<repo>/<class>/`, and an optional gateway path over sccache's WebDAV backend adds metering, approximate LRU and server-enforced trust; plan GT3.)*
-- **Bazel / Buck2 / Pants:** `bazel-remote` (Apache-2.0) with its S3 backend now; Operon's own REAPI CAS + ActionCache on the namespace CAS is Phase C.
+- **sccache** (Apache-2.0) has an S3 backend: point it at `ns/<ns>/cache/sccache/` with vended credentials. No Loams code. *(D398, §36 §8: keys become per repository and trust class, `ns/<ns>/cache/sccache/<repo>/<class>/`, and an optional gateway path over sccache's WebDAV backend adds metering, approximate LRU and server-enforced trust; plan GT3.)*
+- **Bazel / Buck2 / Pants:** `bazel-remote` (Apache-2.0) with its S3 backend now; Loams's own REAPI CAS + ActionCache on the namespace CAS is Phase C.
 - **Turborepo / Nx** remote-cache HTTP APIs: small, Phase B.
 
 ## 8. Sandbox runtimes: integrate, do not build
@@ -136,7 +136,7 @@ Coding agents need a full Linux userland (Node or Bun, Git, a shell, compilers),
 | Hyperlight | Apache-2.0 | Rust | micro-VM per function call | — | KVM / Hyper-V | Not suitable (no OS for agent harnesses) |
 | Daytona | AGPL-3.0 | — | — | — | — | **Avoid**: license; open-source repo reported unmaintained (2026-06) |
 
-**Decision (proposed): `operon-sandbox` is a Rust crate with a `Runtime` trait and four backends**, chosen per deployment:
+**Decision (proposed): `loams-sandbox` is a Rust crate with a `Runtime` trait and four backends**, chosen per deployment:
 
 | Backend | When |
 |---|---|
@@ -145,14 +145,14 @@ Coding agents need a full Linux userland (Node or Bun, Git, a shell, compilers),
 | `gvisor` | Kubernetes clusters without KVM or nested virtualization |
 | `process` (Landlock + seccomp, or bubblewrap) | Trusted local development only; never multi-tenant |
 
-**`operon-sandbox`** is a small agent (sidecar or in-VM binary) that runtimes call with a spec:
+**`loams-sandbox`** is a small agent (sidecar or in-VM binary) that runtimes call with a spec:
 
 ```toml
 repo    = "ns/acme/repos/api"      # fork or branch to work on
 ref     = "agent/run-8f2c"
 env_key = "auto"                    # derived from lockfiles
 caches  = ["uv", "pnpm", "cargo"]
-egress  = "operon-only"             # registry proxy + model API
+egress  = "loams-only"             # registry proxy + model API
 token   = "<vended, 1h, scoped to this repo branch, env read, cache write>"
 ```
 
@@ -160,18 +160,18 @@ It mounts the layers (§5), points package managers at the proxy (§6), ships te
 
 **Credential vending:** tokens are short-lived and scoped to `(namespace, repo, branch prefix, env read, cache write, MCP tools)`, the way Lakekeeper vends table credentials (§10 §4).
 
-**VM memory snapshots** (fork a *running* VM, as Morph's Infinibranch does) are a runtime feature. Operon can store Firecracker snapshot files (memory + disk diff) in the CAS with chunk dedup for suspend-to-bucket and resume-anywhere. Phase C.
+**VM memory snapshots** (fork a *running* VM, as Morph's Infinibranch does) are a runtime feature. Loams can store Firecracker snapshot files (memory + disk diff) in the CAS with chunk dedup for suspend-to-bucket and resume-anywhere. Phase C.
 
-## 9. Agent sessions: stored in Operon, run as durable executions
+## 9. Agent sessions: stored in Loams, run as durable executions
 
-**Every agent session is a Resonate durable execution (§14), and every session is stored in Operon.** A crash of the sandbox, the host or the orchestrator never loses a session; it resumes mid-conversation on another host.
+**Every agent session is a Resonate durable execution (§14), and every session is stored in Loams.** A crash of the sandbox, the host or the orchestrator never loses a session; it resumes mid-conversation on another host.
 
 ### 9.1 What a session is
 
 | Part | Where it lives | Written when |
 |---|---|---|
 | Session workflow | Resonate origin `session-<id>` (`ns/<ns>/durable/wf/…`) | Every step transition |
-| Workspace | Branch `agent/<session>` in an Operon repo (§3) | Every checkpoint |
+| Workspace | Branch `agent/<session>` in a Loams repo (§3) | Every checkpoint |
 | Harness session state (`~/.claude/projects/…/*.jsonl`, `~/.codex/sessions/`, `~/.local/share/opencode/opencode.db`) | The `/agent-home` layer, checkpointed with the workspace as a tree in the namespace CAS | Every checkpoint |
 | Session log (messages, tool calls, results, token usage) | Stream `sessions` (one partition key per session) → table `agent_sessions` + collection `session_history` | Continuously, from telemetry and from parsed session files |
 | Traces and metrics | OTLP → streams → tables (§16 §6) | Continuously |
@@ -201,30 +201,30 @@ session(id, task):                                   # a Resonate durable functi
 
 - The `sessions` stream receives one record per message, tool call and turn result (from OTLP spans and events, and from the harness's session files parsed with `tokscale-core`, §16 §6).
 - A link keeps `agent_sessions` (one row per turn: harness, model, tokens, cost, tools used, duration, outcome; a collection until M4 adds tables, then an Iceberg table) and `session_history`, a collection over transcripts, so agents can search past sessions as memory (hybrid search, §05 §4).
-- Session files in `/agent-home` are the harness's own resume state; the stream is Operon's queryable copy. Both survive the sandbox.
-- **Result:** merge within the Operon repo, or push the branch to the GitHub mirror.
+- Session files in `/agent-home` are the harness's own resume state; the stream is Loams's queryable copy. Both survive the sandbox.
+- **Result:** merge within the Loams repo, or push the branch to the GitHub mirror.
 
-## 10. MCP: Operon's server and the MCP gateway
+## 10. MCP: Loams's server and the MCP gateway
 
 Target spec: **MCP 2026-07-28**, which makes the protocol stateless: no `initialize` handshake and no `Mcp-Session-Id`; every request carries its protocol version and client capabilities in `_meta`; `server/discover` advertises versions; `Mcp-Method` / `Mcp-Name` headers let gateways route without parsing JSON; list results carry `ttlMs` and `cacheScope`; server-initiated requests are replaced by multi-round-trip `input_required` results; long-running work uses the Tasks extension; OpenTelemetry context travels in `_meta` (`traceparent`).
 
-### 10.1 Operon MCP server (W0)
+### 10.1 Loams MCP server (W0)
 
 - Tools: `search` (hybrid over collections, including code, with graph `expand` from M3), `sql` (including `graph_expand`), `memory_write`, `repo_read` / `repo_diff` / `repo_log` at a ref, `session_search` (past sessions).
 - Stateless by the spec, so any gateway node answers any request; OAuth maps to a namespace. Library: the official Rust MCP SDK (`rmcp`; license and 2026-07-28 support to verify).
 - Small and immediately useful to every Claude Code, Codex and opencode user, so it is proposed for M1, independent of the rest of this document.
-- **Beside it** is the CLI's stdio bootstrap server, `loam mcp serve` (D289, §30 §12). It offers docs search, SDK snippets, stack status and creation, and `.env.loam` export, and holds no data tools. `loam mcp install` registers both servers in the agent's config (D290).
+- **Beside it** is the CLI's stdio bootstrap server, `loams mcp serve` (D289, §30 §12). It offers docs search, SDK snippets, stack status and creation, and `.env.loams` export, and holds no data tools. `loams mcp install` registers both servers in the agent's config (D290).
 
 ### 10.2 MCP gateway with tool retrieval (W1)
 
 Agents with many MCP servers pay for every tool definition in every request. The gateway fronts all of a namespace's MCP servers and sends the model **only the tool definitions a task needs**.
 
 - **Catalog:** the gateway reads `tools/list` from each registered server (cached for `ttlMs`) and upserts every tool into a collection (name, description, parameter names; BM25 + embedding) and a **tool graph** (a mapped graph, §07): `PROVIDES` edges from server to tool, `REQUIRES` edges from tool to tool (from schemas and docs, e.g. `create_pr` needs `push_branch`), and weighted `CO_USED` edges between tools learned from session traces.
-- **Retrieval (Graph RAG-Tool Fusion, arXiv 2502.07223):** hybrid search over the catalog seeds candidates, a 1–2 hop expansion over `REQUIRES` / `CO_USED` adds their dependencies, and a rerank keeps the top *k*. One native Operon query with an `expand` stage (§05 §4, §07 §5.2).
+- **Retrieval (Graph RAG-Tool Fusion, arXiv 2502.07223):** hybrid search over the catalog seeds candidates, a 1–2 hop expansion over `REQUIRES` / `CO_USED` adds their dependencies, and a rerank keeps the top *k*. One native Loams query with an `expand` stage (§05 §4, §07 §5.2).
 - **Delivery, spec-compliant:** under 2026-07-28 `tools/list` must not vary per connection, so the gateway exposes a fixed pair of meta-tools, `find_tools(query, k)` → matching tool definitions, and `call_tool(name, arguments)` → validated against the tool's JSON Schema and proxied with the caller's credentials. Works with any client (Codex, opencode, Claude Code).
 - **Clients with native deferral:** Claude Code defers MCP tool definitions by default (`ENABLE_TOOL_SEARCH`) and the Anthropic API offers a tool search tool with `defer_loading`; the gateway can also serve the full catalog to them and let the client search. The demo compares both (§16).
 - **Older servers:** for servers on 2025-11-25 the gateway probes with `server/discover`, holds the upstream session itself and presents a stateless face to agents.
-- **Tracing:** the gateway propagates `traceparent` from `_meta`, so an agent's LLM span, the MCP call and the Operon query that served it share one trace.
+- **Tracing:** the gateway propagates `traceparent` from `_meta`, so an agent's LLM span, the MCP call and the Loams query that served it share one trace.
 
 ## 11. Object layout additions
 
@@ -251,14 +251,14 @@ GC: reachability from `refs` documents (from D388: checkpoints within retention,
 
 | Phase | When | Scope | Exit gates |
 |---|---|---|---|
-| **W0** | With M1 | Operon MCP server on the 2026-07-28 stateless spec | Claude Code, Codex and opencode use Operon tools over MCP |
-| **W1** | After M3 | Repos (smart HTTP v2, forks, partial clone, repack/GC, LFS, GitHub import); code-index links; credential vending; OTLP ingest of agent traces and metrics (OTLP logs ship in M2, D73); MCP gateway with graph-based tool retrieval; session workflows on Resonate with stored sessions (§9) | Client matrix (git, gitoxide, libgit2, JGit) passes clone/fetch/push/partial clone; 10k concurrent forks; Claude Code and Codex complete a task end to end with Operon as the remote |
-| **W2** | After W1 | `operon-sandbox`: `Runtime` trait with microsandbox, Firecracker, gVisor and process backends; lazy workspace mount, env images via nydus, package-cache layer, registry proxy (PyPI, npm, crates, Go), sccache wiring; the 100-agent fleet demo (§16), staged as α after M3 + W1 and β after M4 + W2 | Warm-env start target met; installs work with egress limited to Operon; kill a sandbox mid-task and resume on another host from the last checkpoint with an identical workspace |
+| **W0** | With M1 | Loams MCP server on the 2026-07-28 stateless spec | Claude Code, Codex and opencode use Loams tools over MCP |
+| **W1** | After M3 | Repos (smart HTTP v2, forks, partial clone, repack/GC, LFS, GitHub import); code-index links; credential vending; OTLP ingest of agent traces and metrics (OTLP logs ship in M2, D73); MCP gateway with graph-based tool retrieval; session workflows on Resonate with stored sessions (§9) | Client matrix (git, gitoxide, libgit2, JGit) passes clone/fetch/push/partial clone; 10k concurrent forks; Claude Code and Codex complete a task end to end with Loams as the remote |
+| **W2** | After W1 | `loams-sandbox`: `Runtime` trait with microsandbox, Firecracker, gVisor and process backends; lazy workspace mount, env images via nydus, package-cache layer, registry proxy (PyPI, npm, crates, Go), sccache wiring; the 100-agent fleet demo (§16), staged as α after M3 + W1 and β after M4 + W2 | Warm-env start target met; installs work with egress limited to Loams; kill a sandbox mid-task and resume on another host from the last checkpoint with an identical workspace |
 | **W3** | Phase C | `jj` backend, REAPI CAS/AC, VM snapshot storage, Turborepo/Nx caches | — |
 
 ## 14. Non-goals
 
-- Not a sandbox runtime or VM host; no untrusted code in Operon processes.
+- Not a sandbox runtime or VM host; no untrusted code in Loams processes.
 - Not a distributed POSIX filesystem and no concurrent multi-writer workspaces. For shared POSIX datasets use JuiceFS (Apache-2.0) or Amazon S3 Files.
 - Not a GitHub replacement: no pull-request UI, issues or CI (webhooks and mirroring only).
 - Not a secrets manager.
@@ -278,8 +278,8 @@ GC: reachability from `refs` documents (from D388: checkpoints within retention,
 
 ## 16. Open questions
 
-1. Scope of the Git server Operon must build on gitoxide (protocol v2 only? v0/v1 for old clients?). *Proposed answer (D394, §36 §6.1): v2 upload-pack, v0/v1 receive-pack, v0 upload-pack only if a W1 matrix client lacks v2 (Q387).*
-2. Whether nydus can read chunks through `object_store` or needs an S3-compatible endpoint on Operon's cache.
+1. Scope of the Git server Loams must build on gitoxide (protocol v2 only? v0/v1 for old clients?). *Proposed answer (D394, §36 §6.1): v2 upload-pack, v0/v1 receive-pack, v0 upload-pack only if a W1 matrix client lacks v2 (Q387).*
+2. Whether nydus can read chunks through `object_store` or needs an S3-compatible endpoint on Loams's cache.
 3. FUSE vs virtiofs vs EROFS + fscache per runtime, and privileges in Kubernetes pods.
 4. A cross-ecosystem definition of `env_key` (lockfile sets, native build steps, CPU architecture).
 5. Cross-namespace dedup policy for public packages.
