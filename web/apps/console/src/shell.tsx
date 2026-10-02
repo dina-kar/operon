@@ -1,4 +1,4 @@
-import { Avatar, Badge, Logo } from '@loam/ui';
+import { Avatar, Badge, Logo } from '@loams/ui';
 import {
   BookOpen,
   Bot,
@@ -31,7 +31,7 @@ function useTheme(): [boolean, () => void] {
     const next = !dark;
     document.documentElement.classList.toggle('dark', next);
     try {
-      localStorage.setItem('loam-theme', next ? 'dark' : 'light');
+      localStorage.setItem('loams-theme', next ? 'dark' : 'light');
     } catch {
       // Private mode: the choice lasts for this page only.
     }
@@ -45,7 +45,7 @@ function useCurrentProject(projects: Schemas['Project'][]): Schemas['Project'] |
   const { project } = useParams();
   const [last, setLast] = useState<string | undefined>(() => {
     try {
-      return localStorage.getItem('loam-project') ?? undefined;
+      return localStorage.getItem('loams-project') ?? undefined;
     } catch {
       return undefined;
     }
@@ -54,7 +54,7 @@ function useCurrentProject(projects: Schemas['Project'][]): Schemas['Project'] |
     if (!project) return;
     setLast(project);
     try {
-      localStorage.setItem('loam-project', project);
+      localStorage.setItem('loams-project', project);
     } catch {
       // Not saved; fine.
     }
@@ -163,7 +163,7 @@ export function Shell() {
             <a href="https://loams.dev/docs" target="_blank" rel="noreferrer">
               <BookOpen size={16} aria-hidden="true" /> Documentation
             </a>
-            <span className="side-version">Loam {instance.version}</span>
+            <span className="side-version">Loams {instance.version}</span>
           </div>
         </aside>
         {open && (

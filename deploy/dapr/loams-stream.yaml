@@ -1,0 +1,82 @@
+# One-replica integration topology. Production needs explicit cluster peers,
+# object storage, and independently deployed Resonate workers.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loams-stream-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loams-stream
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: loams-stream
+  template:
+    metadata:
+      labels:
+        app: loams-stream
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: loams-stream
+        dapr.io/app-port: "8091"
+        dapr.io/app-protocol: grpc
+        dapr.io/config: loams-stream
+    spec:
+      serviceAccountName: loams-trigger-edge
+      initContainers:
+        - name: reject-dapr-workflow
+          image: loams-trigger-edge:dev
+          args: [--check-config]
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: DAPR_CONFIG_NAME
+              value: loams-stream
+      containers:
+        - name: loams
+          image: loams:tikv-stream-grpc-durable-tikv
+          args:
+            - dev
+            - --data-dir
+            - /data
+            - --listen
+            - 0.0.0.0:8080
+            - --stream-grpc-listen
+            - 127.0.0.1:8091
+            - --meta
+            - tikv://pd.loams.svc.cluster.local:2379/loams-meta
+            - --durable-store
+            - tikv://pd.loams.svc.cluster.local:2379/loams-durable
+          ports:
+            - name: native-http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: native-http
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              memory: 4Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: loams-stream-data

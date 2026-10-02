@@ -32,15 +32,15 @@ export function Table<T>({
 }) {
   if (rows.length === 0 && empty) return <>{empty}</>;
   return (
-    <div className="loam-table-wrap">
-      <table className="loam-table">
+    <div className="loams-table-wrap">
+      <table className="loams-table">
         {caption && <caption className="sr-only">{caption}</caption>}
         <thead>
           <tr>
             {columns.map((c) => (
               <th
                 key={c.key}
-                className={c.numeric ? 'loam-num' : undefined}
+                className={c.numeric ? 'loams-num' : undefined}
                 style={{ width: c.width }}
               >
                 {c.header}
@@ -68,7 +68,7 @@ export function Table<T>({
               }
             >
               {columns.map((c) => (
-                <td key={c.key} className={c.numeric ? 'loam-num' : undefined}>
+                <td key={c.key} className={c.numeric ? 'loams-num' : undefined}>
                   {c.cell(row)}
                 </td>
               ))}
@@ -83,7 +83,7 @@ export function Table<T>({
 /** A table cell with a strong first line and a muted second. */
 export function Primary({ title, detail }: { title: ReactNode; detail?: ReactNode }) {
   return (
-    <span className="loam-table-primary">
+    <span className="loams-table-primary">
       <strong>{title}</strong>
       {detail && <span>{detail}</span>}
     </span>

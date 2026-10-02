@@ -1,0 +1,32 @@
+[package]
+name = "loams-sim"
+description = "Loams's seeded cluster simulation and linearizability checker (test-only)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+bytes.workspace = true
+object_store.workspace = true
+loams-cache.workspace = true
+loams-collection = { workspace = true, features = ["test-util"] }
+loams-common.workspace = true
+loams-link.workspace = true
+loams-log.workspace = true
+loams-meta.workspace = true
+loams-meta-conformance.workspace = true
+loams-query.workspace = true
+loams-store.workspace = true
+loams-worker.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

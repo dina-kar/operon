@@ -5,7 +5,7 @@ import { cx } from './cx';
 export type GrainKind = 'sand' | 'silt' | 'clay' | 'bloom';
 
 /**
- * Loam's texture: stipple instead of gradients. Sand is coarse and sparse,
+ * Loams's texture: stipple instead of gradients. Sand is coarse and sparse,
  * silt even, clay fine and packed toward the bottom, and bloom is ochre
  * rising into sprout, for covers and calls to action only.
  */
@@ -87,7 +87,7 @@ export function Grain({
   }, [kind, seed]);
 
   return (
-    <span aria-hidden="true" className={cx('loam-grain', className)}>
+    <span aria-hidden="true" className={cx('loams-grain', className)}>
       <canvas ref={ref} />
     </span>
   );

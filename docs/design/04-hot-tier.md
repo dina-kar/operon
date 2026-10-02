@@ -18,9 +18,9 @@ Status: **Approved** · 2026-09-22 · amended 2026-09-26 (M1.2 as built) · amen
 
 Fragment prefetch fills H1 (the range cache that Lance reads through); it is not an H2 structure (M1.3 Ruling 9).
 
-**H1's disk tier (D287, §30 §10).** As built, H1 is `operon_cache::RangeCache` and is RAM-only unless `RangeCacheConfig.disk` is set, and no flag sets it. CLI1 Task 3 adds `--cache-dir`, `--cache-disk-bytes` and `--cache-ram-bytes` to `dev`, `standalone` and `cluster`. `loam stack create --storage nvme:…|mount:…` places H1 (`cache/`) and H2 (`--hot-dir`, `hot/`) on the prepared NVMe mount.
+**H1's disk tier (D287, §30 §10).** As built, H1 is `loams_cache::RangeCache` and is RAM-only unless `RangeCacheConfig.disk` is set, and no flag sets it. CLI1 Task 3 adds `--cache-dir`, `--cache-disk-bytes` and `--cache-ram-bytes` to `dev`, `standalone` and `cluster`. `loams stack create --storage nvme:…|mount:…` places H1 (`cache/`) and H2 (`--hot-dir`, `hot/`) on the prepared NVMe mount.
 
-**Coherence is trivial by construction:** durable objects are immutable, so H0/H1 never need invalidation. Only *pointers* (manifest pointer, Iceberg current snapshot) change; nodes learn about them through meta watch streams (Operon-written objects) or Lakekeeper change events/polling (externally written Iceberg tables). From M2 the watch is a scoped change feed (`changes_since(catalog_version)`, or one namespace's changes), so a node refreshes only what changed instead of re-reading the catalog (D63, §18 §5.4).
+**Coherence is trivial by construction:** durable objects are immutable, so H0/H1 never need invalidation. Only *pointers* (manifest pointer, Iceberg current snapshot) change; nodes learn about them through meta watch streams (Loams-written objects) or Lakekeeper change events/polling (externally written Iceberg tables). From M2 the watch is a scoped change feed (`changes_since(catalog_version)`, or one namespace's changes), so a node refreshes only what changed instead of re-reading the catalog (D63, §18 §5.4).
 
 The layering is the pattern StarRocks' Data Cache established for Iceberg on S3 (stateless compute over open files, a RAM + NVMe cache), applied uniformly to Parquet, Lance pages, Tantivy splits and graph sidecars.
 
@@ -29,7 +29,7 @@ The layering is the pattern StarRocks' Data Cache established for Iceberg on S3 
 | Object | Durable tier | H2 hot structure | H3 tail |
 |---|---|---|---|
 | Stream | Segments / WAL objects | Recent segments pinned in RAM/NVMe; per-partition read-ahead | Recent record batches (written-through at produce); Arrow batches for `arrow`-encoded streams, shared with the object's tail index without decoding |
-| Collection — vectors | Lance IVF index + vectors | **HNSW** built by `qdrant-edge` 0.8 behind `operon-hnsw` (R20), published under `hot/hnsw/<column>/<source_version:020>-<ulid>/`; views per manifest version add an appendable delta index and exclude rows deleted since (M1.3 Rulings 1–2) | One RAM Tantivy index plus flat vectors per collection on the query node, folded latest-by-key over the durable state (M1.2); tail vectors are scored by brute force |
+| Collection — vectors | Lance IVF index + vectors | **HNSW** built by `qdrant-edge` 0.8 behind `loams-hnsw` (R20), published under `hot/hnsw/<column>/<source_version:020>-<ulid>/`; views per manifest version add an appendable delta index and exclude rows deleted since (M1.3 Rulings 1–2) | One RAM Tantivy index plus flat vectors per collection on the query node, folded latest-by-key over the durable state (M1.2); tail vectors are scored by brute force |
 | Collection — text | Tantivy splits on S3 | Splits pinned on NVMe (whole files), hotcaches in RAM | The same RAM Tantivy index (M1.2) |
 | Collection — docs | Lance fragments | Hot fragments on NVMe | The same index's latest document per key (M1.2) |
 | **Table (Iceberg)** | Parquet + Iceberg metadata | **Hot projections** (sorted columnar parts + sparse PK index + skip indexes + aggregate projections) on NVMe | Arrow buffers of rows beyond last Iceberg commit |
@@ -43,7 +43,7 @@ Goal: interactive analytical latency (§7) and sub-second freshness on hot data,
 ### 3.1 T0 — metadata hot tier
 - Lakekeeper `LoadTable` response, `metadata.json`, manifest lists and manifests are fetched **once per snapshot** and decoded into an in-memory **file index**: per data file → partition values, column min/max/null counts, record count, DV reference, sort-order id.
 - Pruning runs against this index with zero object-store I/O. New snapshots are applied **incrementally** (only added/removed manifests are read).
-- Operon's own commits notify query nodes directly via meta; for external writers, subscribe to Lakekeeper CloudEvents or poll with ETag (default 5 s).
+- Loams's own commits notify query nodes directly via meta; for external writers, subscribe to Lakekeeper CloudEvents or poll with ETag (default 5 s).
 - ⇒ Lakekeeper is contacted only on cold start or snapshot change, never per query.
 
 ### 3.2 T1 — Parquet data cache
@@ -79,7 +79,7 @@ For each table scan: `hot projection @ S'` if present and `S'` ≥ required snap
 
 **As built in M1.3 (collections):**
 - **Pin:** `PUT /v1/namespaces/{ns}/collections/{c}/hot {"vectors", "text", "fragments"}` (booleans; absent keys are `false`) stores a `HotConfig` in the catalog (`SetCollectionHot`, M1.3 Ruling 7) and answers the hot status. `vectors` makes workers build and owners load HNSW artifacts; `text` pins every split of the live manifest on NVMe (verified by 64 KiB block checksums); `fragments` prefetches the Lance data, deletion and index files into H1. `--hot-pin-all` pins every collection on that process without a metastore write (Ruling 8); `--hot off` turns the tier off.
-- **Warm:** `POST …/collections/{c}/warm` (and `operon warm <ns>/<collection>`) raises the collection's heat on its owner and marks it warm until the heat decays; it answers `202` with the status and never writes the metastore.
+- **Warm:** `POST …/collections/{c}/warm` (and `loams warm <ns>/<collection>`) raises the collection's heat on its owner and marks it warm until the heat decays; it answers `202` with the status and never writes the metastore.
 - **Status:** `GET …/collections/{c}` carries `hot` from the owner: the configuration, `pin_all`, `promoted`, the owner, and per structure `off | building | ready`, the effective `source_version` and `over_budget` (per vector column also the artifact's own source version, the delta's rows and the last load error).
 - **Auto-promotion is off by default.** When on, a collection whose heat estimate (a TinyLFU-style count-min sketch, halved every `heat_window`) reaches `promote_min_hits` is promoted by its owner, which holds the lease `hot-promote/<ns>/<cid>` while it stays above `demote_below_hits`; workers treat a held lease like a pin, and demotion lets the lease go.
 - **Budgets:** per node, NVMe (`--hot-nvme-bytes`), RAM (`--hot-ram-bytes`) and at most 32 open artifacts (`max_loaded_artifacts`, M1.3 Ruling 18). Each namespace's fair share is the budget divided by the namespaces with a resident or requesting structure. A candidate may evict a structure of a lower class (promoted below pinned), or of its own class with lower heat per byte that is in its own namespace or in a namespace over its share; evictions go by class, over-share first, then heat per byte. A pin that cannot fit is reported `over_budget`, and nothing is evicted for it. An evicted structure stays usable by the queries that hold it. A growing delta index is sized after each extension, so a column near the budget can be evicted and loaded again as its delta grows, until the rebuild lands.
@@ -92,7 +92,7 @@ For each table scan: `hot projection @ S'` if present and `S'` ≥ required snap
 - Ownership is a **soft hint**: correctness never depends on the owner, and any node can serve any namespace, so a stale route is slow, never wrong.
 - Gateways route to the owning node(s); large scans fan out across owners via distributed execution (§05).
 - On node loss/scale-out, ownership moves with minimal churn; the new owner serves cold from S3 while warming, or downloads published hot-tier artifacts. (Peer-to-peer cache transfer between nodes is a later optimization.)
-- Prewarm API: `operon warm <object>` for planned failovers and deploys.
+- Prewarm API: `loams warm <object>` for planned failovers and deploys.
 
 **As built in M1.3:**
 - **Node registry:** each node holds the metastore lease `node/<node_id>` (TTL 10 s, renewed every 3 s) whose owner string is its descriptor `v1;<incarnation ulid>;<advertise addr>;<roles>;<zone>`; the live nodes are the leases that exist.
@@ -103,11 +103,11 @@ For each table scan: `hot projection @ S'` if present and `S'` ≥ required snap
 
 ## 6. Failure and correctness rules
 
-1. A query must produce identical results with or without any hot structure (tests enforce this by randomly disabling hot tiers — §12). M1 enforces it with the differential harness (`operon-hot` `differential`, M1.3) and at scale in M1.7; approximate ANN follows overview R12.
+1. A query must produce identical results with or without any hot structure (tests enforce this by randomly disabling hot tiers — §12). M1 enforces it with the differential harness (`loams-hot` `differential`, M1.3) and at scale in M1.7; approximate ANN follows overview R12.
 2. Hot structures carry the source version they reflect; stale structures are used only with an explicit, correct delta patch or not at all.
 3. Loss of a node's tail is safe: the tail is re-derivable from the log (offsets after the applied offset).
 4. Cache corruption is detected by per-block checksums; a failed checksum evicts and refetches from S3.
-5. Exact paths (text, filters, aggregations, fetch, scroll, counts, exact vectors) are identical with the hot tier on and off; approximate ANN returns exact scores (R12). M1.2 gates this with a fake hot tier (`hot_hooks`, `determinism`), and every returned vector score comes from Operon's own kernel, never from a hot artifact (M1.2 Ruling 3).
+5. Exact paths (text, filters, aggregations, fetch, scroll, counts, exact vectors) are identical with the hot tier on and off; approximate ANN returns exact scores (R12). M1.2 gates this with a fake hot tier (`hot_hooks`, `determinism`), and every returned vector score comes from Loams's own kernel, never from a hot artifact (M1.2 Ruling 3).
 
 ## 7. Latency targets (design goals, from reference systems)
 

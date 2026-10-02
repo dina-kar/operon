@@ -18,7 +18,7 @@
 
 **Spec:**
 - [§37 §18](../design/37-desktop-and-mobile-apps.md) (all of it) and its staged log [`_pending/37b-log.md`](../design/_pending/37b-log.md); the superseded §37 sections are historical.
-- §39 (`docs/design/39-software-factory-and-loam-bot.md`, PR #192, branch `software-factory-design`, not yet on `main`): §3 (embedding), §5 (A2A), §6 (tokens), §8 (approvals), §13 (Loam Bot in the apps), and its plans SF1, SF2, SF3.
+- §39 (`docs/design/39-software-factory-and-loam-bot.md`, PR #192, branch `software-factory-design`, not yet on `main`): §3 (embedding), §5 (A2A), §6 (tokens), §8 (approvals), §13 (Loams Bot in the apps), and its plans SF1, SF2, SF3.
 - [§30](../design/30-loam-cli.md) D283, D285 (the CLI JSON contract); [§38](../design/38-knative-authentik-gitops.md) (Authentik); [§19](../design/19-console-identity-and-agents.md) §5 (principals and tokens); D111 (loopback); D128 (one protobuf toolchain); D284 (no telemetry); D435 (approvals); D220.
 - In the fork: `LOAMS.md`, `crates/loams-link/**`, `crates/harness/src/acp/loams_bot.rs`, zeron's `ARCHITECTURE.md`, `docs/mcp.md`, `docs/reference/linux-browser.md`, `docs/reference/windows-development.md`.
 
@@ -88,7 +88,7 @@ dist/loams/  scripts/loams/  .github/workflows/loams*.yml  LOAMS.md  NOTICE
 **Files:** `crates/loams-link/src/env.rs`, `src/client.rs`, `src/cli.rs`, `tests/apps_mock.rs`, `crates/engine` hook for a scrubbed spawn environment (one marked line, if the engine has no such filter).
 
 **Semantics:**
-- `Environment { id, name, url, instance_id, issuer, client_id }` persisted in `LOAM_HOME`-adjacent `desktop/environments.json` (0600; no secrets), one active; `zeron loams env add <url>|list|use|remove`. The keychain entry per environment is `{instance_id}`. `GetInstance` is called on add and cached with its `api_versions`; a feature is offered only if its package is listed (AP1a Ruling 6).
+- `Environment { id, name, url, instance_id, issuer, client_id }` persisted in `LOAMS_HOME`-adjacent `desktop/environments.json` (0600; no secrets), one active; `zeron loams env add <url>|list|use|remove`. The keychain entry per environment is `{instance_id}`. `GetInstance` is called on add and cached with its `api_versions`; a feature is offered only if its package is listed (AP1a Ruling 6).
 - Errors map from Connect codes and `loams.errors.v1.ErrorInfo.reason` into a `LinkError { code, reason, hint }`; `unauthenticated` with `step_up_required` triggers the re-authentication flow, not a generic error.
 - Integration test against the real `loams-apps-mock` binary (a dev-dependency built from the monorepo at the pinned ref): `GetInstance`, `WhoAmI` with `mock-access-usr_dana`, a revoked-device scenario.
 - **The credential rule (D489):** agent subprocesses launched by zeron's engine get an environment without `LOAMS_*` token variables and without the keychain service name; the `zeron mcp` injection is unchanged and carries no token.
@@ -103,10 +103,10 @@ dist/loams/  scripts/loams/  .github/workflows/loams*.yml  LOAMS.md  NOTICE
 **Files:** `crates/loams-link/src/stacks.rs`, `tests/fake_loams.rs` plus a `tests/fixtures/fake-loams` script, `cli.rs` (`zeron loams stacks …`).
 
 **Semantics:**
-- `Stacks` runs `loams stack list|start|stop|restart|upgrade|logs --output json` as a child with no TTY, `LOAM_NO_UPDATE_CHECK=1`, a timeout, its own process group (Unix) or job object (Windows), and parses D283's contract: one JSON document on stdout, one error object on stderr, the exit code classified (0 ok through 9 integrity, 130 interrupted).
-- `LOAM_HOME` is shared (default `~/.loam`). `stack create` and `stack delete` are returned as exact commands to copy (D488), never run.
+- `Stacks` runs `loams stack list|start|stop|restart|upgrade|logs --output json` as a child with no TTY, `LOAMS_NO_UPDATE_CHECK=1`, a timeout, its own process group (Unix) or job object (Windows), and parses D283's contract: one JSON document on stdout, one error object on stderr, the exit code classified (0 ok through 9 integrity, 130 interrupted).
+- `LOAMS_HOME` is shared (default `~/.loams`). `stack create` and `stack delete` are returned as exact commands to copy (D488), never run.
 - The `keep_running` restart policy: a stack reported `crashed` restarts with backoff 1 s, 2 s, 4 s … 30 s, at most five times in ten minutes, then stays `crashed` with its log tail. A pure state machine with an injected clock.
-- Locating the binary: `PATH`, `~/.loam/bin/loams`, or `LOAMS_BIN`; Q428 and Q488 decide bundling and are not assumed.
+- Locating the binary: `PATH`, `~/.loams/bin/loams`, or `LOAMS_BIN`; Q428 and Q488 decide bundling and are not assumed.
 - **Windows is remote-only** (Q437): `Stacks::available()` is false there and the verbs say so.
 - A native Stacks panel is Task 8; this task ends at the library and the CLI verbs.
 
@@ -230,7 +230,7 @@ dist/loams/  scripts/loams/  .github/workflows/loams*.yml  LOAMS.md  NOTICE
 | 1 | **Loams Bot is an ACP agent spawned by zeron's engine**, not a ported conversation UI | Gets threads, queue, steering and tool cards for the price of a protocol shim | A second harness mechanism would be needed if upstream's ACP driver drifts; the shim is 400 lines |
 | 2 | **`loams-link` has no GPUI** | Fast tests on three operating systems; no rebase surface | None |
 | 3 | **Generated code is committed**, regenerated by `buf` in CI | No `protoc` in normal builds; reviewers see diffs | A drift check job to maintain |
-| 4 | **Vendored protos with a `PIN`**, from a local AP0 branch for now | `main` has only `loam.live.v1`; AP0 is unpublished | The first task after AP0 merges re-pins (Task 0) |
+| 4 | **Vendored protos with a `PIN`**, from a local AP0 branch for now | `main` has only `loams.live.v1`; AP0 is unpublished | The first task after AP0 merges re-pins (Task 0) |
 | 5 | **The scaffold keeps binary, crate and data-directory names** | Each rename is a conflict on every rebase | A later migration (Q489, Q490) |
 | 6 | **Updates and sync fail closed by default** (`edge.loams.invalid`, empty WorkOS id) | A default that points at zeron would install zeron's binaries | Source builds report "update check failed"; Task 9 gives release builds the feed |
 | 7 | **Loams crates are Apache-2.0**, inherited code stays MIT | D220 for what Loams writes; MIT requires upstream's notice to stay | Mixed licences in one repository, stated in `NOTICE` |

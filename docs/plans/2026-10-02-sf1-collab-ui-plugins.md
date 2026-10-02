@@ -6,19 +6,19 @@
 
 **Goal:** Put Zulip, Plane and Forgejo into Loams in three ways, in the browser console, in the native desktop app and on phones, with no change to any app:
 - **Full app UI.** Browser console: each app's own web UI in a sandboxed iframe, signed in by Authentik, framed through edge configuration only (design §3.3, §3.4). Desktop: the system browser (top-level, the person's Authentik session) and, if the spike allows, an optional in-app sidebar browser (design §3.4 tiers 2 and 3).
-- **Native panels** from `loam.collab.v1` (the typed read and write surface the loop uses): Zulip threads, Plane issues and cycles, Forgejo repositories, PRs and CI (§3.2, §3.6), with OpenFGA filtering, as cordis plugins in the browser console and native GPUI panels in the desktop app.
+- **Native panels** from `loams.collab.v1` (the typed read and write surface the loop uses): Zulip threads, Plane issues and cycles, Forgejo repositories, PRs and CI (§3.2, §3.6), with OpenFGA filtering, as cordis plugins in the browser console and native GPUI panels in the desktop app.
 - **Mobile deep links and native views**: issue list and detail, PR list and checks, thread digest, plus `loams://app/…` links into the system browser (§3.4, §3.5).
 
 **Architecture:**
 - **`web/plugins/embed`** (`@loams/plugin-embed`): the `embed` service and the `embed.pane` slot for the **browser console**: the iframe host, the toolbar, the deep-link router.
 - **`web/plugins/{zulip,plane,forgejo}`**: one plugin each, `first-party`, registering `console.page`, `app.panel`, `bot.card`, `embed.pane`, overview cards and palette commands (design §3.5).
-- **`crates/operon-collab`**: the `loam.collab.v1` service (Connect, connect-rust), the app adapters (`ZulipApi`, `PlaneApi`, `ForgejoApi` traits with HTTP implementations and recorded-fixture fakes), the **credential broker** and the OpenFGA filter. SF2 reuses all three.
-- **`crates/operon-apps-client`**: generated connect-rust clients for AP0's services and `loam.collab.v1` (later `loam.bot.v1` and `loam.factory.v1`), shared by the desktop fork and any Rust client.
+- **`crates/operon-collab`**: the `loams.collab.v1` service (Connect, connect-rust), the app adapters (`ZulipApi`, `PlaneApi`, `ForgejoApi` traits with HTTP implementations and recorded-fixture fakes), the **credential broker** and the OpenFGA filter. SF2 reuses all three.
+- **`crates/operon-apps-client`**: generated connect-rust clients for AP0's services and `loams.collab.v1` (later `loams.bot.v1` and `loams.factory.v1`), shared by the desktop fork and any Rust client.
 - **Desktop (the zeron fork; the directory is named by §37's amendment, written `desktop/` below):** crate `loams-ui-collab` with GPUI panels and cards for the same objects, an `AppOpener` (registry-checked system-browser opens) and, spike-gated, `SidebarBrowser`.
 - **`deploy/factory/edge/`**: the edge routes (headers, forward-auth hooks) as Envoy or Caddy snippets and Helm values, plus the CI harness that starts each pinned app image behind the edge.
 - **`loams-mobile`** (separate repository): `Apps` screen, issue and PR views, deep-link handling.
 
-**Tech Stack:** Rust 1.97.1, edition 2024, connect-rust and buffa (D128), `reqwest` (Apache-2.0 or MIT) for app APIs, `wiremock` for fakes, OpenFGA client from §22's `commons-control` work; TypeScript and cordis 4.0.0-rc.10 behind `@loams/cordis` (Q427), Vitest and Playwright for the browser console; GPUI at the revision the zeron fork pins, with GPUI's test context for views, and the `open` crate (MIT or Apache-2.0) for the system browser; `gpui-wry` or `wry` (MIT or Apache-2.0) only inside the spike (Task 0); SwiftUI with connect-swift, Compose with connect-kotlin. Docker Compose for the edge harness. No new native dependency in the Loam binary beyond `reqwest`.
+**Tech Stack:** Rust 1.97.1, edition 2024, connect-rust and buffa (D128), `reqwest` (Apache-2.0 or MIT) for app APIs, `wiremock` for fakes, OpenFGA client from §22's `commons-control` work; TypeScript and cordis 4.0.0-rc.10 behind `@loams/cordis` (Q427), Vitest and Playwright for the browser console; GPUI at the revision the zeron fork pins, with GPUI's test context for views, and the `open` crate (MIT or Apache-2.0) for the system browser; `gpui-wry` or `wry` (MIT or Apache-2.0) only inside the spike (Task 0); SwiftUI with connect-swift, Compose with connect-kotlin. Docker Compose for the edge harness. No new native dependency in the Loams binary beyond `reqwest`.
 
 **Spec:**
 - [`docs/design/39-software-factory-and-loams-bot.md`](../design/39-software-factory-and-loams-bot.md): §3 (all), §4, §6.2, §7; D461–D464, D475, D476, D478.
@@ -31,11 +31,11 @@
 
 Same as the AP plans, plus:
 - **No app is modified, forked or patched** (D476). A needed behaviour is edge configuration, a panel or an adapter. A task that seems to need a patch stops and files an issue.
-- **Embeds never hold a Loam token.** No Loam credential is passed to a frame, a webview, a URL or a spawned browser's command line. CI greps the plugin and desktop sources for `Authorization`, `Bearer` and `loams_` in embed and opener code paths.
+- **Embeds never hold a Loams token.** No Loams credential is passed to a frame, a webview, a URL or a spawned browser's command line. CI greps the plugin and desktop sources for `Authorization`, `Bearer` and `loams_` in embed and opener code paths.
 - **The desktop opens only registry origins.** `AppOpener` refuses any URL whose origin is not in `ListApps` for the active environment, and never passes a token (SSO is the browser's).
-- **A GPUI panel uses `operon-apps-client` only**; a lint (`cargo deny` bans plus a source grep) fails on an HTTP client aimed at an app origin from `loams-ui-collab`.
-- **Native panels read through `loam.collab.v1` only.** A plugin never imports an app's API client. A lint (`eslint-plugin-boundaries` or a plain import test) fails on `fetch` of an app origin in `web/plugins/{zulip,plane,forgejo}`.
-- **No app secret leaves the broker.** `Secret` has no `Serialize` and a redacted `Debug` (§30 D288); the canary test of Task 9 covers `operon-collab`.
+- **A GPUI panel uses `loams-apps-client` only**; a lint (`cargo deny` bans plus a source grep) fails on an HTTP client aimed at an app origin from `loams-ui-collab`.
+- **Native panels read through `loams.collab.v1` only.** A plugin never imports an app's API client. A lint (`eslint-plugin-boundaries` or a plain import test) fails on `fetch` of an app origin in `web/plugins/{zulip,plane,forgejo}`.
+- **No app secret leaves the broker.** `Secret` has no `Serialize` and a redacted `Debug` (§30 D288); the canary test of Task 9 covers `loams-collab`.
 - **Deep links navigate, never act** (D432). Parsed in Rust against an allowlist, and in Swift and Kotlin against the same golden table.
 - **Pinned images by digest** in every compose file and chart; the digests are recorded in `deploy/factory/images.lock` with each app's licence and source URL (`LICENSES.md`, design §4).
 - **The build machine.** One cargo build at a time, shared target; Docker harness runs one stack at a time; stop and report if `/home` has under 8 GB free.
@@ -47,9 +47,9 @@ Same as the AP plans, plus:
 |---|---|---|---|
 | 1 | **Sibling subdomains of one domain** for the apps and the console (Q462's proposal) | Same-site cookies make framing work with `SameSite=Lax`; Plane, Forgejo and Zulip cannot all be served under a path prefix | A single-host install needs a wildcard DNS entry; `loams dev` uses `*.localhost` |
 | 2 | **Desktop gets native panels plus the system browser; the sidebar browser is optional** (design §3.4) | zeron has no webview crate in its workspace, and the factory needs only the objects; the system browser gives SSO for free | Users who want a docked Plane board wait for the spike's answer |
-| 3 | **Native panels first for read, write only for comment, create and (gated) merge** | The loop needs these; every other write is the app's UI | Users ask for more; each is a small addition to `loam.collab.v1` |
+| 3 | **Native panels first for read, write only for comment, create and (gated) merge** | The loop needs these; every other write is the app's UI | Users ask for more; each is a small addition to `loams.collab.v1` |
 | 4 | **Plane's API key is per agent identity, not per user** (Q463) | Plane CE has no per-user OAuth for third-party callers **(verify, Task 4)** | Audit in Plane names the agent, not the person; Loams' audit holds the person |
-| 5 | **`loam.collab.v1` mirrors A2A's `Part` and artifact kinds where it can** | SF2 and SF3 render the same objects in chat | A little protobuf duplication until Q467 settles importing A2A's proto |
+| 5 | **`loams.collab.v1` mirrors A2A's `Part` and artifact kinds where it can** | SF2 and SF3 render the same objects in chat | A little protobuf duplication until Q467 settles importing A2A's proto |
 
 ## Review Focus
 
@@ -62,7 +62,7 @@ Same as the AP plans, plus:
 ## File structure
 
 ```
-proto/loam/collab/v1/collab.proto                    # ListApps, threads, issues, cycles, repos, PRs, checks
+proto/loams/collab/v1/collab.proto                    # ListApps, threads, issues, cycles, repos, PRs, checks
 crates/operon-collab/src/{lib.rs,service.rs,broker.rs,fga.rs,apps/{mod.rs,zulip.rs,plane.rs,forgejo.rs},fixtures.rs}
 crates/operon-collab/tests/{main.rs,list.rs,write.rs,broker.rs,fga.rs,canary.rs}
 crates/operon-collab/tests/fixtures/{zulip,plane,forgejo}/*.json   # recorded API responses
@@ -99,7 +99,7 @@ docs/design/39-…  docs/design/37-… (slot catalog note)  docs/plans/README.md
 
 ### Task 1: Slots, the proto and the app registry
 
-**Files:** `web/packages/slots/src/{embed.ts,app-panel.ts,bot.ts,factory.ts}`, `proto/loam/collab/v1/collab.proto`, `proto/loam/instance/v1/instance.proto` (the `apps` field), `docs/design/37-…` (§5.5 note), `web/packages/mock/*` (AP0's mock gains the services).
+**Files:** `web/packages/slots/src/{embed.ts,app-panel.ts,bot.ts,factory.ts}`, `proto/loams/collab/v1/collab.proto`, `proto/loams/instance/v1/instance.proto` (the `apps` field), `docs/design/37-…` (§5.5 note), `web/packages/mock/*` (AP0's mock gains the services).
 
 **Produces:**
 
@@ -133,7 +133,7 @@ service CollabService {
 
 **Tests:** `buf lint` and `buf breaking`; the slots package's type tests (a plugin registering `embed.pane` with a wrong key type fails to compile); mock server tests: `list_apps_returns_registry`, `plugin_activates_only_when_app_listed` (a plugin whose app is not listed stays inactive and shows no nav entry), `mutations_require_idempotency_key`.
 
-**Commit:** `proto: loam.collab.v1 and the embed, app and bot slots`.
+**Commit:** `proto: loams.collab.v1 and the embed, app and bot slots`.
 
 ### Task 2: The edge: framing, headers, forward-auth, and the harness
 
@@ -150,7 +150,7 @@ service CollabService {
 
 **Commit:** `edge: frame the collaboration apps from the console origin only`.
 
-### Task 3: `operon-collab`: Zulip adapter, the broker and OpenFGA filtering
+### Task 3: `loams-collab`: Zulip adapter, the broker and OpenFGA filtering
 
 **Files:** `crates/operon-collab/src/{lib.rs,service.rs,broker.rs,fga.rs,apps/{mod.rs,zulip.rs},fixtures.rs}`, `crates/operon-collab/tests/{main.rs,list.rs,write.rs,broker.rs,fga.rs,canary.rs}`.
 
@@ -283,7 +283,7 @@ pub struct SidebarBrowser;   // only built with the `sidebar-browser` feature, p
 **Files:** `crates/operon-collab/tests/canary.rs`, `web/plugins/*/test/security/*`, `docs/plans/sf1-exit-report.md`, `docs/design/39-…` (status and as-built notes), `CHANGELOG.md`.
 
 **Checks:**
-- **Canary:** every `loam.collab.v1` method, error, trace and log line of Tasks 3 and 4 scanned for the canary secrets (§30 D288's test, extended).
+- **Canary:** every `loams.collab.v1` method, error, trace and log line of Tasks 3 and 4 scanned for the canary secrets (§30 D288's test, extended).
 - **Prompt-injection fixtures:** an issue body, a Zulip message and a PR description containing `</script>`, markdown links with `javascript:` URLs, `[click](loams://…)` deep links, and "ignore previous instructions" text render as inert text in every plugin, card and mobile view; no deep link inside content is ever followed without a tap; the `untrusted` flag is present on every free-text field.
 - **Exit gate (all must pass in CI):** the edge assertions of Task 2; the browser embed and desktop opener tests of Tasks 5 and 5b; plugin tests of Tasks 6–7; mobile tests of Task 8; the licence table check; an end-to-end Playwright run: sign in at Authentik, open Zulip, Plane and Forgejo panes, create a Plane issue from the native panel and see it in the embedded Plane, open a Forgejo PR's diff from the native PR panel; on the desktop build (the standalone GPUI harness until the fork lands), open the same issue and PR panels and the system-browser links; and on a simulator, open the issue on the phone through a deep link.
 - Record outcomes, measured sizes (the plugins' bundle sizes, the desktop binary delta), and any API gaps found, in the exit report.

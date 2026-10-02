@@ -2,13 +2,13 @@
 
 Status: **Approved** · 2026-09-22 · revised 2026-09-25 (frontends narrowed, D42/D44) · amended 2026-09-26 (M1.2 as built) · amended 2026-09-26 (turbopuffer gap analysis: `eventual` under backpressure, the performance block, ranking expressions, weighted concurrency, sharded collections; D86, D88, D91, D92, D95, D98)
 
-All reads — native hybrid requests (including the graph `expand` stage), SQL over the native API and Flight SQL, ES `_search`, Qdrant `query` — compile to **Apache DataFusion** logical plans and execute on `query` nodes. DataFusion is embedded as a library; Operon adds catalogs, table providers, physical operators, optimizer rules and a distributed layer.
+All reads — native hybrid requests (including the graph `expand` stage), SQL over the native API and Flight SQL, ES `_search`, Qdrant `query` — compile to **Apache DataFusion** logical plans and execute on `query` nodes. DataFusion is embedded as a library; Loams adds catalogs, table providers, physical operators, optimizer rules and a distributed layer.
 
 ---
 
 ## 1. Catalog integration
 
-| DataFusion concept | Operon mapping |
+| DataFusion concept | Loams mapping |
 |---|---|
 | `CatalogProvider` | Namespace |
 | `SchemaProvider` | Object kind: `tables`, `collections`, `streams`, `graphs` (plus user schemas for tables) |
@@ -38,7 +38,7 @@ Row ids are one `RoaringTreemap` space for masks, bitmaps, fusion and fetch: dur
 ## 3. Optimizer rules
 
 - **Index pushdown:** predicates on indexed columns become `FilterBitmapExec` inputs; `ORDER BY distance(v, q) LIMIT k` → `AnnExec`; `WHERE match(text, 'q') ORDER BY score LIMIT k` → `TantivySearchExec`. As built (M1.2 plan row 10.2), `CollectionProvider` pushes down only what keeps DataFusion's `Inexact` filter a superset: comparisons, `IN`, ranges and `IS [NOT] NULL` on keyword, integer, float, boolean, date and UUID fields with a literal of the column's type, and `NOT` only over exact, never-null operands; text and JSON predicates, and every predicate while a split older than the current schema version exists, are left to DataFusion.
-- **Pre- vs post-filter selection** for ANN: cost-based on estimated filter selectivity (bitmap cardinality); highly selective → pre-filter (bitmap-restricted search / brute force on small sets); broad → post-filter with over-fetch. As built (M1.2, `AnnConfig`): a filter allowing at most `max(1 000, full_scan_threshold_kb · 1024 / (4 · dim))` durable rows is scored by brute force; one allowing at most 10 % of the durable rows prefilters the Lance index search; a broader one post-filters, asking for `k · 1.5 / selectivity` candidates and retrying once with 4× more, then prefilters. Index searches default to `nprobes = max(20, ⌈partitions / 16⌉)` and refine factor 20 (M1.2 plan row 6.1). Exact search (`exact`, a metric override, Manhattan, or no index) never uses an index, and every returned vector score is Operon's own exact kernel (M1.2 Ruling 3).
+- **Pre- vs post-filter selection** for ANN: cost-based on estimated filter selectivity (bitmap cardinality); highly selective → pre-filter (bitmap-restricted search / brute force on small sets); broad → post-filter with over-fetch. As built (M1.2, `AnnConfig`): a filter allowing at most `max(1 000, full_scan_threshold_kb · 1024 / (4 · dim))` durable rows is scored by brute force; one allowing at most 10 % of the durable rows prefilters the Lance index search; a broader one post-filters, asking for `k · 1.5 / selectivity` candidates and retrying once with 4× more, then prefilters. Index searches default to `nprobes = max(20, ⌈partitions / 16⌉)` and refine factor 20 (M1.2 plan row 6.1). Exact search (`exact`, a metric override, Manhattan, or no index) never uses an index, and every returned vector score is Loams's own exact kernel (M1.2 Ruling 3).
 - **Projection matching** for aggregates: a query whose grouping keys and aggregates a declared aggregate projection covers is rewritten to read it → `ProjectionScanExec`.
 - **Late materialization:** retrieve `(_pk, row_addr, score)` first, fetch documents only for final top-k.
 - **Dynamic filters** (DataFusion 54.1, M1.1) propagate join/top-k bounds into scans, including across distributed stage boundaries.
@@ -122,8 +122,8 @@ LIMIT 10;
 
 | Frontend | Parser/mapping | Notes |
 |---|---|---|
-| Native REST/gRPC | Hybrid request (§4) → logical plan; SQL endpoint with DataFusion SQL + Operon UDTFs | Primary surface; hybrid, graph `expand` and SQL |
-| Arrow Flight SQL (ADBC) | DataFusion SQL + Operon UDTFs | Queries, and `DoPut` bulk ingest into collections and streams (D49) |
+| Native REST/gRPC | Hybrid request (§4) → logical plan; SQL endpoint with DataFusion SQL + Loams UDTFs | Primary surface; hybrid, graph `expand` and SQL |
+| Arrow Flight SQL (ADBC) | DataFusion SQL + Loams UDTFs | Queries, and `DoPut` bulk ingest into collections and streams (D49) |
 | ES Query DSL | Quickwit-derived DSL → logical plan | §06 |
 | Qdrant query API | Direct mapping → logical plan | §06 |
 
@@ -132,7 +132,7 @@ Graph queries have no language frontend: traversal runs as `ExpandExec` and `Sho
 **Arrow Flight SQL** is a core surface from M1.2 (D49): high-throughput result transfer (Python/pandas/Polars, BI via ADBC) and zero-copy bulk ingest; the ADBC Flight SQL drivers (Python and Go) are an M1 exit gate.
 
 As built (M1.2):
-- **Listener:** `native.flight_sql` (`--flight-sql-listen`; default `0.0.0.0:8082`, `127.0.0.1:8082` for `operon dev`; `--no-flight-sql` turns it off).
-- **Queries:** read-only SQL (DDL, DML and statements are refused on every served surface), the same planner as the REST `…/sql` endpoint. The namespace is the request metadata `operon-namespace` (default `default`); `operon-consistency-token` reads `AtLeast` that token, else `Strong`. `GetCatalogs` lists namespaces, `GetDbSchemas`/`GetTables` list collections (not aliases, M1.2 plan row 12.2).
-- **`DoPut` bulk ingest** into collections and streams (D49): a PATH descriptor `["collections", c]`, `["streams", s]` or `["streams", s, p]` answers one `PutAck` per record batch (`{batch, rows, token, offsets}`, the token covering the whole put so far); `CommandStatementIngest` serves ADBC's `adbc_ingest` (`create`, `append` and `create_append`; `replace` is refused) and answers the row count. Collection columns: `_id` (unsigned integers, strings, or 16-byte UUIDs; `operon-id-type: u64|uuid`, as field or request metadata, types string keys), `_source` (one JSON object, verbatim), one column per dense vector (`FixedSizeList<Float32, dim>`; `_vector` for the unnamed vector, and a collection created by ingest names such a column's vector `""`, M1.2 plan row 13.2) or sparse vector (`Struct<indices, values>`), `_seq_no`/`_partition`/`_score` ignored, and, without `_source`, any other column as a top-level source key. Stream columns: `key`, `value`, `headers`, `timestamp`, `partition`. Batches are written in chunks of 10 000 rows through the native write path, one chunk in flight, each whole or not at all.
-- **Scan plans:** pinned reads of a scan plan (D53) use the metadata `operon-pin-manifest` with `operon-consistency-token`; §17 §3.7 describes the scan plan as built.
+- **Listener:** `native.flight_sql` (`--flight-sql-listen`; default `0.0.0.0:8082`, `127.0.0.1:8082` for `loams dev`; `--no-flight-sql` turns it off).
+- **Queries:** read-only SQL (DDL, DML and statements are refused on every served surface), the same planner as the REST `…/sql` endpoint. The namespace is the request metadata `loams-namespace` (default `default`); `loams-consistency-token` reads `AtLeast` that token, else `Strong`. `GetCatalogs` lists namespaces, `GetDbSchemas`/`GetTables` list collections (not aliases, M1.2 plan row 12.2).
+- **`DoPut` bulk ingest** into collections and streams (D49): a PATH descriptor `["collections", c]`, `["streams", s]` or `["streams", s, p]` answers one `PutAck` per record batch (`{batch, rows, token, offsets}`, the token covering the whole put so far); `CommandStatementIngest` serves ADBC's `adbc_ingest` (`create`, `append` and `create_append`; `replace` is refused) and answers the row count. Collection columns: `_id` (unsigned integers, strings, or 16-byte UUIDs; `loams-id-type: u64|uuid`, as field or request metadata, types string keys), `_source` (one JSON object, verbatim), one column per dense vector (`FixedSizeList<Float32, dim>`; `_vector` for the unnamed vector, and a collection created by ingest names such a column's vector `""`, M1.2 plan row 13.2) or sparse vector (`Struct<indices, values>`), `_seq_no`/`_partition`/`_score` ignored, and, without `_source`, any other column as a top-level source key. Stream columns: `key`, `value`, `headers`, `timestamp`, `partition`. Batches are written in chunks of 10 000 rows through the native write path, one chunk in flight, each whole or not at all.
+- **Scan plans:** pinned reads of a scan plan (D53) use the metadata `loams-pin-manifest` with `loams-consistency-token`; §17 §3.7 describes the scan plan as built.

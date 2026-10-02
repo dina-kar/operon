@@ -1,0 +1,68 @@
+[package]
+name = "loams-hot"
+description = "Loams's hot tier: HNSW artifacts built from collection manifests, per-manifest views of them with delta indexes, pinned splits, budgets, the node registry, placement and read forwarding."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+# The qdrant-edge HNSW engine (`loams-hnsw/qdrant`).
+hnsw = ["loams-hnsw/qdrant"]
+# Test hooks (holding a build at a step) and the hot on/off differential
+# harness (`differential`). Not part of the stable API.
+test-util = ["loams-collection/test-util", "dep:rand", "dep:rand_chacha"]
+# Named failpoints for the crash gate (`hot.after_artifact_put`,
+# `hot.after_manifest_put`, `hot.after_cas`). Off by default: without it the
+# failpoints compile to nothing.
+failpoints = ["dep:fail", "fail/failpoints", "loams-collection/failpoints"]
+
+[dependencies]
+arrow-array.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+crc32c.workspace = true
+fail = { workspace = true, optional = true }
+futures.workspace = true
+http.workspace = true
+lance.workspace = true
+lance-table.workspace = true
+moka = { workspace = true, features = ["sync"] }
+loams-cache.workspace = true
+loams-collection.workspace = true
+loams-common.workspace = true
+loams-hnsw.workspace = true
+loams-link.workspace = true
+loams-query.workspace = true
+loams-store.workspace = true
+loams-worker.workspace = true
+postcard.workspace = true
+rand = { workspace = true, optional = true }
+rand_chacha = { workspace = true, optional = true }
+reqwest.workspace = true
+roaring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+ulid.workspace = true
+xxhash-rust.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+loams-collection = { workspace = true, features = ["test-util"] }
+loams-hot = { path = ".", features = ["test-util"] }
+loams-link = { workspace = true, features = ["test-util"] }
+loams-log.workspace = true
+loams-meta = { workspace = true, features = ["test-util"] }
+loams-quickwit.workspace = true
+loams-worker = { workspace = true, features = ["test-util"] }
+proptest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -26,7 +26,7 @@ body:
       label: Steps to reproduce
       description: The smallest sequence of commands or requests that shows the problem.
       placeholder: |
-        1. cargo run --release -p operon -- dev
+        1. cargo run --release -p loams -- dev
         2. curl -s localhost:8080/v1/namespaces/demo/collections ...
         3. ...
     validations:
@@ -35,7 +35,7 @@ body:
     id: version
     attributes:
       label: Version or commit
-      description: Output of `operon --version`, or the commit you built from.
+      description: Output of `loams --version`, or the commit you built from.
     validations:
       required: true
   - type: dropdown
@@ -43,9 +43,9 @@ body:
     attributes:
       label: Deployment mode
       options:
-        - operon dev
-        - operon standalone
-        - operon cluster
+        - loams dev
+        - loams standalone
+        - loams cluster
         - Kubernetes
         - Other
     validations:
@@ -61,7 +61,7 @@ body:
         - Qdrant REST or gRPC
         - Elasticsearch API
         - Resonate (durable execution)
-        - Loam Live
+        - Loams Live
         - Web console
         - Not API related
   - type: input

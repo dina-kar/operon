@@ -1,0 +1,44 @@
+[package]
+name = "loams-log"
+description = "Loams's internal log: WAL objects, segments, the leaderless write path, fetch, segmenting and retention."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+crc32c.workspace = true
+fail = { workspace = true, optional = true }
+moka.workspace = true
+loams-cache.workspace = true
+loams-common.workspace = true
+loams-store.workspace = true
+loams-worker.workspace = true
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+ulid.workspace = true
+
+[features]
+# Named failpoints for the crash gate (M0.4 Task 5). Off by default: without
+# it the failpoints compile to nothing.
+failpoints = ["dep:fail", "fail/failpoints"]
+
+[dev-dependencies]
+crc32c.workspace = true
+futures.workspace = true
+kafka-protocol.workspace = true
+loams-meta = { workspace = true, features = ["test-util"] }
+loams-worker = { workspace = true, features = ["test-util"] }
+object_store.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
+ulid.workspace = true
+
+[lints]
+workspace = true

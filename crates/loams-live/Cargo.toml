@@ -1,0 +1,36 @@
+[package]
+name = "loams-live"
+description = "Loams Live, the reactive document database on TiKV: values, document ids, tables, indexes, the commit journal, transactions and the system functions (design §20)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+# loams-tikv depends on tikv-client by git (R1 plan row R4), which crates.io
+# refuses.
+publish = false
+
+[dependencies]
+buffa.workspace = true
+crc.workspace = true
+data-encoding.workspace = true
+futures.workspace = true
+loams-live-proto.workspace = true
+loams-tikv.workspace = true
+# The OS random source for document ids (rand's OsRng).
+rand.workspace = true
+# The idempotency key hash (design §20 §4.3).
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+# CancellationToken for the subscription manager (Task 11).
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# The lost-acknowledgement tests put a FaultPlan on the handle.
+loams-tikv = { workspace = true, features = ["faults"] }
+proptest.workspace = true
+
+[lints]
+workspace = true

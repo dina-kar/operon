@@ -1,0 +1,48 @@
+[package]
+name = "loams-qdrant"
+description = "Loams's Qdrant-compatible gateway: Qdrant's REST and gRPC APIs over the collection service."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+axum.workspace = true
+bytes.workspace = true
+http.workspace = true
+loams-collection.workspace = true
+loams-query.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tonic = { workspace = true, features = ["gzip"] }
+tonic-prost.workspace = true
+tower.workspace = true
+tracing.workspace = true
+time.workspace = true
+uuid.workspace = true
+
+loams-text = { workspace = true, optional = true }
+tantivy = { workspace = true, optional = true }
+
+[features]
+# `filter::reference_eval`, the reference evaluator of the differential
+# filter tests (Task 4).
+test-util = ["dep:loams-text", "dep:tantivy"]
+
+[build-dependencies]
+tonic-prost-build.workspace = true
+
+[dev-dependencies]
+crc32c.workspace = true
+loams-common.workspace = true
+proptest.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

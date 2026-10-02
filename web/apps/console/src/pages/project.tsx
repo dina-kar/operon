@@ -13,7 +13,7 @@ import {
   Primary,
   StatusTag,
   Table,
-} from '@loam/ui';
+} from '@loams/ui';
 import { Lock, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
