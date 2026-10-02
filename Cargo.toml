@@ -121,7 +121,7 @@ serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
 serde_json_borrow = "0.9"
 serde_with = "3"
 sha2 = "0.11"
-slatedb = { version = "0.16", default-features = false }
+slatedb = { version = "0.17", default-features = false }
 # The MySQL driver resonate-server-mysql uses (0.8.6, rustls); loams-durable
 # checks a TiDB store's schema with it before serving (D1 Task 4).
 sqlx = { version = "0.9.0", default-features = false }
