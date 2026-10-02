@@ -1,4 +1,4 @@
-"""The elasticsearch-py 8.19 client against Operon's Elasticsearch API (plan
+"""The elasticsearch-py 8.19 client against Loams's Elasticsearch API (plan
 M1.5 Task 11).
 
 Only the public client API is used (no raw HTTP), so every check also
@@ -25,21 +25,21 @@ def ids_of(response):
     return [hit["_id"] for hit in response["hits"]["hits"]]
 
 
-def knn_tolerance(is_operon):
-    """Operon scores knn hits exactly; Elasticsearch 8.19 quantizes float
+def knn_tolerance(is_loams):
+    """Loams scores knn hits exactly; Elasticsearch 8.19 quantizes float
     vectors (`int8_hnsw` by default), so its scores are close only."""
-    return 1e-5 if is_operon else 5e-3
+    return 1e-5 if is_loams else 5e-3
 
 def cos(a, b):
     dot = sum(x * y for x, y in zip(a, b))
     return dot / (math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b)))
 
 
-def test_info_passes_the_product_check(es, is_operon):
+def test_info_passes_the_product_check(es, is_loams):
     info = es.info()
     assert info["tagline"] == "You Know, for Search"
     assert info["version"]["number"].startswith("8.19.")
-    if is_operon:
+    if is_loams:
         assert info["version"]["number"] == "8.19.0"
 
 
@@ -165,9 +165,9 @@ def test_search_dsl(es, index, query, expected):
     assert r["hits"]["total"] == {"value": len(expected), "relation": "eq"}
 
 
-def test_aggregations_are_phase_b(es, index, is_operon):
-    if not is_operon:
-        pytest.skip("Operon refuses aggregations as Phase B")
+def test_aggregations_are_phase_b(es, index, is_loams):
+    if not is_loams:
+        pytest.skip("Loams refuses aggregations as Phase B")
     _dsl_index(es, index)
     with pytest.raises(BadRequestError):
         es.search(index=index, aggs={"t": {"terms": {"field": "tag"}}})
@@ -199,13 +199,13 @@ def _vector_index(es, index):
     )
 
 
-def test_knn_and_hybrid(es, index, is_operon):
+def test_knn_and_hybrid(es, index, is_loams):
     _vector_index(es, index)
     q = [1.0, 0.2, 0.0]
     r = es.search(index=index, knn={"field": "v", "query_vector": q, "k": 3, "num_candidates": 10})
     assert ids_of(r) == ["a", "b", "c"]
     for hit in r["hits"]["hits"]:
-        assert hit["_score"] == pytest.approx((1 + cos(q, VECTORS[hit["_id"]])) / 2, rel=knn_tolerance(is_operon))
+        assert hit["_score"] == pytest.approx((1 + cos(q, VECTORS[hit["_id"]])) / 2, rel=knn_tolerance(is_loams))
     # The vector comes back in `_source`.
     assert r["hits"]["hits"][0]["_source"]["v"] == VECTORS["a"]
     # RRF: `b` is in both lists (second by vector), `a` only in the knn
@@ -272,7 +272,7 @@ def test_count_and_msearch(es, index):
     assert "_source" not in r["responses"][1]["hits"]["hits"][0]
 
 
-def test_search_after_paging(es, index, is_operon):
+def test_search_after_paging(es, index, is_loams):
     es.indices.create(
         index=index,
         mappings={"properties": {"session_id": {"type": "keyword"}, "created_at": {"type": "long"}, "history": {"type": "text"}}},
@@ -297,7 +297,7 @@ def test_search_after_paging(es, index, is_operon):
         seen.extend(h["_id"] for h in hits)
         after = hits[-1]["sort"]
     assert seen == made
-    if is_operon:
+    if is_loams:
         with pytest.raises(BadRequestError):
             es.open_point_in_time(index=index, keep_alive="1m")
 
@@ -311,7 +311,7 @@ def test_delete_by_query(es, index):
     assert es.count(index=index)["count"] == 2
 
 
-def test_indices_admin(es, names, is_operon):
+def test_indices_admin(es, names, is_loams):
     a = names()
     es.indices.create(
         index=a,
@@ -343,7 +343,7 @@ def test_indices_admin(es, names, is_operon):
     es.indices.delete(index=b)
     assert not es.indices.exists(index=b)
     health = es.cluster.health()
-    if is_operon:
+    if is_loams:
         assert health["status"] == "green"
     else:
         assert health["status"] in ("green", "yellow")

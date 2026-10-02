@@ -1,0 +1,34 @@
+[package]
+name = "loams-live-proto"
+description = "The loams.live.v1 protos of Loams Live: buffa messages and the connect-rust LiveService trait and client, generated at build time."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+# Not published yet: build.rs reads the protos from the workspace's proto/
+# directory, which a crate archive would not contain. Publishing is decided
+# at the Loams rename with the TiKV crates (R1 plan row T8-1): ship the protos
+# in the crate then, or the generated code.
+publish = false
+
+[features]
+# The generated `LiveServiceClient` (connect-rust's client transport). Off by
+# default, so a server build does not pull in the client stack; Task 12's
+# tests enable it.
+client = ["connectrpc/client"]
+
+[dependencies]
+buffa.workspace = true
+connectrpc.workspace = true
+# The generated JSON mapping derives serde (connectrpc's default json feature).
+serde.workspace = true
+
+[build-dependencies]
+connectrpc-build.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

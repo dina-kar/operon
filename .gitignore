@@ -4,8 +4,8 @@
 *.rs.bk
 *.pdb
 
-# Operon local dev data
-/.operon/
+# Loams local dev data
+/.loams/
 /data/
 *.wal
 *.seg

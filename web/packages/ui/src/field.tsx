@@ -26,15 +26,15 @@ export function Field({
   const id = useId();
   const noteId = hint || error ? `${id}-note` : undefined;
   return (
-    <div className="loam-field">
+    <div className="loams-field">
       <label htmlFor={id}>{label}</label>
       {children({ id, 'aria-describedby': noteId, 'aria-invalid': error ? true : undefined })}
       {error ? (
-        <span id={noteId} className="loam-field-error">
+        <span id={noteId} className="loams-field-error">
           {error}
         </span>
       ) : hint ? (
-        <span id={noteId} className="loam-field-hint">
+        <span id={noteId} className="loams-field-hint">
           {hint}
         </span>
       ) : null}
@@ -43,15 +43,15 @@ export function Field({
 }
 
 export function Input({ className, ...rest }: InputHTMLAttributes<HTMLInputElement>) {
-  return <input className={cx('loam-input', className)} {...rest} />;
+  return <input className={cx('loams-input', className)} {...rest} />;
 }
 
 export function Select({ className, ...rest }: SelectHTMLAttributes<HTMLSelectElement>) {
-  return <select className={cx('loam-input', className)} {...rest} />;
+  return <select className={cx('loams-input', className)} {...rest} />;
 }
 
 export function Textarea({ className, ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <textarea className={cx('loam-input', className)} {...rest} />;
+  return <textarea className={cx('loams-input', className)} {...rest} />;
 }
 
 export function Checkbox({
@@ -59,7 +59,7 @@ export function Checkbox({
   ...rest
 }: InputHTMLAttributes<HTMLInputElement> & { label: ReactNode }) {
   return (
-    <label className="loam-check">
+    <label className="loams-check">
       <input type="checkbox" {...rest} />
       {label}
     </label>

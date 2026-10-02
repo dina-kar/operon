@@ -1,36 +1,36 @@
-# GT1 — The WAL Git Core and `git-remote-loam` Implementation Plan
+# GT1 — The WAL Git Core and `git-remote-loams` Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists the interfaces it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (names, paths, formats, constants, error messages), use them verbatim. The code is not pre-written in this plan (M0.3 Ruling 1).
 
-> **Status: Planned** (2026-10-01). Design: [§36](../design/36-loam-git.md) (D388–D399). **Slot: track GT**, beside M, R, D and J, interleaved on the one-build machine; whether GT starts now or waits for §15's W1 slot after M3 is the owner's decision (Q395). Branches `gt1-t<N>`, stacked; PRs target `main`. GT1 adds two crates and one proto package; it changes no existing code path except one small, additive `operon-store` method if Task 0 finds it missing.
+> **Status: Planned** (2026-10-01). Design: [§36](../design/36-loams-git.md) (D388–D399). **Slot: track GT**, beside M, R, D and J, interleaved on the one-build machine; whether GT starts now or waits for §15's W1 slot after M3 is the owner's decision (Q395). Branches `gt1-t<N>`, stacked; PRs target `main`. GT1 adds two crates and one proto package; it changes no existing code path except one small, additive `loams-store` method if Task 0 finds it missing.
 
 **Goal:** Ship §36's bucket-native Git core and a serverless remote helper:
-- `operon-git`: the `loam.git.v1` formats (segments, checkpoints, `.lpk` pack objects), `BlobStore`, `WalStore`, a pack-cache `Odb`, the ref state machine, `BucketRefLog` (the per-repository sequencer with group commit, fencing, unknown-outcome resolution and idempotency), checkpoints, forks and segment GC;
-- `git-remote-loam` (crate `operon-git-remote`): stock git clones, fetches and pushes through `loam::<store-url>` addresses straight to the bucket, with no server;
+- `loams-git`: the `loams.git.v1` formats (segments, checkpoints, `.lpk` pack objects), `BlobStore`, `WalStore`, a pack-cache `Odb`, the ref state machine, `BucketRefLog` (the per-repository sequencer with group commit, fencing, unknown-outcome resolution and idempotency), checkpoints, forks and segment GC;
+- `git-remote-loams` (crate `loams-git-remote`): stock git clones, fetches and pushes through `loams::<store-url>` addresses straight to the bucket, with no server;
 - the GT1 gates: fault runs, linearizable `RefLog` histories, concurrent pushers through stock git, and the first pushes/s and latency numbers per store.
 
 **Architecture:**
 - **One core, two callers.** `BucketRefLog` is the sequencer of §36 §4.4. In GT1 its callers are the helper (each `git push` process is its own short-lived sequencer) and the tests (many sequencers on one store, the worst case). GT2 adds the gateway; a commercial Cloudflare target (`loam-platform`) may add a Durable Object. Every caller is fenced by the create-only segment PUT (§36 §4.2), so none needs a lease for correctness.
-- **Storage through `operon-store`.** `StoreBlobStore` and `StoreWalStore` take an `operon_store::Store` (already a `PrefixStore` when opened from a URL with a prefix) and a `RepoPaths`. Fault injection is `operon_store::FaultyStore`, unchanged.
+- **Storage through `loams-store`.** `StoreBlobStore` and `StoreWalStore` take a `loams_store::Store` (already a `PrefixStore` when opened from a URL with a prefix) and a `RepoPaths`. Fault injection is `loams_store::FaultyStore`, unchanged.
 - **gitoxide only behind `Odb` and `ids`.** `gix-hash` (object ids), `gix-validate` (ref names), `gix-pack` (reading packs and indexes in tests and in the pack cache). Pack writing in the helper uses the `git` binary (`pack-objects`, `index-pack`), as every remote helper does.
-- **CloudEvents through `operon-cloudevents`.** Events are `operon_cloudevents::CloudEvent`; the protobuf format comes from where PR #171 (`ProduceCloudEvents`, D270) put it, or a vendored `io.cloudevents.v1` proto if it has not merged (Task 0).
+- **CloudEvents through `loams-cloudevents`.** Events are `loams_cloudevents::CloudEvent`; the protobuf format comes from where PR #171 (`ProduceCloudEvents`, D270) put it, or a vendored `io.cloudevents.v1` proto if it has not merged (Task 0).
 
 **Tech Stack:**
 - Rust 1.97.1, edition 2024, workspace lints.
-- New dependencies (Task 0 checks versions, licences and `cargo deny`): `gix-hash`, `gix-validate`, `gix-pack` (and the `gix-features`/`gix-object` versions they pull) from the `gix` 0.88.0 release train (2026-09-25; MIT OR Apache-2.0), with `default-features = false` and only the `sha1` feature; `crc32c` (already used by `operon-log`), `prost` 0.14 and `prost-build` 0.14 (workspace), `sha2` (workspace, if present; else Task 0 adds it, MIT OR Apache-2.0).
-- Reused: `operon-store`, `operon-cloudevents`, `operon-meta-conformance` (dev: its `linearizability` checker), `tokio`, `bytes`, `futures`, `async-trait`, `thiserror`, `tracing`, `proptest`, `rand`, `rand_chacha`, `tempfile`.
+- New dependencies (Task 0 checks versions, licences and `cargo deny`): `gix-hash`, `gix-validate`, `gix-pack` (and the `gix-features`/`gix-object` versions they pull) from the `gix` 0.88.0 release train (2026-09-25; MIT OR Apache-2.0), with `default-features = false` and only the `sha1` feature; `crc32c` (already used by `loams-log`), `prost` 0.14 and `prost-build` 0.14 (workspace), `sha2` (workspace, if present; else Task 0 adds it, MIT OR Apache-2.0).
+- Reused: `loams-store`, `loams-cloudevents`, `loams-meta-conformance` (dev: its `linearizability` checker), `tokio`, `bytes`, `futures`, `async-trait`, `thiserror`, `tracing`, `proptest`, `rand`, `rand_chacha`, `tempfile`.
 - System: `git` ≥ 2.45 on the build machine and CI (the helper protocol and `pack-objects --stdin-packs` behaviour used by Task 9; Task 0 records the versions), system `protoc` as for M1, Docker or Podman for RustFS in Task 10 (`rustfs/rustfs:1.0.x`, D61).
 
 **Spec:**
-- [`docs/design/36-loam-git.md`](../design/36-loam-git.md): §4 (the WAL), §5.1–§5.3 (the traits), §6.2 (the helper), §6.3 (steps 1–5 as the helper uses them), §7 (checkpoints and segment GC; repack is GT2), §12 (cost), §14 (risks).
+- [`docs/design/36-loams-git.md`](../design/36-loams-git.md): §4 (the WAL), §5.1–§5.3 (the traits), §6.2 (the helper), §6.3 (steps 1–5 as the helper uses them), §7 (checkpoints and segment GC; repack is GT2), §12 (cost), §14 (risks).
 - [`docs/design/15-agent-workspaces.md`](../design/15-agent-workspaces.md) §3 (amended by D388–D390), §11.
 - [`docs/design/02-stream-engine.md`](../design/02-stream-engine.md) §7.4 (D270, the CloudEvents mapping), [`docs/design/03-storage-formats.md`](../design/03-storage-formats.md) §6–§7.
-- As built: `crates/operon-store/src/{store.rs,fault.rs,error.rs}`, `crates/operon-cloudevents/src/lib.rs`, `crates/operon-meta-conformance/src/linearizability.rs`, `crates/operon-log/src/wal.rs` (framing conventions).
+- As built: `crates/loams-store/src/{store.rs,fault.rs,error.rs}`, `crates/loams-cloudevents/src/lib.rs`, `crates/loams-meta-conformance/src/linearizability.rs`, `crates/loams-log/src/wal.rs` (framing conventions).
 
 ## Global Constraints
 
 Same as the M1 overview §8, plus:
-- **Docs and code stay in step.** Any constant this plan names (`max_group_txns` 64, `max_segment_bytes` 1 MiB, `idempotency_window` 1 h, `checkpoint_every_segments` 256, `checkpoint_every_bytes` 8 MiB, `max_refs_per_txn` 4096, `exactly_retention` 24 h, `gc_grace` 1 h) lives in one `operon_git::limits` module with a doc comment pointing at §36.
+- **Docs and code stay in step.** Any constant this plan names (`max_group_txns` 64, `max_segment_bytes` 1 MiB, `idempotency_window` 1 h, `checkpoint_every_segments` 256, `checkpoint_every_bytes` 8 MiB, `max_refs_per_txn` 4096, `exactly_retention` 24 h, `gc_grace` 1 h) lives in one `loams_git::limits` module with a doc comment pointing at §36.
 - **No server, no listener.** GT1 opens no port. The helper is a process git starts.
 - **Object storage is the source of truth.** No state outside the bucket is read for correctness. Local caches (`Odb`'s pack cache) are keyed by content and may be deleted at any time.
 - **Never link copyleft code.** The `git` binary is run as a process by the helper and by tests only (D394, D396); `git2`/libgit2 is not a dependency of any crate.
@@ -44,10 +44,10 @@ Same as the M1 overview §8, plus:
 | 1 | **Content-named blobs over 64 MiB are uploaded with an unconditional multipart PUT**; under 64 MiB, `put_if_absent`. **On RustFS, blobs over 64 MiB are supported only once Q385 confirms atomic multipart completion**; until then `StoreBlobStore` refuses them there with `BlobError::TooLarge` (a 64 MiB push limit on RustFS), and Task 3 records the finding | Two writers of one content-derived name write identical bytes, so overwriting is harmless, and a conditional multipart completion is not available on every `object_store` backend; S3, R2, GCS and Azure document atomic completion | A lower push-size limit on RustFS until Q385 is answered |
 | 2 | **The helper is its own sequencer** (a `BucketRefLog` per `git push` process), fenced by the segment PUT | GT1 has no server; the protocol is safe for any number of writers | Many direct pushers to one hot repository retry on 412 a lot; GT2's server path group-commits them |
 | 3 | **The helper uses `fetch` and `push` capabilities, not `stateless-connect`** | `stateless-connect` needs a v2 upload-pack, which is GT2 | No partial clone in GT1; documented |
-| 4 | **Fetch downloads whole packs.** The helper keeps the set of pack checksums it has in `.git/loam/<remote>/packs` and downloads every live pack it lacks; each `.lpk` is split into `pack-<checksum>.pack` and `.idx` in `.git/objects/pack/`, with no `index-pack` run | Packs are immutable and content-named, and the stored idx is the pack's own idx (verified at push) | Over-fetching after repacks (GT2's compaction rewrites packs); acceptable for GT1's agent-sized repositories, and GT2's v2 fetch replaces it for large ones |
+| 4 | **Fetch downloads whole packs.** The helper keeps the set of pack checksums it has in `.git/loams/<remote>/packs` and downloads every live pack it lacks; each `.lpk` is split into `pack-<checksum>.pack` and `.idx` in `.git/objects/pack/`, with no `index-pack` run | Packs are immutable and content-named, and the stored idx is the pack's own idx (verified at push) | Over-fetching after repacks (GT2's compaction rewrites packs); acceptable for GT1's agent-sized repositories, and GT2's v2 fetch replaces it for large ones |
 | 5 | **Fast-forward checks happen in the pushing process** (`git merge-base --is-ancestor <old> <new>` in the helper) | The helper has the full local object graph; the sequencer checks only object ids (§36 §4.4) | A modified helper can force-push without `+`. Protections (Task 6) are checked by every sequencer, the helper's included, but a modified helper with bucket credentials can skip both checks: direct bucket writers are trusted with their credentials in GT1, and GT2's server path enforces both for everyone else |
-| 6 | **Idempotency keys for helper pushes** are `sha256(principal ‖ pack checksum ‖ sorted updates)` (§36 §4.5). `principal` is the authenticated credential subject: the access key id of the bucket credentials the helper uses (or a vended token's subject), the same value in the WAL event and the key. `git config user.email` is used only when `LOAM_GIT_UNAUTHENTICATED_TESTS=1` (local tests on `file://` and `memory://` stores) | git retries a push only by the user re-running it; the derived key makes a re-run after a lost answer a replay. A caller-chosen email would let two credential holders share or spoof one audit and idempotency identity | None beyond §36 §4.5 |
-| 7 | **The repository is created by its first push** (checkpoint 0 with no refs, then segment 1), or explicitly by `operon_git::create_repo`; a clone of a missing repository fails with `fatal: repository '<url>' not found` | Mirrors git hosting behaviour without a control plane | A typo in a URL creates a repository on push; GT2's server requires an explicit create |
+| 6 | **Idempotency keys for helper pushes** are `sha256(principal ‖ pack checksum ‖ sorted updates)` (§36 §4.5). `principal` is the authenticated credential subject: the access key id of the bucket credentials the helper uses (or a vended token's subject), the same value in the WAL event and the key. `git config user.email` is used only when `LOAMS_GIT_UNAUTHENTICATED_TESTS=1` (local tests on `file://` and `memory://` stores) | git retries a push only by the user re-running it; the derived key makes a re-run after a lost answer a replay. A caller-chosen email would let two credential holders share or spoof one audit and idempotency identity | None beyond §36 §4.5 |
+| 7 | **The repository is created by its first push** (checkpoint 0 with no refs, then segment 1), or explicitly by `loams_git::create_repo`; a clone of a missing repository fails with `fatal: repository '<url>' not found` | Mirrors git hosting behaviour without a control plane | A typo in a URL creates a repository on push; GT2's server requires an explicit create |
 | 8 | **SHA-1 only in GT1.** The object format is a field in every message and checkpoint; a SHA-256 repository is refused with `object format sha256 is not supported yet (Q388)` | gitoxide's SHA-256 parity is an open item | A format change later is additive |
 
 ## Carried in
@@ -67,34 +67,34 @@ From §36: Q384 (latency per store) is measured in Task 10; Q385 (RustFS above 1
 ```
 Cargo.toml / Cargo.lock                      # gix-hash, gix-validate, gix-pack (sha1), members unchanged (crates/*)
 deny.toml                                    # only if Task 0 needs an exception
-proto/loam/git/v1/wal.proto                  # §36 §4.3, verbatim
+proto/loams/git/v1/wal.proto                  # §36 §4.3, verbatim
 proto/io/cloudevents/v1/cloudevents.proto    # only if PR #171 has not merged (Task 0)
-crates/operon-git/
-  Cargo.toml  build.rs                       # prost-build over proto/loam/git/v1
+crates/loams-git/
+  Cargo.toml  build.rs                       # prost-build over proto/loams/git/v1
   src/{lib.rs,limits.rs,ids.rs,paths.rs,error.rs,
        format/{mod.rs,segment.rs,checkpoint.rs,lpk.rs,event.rs},
        blob.rs,wal.rs,odb.rs,state.rs,reflog.rs,sequencer.rs,checkpointer.rs,fork.rs,gc.rs,testing.rs}
   tests/{format.rs,blob.rs,wal.rs,state.rs,reflog.rs,linearizable.rs,checkpoint.rs,fork.rs,gc.rs}
   tests/golden/{segment_v1.lgw,checkpoint_v1.lgc,lpk_v1_footer.bin}
-crates/operon-git-remote/
-  Cargo.toml                                 # [[bin]] name = "git-remote-loam"
+crates/loams-git-remote/
+  Cargo.toml                                 # [[bin]] name = "git-remote-loams"
   src/{main.rs,protocol.rs,url.rs,fetch.rs,push.rs,local.rs}
   tests/{helper.rs,concurrent.rs,faults.rs}
-crates/operon-git/benches/ or bench/git-wal/ # Task 10 (whichever matches bench/ conventions on main)
+crates/loams-git/benches/ or bench/git-wal/ # Task 10 (whichever matches bench/ conventions on main)
 scripts/git/{rustfs.sh,bench.sh}
 .github/workflows/ci.yml                     # job git (path-filtered)
-docs/design/36-loam-git.md  CHANGELOG.md
+docs/design/36-loams-git.md  CHANGELOG.md
 ```
 
 ### Task 0: Reconcile and check the facts
 
-**Files:** read `crates/operon-store/src/*`, `crates/operon-cloudevents/src/*`, `crates/operon-meta-conformance/src/linearizability.rs`, `crates/operon-log/src/wal.rs`, `bench/` and `.github/workflows/ci.yml` as on `main`. Fill this plan's "Rulings made during execution" table.
+**Files:** read `crates/loams-store/src/*`, `crates/loams-cloudevents/src/*`, `crates/loams-meta-conformance/src/linearizability.rs`, `crates/loams-log/src/wal.rs`, `bench/` and `.github/workflows/ci.yml` as on `main`. Fill this plan's "Rulings made during execution" table.
 
 **Checks** (record each result with its command):
-1. `operon_store::Store` has `put_if_absent`, `put_if_match`, `get`, `get_range`, `put`, `list` (with an offset or prefix), `delete` and a multipart put. Missing ones become a small additive PR to `operon-store` first (commit area `store`), with tests in its own suite.
-2. `FaultyStore` has `Fault::ErrorAfterApply` (lost acknowledgement) for `PutCreate` (it does on `main` as of 2026-10-01: `crates/operon-store/src/fault.rs`). Record how a test targets one path (rules by path prefix or op).
-3. Where the CloudEvents protobuf format lives after PR #171 (`crates/operon-stream-grpc/src/events.rs` and `proto/loam/stream/v1/stream.proto` on its branch). If merged, `operon-git` depends on the proto definitions it exposes (or on `operon-cloudevents` if the codec moved there); if not, vendor `io/cloudevents/v1/cloudevents.proto` from cloudevents/spec v1.0.2 (Apache-2.0, noted in `NOTICE`) and record that the two must be merged when #171 lands.
-4. The `gix-*` crate versions of the `gix` 0.88.0 train, their features with `default-features = false`, `cargo deny check` and `cargo tree -d` deltas, and the cold build time of `operon-git` alone (one measured build).
+1. `loams_store::Store` has `put_if_absent`, `put_if_match`, `get`, `get_range`, `put`, `list` (with an offset or prefix), `delete` and a multipart put. Missing ones become a small additive PR to `loams-store` first (commit area `store`), with tests in its own suite.
+2. `FaultyStore` has `Fault::ErrorAfterApply` (lost acknowledgement) for `PutCreate` (it does on `main` as of 2026-10-01: `crates/loams-store/src/fault.rs`). Record how a test targets one path (rules by path prefix or op).
+3. Where the CloudEvents protobuf format lives after PR #171 (`crates/loams-stream-grpc/src/events.rs` and `proto/loams/stream/v1/stream.proto` on its branch). If merged, `loams-git` depends on the proto definitions it exposes (or on `loams-cloudevents` if the codec moved there); if not, vendor `io/cloudevents/v1/cloudevents.proto` from cloudevents/spec v1.0.2 (Apache-2.0, noted in `NOTICE`) and record that the two must be merged when #171 lands.
+4. The `gix-*` crate versions of the `gix` 0.88.0 train, their features with `default-features = false`, `cargo deny check` and `cargo tree -d` deltas, and the cold build time of `loams-git` alone (one measured build).
 5. `git --version` locally and on the CI image; whether `git index-pack --stdin --fix-thin` and `git pack-objects --revs --stdout --thin` behave as Task 9 uses them.
 6. Whether RustFS runs in CI already (D61) and the image tag; otherwise Task 10 adds a path-filtered service container.
 7. The decision numbers on `main` (D388–D399 reserved by §36's PR).
@@ -103,7 +103,7 @@ docs/design/36-loam-git.md  CHANGELOG.md
 
 ### Task 1: The crate, ids and paths
 
-**Files:** `crates/operon-git/{Cargo.toml,src/{lib.rs,limits.rs,ids.rs,paths.rs,error.rs}}`, `crates/operon-git/tests/format.rs` (ids part).
+**Files:** `crates/loams-git/{Cargo.toml,src/{lib.rs,limits.rs,ids.rs,paths.rs,error.rs}}`, `crates/loams-git/tests/format.rs` (ids part).
 
 **Produces:**
 
@@ -133,16 +133,16 @@ impl RepoPaths {
 
 **Tests:** `refname_validation_matches_git_check_ref_format` (a corpus of 40 valid and invalid names, each also run through `git check-ref-format` when `git` is present); `repo_id_charset`; `seq_formats_as_twenty_digits_and_sorts_lexically`; `paths_round_trip`; `limits_are_documented` (every `pub const` in `limits.rs` has a doc comment naming a §36 section).
 
-**Commit:** `git: add the operon-git crate with ids and object paths`.
+**Commit:** `git: add the loams-git crate with ids and object paths`.
 
 ### Task 2: Formats
 
-**Files:** `proto/loam/git/v1/wal.proto` (§36 §4.3 verbatim), `crates/operon-git/build.rs`, `crates/operon-git/src/format/{mod.rs,segment.rs,checkpoint.rs,lpk.rs,event.rs}`, `crates/operon-git/tests/{format.rs,golden/*}`.
+**Files:** `proto/loams/git/v1/wal.proto` (§36 §4.3 verbatim), `crates/loams-git/build.rs`, `crates/loams-git/src/format/{mod.rs,segment.rs,checkpoint.rs,lpk.rs,event.rs}`, `crates/loams-git/tests/{format.rs,golden/*}`.
 
 **Produces:**
 
 ```rust
-pub mod pb { /* prost-generated loam.git.v1 */ }
+pub mod pb { /* prost-generated loams.git.v1 */ }
 // segment.rs
 pub const SEGMENT_MAGIC: &[u8; 8] = b"LGITWAL\0";   pub const SEGMENT_END: &[u8; 8] = b"LGITWEND";
 pub const SEGMENT_VERSION: u16 = 1;
@@ -165,15 +165,15 @@ pub fn to_cloudevent(e: &TxnEvent, seq: Seq, index: u32) -> CloudEvent;   // §3
 pub fn from_cloudevent(ce: &CloudEvent) -> Result<TxnEvent, FormatError>;  // refuses a wrong type, schemaversion ≠ "1", a missing extension
 ```
 
-**Semantics:** the header, body and trailer layouts of §36 §4.3, little-endian; CRC32C (Castagnoli) over header and body; a reader accepts format versions 1 and (once a version 2 exists) 1–2; an unknown higher version is `UnknownVersion { found }`. The segment body is the `CloudEventBatch` protobuf. `loamseq` is the decimal string of the segment's seq and must equal the segment header's seq.
+**Semantics:** the header, body and trailer layouts of §36 §4.3, little-endian; CRC32C (Castagnoli) over header and body; a reader accepts format versions 1 and (once a version 2 exists) 1–2; an unknown higher version is `UnknownVersion { found }`. The segment body is the `CloudEventBatch` protobuf. `loamsseq` is the decimal string of the segment's seq and must equal the segment header's seq.
 
 **Tests:** `segment_round_trip` (proptest over random batches up to the limit); `segment_over_one_mib_is_too_large`; `corrupt_crc_is_error`; `truncated_segment_is_error`; `seq_mismatch_is_error`; `golden_segment_v1` (a checked-in file of a fixed batch decodes, and encoding the batch reproduces it byte for byte); `checkpoint_round_trip`; `golden_checkpoint_v1`; `lpk_footer_round_trip`; `pack_checksum_reads_trailer` (a pack made by `git pack-objects`); `event_attributes_match_design_table`; `event_without_tenantid_is_refused`; `n_minus_one_is_read` (a stub: version 0 bytes are refused with `UnknownVersion`, and the test documents where version 1 readers must keep working when version 2 arrives).
 
-**Commit:** `git: add the loam.git.v1 formats (segments, checkpoints, pack objects)`.
+**Commit:** `git: add the loams.git.v1 formats (segments, checkpoints, pack objects)`.
 
 ### Task 3: `BlobStore`
 
-**Files:** `crates/operon-git/src/blob.rs`, `crates/operon-git/tests/blob.rs`.
+**Files:** `crates/loams-git/src/blob.rs`, `crates/loams-git/tests/blob.rs`.
 
 **Produces:** the `BlobStore` trait of §36 §5.3 verbatim, plus:
 
@@ -192,11 +192,11 @@ pub async fn read_pack(blobs: &dyn BlobStore, pack: &pb::PackRef) -> Result<Byte
 
 **Tests:** `put_is_create_only_and_idempotent`; `put_existing_with_other_length_is_mismatch`; `lost_ack_put_returns_existed_on_retry` (`FaultyStore` `ErrorAfterApply` on the pack path); `get_range_reads_idx_section`; `range_past_end_is_out_of_range`; `lpk_from_git_pack_round_trips` (a pack from `git pack-objects`, read back through `read_pack`/`read_idx`, verifies with `git verify-pack`); `large_blob_uses_multipart` (a 65 MiB blob on the in-memory store). **Q385** is recorded by a manual run of `large_blob_uses_multipart` against RustFS with a concurrent reader polling the object (no partial object observed in 200 tries, or the finding).
 
-**Commit:** `git: add BlobStore over operon-store with one-object pack bundles`.
+**Commit:** `git: add BlobStore over loams-store with one-object pack bundles`.
 
 ### Task 4: `WalStore`
 
-**Files:** `crates/operon-git/src/wal.rs`, `crates/operon-git/tests/wal.rs`.
+**Files:** `crates/loams-git/src/wal.rs`, `crates/loams-git/tests/wal.rs`.
 
 **Produces:** the `WalStore` trait, `Seq`, `WalBatch`, `WalSegment`, `Hint` and `Appended` of §36 §5.1 verbatim, plus:
 
@@ -219,7 +219,7 @@ impl Hint { pub fn empty() -> Self; }
 
 ### Task 5: The pack-cache `Odb`
 
-**Files:** `crates/operon-git/src/odb.rs`, `crates/operon-git/tests/fork.rs` (lookup part).
+**Files:** `crates/loams-git/src/odb.rs`, `crates/loams-git/tests/fork.rs` (lookup part).
 
 **Produces:**
 
@@ -243,7 +243,7 @@ impl Odb {
 
 ### Task 6: The ref state machine and idempotency
 
-**Files:** `crates/operon-git/src/state.rs`, `crates/operon-git/tests/state.rs`.
+**Files:** `crates/loams-git/src/state.rs`, `crates/loams-git/tests/state.rs`.
 
 **Produces:**
 
@@ -275,7 +275,7 @@ impl RepoState {
 
 ### Task 7: `BucketRefLog`: the sequencer and group commit
 
-**Files:** `crates/operon-git/src/{reflog.rs,sequencer.rs,testing.rs}`, `crates/operon-git/tests/{reflog.rs,linearizable.rs}`.
+**Files:** `crates/loams-git/src/{reflog.rs,sequencer.rs,testing.rs}`, `crates/loams-git/tests/{reflog.rs,linearizable.rs}`.
 
 **Produces:** the `RefLog` trait, `RefTxn`, `Receipt`, `RefError`, `ReadAt`, `RefSnapshot` and `CommittedTxn` of §36 §5.2 verbatim, plus:
 
@@ -303,13 +303,13 @@ pub mod testing { pub struct ManualClock; pub fn mem_reflog(store: Store) -> Buc
 
 **Tests** (`tests/reflog.rs`): `commit_then_snapshot_sees_it`; `group_commit_batches_concurrent_txns` (200 concurrent commits with a 50 ms injected PUT delay produce fewer than 60 segments); `group_rejects_only_the_stale_txn`; `atomic_multi_ref_all_or_none`; `lost_ack_resolves_to_committed`; `fenced_group_revalidates` (a second `BucketRefLog` on the same store commits a conflicting update in between); `replay_returns_original_receipt`; `snapshot_is_a_prefix_of_commits`; `watch_has_no_gaps_across_fences`; `missing_pack_is_refused_before_queueing`; `shutdown_answers_unavailable`.
 
-**Tests** (`tests/linearizable.rs`, with `operon_meta_conformance::linearizability`): `single_sequencer_linearizable`, `two_sequencers_one_store_linearizable` and `four_sequencers_under_faults_linearizable` — histories of `commit` (CAS on 3 refs) and `snapshot(Latest)` from 4 clients over 300 operations each, with `FaultyStore::random` (5% errors, 5% `ErrorAfterApply`, delays up to 20 ms), seeds 0..32 on PRs and 0..1024 nightly; the model is a map of 3 refs with CAS semantics.
+**Tests** (`tests/linearizable.rs`, with `loams_meta_conformance::linearizability`): `single_sequencer_linearizable`, `two_sequencers_one_store_linearizable` and `four_sequencers_under_faults_linearizable` — histories of `commit` (CAS on 3 refs) and `snapshot(Latest)` from 4 clients over 300 operations each, with `FaultyStore::random` (5% errors, 5% `ErrorAfterApply`, delays up to 20 ms), seeds 0..32 on PRs and 0..1024 nightly; the model is a map of 3 refs with CAS semantics.
 
 **Commit:** `git: add the bucket RefLog with group commit, fencing and idempotency`.
 
 ### Task 8: Checkpoints, forks and segment GC
 
-**Files:** `crates/operon-git/src/{checkpointer.rs,fork.rs,gc.rs}`, `crates/operon-git/tests/{checkpoint.rs,fork.rs,gc.rs}`.
+**Files:** `crates/loams-git/src/{checkpointer.rs,fork.rs,gc.rs}`, `crates/loams-git/tests/{checkpoint.rs,fork.rs,gc.rs}`.
 
 **Produces:**
 
@@ -330,41 +330,41 @@ pub async fn run_segment_gc(store: &Store, plan: &SegmentGcPlan) -> Result<u64, 
 
 **Commit:** `git: add checkpoints, O(1) forks and segment GC`.
 
-### Task 9: `git-remote-loam`
+### Task 9: `git-remote-loams`
 
-**Files:** `crates/operon-git-remote/{Cargo.toml,src/{main.rs,protocol.rs,url.rs,fetch.rs,push.rs,local.rs}}`, `crates/operon-git-remote/tests/{helper.rs,concurrent.rs,faults.rs}`.
+**Files:** `crates/loams-git-remote/{Cargo.toml,src/{main.rs,protocol.rs,url.rs,fetch.rs,push.rs,local.rs}}`, `crates/loams-git-remote/tests/{helper.rs,concurrent.rs,faults.rs}`.
 
-**Produces:** the binary `git-remote-loam`, invoked by git as `git-remote-loam <remote-name> <address>` for `loam::<address>` URLs.
+**Produces:** the binary `git-remote-loams`, invoked by git as `git-remote-loams <remote-name> <address>` for `loams::<address>` URLs.
 
 **Semantics** (gitremote-helpers):
-1. **Address.** `<address>` is an `object_store` URL whose path ends in `ns/<ns>/repos/<repo_id>`; the helper opens `Store::from_url` at that prefix (credentials from the environment). Anything else exits with `fatal: loam: expected <store-url>/ns/<ns>/repos/<repo_id>, got <address>`.
+1. **Address.** `<address>` is an `object_store` URL whose path ends in `ns/<ns>/repos/<repo_id>`; the helper opens `Store::from_url` at that prefix (credentials from the environment). Anything else exits with `fatal: loams: expected <store-url>/ns/<ns>/repos/<repo_id>, got <address>`.
 2. **`capabilities`** → `fetch`, `push`, `option`, then a blank line.
 3. **`option`** → `verbosity`, `progress`, `atomic`, `push-option`, `dry-run` (`ok`), anything else `unsupported`.
 4. **`list` / `list for-push`** → `RefLog::snapshot(Latest)`; one line `<oid> <ref>` per ref, `@<target> HEAD` for the symref; a missing repository lists nothing for `for-push` and fails `list` with `fatal: repository '<address>' not found` (Ruling 7).
-5. **`fetch <oid> <ref>` lines, then a blank line** → Ruling 4: download every live pack (and the fork parent's, at its seq) not in `.git/loam/<remote>/packs`, write `pack-<checksum>.pack`/`.idx` into `.git/objects/pack/` atomically (write to `tmp_pack_*`, then rename), record the checksums, answer a blank line.
+5. **`fetch <oid> <ref>` lines, then a blank line** → Ruling 4: download every live pack (and the fork parent's, at its seq) not in `.git/loams/<remote>/packs`, write `pack-<checksum>.pack`/`.idx` into `.git/objects/pack/` atomically (write to `tmp_pack_*`, then rename), record the checksums, answer a blank line.
 6. **`push <src>:<dst>` lines, then a blank line** → for each refspec: resolve `<src>` (empty = delete); FF check (Ruling 5) unless `+`; collect `<new>` tips and the remote's tips; `git pack-objects --revs --stdout --thin` with `<new>` and `^<remote tip>` lines on stdin; complete the thin pack with `git index-pack --stdin --fix-thin` into a temp dir (giving pack and idx); `LpkWriter::from_parts` → `BlobStore::put` → one `RefTxn` (all refspecs if `option atomic true`, else one per refspec, committed concurrently so they share segments) through a `BucketRefLog` opened for this process; answer `ok <dst>` or `error <dst> <reason>` per ref (`fetch first` for `Stale`, `non-fast-forward`, `protected`, `already exists`), then a blank line; `shutdown` the log (publishes the hint).
 7. Progress lines go to stderr when `progress` is on. Exit code 0 unless the protocol itself failed.
 
-**Tests** (`tests/helper.rs`, driving the real `git` binary with `PATH` pointing at the built helper and a `file://` store in a temp dir): `clone_of_missing_repo_fails`; `first_push_creates_repo`; `clone_fetch_push_round_trip`; `non_fast_forward_is_rejected_with_fetch_first`; `force_push_with_plus_succeeds`; `delete_ref`; `atomic_multi_ref_push_all_or_none`; `push_options_are_recorded` (visible in the WAL event); `fork_then_clone` (a fork made with `fork_repo` clones with the parent's objects); `fetch_after_other_push_gets_new_pack`. **Tests** (`tests/concurrent.rs`): `concurrent_pushes_to_distinct_branches_all_land` (8 `git push` processes); `concurrent_pushes_to_one_branch_one_wins_per_round` (8 processes, 5 rounds, each round exactly one `ok` and the rest `fetch first`); `concurrent_pushes_never_lose_an_acked_push` (every `ok` ref is in the final snapshot or superseded by a later `ok`). **Tests** (`tests/faults.rs`, through a `LOAM_GIT_FAULTS=<seed>:<rate>` test hook compiled only with the `faults` feature): `push_survives_lost_acks`, `repeated_push_after_lost_answer_is_replayed`.
+**Tests** (`tests/helper.rs`, driving the real `git` binary with `PATH` pointing at the built helper and a `file://` store in a temp dir): `clone_of_missing_repo_fails`; `first_push_creates_repo`; `clone_fetch_push_round_trip`; `non_fast_forward_is_rejected_with_fetch_first`; `force_push_with_plus_succeeds`; `delete_ref`; `atomic_multi_ref_push_all_or_none`; `push_options_are_recorded` (visible in the WAL event); `fork_then_clone` (a fork made with `fork_repo` clones with the parent's objects); `fetch_after_other_push_gets_new_pack`. **Tests** (`tests/concurrent.rs`): `concurrent_pushes_to_distinct_branches_all_land` (8 `git push` processes); `concurrent_pushes_to_one_branch_one_wins_per_round` (8 processes, 5 rounds, each round exactly one `ok` and the rest `fetch first`); `concurrent_pushes_never_lose_an_acked_push` (every `ok` ref is in the final snapshot or superseded by a later `ok`). **Tests** (`tests/faults.rs`, through a `LOAMS_GIT_FAULTS=<seed>:<rate>` test hook compiled only with the `faults` feature): `push_survives_lost_acks`, `repeated_push_after_lost_answer_is_replayed`.
 
-**Commit:** `git: add git-remote-loam, a serverless remote helper over the bucket`.
+**Commit:** `git: add git-remote-loams, a serverless remote helper over the bucket`.
 
 ### Task 10: Benchmarks, RustFS and the CI job
 
-**Files:** the bench (in `bench/git-wal/` or `crates/operon-git/benches/`, per `bench/`'s conventions on `main`), `scripts/git/{rustfs.sh,bench.sh}`, `.github/workflows/ci.yml`, `docs/design/36-loam-git.md` (§4.4 measured numbers).
+**Files:** the bench (in `bench/git-wal/` or `crates/loams-git/benches/`, per `bench/`'s conventions on `main`), `scripts/git/{rustfs.sh,bench.sh}`, `.github/workflows/ci.yml`, `docs/design/36-loams-git.md` (§4.4 measured numbers).
 
 **Semantics:**
 - `git-wal-bench --store <url> --repos <n> --pushers <p> --duration <s> --pack-bytes <b> [--put-delay-ms <d>]` drives `BucketRefLog` directly (no git processes): reports commits/s, p50/p99 commit latency, mean group size, store PUTs and GETs per commit, as one JSON line.
 - Runs recorded in §36 §4.4 (as a table, with the machine and date): in-memory with `--put-delay-ms` 20, 50, 100, 150 (the latency model); RustFS on the machine (via `scripts/git/rustfs.sh start`, `rustfs/rustfs:1.0.x`); and, when the owner provides credentials, R2, S3 Standard and S3 Express One Zone in one region, which answers **Q384** (including whether an Express directory bucket honours `If-None-Match: *`: the `append_is_exclusive_across_writers` test run against it).
-- The CI job `git` (path-filtered on `crates/operon-git*/**`, `proto/loam/git/**`): `cargo test -p operon-git -p operon-git-remote` with RustFS as a service container for the store-backed suites (`OPERON_TEST_S3_URL`), skipping them with a printed reason when unset; seeds 0..32. The nightly runs seeds 0..1024 and the bench against RustFS.
+- The CI job `git` (path-filtered on `crates/loams-git*/**`, `proto/loams/git/**`): `cargo test -p loams-git -p loams-git-remote` with RustFS as a service container for the store-backed suites (`LOAMS_TEST_S3_URL`), skipping them with a printed reason when unset; seeds 0..32. The nightly runs seeds 0..1024 and the bench against RustFS.
 
 **Exit:** §36's GT1 gate (§13): every test above green; ≥ 30 commits/s on one hot repository at `--put-delay-ms 100` with p99 commit latency under 1 s, or the measured shortfall recorded with the owner's ruling.
 
-**Commit:** `bench: measure the bucket WAL's push rate and latency per store`; `ci: run the operon-git suites against RustFS`.
+**Commit:** `bench: measure the bucket WAL's push rate and latency per store`; `ci: run the loams-git suites against RustFS`.
 
 ### Task 11: Docs and close
 
-**Files:** `docs/design/36-loam-git.md` (an "As built (GT1)" note under §4, the measured table, any ruling that changed the design), `CHANGELOG.md`, and this plan's "Rulings made during execution".
+**Files:** `docs/design/36-loams-git.md` (an "As built (GT1)" note under §4, the measured table, any ruling that changed the design), `CHANGELOG.md`, and this plan's "Rulings made during execution".
 
 **Commit:** `docs: record GT1 as built and close the plan`.
 

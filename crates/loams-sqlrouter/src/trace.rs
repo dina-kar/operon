@@ -9,16 +9,23 @@ use serde::Serialize;
 /// `ShardMap / Reload {instance: "pgdog-1", gen: 4, ok: true}`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SpecEvent {
+    /// The TLA+ module, e.g. `ShardMap`.
     pub spec: &'static str,
+    /// The action in that module, e.g. `Reload`.
     pub action: &'static str,
+    /// The observed values, in the order the spec's trace checker reads them.
     pub fields: Vec<(&'static str, SpecValue)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
+/// A field value, serialised as the bare JSON value.
 pub enum SpecValue {
+    /// A TLA+ `BOOLEAN`.
     Bool(bool),
+    /// A TLA+ integer.
     Int(i64),
+    /// A TLA+ string (instance, shard and key names).
     Str(String),
 }
 
@@ -52,7 +59,9 @@ impl From<String> for SpecValue {
     }
 }
 
+/// Receives spec events from machines. Drivers decide where they go.
 pub trait TraceSink {
+    /// Record one transition. Must not block or fail.
     fn emit(&mut self, event: SpecEvent);
 }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Minimal compute entrypoint, adapted from neondatabase/neon
 # docker-compose/compute_wrapper/shell/compute.sh (Apache-2.0). The tenant and timeline are created by the caller
-# (Loam, or the spike's curl calls) through the pageserver API, so this script
+# (Loams, or the spike's curl calls) through the pageserver API, so this script
 # needs no curl/jq: it fills the compute spec and starts compute_ctl.
 set -euo pipefail
 : "${TENANT_ID:?set TENANT_ID}" "${TIMELINE_ID:?set TIMELINE_ID}"
