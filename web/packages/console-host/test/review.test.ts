@@ -108,6 +108,24 @@ describe('review fixes', () => {
     ).toEqual({ kind: 'connector', ref: 'kafka' });
   });
 
+  it('the script must be the frame base path for the policy plugin', () => {
+    const mount = (frameUrl: string, scriptUrl: string, pluginId = 'hello') =>
+      mountSandboxed(document.createElement('div'), {
+        frameUrl,
+        scriptUrl,
+        policy: { pluginId, version: '1', services: [], permissions: [] },
+        invoke: async () => undefined,
+      });
+    expect(() => mount('/ui/sandbox/frame.html', '/custom/plugins/hello/client.js')).toThrow(
+      /refusing/,
+    );
+    expect(() => mount('/ui/sandbox/frame.html', '/ui/plugins/hello/client.js', 'other')).toThrow(
+      /refusing/,
+    );
+    expect(() => mount('/ui/other.html', '/ui/plugins/hello/client.js')).toThrow(/refusing/);
+    mount('/ui/sandbox/frame.html', '/ui/plugins/hello/client.js').dispose();
+  });
+
   it('a frame that navigates away never gets a port again', () => {
     const container = document.createElement('div');
     const handle = mountSandboxed(container, {

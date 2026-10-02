@@ -53,11 +53,24 @@ export function isLocalScript(url: string): boolean {
 }
 
 export function mountSandboxed(container: HTMLElement, options: SandboxOptions): SandboxHandle {
+  // The frame loads `<base>plugins/<id>/client.js` beside `<base>sandbox/`,
+  // so the script must be exactly that path, for this policy's plugin id.
+  const base = options.frameUrl.endsWith('sandbox/frame.html')
+    ? options.frameUrl.slice(0, -'sandbox/frame.html'.length)
+    : undefined;
   const scriptId = isLocalScript(options.scriptUrl)
     ? sandboxScriptId(options.scriptUrl)
     : undefined;
-  if (!scriptId) {
+  if (!scriptId || base === undefined || !isLocalScript(options.frameUrl)) {
     throw new Error(`refusing a non-local plugin script: ${options.scriptUrl}`);
+  }
+  if (
+    scriptId !== options.policy.pluginId ||
+    options.scriptUrl !== `${base}plugins/${scriptId}/client.js`
+  ) {
+    throw new Error(
+      `refusing plugin script ${options.scriptUrl} for ${options.policy.pluginId} (frame ${options.frameUrl})`,
+    );
   }
   const iframe = document.createElement('iframe');
   iframe.setAttribute('sandbox', SANDBOX_FLAGS);
