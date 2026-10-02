@@ -2,35 +2,38 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists the interfaces it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (names, paths, flags, header values), use them verbatim. The code is not pre-written in this plan; the tests are the specification.
 
-> **Status: Planned** (2026-10-02). **Slot: track SF, first plan** (proposed; D460). Branches `sf1-t<N>`, stacked; PRs target `main`. Depends on AP1a (the cordis console host and slots) and AP1 (the Tauri shell) being on `main`; Tasks 0–2 and 9 do not (they are edge configuration, a spike and a proto). Mobile work (Task 8) depends on AP0's protos and AP2/AP3's app shells. **Phase 1 of D460: Zulip, Plane and Forgejo, in full, before any phase-2 app.**
+> **Status: Planned** (2026-10-02). **Slot: track SF, first plan** (proposed; D460). Branches `sf1-t<N>`, stacked; PRs target `main`. Depends on AP1a (the cordis console host and slots, for the browser console) being on `main`; the **desktop** tasks (5b and the GPUI halves of 6 and 7) depend on the native desktop shell, a fork of zeron (§37, amended for a native desktop, D440-series pending), and until it lands they build as standalone GPUI crates with a test harness. Tasks 0–2 and 9 depend on neither (they are edge configuration, a spike and a proto). Mobile work (Task 8) depends on AP0's protos and AP2/AP3's app shells. **Phase 1 of D460: Zulip, Plane and Forgejo, in full, before any phase-2 app.**
 
-**Goal:** Put Zulip, Plane and Forgejo into the console in three ways, in the browser, in the desktop app and on phones, with no change to any app:
-- **Embedded UI.** Each app's own web UI in an isolated pane (sandboxed iframe in the browser, a separate Tauri webview or window on the desktop), signed in by Authentik, framed through edge configuration only (design §3.3, §3.4).
-- **Native panels** from `loam.collab.v1` (the typed read and write surface the loop uses): Zulip threads, Plane issues and cycles, Forgejo repositories, PRs and CI (§3.2, §3.6), with OpenFGA filtering.
+**Goal:** Put Zulip, Plane and Forgejo into Loams in three ways, in the browser console, in the native desktop app and on phones, with no change to any app:
+- **Full app UI.** Browser console: each app's own web UI in a sandboxed iframe, signed in by Authentik, framed through edge configuration only (design §3.3, §3.4). Desktop: the system browser (top-level, the person's Authentik session) and, if the spike allows, an optional in-app sidebar browser (design §3.4 tiers 2 and 3).
+- **Native panels** from `loam.collab.v1` (the typed read and write surface the loop uses): Zulip threads, Plane issues and cycles, Forgejo repositories, PRs and CI (§3.2, §3.6), with OpenFGA filtering, as cordis plugins in the browser console and native GPUI panels in the desktop app.
 - **Mobile deep links and native views**: issue list and detail, PR list and checks, thread digest, plus `loams://app/…` links into the system browser (§3.4, §3.5).
 
 **Architecture:**
-- **`web/plugins/embed`** (`@loams/plugin-embed`): the `embed` service and the `embed.pane` slot; the iframe host; the desktop bridge that calls Rust `embed_*` commands; the toolbar; the deep-link router.
+- **`web/plugins/embed`** (`@loams/plugin-embed`): the `embed` service and the `embed.pane` slot for the **browser console**: the iframe host, the toolbar, the deep-link router.
 - **`web/plugins/{zulip,plane,forgejo}`**: one plugin each, `first-party`, registering `console.page`, `app.panel`, `bot.card`, `embed.pane`, overview cards and palette commands (design §3.5).
 - **`crates/operon-collab`**: the `loam.collab.v1` service (Connect, connect-rust), the app adapters (`ZulipApi`, `PlaneApi`, `ForgejoApi` traits with HTTP implementations and recorded-fixture fakes), the **credential broker** and the OpenFGA filter. SF2 reuses all three.
-- **`web/apps/desktop`**: `embed_open`, `embed_place`, `embed_hide`, `embed_close` commands; per-app data stores; navigation allowlist; no capability for embed labels.
+- **`crates/operon-apps-client`**: generated connect-rust clients for AP0's services and `loam.collab.v1` (later `loam.bot.v1` and `loam.factory.v1`), shared by the desktop fork and any Rust client.
+- **Desktop (the zeron fork; the directory is named by §37's amendment, written `desktop/` below):** crate `loams-ui-collab` with GPUI panels and cards for the same objects, an `AppOpener` (registry-checked system-browser opens) and, spike-gated, `SidebarBrowser`.
 - **`deploy/factory/edge/`**: the edge routes (headers, forward-auth hooks) as Envoy or Caddy snippets and Helm values, plus the CI harness that starts each pinned app image behind the edge.
 - **`loams-mobile`** (separate repository): `Apps` screen, issue and PR views, deep-link handling.
 
-**Tech Stack:** Rust 1.97.1, edition 2024, connect-rust and buffa (D128), `reqwest` (Apache-2.0 or MIT) for app APIs, `wiremock` for fakes, OpenFGA client from §22's `commons-control` work; TypeScript and cordis 4.0.0-rc.10 behind `@loams/cordis` (Q427), Vitest and Playwright; Tauri 2 (the version AP1 pins), `tauri-plugin-opener`, `tauri-plugin-deep-link`; SwiftUI with connect-swift, Compose with connect-kotlin. Docker Compose for the edge harness. No new native dependency in the Loam binary beyond `reqwest`.
+**Tech Stack:** Rust 1.97.1, edition 2024, connect-rust and buffa (D128), `reqwest` (Apache-2.0 or MIT) for app APIs, `wiremock` for fakes, OpenFGA client from §22's `commons-control` work; TypeScript and cordis 4.0.0-rc.10 behind `@loams/cordis` (Q427), Vitest and Playwright for the browser console; GPUI at the revision the zeron fork pins, with GPUI's test context for views, and the `open` crate (MIT or Apache-2.0) for the system browser; `gpui-wry` or `wry` (MIT or Apache-2.0) only inside the spike (Task 0); SwiftUI with connect-swift, Compose with connect-kotlin. Docker Compose for the edge harness. No new native dependency in the Loam binary beyond `reqwest`.
 
 **Spec:**
-- [`docs/design/39-software-factory-and-loam-bot.md`](../design/39-software-factory-and-loam-bot.md): §3 (all), §4, §6.2, §7; D461–D464, D475, D476, D478.
-- [`docs/design/37-desktop-and-mobile-apps.md`](../design/37-desktop-and-mobile-apps.md): §5 (slots, trust tiers), §6.3 and §6.4 (lockdown, bridge), §6.7 (deep links), §7.4, §8.3.
+- [`docs/design/39-software-factory-and-loams-bot.md`](../design/39-software-factory-and-loams-bot.md): §3 (all), §4, §6.2, §7; D461–D464, D475, D476, D478.
+- [`docs/design/37-desktop-and-mobile-apps.md`](../design/37-desktop-and-mobile-apps.md): §5 (slots, trust tiers, for the browser console), §7.4, §8.3; the desktop shell is **§37 as amended for a native desktop (D440-series pending)**, not designed here. zeron (`github.com/zeronsh/zeron`, MIT): `ARCHITECTURE.md`, `crates/ui`.
 - [`docs/design/22-showcase-suite.md`](../design/22-showcase-suite.md): §4 (licences), §5 (SSO per app), §7 (the OpenFGA model), §8.1.
 - [`docs/design/38-knative-authentik-gitops.md`](../design/38-knative-authentik-gitops.md): Authentik, the edge.
-- [`docs/plans/2026-10-01-ap1a-cordis-console.md`](2026-10-01-ap1a-cordis-console.md), [`…ap1-desktop-tauri.md`](2026-10-01-ap1-desktop-tauri.md), [`…ap0-app-protos.md`](2026-10-01-ap0-app-protos.md).
+- [`docs/plans/2026-10-01-ap1a-cordis-console.md`](2026-10-01-ap1a-cordis-console.md), [`…ap0-app-protos.md`](2026-10-01-ap0-app-protos.md).
 
 ## Global Constraints
 
 Same as the AP plans, plus:
 - **No app is modified, forked or patched** (D476). A needed behaviour is edge configuration, a panel or an adapter. A task that seems to need a patch stops and files an issue.
-- **Embeds never hold a Loam token.** No Loam credential is passed to a frame, a webview or a URL. CI greps the plugin and desktop sources for `Authorization`, `Bearer` and `loams_` in embed code paths.
+- **Embeds never hold a Loam token.** No Loam credential is passed to a frame, a webview, a URL or a spawned browser's command line. CI greps the plugin and desktop sources for `Authorization`, `Bearer` and `loams_` in embed and opener code paths.
+- **The desktop opens only registry origins.** `AppOpener` refuses any URL whose origin is not in `ListApps` for the active environment, and never passes a token (SSO is the browser's).
+- **A GPUI panel uses `operon-apps-client` only**; a lint (`cargo deny` bans plus a source grep) fails on an HTTP client aimed at an app origin from `loams-ui-collab`.
 - **Native panels read through `loam.collab.v1` only.** A plugin never imports an app's API client. A lint (`eslint-plugin-boundaries` or a plain import test) fails on `fetch` of an app origin in `web/plugins/{zulip,plane,forgejo}`.
 - **No app secret leaves the broker.** `Secret` has no `Serialize` and a redacted `Debug` (§30 D288); the canary test of Task 9 covers `operon-collab`.
 - **Deep links navigate, never act** (D432). Parsed in Rust against an allowlist, and in Swift and Kotlin against the same golden table.
@@ -43,7 +46,7 @@ Same as the AP plans, plus:
 | # | Ruling | Why | Cost if wrong |
 |---|---|---|---|
 | 1 | **Sibling subdomains of one domain** for the apps and the console (Q462's proposal) | Same-site cookies make framing work with `SameSite=Lax`; Plane, Forgejo and Zulip cannot all be served under a path prefix | A single-host install needs a wildcard DNS entry; `loams dev` uses `*.localhost` |
-| 2 | **The embed pane is one component with two backends** (iframe, child webview) behind the `embed` service | Plugins stay identical across browser and desktop | The desktop backend has the larger test surface |
+| 2 | **Desktop gets native panels plus the system browser; the sidebar browser is optional** (design §3.4) | zeron has no webview crate in its workspace, and the factory needs only the objects; the system browser gives SSO for free | Users who want a docked Plane board wait for the spike's answer |
 | 3 | **Native panels first for read, write only for comment, create and (gated) merge** | The loop needs these; every other write is the app's UI | Users ask for more; each is a small addition to `loam.collab.v1` |
 | 4 | **Plane's API key is per agent identity, not per user** (Q463) | Plane CE has no per-user OAuth for third-party callers **(verify, Task 4)** | Audit in Plane names the agent, not the person; Loams' audit holds the person |
 | 5 | **`loam.collab.v1` mirrors A2A's `Part` and artifact kinds where it can** | SF2 and SF3 render the same objects in chat | A little protobuf duplication until Q467 settles importing A2A's proto |
@@ -51,7 +54,7 @@ Same as the AP plans, plus:
 ## Review Focus
 
 1. **Framing is exactly as configured.** Tests: Task 2 (`frames_from_console_only`, `no_samesite_none`, `app_csp_otherwise_untouched`).
-2. **Embed isolation on the desktop.** Tests: Task 5 (`embed_webview_has_no_ipc`, `storage_is_per_app_and_env`, `navigation_off_origin_is_blocked`, `capability_check_names_no_embed_label`).
+2. **The desktop opens only registry origins and never carries a token.** Tests: Task 5b (`opener_refuses_unlisted_origin`, `opener_passes_no_token`, `sidebar_browser_navigation_allowlist`).
 3. **No path from an embed or a plugin to a secret or token.** Tests: Tasks 3, 4, 9.
 4. **OpenFGA filtering is real.** Tests: Task 3 (`list_filters_by_openfga`, `unlisted_object_is_404_not_403`).
 5. **Deep links cannot act.** Tests: Tasks 6 and 8 (`deeplink_table`, `unknown_path_is_dropped`).
@@ -66,27 +69,31 @@ crates/operon-collab/tests/fixtures/{zulip,plane,forgejo}/*.json   # recorded AP
 deploy/factory/edge/{envoy.yaml.tmpl,caddy.snippet,values.edge.yaml,README.md}
 deploy/factory/images.lock   LICENSES.md
 deploy/factory/harness/{compose.yml,run.sh,assert_frames.mjs}
-web/plugins/embed/{package.json,src/{index.ts,service.ts,iframe.ts,desktop.ts,toolbar.tsx,deeplink.ts},test/*}
+web/plugins/embed/{package.json,src/{index.ts,service.ts,iframe.ts,toolbar.tsx,deeplink.ts},test/*}
 web/plugins/{zulip,plane,forgejo}/{package.json,src/{index.ts,panels/*.tsx,cards/*.tsx,pages/*.tsx},test/*}
 web/packages/slots/src/{embed.ts,app-panel.ts,bot.ts,factory.ts}   # new slot declarations
-web/apps/desktop/src-tauri/{src/embed.rs,capabilities/main.json,tauri.conf.json}
-web/apps/console/catalog/{base.yml,desktop.patch.yml}
+web/apps/console/catalog/base.yml
+crates/operon-apps-client/{Cargo.toml,build.rs,src/lib.rs}
+desktop/crates/loams-ui-collab/src/{lib.rs,opener.rs,sidebar.rs,panels/{zulip,plane,forgejo}.rs,cards/*.rs}   # zeron fork; path per §37's amendment
+desktop/crates/loams-ui-collab/tests/*
 docs/design/39-…  docs/design/37-… (slot catalog note)  docs/plans/README.md  CHANGELOG.md
 ```
 
-### Task 0: Spike: per-webview storage and framing, per OS
+### Task 0: Spike: the desktop browser question, the apps' headers and APIs
 
-**Files:** `docs/plans/sf1-spike.md` (the results); a throwaway Tauri project under `web/apps/desktop/spikes/embed/` (deleted at the end).
+**Files:** `docs/plans/sf1-spike.md` (the results); a throwaway GPUI example under `desktop/spikes/sidebar/` (deleted at the end).
 
 **Checks** (record each result with the command and OS, in the spike doc):
-- On macOS (14+), Linux (webkit2gtk) and Windows (WebView2): can two child webviews in one window have **separate data stores** (`data_store_identifier` on macOS, a data directory on Linux and Windows), and does the Tauri `unstable` feature flag still gate `Window::add_child`? If not, the fallback is one window per app; record which OS needs it.
-- Do cookies in one embed stay invisible to another and to the main window (read `document.cookie` in each)?
-- With `local: true` capabilities naming only `main`, does an embed webview get any `window.__TAURI__` or IPC? Does `dangerousRemoteDomainIpcAccess` stay unset?
-- Does `on_navigation` fire for redirects, form posts and `window.open`, and can it refuse them?
-- WebAuthn and passkeys inside each OS's webview against Authentik's sign-in (answers Q461).
+- **zeron's sidebar browser.** Its README mentions one; its `ARCHITECTURE.md` lists no webview crate and its `zeron-preview` manifest depends on `webrtc`. Read the code (`crates/ui`, `crates/preview`) and record what the sidebar browser actually is (an embedded webview, a remote-rendered preview, or something else) and whether Loams can reuse it for a top-level page.
+- **A webview inside GPUI** on macOS (14+), Linux (X11 and Wayland) and Windows: does `gpui-wry` (or `wry` driven directly) host a child webview, at what GPUI revision, with what z-order, resize, focus and IME behaviour? Record per OS: works, works with caveats, or does not.
+- **Separate data stores** for two webviews in one window on each OS that works (a named data store on macOS 14+, a data directory on Linux and Windows); cookies in one invisible to the other.
+- **Navigation control**: can the host refuse redirects, form posts and new-window requests, and route them to the system browser?
+- **WebAuthn and passkeys** inside each OS's webview against Authentik's sign-in (answers Q461).
 - Which Authentik release's **proxy outpost** is in the open-source edition, and whether it injects basic auth or a trusted header.
-- For each of Zulip, Plane and Forgejo, from the pinned image: the `X-Frame-Options` and `Content-Security-Policy` headers on `/`, `/login` and an API route; the cookie flags; whether the app serves under a path prefix.
+- For each of Zulip, Plane and Forgejo, from the pinned image: the `X-Frame-Options` and `Content-Security-Policy` headers on `/`, `/login` and an API route (these matter to the browser console's iframes); the cookie flags; whether the app serves under a path prefix.
 - Plane CE: the REST API v1 endpoints for workspaces, projects, issues, cycles, modules, comments, labels and webhooks (answers Q464), the API key model, and rate limits.
+
+**Decision recorded by the spike:** per OS, whether the sidebar browser ships (tier 3) or the desktop has tiers 1 and 2 only. Nothing else in this plan depends on it.
 
 **Commit:** `docs: SF1 spike results`.
 
@@ -133,7 +140,7 @@ service CollabService {
 **Files:** `deploy/factory/edge/*`, `deploy/factory/harness/*`, `deploy/factory/images.lock`, `LICENSES.md`, `.github/workflows/factory-edge.yml` (path-filtered).
 
 **Semantics (design §3.3):**
-- Routes for `chat.`, `plane.`, `git.` (and, for SF5, `errors.`, `analytics.`, `llm.`, `obs.`). Per route: remove `X-Frame-Options`; replace `frame-ancestors` in any CSP with `'self' <console origin> tauri://localhost http://tauri.localhost`, appending when the app sends no CSP (a CSP with only `frame-ancestors`); leave every other directive; leave cookies alone.
+- Routes for `chat.`, `plane.`, `git.` (and, for SF5, `errors.`, `analytics.`, `llm.`, `obs.`). Per route: remove `X-Frame-Options`; replace `frame-ancestors` in any CSP with `'self' <console origin>`, appending when the app sends no CSP (a CSP with only `frame-ancestors`); leave every other directive; leave cookies alone.
 - A route flag `forward_auth: authentik` adds Authentik's proxy outpost check before the app (used by SF5).
 - `*.localhost` names for `loams dev`; wildcard DNS for a cluster; the Helm values map names to origins.
 - `images.lock`: image, digest, licence, source URL, for Zulip, Plane CE, Forgejo, Forgejo Runner and (placeholders) the phase-2 apps. `LICENSES.md` renders the design §4 table from it; CI fails if an image is missing a licence line.
@@ -166,9 +173,11 @@ impl CredentialBroker {
 }
 ```
 
+**`AppCredential` is an opaque, secret-free handle** (an id, the app, the scope and an expiry); it contains no secret bytes and has no accessor for any. An adapter builds a request, hands it with the `AppCredential` to `CredentialBroker::execute`, and the broker attaches the secret inside its own boundary and performs the call; so every adapter call runs through a broker-owned `CallPermit`, and adapter code cannot read, log or copy the secret.
+
 **Semantics:** Zulip over its REST API as the agent's bot user (design §6.1). `idem` becomes a Zulip `local_id`-style dedupe: the service keeps `(idempotency key → message id)` in the `ControlStore` for 24 h so a replay returns the first message. The OpenFGA filter (`fga.rs`) asks `ListObjects(user, can_read, zulip_stream)` with a seconds-long cache (as §22 §8.1) and filters streams, topics and messages; **an object the user cannot read is `NOT_FOUND`**, never `PERMISSION_DENIED`, so existence does not leak. Untrusted text (message content) is returned in a field marked `untrusted` and capped at 64 KiB.
 
-**Tests:** fixtures-backed fakes (`wiremock`): `list_streams_and_topics`; `thread_read_paginates`; `post_is_idempotent_on_key`; `list_filters_by_openfga`; `unlisted_object_is_404_not_403`; `broker_refuses_unlisted_action`; `broker_requires_settled_approval_for_destructive`; `permit_has_no_secret_accessor` (a compile-fail test); `canary_secret_never_appears` (§30's canary extended: the `loam_cnry_…` value is the Zulip API key; every method, error and `tracing` output is scanned); `app_error_maps_to_stable_reason` (`APP_UNREACHABLE`, `APP_AUTH`, `APP_RATE_LIMITED`).
+**Tests:** fixtures-backed fakes (`wiremock`): `list_streams_and_topics`; `thread_read_paginates`; `post_is_idempotent_on_key`; `list_filters_by_openfga`; `unlisted_object_is_404_not_403`; `broker_refuses_unlisted_action`; `broker_requires_settled_approval_for_destructive`; `permit_has_no_secret_accessor` and `app_credential_has_no_secret_accessor` (compile-fail tests); `canary_secret_never_appears` (§30's canary extended: the `loam_cnry_…` value is the Zulip API key; every method, error and `tracing` output is scanned); `app_error_maps_to_stable_reason` (`APP_UNREACHABLE`, `APP_AUTH`, `APP_RATE_LIMITED`).
 
 **Commit:** `collab: the Zulip adapter, the credential broker and OpenFGA filtering`.
 
@@ -187,44 +196,58 @@ impl CredentialBroker {
 
 **Commit:** `collab: the Plane and Forgejo adapters`.
 
-### Task 5: The embed plugin and the desktop bridge
+### Task 5: The browser embed plugin
 
-**Files:** `web/plugins/embed/**`, `web/apps/desktop/src-tauri/src/embed.rs`, `capabilities/main.json`, `tauri.conf.json`, the CI capability check from AP1.
+**Files:** `web/plugins/embed/**`.
 
 **Produces:**
 
 ```ts
 export interface EmbedService {
-  open(app: AppId, path?: string): EmbedHandle;                 // iframe in the browser, child webview or window on the desktop
-  place(handle: EmbedHandle, rect: DOMRectInit): void;          // desktop: tells Rust where to put the webview
-  hide(handle: EmbedHandle): void;  close(handle: EmbedHandle): void;
+  open(app: AppId, path?: string): EmbedHandle;                 // a sandboxed iframe in the browser console
+  close(handle: EmbedHandle): void;
   onState(handle: EmbedHandle, cb: (s: "loading" | "ready" | "signin" | "error") => void): Dispose;
 }
 ```
 
+**Semantics (design §3.4, browser console):** `iframe.ts` sets the sandbox attribute of design §3.4 and the `allow` attribute to `clipboard-write; fullscreen` only; the URL must be in `ListApps`' `embed_url` set for the active environment; messages from frames are ignored; the toolbar offers back, reload, open in a new tab and copy link; the state is `signin` when the frame lands on Authentik's origin (detected by a load timeout and the app registry's issuer, never by reading the frame).
+
+**Tests (Vitest and Playwright against the Task 2 harness):** `service_opens_sandboxed_iframe`; `unlisted_app_is_refused`; `sandbox_attribute_is_exact`; `allow_attribute_is_exact`; `frame_messages_are_ignored`; `state_signin_on_authentik_origin`; `no_token_in_frame_url_or_name`.
+
+**Commit:** `embed: the browser pane service and iframe host`.
+
+### Task 5b: The desktop client, panel scaffolding, opener and (optional) sidebar browser
+
+**Files:** `crates/operon-apps-client/**`, `desktop/crates/loams-ui-collab/{src/{lib.rs,opener.rs,sidebar.rs},tests/*}`.
+
+**Produces:**
+
 ```rust
-// web/apps/desktop/src-tauri/src/embed.rs  (commands declared in the app manifest, each needing a grant)
-#[tauri::command] async fn embed_open(app: AppId, env: EnvId, path: Option<String>) -> Result<EmbedId, EmbedError>;
-#[tauri::command] fn embed_place(id: EmbedId, x: f64, y: f64, w: f64, h: f64) -> Result<(), EmbedError>;
-#[tauri::command] fn embed_hide(id: EmbedId) -> Result<(), EmbedError>;
-#[tauri::command] fn embed_close(id: EmbedId) -> Result<(), EmbedError>;
+// crates/operon-apps-client: generated from AP0 and collab protos
+pub struct AppsClient { /* connect-rust clients over the desktop's HTTP stack and token source */ }
+impl AppsClient { pub fn collab(&self) -> CollabServiceClient; /* + instance, approvals; bot and factory arrive in SF3 and SF4 */ }
+
+// desktop/crates/loams-ui-collab
+pub struct AppOpener { /* the active environment's ListApps registry */ }
+impl AppOpener { pub fn open(&self, url: &Url) -> Result<(), OpenError>; }   // refuses unlisted origins; no token, no extra args
+pub struct SidebarBrowser;   // only built with the `sidebar-browser` feature, per Task 0's decision
 ```
 
-**Semantics (design §3.4):** per Task 0's result, child webview where storage isolation is supported, a window otherwise. The label is `embed-<env>-<app>`; the data store is named the same; the URL must be in `ListApps`' `embed_url` set for the active environment, checked in Rust, never from JavaScript's argument alone. `on_navigation` allows the app origin and the instance's Authentik origin and sends every other URL to `opener:allow-open-url`. No capability names an embed label. In the browser, `iframe.ts` sets the sandbox attribute of design §3.4 and the `allow` attribute to `clipboard-write; fullscreen` only. The toolbar offers back, reload, open in browser, copy link. States: `signin` is shown when the pane lands on Authentik's origin.
+**Semantics:** the desktop's HTTP stack and token handling are §37's amendment; `AppsClient` takes them as trait objects (`HttpTransport`, `TokenSource`) so SF1 does not depend on that design. `AppOpener` resolves `loams://app/<env>/<app>/<path>` and panel "Open in browser" actions to registry URLs and opens them with the OS handler. `SidebarBrowser` (feature-gated) loads a registry URL top-level with a per-(environment, app) data store, a navigation allowlist (the app's origin and Authentik's), new windows and downloads refused, no JavaScript bridge to the host, and an address bar that shows the origin.
 
-**Tests:** Vitest: `service_picks_iframe_in_browser`, `service_picks_webview_in_tauri`, `place_follows_layout_resize`, `unlisted_app_is_refused`, `state_signin_on_authentik_origin`. Rust (`cargo test -p loams-desktop`, mock runtime): `embed_url_must_be_in_registry`, `navigation_off_origin_is_blocked`, `new_window_is_sent_to_browser`, `storage_is_per_app_and_env`, `close_drops_the_store_handle`. Capability check script: `capability_check_names_no_embed_label`, `embed_webview_has_no_ipc` (a Playwright-driven desktop test loads an embed fixture that probes `window.__TAURI__` and `window.__TAURI_INTERNALS__`).
+**Tests:** `opener_refuses_unlisted_origin`; `opener_passes_no_token` (the spawned command line and environment are scanned); `opener_resolves_deeplink_to_registry_url`; `apps_client_uses_injected_transport` (a fake transport sees every call); `apps_client_streams_watch` (collab `Watch` snapshot, changes, heartbeat); with the feature: `sidebar_browser_navigation_allowlist`, `sidebar_browser_data_store_is_per_app_and_env`, `sidebar_browser_refuses_downloads`, `sidebar_browser_has_no_host_bridge`.
 
-**Commit:** `embed: the pane service, the iframe host and the desktop webview bridge`.
+**Commit:** `desktop: apps client, the opener and the optional sidebar browser`.
 
 ### Task 6: The Zulip plugin
 
 **Files:** `web/plugins/zulip/**`, catalog entries.
 
-**Produces:** `@loams/plugin-zulip`: `console.page` at `/chat` (tabs: Panel, Zulip) where the **Panel** tab is the factory triage stream's topics with a thread view and a reply box (read, post) and the **Zulip** tab is `embed.pane#zulip`; `environment.overview.card` (unread, mentions, triage topics open); `app.panel#zulip.threads`; `bot.card#zulip.thread` (title, last message, reply count, open-in-app link); a `palette.command` "Open Zulip thread…". Deep links: `loams://app/<env>/zulip/#narrow/stream/<id>/topic/<name>` resolves through the router to the pane at that path.
+**Produces:** `@loams/plugin-zulip`: `console.page` at `/chat` (tabs: Panel, Zulip) where the **Panel** tab is the factory triage stream's topics with a thread view and a reply box (read, post) and the **Zulip** tab is `embed.pane#zulip`; `environment.overview.card` (unread, mentions, triage topics open); `app.panel#zulip.threads`; `bot.card#zulip.thread` (title, last message, reply count, open-in-app link); a `palette.command` "Open Zulip thread…". **Desktop:** `loams-ui-collab/src/panels/zulip.rs`: the same triage-topics list, thread view and reply box as GPUI views, the thread card for the conversation, an "Open in Zulip" action through `AppOpener`. Deep links: `loams://app/<env>/zulip/#narrow/stream/<id>/topic/<name>` resolves through the router to the pane at that path.
 
-**Tests:** Vitest with the AP0 mock: `panel_lists_triage_topics`, `thread_view_streams_new_messages`, `reply_posts_with_idempotency_key`, `untrusted_content_renders_as_text` (HTML in a message is shown escaped; links get `rel="noopener noreferrer"` and open externally), `overview_card_counts`, `deeplink_opens_pane_at_narrow`, `inactive_when_app_not_listed`. Playwright against the harness: `embed_signs_in_through_authentik_once`.
+**Tests:** Vitest with the AP0 mock: `panel_lists_triage_topics`, `thread_view_streams_new_messages`, `reply_posts_with_idempotency_key`, `untrusted_content_renders_as_text` (HTML in a message is shown escaped; links get `rel="noopener noreferrer"` and open externally), `overview_card_counts`, `deeplink_opens_pane_at_narrow`, `inactive_when_app_not_listed`. Playwright against the harness: `embed_signs_in_through_authentik_once`. GPUI (test context): `zulip_panel_lists_triage_topics`, `zulip_reply_posts_with_idempotency_key`, `zulip_untrusted_content_is_plain_text`, `zulip_open_in_browser_uses_opener`.
 
-**Commit:** `zulip: the console plugin`.
+**Commit:** `zulip: the console plugin and the desktop panel`.
 
 ### Task 7: The Plane and Forgejo plugins
 
@@ -232,11 +255,14 @@ export interface EmbedService {
 
 **Produces:**
 - `@loams/plugin-plane`: `console.page` `/issues` (list with filters, detail drawer, create, comment), `/cycles` (the current cycle's progress and scope), the **Plane** tab as `embed.pane#plane`; `bot.card#plane.issue`; overview card (open factory issues, cycle progress). Deep links `loams://app/<env>/plane/<workspace>/projects/<id>/issues/<issue>`.
+  **Desktop:** GPUI issue list, detail, create, comment and cycle views and the issue card.
 - `@loams/plugin-forgejo`: `console.page` `/code` (repositories, PRs with status and checks, CI runs with a log tail), the **Forgejo** tab as `embed.pane#forgejo` (diffs open here, `loams://app/<env>/forgejo/<owner>/<repo>/pulls/<n>/files`), `bot.card#forgejo.pr`, `approval.renderer#forgejo.merge` (PR title, base and head, checks summary, the diffstat, "open the diff", typed confirmation for protected branches), overview card (open PRs, failing CI).
 
-**Tests:** Vitest: `plane_issue_list_filters`, `plane_create_issue_flow`, `plane_comment_is_idempotent`, `plane_cycle_card`, `forgejo_pr_list_and_checks`, `forgejo_merge_button_creates_approval_not_merge`, `merge_renderer_shows_hash_matched_summary`, `forgejo_log_tail_is_text_only`, `deeplinks_table` (shared golden file with Tasks 6 and 8). Playwright: `diff_opens_in_embed_pane`.
+**Desktop:** GPUI repository, PR, checks and CI log-tail views, the PR card, and the merge approval view (the native approvals screen renders `forgejo.merge` summaries; "open the diff" goes through `AppOpener`).
 
-**Commit:** `plane, forgejo: the console plugins`.
+**Tests:** Vitest: `plane_issue_list_filters`, `plane_create_issue_flow`, `plane_comment_is_idempotent`, `plane_cycle_card`, `forgejo_pr_list_and_checks`, `forgejo_merge_button_creates_approval_not_merge`, `merge_renderer_shows_hash_matched_summary`, `forgejo_log_tail_is_text_only`, `deeplinks_table` (shared golden file with Tasks 6 and 8). Playwright: `diff_opens_in_embed_pane`. GPUI: `plane_issue_view_renders_untrusted_as_plain`, `plane_create_issue_flow`, `forgejo_pr_view_shows_checks`, `forgejo_merge_action_creates_approval_not_merge`, `forgejo_diff_opens_in_browser_via_opener`.
+
+**Commit:** `plane, forgejo: the console plugins and desktop panels`.
 
 ### Task 8: Mobile deep links and native views
 
@@ -259,7 +285,7 @@ export interface EmbedService {
 **Checks:**
 - **Canary:** every `loam.collab.v1` method, error, trace and log line of Tasks 3 and 4 scanned for the canary secrets (§30 D288's test, extended).
 - **Prompt-injection fixtures:** an issue body, a Zulip message and a PR description containing `</script>`, markdown links with `javascript:` URLs, `[click](loams://…)` deep links, and "ignore previous instructions" text render as inert text in every plugin, card and mobile view; no deep link inside content is ever followed without a tap; the `untrusted` flag is present on every free-text field.
-- **Exit gate (all must pass in CI):** the edge assertions of Task 2; the embed isolation tests of Task 5; plugin tests of Tasks 6–7; mobile tests of Task 8; the licence table check; an end-to-end Playwright run: sign in at Authentik, open Zulip, Plane and Forgejo panes, create a Plane issue from the native panel and see it in the embedded Plane, open a Forgejo PR's diff from the native PR panel; and on a simulator, open the issue on the phone through a deep link.
+- **Exit gate (all must pass in CI):** the edge assertions of Task 2; the browser embed and desktop opener tests of Tasks 5 and 5b; plugin tests of Tasks 6–7; mobile tests of Task 8; the licence table check; an end-to-end Playwright run: sign in at Authentik, open Zulip, Plane and Forgejo panes, create a Plane issue from the native panel and see it in the embedded Plane, open a Forgejo PR's diff from the native PR panel; on the desktop build (the standalone GPUI harness until the fork lands), open the same issue and PR panels and the system-browser links; and on a simulator, open the issue on the phone through a deep link.
 - Record outcomes, measured sizes (the plugins' bundle sizes, the desktop binary delta), and any API gaps found, in the exit report.
 
 **Commit:** `docs: SF1 exit report`.

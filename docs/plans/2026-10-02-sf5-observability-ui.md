@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists the interfaces it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (names, paths, headers, attributes, endpoints), use them verbatim, except where marked **(verify)**: Task 0 checks those against the pinned images and records the answer. The code is not pre-written in this plan; the tests are the specification.
 
-> **Status: Planned** (2026-10-02). **Slot: track SF, fifth plan, phase 2** (proposed; D460, D461, D470, D476). Branches `sf5-t<N>`, stacked; PRs target `main`. Depends on SF1 (embed plugin, edge, `operon-collab`, the broker), SF2 (A2A host, agent pattern) and SF4's `Observer` trait and run record. Tasks 1–2 and 6 need no SF4. Loopback only until the unified auth plan (D111).
+> **Status: Planned** (2026-10-02). **Slot: track SF, fifth plan, phase 2** (proposed; D460, D461, D470, D476). Branches `sf5-t<N>`, stacked; PRs target `main`. Depends on SF1 (embed plugin, edge, `operon-collab`, the broker), SF2 (A2A host, agent pattern) and SF4's `Observer` trait and run record. Tasks 1–5 and Task 6's panes and readers need no SF4; Task 6's real `Observer` is built against the trait as SF4 Task 7 specifies it (a stable interface) and merges after SF4 Task 7. Loopback only until the unified auth plan (D111).
 
 **Goal:** Phase 2 of D460, complete:
 - **GlitchTip** and **OpenPanel** in the console (native panels plus embed) and as the **`glitchtip`** and **`analytics`** A2A agents (the loop's signal sources and its observation tools).
@@ -15,14 +15,15 @@
 - **`crates/operon-agent-glitchtip`**, **`crates/operon-agent-analytics`**: A2A agents like SF2's.
 - **`deploy/factory/otel/`**: the collector config (two pipelines plus Loam's own OTLP exporter), the Langfuse and OpenObserve profiles (images pinned, S3 on RustFS, Postgres, ClickHouse and Redis for Langfuse), and the Authentik outpost config for forward-auth apps.
 - **`crates/operon-factory`** gains the real `Observer` implementation (SF4 Task 7).
+- **Desktop (the zeron fork; path per §37's amendment):** `loams-ui-collab` gains GlitchTip error panels and OpenPanel tiles (GPUI), and the trace and log buttons open Langfuse and OpenObserve through SF1's `AppOpener` (system browser, or the sidebar browser where it ships); no embedding of either app is attempted natively.
 - **`loams-mobile`**: error list and detail, analytics tiles, the run view's trace timeline.
 
 **Tech Stack:** Rust 1.97.1, edition 2024, `reqwest`, `wiremock`, the OpenTelemetry Collector (`otelcol-contrib`, Apache-2.0; a distribution built with only the needed components by `ocb`, Task 0) with the `filter`, `transform`, `batch` processors and the `otlphttp` exporter; `opentelemetry` and `tracing-opentelemetry` in the Rust services; TypeScript and cordis 4; Vitest, Playwright; Docker Compose and Helm for the profiles. The pinned images: GlitchTip (MIT), OpenPanel (AGPL-3.0), Langfuse web and worker (MIT, `ee/` never enabled), OpenObserve open-source edition (AGPL-3.0). Task 0 records digests and licences into `deploy/factory/images.lock`.
 
 **Spec:**
-- [`docs/design/39-software-factory-and-loam-bot.md`](../design/39-software-factory-and-loam-bot.md): §3 (apps, embed, edge, sessions), §4 (licences), §9 (tracing), §10 stage 7, §16; D461, D463, D470, D476.
+- [`docs/design/39-software-factory-and-loams-bot.md`](../design/39-software-factory-and-loams-bot.md): §3 (apps, embed, edge, sessions), §4 (licences), §9 (tracing), §10 stage 7, §16; D461, D463, D470, D476.
 - [`docs/design/22-showcase-suite.md`](../design/22-showcase-suite.md): §4.3 (GlitchTip), §5 (SSO), §8.4 (OTLP), §13b (OpenPanel); [`21-durable-execution.md`](../design/21-durable-execution.md) §6.6 (agent traces); D73 and Q43 (OTLP ingest into Loam).
-- [`docs/plans/2026-10-02-sf1-collab-ui-plugins.md`](2026-10-02-sf1-collab-ui-plugins.md), [`…sf2-a2a-agents.md`](2026-10-02-sf2-a2a-agents.md), [`…sf4-factory-loop.md`](2026-10-02-sf4-factory-loop.md).
+- [`docs/plans/2026-10-02-sf1-collab-ui-plugins.md`](2026-10-02-sf1-collab-ui-plugins.md), [`2026-10-02-sf2-a2a-agents.md`](2026-10-02-sf2-a2a-agents.md), [`2026-10-02-sf4-factory-loop.md`](2026-10-02-sf4-factory-loop.md).
 - Upstream documentation, re-read at Task 0: GlitchTip's API and alert webhooks, OpenPanel's API and its self-hosting compose, Langfuse's OpenTelemetry and public API pages and self-hosting guide, OpenObserve's OTLP ingestion pages.
 
 ## Global Constraints
@@ -31,6 +32,7 @@ Same as SF1 and SF2, plus:
 - **Unmodified apps** (D476). **Langfuse's `ee/` features are never switched on**; CI greps the Langfuse environment for enterprise licence keys. **OpenObserve runs the open-source edition only.**
 - **Model content goes to Langfuse only.** The OpenObserve and Loam pipelines delete `gen_ai.prompt`, `gen_ai.completion` and `gen_ai.*.content`; a test proves it with a content canary.
 - **No per-person identity is claimed for OpenPanel or OpenObserve** (forward-auth, one service user). The UI says so on the pane's toolbar tooltip.
+- **Both credential-bearing hops use TLS** (HTTPS or the cluster's mTLS): the collector to Langfuse and OpenObserve, and the Authentik outpost to OpenPanel and OpenObserve. A test fails on an `http://` endpoint outside loopback.
 - **Readers are read-only** and use their own, minimally scoped credentials from the broker; they cannot ingest or delete.
 - **Collector config is declarative and tested** with `otelcol validate` and golden pipelines; no hand-edited file in a chart.
 - **The build machine.** One cargo build at a time; the Langfuse profile (ClickHouse, Redis, Postgres, S3) and OpenObserve run one at a time in tests; stop and report if `/home` has under 8 GB free.
@@ -92,7 +94,9 @@ docs/design/39-…  docs/plans/README.md  CHANGELOG.md
 
 **Tests:** `list_and_detail_from_fixtures`; `stack_trace_truncates_at_20_frames`; `resolve_is_idempotent`; `free_text_is_untrusted`; `agent_card_schema_and_signature`; `agent_search_by_release`; `canary_secret_never_appears`; `framing_headers_replaced_by_edge` (harness); `plugin_inactive_when_not_listed`; `deeplink_opens_pane_at_issue`.
 
-**Commit:** `glitchtip: adapter, plugin and agent`.
+**Desktop:** a GPUI error list and detail panel and the error card, with "Open in GlitchTip" through `AppOpener`; tests (GPUI test context): `error_panel_lists_and_filters`, `stack_trace_is_plain_text`, `open_in_glitchtip_uses_opener`.
+
+**Commit:** `glitchtip: adapter, plugin, desktop panel and agent`.
 
 ### Task 2: OpenPanel adapter, plugin and the `analytics` agent; the forward-auth edge
 
@@ -102,7 +106,9 @@ docs/design/39-…  docs/plans/README.md  CHANGELOG.md
 
 **Tests:** `metrics_from_fixtures`; `anomaly_flags_3_mad`; `anomaly_ignores_seasonal_pattern` (a recorded weekly cycle); `scheduler_publishes_signal_once_per_window`; `forward_auth_denies_without_group` (harness: Authentik container, a user outside the group gets 403); `forward_auth_injects_service_credentials_server_side` (the browser never sees them); `framing_allowed_only_for_console_origin`; `plugin_states_no_per_user_identity` (the tooltip text); `agent_has_no_write_skills` (the card).
 
-**Commit:** `openpanel: adapter, plugin, analytics agent and forward-auth`.
+**Desktop:** GPUI metric tiles and the metric card; tests: `tiles_render_from_series`, `tiles_state_no_per_user_identity`, `open_in_openpanel_uses_opener`.
+
+**Commit:** `openpanel: adapter, plugin, desktop tiles, analytics agent and forward-auth`.
 
 ### Task 3: The collector and the two pipelines
 
