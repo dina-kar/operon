@@ -2,38 +2,38 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists the interfaces it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (names, paths, flags, constants), use them verbatim. The code is not pre-written in this plan (M0.3 Ruling 1).
 
-> **Status: In progress** (2026-10-02: Tasks 0–4 in #188, Task 8 in #189, Task 7 in #191, Task 5 in #193/#194; Task 6 and Task 9 next). Planned 2026-10-01. Track RT, phase RT0 (design [§31](../design/31-loams-router-and-verification.md) §17, D319). Branches `rt0-t<N>`, stacked; PRs target `main`. RT0 adds two crates (`loams-sqlrouter`, `loams-compat`), a `spec/` tree, scripts, inventory tables and two CI jobs. It changes no existing crate, no default feature and no M-track code path. It needs no cluster except the containers the inventory starts. Every decision here is a proposal until the owner answers Q300 (§31 §19); Tasks 1–4 and 7–8 are useful whatever the answer, Tasks 5–6 too.
+> **Status: In progress** (2026-10-02: Tasks 0–4 done in PR rt0-t1; Tasks 5–9 next). Planned 2026-10-01. Track RT, phase RT0 (design [§31](../design/31-loam-router-and-verification.md) §17, D319). Branches `rt0-t<N>`, stacked; PRs target `main`. RT0 adds two crates (`loams-sqlrouter`, `loams-compat`), a `spec/` tree, scripts, inventory tables and two CI jobs. It changes no existing crate, no default feature and no M-track code path. It needs no cluster except the containers the inventory starts. Every decision here is a proposal until the owner answers Q300 (§31 §19); Tasks 1–4 and 7–8 are useful whatever the answer, Tasks 5–6 too.
 
 **Goal:** Lay the foundations the chat dump's M0 asked for, as reconciled in §31:
 - `spec/tla/router/` with **`ShardMap` and `ReshardCutover` checked by TLC at small bounds**, skeletons of `CrossShardCommit`, `PrimaryFailover` and `RouterSession` that parse, and the `tla` CI job (D310);
-- **the compatibility inventory**, static and dynamic halves, for PgDog in front of Postgres and for Vitess v24 in front of MySQL 8.0.46, replayed against WeSQL and Loams Postgres where they are available (D309, §31 §15);
+- **the compatibility inventory**, static and dynamic halves, for PgDog in front of Postgres and for Vitess v24 in front of MySQL 8.0.46, replayed against WeSQL and Loam Postgres where they are available (D309, §31 §15);
 - **`loams-sqlrouter`**, the sans-I/O kernel crate: the shard-map types, key ranges with split and merge, the hash functions with reference vectors, the `Machine`/`Ctx`/`TraceSink` seams and the lints that keep the crate free of I/O (§31 §7.1);
 - **the Lean 4 project** `spec/lean/` with the range-partition theorems proved and an oracle binary that the Rust tests call, with the `lean` CI job (D312).
 
 **Architecture:**
 - **Specs are their own tree.** `spec/tla/router/*.tla` with `MC*.tla` models and `.cfg` variants listed in `spec/tla/router/specs.toml`; `scripts/spec/check.sh` runs TLC and Apalache from pinned downloads. A variant may be marked `expect = "violation:<Invariant>"`, which must fail exactly that way.
 - **The kernel crate does no I/O.** `crates/loams-sqlrouter` depends on `serde`, `postcard`, `thiserror`, `rand_core`, `des` and `xxhash-rust` only; its own `clippy.toml` bans clocks, threads, env reads and unseeded randomness; it has no `tokio`.
-- **The inventory is data plus small tools.** `crates/loams-compat` (test-only, `publish = false`) holds the `compat-replay` binary; capture scripts live in `scripts/router/inventory/`; blessed TSVs in `conformance/router/`. Pinned PgDog and Vitess checkouts live outside the repository in `$HOME/.cache/loams/` and are never committed.
+- **The inventory is data plus small tools.** `crates/loams-compat` (test-only, `publish = false`) holds the `compat-replay` binary; capture scripts live in `scripts/router/inventory/`; blessed TSVs in `conformance/router/`. Pinned PgDog and Vitess checkouts live outside the repository in `$HOME/.cache/loam/` and are never committed.
 - **Lean builds an executable.** `spec/lean/` is a Lake package `LoamsRouter` with library modules and an executable `loams-router-oracle` speaking JSON lines.
 
 **Tech Stack:**
-- Rust 1.97.1, edition 2024, workspace lints. New dependencies (Task 0 checks versions and `cargo deny`): `des` 0.9 (MIT OR Apache-2.0), `postcard` and `serde` (workspace), `rand_core` (workspace through `rand` 0.9), `xxhash-rust` 0.8 (workspace). For `loams-compat` only: `tokio-postgres` 0.7 (already a dev-dependency of `loams`), `mysql_async` (MIT OR Apache-2.0, version checked in Task 0), `sha2`, `csv` (workspace if present; else MIT OR Unlicense, checked).
+- Rust 1.97.1, edition 2024, workspace lints. New dependencies (Task 0 checks versions and `cargo deny`): `des` 0.9 (MIT OR Apache-2.0), `postcard` and `serde` (workspace), `rand_core` (workspace through `rand` 0.9), `xxhash-rust` 0.8 (workspace). For `loams-compat` only: `tokio-postgres` 0.7 (already a dev-dependency of `operon`), `mysql_async` (MIT OR Apache-2.0, version checked in Task 0), `sha2`, `csv` (workspace if present; else MIT OR Unlicense, checked).
 - TLA+: `tla2tools.jar` v1.7.4 (MIT, 2024-08-05), CommunityModules (MIT, the release Task 0 picks), Apalache v0.62.3 (Apache-2.0). Java 21 (Temurin) in CI.
 - Lean: `leanprover/lean4:v4.34.1` through elan, Plausible (Apache-2.0) pinned in `lake-manifest.json`.
 - Containers for the inventory: `postgres:17.11`, `mysql:8.0.46` (verify the tag exists; otherwise the closest 8.0 patch, recorded), the WeSQL image built by `deploy/wesql/` at fork commit `eef34f452` or later, `ghcr.io/pgdogdev/pgdog` v0.1.60 by digest, Vitess v24.0.4 images (`vitess/lite:v24.0.4`, verify the name), `quay.io/coreos/etcd:v3.7.2`.
 
 **Spec:**
-- [`docs/design/31-loams-router-and-verification.md`](../design/31-loams-router-and-verification.md): all of it; §6 (record, rendering, push, cutover, monitor), §7 (seams), §9.2 (C-1–C-7), §11 (specs), §12 (Lean), §15 (inventory method), §16 (licenses).
-- [`docs/design/28-loams-postgres.md`](../design/28-loams-postgres.md) §8 (PgDog rules) and §11 (P-phases); [`docs/design/29-wesql-oltp.md`](../design/29-wesql-oltp.md) once PR #172 merges (until then `git show origin/wesql-oltp-design:docs/design/29-wesql-oltp.md`).
+- [`docs/design/31-loam-router-and-verification.md`](../design/31-loam-router-and-verification.md): all of it; §6 (record, rendering, push, cutover, monitor), §7 (seams), §9.2 (C-1–C-7), §11 (specs), §12 (Lean), §15 (inventory method), §16 (licenses).
+- [`docs/design/28-loam-postgres.md`](../design/28-loam-postgres.md) §8 (PgDog rules) and §11 (P-phases); [`docs/design/29-wesql-oltp.md`](../design/29-wesql-oltp.md) once PR #172 merges (until then `git show origin/wesql-oltp-design:docs/design/29-wesql-oltp.md`).
 - Neon's spec layout as a reference: `neon/safekeeper/spec/` (`modelcheck.sh`, `MC*.tla`, `models/`).
 
 ## Global Constraints
 
 Same as the M1 overview §8, plus:
-- **No PgDog code or text in Loams.** PgDog (AGPL-3.0) is read as a reference and run as an unmodified container (D236, D318). Specs are written from its documentation and observed behaviour; inventory rows record source paths and captured statements, never PgDog source lines; no PgDog test is copied. A reviewer rejects any PR that pastes or translates PgDog code.
+- **No PgDog code or text in Loam.** PgDog (AGPL-3.0) is read as a reference and run as an unmodified container (D236, D318). Specs are written from its documentation and observed behaviour; inventory rows record source paths and captured statements, never PgDog source lines; no PgDog test is copied. A reviewer rejects any PR that pastes or translates PgDog code.
 - **Vitess material only with its notice.** Test vectors copied from Vitess (`go/vt/vtgate/vindexes/hash_test.go`) carry the Apache-2.0 notice in the fixture's header; no other Vitess code is ported in RT0.
 - **PostgreSQL's hash functions** are ported from PostgreSQL's `src/common/hashfn.c` and `src/backend/access/hash/hashfunc.c` (PostgreSQL License) with the notice in the module header, never from PgDog's `hashfn.c` copy.
-- **Pinned external checkouts stay outside the repository**, in `$HOME/.cache/loams/{pgdog-v0.1.60,vitess-v24.0.4}` (shallow clones by tag). Scripts take the path as `PGDOG_SRC` and `VITESS_SRC`.
+- **Pinned external checkouts stay outside the repository**, in `$HOME/.cache/loam/{pgdog-v0.1.60,vitess-v24.0.4}` (shallow clones by tag). Scripts take the path as `PGDOG_SRC` and `VITESS_SRC`.
 - **The build machine.** One cargo build at a time, the shared target directory, `-j 6`, lld. Containers are stopped before a cargo build. TLC runs with `-workers 2` locally. Stop and report if `/home` has under 8 GB free.
 - **Commit areas:** `spec`, `router`, `compat`, `ci`, `docs`.
 
@@ -46,8 +46,8 @@ Same as the M1 overview §8, plus:
 | 3 | **A spec that documents an unsafe configuration carries an `expect = "violation:<Inv>"` variant** | Keeps the reason for each rule (fence before ConfigMap, durable 2PC log) executable | None |
 | 4 | **Postgres hash ground truth comes from real Postgres hash partitioning** (`CREATE TABLE … PARTITION BY HASH`, then which partition a key lands in), not from PgDog's code | PgDog documents that it matches Postgres's hash partitioning; Postgres is the primary source | If PgDog differs from Postgres for some type, RT1's routing test finds it, and the type is recorded as a deviation |
 | 5 | **The kernel crate has no async and no I/O**, enforced by its `clippy.toml` and by a test that greps its `Cargo.toml` for forbidden dependencies (`tokio`, `reqwest`, `tikv-client`, `tokio-postgres`) | D313's determinism rests on it | None |
-| 6 | **The inventory's dynamic half runs vttablet in unmanaged mode against MySQL 8.0.46**, the mode WeSQL will use (D302) | Managed-mode statements (mysqlctl, backups) are not what Loams runs | Statements only managed mode sends are missed; they are out of Loams's scope anyway |
-| 7 | **An inventory row whose target is not yet runnable is `pending-target`**, not a failure | Loams Postgres computes need P2b; WeSQL's image exists today | RT0 exits with Postgres-side rows pending; RT1 Task 0 re-runs them if P2b merged |
+| 6 | **The inventory's dynamic half runs vttablet in unmanaged mode against MySQL 8.0.46**, the mode WeSQL will use (D302) | Managed-mode statements (mysqlctl, backups) are not what Loam runs | Statements only managed mode sends are missed; they are out of Loam's scope anyway |
+| 7 | **An inventory row whose target is not yet runnable is `pending-target`**, not a failure | Loam Postgres computes need P2b; WeSQL's image exists today | RT0 exits with Postgres-side rows pending; RT1 Task 0 re-runs them if P2b merged |
 | 8 | **`ShardMapRecord` is postcard-encoded with a leading format byte `1`** | The metastore's encoding (D16); a byte lets RT1 change the layout | A layout change needs a new format byte and a reader for `1` |
 
 ## Review Focus
@@ -80,11 +80,11 @@ crates/loams-sqlrouter/tests/it/{main.rs,record.rs,ranges.rs,hash.rs,lean_oracle
 crates/loams-sqlrouter/tests/fixtures/{pg_hash_vectors.json,vitess_hash_vectors.json}
 crates/loams-compat/{Cargo.toml,src/main.rs,src/replay.rs,src/classify.rs,src/tsv.rs,tests/it/main.rs}
 conformance/router/README.md
-conformance/router/{pgdog-loamspg,vitess-wesql}-statements.tsv
-conformance/router/{pgdog-loamspg,vitess-wesql}-suites.tsv
+conformance/router/{pgdog-loampg,vitess-wesql}-statements.tsv
+conformance/router/{pgdog-loampg,vitess-wesql}-suites.tsv
 .github/workflows/ci.yml                        # jobs tla, lean; the changes filter gains spec and router
 deny.toml                                       # only if Task 0 finds a license to allow (none expected)
-docs/design/31-loams-router-and-verification.md  docs/plans/README.md  CHANGELOG.md
+docs/design/31-loam-router-and-verification.md  docs/plans/README.md  CHANGELOG.md
 ```
 
 ### Task 0: Reconcile and check the facts
@@ -93,7 +93,7 @@ docs/design/31-loams-router-and-verification.md  docs/plans/README.md  CHANGELOG
 
 **Checks** (record each result with the command):
 - Whether PR #172 (§29) has merged, and §29's final decision numbers (D273–D280 expected).
-- Whether §28's P2b and P3 have merged (Loams Postgres computes and PgDog routing in `deploy/`), which decides Ruling 7's `pending-target` rows.
+- Whether §28's P2b and P3 have merged (Loam Postgres computes and PgDog routing in `deploy/`), which decides Ruling 7's `pending-target` rows.
 - The latest PgDog release and the image digest for v0.1.60 (or the newer release, recorded, if the owner wants to move the pin); PgDog's license is still AGPL-3.0.
 - Vitess: the latest v24 patch (v24.0.4 on 2026-10-01), the image names for vtgate, vttablet and vtctld at that tag, and whether vitess.io still says v24 is the last release with MySQL 8.0.
 - `tla2tools.jar` v1.7.4 SHA-256; the CommunityModules release that works with it (its `Json` module is what RT1's trace validation needs; record the version); Apalache v0.62.3 SHA-256; Lean v4.34.1 still the latest stable, Plausible's tag for it.
@@ -107,7 +107,7 @@ docs/design/31-loams-router-and-verification.md  docs/plans/README.md  CHANGELOG
 **Files:** `spec/README.md`, `spec/tla/router/{README.md,specs.toml}`, `spec/tla/selftest/*`, `scripts/spec/{check.sh,tools.lock,provenance.sh}`, `.github/workflows/ci.yml`.
 
 **Produces:**
-- `scripts/spec/tools.lock`: one line per tool, `name version url sha256`. `check.sh` downloads into `$HOME/.cache/loams/spec-tools/` and verifies the hash before use; a mismatch exits 2 with `checksum mismatch for <name>`.
+- `scripts/spec/tools.lock`: one line per tool, `name version url sha256`. `check.sh` downloads into `$HOME/.cache/loam/spec-tools/` and verifies the hash before use; a mismatch exits 2 with `checksum mismatch for <name>`.
 - `scripts/spec/check.sh <Spec> [<variant>] [--parse-only] [--nightly]`: reads `specs.toml`, runs SANY (`--parse-only`), TLC (`java -XX:+UseParallelGC -cp tla2tools.jar:CommunityModules.jar tlc2.TLC -workers ${TLC_WORKERS:-2} -deadlock -config <cfg> <model>`) and, for variants with `apalache = ["Inv", …]`, `apalache-mc check --inv=<Inv> --length=<k>`. Exit 0 when every result matches `expect` (`"ok"` or `"violation:<Inv>"`), 1 otherwise, printing the variant, the expected and actual outcome, the states found and the time.
 - `specs.toml` format:
 
@@ -124,7 +124,7 @@ docs/design/31-loams-router-and-verification.md  docs/plans/README.md  CHANGELOG
   ```
 
 - `scripts/spec/provenance.sh`: fails if any file under `spec/`, `conformance/` or `crates/loams-sqlrouter/` contains `GNU AFFERO`, `pgdog::`, `use pgdog` or a line PgDog's source has verbatim (a list of 20 distinctive identifiers from PgDog's 2PC and resharding modules, kept in the script, chosen in this task); run in the `tla` job.
-- CI: the `changes` job gains filters `spec` (`spec/**`, `scripts/spec/**`) and `router` (`crates/loams-sqlrouter/**`, `crates/loams-compat/**`, `conformance/**`). Job `tla` (needs `changes`; runs when `spec` or `router` changed, or on schedule): Temurin 21, cache `~/.cache/loams/spec-tools`, `scripts/spec/check.sh --all` (PR variants) or `--all --nightly` on schedule, then `provenance.sh`, which covers `spec/`, `conformance/` and `crates/loams-sqlrouter/`.
+- CI: the `changes` job gains filters `spec` (`spec/**`, `scripts/spec/**`) and `router` (`crates/loams-sqlrouter/**`, `crates/loams-compat/**`, `conformance/**`). Job `tla` (needs `changes`; runs when `spec` or `router` changed, or on schedule): Temurin 21, cache `~/.cache/loam/spec-tools`, `scripts/spec/check.sh --all` (PR variants) or `--all --nightly` on schedule, then `provenance.sh`, which covers `spec/`, `conformance/` and `crates/loams-sqlrouter/`.
 
 **Semantics:** `spec/tla/selftest/Selftest.tla` is a three-line counter with an invariant that the counter stays under 3; `MCSelftest_Violation.cfg` sets the bound so TLC must find the violation. It proves the job detects failures and is listed with `expect = "violation:Small"`.
 
@@ -179,12 +179,12 @@ docs/design/31-loams-router-and-verification.md  docs/plans/README.md  CHANGELOG
 
 ### Task 5: The compatibility inventory, Postgres half
 
-**Files:** `scripts/router/inventory/{pg-static.sh,pg-capture.sh,compose.pg.yml,README.md}`, `crates/loams-compat/{Cargo.toml,src/{main.rs,replay.rs,classify.rs,tsv.rs},tests/it/main.rs}`, `conformance/router/{README.md,pgdog-loamspg-statements.tsv,pgdog-loamspg-suites.tsv}`.
+**Files:** `scripts/router/inventory/{pg-static.sh,pg-capture.sh,compose.pg.yml,README.md}`, `crates/loams-compat/{Cargo.toml,src/{main.rs,replay.rs,classify.rs,tsv.rs},tests/it/main.rs}`, `conformance/router/{README.md,pgdog-loampg-statements.tsv,pgdog-loampg-suites.tsv}`.
 
 **Produces:**
 - `pg-static.sh $PGDOG_SRC`: greps `pgdog/src/backend/{replication,schema,pool}/`, `pgdog/src/frontend/client/query_engine/two_pc/` and `pgdog/src/healthcheck.rs` for SQL string literals and replication commands (`START_REPLICATION`, `CREATE_REPLICATION_SLOT`, `IDENTIFY_SYSTEM`, `PREPARE TRANSACTION`, `COMMIT PREPARED`, `ROLLBACK PREPARED`, `pg_prepared_xacts`, `pg_is_in_recovery`, `pg_current_wal_lsn`, `COPY … (FORMAT BINARY)`, `pg_dump` invocations) and prints `source_path:line<TAB>statement-kind` rows, **never the line's text**. A human classifies each kind into a digest row.
 - `compose.pg.yml`: `postgres:17.11` ×3 (`shard0`, `shard1`, `ref`) with `shared_preload_libraries = pg_stat_statements`, `log_statement = all`, `max_prepared_transactions = 16`, `wal_level = logical`; PgDog v0.1.60 by digest with a two-shard config rendered by hand for this task (RT1 renders it from code).
-- `pg-capture.sh`: starts the compose file, runs PgDog's integration scenarios `resharding`, `logical`, `failover`, `pgbench`, `rewrite` and the 2PC tests from `$PGDOG_SRC/integration/` against it (run, not copied), then dumps `pg_stat_statements` (query text normalized by Postgres, calls, rows) from every shard into `capture.jsonl` under `$HOME/.cache/loams/inventory/pg/<date>/`.
+- `pg-capture.sh`: starts the compose file, runs PgDog's integration scenarios `resharding`, `logical`, `failover`, `pgbench`, `rewrite` and the 2PC tests from `$PGDOG_SRC/integration/` against it (run, not copied), then dumps `pg_stat_statements` (query text normalized by Postgres, calls, rows) from every shard into `capture.jsonl` under `$HOME/.cache/loam/inventory/pg/<date>/`.
 - `compat-replay` binary:
 
   ```text
@@ -194,7 +194,7 @@ docs/design/31-loams-router-and-verification.md  docs/plans/README.md  CHANGELOG
   For each digest it runs the captured example (session `SET`s first) on both URLs in a fresh connection, in a transaction rolled back at the end unless the statement is a transaction or replication command (those run in a scratch database per statement), and writes one TSV row: `digest, component, source, example, class, ref_hash, target_hash, note, issue`. `class ∈ {same, differs, error, unsupported, pending-target}`; `unsupported` needs a non-empty `note`.
 - `conformance/router/README.md`: the method (§31 §15), the column meanings, how to re-run, and the rule that a pin bump re-runs the inventory.
 
-**Semantics:** the target is a Loams Postgres compute from `deploy/neon` when P2b is merged (Task 0); otherwise every row is `pending-target` with the reference result recorded. `component` is one of `pool`, `health`, `schema-sync`, `copy`, `replication`, `2pc`, `query`.
+**Semantics:** the target is a Loam Postgres compute from `deploy/neon` when P2b is merged (Task 0); otherwise every row is `pending-target` with the reference result recorded. `component` is one of `pool`, `health`, `schema-sync`, `copy`, `replication`, `2pc`, `query`.
 
 **Tests:** `crates/loams-compat/tests/it`: `classify_same_differs_error` (fixtures over two in-process mock connectors: identical rows, a different row, an error), `tsv_round_trip`, `unsupported_needs_note`; a CI-less manual run whose TSVs are committed, with the run's date and pins in the README.
 
@@ -285,7 +285,7 @@ pub fn vitess_xxhash(bytes: &[u8]) -> KeyspaceId;
 
 ### Task 9: Docs and the RT0 exit
 
-**Files:** `docs/design/31-loams-router-and-verification.md` (as-built notes: tool versions, bounds and run times, the inventory's headline numbers per class and component, C-1–C-7 observations), `docs/plans/README.md` (RT0 row status), `CHANGELOG.md`.
+**Files:** `docs/design/31-loam-router-and-verification.md` (as-built notes: tool versions, bounds and run times, the inventory's headline numbers per class and component, C-1–C-7 observations), `docs/plans/README.md` (RT0 row status), `CHANGELOG.md`.
 
 **Exit criteria:**
 - `tla` job green: `ShardMap` and `ReshardCutover` pass at PR bounds and fail their unsafe variants as expected; the three skeletons parse.
@@ -310,4 +310,9 @@ pub fn vitess_xxhash(bytes: &[u8]) -> KeyspaceId;
 | E8 | **TLC's working directories live under `~/.cache/loam/spec-work/`** | TLC spills its state queue to the metadir; on a tmpfs `/tmp` a nightly run can exhaust memory | None |
 | E10 | **Lean without Plausible.** `lake test` runs `loams-router-proptest`, a seeded random driver (2 000 cases by default; `LOAMS_PROPTEST_CASES`) over the executable definitions; the package is `LoamsRouter` and the oracle `loams-router-oracle` (the product rename, D400) | Plausible's derive support for the structures here was not needed: the properties that matter are *proved* (`validate_iff`, `partition_total_unique`, `split_partition`, `merge_partition`, `shardOfRange_total`), and the random driver only exercises the executable code the oracle runs. No dependency to pin | If Lean-side shrinking is wanted later, add Plausible then |
 | E11 | **The Lean theorems are stated over `validate`, the same algorithm as Rust's `validate_partition`**, and `validate_iff` proves it accepts exactly the partitions; the plan's `lookup_total_unique` is stated as "the filter of ranges containing `id` has length 1" | Ties the proofs to the code the oracle compares, instead of to a separate Prop the Rust never computes | None |
+| E12 | **`KeyRange` is `{ lo: u64, hi: Option<u64> }`**, as this plan says, not §31 §6.1's `[u8; 8]` pair | Big-endian byte order is numeric order, so the two are equivalent; `u64` makes the arithmetic and the Lean oracle direct | None |
+| E13 | **`lookup` returns `Option<usize>`**, and `split`/`merge` return a separate `EditError` (`BadIndex`, `NotInside`, `NotAdjacent { index }`) instead of `PartitionError` | Mirrors Lean's `lookup : … → Option Nat` and `split`/`merge : … → Option …` one to one; a bad edit is not a partition defect | None |
+| E14 | **The Postgres port is the little-endian path of `hash_bytes_extended`**, with the PostgreSQL License notice in `hash/pg.rs` | PostgreSQL reads 32-bit words in host order; every server Loams runs is little-endian (x86-64, ARM64) | On a big-endian Postgres the hashes differ; out of scope |
+| E15 | **`pg_hash_vectors.json` holds 2 000 int8, int4 and uuid keys and 1 915 distinct text keys** (the generator's lengths 0–40 repeat some prefixes), each with its remainder for moduli 2, 3, 4, 8 and 16 from `postgres:17.11`: 38 000+ checks, all equal | Ruling 4's ground truth, generated by `scripts/router/gen-pg-hash-vectors.sh` (docker or podman) | None |
+| E16 | **The oracle generator draws half its lists from cut points below 16 and plants empty ranges.** A first version agreed with Lean on 10 000 cases while missing a planted `<` for `<=` bug in `validate_partition`; the strengthened one catches it at case 108 | A differential test is only as good as the inputs that reach the boundaries | None |
 | E9 | **Task 0 facts (2026-10-02):** §29 merged (D273–D280); PgDog latest v0.1.60 (2026-09-24), still AGPL-3.0; Vitess latest v24.0.4 (2026-10-01); Lean v4.34.1 still the latest stable; TLC 1.7.4 `936a2620…0e88`, Apalache 0.62.3 `14482cc9…850e` (matches its release `sha256sum.txt`) | Recorded by command in this PR | — |

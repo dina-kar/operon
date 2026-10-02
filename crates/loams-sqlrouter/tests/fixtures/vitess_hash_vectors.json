@@ -1,0 +1,95 @@
+{
+  "_notice": "Test vectors from Vitess go/vt/vtgate/vindexes/hash_test.go and xxhash_test.go (v24.0.4). Copyright 2019 The Vitess Authors. Licensed under the Apache License, Version 2.0: http://www.apache.org/licenses/LICENSE-2.0",
+  "hash": [
+    {
+      "input": 1,
+      "ksid": "166b40b44aba4bd6"
+    },
+    {
+      "input": 2,
+      "ksid": "06e7ea22ce92708f"
+    },
+    {
+      "input": 3,
+      "ksid": "4eb190c9a2fa169c"
+    },
+    {
+      "input": 4,
+      "ksid": "d2fd8867d50d2dfe"
+    },
+    {
+      "input": 5,
+      "ksid": "70bb023c810ca87a"
+    },
+    {
+      "input": 6,
+      "ksid": "f098480ac4c4be71"
+    },
+    {
+      "input": 0,
+      "ksid": "8ca64de9c1b123a7"
+    },
+    {
+      "input": 18446744073709551615,
+      "ksid": "355550b2150e2451"
+    },
+    {
+      "input": 18446744073709551615,
+      "ksid": "355550b2150e2451"
+    },
+    {
+      "input": 9223372036854775807,
+      "ksid": "f77d48aadda1f1bb"
+    },
+    {
+      "input": 9223372036854775807,
+      "ksid": "f77d48aadda1f1bb"
+    },
+    {
+      "input": 9223372036854775808,
+      "ksid": "95f8a5e5dd31d900"
+    }
+  ],
+  "xxhash": [
+    {
+      "input_utf8": "test1",
+      "ksid": "d01ab7e4d6978f0b"
+    },
+    {
+      "input_utf8": "test2",
+      "ksid": "87eb11714c0a0e89"
+    },
+    {
+      "input_utf8": "testaverylongvaluetomakesurethisworks",
+      "ksid": "81d8c38e0d850e6a"
+    },
+    {
+      "input_utf8": "1",
+      "ksid": "d46405367612b4b7"
+    },
+    {
+      "input_utf8": "",
+      "ksid": "99e9d85137db46ef"
+    },
+    {
+      "input_utf8": "-1",
+      "ksid": "d8e2a6a7c8c7623d"
+    },
+    {
+      "input_utf8": "18446744073709551615",
+      "ksid": "477cfa8d6d8f1f8d"
+    },
+    {
+      "input_utf8": "9223372036854775807",
+      "ksid": "b37eb01f7bffafd8"
+    },
+    {
+      "input_utf8": "9223372036854775807",
+      "ksid": "b37eb01f7bffafd8"
+    },
+    {
+      "input_utf8": "-9223372036854775808",
+      "ksid": "102c27ddb26a609e"
+    }
+  ]
+}

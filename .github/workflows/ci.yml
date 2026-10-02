@@ -411,8 +411,8 @@ jobs:
         run: scripts/spec/provenance.sh
 
   # RT0 Task 8 (D312): build the Lean proofs (building checks every theorem),
-  # run the randomised properties, and keep the oracle binary for the Rust
-  # differential test (wired in with the loams-sqlrouter crate, Task 7).
+  # run the randomised properties, then run loams-sqlrouter's ranges against
+  # the Lean oracle on 10 000 random cases.
   lean:
     name: Lean proofs
     needs: changes
@@ -444,6 +444,10 @@ jobs:
         run: lake test
       - name: no sorry
         run: '! grep -rn --include=*.lean -w sorry LoamsRouter Main.lean PropTest.lean'
+      - uses: Swatinem/rust-cache@v2
+      - name: Rust against the Lean oracle (10 000 cases)
+        working-directory: .
+        run: cargo test -p loams-sqlrouter --locked --test it lean_oracle -- --nocapture
 
   sim:
     name: simulation seed sweep
