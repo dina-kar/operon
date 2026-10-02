@@ -1,0 +1,4 @@
+[[users]]
+name = "pgdog"
+database = "inv"
+password = "pgdog"

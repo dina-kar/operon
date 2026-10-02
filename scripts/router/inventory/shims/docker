@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# `docker` for PgDog's integration scripts on a machine that has podman: `docker compose …` goes
+# to docker-compose over podman's socket, anything else to podman. Before `compose down`, the
+# statistics of the running Postgres containers are dumped (the scripts tear their stack down
+# when they finish, and pg_stat_statements dies with it), when LOAMS_INV_DUMP_DIR is set.
+set -euo pipefail
+export DOCKER_HOST="${DOCKER_HOST:-unix:///run/user/$(id -u)/podman/podman.sock}"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ "${1:-}" == compose ]]; then
+  shift
+  if [[ " $* " == *" down "* && -n "${LOAMS_INV_DUMP_DIR:-}" ]]; then
+    bash "$here/pg-dump-stats.sh" "$LOAMS_INV_DUMP_DIR" "${LOAMS_INV_LABEL:-scenario}" ${LOAMS_INV_PORTS:-15432 15433 15434 15435} || true
+  fi
+  # shellcheck disable=SC2086
+  exec "${LOAMS_REAL_COMPOSE:-docker-compose}" ${LOAMS_COMPOSE_ARGS:-} "$@"
+fi
+exec podman "$@"
