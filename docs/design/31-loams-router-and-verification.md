@@ -222,7 +222,7 @@ The kernel crate has no dependency on tokio, sockets, files or clocks. Its `clip
 ```rust
 pub struct Ctx<'a> {
     pub now: Millis,                      // supplied by the driver: real clock or simulated clock
-    pub rng: &'a mut dyn rand::RngCore,   // supplied by the driver: seeded in simulation
+    pub rng: &'a mut dyn rand_core::Rng,   // supplied by the driver: seeded in simulation
     pub trace: &'a mut dyn TraceSink,     // spec events (D311)
 }
 pub trait Machine {

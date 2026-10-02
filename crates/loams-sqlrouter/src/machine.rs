@@ -5,7 +5,7 @@
 //! Network, disk and spawning do not exist inside a machine; they are
 //! commands in its output.
 
-use rand_core::RngCore;
+use rand_core::Rng;
 
 use crate::trace::TraceSink;
 
@@ -26,7 +26,7 @@ pub struct Ctx<'a> {
     /// The driver's current time; the same for every output of one `on` call.
     pub now: Millis,
     /// The driver's random source: seeded in simulation, OS-seeded in production.
-    pub rng: &'a mut dyn RngCore,
+    pub rng: &'a mut dyn Rng,
     /// Where the machine reports each transition as a spec event.
     pub trace: &'a mut dyn TraceSink,
 }

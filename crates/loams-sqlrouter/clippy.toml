@@ -5,6 +5,7 @@ disallowed-methods = [
     { path = "std::time::SystemTime::now", reason = "use Ctx::now" },
     { path = "std::thread::spawn", reason = "machines are single-threaded" },
     { path = "std::env::var", reason = "configuration comes in as input" },
-    { path = "rand::rng", reason = "use Ctx::rng" },
-    { path = "rand::thread_rng", reason = "use Ctx::rng" },
+    { path = "rand::make_rng", reason = "use Ctx::rng", allow-invalid = true },
+    { path = "rand::rng", reason = "use Ctx::rng", allow-invalid = true },
+    { path = "rand::thread_rng", reason = "use Ctx::rng", allow-invalid = true },
 ]

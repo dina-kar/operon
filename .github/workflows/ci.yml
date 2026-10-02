@@ -177,7 +177,9 @@ jobs:
               - "scripts/spec/**"
             # The Lean proofs and the Rust code they are the oracle for (RT0 Task 8, D312).
             lean:
-              - ".github/workflows/**"
+              - *toolchain
+              - "crates/loams-sqlrouter/Cargo.toml"
+              - "crates/loams-sqlrouter/tests/it/lean_oracle.rs"
               - "spec/lean/**"
               - "crates/loams-sqlrouter/src/ranges.rs"
               - "crates/loams-sqlrouter/src/reference/**"
