@@ -789,7 +789,11 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
+      - name: the Cloudflare deploy scripts (issue #269)
+        run: node --test apps/console/deploy/
       - run: pnpm build
+      - name: the build stages for Workers static assets
+        run: node apps/console/deploy/stage.mjs
 
   # The Dapr trigger edge (deploy/dapr/edge): a standalone crate with its own
   # Cargo.lock, so the workspace jobs never build it.
