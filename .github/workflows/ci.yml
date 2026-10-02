@@ -414,6 +414,9 @@ jobs:
         working-directory: spec/lean
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The job runs downloaded tooling (elan, lake); keep the token out of .git/config.
+          persist-credentials: false
       - name: elan
         run: |
           curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o /tmp/elan-init.sh
