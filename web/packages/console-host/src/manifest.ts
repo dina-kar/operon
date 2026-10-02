@@ -4,6 +4,7 @@
 // one the host and the build run, and the tests keep the two in step.
 
 import { isPermission, type Permission } from './permissions.js';
+import { CORE_PLUGINS } from './tiers.js';
 
 export type Tier = 'core' | 'first-party' | 'third-party';
 export type Edition = 'oss' | 'desktop' | 'cloud';
@@ -82,7 +83,9 @@ export function validateManifest(pkg: unknown): PluginManifest {
   const tier = block.tier as Tier;
   const id = pluginId(name);
   const provides = strings(block.provides, 'provides', name);
-  if (tier !== 'core') {
+  // The claimed tier is untrusted: only the host's own core packages may
+  // provide services outside their namespace.
+  if (tier !== 'core' || !CORE_PLUGINS.has(name)) {
     for (const service of provides) {
       if (!service.startsWith(`${id}.`)) {
         throw new ManifestError(
@@ -102,6 +105,40 @@ export function validateManifest(pkg: unknown): PluginManifest {
     if (!EDITIONS.has(edition)) throw new ManifestError(`${name}: unknown edition "${edition}"`);
   }
   const requires = (block.requires ?? {}) as Record<string, unknown>;
+  if (typeof requires !== 'object' || requires === null || Array.isArray(requires)) {
+    throw new ManifestError(`${name}: "requires" must be an object`);
+  }
+  for (const key of Object.keys(requires)) {
+    if (key !== 'console' && key !== 'api') {
+      throw new ManifestError(`${name}: unknown "requires" key "${key}"`);
+    }
+  }
+  if (requires.console !== undefined && typeof requires.console !== 'string') {
+    throw new ManifestError(`${name}: "requires.console" must be a semver range`);
+  }
+  const api = strings(requires.api, 'requires.api', name);
+  for (const pkg of api) {
+    if (!/^loams\.[a-z]+\.v[0-9]+$/.test(pkg)) {
+      throw new ManifestError(
+        `${name}: "requires.api" entry "${pkg}" is not a loams.<area>.v<N> package`,
+      );
+    }
+  }
+  const server = block.server ?? null;
+  if (server !== null) {
+    const ok =
+      typeof server === 'object' &&
+      !Array.isArray(server) &&
+      Object.keys(server).every((k) => k === 'kind' || k === 'ref') &&
+      ((server as Record<string, unknown>).kind === 'function' ||
+        (server as Record<string, unknown>).kind === 'connector') &&
+      typeof (server as Record<string, unknown>).ref === 'string';
+    if (!ok) {
+      throw new ManifestError(
+        `${name}: "server" must be null or {kind: "function" | "connector", ref}`,
+      );
+    }
+  }
   return {
     package: name,
     version: typeof p.version === 'string' ? p.version : '0.0.0',
@@ -114,10 +151,10 @@ export function validateManifest(pkg: unknown): PluginManifest {
     permissions: permissions as Permission[],
     requires: {
       console: typeof requires.console === 'string' ? requires.console : '*',
-      api: strings(requires.api, 'requires.api', name),
+      api,
     },
     editions: editions as Edition[],
     ...(typeof block.config === 'string' ? { config: block.config } : {}),
-    server: (block.server as PluginManifest['server']) ?? null,
+    server: server as PluginManifest['server'],
   };
 }

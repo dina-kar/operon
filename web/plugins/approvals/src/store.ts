@@ -47,7 +47,10 @@ export class Inbox {
         list = list.filter((a) => a.id !== event.value);
         break;
       default:
-        break;
+        // A heartbeat only moves the cursor: it proves the stream is open,
+        // not that the list has resynced, so a stale warning stays up.
+        this.#set({ ...this.#state, cursor: message.cursor || this.#state.cursor });
+        return;
     }
     for (const a of list) {
       if (this.#seen.has(a.id)) continue;

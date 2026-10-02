@@ -8,6 +8,8 @@ import {
   type CatalogPatch,
   type ConsoleHandle,
   composeCatalog,
+  type Permission,
+  type PluginManifest,
   type PluginModule,
   parseCatalog,
 } from '@loams/console-host';
@@ -24,6 +26,8 @@ export interface StartOptions {
   extraManifests?: unknown[];
   /** Where the console's assets live, for example "/ui/" or "/". */
   base?: string;
+  /** The permissions granted to a sandboxed plugin; default: none. */
+  grant?: (manifest: PluginManifest) => Permission[];
 }
 
 export function startConsole(options: StartOptions): Promise<ConsoleHandle> {
@@ -35,9 +39,10 @@ export function startConsole(options: StartOptions): Promise<ConsoleHandle> {
     platform: options.platform,
     sandboxScripts: sandboxScripts(base),
     frameUrl: `${base}sandbox/frame.html`,
-    // Development and demo: the user grants a sandboxed plugin what it
-    // declares. The install screen (AP1a Task 7) asks instead.
-    grant: (manifest) => manifest.permissions,
+    // Nothing is granted to a sandboxed plugin by default: the install
+    // screen (AP1a Task 7) asks the user. Only the demo grants what a
+    // plugin declares, so the sample can show the bridge.
+    grant: options.grant ?? (() => []),
     root: options.root,
   });
 }

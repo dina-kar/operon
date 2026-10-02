@@ -34,7 +34,12 @@ const platform = createWebPlatform(
 
 const root = document.getElementById('root');
 if (root) {
-  startConsole({ platform, root }).then((handle) => {
+  startConsole({
+    platform,
+    root,
+    // Demo only: grant a sandboxed plugin what it declares (start.ts).
+    grant: demo ? (manifest) => manifest.permissions : undefined,
+  }).then((handle) => {
     // For debugging in the browser console: the plugin table and the sweep.
     Object.assign(globalThis, { loamsConsole: handle });
     setTimeout(() => {

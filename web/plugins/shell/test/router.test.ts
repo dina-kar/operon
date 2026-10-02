@@ -73,3 +73,21 @@ describe('router', () => {
     expect(() => router.page({ id: 'a', path: '/b', title: 'B' }, () => null)).toThrow(/already/);
   });
 });
+
+describe('router hardening', () => {
+  it('a malformed escape in the hash matches no route instead of throwing', () => {
+    const slots = new SlotRegistry();
+    let path = '/approvals/%';
+    const router = new HashRouter(slots, {
+      get: () => path,
+      set: (p) => {
+        path = p;
+      },
+      listen: () => () => {},
+    });
+    router.page({ id: 'approval', path: '/approvals/:id', title: 'A' }, () => null);
+    expect(router.current().pageId).toBeUndefined();
+    router.navigate('/approvals/a%2Fb');
+    expect(router.current().params).toEqual({ id: 'a/b' });
+  });
+});

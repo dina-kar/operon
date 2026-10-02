@@ -16,13 +16,14 @@ afterEach(async () => {
   window.location.hash = '';
 });
 
-async function start(features: Record<string, boolean> = {}) {
+async function start(features: Record<string, boolean> = {}, grantDeclared = false) {
   const root = document.createElement('div');
   document.body.append(root);
   const handle = await startConsole({
     platform: createWebPlatform({ transport: createMockTransport({ features }) }),
     root,
     base: '/ui/',
+    grant: grantDeclared ? (manifest) => manifest.permissions : undefined,
   });
   dispose = handle.dispose;
   return { root, handle };
@@ -69,7 +70,7 @@ describe('the cordis console', () => {
   });
 
   it('runs the third-party sample in a sandboxed frame when the instance allows it', async () => {
-    const { root, handle } = await start({ [THIRD_PARTY_FLAG]: true });
+    const { root, handle } = await start({ [THIRD_PARTY_FLAG]: true }, true);
     await waitFor(() => expect(navLabels(root)).toContain('hello'));
     window.location.hash = '#/plugins/hello';
     window.dispatchEvent(new HashChangeEvent('hashchange'));

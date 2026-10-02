@@ -53,8 +53,16 @@ export function mountSandboxed(container: HTMLElement, options: SandboxOptions):
   iframe.dataset.plugin = options.policy.pluginId;
   iframe.src = `${options.frameUrl}#script=${encodeURIComponent(options.scriptUrl)}`;
   let bridge: Bridge | undefined;
+  let loaded = false;
   const onLoad = () => {
-    bridge?.close();
+    if (loaded) {
+      // The frame navigated away from frame.html: never hand the new
+      // document a port, and cut the old one off.
+      bridge?.close();
+      bridge = undefined;
+      return;
+    }
+    loaded = true;
     const channel = new MessageChannel();
     bridge = createBridge(channel.port1, options.policy, options.invoke);
     // The frame's origin is opaque, so the target origin can only be "*";

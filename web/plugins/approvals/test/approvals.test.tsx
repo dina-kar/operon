@@ -122,3 +122,16 @@ describe('InboxPage', () => {
     stop();
   });
 });
+
+describe('Inbox stream health', () => {
+  it('a heartbeat after a failure does not clear the stale warning', () => {
+    const inbox = new Inbox();
+    inbox.apply({ event: { case: 'snapshot', value: { approvals: [] } }, cursor: 'c1' } as never);
+    inbox.failed('reset');
+    inbox.apply({ event: { case: 'heartbeat', value: {} }, cursor: 'c2' } as never);
+    expect(inbox.getSnapshot()).toMatchObject({ connected: false, error: 'reset', cursor: 'c2' });
+    inbox.apply({ event: { case: 'snapshot', value: { approvals: [] } }, cursor: 'c3' } as never);
+    expect(inbox.getSnapshot().connected).toBe(true);
+    expect(inbox.getSnapshot().error).toBeUndefined();
+  });
+});

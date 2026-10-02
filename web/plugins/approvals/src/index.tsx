@@ -13,7 +13,7 @@ import { type PlatformService, type PluginModule, service, watch } from '@loams/
 import type { Context } from '@loams/cordis';
 import { approvals } from '@loams/proto';
 import { Badge, Button, Card, Empty, Field, Input, Notice, StatusTag } from '@loams/ui';
-import { useState, useSyncExternalStore } from 'react';
+import { useRef, useState, useSyncExternalStore } from 'react';
 import { Inbox, REASON_TEXT, reasonOf } from './store.js';
 
 export { Inbox, REASON_TEXT, reasonOf } from './store.js';
@@ -41,6 +41,9 @@ export function ApprovalCard({
   const [reason, setReason] = useState('');
   const [typed, setTyped] = useState('');
   const [busy, setBusy] = useState(false);
+  // One idempotency key per decision for this revision (the card remounts on
+  // a new revision), so a retry after a lost answer is deduplicated.
+  const keys = useRef(new Map<approvals.DecisionKind, string>());
   const [error, setError] = useState<string>();
   const requester = approval.requestedBy?.displayName ?? 'someone';
   // An agent acting for a user: the chain is [agent, user, ...].
@@ -59,7 +62,9 @@ export function ApprovalCard({
         revision: approval.revision,
         decision,
         reason,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey:
+          keys.current.get(decision) ??
+          (keys.current.set(decision, crypto.randomUUID()).get(decision) as string),
       });
       if (res.approval) onDecided(res.approval);
     } catch (e) {
@@ -89,8 +94,10 @@ export function ApprovalCard({
         {expires ? ` · expires ${expires.toLocaleString()}` : ''}
       </p>
       <ul className="lc-detail-lines">
-        {approval.detailLines.map((line) => (
-          <li key={line}>{line}</li>
+        {approval.detailLines.map((line, i) => (
+          // Server-rendered lines may repeat; the list is fixed per revision.
+          // biome-ignore lint/suspicious/noArrayIndexKey: see above
+          <li key={i}>{line}</li>
         ))}
       </ul>
       <Field

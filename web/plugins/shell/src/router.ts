@@ -43,7 +43,8 @@ export interface HashSource {
 
 /** `window.location.hash`, as the default source. */
 export const windowHash: HashSource = {
-  get: () => decodeURI(globalThis.location?.hash.replace(/^#/, '') || '/'),
+  // The raw hash: decoding happens once, per parameter, in the router.
+  get: () => globalThis.location?.hash.replace(/^#/, '') || '/',
   set: (path) => {
     globalThis.location.hash = path;
   },
@@ -128,9 +129,15 @@ export class HashRouter implements RouterService {
       const match = route.pattern.exec(path);
       if (!match) continue;
       const params: Record<string, string> = {};
-      route.keys.forEach((key, i) => {
-        params[key] = decodeURIComponent(match[i + 1] ?? '');
-      });
+      try {
+        route.keys.forEach((key, i) => {
+          params[key] = decodeURIComponent(match[i + 1] ?? '');
+        });
+      } catch {
+        // A malformed escape in a user-supplied hash (`#/approvals/%`):
+        // no route matches, and the router keeps working.
+        return { path, params: {} };
+      }
       return { path, pageId: route.spec.id, params };
     }
     return { path, params: {} };

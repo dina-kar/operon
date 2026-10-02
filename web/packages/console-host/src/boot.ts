@@ -92,7 +92,8 @@ export interface ConsoleHandle {
 /** The instance feature that turns sandboxed third-party plugins on (Ruling 9). */
 export const THIRD_PARTY_FLAG = 'console.third_party_plugins';
 
-function unwrap(mod: PluginModule | { default: PluginModule }): PluginModule {
+function unwrap(mod: PluginModule | { default: PluginModule }): PluginModule | undefined {
+  if (!mod || typeof mod !== 'object') return undefined;
   return 'apply' in mod ? mod : mod.default;
 }
 
@@ -160,7 +161,21 @@ export async function boot(options: BootOptions): Promise<ConsoleHandle> {
       record.reason = `no bundled module for ${entry.name}`;
       return;
     }
-    const mod = unwrap(await loader());
+    let mod: PluginModule | undefined;
+    try {
+      mod = unwrap(await loader());
+    } catch (error) {
+      // A chunk that fails to load or throws at evaluation fails its row only.
+      record.status = 'failed';
+      record.reason = `could not load ${entry.name}: ${error instanceof Error ? error.message : String(error)}`;
+      return;
+    }
+    if (typeof mod?.apply !== 'function') {
+      record.status = 'failed';
+      record.reason = `${entry.name} exports no plugin (no apply)`;
+      return;
+    }
+    const plugin = mod;
     const inject = entry.inject ?? manifest.inject;
     record.status = 'loading';
     record.fiber = ctx.plugin(
@@ -168,7 +183,7 @@ export async function boot(options: BootOptions): Promise<ConsoleHandle> {
         name: entry.id,
         inject,
         apply: (c: Context, config: unknown) =>
-          mod.apply(tier === 'core' ? c : guard(c, inject, record.id), config),
+          plugin.apply(tier === 'core' ? c : guard(c, inject, record.id), config),
       },
       entry.config ?? {},
     );
@@ -262,7 +277,9 @@ export async function boot(options: BootOptions): Promise<ConsoleHandle> {
     },
     async enable(id) {
       const record = records.get(id);
-      if (!record || record.fiber || record.tier === 'third-party') return;
+      // Only a disabled row can be enabled: a row that failed a boot-time
+      // check (for example an inject list wider than its manifest) stays off.
+      if (!record || record.fiber || record.status !== 'disabled') return;
       record.entry = { ...record.entry, disabled: false };
       await load(record);
     },

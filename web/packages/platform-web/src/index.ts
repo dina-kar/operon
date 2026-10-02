@@ -32,7 +32,8 @@ export function createWebPlatform(options: WebPlatformOptions = {}): PluginModul
   return {
     name: 'platform-web',
     apply(ctx: Context) {
-      const baseUrl = options.baseUrl ?? globalThis.location?.origin ?? 'http://127.0.0.1:8084';
+      const baseUrl = options.baseUrl ?? globalThis.location?.origin;
+      if (!baseUrl) throw new Error('platform-web: no baseUrl and no page origin');
       const fetch = webFetch(options.devBearer);
       const platform: PlatformService = {
         kind: 'web',

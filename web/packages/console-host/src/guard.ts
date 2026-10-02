@@ -21,6 +21,15 @@ export function guard(ctx: Context, inject: readonly string[], pluginId: string)
   return new Proxy(ctx, {
     get(target, prop, receiver) {
       if (typeof prop === 'symbol') return Reflect.get(target, prop, receiver);
+      if (prop === 'provide') {
+        // Non-core plugins provide only `<plugin-id>.*` services (§37 §5.3).
+        return (name: string, ...args: unknown[]) => {
+          if (!name.startsWith(`${pluginId}.`)) {
+            throw new GuardError(`${pluginId} may only provide "${pluginId}.*" services`);
+          }
+          return (target.provide as (n: string, ...a: unknown[]) => unknown)(name, ...args);
+        };
+      }
       if (prop === 'emit') {
         // Plugins emit only their own events, `<plugin-id>/...`.
         return (name: string, ...args: unknown[]) => {
