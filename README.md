@@ -256,10 +256,15 @@ Contributions of every size are welcome: bug reports, compatibility reports from
 
 ## Community
 
-- **Questions, bugs and ideas:** [GitHub issues](../../issues).
+- **Questions and ideas:** [GitHub Discussions](https://github.com/ostrium-labs/loams/discussions). **Bugs and RFCs:** [GitHub issues](../../issues).
 - **Security issues:** please report them privately, as described in [SECURITY.md](SECURITY.md).
 - **Conduct:** everyone who takes part agrees to the [Code of Conduct](CODE_OF_CONDUCT.md).
 - **Governance and maintainers:** [GOVERNANCE.md](GOVERNANCE.md) and [MAINTAINERS.md](MAINTAINERS.md).
+- **Wiki:** [guides and overviews](https://github.com/ostrium-labs/loams/wiki).
+- **Roadmap board:** [Loams Roadmap](https://github.com/orgs/ostrium-labs/projects).
+- **Build on Loams:** [ECOSYSTEM.md](ECOSYSTEM.md) (upstream first), the [trademark policy](TRADEMARKS.md) and [Deploy buttons](docs/ecosystem/deploy-buttons.md).
+- **Publish to the marketplace:** [the developer guide](docs/marketplace/publishing.md).
+- **Sponsor** the maintainers through the Sponsor button once their GitHub Sponsors profiles are live.
 
 ## Built on
 
@@ -269,4 +274,4 @@ Loams builds on great open-source work, including [DataFusion](https://datafusio
 
 Loams is licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for third-party attributions.
 
-**Open core.** Everything you need to self-host Loams for a single organisation is open source in this repository. Only what is needed to run Loams as a multi-tenant paid cloud (billing, metering and the hosted control plane) lives in a separate, proprietary platform. The boundary is spelled out in [docs/open-core.md](docs/open-core.md).
+**Open core.** Everything you need to self-host Loams for a single organisation is open source in this repository. The **Multitenant BYOC Control Plane with GitOps** (multi-tenancy, Knative, Argo CD, Authentik, bring-your-own-cloud) is open source too. Only metering, billing and the commercial APIs live in a separate, proprietary platform, because usage figures and paid endpoints must not be open to manipulation (integrity is the security principle). The boundary is spelled out in [docs/open-core.md](docs/open-core.md).

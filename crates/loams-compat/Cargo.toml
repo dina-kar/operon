@@ -1,0 +1,43 @@
+[package]
+name = "loams-compat"
+description = "compat-replay: replays captured router statements against a reference engine and a target engine and classifies the results (RT0 compatibility inventory)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+# Test tooling for the compatibility inventory (RT0 plan Tasks 5 and 6); never published or shipped.
+publish = false
+
+[lib]
+name = "loams_compat"
+path = "src/lib.rs"
+
+[[bin]]
+name = "compat-replay"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+clap.workspace = true
+futures.workspace = true
+hex.workspace = true
+mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-postgres = "0.7"
+
+[dev-dependencies]
+tokio.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+
+[lints]
+workspace = true

@@ -6,6 +6,8 @@
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+#[cfg(unix)]
+use std::os::fd::AsFd;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -70,6 +72,8 @@ pub struct ClusterConfig {
     pub advertise: String,
     /// The `meta` nodes: id → `host:port`.
     pub peers: BTreeMap<u64, String>,
+    /// Inherit a pre-bound listener from stdin (test harness only).
+    pub listen_stdin: bool,
     /// Empty when unset.
     pub zone: String,
     /// Owners per collection (1).
@@ -98,6 +102,7 @@ impl ClusterConfig {
             roles,
             advertise: advertise.into(),
             peers,
+            listen_stdin: false,
             zone: String::new(),
             replication: 1,
             registry: RegistryConfig::default(),
@@ -1057,7 +1062,11 @@ impl Server {
         let node_id = cluster.node_id;
         config.log.node_id = node_id;
         let store = Store::from_url(&bucket_url(&config)?, Vec::<(String, String)>::new())?;
-        let (listener, local_addr) = bind(config.listen).await?;
+        let (listener, local_addr) = if cluster.listen_stdin {
+            inherited_listener(config.listen)?
+        } else {
+            bind(config.listen).await?
+        };
         let transport = HttpTransport::new(cluster.transport)?;
         let mut meta_config = MetaConfig::new(node_id, config.data_dir.join("meta"), store.clone());
         meta_config.snapshot_every = config.snapshot_every;
@@ -1923,6 +1932,44 @@ async fn bind(addr: SocketAddr) -> Result<(tokio::net::TcpListener, SocketAddr),
     }
     .await;
     bound.map_err(|source| ServerError::Listen { addr, source })
+}
+
+#[cfg(unix)]
+/// Takes the test harness's bound listener from stdin and validates its address.
+fn inherited_listener(
+    addr: SocketAddr,
+) -> Result<(tokio::net::TcpListener, SocketAddr), ServerError> {
+    // The child receives a clone of the parent's bound listener on stdin.
+    // Clone it here so the server owns its descriptor independently of stdin.
+    let fd = std::io::stdin()
+        .as_fd()
+        .try_clone_to_owned()
+        .map_err(|source| ServerError::Listen { addr, source })?;
+    let listener = std::net::TcpListener::from(fd);
+    let bound = listener
+        .local_addr()
+        .map_err(|source| ServerError::Listen { addr, source })?;
+    if bound != addr {
+        return Err(ServerError::Config(format!(
+            "inherited listener is bound to {bound}, not --listen {addr}"
+        )));
+    }
+    listener
+        .set_nonblocking(true)
+        .map_err(|source| ServerError::Listen { addr, source })?;
+    let listener = tokio::net::TcpListener::from_std(listener)
+        .map_err(|source| ServerError::Listen { addr, source })?;
+    Ok((listener, bound))
+}
+
+#[cfg(not(unix))]
+/// Rejects the Unix-only listener handoff on other platforms.
+fn inherited_listener(
+    _addr: SocketAddr,
+) -> Result<(tokio::net::TcpListener, SocketAddr), ServerError> {
+    Err(ServerError::Config(
+        "--listen-stdin requires a Unix socket descriptor".to_string(),
+    ))
 }
 
 /// `--advertise` as a socket address (E49): an `ip:port` as is, a host name

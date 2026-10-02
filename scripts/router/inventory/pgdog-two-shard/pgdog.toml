@@ -1,0 +1,31 @@
+# A two-shard PgDog configuration rendered by hand for the inventory (RT1 renders it from code).
+# Written from PgDog's documentation of its configuration file, not copied from any PgDog file.
+[general]
+host = "0.0.0.0"
+port = 6432
+two_phase_commit = true
+prepared_statements = "full"
+healthcheck_port = 8080
+
+[[databases]]
+name = "inv"
+host = "shard0"
+port = 5432
+database_name = "postgres"
+shard = 0
+
+[[databases]]
+name = "inv"
+host = "shard1"
+port = 5432
+database_name = "postgres"
+shard = 1
+
+[[sharded_tables]]
+database = "inv"
+name = "events"
+column = "id"
+data_type = "bigint"
+
+[admin]
+password = "pgdog"

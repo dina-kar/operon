@@ -50,14 +50,14 @@ License (its notice is in the file), and rustproto.proto from rust-protobuf
 
 Resonate (https://github.com/resonatehq/resonate), Apache License 2.0.
 loams-durable links the Resonate server plugins and the Resonate Rust SDK
-from the fork https://github.com/dina-kar/resonate, branch loam/0.10.1
+from the fork https://github.com/ostrium-labs/resonate, branch loam/0.10.1
 (upstream revision 28dfd016aa970332dc283e2431c406845e2ccc8f plus the
 patches listed in docs/plans/d1-dependency-spike.md), pinned by revision in
 Cargo.toml. Copyright 2026 Resonate HQ, Inc.
 
 TiKV Rust client (https://github.com/tikv/client-rust), Apache License 2.0.
 loams-tikv, loams-meta-tikv and loams-live link tikv-client from the fork
-https://github.com/dina-kar/client-rust, branch loam (upstream revision
+https://github.com/ostrium-labs/client-rust, branch loam (upstream revision
 ab4be1c2cdd58d4e593202991fb520221c83bdfd plus the patches listed in
 docs/plans/r1-dependency-spike.md), pinned by revision in Cargo.toml. Its
 generated protobuf code comes from pingcap/kvproto (Apache License 2.0).
