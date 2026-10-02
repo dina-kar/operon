@@ -62,6 +62,10 @@ describe('permissions', () => {
       reason: expect.stringContaining('inject'),
     });
     expect(decideCall(policy, 'rpc.approvals', 'watchApprovals')).toMatchObject({ ok: false });
+    // A method cannot borrow another service's entry, or an inherited key.
+    const rpc = { services: ['rpc'], permissions: ['approvals:read'] };
+    expect(decideCall(rpc, 'rpc', 'approvals.listApprovals')).toMatchObject({ ok: false });
+    expect(decideCall(rpc, 'rpc', 'constructor')).toMatchObject({ ok: false });
   });
 
   it('never bridges session, transport or desktop internals', () => {

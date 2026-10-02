@@ -40,6 +40,11 @@ export function createWebPlatform(options: WebPlatformOptions = {}): PluginModul
         fetch,
         baseUrl,
         async openExternal(url) {
+          // Web links only: never `javascript:`, `data:` or a custom scheme.
+          const { protocol } = new URL(url, baseUrl);
+          if (protocol !== 'https:' && protocol !== 'http:') {
+            throw new Error(`openExternal refuses ${protocol} URLs`);
+          }
           globalThis.open?.(url, '_blank', 'noopener,noreferrer');
         },
         async notify({ title, body }) {

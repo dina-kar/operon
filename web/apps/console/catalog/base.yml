@@ -2,9 +2,8 @@
 #
 # cordis v4 loader entries: id, name, config, group, disabled, inject. Edition
 # and bundle patch files (`- id:` replaces a row's config, `- insert:` adds
-# rows) are applied after this file; the desktop's is
-# web/apps/desktop/catalog/desktop.patch.yml. No YAML tags (so no `!!js`):
-# the loader refuses them.
+# rows) are applied after this file. No YAML tags (so no `!!js`): the loader
+# refuses them.
 
 # Core: the layout and router, typed Connect clients, the session.
 - id: shell

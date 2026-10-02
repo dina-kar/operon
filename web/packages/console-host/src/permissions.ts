@@ -88,7 +88,13 @@ export function decideCall(
   if (!policy.services.includes(service)) {
     return { ok: false, reason: `${service} is not in the plugin's inject list` };
   }
-  const permission = METHOD_PERMISSIONS[`${service}.${method}`];
+  const key = `${service}.${method}`;
+  // Own keys only, and the method must be one name (no `.`), so
+  // `rpc` + `approvals.listApprovals` cannot borrow another service's entry.
+  const permission =
+    !method.includes('.') && Object.hasOwn(METHOD_PERMISSIONS, key)
+      ? METHOD_PERMISSIONS[key]
+      : undefined;
   if (!permission) return { ok: false, reason: `${service}.${method} cannot be bridged` };
   if (!policy.permissions.includes(permission)) {
     return { ok: false, reason: `${service}.${method} needs ${permission}` };

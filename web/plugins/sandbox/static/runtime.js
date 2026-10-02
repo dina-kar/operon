@@ -4,13 +4,23 @@
 // waits for the host's `loams/init` message carrying a MessagePort, exposes
 // `globalThis.loams` (call a bridged service method, get the plugin's root
 // element), then loads the plugin named in the fragment (`#plugin=<id>`)
-// from `../plugins/<id>/client.js` on this origin. Everything the plugin does outside its frame goes through
-// `loams.call`, which the host checks against the plugin's permissions.
+// from `../plugins/<id>/client.js` on this origin, but only after the host
+// has handed over the port: no plugin code runs before the frame holds its
+// port, so a plugin cannot navigate the frame first and have the port posted
+// to the next document. Everything the plugin does outside its frame goes
+// through `loams.call`, which the host checks against the plugin's
+// permissions.
+//
+// The runtime refuses to load a plugin unless its own origin is opaque
+// (`self.origin === 'null'`) and it is framed: opened directly, or framed
+// without `sandbox`, frame.html would run plugin code with the console's
+// origin (its storage, its cookies).
 (() => {
   const params = new URLSearchParams(location.hash.slice(1));
   const requested = params.get('plugin') || '';
   // Only an id, never a URL: [a-z0-9-], as the host's sandboxScriptId.
   const pluginId = /^[a-z0-9][a-z0-9-]{0,63}$/.test(requested) ? requested : '';
+  const isolated = self.origin === 'null' && window.parent !== window;
 
   let port = null;
   let nextId = 1;
@@ -61,15 +71,18 @@
     };
     for (const message of queued.splice(0)) port.postMessage(message);
     initResolve({ plugin: data.plugin, version: data.version });
+    if (pluginId && isolated) {
+      const element = document.createElement('script');
+      element.src = new URL(`../plugins/${pluginId}/client.js`, location.href).pathname;
+      document.head.append(element);
+    }
   });
 
   Object.defineProperty(globalThis, 'loams', { value: loams, writable: false });
 
-  if (pluginId) {
-    const element = document.createElement('script');
-    element.src = new URL(`../plugins/${pluginId}/client.js`, location.href).pathname;
-    document.head.append(element);
-  } else if (requested) {
+  if (requested && !pluginId) {
     loams.root.textContent = 'Refused a plugin name that is not an id.';
+  } else if (pluginId && !isolated) {
+    loams.root.textContent = 'Refused to run a plugin outside a sandboxed frame.';
   }
 })();

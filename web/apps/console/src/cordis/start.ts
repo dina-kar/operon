@@ -1,7 +1,7 @@
 // Starts the cordis console with a platform plugin and optional catalog
-// patches. The browser entry (main.tsx) and Loams Desktop
-// (web/apps/desktop) both call this; they differ in the platform plugin and
-// the desktop patch (§37 §5.8: editions are plugin sets).
+// patches (§37 §5.8: editions are plugin sets). The browser entry
+// (main.tsx) calls it; AP1, the Tauri shell that would also have called it,
+// is dropped (Ruling E10).
 
 import {
   boot,
@@ -21,7 +21,7 @@ export interface StartOptions {
   root: HTMLElement;
   /** Edition or bundle patches applied to base.yml in order. */
   patches?: CatalogPatch[];
-  /** Extra bundled plugins (the desktop's), by package name. */
+  /** Extra bundled plugins (an edition's), by package name. */
   extraModules?: typeof modules;
   extraManifests?: unknown[];
   /** Where the console's assets live, for example "/ui/" or "/". */
