@@ -5,6 +5,8 @@ Status: **Proposed** · 2026-10-01, revised 2026-10-02 (the Authentik and D220 r
 1. "I downloaded the DeepSeek Harness desktop and mobile app repos. They serve as the base for the Loams desktop app and mobile app, with Connect-RPC. The harness desktop's Rust backend is Tauri, so adapt our control-plane React to Tauri. Mobile is Kotlin, so use Connect-RPC natively in Swift (iOS) and Jetpack Compose (Android)."
 2. The same day's correction: "cordis" is the JavaScript meta-framework the harness is built on (contexts, services, a plugin lifecycle with scoped disposal and hot reload), not Tauri. The intent is to **adapt Loam's control-plane React to cordis so that any code can be loaded as a plugin**: console pages, panels, engine adapters, connectors, agent tools, and the integrations of §26, §30, §32–§34, each a cordis plugin with declared services and dependencies, loaded from a catalog like the harness's `cordis.yml`, in the browser and inside Tauri. **Tauri stays the desktop shell; cordis is the application architecture inside it.** "Native Connect-RPC" on mobile means connect-swift and connect-kotlin generated from the shared protos, with no web view or bridge, in native SwiftUI and Compose.
 
+> **Amended 2026-10-02 (the zeron ruling).** The owner ruled: "instead of Tauri go native for desktop apps also: https://github.com/zeronsh/zeron". **The desktop is no longer a Tauri shell around the cordis console; it is a native app on a fork of zeron** (§18, D480–D499, plan [AP1n](../plans/2026-10-02-ap1n-native-desktop-zeron.md), which replaces AP1). Superseded by §18, kept below for history and marked in place: D420's "Tauri 2", D429–D432, D439's desktop layout, §3.1, §4's desktop half, §6 in full, §9's desktop rows, §12's `tauri-driver` tests, §13's AP1 row, risks 7, 9 and 10, Q428–Q430 and Q437 (as noted). **Unchanged:** the web console on cordis in the browser (D422–D428, AP1a), the phones and the app protos (D433–D438), AP0 and AP2/AP3. The names are the owner's: **Loams Bot** and **Loams Software Factory** (§39).
+
 The owner's standing rulings that apply: Connect-RPC everywhere (connect-es, connect-swift, connect-kotlin, all from the protos connect-rust serves, D128); the package namespace `loams` (crates.io, PyPI, npm `@loams`), Go paths `loams.dev/...`, the domain `loams.dev`, CloudEvents types `io.loams.dev.*`; the repository moving to the GitHub organisation `ostrium-labs`; mobile native per platform, not Kotlin Multiplatform UI. Two further rulings arrived while this document was written (2026-10-01 and 2026-10-02): **the identity provider is Authentik, open-source edition only** (Clerk and Keycloak are gone), so every app sign-in flow targets Authentik (§6.5, §7.2); and **D220's open-core split stands**: the console's multi-tenant, hosted and billing parts stay in the private `loam-cloud` and `loam-platform` repositories, loaded as private plugins from a private registry. This document designs only the open side and names the extension points the private side uses (§5.8); it contains no design for hosted or billing plugins.
 
 This document turns that direction into decisions **D420–D439** and open questions **Q420–Q439**. Every choice beyond the direction (formats, trust tiers, flows, phasing) is a **proposal** until the owner confirms it. **No code is written by this document.** The plans are [AP0](../plans/2026-10-01-ap0-app-protos.md), [AP1a](../plans/2026-10-01-ap1a-cordis-console.md), [AP1](../plans/2026-10-01-ap1-desktop-tauri.md), [AP2](../plans/2026-10-01-ap2-android-compose.md) and [AP3](../plans/2026-10-01-ap3-ios-swiftui.md).
@@ -19,7 +21,7 @@ Markers: **(verified 2026-10-01)** means checked against a primary source on tha
 
 | # | Decision | Status |
 |---|---|---|
-| D420 | **Three apps, one contract.** Loams Desktop (Tauri 2, macOS, Linux, Windows), Loams for iOS (SwiftUI) and Loams for Android (Jetpack Compose). Every application call from an app to Loam is Connect-RPC from the protos connect-rust serves, through connect-es, connect-swift and connect-kotlin; the named exceptions are the console's OpenAPI `/api/v1` (REST until Q423), sign-in at Authentik and the Loam gateway's OAuth token endpoint (OIDC and OAuth over HTTP), the instance-to-gateway push API and APNs/FCM, the desktop's local CLI JSON contract (D283), and the updater's manifests (§2, §8) | Proposed |
+| D420 | **Three apps, one contract.** Loams Desktop (Tauri 2, macOS, Linux, Windows), Loams for iOS (SwiftUI) and Loams for Android (Jetpack Compose). Every application call from an app to Loam is Connect-RPC from the protos connect-rust serves, through connect-es, connect-swift and connect-kotlin; the named exceptions are the console's OpenAPI `/api/v1` (REST until Q423), sign-in at Authentik and the Loam gateway's OAuth token endpoint (OIDC and OAuth over HTTP), the instance-to-gateway push API and APNs/FCM, the desktop's local CLI JSON contract (D283), and the updater's manifests (§2, §8) | Proposed; the desktop half amended by D480 (native, §18) |
 | D421 | **Borrow the harness repos' patterns; fork neither.** Both are MIT. The desktop's Rust host is about 160 lines and its value is the pattern; the mobile app talks a different protocol to a different server. Nothing is copied by default, so no attribution is owed; any copied file keeps its MIT notice in `THIRD_PARTY_NOTICES.md`. cordis itself is a direct MIT dependency (§3) | Proposed |
 | D422 | **The console becomes a cordis v4 application**, in the browser (served by the engine at `/ui`, §19 P1) and inside Tauri. A small host boots a cordis `Context` and the cordis loader; everything else (layout, pages, engine views, connector forms, approval renderers, the RPC clients themselves) is a plugin. cordis's client half is used; the harness's Node host half is replaced by the Rust engine and the Tauri host, and its Typert RPC by Connect (§5) | Proposed |
 | D423 | **The plugin manifest and the catalog.** A plugin is an ESM package whose `package.json` has a `loams.plugin` block (kind, entry, `inject`, `provides`, slots, permissions, trust tier, API requirements, editions). The catalog is a cordis v4 entry list, `loams.yml`, composed from a base file and edition patch files exactly as the harness composes bundles and profiles. **No `!!js` in any catalog** (§5.3) | Proposed |
@@ -28,17 +30,17 @@ Markers: **(verified 2026-10-01)** means checked against a primary source on tha
 | D426 | **Trust tiers and isolation.** `core` and `first-party` plugins run in the console's realm behind a guard proxy that exposes only their injected services. **`third-party` plugins always run in a sandboxed iframe** (opaque origin, `connect-src 'none'`) with a capability-checked bridge, and their calls carry a **vended, attenuated token** (§19 §5.2 flow 3) whose scopes are the manifest's permissions intersected with the user's, with the plugin as the actor. The server enforces it and audits it. Third-party plugins are off until the unified auth plan (§5.6) | Proposed |
 | D427 | **Plugin sources and reload.** Five sources: bundled, npm `@loams/*` at build time (with npm provenance from `ostrium-labs`), a **private registry** configured at build time (how the private Cloud plugins arrive, §5.8), installed on an instance by an org owner at run time (served by the engine with integrity hashes), and a local path in development. Development reload is Vite HMR plus a cordis fiber refresh; a production instance pushes catalog changes and the host disposes and loads fibers without a page reload (§5.7) | Proposed |
 | D428 | **Editions are plugin sets** (D220, which stands): `oss` and `desktop` in this repository; the hosted set is private plugins from `loam-cloud` and `loam-platform`, built into a hosted console from a private registry with a private catalog patch. The open host exposes extension points for it (a registry source, trusted publishers, catalog patches, slots, `flags.edition`) and knows nothing else about it; this repository never depends on it (§5.8, §10) | Proposed |
-| D429 | **The desktop shell.** One Tauri 2 window loads the bundled console with the `desktop` plugin set. **Its sidecar is the `loams` CLI binary**, bundled per target; stacks are created, started, stopped and described through the CLI's JSON contract (§30 D283, D285), so terminal and app share `LOAM_HOME` and the same stacks. Stacks outlive the app. The app restarts `keep_running` stacks with backoff. "Add `loams` to PATH" writes a `desktop` install receipt, which `self-update` refuses (amends D294) (§6.2) | Proposed |
-| D430 | **Desktop lockdown and the network bridge.** One local capability with an explicit command allowlist; no shell, fs, http or process permission; a CSP with no remote source. **Every console request goes through `net_fetch`**, a Rust command that streams the response over a Tauri `Channel` into a standard `Response`, adds the bearer token, strips JavaScript-set credentials, and only reaches the active environment's origins. Tokens never reach JavaScript (§6.3, §6.4) | Proposed |
-| D431 | **Desktop sign-in against Authentik**: OIDC authorization code with PKCE in the system browser and a loopback redirect (RFC 8252 §7.3) at the instance's Authentik (open-source edition), public client `loams-desktop`; the Authentik token is exchanged at the Loam gateway (RFC 8693) for Loam's own access and refresh tokens (§19 §5.3), so Loam still decides environment and scopes. The refresh token in the OS keychain through `keyring`, the access token in Rust memory only. Not Stronghold, which is deprecated (§6.5) | Proposed |
-| D432 | **Desktop updates, signing, platforms and deep links.** `tauri-plugin-updater` with static per-channel manifests and its own signing key, separate from the CLI's; Developer ID signing and notarization on macOS, Authenticode on Windows; macOS aarch64 and Linux with local stacks, Windows remote-only until a Windows server variant exists; `loams://` deep links are navigation only, parsed in Rust against an allowlist, forwarded by the single-instance plugin (§6.6, §6.7) | Proposed |
+| D429 | **The desktop shell.** One Tauri 2 window loads the bundled console with the `desktop` plugin set. **Its sidecar is the `loams` CLI binary**, bundled per target; stacks are created, started, stopped and described through the CLI's JSON contract (§30 D283, D285), so terminal and app share `LOAM_HOME` and the same stacks. Stacks outlive the app. The app restarts `keep_running` stacks with backoff. "Add `loams` to PATH" writes a `desktop` install receipt, which `self-update` refuses (amends D294) (§6.2) | **Superseded** by D488 (stacks through the CLI, from a native app) and D480 |
+| D430 | **Desktop lockdown and the network bridge.** One local capability with an explicit command allowlist; no shell, fs, http or process permission; a CSP with no remote source. **Every console request goes through `net_fetch`**, a Rust command that streams the response over a Tauri `Channel` into a standard `Response`, adds the bearer token, strips JavaScript-set credentials, and only reaches the active environment's origins. Tokens never reach JavaScript (§6.3, §6.4) | **Superseded** by D489 (the credential rule for a native app) |
+| D431 | **Desktop sign-in against Authentik**: OIDC authorization code with PKCE in the system browser and a loopback redirect (RFC 8252 §7.3) at the instance's Authentik (open-source edition), public client `loams-desktop`; the Authentik token is exchanged at the Loam gateway (RFC 8693) for Loam's own access and refresh tokens (§19 §5.3), so Loam still decides environment and scopes. The refresh token in the OS keychain through `keyring`, the access token in Rust memory only. Not Stronghold, which is deprecated (§6.5) | Proposed; now implemented in Rust inside the app (D486, §18.7) |
+| D432 | **Desktop updates, signing, platforms and deep links.** `tauri-plugin-updater` with static per-channel manifests and its own signing key, separate from the CLI's; Developer ID signing and notarization on macOS, Authenticode on Windows; macOS aarch64 and Linux with local stacks, Windows remote-only until a Windows server variant exists; `loams://` deep links are navigation only, parsed in Rust against an allowlist, forwarded by the single-instance plugin (§6.6, §6.7) | **Superseded** by D490 (zeron's updater with a signed manifest; same signing accounts) for updates and packaging; deep links stand |
 | D433 | **Mobile is native on each platform, with no Kotlin Multiplatform.** SwiftUI with connect-swift over URLSession, and Compose with connect-kotlin over OkHttp; both use the Connect protocol with the binary codec. The shared parts are the protos, golden fixtures (canonical decision bytes, pairing payloads, sealed notifications) and the conformance scenarios run against one mock (§7.1, §7.8) | Proposed |
 | D434 | **Pairing maps the harness's relay and pinned-key pattern onto §19's identity model.** A phone is a **device credential of a user principal**, not a new principal kind. A signed-in user creates a short-lived pairing in the console or desktop; the phone scans a QR (v1) holding the Loam gateway's URL, the instance id, the TLS SPKI pin set and the **instance key thumbprint**, and redeems the pairing at the Loam gateway's token endpoint with an extension grant and a DPoP proof. The alternatives sign in at **Authentik** (PKCE in the system browser, or Authentik's device-code flow, RFC 8628, for a phone without a camera) and exchange the result at the gateway. Loam tokens are DPoP-bound to a hardware key. The pinned anchor is the instance's token-signing key (§19 §5.3), under which TLS pins rotate. No relay in track AP (§7.2) | Proposed |
 | D435 | **Approvals are a first-class service** over §21 §6.5's approval promises: `loam.approvals.v1` with list, get, watch and decide. **A decision carries a proof** signed by a user-presence key (Secure Enclave or StrongBox behind biometrics) or comes from a session younger than 5 minutes; the requester (or the user an agent acts for) cannot approve; there are no offline or queued decisions and no "always allow" (§7.3) | Proposed |
 | D436 | **Push is a sealed wake-up.** The engine projects `io.loams.dev.*` CloudEvents into a per-user inbox, seals each notification with HPKE to the device's key, and hands it to a **push gateway** that holds the APNs and FCM credentials and sees only ciphertext. The gateway, `loams-push`, is open source; Loam runs the instance the store apps use, and self-hosters with their own app builds run their own. Android also supports UnifiedPush (§7.4) | Proposed |
 | D437 | **Offline and background behaviour.** Phones cache approvals, operations and the inbox with freshness timestamps and show stale data read-only; no background sockets; push, `WorkManager` and `BGAppRefreshTask` catch up; decisions are never queued (§7.5) | Proposed |
 | D438 | **The app proto surface (AP0)**: new packages `loam.instance.v1`, `loam.devices.v1`, `loam.approvals.v1`, `loam.operations.v1`, `loam.notifications.v1` and `loam.errors.v1`. Rules: unary and server-streaming only; watch streams send a snapshot, then changes, then a heartbeat every 15 s, and resume from a cursor; idempotent reads are marked for HTTP GET; every mutation takes an idempotency key; errors carry a stable `reason`. Served first by `operon-apps-mock` (§8) | Proposed |
-| D439 | **Repository layout and track AP.** Desktop and console in this repository (`web/apps/console`, `web/apps/desktop` with its own Cargo workspace, `web/plugins/*`, `web/packages/*`). Mobile in one repository, `ostrium-labs/loams-mobile` (`android/`, `ios/`), generating from a pinned ref of this repository's `proto/`. Plans: AP0 (protos and mock), AP1a (cordis console), AP1 (desktop), AP2 (Android), AP3 (iOS); AP4 (the server side) is not yet planned (§9, §13) | Proposed |
+| D439 | **Repository layout and track AP.** Desktop and console in this repository (`web/apps/console`, `web/apps/desktop` with its own Cargo workspace, `web/plugins/*`, `web/packages/*`). Mobile in one repository, `ostrium-labs/loams-mobile` (`android/`, `ios/`), generating from a pinned ref of this repository's `proto/`. Plans: AP0 (protos and mock), AP1a (cordis console), AP1 (desktop), AP2 (Android), AP3 (iOS); AP4 (the server side) is not yet planned (§9, §13) | Proposed; the desktop layout **superseded** by D493 (its own repository), the plan by D499 |
 
 ## 2. Goals, non-goals and personas
 
@@ -71,6 +73,8 @@ Markers: **(verified 2026-10-01)** means checked against a primary source on tha
 ## 3. What we take from the harness repositories (D421)
 
 ### 3.1 The desktop harness
+
+> **Superseded 2026-10-02:** the Tauri host pattern below is not used by the native desktop (§18.1, D480). Kept as a record of what was studied.
 
 `harness-desktop` is upstream DeepSeek Harness (about 12 000 commits by its authors) plus a Tauri 2 host added on 2026-08-14 by `fendouai`. The host is `apps/desktop/src-tauri/src/lib.rs` (164 lines) and a capability file.
 
@@ -112,6 +116,8 @@ Gaps we fix: the relay terminates TLS and sees all plaintext; no token refresh; 
 | `@koishijs/plugin-console`, `@koishijs/client` | npm metadata says **AGPL-3.0** although the repository says MIT | **Not used** (and Vue-based) | — |
 
 ## 4. Architecture
+
+> **Superseded 2026-10-02:** the right-hand "Tauri host" box below is replaced by the native app of §18.3 (zeron engine, `loams-link`, three seams); the console and the phones are as drawn.
 
 ```
                          ┌────────────────────── one console host (cordis v4) ─────────────────────────┐
@@ -341,6 +347,8 @@ The open host has no knowledge of the private plugins, and this repository never
 The console on `main` (`web/apps/console`, Vite 8, React 19, React Router 8, `openapi-fetch`) is already a static SPA, so it embeds in Tauri. AP1a turns it into the host plus plugins and fixes what blocks the desktop: `baseUrl: window.location.origin` in `src/api/client.ts` and the raw `fetch('/v1/…')` become the `api` and `transport` services; the hard-coded `/ui` in `window.location.assign` calls (`pages/auth.tsx`) becomes `router` navigation; the `/ui` basename and Vite `base` become build options; the cookie-and-CSRF session stays for the browser, and the desktop uses bearer tokens through the bridge (which needs `GET /api/v1/session` to accept a bearer and return the principal; an auth-plan item, §16).
 
 ## 6. The desktop shell (D429–D432)
+
+> **Superseded 2026-10-02:** this whole section describes the Tauri design and is superseded by §18 (D480–D499). Stack supervision through the CLI (§6.2) survives as D488 (§18.3); sign-in (§6.5) as D486 (§18.7); the capability lockdown and `net_fetch` bridge (§6.3, §6.4) are retired by D489; updates and signing (§6.6) are replaced by D490 (§18.8); deep links (§6.7) stand, navigation only. Kept for history.
 
 ### 6.1 Shape
 
@@ -572,6 +580,8 @@ Package names stay `loam.*` to match `loam.live.v1` and `loam.stream.v1`; whethe
 
 ## 9. Repository layout (D439)
 
+> **Superseded 2026-10-02:** the desktop rows (`web/apps/desktop/`, `src-tauri`, `@loams/platform-tauri`) are superseded by D493: the desktop lives in `ostrium-labs/loams-desktop` (§18.9). Everything else in this layout stands.
+
 **Recommendation: desktop and console in this repository; both phone apps in one new repository, `ostrium-labs/loams-mobile`.**
 
 ```
@@ -632,6 +642,8 @@ Nothing here makes this repository depend on `loam-platform`. A self-hoster gets
 
 ## 12. Testing
 
+> **Superseded 2026-10-02:** the `tauri-driver` and WebdriverIO desktop tests below are superseded by D495 (§18.11): native tests, a mock smoke test of the built binary, and upstream's suites.
+
 The harness's three layers, shared across apps:
 
 1. **Pure cores with golden fixtures.** Android `:core` and iOS `LoamsCore` test pairing payloads, error reasons, watch resume, decision canonicalization and unsealing against the same fixture files, which `operon-apps-mock` also uses. A descriptor-set hash test ties each app to `conformance/proto-ref.lock`.
@@ -646,7 +658,8 @@ Plus, per surface: Vitest for plugins with fake services, Playwright for the bro
 |---|---|---|---|
 | [AP0](../plans/2026-10-01-ap0-app-protos.md) | The six packages, `operon-apps-mock` with scenarios, TypeScript generation and the Swift and Kotlin templates, the shared acceptance module | `main` only | Planned |
 | [AP1a](../plans/2026-10-01-ap1a-cordis-console.md) | `@loams/console-host` on cordis v4, the catalog and manifest, slots, the `rpc.*` services, today's pages as first-party plugins, the trust tiers and iframe bridge, the plugin service and reload | AP0 Task 6 for `rpc.*`; the unified auth plan for Tasks 6–7 against a real server | Planned |
-| [AP1](../plans/2026-10-01-ap1-desktop-tauri.md) | Loams Desktop: the CLI bridge and stacks, lockdown, the network bridge, sign-in and keychain, approvals, pairing, deep links, packaging and updates | AP1a Task 3; CLI1 (stacks, D283); D33 and the transfer for publishing | Planned |
+| [AP1](../plans/2026-10-01-ap1-desktop-tauri.md) | Loams Desktop: the CLI bridge and stacks, lockdown, the network bridge, sign-in and keychain, approvals, pairing, deep links, packaging and updates | AP1a Task 3; CLI1 (stacks, D283); D33 and the transfer for publishing | **Superseded** by [AP1n](../plans/2026-10-02-ap1n-native-desktop-zeron.md) (D499) |
+| [AP1n](../plans/2026-10-02-ap1n-native-desktop-zeron.md) | Native Loams Desktop on a zeron fork: the scaffold (built), fork guards, environments and the credential rule, stack supervision, TLS pinning, Loams Bot over `loams.bot.v1`, approvals, the browser spike, Factory and collab panels, signed packaging and updates, rebase automation | AP0 for a published proto ref; SF1, SF3 for Tasks 5 and 8; the auth plan for the RFC 8693 exchange | Planned (Task 0 built) |
 | [AP2](../plans/2026-10-01-ap2-android-compose.md) | Loams for Android | AP0; for a real server, the auth plan and AP4 | Planned |
 | [AP3](../plans/2026-10-01-ap3-ios-swiftui.md) | Loams for iOS | AP0; the same as AP2 | Planned |
 | AP4 | The server side: AP0's services in the gateway, the pairing grant and DPoP, decision-proof verification, the notifier, `loams-push`, `PluginService` | The unified auth plan (D111, Q30); §21 D2 (approval gates); §26 J1 for job events | Not yet planned |
@@ -663,10 +676,10 @@ Order: AP0 first; AP1a and the two phone plans in parallel; AP1 after AP1a's hos
 | 4 | connect-kotlin is still beta (0.9.0) | Medium | Medium | Thin use (unary and server streams over OkHttp); the conformance suite catches regressions; pin and upgrade deliberately |
 | 5 | Store review rejects apps that need a self-hosted server | Medium | Medium | A bundled demo mode with seed data (Q435) |
 | 6 | Push gateway abuse or cost | Low | Medium | Per-instance credentials and limits; sealed payloads make content abuse pointless; self-hosters can run their own (Q424) |
-| 7 | A bundled `loams` binary makes the desktop large | Medium | Low | Q428: download on first run instead |
+| 7 | _(superseded by §18.10)_ A bundled `loams` binary makes the desktop large | Medium | Low | Q428: download on first run instead |
 | 8 | The auth plan slips, leaving the apps mock-only | Medium | High | AP0–AP3 deliver everything except real-server use; AP4 is small once the auth plan exists |
-| 9 | The Tauri `Channel` bridge is too slow for large exports | Low | Low | AP1 Task 0 measures; large downloads can go to a file through a separate command |
-| 10 | macOS has no WebDriver for WKWebView, so desktop e2e is weaker there | High | Low | Linux and Windows e2e; a launch-and-screenshot check on macOS (verify) |
+| 9 | _(superseded by §18.10)_ The Tauri `Channel` bridge is too slow for large exports | Low | Low | AP1 Task 0 measures; large downloads can go to a file through a separate command |
+| 10 | _(superseded by §18.10)_ macOS has no WebDriver for WKWebView, so desktop e2e is weaker there | High | Low | Linux and Windows e2e; a launch-and-screenshot check on macOS (verify) |
 
 ## 15. Open questions
 
@@ -680,16 +693,16 @@ Order: AP0 first; AP1a and the two phone plans in parallel; AP1 after AP1a's hos
 | Q425 | Reaching private instances from phones (a laptop stack, a self-hosted cluster behind a firewall): build an end-to-end relay, or document VPNs and tunnels only (proposed for track AP)? | Founder | After AP2/AP3 |
 | Q426 | Third-party console plugins in OSS: allowed (proposed: yes, off by default, org owners install), and is npm provenance enough to call a package `first-party`, or only an `ostrium-labs` allowlist? | Founder | AP1a Task 6 |
 | Q427 | cordis: depend on pinned npm `cordis@4.0.0-rc.10` with patches (proposed), vendor it now like the harness, or wait for 4.0? | Eng | AP1a Task 1 |
-| Q428 | Bundle the `standard` `loams` binary in the desktop app (proposed) or download it on first run through the CLI's variant mechanism? | Eng | AP1 Task 2 |
-| Q429 | On quit, leave stacks running (proposed) or stop the ones the app started? | Founder | AP1 Task 3 |
-| Q430 | Linux packages: AppImage, deb and rpm (proposed), plus Flatpak or Snap? | Eng | AP1 Task 11 |
+| Q428 | _(carries over to the native desktop; see Q488)_ Bundle the `standard` `loams` binary in the desktop app (proposed) or download it on first run through the CLI's variant mechanism? | Eng | AP1 Task 2 |
+| Q429 | _(carries over to the native desktop, §18.3)_ On quit, leave stacks running (proposed) or stop the ones the app started? | Founder | AP1 Task 3 |
+| Q430 | _(superseded by Q492)_ Linux packages: AppImage, deb and rpm (proposed), plus Flatpak or Snap? | Eng | AP1 Task 11 |
 | Q431 | Minimum OS versions: iOS 17, Android 10 (API 29), macOS 13 (proposed) | Founder | AP2/AP3 Task 0 |
 | Q432 | May a user approve an operation an agent requested on their behalf? Proposed: no by default, an org policy can allow it for non-protected environments | Founder | AP0 Task 3 |
 | Q433 | Crash reporting in the apps: none (proposed, D284's no-telemetry rule) or opt-in Sentry, which `loam-cloud` already uses? | Founder | AP1, AP2, AP3 Task 10 |
 | Q434 | App names on the stores ("Loams", "Loams for iOS") and a trademark check | Founder | Store releases |
 | Q435 | App review: a bundled demo mode (proposed) or a hosted demo instance and account? | Founder | AP2/AP3 Task 10 |
 | Q436 | Does Loam Cloud's console (today a Next.js app in `loam-cloud`, with Clerk, which the Authentik ruling retires) move onto the cordis host as private plugins from the private registry (§19 P1, proposed), or stay separate? | Founder | Before the cloud console's next phase |
-| Q437 | Windows desktop: remote-only (proposed), stacks through WSL2, or a Windows server variant (§30 Q285)? | Founder | AP1 Task 11 |
+| Q437 | _(carries over, §18.3)_ Windows desktop: remote-only (proposed), stacks through WSL2, or a Windows server variant (§30 Q285)? | Founder | AP1 Task 11 |
 | Q438 | Does the unified auth plan add, on the Loam gateway, the exchange of Authentik tokens for Loam tokens (RFC 8693), DPoP (RFC 9449) for user tokens issued to devices, device-bound rotating refresh tokens and the pairing extension grant? Which Authentik release provides the device-code flow and the step-up (`max_age`) the apps rely on? §19 §5.3 lists DPoP as a follow-up for agents only | Founder, Eng | The auth plan; AP4 |
 | Q439 | Ship the Android `unifiedpush` flavor on F-Droid (reproducible builds), and when? | Founder | AP2 Task 10 |
 
@@ -732,3 +745,244 @@ Read on 2026-10-01 and 2026-10-02.
 - **Push gateways:** github.com/element-hq/sygnal; docs.mattermost.com/deploy/mobile/host-your-own-push-proxy-service; docs.ntfy.sh/config; companion.home-assistant.io/docs/notifications/{notification-details,notification-local}.
 - **Proxies:** developers.cloudflare.com/fundamentals/reference/connection-limits and the 524 error page; docs.aws.amazon.com/elasticloadbalancing/latest/application/edit-load-balancer-attributes.
 - **Loam:** §19, §21 (§6.4, §6.5), §26 (D206, §6.6), `docs/open-core.md` (D220, D221), §30 and its pending log (branch `cli-design`), §32–§33 and their pending log (branch `flow-fabric-house-design`), §34 (branch `gateway-runtime-design`); `web/` on `main` at `9eaddae` (`apps/console/{vite.config.ts,src/main.tsx,src/api/client.ts,src/session.tsx,src/pages/auth.tsx}`, `packages/ui`), `api/console/openapi.json`, `crates/operon-console-mock`, `buf.yaml`, `buf.gen.yaml`, `proto/loam/live/v1/live.proto`, `crates/operon-stream-grpc/proto/loam/stream/v1/stream.proto`; `loam-cloud` at `c738de7` (`next.config.*`, `proxy.ts`, `app/(console)/`, `lib/console.ts`, `lib/integrations.ts`; read only).
+
+
+## 18. Native desktop on a zeron fork (supersedes the Tauri desktop)
+
+Status: **Proposed** · 2026-10-02. The direction is the owner's, given on 2026-10-02: **"instead of Tauri go native for desktop apps also: https://github.com/zeronsh/zeron"**, with the product names **Loams Bot** and **Loams Software Factory**. This section turns that ruling into decisions **D480–D499** and open questions **Q480–Q499**, staged in [`_pending/37b-log.md`](_pending/37b-log.md) (not yet in the decision log). Everything beyond the ruling is a **proposal** until the owner confirms it. The plan is [AP1n](../plans/2026-10-02-ap1n-native-desktop-zeron.md); the scaffold is the branch `loams-scaffold` of [`ostrium-labs/loams-desktop`](https://github.com/ostrium-labs/loams-desktop) (§18.12).
+
+Markers: **(verified 2026-10-02)** means read in zeron's tree at `80b946b` (2026-10-01) or on GitHub that day. **(verify)** means the plan task that builds it checks it first. **(estimate)** means computed, not measured.
+
+### 18.0 What this supersedes, and where it still points
+
+| Of this document | Now | Read instead |
+|---|---|---|
+| D420's "Loams Desktop (Tauri 2, …)" | A native app on a zeron fork | D480, §18.1 |
+| D421 (borrow the harness desktop's pattern) as it applies to the desktop shell | The Tauri host pattern is not used; the harness mobile patterns stand | §18.1 |
+| §3.1 (the harness desktop's Tauri host) and risks 7, 9, 10 | Historical | — |
+| D429 (the Tauri shell and CLI sidecar) | Stacks are still supervised through the CLI, from a native app | D488, §18.3 |
+| D430 (capability lockdown, `net_fetch` bridge), §6.3, §6.4 | There is no webview holding JavaScript to defend; the credential rule is for agent subprocesses | D489, §18.7 |
+| D431 (Authentik sign-in) | Unchanged in substance, now in Rust inside the app | D486, §18.7 |
+| D432 (updater, signing, platforms, deep links), §6.6, §6.7 | Zeron's updater with a signed manifest; same signing accounts; deep links stay navigation-only | D490, §18.8 |
+| D439 (desktop in the monorepo, `web/apps/desktop`) | Its own repository | D493, §18.9 |
+| §9's `web/apps/desktop/` row and `@loams/platform-tauri` | Removed from AP1a's scope | §18.11 |
+| §12's `tauri-driver` end-to-end tests | Native tests | D495, §18.11 |
+| §13's AP1 row | Replaced by AP1n | D499 |
+| Q428–Q430, Q437 | Q428, Q429 and Q437 carry over; Q430 becomes Q492 | §18.3, §18.8 |
+
+Unchanged: D422–D428 (the **web** console on cordis, in the browser at `/ui`), D433–D438 (the phones and the app protos), §10's open-core placement for everything except the desktop's repository.
+
+### 18.1 The ruling, and what zeron is (verified 2026-10-02)
+
+| Fact | Value |
+|---|---|
+| Repository, licence | `zeronsh/zeron`, **MIT**, "Copyright (c) 2026 Wing"; about 2 670 stars, 30 contributors, last push 2026-10-01 |
+| What it says it is | "A native control plane for Claude Code, Codex, Cursor, Devin and other coding agents": every device runs a small engine that stores its sessions locally; multi-device sync is optional |
+| Language and UI | Rust (edition 2024) on **GPUI**. Zeron pins `zeronsh/zui` (an Apache-2.0 extraction from Zed's GPUI with the GPL tracing crates removed and blur and edge-fade additions) and its own `gpui-component` fork. Its `ARCHITECTURE.md` states it uses none of Zed's GPL crates |
+| Size | 17 crates plus the `zeron` app; `ui` 180 k lines of Rust, `engine` 79 k, `harness` 49 k, `client` 13 k, `doc` and `sync` 10 k each |
+| Shape | **Engine** (sessions, run journals, repos and worktrees, diffs, terminals, agent accounts, device identity) and **UI** talk one typed RPC, in-process or over loopback IPC (`ws://127.0.0.1:27654`). `zeron` is headed; `zeron headless` is the engine alone; `zeron daemon` installs it as a service |
+| Agents | Native drivers for Claude Code (stream-json), Codex (app-server), Cursor, Pi and opencode, and **ACP** (Agent Client Protocol, JSON-RPC over stdio) for Devin, Grok, Hermes and Antigravity. A mock harness exists for tests |
+| Agent-facing surface | `zeron mcp`, an MCP server over the engine's IPC that lets an agent create, read and message other chats; the engine **injects it into every run** it drives |
+| Data and sync | Sessions are Loro CRDT documents persisted in SQLite on the device. Optional sync runs through **zeron's own Cloudflare Durable Objects edge and WorkOS sign-in** (`edge/`, `edge.zeron.sh`). A clean install starts local-only with no account and no network |
+| CLI | `zeron status`, `login`, `logout`, `sync`, `mcp`, `update`, `daemon install|start|stop|restart|status`, `headless` |
+| Updates | The app and CLI check `{edge}/releases/manifest.json` (a version and a SHA-256 per artifact) hourly, download in the background, and swap a versioned managed install or an app bundle. Nothing is signed beyond TLS and the checksum |
+| Packaging and CI | Installers for Linux (tarball and `install.sh`), macOS (dmg; signs and notarizes when secrets exist) and Windows (Inno Setup installer and a portable zip). Workflows: Linux UI and core tests, Windows tests and packaging, macOS and aarch64 Linux builds in the release workflow |
+| Sidebar browser | **Linux:** a separate WebKitGTK helper process that sends offscreen frames to GPUI, with an **ephemeral** website-data store. **macOS:** `wry` (WKWebView). **Windows: none** (listed as remaining work in zeron's own Windows notes) |
+| Telemetry | None in the Rust crates (searched on 2026-10-02) |
+| Velocity | About 670 commits and 30 tagged releases in September 2026; 130 commits in the last eight days |
+
+What zeron does **not** have: an extension or plugin runtime (its extension points are MCP servers, ACP agents, skills and themes), an organisation or identity model, an approvals concept, or any notion of a server. It is a very good single-user agent cockpit; Loams adds the server-connected half.
+
+### 18.2 What to keep, change, add and drop (D481)
+
+| Area | Decision | Why |
+|---|---|---|
+| Engine, run journals, repos, worktrees, diffs, terminals | **Keep** unchanged | The product; 79 k lines Loams does not want to own |
+| Harness drivers (Claude Code, Codex, Cursor, Pi, opencode, ACP agents) | **Keep** | Loams Bot sits beside them; the coding agents are what people also use |
+| gpui UI, themes, composer, transcript, sidebar | **Keep**; Loams adds a harness icon and, later, panels | |
+| Local-only profile and the data directory (`~/.zeron`, `ZERON_*`) | **Keep** the names (Q489) | Renaming touches hundreds of lines and every rebase |
+| `zeron-update` mechanism | **Keep**, **change** the feed and add a signature (D490) | |
+| Voice dictation (`zeron-voice`, Parakeet model, optional) | **Keep**, off unless the user enables it | Not ours to remove |
+| Name, window title, app id, icon, `.desktop` file | **Change** through `loams-brand` and `dist/loams/` | One reviewed place |
+| Default edge URL and WorkOS client id | **Change**: both fail closed (§18.7) | They name zeron's private cloud |
+| Sign-in | **Change**: Authentik (D486) | |
+| `loams-brand`, `loams-link` (Connect client, mock, OIDC, A2A stub, ACP shim, CLI verbs) | **Add** | Everything Loams-specific that has no GPUI in it |
+| Loams Bot harness (`HarnessId::LoamsBot`) | **Add**, in a separate file plus the match arms the compiler demands | D483 |
+| `loams-panels` (native GPUI panels over `loams.collab.v1`, approvals, operations, stacks) | **Add** later (AP1n Tasks 3–8) | |
+| `edge/` (Cloudflare Worker), `apps/landing`, `apps/www-redirect`, `apps/ios`, TestFlight and deploy workflows | **Drop** from the product (left in the tree, workflows disabled in repository settings, so rebases stay clean) | Zeron's cloud and iOS app |
+| Zeron's sync crates (`zeron-sync`, the registry rooms) | **Keep compiled, unreachable** (D487) | Removing them is a large, conflict-prone patch |
+
+### 18.3 The engines and the `loams` binary (D482, D488)
+
+```
+  ┌──────────────────────────── Loams Desktop (zeron fork, one binary `zeron`) ───────────────────────────┐
+  │  gpui UI ──── typed RPC (in-process or ws://127.0.0.1:27654) ──── zeron engine                       │
+  │   · transcript, composer, terminals, diffs                       · sessions, run journals, worktrees  │
+  │   · harness picker: Claude Code, Codex, … , Loams Bot            · agent subprocesses (user's rights) │
+  │   · loams-panels (later): approvals, stacks, operations, collab                                       │
+  │                                                                                                      │
+  │  loams-link (no GPUI)                                                                                 │
+  │   · Connect clients (buf-generated)  · Authentik OIDC + keychain  · stack supervisor (CLI JSON)      │
+  │   · `zeron loams bot-acp`: ACP agent ⇄ A2A (stub) / loams.bot.v1 (SF3)                               │
+  └──────┬──────────────────────────┬────────────────────────────────────────────────┬───────────────────┘
+         │ (1) supervise            │ (2) Connect-RPC                                │ (3) spawn, ACP on stdio
+         ▼                          ▼                                                ▼
+   `loams` CLI  ─ stacks      loams server (local stack or remote)            Loams Bot agent (same binary)
+   `loams stack … --output json`   loams.instance / approvals / operations /        └─ A2A → Plane, Zulip, Forgejo,
+   shared LOAM_HOME                 collab / bot .v1                                      GlitchTip, analytics agents
+```
+
+**Three seams, and no fourth.**
+
+1. **Supervise.** Stacks are managed by running `loams stack <verb> --output json` (§30 D283, D285) with no TTY, `LOAM_NO_UPDATE_CHECK=1` and a timeout, parsing the one JSON document on stdout. `LOAM_HOME` is shared with the terminal, so a stack created either way appears in the other. Stacks outlive the app. `stack create` and `stack delete` stay copy-paste commands in the first release. The restart policy AP1 specified (`keep_running`, backoff 1 s to 30 s, five tries in ten minutes) moves into `loams-link`. Windows stays remote-only (Q437), because no Windows server variant exists.
+2. **Connect.** The app calls a running loams server with connect-rust clients generated by `buf` from the same protos the server, the console and the phones use (D128, D438). The scaffold has `loams.instance.v1` (`GetInstance`, `WhoAmI`); approvals, operations, notifications, collab and bot arrive as AP0 and the SF plans land. Remote HTTPS needs connect-rust's `client-tls` and the pinning of §7.2.3 (AP1n Task 4).
+3. **Spawn.** Loams Bot is an ACP agent the zeron engine launches like any other (D483).
+
+**Why not embed the `loams` engine in the app.** It is Rust, so it is tempting. Against it: the engine workspace is about 950 crates (DataFusion, Arrow, Lance, TiKV clients), and linking it beside GPUI in one binary would multiply link time and memory on a build machine already at its limit; an engine crash or a stuck compaction would take the window down; the app and the engine could no longer release independently; and the CLI already owns stack supervision (`stack.toml`, port blocks, readiness, `setsid`, log rotation). Embedding would also give two supervisors of one directory. **Why not run stacks inside zeron's engine:** it has no notion of one, and teaching it would be a large patch to a file set that changes daily.
+
+Open: where the bundled `loams` binary lives and whether one updater may touch both it and zeron's `~/.zeron/app` layout (Q488); a native Stacks panel versus CLI-only buttons first (Q497, which turns on whether a stack is a zeron "space").
+
+### 18.4 Loams Bot as zeron's chat and agents surface (D483, D497)
+
+Zeron's chat surface already gives Loams Bot threads, an attention-sorted sidebar, drafts, a durable queue, steering, interrupts, attachments, tool cards, a question panel and local persistence. The cheapest faithful way to put Loams Bot on it is the way zeron puts Devin and Hermes on it: **as an ACP agent**.
+
+| Zeron concept | Loams Bot behaviour |
+|---|---|
+| Harness | `HarnessId::LoamsBot`, wire name `loams-bot`, "Loams Bot" in the picker, running `zeron loams bot-acp`. It is the binary already running, so there is nothing to install or version-skew |
+| `session/new` | A Loams Bot chat thread; its A2A `contextId` is derived from the session id (D467: the thread) |
+| `session/prompt` | One A2A `SendMessage` (D465); the `messageId` is deterministic per turn so a replay deduplicates |
+| An A2A task | An ACP **tool call**: `tool_call` when it starts, `tool_call_update` with `in_progress`, `completed` or `failed`. Zeron renders it as a tool card with live status, which is what §39 calls a subagent card |
+| Agent text and artifacts | `agent_message_chunk` text; artifact cards (issue, PR, error, metric, run, approval) are a later native renderer (AP1n Task 5), not Markdown |
+| `INPUT_REQUIRED` (a question) | Relayed as text now; as a zeron question panel (an ACP input request, which the engine already bridges) in AP1n Task 5, and the answer goes back as an A2A message in the same task: the **person** answers, never the bot |
+| `INPUT_REQUIRED` (an approval, D435) | A card that opens the approval in the native approvals panel or the console; the decision needs a proof (a session younger than five minutes or a user-presence key) and is never made by the shim (**D497**, §39 D468) |
+| `AUTH_REQUIRED` | Text with the link to the admin's "connect app" page |
+| Cancel | `session/cancel` becomes `CancelTask` |
+| Permission requests | Loams Bot sends none; zeron's auto-accept of an ACP agent's permission requests (it exists because zeron's sessions run unattended) is never exercised. Third-party coding agents keep zeron's behaviour, which the app should state plainly (Q485) |
+
+**Who speaks A2A.** §39 D465 stands: clients speak Connect to Loams Bot, and Loams Bot speaks A2A to the five platform agents. In production the ACP shim therefore talks to `loams.bot.v1` (a Connect stream, SF3), not to agents. The **A2A client in `loams-link` is a stub**: a small JSON-RPC client (`SendMessage`, `CancelTask`) with a mock agent, so the chat path runs end to end before SF2 and SF3 exist, and so a developer can point `LOAMS_BOT_URL` at one agent. It follows A2A 1.0's JSON-RPC binding as §39 §5.3 records it and must be re-checked against `a2a.proto` in SF2 Task 0 (Q466).
+
+**This amends D478 for the desktop only.** §39 planned to port the harness's conversation UI as cordis plugins (`@loams/plugin-bot`, `rpc.bot`). On the native desktop the conversation UI is zeron's, so that port is not built. Mobile is unchanged: native SwiftUI and Compose chat over `loams.bot.v1`. The server keeps the durable execution (a thread survives a locked phone or a closed laptop); the desktop keeps the transcript it shows. Which is the source of truth when they disagree is Q496. First-run default harness (Claude Code as upstream has it, or Loams Bot once an instance is configured) is Q484.
+
+**The Loams Software Factory on the desktop** is the loop of §39 §10 seen from this chat: runs, stages, approvals and the kill switch are native panels over `loams.collab.v1` and `loams.factory.v1` (AP1n Task 8), plus Loams Bot's cards. Zeron's own `zeron mcp` server and its headless engine are an opportunity for the loop's coding step: a VPS running `zeron headless` could be the worker for the Forgejo agent's `propose_patch` sessions (§39 D477) instead of Loams' sandbox (Q498).
+
+### 18.5 How the app UIs appear (D484)
+
+§39 §3.2 fixed the rule: native, API-driven panels for the objects the loop reads and writes, and the app's own web UI, unmodified, for everything deeper. D464 implemented "deeper" as isolated Tauri child webviews. On a zeron fork that mechanism does not exist, and the verified state of zeron's browser changes the answer:
+
+| Surface | Linux | macOS | Windows |
+|---|---|---|---|
+| Native GPUI panel (issue list, PR and CI status, error groups, metric tiles, approvals, runs) | yes | yes | yes |
+| **System browser** (the person's own profile, Authentik session, passkeys, extensions) | yes | yes | yes |
+| Zeron's sidebar browser tab | WebKitGTK helper, ephemeral store, no cookies kept between launches | `wry` (WKWebView) | **does not exist** |
+
+So the defaults are: **panels first, "Open in browser" for the full app, and the sidebar browser as an opt-in that is on only where a spike proves it good enough.** Specifically:
+
+- **Zulip, Plane, Forgejo, GlitchTip:** a native panel for the objects (from `loams.collab.v1`, SF1), and **Open in browser** to the app's own URL, where the person is already signed in at Authentik.
+- **OpenPanel:** tiles in a panel, "Open" for the full UI. **Langfuse, OpenObserve:** links, never embeds (§39 D461).
+- **The browser console itself** (`/ui` on the instance, with its cordis plugins) opens the same way: it is the place for administration, and it is where cordis plugins live (§18.6).
+- **The sidebar browser** is a top-level browsing context, not a frame, so **D462's edge changes are not needed for it**: no `X-Frame-Options` removal and no `frame-ancestors` for `tauri://localhost`. A page that cannot be framed works fine here.
+- **What the spike (AP1n Task 7, Q482) must prove:** a persistent data store on the Linux helper and on macOS, so that signing in to Authentik once lasts; passkeys and WebAuthn on each OS; a Windows browser on `wry` (WebView2); and whether `gpui-wry` (Apache-2.0, `longbridge/gpui-kit`, 0.7.0) can sit on zeron's pinned GPUI fork at all, since it targets Zed's own GPUI **(unverified; it may need a patch)**. Everything the spike produces is generally useful and goes upstream first (D491).
+- **Mobile does not embed** (§39 D461, unchanged): native views, sealed push, deep links to the system browser.
+
+### 18.6 The plugin story (D485)
+
+Cordis no longer runs inside the desktop, because there is no webview. The extension story is therefore three tiers, each with a different trust level, and none of them needs a fork of zeron's UI to extend it.
+
+| Tier | Mechanism | Runs in | For | Trust |
+|---|---|---|---|---|
+| **1. Now** | **MCP servers and ACP agents**, configured as zeron already does. The engine injects its own `zeron mcp` into every run; Loams adds a `loams mcp serve` entry (§30 D289) beside it. Skills (`SKILL.md`) and themes (VS Code themes compile to zeron families) are also extension points | Separate processes | Tools, agents, prompts, themes: anything that fits "a process the engine talks to" | The user's own; third-party servers run with the user's rights, as in every MCP client |
+| **2. First-party** | **Native panels**, Rust crates behind cargo features (`loams-panels`), reviewed in-tree | The UI process | Approvals, stacks, operations, collab, factory runs | `first-party` |
+| **3. Later** | **WASM components** on wasmtime with a declarative UI interface: a plugin returns a view tree (lists, forms, tables, charts, text) that the **host** renders in GPUI; it never touches GPUI, the filesystem or the network directly. A permission manifest names the Loams services it may call, intersected with the user's, and calls carry the vended, attenuated token of D426 with the plugin as the actor | A wasmtime instance per plugin | Third-party panels and agent-tool views | `third-party`, always sandboxed |
+
+Why not Zed's extension host: Zed's extension runtime is built into editor crates that are GPL; only the extension API crate is Apache-2.0, and zeron has deliberately kept every GPL crate out. A host of our own on wasmtime is small, because Loams already chose wasmtime for functions (§24), and a declarative UI keeps third parties out of the render loop. Whether tier 3 is worth building at all, and whether third-party desktop plugins are allowed in the open edition, are Q486 and Q487; tiers 1 and 2 need neither.
+
+The **web console's plugins** (D422–D428) are unaffected: they run in the browser console, which the desktop opens like any other app. There is one console, in a browser, and one native cockpit beside it.
+
+### 18.7 Sign-in, sync and credentials (D486, D487, D489)
+
+- **Sign-in.** OIDC authorization code with PKCE (S256) at the instance's Authentik, in the **system browser**, redirect to `http://127.0.0.1:<ephemeral>/callback` (RFC 8252 §7.3), one request accepted, `state` and `nonce` checked, public client `loams-desktop`. The issuer and client id come from `GetInstance.sign_in_methods`. The refresh token is stored in the OS keychain (macOS Keychain, Windows Credential Manager, the Linux Secret Service) through the `keyring` crate, one entry per instance, and rotates on every refresh; the access token lives in memory only. Where no keychain exists, sign-in lasts the session and the app says so. The RFC 8693 exchange of the Authentik token for Loams tokens at the gateway (D431) is added with the unified auth plan (Q438). The scaffold implements the flow end to end against a fake provider in tests; it has not been run against a real Authentik.
+- **Zeron's login is not used.** The fork's default WorkOS client id is empty and its default edge host cannot resolve (`edge.loams.invalid`), so zeron's `login` and sync paths are compiled but unreachable. Upstream's `zeron login` would otherwise send a Loams user to zeron's WorkOS tenant.
+- **Sync (D487).** Zeron's multi-device sync is Loro documents through zeron's Cloudflare edge. Loams does not depend on another company's backend. The desktop is local-first on its device; continuity across devices is the server's: a Loams Bot thread is a durable execution visible from every device (§39 §13). Whether the Loro document layer is worth giving a Loams transport (streams over Connect) is Q483.
+- **The credential rule (D489).** The Tauri design defended against JavaScript holding tokens. A native app has a different adversary: **the agents it launches**, which are subprocesses with the user's rights, and the sidebar browser. So: Loams tokens exist only in `loams-link`'s memory and the keychain; no agent subprocess and no browser receives one; the injected `zeron mcp` server carries chat identity and nothing else; and when an agent must call Loams, it does so through the credential broker with an attenuated, audience-bound token (§39 §6), never the user's. Local stacks before the auth plan report `auth: none` (D111) and need no token.
+
+### 18.8 Updates and signing (D490)
+
+| Item | Choice |
+|---|---|
+| Mechanism | Zeron's: versioned managed installs behind a `current` link (Linux and macOS headless), an app-bundle swap (macOS), an in-place swap with `zeron-update.json` (Windows); a manifest of version and SHA-256 per artifact; check at start, hourly and on wake; download in the background; install on "Restart to update" or at quit; `ZERON_AUTO_UPDATE=0` to only report |
+| Feed | GitHub Releases of `ostrium-labs/loams-desktop` for the first betas (Windows packaging already takes a releases URL), then a `loams.dev/desktop` redirect (Q493). **Until the feed exists the default host cannot resolve**, so a Loams build never installs zeron's binaries (the scaffold's `edge.loams.invalid`); the in-app "releases" links already point at the fork |
+| Integrity | Zeron's manifest is protected by TLS and a checksum only. The fork adds a **detached Ed25519 signature over the manifest**, verified in `zeron-update` against a key compiled into the app, and **refuses an unsigned manifest**. The key is separate from the CLI's (Q282, Q494). This is also the best first upstream PR |
+| macOS | Developer ID Application, hardened runtime, notarization and stapling: zeron's script does all of it when `MACOS_CERT_P12`, `MACOS_CERT_PASSWORD` and the App Store Connect API key secrets exist and falls back to ad-hoc signing without them (**owner action**, Q420, Q491) |
+| Windows | Authenticode on the Inno Setup installer and `zeron.exe`; zeron has no signing today. Azure Artifact Signing or a certificate in a vault (**owner action**, Q421); unsigned betas trip SmartScreen |
+| Linux | The tarball and `install.sh` (a per-user install under `~/.zeron/app` with a desktop entry); AppImage, deb, rpm and Flatpak are Q492 |
+| Deep links | `loams://` stays navigation-only (D432). The desktop entry already claims `x-scheme-handler/loams`; macOS `CFBundleURLTypes` and the Windows protocol registration are AP1n Task 9 |
+
+### 18.9 Upstream tracking, licensing and the repository (D491–D493)
+
+**Cadence.** Zeron ships about two releases a day and moved 670 commits in September. Merging its `main` would be a permanent job, so the fork **rebases onto upstream release tags, not `main`**, at least every two weeks (Q480). A scheduled agent opens the rebase PR; CI is the judge. Conflicts are rare by construction.
+
+**Patch discipline.** Loams changes are (a) **additive crates and files** (`loams-brand`, `loams-link`, `dist/loams`, `scripts/loams`, one workflow), (b) **one-line hooks** marked `// loams:` in inherited files, and (c) the match arms the compiler demands when `HarnessId` grows. `LOAMS.md` keeps a **patch ledger** of every inherited file touched and why; a CI job (AP1n Task 1) fails when an inherited file changes with no ledger line. The scaffold touches 20 inherited files (and `Cargo.lock`), almost all single lines (§18.12); the check itself is AP1n Task 1.
+
+**What goes upstream first** (Q481): a config-driven custom ACP agent (which would delete the `HarnessId` patch), signed manifests, a persistent browser store, the Windows browser, an "ask" mode for permission requests. These are the changes zeron's other users also want, and each one that lands removes a patch from the ledger. **What stays in the fork:** anything that names Loams, Authentik or A2A.
+
+**Licensing and attribution (D492).** `LICENSE` (MIT, "Copyright (c) 2026 Wing") is untouched. A root `NOTICE` records the fork, links upstream, and states that Loams-added crates are Apache-2.0 (D220). `THIRD_PARTY_NOTICES.md` stays upstream's (tree-sitter grammars, GPUI, `gpui-component`, Symbols icons) and gains nothing until Loams adds a bundled asset. A `cargo deny` licence job (AP1n Task 1) guards the dependency tree, and zeron's own statement that it uses no GPL Zed crate is kept true by it. The name "Zeron" is never used as a product name.
+
+**Repository (D493).** `ostrium-labs/loams-desktop`, a public fork with upstream history, created with `gh repo fork zeronsh/zeron --org ostrium-labs --fork-name loams-desktop` on 2026-10-02. It vendors the protos it uses by pinned ref (`crates/loams-link/proto/PIN`, `scripts/loams/sync-protos.sh`), the pattern `loams-mobile` uses (§9). The monorepo keeps AP0, AP1a and the CLI. D439's layout row changes accordingly.
+
+### 18.10 Risks
+
+| # | Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|---|
+| 1 | **Upstream velocity and bus factor.** One fast-moving project (30 contributors, about 2 releases a day) is now our desktop; the maintainers' priorities are not ours | High | High | Additive patches, release-tag rebases, a patch ledger, upstream-first for generic changes; the exit is to freeze at a tag and carry the ledger |
+| 2 | **A double fork of GPUI.** Zeron pins `zeronsh/zui`, itself extracted from Zed; its history and Zed's both move | Medium | High | We never touch GPUI; we rebase when zeron bumps its pin; no Loams crate depends on `gpui` except future `loams-panels` |
+| 3 | **Accessibility.** GPUI has no screen-reader support today **(verify)**; an enterprise-facing desktop may need it | High | Medium | The browser console is the accessible surface; track GPUI's accessibility work; say so in the docs |
+| 4 | **Windows maturity.** Zeron's own notes list authenticated provider runs, GPU and DPI coverage, accessibility and the browser as remaining Windows work | Medium | Medium | Windows is remote-only for stacks (Q437) and gets CI from day one; Windows panels use no browser |
+| 5 | **Agent subprocesses run with the user's rights, and zeron auto-accepts ACP permission requests** | Medium | High | D489 and D497; Loams tokens never reach agents; an "ask" mode (Q485) |
+| 6 | **Update supply chain.** Unsigned manifests; a wrong default host would install another project's binary | Medium | High | The unresolvable default host (done in the scaffold) and the signed manifest (D490) |
+| 7 | **The sidebar browser may never be good enough** (ephemeral store, no Windows) | Medium | Low | It is optional; panels and the system browser carry the product |
+| 8 | **GPU required.** GPUI needs Vulkan, Metal or Direct3D; remote desktops and some VMs have none | Medium | Medium | Document it; the CLI verbs (`zeron loams …`) and `zeron headless` need no GPU |
+| 9 | **Name and brand confusion** with real zeron if both are installed (`zeron` on `PATH`, `~/.zeron`) | Medium | Low | The harness launches `current_exe`, never `zeron` from `PATH`; the data-directory and binary names are Q489 and Q490 |
+| 10 | **The Authentik flow and the A2A shapes are unproven against the real servers** | Medium | Medium | Both are tested against fakes only; AP1n Tasks 2 and 5 run them against `loams-apps-mock` and a real Authentik before anything ships |
+| 11 | **Connect-rust and buffa are pre-1.0** (0.9.x) | Medium | Low | Pinned; the generated code is committed; the server side already depends on them (D128) |
+
+### 18.11 Testing, platforms and phasing (D494, D495, D499)
+
+- **Platforms (D494):** Linux x86_64 and aarch64 (Wayland and X11), macOS on Apple silicon, Windows x86_64 (the set zeron's workflows build). Stacks on macOS and Linux; Windows is remote-only.
+- **Tests (D495):** `loams-brand` and `loams-link` have no GPUI dependency and run in seconds on all three operating systems (the scaffold has 33 tests: PKCE against the RFC 7636 vector, the loopback listener, the full sign-in against a fake provider, the Connect client against the in-process mock, the A2A JSON-RPC client, and the ACP agent over an in-memory pipe). A smoke script drives `zeron loams status`, `bot` and `bot-acp` against the mock in the built binary on Linux and Windows. Generated code is regenerated and diffed in CI. Upstream's UI, engine and Windows suites run on every change because the shared crates changed. The Tauri plan's `tauri-driver` tests and risk 10 disappear.
+- **Phasing (D499):** AP1n replaces AP1. AP1a drops its `desktop` catalog patch and `@loams/platform-tauri`. AP0 is unchanged (the desktop consumes its protos by pinned ref). SF1's Tauri child-webview tasks become panels and the spike of §18.5; SF3's desktop task becomes the harness shim of §18.4.
+- **Stacks and approvals on the desktop:** approvals are a native panel over `loams.approvals.v1` with step-up through the system browser (`max_age=0`) and native notifications from zeron's notifier (D435, AP1n Task 6). Pairing a phone stays in the console first and gets a native QR panel in AP1n Task 8.
+
+### 18.12 The scaffold (what the fork's first pull request contains)
+
+Branch `loams-scaffold` of `ostrium-labs/loams-desktop`, on zeron `80b946b`, 2026-10-02. It is deliberately small and mostly additive.
+
+| Piece | Where | What it does |
+|---|---|---|
+| Branding | `crates/loams-brand`, `dist/loams/`, four one-line hooks in `crates/ui/src/lib.rs` and `crates/update/src/lib.rs` | Product name, app id `dev.loams.desktop`, window title, the fork's releases links, a placeholder icon and desktop entry |
+| Connect client and mock | `crates/loams-link` (`client`, `mock`, generated `proto` and `connect`) | `LoamsClient::get_instance` and `who_am_i` against a local `loams` server (`LOAMS_URL`, default `http://127.0.0.1:8080`); an in-process mock of `loams.instance.v1` for `LOAMS_MOCK=1`, tests and CI; code generated by `buf` from vendored protos and committed |
+| Sign-in | `crates/loams-link/src/auth` | PKCE, OIDC discovery and token grants, loopback listener, system-browser launch, `KeyringStore` and `MemoryStore`; `zeron loams login` and `logout` |
+| Loams Bot | `crates/loams-link/src/{a2a,acp}`, `crates/harness/src/acp/loams_bot.rs`, the match arms the compiler demanded in engine, harness, client and UI | The stub A2A client with a mock agent, the ACP agent (`zeron loams bot-acp`), and the harness registration that puts "Loams Bot" in zeron's picker |
+| Fork hygiene | `LOAMS.md`, `NOTICE`, `.github/workflows/loams.yml`, `scripts/loams/` | Patch ledger and policy, attribution, CI (below), smoke test, proto generation and sync scripts |
+| Fail-closed defaults | `apps/zeron/src/main.rs` | Empty WorkOS client id and an unresolvable default edge host, so a Loams build never contacts zeron's cloud or installs its binaries |
+
+CI added: the Loams crates on Linux, Windows and macOS; a build of the real binary with the mock smoke test on Linux and Windows; and the generated-code drift check. Zeron's own workflows already build the app on Linux and Windows for every `crates/**` change and on macOS in the release workflow, so they are not duplicated.
+
+**Not in the scaffold** (each is an AP1n task): the stack supervisor, native panels, TLS to remote instances, the RFC 8693 exchange, `loams.bot.v1`, the signed update manifest and the feed, packaging overlays and signing, the sidebar-browser spike, the WASM host, deep links, and the rebase automation.
+
+### 18.13 Contradictions with earlier decisions, and how they are resolved
+
+| Existing | What this section needs | Resolution |
+|---|---|---|
+| **D420, D429–D432, D439, §6, §9, §12, §13's AP1 row** (Tauri) | A native desktop | Superseded as listed in §18.0; the old text stays for history |
+| **§39 D464** (desktop embeds are isolated Tauri child webviews) and **§39 §3.4** | No Tauri | Replaced by §18.5 (panels, the system browser, an optional spiked sidebar browser); D462's edge changes are not needed for the desktop |
+| **§39 D478** (`@loams/plugin-bot` ports the harness UI as cordis plugins on desktop) | Zeron's chat is the UI | Amended for desktop by D483; mobile unchanged |
+| **§39 D461** ("Tauri child webviews") wording | | Superseded for the desktop by D484; the embed rule for the browser console stands |
+| **D421** (fork neither harness repository; borrow patterns) | Fork zeron | The owner's ruling (D480) is a fork; D421 still holds for the harness repositories |
+| **D431** (RFC 8693 exchange at the gateway) | Not available yet | Deferred to the unified auth plan (Q438); the Authentik token is the bearer until then |
+| **§30 D294** (a desktop install receipt that `self-update` refuses) | Desktop no longer bundles into a Tauri app | Still needed if the `loams` binary is bundled (Q428, Q488) |
+| **D284 and Q433** (no telemetry) | | Consistent: zeron's Rust crates have none |
+| **D220** (open for adoption; commercial in `loam-platform`) | An MIT fork with Apache-2.0 additions | Consistent: both are open; nothing here depends on `loam-platform` |
+
+### 18.14 Sources
+
+Read on 2026-10-02. **Zeron** (`github.com/zeronsh/zeron`, `80b946b`, 2026-10-01): `README.md`, `ARCHITECTURE.md`, `CONTEXT.md`, `docs/mcp.md`, `docs/reference/{linux-browser,windows-development}.md`, `docs/PARITY.md`, `Cargo.toml`, `apps/zeron/src/{main,update_cli,auth_cli}.rs`, `crates/engine/src/{auth,registry,harness_updates}.rs`, `crates/harness/src/acp/{mod,normalize}.rs`, `crates/update/src/lib.rs`, `crates/ui/src/{lib,browser/mod,icons,pickers}.rs`, `crates/ui/Cargo.toml`, `.github/workflows/{release,windows,ui-tests}.yml`, `.github/actions/*`, `dist/`, `LICENSE`, `THIRD_PARTY_NOTICES.md`; GitHub metadata (stars, contributors, release and commit counts). **Loams:** §19, §30, §37 (this document), §38, §39 and its pending log (branch `software-factory-design`, PR #192), the AP0 branch's `proto/loams/{instance,errors}/v1` (commit `bc3e559`, not yet on `main`) and `loams-apps-mock`, `docs/open-core.md`. **Libraries:** connect-rust 0.9.1 (`connectrpc`, `connectrpc-codegen`), buffa 0.9.2, `keyring` 4.2.0, `gpui-wry` 0.7.0 (crates.io metadata only). **Protocols:** RFC 7636, RFC 8252, RFC 8693, A2A 1.0 as recorded in §39 §5.
