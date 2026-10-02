@@ -85,7 +85,7 @@ rand = "0.9"
 rand_chacha = "0.9"
 redb = "4"
 regex = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
 # Resonate, embedded by loams-durable (D1, D140): the fork ostrium-labs/resonate,
 # branch loam/0.10.1 = upstream 28dfd01 + PR 0c (#1164), the gcp-idtoken
 # feature, PR 0a (#1162), PR 1 (#1163) and the SDK's reqwest defaults as a
