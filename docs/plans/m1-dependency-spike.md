@@ -60,18 +60,18 @@ Registry source paths below are relative to `~/.cargo/registry/src/index.crates.
 
 ## (b) Lance and object_store: how to hand Lance our own store
 
-- **Lance 12 is on `object_store` 0.14**, the same as ours (lance, lance-core, lance-io, lance-table, lance-file and lance-index all use `^0.14.1`). So `operon-store` and `FaultyStore` can be passed straight in. Only DataFusion 54 (and 55) stays on 0.13. That affects us only if we use DataFusion's own `ObjectStoreRegistry` (ListingTable/Parquet). Lance does its own I/O and never uses it.
+- **Lance 12 is on `object_store` 0.14**, the same as ours (lance, lance-core, lance-io, lance-table, lance-file and lance-index all use `^0.14.1`). So `loams-store` and `FaultyStore` can be passed straight in. Only DataFusion 54 (and 55) stays on 0.13. That affects us only if we use DataFusion's own `ObjectStoreRegistry` (ListingTable/Parquet). Lance does its own I/O and never uses it.
 - **API (verified, and it ran):**
   - Implement `lance_io::object_store::ObjectStoreProvider` (`lance-io-12.0.0/src/object_store/providers.rs:42`, `async fn new_store(&self, base: Url, params: &ObjectStoreParams) -> lance::Result<lance::io::ObjectStore>`; also override `extract_path` and `calculate_object_store_prefix`).
   - Build the store with `lance::io::ObjectStore::new(inner: Arc<dyn object_store::ObjectStore /*0.14*/>, location: Url, block_size, wrapper: Option<Arc<dyn WrappingObjectStore>>, use_constant_size_upload_parts, list_is_lexically_ordered, io_parallelism, download_retry_count, storage_options)` (`lance-io-12.0.0/src/object_store.rs:1766`). Its struct fields are partly private (`:203-207`), so you cannot build a struct literal.
   - Register it:
     ```rust
     let reg = Arc::new(ObjectStoreRegistry::default()); // or ::empty() (providers.rs:132)
-    reg.insert("operon", Arc::new(OperonProvider{..}));  // providers.rs:407
+    reg.insert("loams", Arc::new(LoamsProvider{..}));  // providers.rs:407
     let session = Arc::new(Session::new(idx_bytes, meta_bytes, reg)); // lance-12.0.0/src/session.rs:116
     ```
   - Pass `session` in `WriteParams { session: Some(..) }` (`dataset/write.rs:627`) and to `DatasetBuilder::with_session` (`dataset/builder.rs:527`) or `CommitBuilder::with_session` (`dataset/write/commit.rs:169`).
-- **Commit handler.** For an unknown URL scheme, Lance silently falls back to `UnsafeCommitHandler` (`lance-table-12.0.0/src/io/commit.rs:1278`). Always pass `commit_handler: Some(Arc::new(ConditionalPutCommitHandler))` (`commit.rs:1629`; it needs `PutMode::Create` support in our store, which our S3 CAS already relies on). Alternatively, implement `ExternalManifestStore` (`commit/external_manifest.rs:163`) and wrap it in `ExternalManifestCommitHandler { external_manifest_store }` (`:563`), which puts the "latest Lance version" pointer in Operon meta.
+- **Commit handler.** For an unknown URL scheme, Lance silently falls back to `UnsafeCommitHandler` (`lance-table-12.0.0/src/io/commit.rs:1278`). Always pass `commit_handler: Some(Arc::new(ConditionalPutCommitHandler))` (`commit.rs:1629`; it needs `PutMode::Create` support in our store, which our S3 CAS already relies on). Alternatively, implement `ExternalManifestStore` (`commit/external_manifest.rs:163`) and wrap it in `ExternalManifestCommitHandler { external_manifest_store }` (`:563`), which puts the "latest Lance version" pointer in Loams meta.
 - **Alternatives:**
   - `ObjectStoreParams { object_store_wrapper: Some(Arc<dyn WrappingObjectStore>) }` (`object_store.rs:352`, trait at `:269`, `wrap(&self, prefix, Arc<dyn ObjectStore>) -> Arc<dyn ObjectStore>`) wraps whatever store Lance built. It is good for metering or fault injection over Lance's own S3 client. A fault-injecting wrapper must return `None` from `wrap_paginated` (doc at `:274-297`).
   - `ObjectStoreParams.object_store: Option<(Arc<DynObjectStore>, Url)>` (`:346`) and `DatasetBuilder::with_object_store` (`builder.rs:281`) still work but are `#[deprecated(note = "Implement an ObjectStoreProvider instead")]`.
@@ -113,7 +113,7 @@ Registry source paths below are relative to `~/.cargo/registry/src/index.crates.
 
 | Piece | Paths | LOC | Gives us | Builds on 0.26.2 |
 |---|---|---|---|---|
-| Storage trait + RAM/local/prefix | `quickwit-storage/src/{storage,error,payload,ram_storage,local_file_storage,prefix_storage,stable_deref_bytes}.rs` | ~1,450 | async `Storage` (`get_slice`/`get_all`/`put`/`delete` → `OwnedBytes`) | yes. Better: write an `operon-store`-backed `Storage` impl instead of taking the S3 backend. The S3 backend is `object_storage/s3_compatible_storage.rs` (1,246 LOC); it uses aws-sdk-s3 **directly**, not object_store. Skip it. |
+| Storage trait + RAM/local/prefix | `quickwit-storage/src/{storage,error,payload,ram_storage,local_file_storage,prefix_storage,stable_deref_bytes}.rs` | ~1,450 | async `Storage` (`get_slice`/`get_all`/`put`/`delete` → `OwnedBytes`) | yes. Better: write a `loams-store`-backed `Storage` impl instead of taking the S3 backend. The S3 backend is `object_storage/s3_compatible_storage.rs` (1,246 LOC); it uses aws-sdk-s3 **directly**, not object_store. Skip it. |
 | Split bundle + footer | `quickwit-storage/src/{bundle_storage,split,versioned_component}.rs`, `quickwit-directories/src/bundle_directory.rs` | ~1,200 | `SplitPayloadBuilder` (writer), `BundleStorage`/`BundleFileRanges`/`BundleDirectory` (reader), 16-byte trailer `footer_start u64 LE, version u32=1, b"QWFT"` | yes |
 | Hotcache | `quickwit-directories/src/hot_directory.rs` | 537 | `write_hotcache`, `HotDirectory`, `StaticDirectoryCache` (open a split in one GET) | yes, with 1 edit |
 | Async directories + byte-range cache | `quickwit-directories/src/{caching_directory,storage_directory,union_directory,lib}.rs`, `quickwit-storage/src/cache/{byte_range_cache,slice_address,stored_item}.rs` | ~900 | tantivy `Directory` over async storage | yes |
@@ -126,11 +126,11 @@ Registry source paths below are relative to `~/.cargo/registry/src/index.crates.
 
 **Total vendored:** about 16k LOC plus a ~1.2k LOC shim (non-test, excluding S3).
 
-**Ruling:** vendor from `af0591a3` into one `operon-search-vendor` crate against tantivy 0.26.2, and re-sync by diff when we bump tantivy. Splits written by the fork rev are not needed: we write our own splits with 0.26.2. Whether fork-written splits are readable by 0.26.2 is unverified and doesn't matter to us.
+**Ruling:** vendor from `af0591a3` into one `loams-search-vendor` crate against tantivy 0.26.2, and re-sync by diff when we bump tantivy. Splits written by the fork rev are not needed: we write our own splits with 0.26.2. Whether fork-written splits are readable by 0.26.2 is unverified and doesn't matter to us.
 
 ## (e) qdrant-edge compared with vendoring `lib/segment`
 
-**Verdict: depend on `qdrant-edge = "=0.8.0"` behind an `operon-hnsw` trait. Do not vendor `lib/segment`.**
+**Verdict: depend on `qdrant-edge = "=0.8.0"` behind a `loams-hnsw` trait. Do not vendor `lib/segment`.**
 
 **What qdrant-edge is:**
 - It is an amalgamation of qdrant's segment, shard, quantization, common, wal, sparse and related crates, and corresponds to Qdrant v1.19.0 (inferred by diffing; the current Qdrant release is v1.19.1).
@@ -282,7 +282,7 @@ File paths are under `lance-12.0.0/src/` unless another crate is named.
   - `CleanupPolicyBuilder::versions(Vec<u64>)` (`cleanup.rs:1422`, exact version set), `before_version`, `before_timestamp`, `delete_unverified`, `delete_rate_limit`, `clean_referenced_branches` (`:1345-1365`)
 - What cleanup removes: old manifests plus the data, deletion, index and transaction files that are referenced by none of the kept manifests. The latest version is always kept. Files not referenced by any manifest ("unverified", for example an in-flight staged fragment) are kept unless `delete_unverified` is set (`dataset.rs:1474-1480`, `cleanup.rs:1495-1511`). Tagged versions are protected (with an error if `error_if_tagged_old_versions`).
 - **Recommended:**
-  - The Operon GC worker computes the set of Lance versions referenced by no live collection manifest and calls `cleanup_with_policy(versions(set))` with `delete_unverified=false`.
+  - The Loams GC worker computes the set of Lance versions referenced by no live collection manifest and calls `cleanup_with_policy(versions(set))` with `delete_unverified=false`.
   - Orphaned staged fragments from failed batches are removed by our own orphan sweep, with a grace period.
   - Never set `lance.auto_cleanup.*`.
 
@@ -294,8 +294,8 @@ File paths are under `lance-12.0.0/src/` unless another crate is named.
    - (a) `enable_stable_row_ids = true` from day one and store `_rowid` in Tantivy (recommended: compaction needs no remap, and the index is not remapped either), or
    - (b) keep addresses and make the Tantivy split rewrite part of the Lance compaction commit.
 4. **cargo-deny licenses:** add `BSL-1.0` (Boost) and `bzip2-1.0.6` to `deny.toml` `[licenses].allow`, and fix the comment ("BSL" → "BUSL-1.1").
-5. **Custom URL scheme silently gets `UnsafeCommitHandler`.** Ruling: `operon-collection` always sets `commit_handler` explicitly (ConditionalPut), or uses `ExternalManifestCommitHandler` backed by meta. Add a test that fails on unsafe commits (FaultyStore concurrent commit).
-6. **qdrant-edge weight** (+171 packages, including zbus/D-Bus via cgroups-rs, a tokenizer stack and tonic). Not a blocker. Ruling: isolate it in its own crate (`operon-hnsw`) behind a feature so builds that do not need the hot tier skip it. Upstream a request for a lean feature set.
+5. **Custom URL scheme silently gets `UnsafeCommitHandler`.** Ruling: `loams-collection` always sets `commit_handler` explicitly (ConditionalPut), or uses `ExternalManifestCommitHandler` backed by meta. Add a test that fails on unsafe commits (FaultyStore concurrent commit).
+6. **qdrant-edge weight** (+171 packages, including zbus/D-Bus via cgroups-rs, a tokenizer stack and tonic). Not a blocker. Ruling: isolate it in its own crate (`loams-hnsw`) behind a feature so builds that do not need the hot tier skip it. Upstream a request for a lean feature set.
 7. **Build cost:** 13 GB debug target and a 3 GB debug binary. Ruling: set `[profile.dev] debug = "line-tables-only"` (or `split-debuginfo`) and install `protoc` in CI (Lance build requirement). Do not enable Lance's `protoc` feature, which is a C++ build.
 8. **Quickwit's tantivy rev (0.27-dev) is ahead of crates.io 0.26.2.** Not a blocker: the vendored files build on 0.26.2 with about 12 edits (see (d)). Ruling: stay on crates.io tantivy and own the edits.
 9. **Two `object_store` majors** (0.13 in DataFusion only). This is not a blocker for M1, because Lance, SlateDB and ours all use 0.14. It becomes relevant once DataFusion's ListingTable or Parquet reads Iceberg over our store; that will need a 0.13 adapter or a DF release on 0.14.
@@ -303,16 +303,16 @@ File paths are under `lance-12.0.0/src/` unless another crate is named.
 ## (i) Added 2026-09-25: ADBC test dependencies and `async-trait`
 
 These were not part of the spike run. They are recorded for M1.2 Task 13 (Flight `DoPut` ingest), M1.6 and M1.7 (D49, D47).
-- **ADBC Flight SQL drivers, test-only** (M1.7's exit gate runs them against Operon; M1.6's `flight` extra uses the Python pair):
+- **ADBC Flight SQL drivers, test-only** (M1.7's exit gate runs them against Loams; M1.6's `flight` extra uses the Python pair):
   - Python: `adbc-driver-flightsql` and `adbc-driver-manager` (Apache-2.0; M1.6 declares `>=1.12,<2`), with `pyarrow`.
   - Go: `github.com/apache/arrow-adbc/go/adbc/driver/flightsql` (Apache-2.0), with the arrow-adbc `validation` test package.
-  - None of them is a Rust dependency or ships in the `operon` binary. (verify versions at execution)
-- **`async-trait`** (MIT OR Apache-2.0) is already a workspace dependency (`Task`, `TaskSource`, `LinkTarget`, `GcRoots`, and M1.2's hook traits use it). M1.2a Ruling 2 chooses it for `trait MetaStore`, so that `Arc<dyn MetaStore>` works (native `async fn` in traits is not dyn-compatible on Rust 1.97; verify at execution), which makes it a dependency of `operon-common`. No new crate or version.
+  - None of them is a Rust dependency or ships in the `loams` binary. (verify versions at execution)
+- **`async-trait`** (MIT OR Apache-2.0) is already a workspace dependency (`Task`, `TaskSource`, `LinkTarget`, `GcRoots`, and M1.2's hook traits use it). M1.2a Ruling 2 chooses it for `trait MetaStore`, so that `Arc<dyn MetaStore>` works (native `async fn` in traits is not dyn-compatible on Rust 1.97; verify at execution), which makes it a dependency of `loams-common`. No new crate or version.
 
 ## (j) Added 2026-09-25: Python data-ecosystem dependencies (D53, D54)
 
 These were not part of the spike run. They are recorded for M1.2 Task 0 step 5 (Q20) and Task 14 (scan plans), and for M1.6 Tasks 3 and 4 (`to_arrow()`, `to_polars()`, `scan_plan()`).
 - **`polars`** (MIT; Python 1.44.2 on 2026-09-09, 2.0.0-rc.2 on 2026-09-20): M1.6's optional extra `polars` declares `polars>=1.3,<3` with `pyarrow>=18`. 1.3 is the first release that takes Arrow data through the PyCapsule interface without a copy (https://docs.pola.rs/user-guide/misc/arrow/). Only the Python package is used; the Polars Rust crates are not a dependency (D51: `polars-arrow` is a second Arrow implementation). (verify versions at execution)
 - **`pyarrow`** (Apache-2.0): already in M1.6's `flight` extra; the new `arrow` and `polars` extras declare the same `pyarrow>=18`. Its tables implement `__arrow_c_stream__`, which M1.6's results delegate to.
-- **`pylance`** (Apache-2.0), test-only: M1.2 Task 0 step 5 runs it once by hand, and M1.6's `test_scan_plan_opens_with_pylance` runs in CI when it is installed (dev group, not an extra). The release must match the workspace's `lance` crate (12.0.x; verify the pairing on PyPI), so the check exercises the reader users will pair with Operon's writer; an older pylance may not read what a newer writer wrote. The Ray, Polars IO plugin and torch readers that depend on it at run time are M2 (D54).
-- None of them is a Rust dependency or ships in the `operon` binary.
+- **`pylance`** (Apache-2.0), test-only: M1.2 Task 0 step 5 runs it once by hand, and M1.6's `test_scan_plan_opens_with_pylance` runs in CI when it is installed (dev group, not an extra). The release must match the workspace's `lance` crate (12.0.x; verify the pairing on PyPI), so the check exercises the reader users will pair with Loams's writer; an older pylance may not read what a newer writer wrote. The Ray, Polars IO plugin and torch readers that depend on it at run time are M2 (D54).
+- None of them is a Rust dependency or ships in the `loams` binary.

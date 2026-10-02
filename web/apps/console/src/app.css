@@ -1,6 +1,6 @@
 /*
  * The console's layout: a sidebar of project and org sections, a slim top
- * bar, and square panels on the ground. Components come from @loam/ui.
+ * bar, and square panels on the ground. Components come from @loams/ui.
  */
 
 *,
@@ -17,7 +17,7 @@ html {
 body {
   margin: 0;
   min-height: 100svh;
-  font-family: var(--loam-font-sans);
+  font-family: var(--loams-font-sans);
   font-size: 15px;
   line-height: 1.5;
   color: var(--op-ink);
@@ -39,7 +39,7 @@ button {
 }
 
 code {
-  font-family: var(--loam-font-mono);
+  font-family: var(--loams-font-mono);
   font-size: 0.82em;
 }
 
@@ -257,7 +257,7 @@ code {
 .side-group h2 {
   margin: 0 0 6px;
   padding: 0 10px;
-  font-family: var(--loam-font-mono);
+  font-family: var(--loams-font-mono);
   font-size: 0.64rem;
   font-weight: 400;
   color: var(--op-faint);
@@ -335,7 +335,7 @@ code {
 
 .side-count {
   margin-left: auto;
-  font-family: var(--loam-font-mono);
+  font-family: var(--loams-font-mono);
   font-size: 0.68rem;
   color: var(--op-faint);
 }
@@ -349,7 +349,7 @@ code {
 
 .side-version {
   padding: 6px 10px 0;
-  font-family: var(--loam-font-mono);
+  font-family: var(--loams-font-mono);
   font-size: 0.64rem;
   color: var(--op-faint);
 }
@@ -518,7 +518,7 @@ code {
   color: var(--op-muted);
 }
 
-.user-who .loam-badge {
+.user-who .loams-badge {
   width: fit-content;
   margin-top: 4px;
 }
@@ -594,7 +594,7 @@ code {
 
 .page-eyebrow {
   margin-bottom: 6px;
-  font-family: var(--loam-font-mono);
+  font-family: var(--loams-font-mono);
   font-size: 0.7rem;
   color: var(--op-faint);
 }
@@ -733,7 +733,7 @@ code {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-family: var(--loam-font-mono);
+  font-family: var(--loams-font-mono);
   font-size: 0.72rem;
   color: var(--op-muted);
 }
@@ -766,7 +766,7 @@ code {
 }
 
 .env-chip-n {
-  font-family: var(--loam-font-mono);
+  font-family: var(--loams-font-mono);
   font-size: 0.66rem;
   color: var(--op-faint);
 }
@@ -853,7 +853,7 @@ code {
   display: inline-grid;
   gap: 4px;
   min-width: 64px;
-  font-family: var(--loam-font-mono);
+  font-family: var(--loams-font-mono);
   font-size: 0.76rem;
   font-variant-numeric: tabular-nums;
 }
@@ -917,7 +917,7 @@ code {
 .chart-axis {
   display: flex;
   justify-content: space-between;
-  font-family: var(--loam-font-mono);
+  font-family: var(--loams-font-mono);
   font-size: 0.64rem;
   color: var(--op-faint);
 }
@@ -951,7 +951,7 @@ code {
   margin-bottom: 16px;
 }
 
-.filters .loam-field {
+.filters .loams-field {
   min-width: 240px;
 }
 
@@ -963,7 +963,7 @@ code {
 }
 
 .facts dt {
-  font-family: var(--loam-font-mono);
+  font-family: var(--loams-font-mono);
   font-size: 0.66rem;
   color: var(--op-faint);
 }
@@ -1129,6 +1129,6 @@ code {
   }
 }
 
-.consent .loam-badge {
+.consent .loams-badge {
   width: fit-content;
 }

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 802" width="1040" height="802" role="img" aria-labelledby="title desc">
-<title id="title">Loam architecture</title>
-<desc id="desc">Clients and protocols reach a stateless gateway and router, which serves the retrieval engine, Loam Live, Loam Durable, the runtime and jobs, and Loam Postgres. TiKV holds metadata, transactions and the hot WAL. Object storage (RustFS, S3, GCS or Azure Blob) holds all data in open formats. Dotted outlines are in progress; dashed outlines are planned.</desc>
+<title id="title">Loams architecture</title>
+<desc id="desc">Clients and protocols reach a stateless gateway and router, which serves the retrieval engine, Loams Live, Loams Durable, the runtime and jobs, and Loams Postgres. TiKV holds metadata, transactions and the hot WAL. Object storage (RustFS, S3, GCS or Azure Blob) holds all data in open formats. Dotted outlines are in progress; dashed outlines are planned.</desc>
 <style>
 
 .t{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif}
@@ -81,7 +81,7 @@
 <rect class="chip c" x="40.0" y="98" width="115.1" height="30" rx="7"/>
 <text class="t chipt" x="97.6" y="118" text-anchor="middle">Resonate SDKs</text>
 <rect class="chip c prog" x="163.1" y="98" width="113.7" height="30" rx="7"/>
-<text class="t chipt" x="220.0" y="118" text-anchor="middle">Loam Live SDK</text>
+<text class="t chipt" x="220.0" y="118" text-anchor="middle">Loams Live SDK</text>
 <rect class="chip c" x="284.8" y="98" width="242.4" height="30" rx="7"/>
 <text class="t chipt" x="406.0" y="118" text-anchor="middle">pylance · Ray · Polars (pinned scans)</text>
 <rect class="chip c plan" x="535.2" y="98" width="249.9" height="30" rx="7"/>
@@ -128,13 +128,13 @@
 <rect class="chip e plan" x="270.0" y="481" width="208.0" height="30" rx="7"/>
 <text class="t chipt" x="374.0" y="501" text-anchor="middle">Iceberg analytics tables</text>
 <rect class="box e prog" x="506" y="310" width="241.0" height="97.0" rx="10"/>
-<text class="t ttl" x="520" y="334">Loam Live</text>
+<text class="t ttl" x="520" y="334">Loams Live</text>
 <text class="t badge" x="604" y="334">in progress</text>
 <text class="t body" x="520" y="356">reactive document database</text>
 <text class="t body" x="520" y="375">transactions · live queries</text>
 <text class="t body" x="520" y="394">TypeScript SDK</text>
 <rect class="box e" x="759.0" y="310" width="241.0" height="97.0" rx="10"/>
-<text class="t ttl" x="773.0" y="334">Loam Durable</text>
+<text class="t ttl" x="773.0" y="334">Loams Durable</text>
 <text class="t body" x="773.0" y="356">embedded Resonate server</text>
 <text class="t body" x="773.0" y="375">durable promises and tasks</text>
 <text class="t body" x="773.0" y="394">crash-safe agent runs</text>
@@ -145,9 +145,9 @@
 <text class="t body" x="520" y="484.0">wasmtime, gVisor, Dapr API</text>
 <text class="t body" x="520" y="503.0">jobs: Celery · BullMQ · Spark · Flink</text>
 <rect class="box e plan" x="759.0" y="419.0" width="241.0" height="97.0" rx="10"/>
-<text class="t ttl" x="773.0" y="443.0">Loam Postgres</text>
+<text class="t ttl" x="773.0" y="443.0">Loams Postgres</text>
 <text class="t badge" x="891" y="443.0">planned</text>
-<text class="t body" x="773.0" y="465.0">Neon fork on Loam's WAL</text>
+<text class="t body" x="773.0" y="465.0">Neon fork on Loams's WAL</text>
 <text class="t body" x="773.0" y="484.0">branching, scale to zero</text>
 <text class="t body" x="773.0" y="503.0">on the same bucket</text>
 <line class="arrow" x1="260" y1="534" x2="260" y2="553" marker-end="url(#ah)"/>
@@ -163,7 +163,7 @@
 <rect class="chip k prog" x="403.6" y="596" width="105.7" height="30" rx="7"/>
 <text class="t chipt" x="456.5" y="616" text-anchor="middle">durable store</text>
 <rect class="chip k plan" x="517.3" y="596" width="189.9" height="30" rx="7"/>
-<text class="t chipt" x="612.3" y="616" text-anchor="middle">hot WAL for Loam Postgres</text>
+<text class="t chipt" x="612.3" y="616" text-anchor="middle">hot WAL for Loams Postgres</text>
 <text class="t note" x="1000" y="616" text-anchor="end">dev and single node: embedded Raft</text>
 <line class="arrow" x1="260" y1="640" x2="260" y2="659" marker-end="url(#ah)"/>
 <line class="arrow" x1="520" y1="640" x2="520" y2="659" marker-end="url(#ah)"/>

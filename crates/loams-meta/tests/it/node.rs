@@ -1,0 +1,694 @@
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use loams_common::{NamespaceId, StreamId};
+use loams_meta::{
+    ApplyError, Clock, Command, Consistency, Fence, ManualClock, MetaConfig, MetaError, MetaNode,
+    RaftStatus, Router, WalChunk, WalClass,
+};
+use loams_store::{Fault, FaultyStore, Op, Store};
+use tempfile::TempDir;
+
+const WAIT: Duration = Duration::from_secs(10);
+
+fn config(dir: &TempDir, store: &Store) -> MetaConfig {
+    MetaConfig::new(1, dir.path(), store.clone())
+}
+
+async fn start(config: MetaConfig) -> MetaNode {
+    let node = MetaNode::start(config, &Router::new())
+        .await
+        .expect("start node");
+    node.initialize([1]).await.expect("initialize");
+    node.wait_for_leader(WAIT).await.expect("leader");
+    node
+}
+
+/// A store that fails the operations queued on the returned `FaultyStore`.
+fn faulty_store() -> (Arc<FaultyStore>, Store) {
+    let faulty = Arc::new(FaultyStore::new(Store::in_memory().inner().clone()));
+    (faulty.clone(), Store::new(faulty))
+}
+
+fn namespace_names(state: &loams_meta::MetaState) -> Vec<String> {
+    state.namespaces().map(|n| n.name.clone()).collect()
+}
+
+/// Waits until `node`'s status satisfies `check`.
+async fn wait_for_status(node: &MetaNode, check: impl Fn(RaftStatus) -> bool) -> RaftStatus {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let status = node.status();
+        if check(status) {
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "status never matched: {status:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn chunk(stream: StreamId, records: u32) -> WalChunk {
+    WalChunk {
+        stream,
+        partition: 0,
+        records,
+        byte_range: 0..64,
+        max_timestamp_ms: 0,
+    }
+}
+
+#[tokio::test]
+async fn a_single_node_serves_writes_and_reads() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    let node = start(config(&dir, &store)).await;
+    assert_eq!(node.current_leader().await, Some(1));
+
+    let ns = node.create_namespace("acme").await.unwrap();
+    let stream = node
+        .create_stream(ns, "events", 2, WalClass::Standard)
+        .await
+        .unwrap();
+    assert_eq!(
+        node.commit_wal("wal/1.wal", 0, vec![chunk(stream, 10)])
+            .await
+            .unwrap(),
+        [0]
+    );
+    assert_eq!(
+        node.commit_wal("wal/2.wal", 0, vec![chunk(stream, 5)])
+            .await
+            .unwrap(),
+        [10]
+    );
+    // A retried commit gets its original offsets.
+    assert_eq!(
+        node.commit_wal("wal/1.wal", 0, vec![chunk(stream, 10)])
+            .await
+            .unwrap(),
+        [0]
+    );
+
+    for consistency in [Consistency::Linearizable, Consistency::Local] {
+        let next = node
+            .read(consistency, |s| {
+                s.partition(stream, 0).map(|p| p.next_offset())
+            })
+            .await
+            .unwrap();
+        assert_eq!(next, Some(15));
+    }
+}
+
+#[tokio::test]
+async fn rejected_commands_come_back_as_rejected_errors() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    let node = start(config(&dir, &store)).await;
+    let ns = node.create_namespace("acme").await.unwrap();
+
+    let err = node.create_namespace("acme").await.unwrap_err();
+    assert!(
+        matches!(err, MetaError::Rejected(ApplyError::NamespaceExists(id)) if id == ns),
+        "{err:?}"
+    );
+    let err = node
+        .create_stream(NamespaceId(99), "events", 1, WalClass::Standard)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, MetaError::Rejected(ApplyError::NamespaceNotFound(_))),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn leases_are_stamped_with_the_node_clock() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    let clock = Arc::new(ManualClock::new(1_000));
+    let mut config = config(&dir, &store);
+    config.clock = clock.clone();
+    let node = start(config).await;
+    let ns = node.create_namespace("acme").await.unwrap();
+    let ttl = Duration::from_secs(10);
+
+    let first = node.acquire_lease("task/a", "w1", ttl).await.unwrap();
+    assert_eq!((first.epoch, first.deadline_ms), (1, 11_000));
+    let err = node.acquire_lease("task/a", "w2", ttl).await.unwrap_err();
+    assert!(
+        matches!(err, MetaError::Rejected(ApplyError::LeaseHeld { .. })),
+        "{err:?}"
+    );
+
+    clock.advance(ttl);
+    let second = node.acquire_lease("task/a", "w2", ttl).await.unwrap();
+    assert_eq!((second.epoch, second.deadline_ms), (2, 21_000));
+    let err = node.renew_lease("task/a", "w1", 1, ttl).await.unwrap_err();
+    assert!(
+        matches!(err, MetaError::Rejected(ApplyError::LeaseLost { .. })),
+        "{err:?}"
+    );
+
+    let fence = |epoch| {
+        Some(Fence {
+            lease: "task/a".to_string(),
+            epoch,
+        })
+    };
+    let err = node
+        .cas_pointer(ns, "manifest", None, "m/1.pb", fence(1))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, MetaError::Rejected(ApplyError::Fenced { .. })),
+        "{err:?}"
+    );
+    assert_eq!(
+        node.cas_pointer(ns, "manifest", None, "m/1.pb", fence(2))
+            .await
+            .unwrap(),
+        1
+    );
+    node.release_lease("task/a", "w2", 2).await.unwrap();
+}
+
+#[tokio::test]
+async fn an_uninitialized_node_refuses_writes_and_linearizable_reads() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    let node = MetaNode::start(config(&dir, &store), &Router::new())
+        .await
+        .unwrap();
+
+    let err = node.create_namespace("acme").await.unwrap_err();
+    assert!(
+        matches!(err, MetaError::NotLeader { leader: None }),
+        "{err:?}"
+    );
+    let err = node
+        .read(Consistency::Linearizable, |s| s.namespaces().count())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, MetaError::NotLeader { leader: None }),
+        "{err:?}"
+    );
+    let count = node
+        .read(Consistency::Local, |s| s.namespaces().count())
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn initialize_is_idempotent_and_checks_membership() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    let node = start(config(&dir, &store)).await;
+    node.initialize([1]).await.unwrap();
+    node.create_namespace("acme").await.unwrap();
+    // Initializing an existing cluster with other voters is a mistake, not a no-op.
+    let err = node.initialize([1, 2]).await.unwrap_err();
+    assert!(matches!(err, MetaError::Config(_)), "{err:?}");
+    node.initialize([1]).await.unwrap();
+
+    let (dir2, store2) = (TempDir::new().unwrap(), Store::in_memory());
+    let other = MetaNode::start(MetaConfig::new(5, dir2.path(), store2), &Router::new())
+        .await
+        .unwrap();
+    let err = other.initialize([1, 2]).await.unwrap_err();
+    assert!(matches!(err, MetaError::Config(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn state_survives_a_restart() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    let node = start(config(&dir, &store)).await;
+    node.create_namespace("acme").await.unwrap();
+    node.shutdown().await.unwrap();
+    drop(node);
+
+    // Recovery re-applies the log inside `start`: a local read right away,
+    // before any leader is elected, already sees the write.
+    let node = MetaNode::start(config(&dir, &store), &Router::new())
+        .await
+        .unwrap();
+    let names = node
+        .read(Consistency::Local, namespace_names)
+        .await
+        .unwrap();
+    assert_eq!(names, ["acme"]);
+    node.wait_for_leader(WAIT).await.unwrap();
+    let names = node
+        .read(Consistency::Linearizable, namespace_names)
+        .await
+        .unwrap();
+    assert_eq!(names, ["acme"]);
+    assert_eq!(
+        node.create_namespace("globex").await.unwrap(),
+        NamespaceId(2)
+    );
+}
+
+#[tokio::test]
+async fn shutdown_releases_the_local_database_even_while_handles_remain() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    let node = start(config(&dir, &store)).await;
+    node.create_namespace("acme").await.unwrap();
+    let clone = node.clone();
+    node.shutdown().await.unwrap();
+
+    // `clone` is still alive, yet the node restarts on the same directory.
+    let restarted = start(config(&dir, &store)).await;
+    assert_eq!(
+        restarted.create_namespace("globex").await.unwrap(),
+        NamespaceId(2)
+    );
+    let err = clone.create_namespace("zombie").await.unwrap_err();
+    assert!(matches!(err, MetaError::Unavailable(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn state_survives_a_restart_after_snapshot_and_log_purge() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    let mut cfg = config(&dir, &store);
+    cfg.logs_after_snapshot = 0;
+    let node = start(cfg.clone()).await;
+    let ns = node.create_namespace("acme").await.unwrap();
+    let stream = node
+        .create_stream(ns, "events", 1, WalClass::Standard)
+        .await
+        .unwrap();
+    node.commit_wal("wal/1.wal", 0, vec![chunk(stream, 7)])
+        .await
+        .unwrap();
+    node.snapshot().await.unwrap();
+    let status = node.status();
+    assert_eq!(status.leader, Some(1));
+    assert!(status.snapshot.is_some() && status.snapshot == status.last_applied);
+    // The purge follows the snapshot asynchronously.
+    let snapshotted = wait_for_status(&node, |s| s.purged >= s.snapshot).await;
+    assert_eq!(snapshotted.purged, status.snapshot);
+    // Entries after the snapshot are recovered from the log.
+    node.commit_wal("wal/2.wal", 0, vec![chunk(stream, 3)])
+        .await
+        .unwrap();
+
+    let snapshots = store.list("meta/snapshots/1/").await.unwrap();
+    assert_eq!(snapshots.len(), 1, "{snapshots:?}");
+    let before = node.status();
+    node.shutdown().await.unwrap();
+    drop(node);
+
+    // Right after `start`, before any leader: the local state already holds
+    // the snapshot plus the re-applied log tail, and the status reports it.
+    let node = MetaNode::start(cfg, &Router::new()).await.unwrap();
+    let status = node.status();
+    assert_eq!(
+        (status.last_applied, status.snapshot, status.purged),
+        (
+            before.last_applied,
+            snapshotted.snapshot,
+            snapshotted.purged
+        ),
+        "{status:?}"
+    );
+    let next_offset = |s: &loams_meta::MetaState| s.partition(stream, 0).map(|p| p.next_offset());
+    assert_eq!(
+        node.read(Consistency::Local, next_offset).await.unwrap(),
+        Some(10)
+    );
+    node.wait_for_leader(WAIT).await.unwrap();
+    assert_eq!(
+        node.read(Consistency::Linearizable, next_offset)
+            .await
+            .unwrap(),
+        Some(10)
+    );
+    assert_eq!(
+        node.commit_wal("wal/3.wal", 0, vec![chunk(stream, 1)])
+            .await
+            .unwrap(),
+        [10]
+    );
+}
+
+#[tokio::test]
+async fn snapshots_are_taken_automatically_every_n_entries() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    let mut cfg = config(&dir, &store);
+    cfg.snapshot_every = 10;
+    let node = start(cfg).await;
+    for i in 0..25 {
+        node.create_namespace(&format!("ns{i}")).await.unwrap();
+    }
+
+    let mut found = false;
+    for _ in 0..100 {
+        if !store.list("meta/snapshots/1/").await.unwrap().is_empty() {
+            found = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(found, "no snapshot written after 25 entries");
+}
+
+#[tokio::test]
+async fn a_node_keeps_serving_through_failed_snapshot_uploads() {
+    let dir = TempDir::new().unwrap();
+    let (faulty, store) = faulty_store();
+    let node = start(config(&dir, &store)).await;
+    node.create_namespace("acme").await.unwrap();
+
+    // openraft stops the node for good on a snapshot error; the state machine
+    // must ride out a store that fails for a while.
+    for _ in 0..3 {
+        faulty.inject(Op::Put, Fault::Error);
+    }
+    let snapshot = tokio::spawn({
+        let node = node.clone();
+        async move { node.snapshot().await }
+    });
+    while faulty.calls(Op::Put) == 0 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    // Writes and reads go on while the upload is being retried.
+    node.create_namespace("globex").await.unwrap();
+    snapshot.await.unwrap().unwrap();
+    assert!(faulty.calls(Op::Put) >= 4);
+    assert_eq!(store.list("meta/snapshots/1/").await.unwrap().len(), 1);
+
+    node.create_namespace("initech").await.unwrap();
+    node.snapshot().await.unwrap();
+    let names = node
+        .read(Consistency::Linearizable, namespace_names)
+        .await
+        .unwrap();
+    assert_eq!(names, ["acme", "globex", "initech"]);
+}
+
+#[tokio::test]
+async fn snapshot_waits_out_an_in_flight_build_that_covers_less() {
+    let dir = TempDir::new().unwrap();
+    let (faulty, store) = faulty_store();
+    let mut cfg = config(&dir, &store);
+    cfg.snapshot_every = 5;
+    let node = start(cfg).await;
+
+    // Slow down the automatic build (retrying failed uploads) so that it is
+    // still in flight, covering fewer entries, when `snapshot` is called.
+    for _ in 0..4 {
+        faulty.inject(Op::Put, Fault::Error);
+    }
+    for i in 0..5 {
+        node.create_namespace(&format!("ns{i}")).await.unwrap();
+    }
+    while faulty.calls(Op::Put) == 0 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    // Too few entries for openraft to start another automatic build after
+    // this one: only `snapshot` itself can get the snapshot to cover them.
+    for i in 5..7 {
+        node.create_namespace(&format!("ns{i}")).await.unwrap();
+    }
+    let applied = node.status().last_applied;
+
+    node.snapshot().await.unwrap();
+    let status = node.status();
+    assert!(
+        status.snapshot >= applied,
+        "{status:?}, applied {applied:?}"
+    );
+}
+
+#[tokio::test]
+async fn shutdown_cuts_short_a_snapshot_upload_being_retried() {
+    let dir = TempDir::new().unwrap();
+    let (faulty, store) = faulty_store();
+    let mut cfg = config(&dir, &store);
+    cfg.request_timeout = Duration::from_secs(2);
+    let node = start(cfg.clone()).await;
+    node.create_namespace("acme").await.unwrap();
+
+    for _ in 0..10_000 {
+        faulty.inject(Op::Put, Fault::Error);
+    }
+    let snapshot = tokio::spawn({
+        let node = node.clone();
+        async move { node.snapshot().await }
+    });
+    while faulty.calls(Op::Put) == 0 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    node.shutdown().await.unwrap();
+    assert!(snapshot.await.unwrap().is_err());
+
+    let node = start(cfg).await;
+    let names = node
+        .read(Consistency::Linearizable, namespace_names)
+        .await
+        .unwrap();
+    assert_eq!(names, ["acme"]);
+}
+
+/// M0.2 review N4: a node whose Raft stopped with a fatal error (here a
+/// snapshot build that failed past its I/O budget) reports it, so a harness
+/// can tell it from one that is merely unavailable.
+#[tokio::test]
+async fn a_fatal_raft_error_is_reported() {
+    let dir = TempDir::new().unwrap();
+    let (faulty, store) = faulty_store();
+    let mut cfg = config(&dir, &store);
+    cfg.snapshot_io_budget = Duration::from_millis(500);
+    let node = start(cfg).await;
+    node.create_namespace("acme").await.unwrap();
+    assert_eq!(node.fatal_error(), None);
+
+    for _ in 0..10_000 {
+        faulty.inject(Op::Put, Fault::Error);
+    }
+    assert!(node.snapshot().await.is_err());
+    let deadline = Instant::now() + WAIT;
+    while node.fatal_error().is_none() {
+        assert!(Instant::now() < deadline, "no fatal error reported");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_node_without_local_state_refuses_to_start_over_existing_snapshots() {
+    let store = Store::in_memory();
+    let dir = TempDir::new().unwrap();
+    let node = start(config(&dir, &store)).await;
+    node.create_namespace("acme").await.unwrap();
+    node.snapshot().await.unwrap();
+    node.shutdown().await.unwrap();
+
+    // The same node on a replaced (empty) data directory would start an empty
+    // metastore, reissue ids and later overwrite its snapshots.
+    let empty = TempDir::new().unwrap();
+    let err = MetaNode::start(
+        MetaConfig::new(1, empty.path(), store.clone()),
+        &Router::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&err, MetaError::Config(msg) if msg.contains("snapshot")),
+        "{err:?}"
+    );
+
+    // Only a node's own snapshots count (M1.3 E47): another node id, such as
+    // a voter first started after a peer snapshotted, or a new learner,
+    // starts empty and receives the leader's state.
+    let other = TempDir::new().unwrap();
+    let peer = MetaNode::start(
+        MetaConfig::new(2, other.path(), store.clone()),
+        &Router::new(),
+    )
+    .await
+    .expect("another node id starts");
+    peer.shutdown().await.unwrap();
+
+    // An operator who knows the snapshots are stale can override the check.
+    let empty = TempDir::new().unwrap();
+    let mut cfg = MetaConfig::new(1, empty.path(), store.clone());
+    cfg.allow_fresh_start_with_existing_snapshots = true;
+    let fresh = start(cfg).await;
+    assert_eq!(
+        fresh
+            .read(Consistency::Local, |s| s.namespaces().count())
+            .await
+            .unwrap(),
+        0
+    );
+    fresh.shutdown().await.unwrap();
+
+    // The original data directory still starts, with its state.
+    let node = start(config(&dir, &store)).await;
+    let names = node
+        .read(Consistency::Linearizable, namespace_names)
+        .await
+        .unwrap();
+    assert_eq!(names, ["acme"]);
+}
+
+#[tokio::test]
+async fn invalid_configs_are_rejected() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    let mut cfg = config(&dir, &store);
+    cfg.snapshot_every = 0;
+    let err = MetaNode::start(cfg, &Router::new()).await.unwrap_err();
+    assert!(matches!(err, MetaError::Config(_)), "{err:?}");
+}
+
+/// A command stamped far ahead of the leader's clock is refused before it is
+/// proposed, so it cannot push the metastore clock forward and make every
+/// later WAL commit stale.
+#[tokio::test]
+async fn the_leader_refuses_commands_stamped_too_far_ahead() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    let clock = Arc::new(ManualClock::new(1_700_000_000_000));
+    let mut cfg = config(&dir, &store);
+    cfg.clock = clock.clone();
+    // The M0.3 default; M0.4 raised the default to 5 min (re-review N1).
+    cfg.max_clock_skew = Duration::from_secs(60);
+    let node = start(cfg).await;
+    let ns = node.create_namespace("acme").await.unwrap();
+    let stream = node
+        .create_stream(ns, "events", 1, WalClass::Standard)
+        .await
+        .unwrap();
+    let now = clock.now_ms();
+    let day = 86_400_000;
+    let clock_before = node
+        .read(Consistency::Local, |s| s.clock_ms())
+        .await
+        .unwrap();
+
+    let skewed = [
+        Command::AcquireLease {
+            key: "l".to_string(),
+            owner: "o".to_string(),
+            ttl_ms: 1_000,
+            now_ms: now + day,
+        },
+        Command::PruneWalCommits {
+            fence: None,
+            now_ms: now + day,
+        },
+        Command::TrimPartition {
+            stream,
+            partition: 0,
+            before_offset: 0,
+            fence: None,
+            now_ms: now + 61_000,
+        },
+        Command::CommitWal {
+            object: "wal/future.wal".to_string(),
+            created_at_ms: now + day,
+            chunks: vec![chunk(stream, 1)],
+        },
+    ];
+    for command in skewed {
+        let err = node.write(command.clone()).await.unwrap_err();
+        assert!(
+            matches!(err, MetaError::ClockSkew { leader_ms, .. } if leader_ms == now),
+            "{command:?}: {err:?}"
+        );
+    }
+    assert_eq!(
+        node.read(Consistency::Local, |s| s.clock_ms())
+            .await
+            .unwrap(),
+        clock_before
+    );
+
+    // Within the tolerance is fine, and commits from a correct clock keep working.
+    node.write(Command::PruneWalCommits {
+        fence: None,
+        now_ms: now + 59_000,
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        node.commit_wal("wal/now.wal", now, vec![chunk(stream, 2)])
+            .await
+            .unwrap(),
+        [0]
+    );
+    // A client with a skewed clock gets the refusal at once, not after retries.
+    let skewed_client = loams_meta::MetaClient::new(
+        node.clone(),
+        vec![],
+        Arc::new(ManualClock::new(now + day)),
+        loams_meta::MetaClientConfig::default(),
+    );
+    let started = Instant::now();
+    let err = skewed_client.prune_wal_commits(None).await.unwrap_err();
+    assert!(matches!(err, MetaError::ClockSkew { .. }), "{err:?}");
+    assert!(started.elapsed() < Duration::from_secs(2));
+    node.shutdown().await.unwrap();
+}
+
+/// M0.3 re-review N1: with the default `max_clock_skew` (5 min), a leader
+/// whose clock is minutes behind still accepts writers with correct clocks.
+#[tokio::test]
+async fn a_leader_minutes_behind_accepts_correct_writers_by_default() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    let clock = Arc::new(ManualClock::new(1_700_000_000_000));
+    let mut cfg = config(&dir, &store);
+    assert_eq!(cfg.max_clock_skew, Duration::from_secs(300));
+    cfg.clock = clock.clone();
+    let node = start(cfg).await;
+    let ns = node.create_namespace("acme").await.unwrap();
+    let stream = node
+        .create_stream(ns, "events", 1, WalClass::Standard)
+        .await
+        .unwrap();
+    // The writers' clock is 4 min ahead of the leader's.
+    let now = clock.now_ms() + 240_000;
+    node.write(Command::PruneWalCommits {
+        fence: None,
+        now_ms: now,
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        node.commit_wal("wal/ahead.wal", now, vec![chunk(stream, 1)])
+            .await
+            .unwrap(),
+        [0]
+    );
+    // Past the default it is refused.
+    let err = node
+        .write(Command::PruneWalCommits {
+            fence: None,
+            now_ms: clock.now_ms() + 301_000,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, MetaError::ClockSkew { .. }), "{err:?}");
+    node.shutdown().await.unwrap();
+}
+
+/// M0.3 re-review N4: `shutdown` returns only once the local database file is
+/// closed, so the node restarts at once in the same process, even on a
+/// multi-threaded runtime where the last handle may be dropped on another
+/// thread.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_restarts_in_the_same_process_right_after_shutdown() {
+    let (dir, store) = (TempDir::new().unwrap(), Store::in_memory());
+    for i in 0..20 {
+        let node = start(config(&dir, &store)).await;
+        node.create_namespace(&format!("ns-{i}")).await.unwrap();
+        node.shutdown().await.unwrap();
+    }
+    let node = start(config(&dir, &store)).await;
+    let count = node
+        .read(Consistency::Local, |s| s.namespaces().count())
+        .await
+        .unwrap();
+    assert_eq!(count, 20);
+    node.shutdown().await.unwrap();
+}

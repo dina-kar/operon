@@ -1,12 +1,12 @@
 apiVersion: dapr.io/v1alpha1
 kind: Configuration
 metadata:
-  name: operon-no-workflow
+  name: loams-no-workflow
 spec:
   tracing:
     samplingRate: "1"
   # No app may invoke a sidecar with this Configuration. A service that other
-  # apps call needs its own Configuration naming its callers (operon-stream).
+  # apps call needs its own Configuration naming its callers (loams-stream).
   accessControl:
     defaultAction: deny
     trustDomain: public
@@ -34,7 +34,7 @@ spec:
 apiVersion: dapr.io/v1alpha1
 kind: Configuration
 metadata:
-  name: operon-trigger-edge
+  name: loams-trigger-edge
 spec:
   tracing:
     samplingRate: "1"
@@ -67,7 +67,7 @@ spec:
 apiVersion: dapr.io/v1alpha1
 kind: Configuration
 metadata:
-  name: operon-stream
+  name: loams-stream
 spec:
   tracing:
     samplingRate: "1"
@@ -76,10 +76,10 @@ spec:
     defaultAction: deny
     trustDomain: public
     policies:
-      - appId: operon-trigger-edge
+      - appId: loams-trigger-edge
         defaultAction: allow
         trustDomain: public
-        namespace: operon
+        namespace: loams
   api:
     denied:
       # Every Workflow API version: stable (Dapr 1.15+), and the beta and

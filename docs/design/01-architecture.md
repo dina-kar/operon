@@ -9,7 +9,7 @@ Status: **Approved** · 2026-09-22 (including amendments: Tantivy for text, Lanc
 1. **Object storage is the only durable source of truth.** The sole exception is the seconds-long WAL tail of `quorum`-class streams, which is 3-way replicated across AZs before acknowledgment (§02).
 2. **All compute is stateless.** Any node can be killed at any time. Local RAM/NVMe hold only caches and derived structures that can be rebuilt from object storage.
 3. **The log is the spine.** Every mutation enters through a stream. Tables, collections and graphs are materializations of streams, maintained by links.
-4. **Open formats at rest.** Iceberg (tables), Lance (collection documents + vectors), Tantivy splits (text), Parquet-style sidecars (graph adjacency). External engines can read Operon's data without Operon.
+4. **Open formats at rest.** Iceberg (tables), Lance (collection documents + vectors), Tantivy splits (text), Parquet-style sidecars (graph adjacency). External engines can read Loams's data without Loams.
 5. **Namespace is the unit of everything.** Tenancy, quotas, encryption keys, cache affinity, routing and billing are all per namespace. A cold namespace costs only its S3 bytes.
 6. **Compatibility is a gateway concern.** Protocol frontends (§3.3) translate into a small set of internal logical operations. No protocol leaks into the storage or query core. The footprint is deliberately narrow (D42): the native REST/gRPC API, Arrow Flight SQL, the Qdrant API and a targeted Elasticsearch subset, plus the Resonate server (§14) and the MCP server (§15).
 7. **Every object has a durable tier and a hot tier** (§04). Correctness never depends on the hot tier.
@@ -56,7 +56,7 @@ A **namespace** contains five kinds of objects.
 
 ## 3. System shape
 
-One binary, `operon`, runs any combination of five roles. All roles except `meta` are stateless; `meta` holds only metadata (Raft-replicated, snapshotted to S3). With an external metastore backend (§3.2) the `meta` role is not run.
+One binary, `loams`, runs any combination of five roles. All roles except `meta` are stateless; `meta` holds only metadata (Raft-replicated, snapshotted to S3). With an external metastore backend (§3.2) the `meta` role is not run.
 
 ```
  clients:  native REST/gRPC (+ MCP) │ Arrow Flight SQL │ Qdrant REST/gRPC │ ES REST subset │ Resonate HTTP
@@ -96,26 +96,26 @@ One binary, `operon`, runs any combination of five roles. All roles except `meta
 | `worker` | Background tasks (§09) | None (leases in meta) | Ingest volume, index/compaction backlog |
 | `meta` | Metadata state machine (openraft backend only) | Raft log + snapshots (→ S3) | Metadata op rate (sharded by namespace in M6, §18 §5) |
 
-Small deployments run everything in one process (`operon dev` / `operon standalone`); large ones split roles into separately autoscaled pools.
+Small deployments run everything in one process (`loams dev` / `loams standalone`); large ones split roles into separately autoscaled pools.
 
-As built (M1.3): `operon cluster --roles meta,log,query,worker,gateway …` runs any subset of the roles in one process (`gateway` implies `log`). Every node runs a metastore replica: voters on `meta` nodes, non-voting learners elsewhere (§3.2). A node registers under the lease `node/<id>`, and collections are owned by rendezvous hashing over the live `query` nodes (§04 §5).
+As built (M1.3): `loams cluster --roles meta,log,query,worker,gateway …` runs any subset of the roles in one process (`gateway` implies `log`). Every node runs a metastore replica: voters on `meta` nodes, non-voting learners elsewhere (§3.2). A node registers under the lease `node/<id>`, and collections are owned by rendezvous hashing over the live `query` nodes (§04 §5).
 
 ### 3.2 Metastore: a semantic trait, Raft by default
 
 Streams generate high-rate metadata: offset assignment per flush, consumer offset commits, partition and task leases. S3 conditional PUT (tens to hundreds of ms, contended per key) cannot sustain that, so metadata lives in a metastore. Durable object data never flows through it: manifest *bodies* stay immutable objects on S3; only *pointers* live in meta.
 
-Every crate reaches the metastore through **`trait MetaStore`** in `operon-common` (D47), as `Arc<dyn MetaStore>` from M1.2a. The trait is semantic, not raw KV: it exposes the domain operations Operon needs — WAL commit and segment swap, trims and retention, catalog operations and schema evolution (namespaces, streams, collections, aliases, links), manifest-pointer CAS, leases and fencing, and retired-object tracking for GC. Each backend implements the sequencer, fencing and CAS natively instead of rebuilding them over bytes (the Lakekeeper model: one catalog trait, several database backends).
+Every crate reaches the metastore through **`trait MetaStore`** in `loams-common` (D47), as `Arc<dyn MetaStore>` from M1.2a. The trait is semantic, not raw KV: it exposes the domain operations Loams needs — WAL commit and segment swap, trims and retention, catalog operations and schema evolution (namespaces, streams, collections, aliases, links), manifest-pointer CAS, leases and fencing, and retired-object tracking for GC. Each backend implements the sequencer, fencing and CAS natively instead of rebuilding them over bytes (the Lakekeeper model: one catalog trait, several database backends).
 
-As built (M1.2a): the trait and its records live in `operon_common::meta`; the openraft `MetaClient` implements it in `operon-meta/src/store.rs`. Only the composition roots (`operon`, `operon-sim`) depend on `operon-meta`; the CI step `metastore boundary` enforces it. Reads are named domain queries that each return one consistent state; `commit_wal`, `swap_segment` and `cas_pointer` report whether an earlier attempt had an unknown outcome; `watch_changes` is the long-poll wake-up. Raft administration (node start, membership, snapshots, status) stays on the openraft types.
+As built (M1.2a): the trait and its records live in `loams_common::meta`; the openraft `MetaClient` implements it in `loams-meta/src/store.rs`. Only the composition roots (`loams`, `loams-sim`) depend on `loams-meta`; the CI step `metastore boundary` enforces it. Reads are named domain queries that each return one consistent state; `commit_wal`, `swap_segment` and `cas_pointer` report whether an earlier attempt had an unknown outcome; `watch_changes` is the long-poll wake-up. Raft administration (node start, membership, snapshots, status) stays on the openraft types.
 
 As built (M1.3): the openraft backend runs over the network. Every node holds a local replica (a voter on `meta` nodes, a learner elsewhere), so `Local` reads stay local; writes go to the leader (`POST /internal/v1/meta/write`) and linearizable reads ask it for a read index, and the client then waits until its own replica has applied that index (M1.3 Ruling 10, D107). Raft RPCs travel as postcard over HTTP on the node's `--listen` address. The routes are private to the openraft backend, not a remote `MetaStore` protocol (that is M2.x, D64). It is the same `MetaClient`, and it passes the `MetaStore` conformance suite over HTTP on the leader and on a learner.
 
 | Backend | Crate | Milestone | Use |
 |---|---|---|---|
-| Embedded **openraft** (redb log, snapshots in the bucket; KRaft / ClickHouse Keeper style) | `operon-meta` | Default (M0) | `operon dev`, standalone, and clusters of 3 or 5 `meta` nodes; no external dependency |
-| **Postgres** | `operon-meta-postgres` | M2 | Deployments that already run managed Postgres (RDS/Aurora, Cloud SQL, Azure Database); no `meta` role to operate. Follows Lakekeeper's patterns; the throughput ceiling is open (Q17) |
-| **DynamoDB** | `operon-meta-dynamodb` | M2 | AWS-native and serverless deployments; the hosted control plane's store (M2.x) |
-| ~~**TiDB**~~ **TiKV** | ~~`operon-meta-tidb`~~ `operon-meta-tikv` | ~~M6~~ R1 | Metadata beyond one Postgres primary, and Loam cloud and cluster metadata: scale-out, transactional KV over `tikv-client`. Replaces the TiDB backend (D124); no TiDB anywhere (D260) |
+| Embedded **openraft** (redb log, snapshots in the bucket; KRaft / ClickHouse Keeper style) | `loams-meta` | Default (M0) | `loams dev`, standalone, and clusters of 3 or 5 `meta` nodes; no external dependency |
+| **Postgres** | `loams-meta-postgres` | M2 | Deployments that already run managed Postgres (RDS/Aurora, Cloud SQL, Azure Database); no `meta` role to operate. Follows Lakekeeper's patterns; the throughput ceiling is open (Q17) |
+| **DynamoDB** | `loams-meta-dynamodb` | M2 | AWS-native and serverless deployments; the hosted control plane's store (M2.x) |
+| ~~**TiDB**~~ **TiKV** | ~~`loams-meta-tidb`~~ `loams-meta-tikv` | ~~M6~~ R1 | Metadata beyond one Postgres primary, and Loams cloud and cluster metadata: scale-out, transactional KV over `tikv-client`. Replaces the TiDB backend (D124); no TiDB anywhere (D260) |
 
 Every backend serves the same relaxed contract (D59): `commit_wal` is atomic per partition group, commands carry bounded-skew stamps with GC claims instead of one monotonic clock, and composite reads follow documented read orders. The openraft backend is stronger, but callers rely only on the relaxed contract. One conformance suite, with the linearizability checker, runs against every backend, each backend has its own fault matrix, and the crash and fault gates run on each (§12 §2 item 5, §18 §4). The directory, the sharded metastore and the placement rules for millions of namespaces are in §18 §5.
 
@@ -138,7 +138,7 @@ Each surface is enabled individually (§10 §2). The Kafka wire protocol follows
 ## 4. Data flow
 
 ### 4.1 Write (any protocol)
-1. Gateway authenticates and translates the request into a logical write against a stream (explicit or implicit). A collection write is admitted only while the collection's unapplied backlog (records past `applied` and their bytes) is under its budget; otherwise it is refused with HTTP 429 or gRPC `RESOURCE_EXHAUSTED` and `Retry-After` (D86). A bulk load may send `Operon-Backpressure: off`, which admits writes up to 4× the budget; while the backlog is above the budget, strong reads may fall back to range tails or answer `Unavailable`, and `Eventual` keeps serving.
+1. Gateway authenticates and translates the request into a logical write against a stream (explicit or implicit). A collection write is admitted only while the collection's unapplied backlog (records past `applied` and their bytes) is under its budget; otherwise it is refused with HTTP 429 or gRPC `RESOURCE_EXHAUSTED` and `Retry-After` (D86). A bulk load may send `Loams-Backpressure: off`, which admits writes up to 4× the budget; while the backlog is above the budget, strong reads may fall back to range tails or answer `Unavailable`, and `Eventual` keeps serving.
 2. A `log` node appends to the WAL per the stream's class and obtains dense offsets from meta (or from its journal for `quorum`).
 3. The client is acknowledged with a **consistency token** `{(stream, partition, offset)…}`.
 4. Workers asynchronously apply links: build Lance fragments + Tantivy splits, append Iceberg data files, update adjacency — each commit atomically records its applied offset.

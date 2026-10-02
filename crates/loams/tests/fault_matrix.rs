@@ -1,0 +1,1525 @@
+//! The object-store fault matrix (M0 exit gate; M0.4 plan Task 7).
+//!
+//! Every component operation (writer flush, reader fetch, segmenter swap,
+//! retention trim, link commit, GC pass, meta snapshot, a collection's
+//! link commit, plan M1.1 Task 13, and plan M1.3 Task 13's split merge,
+//! Lance compaction, hot artifact build and hot artifact load) is crossed
+//! with every
+//! `(Op, Fault)` pair, the fault hitting the operation's first or its second
+//! call of that store operation. Each cell runs on a fresh in-process setup
+//! and ends up in one of four outcomes:
+//! - `Retried`: the fault was reached and the operation still completed
+//!   (retrying internally or riding out a delay);
+//! - `Deferred`: GC only: the fault was reached, the pass completed and left
+//!   the object it could not handle for its next pass;
+//! - `SurfacedRetryable`: the fault was reached and the caller saw a
+//!   *retryable* error (store, cache, metastore unavailability, unknown
+//!   commit outcome, a blocked link commit), and nothing was acknowledged
+//!   that is not durable;
+//! - `NoEffect`: the operation never reached the faulted call.
+//!
+//! An error without the fault being reached, or a non-retryable error
+//! (corrupt data, an unexpected reply), fails the gate. Every cell's outcome
+//! must equal the committed table `tests/fault_matrix.expected.md`
+//! (`FAULT_MATRIX_BLESS=1` rewrites it; review the diff). After every cell,
+//! with faults off and the components run once more, the invariants must
+//! hold: the segmenter runs without failures, no acknowledged data loss, no
+//! torn state (meta invariants, and reads equal to the model), the link's
+//! `CounterTable` exact, and, after a collection commit, the collection equal
+//! to the fold of its stream (`fold_stream`, `verify_collection`). The matrix
+//! is written to `target/fault-matrix.md`. The maintenance components must
+//! also keep Task 13 rule 2's blessing rules ([`blessed`]), and after their
+//! cells the maintained collection equals its stream's fold and a live hot
+//! artifact downloads and is served. `FAULT_MATRIX_COMPONENTS=A,B` runs (and
+//! blesses) only those components' rows.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use bytes::Bytes;
+use loams_cache::{CacheError, RangeCache, RangeCacheConfig};
+use loams_collection::{
+    CollectionConfig, CollectionContext, CollectionGcRoots, CollectionSchema,
+    CollectionTargetFactory, CollectionWriter, DocOp, Document, DynamicMapping, FieldKind,
+    FieldSpec, LanceCompactionSource, LanceConfig, LanceEnv, MaintenanceConfig, ManifestCache,
+    OpResult, PkGcRoots, PrimaryKey, SplitMergeSource, VectorSpec, fold_stream, verify_collection,
+};
+use loams_common::meta::{HotConfig, MetaStore};
+use loams_common::{CollectionId, NamespaceId, StreamId};
+use loams_hnsw::FlatEngine;
+use loams_hot::{HotBuildConfig, HotBuildSource, HotTierConfig, HotTierImpl};
+use loams_link::{
+    CounterTable, CounterTargetFactory, LinkApplySource, LinkConfig, LinkError, LinkGcRoots,
+    TargetRegistry,
+};
+use loams_log::gc::{GcConfig, GcSource};
+use loams_log::{
+    FetchRequest, LogConfig, LogError, LogReader, LogWriter, OffsetRecord, Record, Retention,
+    RetentionConfig, Segmenter, SegmenterConfig,
+};
+use loams_meta::{
+    Consistency, MetaClient, MetaClientConfig, MetaConfig, MetaError, MetaNode, Router,
+    SystemClock, TargetRef, WalClass,
+};
+use loams_query::hot::HotTier;
+use loams_query::placement::LocalOnly;
+use loams_store::{Fault, FaultyStore, Op, Store};
+use loams_worker::{RunResult, TaskError, TaskSource, run_once};
+use object_store::memory::InMemory;
+use tempfile::TempDir;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Component {
+    WriterFlush,
+    ReaderFetch,
+    SegmenterSwap,
+    RetentionTrim,
+    LinkCommit,
+    GcPass,
+    MetaSnapshot,
+    CollectionCommit,
+    /// One run of the split merge source (plan M1.3 Task 13).
+    SplitMerge,
+    /// One run of the Lance compaction source.
+    LanceCompaction,
+    /// One run of the hot artifact build source.
+    HotBuild,
+    /// One reconcile pass of a fresh hot tier over a committed artifact.
+    HotLoad,
+}
+
+const COMPONENTS: [Component; 12] = [
+    Component::WriterFlush,
+    Component::ReaderFetch,
+    Component::SegmenterSwap,
+    Component::RetentionTrim,
+    Component::LinkCommit,
+    Component::GcPass,
+    Component::MetaSnapshot,
+    Component::CollectionCommit,
+    Component::SplitMerge,
+    Component::LanceCompaction,
+    Component::HotBuild,
+    Component::HotLoad,
+];
+
+impl Component {
+    /// The components that maintain the `maint` collection.
+    fn maintains(self) -> bool {
+        matches!(
+            self,
+            Component::SplitMerge
+                | Component::LanceCompaction
+                | Component::HotBuild
+                | Component::HotLoad
+        )
+    }
+}
+
+/// Partitions of the maintenance components' collection.
+const MAINT_PARTITIONS: u32 = 2;
+/// The Lance column of the collection's vector `v`: its artifact's column.
+const VECTOR_COLUMN: &str = "_vector_0";
+
+/// Partitions of the fixture's collection.
+const DOCS_PARTITIONS: u32 = 2;
+
+const OPS: [Op; 6] = [
+    Op::Put,
+    Op::PutCreate,
+    Op::PutIfMatch,
+    Op::Get,
+    Op::Delete,
+    Op::List,
+];
+
+const DELAY: Duration = Duration::from_secs(2);
+
+fn faults() -> [Fault; 4] {
+    [
+        Fault::Error,
+        Fault::ErrorAfterApply,
+        Fault::Precondition,
+        Fault::Delay(DELAY),
+    ]
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Outcome {
+    Retried,
+    Deferred,
+    SurfacedRetryable,
+    NoEffect,
+}
+
+impl fmt::Display for Outcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Outcome::Retried => "Retried",
+            Outcome::Deferred => "Deferred",
+            Outcome::SurfacedRetryable => "SurfacedRetryable",
+            Outcome::NoEffect => "NoEffect",
+        })
+    }
+}
+
+/// Why a component operation failed.
+#[derive(Debug)]
+enum Failure {
+    Log(LogError),
+    Meta(MetaError),
+    Task(TaskError),
+    /// Not an error of the component (a wrong result): never retryable.
+    Other(String),
+    /// A failure the component reported and retries on its next pass (a
+    /// hot tier's reconcile reports failed loads instead of returning an
+    /// error).
+    Reported(String),
+}
+
+impl From<LogError> for Failure {
+    fn from(err: LogError) -> Self {
+        Failure::Log(err)
+    }
+}
+
+impl From<MetaError> for Failure {
+    fn from(err: MetaError) -> Self {
+        Failure::Meta(err)
+    }
+}
+
+fn meta_retryable(err: &MetaError) -> bool {
+    matches!(
+        err,
+        MetaError::NotLeader { .. }
+            | MetaError::Timeout
+            | MetaError::Unavailable(_)
+            | MetaError::Storage(_)
+    )
+}
+
+fn log_retryable(err: &LogError) -> bool {
+    match err {
+        LogError::Store(err) => err.is_retryable(),
+        LogError::Cache(CacheError::Store(err)) => err.is_retryable(),
+        LogError::CommitUnknown(_) | LogError::Backpressure => true,
+        LogError::Meta(err) => meta_retryable(err),
+        LogError::Task(err) => task_retryable(err),
+        _ => false,
+    }
+}
+
+fn link_retryable(err: &LinkError) -> bool {
+    match err {
+        LinkError::Store(err) => err.is_retryable(),
+        LinkError::Blocked(_) => true,
+        LinkError::Meta(err) => meta_retryable(err),
+        LinkError::Log(err) => log_retryable(err),
+        LinkError::Target { retryable, .. } => *retryable,
+        LinkError::Corrupt(_) | LinkError::NotFound(_) => false,
+    }
+}
+
+fn task_retryable(err: &TaskError) -> bool {
+    match err {
+        TaskError::Fenced => true,
+        TaskError::Meta(err) => meta_retryable(err),
+        TaskError::Failed(err) => {
+            if let Some(err) = err.downcast_ref::<LogError>() {
+                log_retryable(err)
+            } else if let Some(err) = err.downcast_ref::<LinkError>() {
+                link_retryable(err)
+            } else if let Some(err) = err.downcast_ref::<loams_collection::CollectionError>() {
+                err.is_retryable()
+            } else if let Some(err) = err.downcast_ref::<loams_hot::TierError>() {
+                err.is_retryable()
+            } else {
+                err.downcast_ref::<loams_store::StoreError>()
+                    .is_some_and(loams_store::StoreError::is_retryable)
+            }
+        }
+    }
+}
+
+impl Failure {
+    fn retryable(&self) -> bool {
+        match self {
+            Failure::Log(err) => log_retryable(err),
+            Failure::Meta(err) => meta_retryable(err),
+            Failure::Task(err) => task_retryable(err),
+            Failure::Other(_) => false,
+            Failure::Reported(_) => true,
+        }
+    }
+}
+
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Failure::Log(err) => write!(f, "log: {err}"),
+            Failure::Meta(err) => write!(f, "meta: {err}"),
+            Failure::Task(err) => write!(f, "task: {err}"),
+            Failure::Other(err) => f.write_str(err),
+            Failure::Reported(err) => write!(f, "reported: {err}"),
+        }
+    }
+}
+
+/// A fresh single-node setup with data in every state the components touch.
+struct Fixture {
+    node: MetaNode,
+    meta: MetaClient,
+    faults: Arc<FaultyStore>,
+    store: Store,
+    writer: LogWriter,
+    ns: NamespaceId,
+    events: StreamId,
+    logs: StreamId,
+    /// Collection `docs`, its implicit stream and its storage.
+    docs: CollectionId,
+    docs_stream: StreamId,
+    collections: CollectionContext,
+    collection_factory: Arc<CollectionTargetFactory>,
+    /// (stream, partition) → offset → value, acknowledged.
+    acked: Mutex<BTreeMap<(StreamId, u32), BTreeMap<u64, String>>>,
+    /// Values whose append had an unknown outcome.
+    unknown: Mutex<BTreeSet<String>>,
+    /// Values whose append failed definitely.
+    failed: Mutex<BTreeSet<String>>,
+    next: Mutex<u64>,
+    /// The maintenance components' collection `maint` and its stream, once
+    /// prepared.
+    maint: Mutex<Option<(CollectionId, StreamId)>>,
+    /// HotLoad's tier, once prepared.
+    tier: Mutex<Option<HotTierImpl>>,
+    _dir: TempDir,
+}
+
+fn link_source(f: &Fixture, reader: LogReader) -> LinkApplySource {
+    let config = LinkConfig {
+        batch_records: 1_000,
+        batch_interval: Duration::ZERO,
+        ..LinkConfig::default()
+    };
+    let registry = TargetRegistry::new().with(Arc::new(CounterTargetFactory::new(
+        f.store.clone(),
+        config.max_commit_delay,
+    )));
+    LinkApplySource::new(f.meta.clone(), reader, registry, config)
+}
+
+/// Link apply whose registry serves only collections, so it runs only the
+/// collection's link (the counter link is reported as unregistered).
+fn collection_link_source(f: &Fixture, reader: LogReader) -> LinkApplySource {
+    let config = LinkConfig {
+        batch_records: 1_000,
+        batch_interval: Duration::ZERO,
+        ..LinkConfig::default()
+    };
+    let registry = TargetRegistry::new().with(f.collection_factory.clone());
+    LinkApplySource::new(f.meta.clone(), reader, registry, config)
+}
+
+fn field(name: &str, kind: FieldKind) -> FieldSpec {
+    FieldSpec {
+        name: name.to_string(),
+        source_path: name.to_string(),
+        kind,
+        indexed: true,
+        fast: true,
+        ignore_malformed: false,
+    }
+}
+
+/// The crash gate's collection schema: `tag` Keyword, `n` I64, vector `v`
+/// of dim 4 (Cosine, `Auto`), dynamic mapping `Ignore`.
+fn docs_schema() -> CollectionSchema {
+    let vector = VectorSpec {
+        name: "v".to_string(),
+        dim: 4,
+        distance: loams_collection::Distance::Cosine,
+        element: loams_collection::VectorElement::F32,
+        index: loams_collection::VectorIndexSpec::Auto,
+        hnsw: loams_collection::HnswParams::default(),
+        quantization: None,
+    };
+    let schema = CollectionSchema::new(
+        vec![field("tag", FieldKind::Keyword), field("n", FieldKind::I64)],
+        vec![vector],
+        DynamicMapping::Ignore,
+    );
+    schema.validate().expect("valid schema");
+    schema
+}
+
+fn upsert(n: u64) -> DocOp {
+    let x = n as f32;
+    DocOp::Upsert(Document {
+        pk: PrimaryKey::U64(n),
+        source: serde_json::Map::from_iter([
+            ("tag".to_string(), serde_json::json!(format!("t{}", n % 3))),
+            ("n".to_string(), serde_json::json!(n)),
+        ]),
+        vectors: BTreeMap::from([("v".to_string(), vec![x, 1.0, 0.0, 0.0])]),
+        sparse_vectors: BTreeMap::new(),
+    })
+}
+
+/// Task 13 rule 2's maintenance: merges of three 10..30-doc splits,
+/// compactions of two small fragments, every poll due.
+fn maintenance() -> MaintenanceConfig {
+    let mut config = MaintenanceConfig {
+        split_num_docs_target: 10_000,
+        compaction_target_rows: 200,
+        compaction_min_small_fragments: 2,
+        poll_interval: Duration::ZERO,
+        ..MaintenanceConfig::default()
+    };
+    config.merge_policy.min_level_num_docs = 10;
+    config.merge_policy.merge_factor = 3;
+    config.merge_policy.max_merge_factor = 3;
+    config
+}
+
+fn segmenter(f: &Fixture, cache: RangeCache) -> Segmenter {
+    Segmenter::new(
+        f.meta.clone(),
+        f.store.clone(),
+        cache,
+        "matrix-segmenter",
+        SegmenterConfig {
+            min_bytes: 1,
+            ..SegmenterConfig::default()
+        },
+    )
+}
+
+fn gc(f: &Fixture) -> GcSource {
+    GcSource::with_roots(
+        f.store.clone(),
+        GcConfig {
+            // Nothing else runs during a cell, so everything unreferenced is
+            // garbage at once.
+            grace: Duration::ZERO,
+            ..GcConfig::default()
+        },
+        vec![Arc::new(LinkGcRoots)],
+    )
+}
+
+/// [`gc`] that also knows the collection's roots, for the checks.
+fn gc_with_collections(f: &Fixture) -> GcSource {
+    GcSource::with_roots(
+        f.store.clone(),
+        GcConfig {
+            grace: Duration::ZERO,
+            ..GcConfig::default()
+        },
+        vec![
+            Arc::new(LinkGcRoots),
+            Arc::new(CollectionGcRoots::new(f.collections.clone())),
+            Arc::new(PkGcRoots),
+        ],
+    )
+}
+
+impl Fixture {
+    async fn start() -> Self {
+        let dir = TempDir::new().expect("temp dir");
+        let faults = Arc::new(FaultyStore::new(Arc::new(InMemory::new())));
+        let store = Store::new(faults.clone());
+        // The snapshot store is the faulty store too.
+        let node = MetaNode::start(
+            MetaConfig::new(1, dir.path(), store.clone()),
+            &Router::new(),
+        )
+        .await
+        .expect("start meta");
+        node.initialize([1]).await.expect("initialize");
+        node.wait_for_leader(Duration::from_secs(20))
+            .await
+            .expect("leader");
+        let meta = MetaClient::new(
+            node.clone(),
+            vec![],
+            Arc::new(SystemClock),
+            MetaClientConfig::default(),
+        );
+        let ns = meta.create_namespace("acme").await.expect("namespace");
+        let events = meta
+            .create_stream(ns, "events", 2, WalClass::Standard)
+            .await
+            .expect("stream");
+        let logs = meta
+            .create_stream_with_retention(
+                ns,
+                "logs",
+                1,
+                WalClass::Standard,
+                loams_meta::Retention {
+                    max_age_ms: None,
+                    max_bytes: Some(64),
+                },
+            )
+            .await
+            .expect("stream");
+        meta.create_link(
+            ns,
+            "counts",
+            events,
+            TargetRef {
+                kind: "counter".to_string(),
+                name: "counts".to_string(),
+            },
+            BTreeMap::new(),
+        )
+        .await
+        .expect("link");
+        let (docs, docs_stream, _) = meta
+            .create_collection(ns, "docs", docs_schema(), DOCS_PARTITIONS)
+            .await
+            .expect("collection");
+        let collection_config = CollectionConfig::default();
+        let collections = CollectionContext {
+            meta: meta.clone().into(),
+            store: store.clone(),
+            cache: RangeCache::new(store.clone(), RangeCacheConfig::default())
+                .await
+                .expect("cache"),
+            lance: LanceEnv::new(store.clone(), LanceConfig::default()),
+            manifests: ManifestCache::new(collection_config.manifest_cache_entries),
+            config: collection_config,
+        };
+        let collection_factory = Arc::new(CollectionTargetFactory::new(collections.clone()));
+        let writer = LogWriter::start(
+            meta.clone(),
+            store.clone(),
+            LogConfig {
+                flush_interval: Duration::from_millis(2),
+                commit_retry_deadline: Duration::from_secs(10),
+                ..LogConfig::new(1)
+            },
+        )
+        .expect("writer");
+        let f = Self {
+            node,
+            meta,
+            faults,
+            store,
+            writer,
+            ns,
+            events,
+            logs,
+            docs,
+            docs_stream,
+            collections,
+            collection_factory,
+            acked: Mutex::default(),
+            unknown: Mutex::default(),
+            failed: Mutex::default(),
+            next: Mutex::new(0),
+            maint: Mutex::default(),
+            tier: Mutex::default(),
+            _dir: dir,
+        };
+        // Partition 0 segmented, partition 1 in WAL objects, one link commit,
+        // retired WAL objects for GC, and a trimmed logs stream.
+        for _ in 0..3 {
+            f.append(f.events, 0, 2).await.expect("append");
+            f.append(f.logs, 0, 2).await.expect("append");
+        }
+        segmenter(&f, f.cache().await)
+            .run_once()
+            .await
+            .expect("segment");
+        for _ in 0..2 {
+            f.append(f.events, 1, 2).await.expect("append");
+        }
+        f.apply_link().await;
+        f
+    }
+
+    async fn cache(&self) -> RangeCache {
+        RangeCache::new(self.store.clone(), RangeCacheConfig::default())
+            .await
+            .expect("cache")
+    }
+
+    async fn reader(&self) -> LogReader {
+        LogReader::new(self.meta.clone(), self.cache().await)
+    }
+
+    fn values(&self, n: u32) -> Vec<String> {
+        let mut next = self.next.lock().expect("lock");
+        (0..n)
+            .map(|_| {
+                *next += 1;
+                next.to_string()
+            })
+            .collect()
+    }
+
+    /// Appends `n` records, keeping the model.
+    async fn append(&self, stream: StreamId, partition: u32, n: u32) -> Result<(), LogError> {
+        let values = self.values(n);
+        let records = values
+            .iter()
+            .map(|v| Record {
+                key: Some(Bytes::from(format!("c{}", v.len() % 3))),
+                value: Some(Bytes::from(v.clone())),
+                headers: vec![],
+                timestamp_ms: -1,
+            })
+            .collect();
+        match self.writer.append(stream, partition, records).await {
+            Ok(ack) => {
+                let mut acked = self.acked.lock().expect("lock");
+                let slot = acked.entry((stream, partition)).or_default();
+                for (i, v) in values.into_iter().enumerate() {
+                    slot.insert(ack.base_offset + i as u64, v);
+                }
+                Ok(())
+            }
+            Err(err @ LogError::CommitUnknown(_)) => {
+                self.unknown.lock().expect("lock").extend(values);
+                Err(err)
+            }
+            Err(err) => {
+                self.failed.lock().expect("lock").extend(values);
+                Err(err)
+            }
+        }
+    }
+
+    /// Runs link apply until it has applied everything (fault-free).
+    async fn apply_link(&self) {
+        let source = link_source(self, self.reader().await);
+        for _ in 0..50 {
+            run_once(&self.meta, "matrix-link", Duration::from_secs(30), &source)
+                .await
+                .expect("link run");
+            if self.link_caught_up().await {
+                return;
+            }
+        }
+        panic!("the link never caught up");
+    }
+
+    async fn hwms(&self) -> BTreeMap<u32, u64> {
+        let events = self.events;
+        self.meta
+            .read(Consistency::Local, |s| {
+                (0..2)
+                    .filter_map(|p| {
+                        let hwm = s.partition(events, p)?.high_watermark();
+                        (hwm > 0).then_some((p, hwm))
+                    })
+                    .collect()
+            })
+            .await
+            .expect("read")
+    }
+
+    fn table(&self) -> CounterTable {
+        let link = loams_meta::Link {
+            id: loams_meta::LinkId(1),
+            namespace: self.ns,
+            name: "counts".to_string(),
+            source: self.events,
+            target: TargetRef {
+                kind: "counter".to_string(),
+                name: "counts".to_string(),
+            },
+            options: BTreeMap::new(),
+        };
+        CounterTable::for_link(self.meta.clone(), self.store.clone(), &link)
+    }
+
+    async fn link_caught_up(&self) -> bool {
+        self.table().applied().await.ok() == Some(self.hwms().await)
+    }
+
+    /// Runs one component operation; `Ok` if it succeeded.
+    async fn operate(&self, component: Component) -> Result<(), Failure> {
+        match component {
+            // Two flushes, so a fault can hit the second WAL PUT too.
+            Component::WriterFlush => {
+                self.append(self.events, 1, 3).await?;
+                Ok(self.append(self.events, 0, 2).await?)
+            }
+            Component::ReaderFetch => {
+                let reader = self.reader().await;
+                for partition in 0..2 {
+                    let read = read_all(&reader, self.events, partition, 0).await?;
+                    let acked = self
+                        .acked
+                        .lock()
+                        .expect("lock")
+                        .get(&(self.events, partition))
+                        .cloned()
+                        .unwrap_or_default();
+                    for (offset, value) in &acked {
+                        assert_eq!(
+                            read.get(offset),
+                            Some(value),
+                            "a fetch returned wrong data at {partition}@{offset}"
+                        );
+                    }
+                }
+                Ok(())
+            }
+            Component::SegmenterSwap => {
+                // Through the worker directly, to see each task's error.
+                let segmenter = segmenter(self, self.cache().await);
+                let before = segmenter.source().report();
+                let results = run_once(
+                    &self.meta,
+                    "matrix-segmenter",
+                    Duration::from_secs(30),
+                    segmenter.source(),
+                )
+                .await
+                .map_err(Failure::Task)?;
+                for (_, result) in results {
+                    match result {
+                        RunResult::Ran(Ok(_)) => {}
+                        RunResult::Ran(Err(err)) => return Err(Failure::Task(err)),
+                        RunResult::LeaseHeld => {
+                            return Err(Failure::Other("segmenter lease held".to_string()));
+                        }
+                    }
+                }
+                let report = segmenter.source().report();
+                if report.segments == before.segments {
+                    return Err(Failure::Other(format!("nothing segmented: {report:?}")));
+                }
+                Ok(())
+            }
+            Component::RetentionTrim => Ok(Retention::new(
+                self.meta.clone(),
+                "matrix-retention",
+                RetentionConfig::default(),
+            )
+            .run_once()
+            .await
+            .map(|_| ())?),
+            Component::LinkCommit | Component::CollectionCommit => {
+                let source = if component == Component::LinkCommit {
+                    link_source(self, self.reader().await)
+                } else {
+                    collection_link_source(self, self.reader().await)
+                };
+                let results = run_once(&self.meta, "matrix-link", Duration::from_secs(30), &source)
+                    .await
+                    .map_err(Failure::Task)?;
+                match results.into_iter().next() {
+                    Some((_, RunResult::Ran(Ok(_)))) => Ok(()),
+                    Some((_, RunResult::Ran(Err(err)))) => Err(Failure::Task(err)),
+                    other => Err(Failure::Other(format!("{other:?}"))),
+                }
+            }
+            Component::GcPass => match gc(self).run_once(&self.meta, "matrix-gc").await? {
+                Some(_) => Ok(()),
+                None => Err(Failure::Other("gc lease held".to_string())),
+            },
+            Component::SplitMerge => {
+                self.run_source(&SplitMergeSource::new(
+                    self.collections.clone(),
+                    maintenance(),
+                ))
+                .await
+            }
+            Component::LanceCompaction => {
+                self.run_source(&LanceCompactionSource::new(
+                    self.collections.clone(),
+                    maintenance(),
+                ))
+                .await
+            }
+            Component::HotBuild => self.run_source(&self.hot_build()).await,
+            Component::HotLoad => {
+                let tier = self.tier.lock().expect("lock").clone().expect("a tier");
+                let report = tier
+                    .reconcile_once()
+                    .await
+                    .map_err(|err| Failure::Task(TaskError::failed(err)))?;
+                match report.failures.is_empty() {
+                    true => Ok(()),
+                    false => Err(Failure::Reported(report.failures.join("; "))),
+                }
+            }
+            // Two snapshots: the second replaces (and deletes) the first.
+            Component::MetaSnapshot => {
+                self.node.snapshot().await?;
+                self.meta.create_namespace("snapshotted-again").await?;
+                Ok(self.node.snapshot().await?)
+            }
+        }
+    }
+
+    /// Prepares the work a component's operation will do (fault-free).
+    async fn prepare(&self, component: Component) {
+        match component {
+            Component::SegmenterSwap | Component::LinkCommit => {
+                self.append(self.events, 1, 2).await.expect("append");
+                self.append(self.events, 0, 1).await.expect("append");
+            }
+            Component::RetentionTrim => {
+                self.append(self.logs, 0, 3).await.expect("append");
+            }
+            Component::MetaSnapshot => {
+                self.meta
+                    .create_namespace("snapshotted")
+                    .await
+                    .expect("namespace");
+            }
+            Component::GcPass => {
+                // Retire the WAL objects of partition 1.
+                segmenter(self, self.cache().await)
+                    .run_once()
+                    .await
+                    .expect("segment");
+            }
+            Component::CollectionCommit => {
+                let mut ops: Vec<DocOp> = (0..6).map(upsert).collect();
+                ops.push(DocOp::Delete(PrimaryKey::U64(2)));
+                let outcome = CollectionWriter::new(self.meta.clone(), self.writer.clone())
+                    .write(self.ns, self.docs, ops)
+                    .await
+                    .expect("write");
+                assert!(
+                    outcome
+                        .results
+                        .iter()
+                        .all(|r| matches!(r, OpResult::Written { .. })),
+                    "{outcome:?}"
+                );
+            }
+            Component::SplitMerge => {
+                // Six splits of 20 docs: two merges of three (level 10..30).
+                for commit in 0..6 {
+                    self.write_maint((commit * 20..commit * 20 + 20).map(upsert).collect())
+                        .await;
+                }
+            }
+            Component::LanceCompaction => {
+                for commit in 0..6 {
+                    self.write_maint((commit * 5..commit * 5 + 5).map(upsert).collect())
+                        .await;
+                }
+            }
+            Component::HotBuild | Component::HotLoad => {
+                let (cid, _) = self.maint_ids().await;
+                MetaStore::set_collection_hot(
+                    &self.meta,
+                    self.ns,
+                    cid,
+                    HotConfig {
+                        vectors: true,
+                        ..HotConfig::default()
+                    },
+                )
+                .await
+                .expect("pin");
+                self.write_maint((0..300).map(upsert).collect()).await;
+                if component == Component::HotLoad {
+                    self.run_source(&self.hot_build()).await.expect("build");
+                    assert!(
+                        !self.maint_manifest().await.hot_artifacts.is_empty(),
+                        "no artifact to load"
+                    );
+                    let tier = HotTierImpl::new(
+                        self.collections.clone(),
+                        HotTierConfig::new(&self._dir.path().join("tier")),
+                        1,
+                        Arc::new(LocalOnly),
+                        Arc::new(FlatEngine),
+                    )
+                    .await
+                    .expect("hot tier");
+                    *self.tier.lock().expect("lock") = Some(tier);
+                }
+            }
+            Component::WriterFlush | Component::ReaderFetch => {}
+        }
+    }
+
+    /// Runs `source` once; any task error is the operation's.
+    async fn run_source(&self, source: &dyn TaskSource) -> Result<(), Failure> {
+        let results = run_once(&self.meta, "matrix-maint", Duration::from_secs(30), source)
+            .await
+            .map_err(Failure::Task)?;
+        if results.is_empty() {
+            return Err(Failure::Other("the source proposed nothing".to_string()));
+        }
+        for (_, result) in results {
+            match result {
+                RunResult::Ran(Ok(_)) => {}
+                RunResult::Ran(Err(err)) => return Err(Failure::Task(err)),
+                RunResult::LeaseHeld => return Err(Failure::Other("lease held".to_string())),
+            }
+        }
+        Ok(())
+    }
+
+    /// The hot build source over the collections: `FlatEngine`, small
+    /// chunks, every poll due.
+    fn hot_build(&self) -> HotBuildSource {
+        HotBuildSource::new(
+            self.collections.clone(),
+            HotBuildConfig {
+                poll_interval: Duration::ZERO,
+                chunk_bytes: 64 << 10,
+                scan_batch_rows: 128,
+                ..HotBuildConfig::new(self._dir.path())
+            },
+            Arc::new(FlatEngine),
+        )
+        .expect("hot build source")
+    }
+
+    /// Creates `maint` on first use.
+    async fn maint_ids(&self) -> (CollectionId, StreamId) {
+        if let Some(ids) = *self.maint.lock().expect("lock") {
+            return ids;
+        }
+        let (cid, stream, _) = self
+            .meta
+            .create_collection(self.ns, "maint", docs_schema(), MAINT_PARTITIONS)
+            .await
+            .expect("collection");
+        *self.maint.lock().expect("lock") = Some((cid, stream));
+        (cid, stream)
+    }
+
+    /// Writes `ops` to `maint` and applies them in one commit (fault-free).
+    async fn write_maint(&self, ops: Vec<DocOp>) {
+        let (cid, _) = self.maint_ids().await;
+        let outcome = CollectionWriter::new(self.meta.clone(), self.writer.clone())
+            .write(self.ns, cid, ops)
+            .await
+            .expect("write");
+        assert!(
+            outcome
+                .results
+                .iter()
+                .all(|r| matches!(r, OpResult::Written { .. })),
+            "{outcome:?}"
+        );
+        self.apply_maint_link("prepare").await;
+    }
+
+    async fn maint_manifest(&self) -> loams_collection::CollectionManifest {
+        let (cid, _) = self.maint_ids().await;
+        loams_collection::live_manifest(
+            &self.meta,
+            &self.store,
+            &self.collections.manifests,
+            self.ns,
+            cid,
+            Consistency::Linearizable,
+        )
+        .await
+        .expect("live manifest")
+        .map_or_else(
+            || loams_collection::CollectionManifest::empty(cid),
+            |(_, m)| (*m).clone(),
+        )
+    }
+
+    /// Runs collection link apply until `maint` applied its whole stream.
+    async fn apply_maint_link(&self, what: &str) {
+        let (_, stream) = self.maint_ids().await;
+        let source = collection_link_source(self, self.reader().await);
+        for _ in 0..50 {
+            run_once(&self.meta, "matrix-link", Duration::from_secs(30), &source)
+                .await
+                .unwrap_or_else(|e| panic!("{what}: collection link run: {e}"));
+            let hwms: BTreeMap<u32, u64> = self
+                .meta
+                .read(Consistency::Local, move |s| {
+                    (0..MAINT_PARTITIONS)
+                        .filter_map(|p| {
+                            let hwm = s.partition(stream, p)?.high_watermark();
+                            (hwm > 0).then_some((p, hwm))
+                        })
+                        .collect()
+                })
+                .await
+                .expect("read");
+            if self.maint_manifest().await.applied == hwms {
+                return;
+            }
+        }
+        panic!("{what}: the maint link never caught up");
+    }
+
+    /// After a maintenance cell, faults off: one more run of the component,
+    /// then `maint` equals the fold of its stream and, for the hot
+    /// components, the live artifact downloads and a tier serves it.
+    async fn check_maintenance(&self, component: Component, what: &str) {
+        self.operate(component)
+            .await
+            .unwrap_or_else(|e| panic!("{what}: the run after the cell: {e}"));
+        let (cid, stream) = self.maint_ids().await;
+        let reader = self.reader().await;
+        let mut records: Vec<(u32, OffsetRecord)> = Vec::new();
+        for partition in 0..MAINT_PARTITIONS {
+            records.extend(
+                read_records(&reader, stream, partition, 0)
+                    .await
+                    .unwrap_or_else(|e| panic!("{what}: read maint/{partition}: {e}"))
+                    .into_iter()
+                    .map(|r| (partition, r)),
+            );
+        }
+        let expected = fold_stream(&docs_schema(), MAINT_PARTITIONS, &records);
+        assert!(!expected.is_empty(), "{what}: the maint model is empty");
+        let problems = verify_collection(&self.collections, self.ns, cid, &expected)
+            .await
+            .unwrap_or_else(|e| panic!("{what}: verify maint: {e}"));
+        assert!(problems.is_empty(), "{what}: {problems:#?}");
+        if !matches!(component, Component::HotBuild | Component::HotLoad) {
+            return;
+        }
+        let manifest = self.maint_manifest().await;
+        assert!(!manifest.hot_artifacts.is_empty(), "{what}: no artifact");
+        for artifact in &manifest.hot_artifacts {
+            let dir = TempDir::new().expect("temp dir");
+            loams_hot::download(&self.store, &artifact.prefix, dir.path(), 4)
+                .await
+                .unwrap_or_else(|e| panic!("{what}: download {}: {e}", artifact.prefix));
+        }
+        let held = self.tier.lock().expect("lock").clone();
+        let tier = match held {
+            Some(tier) => tier,
+            None => {
+                let tier = HotTierImpl::new(
+                    self.collections.clone(),
+                    HotTierConfig::new(&self._dir.path().join("check-tier")),
+                    1,
+                    Arc::new(LocalOnly),
+                    Arc::new(FlatEngine),
+                )
+                .await
+                .expect("hot tier");
+                let report = tier.reconcile_once().await.expect("reconcile");
+                assert!(report.failures.is_empty(), "{what}: {report:?}");
+                tier
+            }
+        };
+        assert!(
+            tier.ann(self.ns, cid, VECTOR_COLUMN, manifest.version)
+                .is_some(),
+            "{what}: the tier does not serve the live manifest {}",
+            manifest.version
+        );
+        tier.shutdown().await;
+    }
+
+    async fn docs_hwms(&self) -> BTreeMap<u32, u64> {
+        let stream = self.docs_stream;
+        self.meta
+            .read(Consistency::Local, |s| {
+                (0..DOCS_PARTITIONS)
+                    .filter_map(|p| {
+                        let hwm = s.partition(stream, p)?.high_watermark();
+                        (hwm > 0).then_some((p, hwm))
+                    })
+                    .collect()
+            })
+            .await
+            .expect("read")
+    }
+
+    async fn docs_applied(&self) -> BTreeMap<u32, u64> {
+        let manifest = loams_collection::live_manifest(
+            &self.meta,
+            &self.store,
+            &self.collections.manifests,
+            self.ns,
+            self.docs,
+            Consistency::Linearizable,
+        )
+        .await
+        .expect("live manifest");
+        manifest.map_or_else(BTreeMap::new, |(_, m)| m.applied.clone())
+    }
+
+    /// Runs the collection's link apply until it has applied its whole
+    /// stream (fault-free).
+    async fn apply_collection_link(&self, what: &str) {
+        let source = collection_link_source(self, self.reader().await);
+        for _ in 0..50 {
+            run_once(&self.meta, "matrix-link", Duration::from_secs(30), &source)
+                .await
+                .unwrap_or_else(|e| panic!("{what}: collection link run: {e}"));
+            if self.docs_applied().await == self.docs_hwms().await {
+                return;
+            }
+        }
+        panic!("{what}: the collection link never caught up");
+    }
+
+    /// The collection equals the fold of its stream (plan M1.1 Task 10
+    /// rule 8).
+    async fn check_collection(&self, what: &str) {
+        let reader = self.reader().await;
+        let mut records: Vec<(u32, OffsetRecord)> = Vec::new();
+        for partition in 0..DOCS_PARTITIONS {
+            records.extend(
+                read_records(&reader, self.docs_stream, partition, 0)
+                    .await
+                    .unwrap_or_else(|e| panic!("{what}: read docs/{partition}: {e}"))
+                    .into_iter()
+                    .map(|r| (partition, r)),
+            );
+        }
+        assert_eq!(records.len(), 7, "{what}: the collection's stream");
+        let expected = fold_stream(&docs_schema(), DOCS_PARTITIONS, &records);
+        assert_eq!(expected.len(), 5, "{what}: the model");
+        let problems = verify_collection(&self.collections, self.ns, self.docs, &expected)
+            .await
+            .unwrap_or_else(|e| panic!("{what}: verify the collection: {e}"));
+        assert!(problems.is_empty(), "{what}: {problems:#?}");
+    }
+
+    /// The invariants after a cell, with faults off and every component run
+    /// once more so that retries complete.
+    async fn check(&self, component: Component, what: &str) {
+        self.faults.clear();
+        let report = segmenter(self, self.cache().await)
+            .run_once()
+            .await
+            .unwrap_or_else(|e| panic!("{what}: segmenter after the cell: {e}"));
+        assert_eq!(
+            report.failed, 0,
+            "{what}: segmenter after the cell: {report:?}"
+        );
+        self.apply_link().await;
+        let collection = component == Component::CollectionCommit || component.maintains();
+        if collection {
+            self.apply_collection_link(what).await;
+        }
+        if component.maintains() {
+            self.apply_maint_link(what).await;
+        }
+        let gc = if collection {
+            gc_with_collections(self)
+        } else {
+            gc(self)
+        };
+        gc.run_once(&self.meta, "matrix-gc")
+            .await
+            .unwrap_or_else(|e| panic!("{what}: gc after the cell: {e}"));
+        let violations = self
+            .meta
+            .read(Consistency::Local, |s| s.check_invariants())
+            .await
+            .expect("read");
+        assert!(violations.is_empty(), "{what}: {violations:?}");
+
+        let reader = self.reader().await;
+        let acked = self.acked.lock().expect("lock").clone();
+        let unknown = self.unknown.lock().expect("lock").clone();
+        let failed = self.failed.lock().expect("lock").clone();
+        let mut sums: BTreeMap<String, i64> = BTreeMap::new();
+        for (stream, partitions) in [(self.events, 2u32), (self.logs, 1)] {
+            for partition in 0..partitions {
+                let start = self
+                    .meta
+                    .read(Consistency::Local, |s| {
+                        s.partition(stream, partition)
+                            .expect("p")
+                            .log_start_offset()
+                    })
+                    .await
+                    .expect("read");
+                let read = read_all(&reader, stream, partition, start)
+                    .await
+                    .unwrap_or_else(|e| panic!("{what}: read {stream}/{partition}: {e}"));
+                let expected = acked.get(&(stream, partition)).cloned().unwrap_or_default();
+                for (offset, value) in expected.range(start..) {
+                    assert_eq!(
+                        read.get(offset),
+                        Some(value),
+                        "{what}: acknowledged {stream}/{partition}@{offset} lost"
+                    );
+                }
+                let acked_values: BTreeSet<&String> = expected.values().collect();
+                let mut seen = BTreeSet::new();
+                for (offset, value) in &read {
+                    assert!(seen.insert(value), "{what}: {value} twice");
+                    assert!(
+                        !failed.contains(value)
+                            && (acked_values.contains(value) || unknown.contains(value)),
+                        "{what}: {stream}/{partition}@{offset} holds {value}, never acknowledged"
+                    );
+                    if stream == self.events {
+                        *sums.entry(format!("c{}", value.len() % 3)).or_default() +=
+                            value.parse::<i64>().expect("delta");
+                    }
+                }
+            }
+        }
+        let snapshot = self.table().snapshot().await.expect("snapshot");
+        assert_eq!(snapshot.counters, sums, "{what}: CounterTable is not exact");
+        assert_eq!(snapshot.skipped, 0, "{what}");
+        if component == Component::CollectionCommit {
+            self.check_collection(what).await;
+        }
+        if component.maintains() {
+            self.check_maintenance(component, what).await;
+        }
+    }
+
+    async fn shutdown(self) {
+        self.faults.clear();
+        self.collection_factory.close().await;
+        let _ = self.writer.shutdown().await;
+        self.node.shutdown().await.expect("shutdown");
+    }
+}
+
+async fn read_all(
+    reader: &LogReader,
+    stream: StreamId,
+    partition: u32,
+    from: u64,
+) -> Result<BTreeMap<u64, String>, LogError> {
+    Ok(read_records(reader, stream, partition, from)
+        .await?
+        .into_iter()
+        .map(|r| {
+            let value =
+                String::from_utf8_lossy(r.record.value.as_deref().unwrap_or_default()).to_string();
+            (r.offset, value)
+        })
+        .collect())
+}
+
+async fn read_records(
+    reader: &LogReader,
+    stream: StreamId,
+    partition: u32,
+    from: u64,
+) -> Result<Vec<OffsetRecord>, LogError> {
+    let mut out = Vec::new();
+    let mut offset = from;
+    loop {
+        let response = reader
+            .fetch(FetchRequest {
+                stream,
+                partition,
+                offset,
+                max_bytes: 1 << 16,
+                max_wait: Duration::ZERO,
+            })
+            .await?;
+        if response.records.is_empty() {
+            return Ok(out);
+        }
+        offset = response.next_offset;
+        out.extend(response.records);
+    }
+}
+
+/// Runs one cell.
+async fn cell(component: Component, op: Op, fault: Fault, nth: u64) -> Outcome {
+    let what = format!("{component:?} x {op:?} {fault:?} on call {nth}");
+    let f = Fixture::start().await;
+    f.prepare(component).await;
+    f.faults.inject_nth(op, nth, fault);
+    let result = tokio::time::timeout(Duration::from_secs(60), f.operate(component))
+        .await
+        .unwrap_or_else(|_| panic!("{what}: hung"));
+    let consumed = f.faults.pending(op) == 0;
+    let outcome = match (result, consumed) {
+        (Ok(()), false) => Outcome::NoEffect,
+        (Ok(()), true) if component == Component::GcPass && !matches!(fault, Fault::Delay(_)) => {
+            Outcome::Deferred
+        }
+        (Ok(()), true) => Outcome::Retried,
+        (Err(err), true) if err.retryable() => Outcome::SurfacedRetryable,
+        (Err(err), true) => panic!("{what}: a non-retryable error surfaced: {err}"),
+        (Err(err), false) => panic!("{what}: failed without reaching the fault: {err}"),
+    };
+    f.check(component, &what).await;
+    f.shutdown().await;
+    outcome
+}
+
+/// Cells whose outcome is structural: a component that never issues that
+/// store operation cannot be affected by its faults.
+fn structural(component: Component, op: Op) -> Option<Outcome> {
+    let writes = matches!(op, Op::Put | Op::PutCreate | Op::PutIfMatch | Op::Delete);
+    match component {
+        Component::ReaderFetch if writes || op == Op::List => Some(Outcome::NoEffect),
+        Component::RetentionTrim => Some(Outcome::NoEffect),
+        Component::WriterFlush
+            if matches!(op, Op::Get | Op::Delete | Op::List | Op::PutIfMatch) =>
+        {
+            Some(Outcome::NoEffect)
+        }
+        _ => None,
+    }
+}
+
+/// Rule 2 of plan M1.3 Task 13 for the maintenance components: `Put`,
+/// `PutCreate`, `Get` and `List` cells are `Retried` or `SurfacedRetryable`,
+/// `Delay` cells `Retried`, `PutIfMatch` and `Delete` cells `NoEffect`
+/// (none of them conditionally writes or deletes). A hot tier's load
+/// writes nothing, so its write cells are `NoEffect` too (row 13.4).
+fn blessed(component: Component, op: Op, fault: Fault) -> Option<&'static [Outcome]> {
+    if !component.maintains() {
+        return None;
+    }
+    let writes = matches!(op, Op::Put | Op::PutCreate);
+    Some(match (op, fault) {
+        (Op::PutIfMatch | Op::Delete, _) => &[Outcome::NoEffect],
+        _ if writes && component == Component::HotLoad => &[Outcome::NoEffect],
+        (_, Fault::Delay(_)) => &[Outcome::Retried],
+        _ => &[Outcome::Retried, Outcome::SurfacedRetryable],
+    })
+}
+
+/// The maintenance cells that break [`blessed`]. A store operation the
+/// component never issues (every cell of it `NoEffect` on the first call)
+/// is `NoEffect` by structure, and so is the second call of one it issues
+/// once (row 13.4).
+fn unblessed(components: &[Component], results: &Results) -> Vec<String> {
+    let mut broken = Vec::new();
+    for component in components.iter().copied() {
+        for op in OPS {
+            let cells: Vec<(Fault, [Option<Outcome>; 2])> = faults()
+                .into_iter()
+                .map(|fault| {
+                    let key = (component, format!("{op:?}"), format!("{fault:?}"));
+                    (fault, results[&key])
+                })
+                .collect();
+            let never_issued = cells
+                .iter()
+                .all(|(_, [first, _])| *first == Some(Outcome::NoEffect));
+            for (fault, outcomes) in cells {
+                let Some(allowed) = blessed(component, op, fault) else {
+                    continue;
+                };
+                for (i, outcome) in outcomes.into_iter().enumerate() {
+                    let Some(outcome) = outcome else { continue };
+                    let structural = outcome == Outcome::NoEffect && (never_issued || i == 1);
+                    if !allowed.contains(&outcome) && !structural {
+                        broken.push(format!(
+                            "{component:?} x {op:?} {fault:?} on call {}: {outcome}, allowed {allowed:?}",
+                            i + 1
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    broken
+}
+
+/// The components `FAULT_MATRIX_COMPONENTS` names (their `Debug` names,
+/// comma-separated), or every component.
+fn selected() -> Vec<Component> {
+    match std::env::var("FAULT_MATRIX_COMPONENTS") {
+        Ok(names) => select(&names).unwrap_or_else(|err| panic!("FAULT_MATRIX_COMPONENTS: {err}")),
+        Err(_) => COMPONENTS.to_vec(),
+    }
+}
+
+/// The components `names` lists; an unknown name is an error, so a typo
+/// cannot silently skip (or leave unblessed) a component's rows.
+fn select(names: &str) -> Result<Vec<Component>, String> {
+    let names: BTreeSet<&str> = names
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect();
+    let known: BTreeSet<String> = COMPONENTS.iter().map(|c| format!("{c:?}")).collect();
+    let unknown: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|name| !known.contains(*name))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(format!("unknown components {unknown:?}; known: {known:?}"));
+    }
+    if names.is_empty() {
+        return Err("names no component".to_string());
+    }
+    Ok(COMPONENTS
+        .into_iter()
+        .filter(|c| names.contains(format!("{c:?}").as_str()))
+        .collect())
+}
+
+#[test]
+fn an_unknown_component_name_is_refused() {
+    let first = format!("{:?}", COMPONENTS[0]);
+    assert_eq!(select(&first), Ok(vec![COMPONENTS[0]]));
+    let err = select(&format!("{first},HotBuld")).expect_err("a typo");
+    assert!(err.contains("HotBuld"), "{err}");
+    assert!(select(" , ").is_err());
+}
+
+/// Per (component, op, fault): the outcomes on the first and second call.
+type Results = BTreeMap<(Component, String, String), [Option<Outcome>; 2]>;
+
+#[test]
+fn every_component_survives_every_store_fault() {
+    let components = selected();
+    let partial = components.len() < COMPONENTS.len();
+    let mut cells = Vec::new();
+    for component in components.iter().copied() {
+        for op in OPS {
+            for fault in faults() {
+                cells.push((component, op, fault));
+            }
+        }
+    }
+    let results: Mutex<Results> = Mutex::default();
+    let queue = Mutex::new(cells.clone());
+    let threads = std::env::var("FAULT_MATRIX_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8usize);
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+                loop {
+                    let Some((component, op, fault)) = queue.lock().expect("lock").pop() else {
+                        return;
+                    };
+                    for nth in [1, 2] {
+                        let outcome = runtime.block_on(cell(component, op, fault, nth));
+                        if let Some(expected) = structural(component, op) {
+                            assert_eq!(
+                                outcome, expected,
+                                "{component:?} x {op:?} {fault:?} on call {nth}"
+                            );
+                        }
+                        let key = (component, format!("{op:?}"), format!("{fault:?}"));
+                        results.lock().expect("lock").entry(key).or_default()
+                            [usize::try_from(nth - 1).expect("index")] = Some(outcome);
+                    }
+                }
+            });
+        }
+    });
+    let results = results.into_inner().expect("lock");
+    assert_eq!(results.len(), cells.len());
+    let broken = unblessed(&components, &results);
+    assert!(
+        broken.is_empty(),
+        "cells break the blessing rules:\n{}",
+        broken.join("\n")
+    );
+    let mut table =
+        String::from("| Component | Op | Fault | 1st call | 2nd call |\n|---|---|---|---|---|\n");
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for component in components.iter().copied() {
+        for op in OPS {
+            for fault in faults() {
+                let key = (component, format!("{op:?}"), format!("{fault:?}"));
+                let [first, second] = results[&key];
+                let show = |o: Option<Outcome>| o.map_or("-".to_string(), |o| o.to_string());
+                for o in [first, second].into_iter().flatten() {
+                    *counts.entry(o.to_string()).or_default() += 1;
+                }
+                table.push_str(&format!(
+                    "| {component:?} | {op:?} | {fault:?} | {} | {} |\n",
+                    show(first),
+                    show(second)
+                ));
+            }
+        }
+    }
+    let rows = table.clone();
+    table.push_str(&format!("\nCells: {} ({counts:?}).\n", 2 * results.len()));
+    let target = std::env::var("CARGO_TARGET_DIR")
+        .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../target").to_string());
+    let path = std::path::Path::new(&target).join("fault-matrix.md");
+    std::fs::write(&path, &table).expect("write the fault matrix");
+    eprintln!("fault matrix written to {}", path.display());
+
+    // Every cell must have the committed outcome (review I2).
+    let expected_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fault_matrix.expected.md"
+    );
+    let expected = std::fs::read_to_string(expected_path).expect("read the expected matrix");
+    if std::env::var_os("FAULT_MATRIX_BLESS").is_some() {
+        // A partial run replaces only its components' rows.
+        let mut blessed = String::from(
+            "| Component | Op | Fault | 1st call | 2nd call |\n|---|---|---|---|---|\n",
+        );
+        for component in COMPONENTS {
+            let prefix = format!("| {component:?} |");
+            let source = match components.contains(&component) {
+                true => &rows,
+                false => &expected,
+            };
+            for line in source.lines().filter(|l| l.starts_with(&prefix)) {
+                blessed.push_str(line);
+                blessed.push('\n');
+            }
+        }
+        std::fs::write(expected_path, &blessed).expect("write the expected matrix");
+        return;
+    }
+    let expected: String = match partial {
+        true => expected
+            .lines()
+            .filter(|l| {
+                components
+                    .iter()
+                    .any(|c| l.starts_with(&format!("| {c:?} |")))
+            })
+            .map(|l| format!("{l}\n"))
+            .collect(),
+        false => expected,
+    };
+    let mismatches: Vec<String> = diff_rows(&expected, &rows);
+    assert!(
+        mismatches.is_empty(),
+        "cells differ from {expected_path} (expected => actual):\n{}",
+        mismatches.join("\n")
+    );
+}
+
+/// The rows of `actual` that differ from `expected`, by (component, op,
+/// fault), and rows only one of them has.
+fn diff_rows(expected: &str, actual: &str) -> Vec<String> {
+    fn rows(table: &str) -> BTreeMap<String, String> {
+        table
+            .lines()
+            .filter(|l| l.starts_with("| ") && !l.starts_with("| Component"))
+            .filter_map(|l| {
+                let cells: Vec<&str> = l.split('|').map(str::trim).collect();
+                (cells.len() >= 6).then(|| {
+                    (
+                        format!("{} x {} {}", cells[1], cells[2], cells[3]),
+                        format!("{} / {}", cells[4], cells[5]),
+                    )
+                })
+            })
+            .collect()
+    }
+    let (expected, actual) = (rows(expected), rows(actual));
+    let keys: BTreeSet<&String> = expected.keys().chain(actual.keys()).collect();
+    keys.into_iter()
+        .filter(|k| expected.get(*k) != actual.get(*k))
+        .map(|k| format!("{k}: {:?} => {:?}", expected.get(k), actual.get(k)))
+        .collect()
+}

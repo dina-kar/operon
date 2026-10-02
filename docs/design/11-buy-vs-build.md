@@ -1,6 +1,6 @@
 # 11 — Buy vs Build
 
-Status: **Approved** · research as of 2026-09-22 (Fluss and Resonate added 2026-09-24; revised 2026-09-25 after the architecture review: dependencies of the dropped Kafka, Bolt/Cypher and ClickHouse surfaces removed, metastore backends and ADBC added; AI data ecosystem integrations added the same day, §17, D51–D56; metastore backends, CI targets, RustFS and OpenFGA revised 2026-09-26, §18, D58–D70; FoundationDB dropped, OTLP and Kafka dependencies added the same day, D71–D74; amended 2026-10-02: Apache Iggy becomes a companion (D405), Fluss proposed as one (D333), Loam Git's gitoxide and sccache rows, D394–D398)
+Status: **Approved** · research as of 2026-09-22 (Fluss and Resonate added 2026-09-24; revised 2026-09-25 after the architecture review: dependencies of the dropped Kafka, Bolt/Cypher and ClickHouse surfaces removed, metastore backends and ADBC added; AI data ecosystem integrations added the same day, §17, D51–D56; metastore backends, CI targets, RustFS and OpenFGA revised 2026-09-26, §18, D58–D70; FoundationDB dropped, OTLP and Kafka dependencies added the same day, D71–D74; amended 2026-10-02: Apache Iggy becomes a companion (D405), Fluss proposed as one (D333), Loams Git's gitoxide and sccache rows, D394–D398)
 
 Rule: **buy (embed/fork) everything that is not the differentiator; build the serving layer that closed competitors keep closed.** Only Apache-2.0 / MIT / compatible permissive dependencies. No AGPL, BSL, SSPL or ELv2 code in the engine.
 
@@ -8,7 +8,7 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 
 ## 1. Embed (library dependencies)
 
-| Component | Crate / project | License | Version (2026-09) | Role in Operon | Notes / risks |
+| Component | Crate / project | License | Version (2026-09) | Role in Loams | Notes / risks |
 |---|---|---|---|---|---|
 | Query engine | **Apache DataFusion** | Apache-2.0 | 54.1 (lockstep with Lance 12 / arrow 58) | All planning/execution | Very active ASF project; extensibility proven by InfluxDB 3, GreptimeDB, LanceDB |
 | Distributed exec | **datafusion-distributed** | Apache-2.0 | 3.0 (the last release on DataFusion 54; not used in M1) | Multi-node stages over Flight | Young (datafusion-contrib); Ballista rejected (batch-oriented) |
@@ -27,13 +27,13 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | gRPC / HTTP | tonic, axum, hyper | MIT | — | Gateways | — |
 | Arrow Flight SQL | arrow-flight (`flight-sql-experimental`) | Apache-2.0 | 58.4 (lockstep with arrow) | Flight SQL server; `DoPut` bulk ingest into collections and streams (M1.2, D49) | The Flight SQL API is marked experimental in arrow-rs → pin with arrow |
 | SQL parsing | sqlparser-rs | Apache-2.0 | — | SQL (through DataFusion) | — |
-| Qdrant API types | Qdrant protobuf (vendored public protos, 9 files, v1.19.1) + tonic-prost-build; hand-written REST model | Apache-2.0 | 1.19.1 | Qdrant gateway (`operon-qdrant`, M1.4) | `NOTICE` lists the nine protos; `qdrant.proto` drops six internal imports (M1.4 Rulings 2 and 3, D133) |
+| Qdrant API types | Qdrant protobuf (vendored public protos, 9 files, v1.19.1) + tonic-prost-build; hand-written REST model | Apache-2.0 | 1.19.1 | Qdrant gateway (`loams-qdrant`, M1.4) | `NOTICE` lists the nine protos; `qdrant.proto` drops six internal imports (M1.4 Rulings 2 and 3, D133) |
 | Bitmaps | roaring-rs (`roaring`) | Apache-2.0/MIT | 0.11 | Delete bitmaps, filter bitmaps | — |
-| HNSW hot tier | **qdrant-edge** | Apache-2.0 | =0.8.0 (M1.3) | HNSW artifacts behind Operon's `HnswIndex` (R20) | Enables `serde_json/preserve_order`; the workspace turns it on for every build, and the vendored Quickwit code passes with it (M1.1 ruling P5, M1.3 row E58) |
+| HNSW hot tier | **qdrant-edge** | Apache-2.0 | =0.8.0 (M1.3) | HNSW artifacts behind Loams's `HnswIndex` (R20) | Enables `serde_json/preserve_order`; the workspace turns it on for every build, and the vendored Quickwit code passes with it (M1.1 ruling P5, M1.3 row E58) |
 | MCP server | **rmcp** | Apache-2.0 | 3.4.1 (M1.6) | The W0 MCP server (§15) | — |
 | Tokenizers | lindera, jieba-rs, ICU4X | MIT/Apache | — | Analyzers | — |
-| SQL client (M2; R tests) | **sqlx** (features `postgres`, `mysql`) | MIT OR Apache-2.0 | 0.9.0 | `operon-meta-postgres` (M2) behind `MetaStore` (D58); the `mysql` feature is kept only for the legacy `mysql://` durable backend (D261) until the TiKV backend replaces it; TiDB SQL (D123) is superseded by D260 | Lakekeeper's choice: compile-time-checked `query!` macros with offline data in CI (`SQLX_OFFLINE=true`) and `sqlx::migrate` migrations; one client for both SQL backends. Replaces the tokio-postgres option. The TiDB metastore is superseded by `operon-meta-tikv` over `tikv-client` (D124, §20) |
-| DynamoDB client (M2) | **aws-sdk-dynamodb** | Apache-2.0 | 1.128.0 | `operon-meta-dynamodb` behind `MetaStore` (D58) | Custom endpoint for floci and Alternator (`endpoint_url`); one SDK interceptor injects the fault matrix's faults (D60); the SDK reuses `ClientRequestToken` only across its own retries, so application retries set it explicitly (§18 §2.3) |
+| SQL client (M2; R tests) | **sqlx** (features `postgres`, `mysql`) | MIT OR Apache-2.0 | 0.9.0 | `loams-meta-postgres` (M2) behind `MetaStore` (D58); the `mysql` feature is kept only for the legacy `mysql://` durable backend (D261) until the TiKV backend replaces it; TiDB SQL (D123) is superseded by D260 | Lakekeeper's choice: compile-time-checked `query!` macros with offline data in CI (`SQLX_OFFLINE=true`) and `sqlx::migrate` migrations; one client for both SQL backends. Replaces the tokio-postgres option. The TiDB metastore is superseded by `loams-meta-tikv` over `tikv-client` (D124, §20) |
+| DynamoDB client (M2) | **aws-sdk-dynamodb** | Apache-2.0 | 1.128.0 | `loams-meta-dynamodb` behind `MetaStore` (D58) | Custom endpoint for floci and Alternator (`endpoint_url`); one SDK interceptor injects the fault matrix's faults (D60); the SDK reuses `ClientRequestToken` only across its own retries, so application retries set it explicitly (§18 §2.3) |
 | OTLP protobufs (M2) | **opentelemetry-proto** (features `gen-tonic`, `logs`) | Apache-2.0 | 0.33.0 | Decoding OTLP/HTTP and OTLP/gRPC logs requests (D73, §02 §7.1) | Its prost and tonic versions must match the workspace's; pinned in the M2 plan (verify) |
 | OpenFGA client (M2.x) | **openfga-client** (vakamo-labs) | Apache-2.0 (no NOTICE) | 0.6 | The `OpenFga` implementation of the `Authorizer` trait (D66, D67) | gRPC only (tonic, prost 0.14; protos vendored, no protoc); helpers `TupleModelManager`, `read_all_pages`; maintained by Vakamo, Lakekeeper's vendor; tonic/prost versions must match the workspace's (verify at M2.x) |
 
@@ -41,19 +41,19 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 
 | Component | Project | License | Role | Notes |
 |---|---|---|---|---|
-| ADBC Flight SQL drivers | Apache Arrow ADBC: `adbc-driver-flightsql` (Python), the Go `flightsql` driver | Apache-2.0 | Test-only in the engine: the M1 exit gate runs their conformance tests against Operon (M1.7, D49); the Python SDK's optional `operon.flight` module uses the Python driver (M1.6) | Not linked into the `operon` binary |
-| Lance Python bindings | **pylance** (`lance` on import) | Apache-2.0 | Python-SDK extra `loamdb[lance]`, pulled in by the Ray, Spark and torch extras: direct reads of the fragments of a pinned scan plan (§17 §3, D53) | Version tracks the engine's Lance release (12.x; verify at M2); whether it opens a detached version by id is Q20 |
-| Distributed Lance I/O for Ray | **lance-ray** (lance-format/lance-ray) | Apache-2.0 | Python-SDK extra `loamdb[ray]`: the Ray Data datasource's per-fragment read tasks (§17 §5.3) | Version pinned in the M2 plan (verify) |
-| Ray Data | **ray** (`ray[data]`) | Apache-2.0 (Anyscale platform and RayTurbo proprietary) | Python-SDK extra `loamdb[ray]`: datasource and datasink (M2, D54); M2 gate client | 2.58.0 (2026-08-23); PyTorch Foundation project since 2025-10 |
-| Polars | **polars** (Python) | MIT | Python-SDK extra `loamdb[polars]`: `to_polars()` (M1.6) and the experimental `scan_loam()` IO plugin (M2) | 1.44.2; 2.0 in release candidates (streaming engine default). `register_io_source` is marked unstable upstream. Python package only, never the Rust crates (§5) |
-| PySpark | **pyspark** ≥ 4.0 | Apache-2.0 | Python-SDK extra `loamdb[spark]`: the Python data source `format("loam")` on Apache Spark 4 and Sail (M2, D54); M2 gate client | Sail serves PySpark through Spark Connect (PySpark 4.2 per Sail 0.7.1; verify) |
-| PyTorch | **torch** | BSD-3-Clause | Python-SDK extra `loamdb[torch]` (lower bound only; the user's build is used) | Lance's `lance.torch.data` reader is the base of `loamdb.torch` |
-| Spice (test client) | spiceai/spiceai runtime | Apache-2.0 | Test-only: its Flight SQL connector runs against Operon in the M1.7 Flight SQL gate (D56) | Run as a separate process; never linked (§5) |
+| ADBC Flight SQL drivers | Apache Arrow ADBC: `adbc-driver-flightsql` (Python), the Go `flightsql` driver | Apache-2.0 | Test-only in the engine: the M1 exit gate runs their conformance tests against Loams (M1.7, D49); the Python SDK's optional `loams.flight` module uses the Python driver (M1.6) | Not linked into the `loams` binary |
+| Lance Python bindings | **pylance** (`lance` on import) | Apache-2.0 | Python-SDK extra `loams[lance]`, pulled in by the Ray, Spark and torch extras: direct reads of the fragments of a pinned scan plan (§17 §3, D53) | Version tracks the engine's Lance release (12.x; verify at M2); whether it opens a detached version by id is Q20 |
+| Distributed Lance I/O for Ray | **lance-ray** (lance-format/lance-ray) | Apache-2.0 | Python-SDK extra `loams[ray]`: the Ray Data datasource's per-fragment read tasks (§17 §5.3) | Version pinned in the M2 plan (verify) |
+| Ray Data | **ray** (`ray[data]`) | Apache-2.0 (Anyscale platform and RayTurbo proprietary) | Python-SDK extra `loams[ray]`: datasource and datasink (M2, D54); M2 gate client | 2.58.0 (2026-08-23); PyTorch Foundation project since 2025-10 |
+| Polars | **polars** (Python) | MIT | Python-SDK extra `loams[polars]`: `to_polars()` (M1.6) and the experimental `scan_loams()` IO plugin (M2) | 1.44.2; 2.0 in release candidates (streaming engine default). `register_io_source` is marked unstable upstream. Python package only, never the Rust crates (§5) |
+| PySpark | **pyspark** ≥ 4.0 | Apache-2.0 | Python-SDK extra `loams[spark]`: the Python data source `format("loams")` on Apache Spark 4 and Sail (M2, D54); M2 gate client | Sail serves PySpark through Spark Connect (PySpark 4.2 per Sail 0.7.1; verify) |
+| PyTorch | **torch** | BSD-3-Clause | Python-SDK extra `loams[torch]` (lower bound only; the user's build is used) | Lance's `lance.torch.data` reader is the base of `loams.torch` |
+| Spice (test client) | spiceai/spiceai runtime | Apache-2.0 | Test-only: its Flight SQL connector runs against Loams in the M1.7 Flight SQL gate (D56) | Run as a separate process; never linked (§5) |
 | Floci | **floci** (`floci/floci`) | MIT | CI service: the full DynamoDB conformance suite and the nightly AWS deployment job with S3, Lambda, SQS, EventBridge Scheduler and IAM enforcement (D60) | 2.1.0, pinned ≥ 2.1.0 (a Rust-SDK checksum bug was fixed in 2.1.0); seven months old, releases twice a month: new releases are checked against real AWS before the pin moves; never throws `TransactionConflictException` or throttles; `TransactGetItems` isolation is Q22 |
 | ScyllaDB Alternator | `scylladb/scylla:6.2.3` | AGPL-3.0 | CI service only, unmodified, never linked or distributed: the DynamoDB backend's single-item conformance subset with `--alternator-write-isolation always_use_lwt` (D60) | The last AGPL release; 2025.1+ is source-available (§5). No transactions. Not a production metastore |
 | DynamoDB Local | `amazon/dynamodb-local` | Proprietary (DynamoDB Local License Agreement) | Optional CI second opinion for the DynamoDB suite | 3.3.1; pulled in CI, never redistributed |
-| Kafka clients (test, M5) | librdkafka, franz-go, the Apache Kafka Java client | BSD-2-Clause, BSD-3-Clause, Apache-2.0 | Test-only: the M5 Kafka gateway gate runs their test suites against Loam, stage by stage (D74) | Which suite runs is fixed in the M5 plan; the Java client needs a JVM in CI |
-| Postgres, PD + TiKV | `postgres:17`; `tiup playground` (PD and TiKV, no TiDB) | PostgreSQL; Apache-2.0 | CI services: Postgres for the Postgres metastore backend (M2); `tiup playground` with PD and TiKV only for `operon-meta-tikv`, Loam Live, jobs and the TiKV durable backend in track R (D124, D260). The TiDB metastore backend (D124) and TiDB SQL access (D123) are superseded (D260) | Containers run one at a time on the build machine |
+| Kafka clients (test, M5) | librdkafka, franz-go, the Apache Kafka Java client | BSD-2-Clause, BSD-3-Clause, Apache-2.0 | Test-only: the M5 Kafka gateway gate runs their test suites against Loams, stage by stage (D74) | Which suite runs is fixed in the M5 plan; the Java client needs a JVM in CI |
+| Postgres, PD + TiKV | `postgres:17`; `tiup playground` (PD and TiKV, no TiDB) | PostgreSQL; Apache-2.0 | CI services: Postgres for the Postgres metastore backend (M2); `tiup playground` with PD and TiKV only for `loams-meta-tikv`, Loams Live, jobs and the TiKV durable backend in track R (D124, D260). The TiDB metastore backend (D124) and TiDB SQL access (D123) are superseded (D260) | Containers run one at a time on the build machine |
 | RustFS | `rustfs/rustfs` | Apache-2.0 | Per-PR CI target for the `Store` provider conformance suite and the S3 fault matrix (D61); also the default self-hosted store (§4) | 1.0.0 (1.0.1 once released) |
 | Toxiproxy | `ghcr.io/shopify/toxiproxy` | MIT | Nightly end-to-end soaks of each container backend (`timeout`, `reset_peer`, `latency`, `down`) | 2.12.0; driven through its REST API with `reqwest` (the Rust clients are stale) |
 
@@ -69,11 +69,11 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 
 | Source | License | What we take | Why fork (not depend) |
 |---|---|---|---|
-| **Quickwit** | Apache-2.0 (since 2025) | `storage`, `directories` (split bundle + hotcache, async directories, warmup), ES DSL → `QueryAst` → Tantivy (`quickwit-query`), the doc-mapper query builder, aggregation merge glue, `StableLogMergePolicy`, `quickwit-datetime`: vendored file by file from `af0591a3` into `operon-quickwit` (R21) | Internal crates, no stable API; Datadog observability roadmap; we need upserts which Quickwit lacks |
+| **Quickwit** | Apache-2.0 (since 2025) | `storage`, `directories` (split bundle + hotcache, async directories, warmup), ES DSL → `QueryAst` → Tantivy (`quickwit-query`), the doc-mapper query builder, aggregation merge glue, `StableLogMergePolicy`, `quickwit-datetime`: vendored file by file from `af0591a3` into `loams-quickwit` (R21) | Internal crates, no stable API; Datadog observability roadmap; we need upserts which Quickwit lacks |
 | **Qdrant** | Apache-2.0 | `qdrant-edge =0.8.0` behind `HnswIndex` (R20): HNSW, filterable-HNSW links, quantization, payload-filter planner; `lib/segment` is not vendored | Qdrant's storage is local-disk; we need the index code only, as a hot tier |
 | **RisingWave iceberg-rust fork** | Apache-2.0 | RowDelta/RewriteFiles, equality & position deletes | Upstream gaps; plan to converge on upstream |
-| **Resonate** (`resonatehq/resonate`, `impl/server/core`) | Apache-2.0 | `resonate-core` (protocol types, `ResonateServer` trait), `resonate-plugin`, `resonate-gateway-http`, `resonate-server-blob` (object-storage backend on `object_store` 0.14), HTTP push/poll transports; the differential and linearizability test harness (§14) | Not on crates.io (git-only, workspace 0.10.1); vendor-led by a seed-stage company with fast protocol evolution → pin a git revision, keep Operon's code behind the `ResonateServer` trait, replace `resonate-auth` with Operon auth |
-| **Lakekeeper** (`lakekeeper/lakekeeper` @ `b771dbf`) | Apache-2.0, with a NOTICE ("Copyright 2024-2026 Vakamo Inc.") | Copied and adapted, keeping the NOTICE (Apache-2.0 §4(d)) and marking changes: the v4.12 OpenFGA model components (`authz/openfga/v4.12/components/*.fga`) and the patterns of `authz-openfga`'s `migration.rs` and `reconcile.rs` (D66); from `lakekeeper-storage-postgres/src`, `tasks.rs` (SKIP LOCKED queue), `idempotency.rs` with its migration, `dbutils.rs` (SQLSTATE mapping), `advisory_lock.rs` and the conditional-UPDATE CAS of `tabular/table/commit.rs` (D58). Reference only: the `Authorizer` and `CatalogStore` traits and `authorizer.rs` | Coupled to Iceberg types and Lakekeeper's entities; `CatalogStore` threads one transaction through many calls, which Operon's one-call-one-transaction trait avoids (D47) |
+| **Resonate** (`resonatehq/resonate`, `impl/server/core`) | Apache-2.0 | `resonate-core` (protocol types, `ResonateServer` trait), `resonate-plugin`, `resonate-gateway-http`, `resonate-server-blob` (object-storage backend on `object_store` 0.14), HTTP push/poll transports; the differential and linearizability test harness (§14) | Not on crates.io (git-only, workspace 0.10.1); vendor-led by a seed-stage company with fast protocol evolution → pin a git revision, keep Loams's code behind the `ResonateServer` trait, replace `resonate-auth` with Loams auth |
+| **Lakekeeper** (`lakekeeper/lakekeeper` @ `b771dbf`) | Apache-2.0, with a NOTICE ("Copyright 2024-2026 Vakamo Inc.") | Copied and adapted, keeping the NOTICE (Apache-2.0 §4(d)) and marking changes: the v4.12 OpenFGA model components (`authz/openfga/v4.12/components/*.fga`) and the patterns of `authz-openfga`'s `migration.rs` and `reconcile.rs` (D66); from `lakekeeper-storage-postgres/src`, `tasks.rs` (SKIP LOCKED queue), `idempotency.rs` with its migration, `dbutils.rs` (SQLSTATE mapping), `advisory_lock.rs` and the conditional-UPDATE CAS of `tabular/table/commit.rs` (D58). Reference only: the `Authorizer` and `CatalogStore` traits and `authorizer.rs` | Coupled to Iceberg types and Lakekeeper's entities; `CatalogStore` threads one transaction through many calls, which Loams's one-call-one-transaction trait avoids (D47) |
 
 ## 3. Reference designs only (no code)
 
@@ -101,7 +101,7 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 | DiskANN (Rust) | MIT | SSD-resident ANN for larger-than-RAM hot tier (Phase C evaluation) |
 | Vortex | Apache-2.0 (LF AI & Data) | Future local/hot encoding option |
 | Apache Iggy | Apache-2.0 | Thread-per-core io_uring design, VSR clustering, DST practices. Also a companion since 2026-10-02 (§4, D405) |
-| MosaicML Streaming | Apache-2.0 | Elastic determinism (a seeded shuffle over canonical partitions, `num_canonical_nodes`) and mid-epoch resume: the model for `loamdb.torch`'s sampler (§17 §5.5) |
+| MosaicML Streaming | Apache-2.0 | Elastic determinism (a seeded shuffle over canonical partitions, `num_canonical_nodes`) and mid-epoch resume: the model for `loams.torch`'s sampler (§17 §5.5) |
 | Sail (object-store shuffle) | Apache-2.0 | Stateless workers with blocking shuffle to object storage and checkpointing (0.7): a reference for M6's distributed shuffle |
 | TileDB | MIT (core) | Timestamped fragments and named retained snapshots (the idea behind dataset tags, D52); a tensor column type (Q19) |
 | Neki (PlanetScale) | Proprietary (public docs only) | A versioned data topology replaced whole and pushed to stateless routers; routers that buffer writes during cutover; no atomic cross-shard commits in its preview: references for the namespace directory and moves (D63, §18 §5.8) |
@@ -109,31 +109,31 @@ Rule: **buy (embed/fork) everything that is not the differentiator; build the se
 
 ## 4. Companions (run alongside, not embedded)
 
-| System | License | Role next to Operon | Integration surface | Why not embed |
+| System | License | Role next to Loams | Integration surface | Why not embed |
 |---|---|---|---|---|
-| Lakekeeper | Apache-2.0 (Rust) | Iceberg REST catalog (bundled, M4); shares one OpenFGA store with Loam (D67, default) | Iceberg REST | Already listed in §1; separate process by design |
+| Lakekeeper | Apache-2.0 (Rust) | Iceberg REST catalog (bundled, M4); shares one OpenFGA store with Loams (D67, default) | Iceberg REST | Already listed in §1; separate process by design |
 | OpenFGA server | Apache-2.0 | Fine-grained authorization for the `OpenFga` authorizer (M2.x, D67) | gRPC through `openfga-client` | A separate service by design, shared with Lakekeeper |
-| RustFS | Apache-2.0 (contributions need a CLA with RustFS, Inc.; the commercial `license` feature is off by default) | The default local and self-hosted object store (D61), replacing MinIO | S3 API | A separate server; Loam reaches it through `object_store` like any S3 endpoint |
-| Spice | Apache-2.0 (Spice.ai Enterprise proprietary) | Federation and acceleration for agent apps, with Operon as a Flight SQL source (M1 gate, D56); also a competitor (§12 risk 11) | Flight SQL | Ships forks of DataFusion and arrow-rs (§5) |
-| Sail | Apache-2.0 (Rust) | Spark Connect compute for PySpark curation jobs: reads collections through `format("loam")` (M2) and tables through Iceberg REST (M4 gate, D55) | Python data source; Iceberg REST | DataFusion version lockstep (§5) |
+| RustFS | Apache-2.0 (contributions need a CLA with RustFS, Inc.; the commercial `license` feature is off by default) | The default local and self-hosted object store (D61), replacing MinIO | S3 API | A separate server; Loams reaches it through `object_store` like any S3 endpoint |
+| Spice | Apache-2.0 (Spice.ai Enterprise proprietary) | Federation and acceleration for agent apps, with Loams as a Flight SQL source (M1 gate, D56); also a competitor (§12 risk 11) | Flight SQL | Ships forks of DataFusion and arrow-rs (§5) |
+| Sail | Apache-2.0 (Rust) | Spark Connect compute for PySpark curation jobs: reads collections through `format("loams")` (M2) and tables through Iceberg REST (M4 gate, D55) | Python data source; Iceberg REST | DataFusion version lockstep (§5) |
 | Ray | Apache-2.0 | Distributed curation, embedding backfills and batch inference over collections (M2) | Scan plans + Lance fragments; Flight `DoPut` | Python compute cluster, run by the user |
-| Apache Iggy | Apache-2.0 (Rust) | The Event Fabric's ingest log and protocol edge beside the Loam WAL (owner ruling D405; §32 §5.2, D332), unmodified, server 0.9.0 | Iggy's SDKs and connectors runtime; the `loam_sink` and `fluss_sink` plugins (FL1) | A separate service by design; pre-1.0 wire protocol (D332) |
+| Apache Iggy | Apache-2.0 (Rust) | The Event Fabric's ingest log and protocol edge beside the Loams WAL (owner ruling D405; §32 §5.2, D332), unmodified, server 0.9.0 | Iggy's SDKs and connectors runtime; the `loams_sink` and `fluss_sink` plugins (FL1) | A separate service by design; pre-1.0 wire protocol (D332) |
 
-Stream-processor companions (RisingWave, Arroyo, Flink) connect over the Kafka gateway in M5, which brings back the RisingWave integration (D22, D74). Before M5, RisingWave writes to Loam through its Elasticsearch, HTTP and Iceberg sinks (§02 §7.3).
+Stream-processor companions (RisingWave, Arroyo, Flink) connect over the Kafka gateway in M5, which brings back the RisingWave integration (D22, D74). Before M5, RisingWave writes to Loams through its Elasticsearch, HTTP and Iceberg sinks (§02 §7.3).
 
 ### 4.1 Candidates for agent workspaces (§15, proposed)
 
 | Component | Project | License | Role | Notes |
 |---|---|---|---|---|
 | Git objects and packs | **gitoxide** (`gix-*`) | Apache-2.0 / MIT | Pack parsing, indexes, protocol, SHA-1/SHA-256 | Server-side upload-pack/receive-pack not implemented upstream → build the server loop. Pack encoding without delta compression and bitmap writing are also unchecked upstream (2026-10-01): repacking uses stock `git` as a process (D396) |
-| Lazy, deduplicated images | **nydus** (Dragonfly) | Apache-2.0 (Rust) | Environment images (RAFS v6 / EROFS), chunk dedup, lazy fetch | Verify its storage backend can use Operon's bucket or cache |
+| Lazy, deduplicated images | **nydus** (Dragonfly) | Apache-2.0 (Rust) | Environment images (RAFS v6 / EROFS), chunk dedup, lazy fetch | Verify its storage backend can use Loams's bucket or cache |
 | Chunking / hashing | fastcdc, BLAKE3 | MIT / Apache-2.0 | Content-defined chunks for the namespace CAS | — |
 | FUSE | fuser | MIT | Userspace mounts where virtiofs/EROFS are unavailable | — |
 | Code parsing | tree-sitter | MIT | Symbol chunks and code graphs | — |
 | MCP | Rust MCP SDK (`rmcp`) | Apache-2.0 | MCP server and gateway on the 2026-07-28 stateless spec | 3.4.1 supports 2026-07-28 (M1.6 plan; §1) |
 | Session parsing and pricing | **tokscale-core** (tokscale) | MIT (Rust) | Parse Claude Code, Codex, opencode (and ~30 other harnesses') session files into `token_usage` (§16 §6) | Library crate of the tokscale CLI; parity check against the CLI |
-| Build cache | sccache, bazel-remote | Apache-2.0 | sccache v0.18.0: direct S3/R2 path with no Loam code, or a Loam WebDAV gateway path for metering hooks, LRU and trust (D398) | — |
-| Sandbox runtimes | microsandbox (libkrun), Firecracker, Cloud Hypervisor, Kata, gVisor, E2B, Anthropic `sandbox-runtime`, Codex | Apache-2.0 | `operon-sandbox` backends: microsandbox (default), Firecracker (fleet), gVisor (Kubernetes without KVM), process (dev only) (§15 §8) | Integrated through a `Runtime` trait, never forked |
+| Build cache | sccache, bazel-remote | Apache-2.0 | sccache v0.18.0: direct S3/R2 path with no Loams code, or a Loams WebDAV gateway path for metering hooks, LRU and trust (D398) | — |
+| Sandbox runtimes | microsandbox (libkrun), Firecracker, Cloud Hypervisor, Kata, gVisor, E2B, Anthropic `sandbox-runtime`, Codex | Apache-2.0 | `loams-sandbox` backends: microsandbox (default), Firecracker (fleet), gVisor (Kubernetes without KVM), process (dev only) (§15 §8) | Integrated through a `Runtime` trait, never forked |
 | References | git-remote-object-store, awslabs/git-remote-s3, AgentFS, Jujutsu, mountpoint-s3, JuiceFS | Apache-2.0 / MIT | Designs to learn from | — |
 
 ## 5. Avoid
@@ -153,21 +153,21 @@ Stream-processor companions (RisingWave, Arroyo, Flink) connect over the Kafka g
 | MinIO (community) | AGPL-3.0 | Archived after maintenance mode (2025-12-03); was only ever a documented local store, never linked. Replaced by RustFS (D61) |
 | ScyllaDB 2025.1 and later | ScyllaDB Software License Agreement (source-available) | Caps use, bans DBaaS and competing use; only the AGPL 6.2.3 image is used, as a CI service (§1.1) |
 | LocalStack (2026) | Commercial; the single image needs an auth token | The Community edition ended 2026-03-23; floci replaces it (D60) |
-| ~~`tikv-client`~~ | Apache-2.0 | ~~Needs a real PD and TiKV cluster and rebuilds in KV what TiDB's SQL layer provides~~. **Removed from the avoid list by D124 (2026-09-27):** `tikv-client` 0.4 is the client of `operon-tikv`, `operon-meta-tikv` and Loam Live (§20) |
+| ~~`tikv-client`~~ | Apache-2.0 | ~~Needs a real PD and TiKV cluster and rebuilds in KV what TiDB's SQL layer provides~~. **Removed from the avoid list by D124 (2026-09-27):** `tikv-client` 0.4 is the client of `loams-tikv`, `loams-meta-tikv` and Loams Live (§20) |
 | Kuzu forks as core (Ladybug, RyuGraph, Bighorn) | MIT | C++, local-disk, single-writer — wrong architecture for stateless S3 compute |
 | Qdrant as storage | Apache-2.0 | Local-disk architecture (use its index code only) |
 | Quickwit as a service | Apache-2.0 | Append-only; duplicates our metastore/ingest (use its crates) |
 | S3 Vectors | AWS service | Top-k ≤ 100, ~1k writes/s per index, no hybrid search — cold tier at best |
 | ClickHouse OSS text index | Apache-2.0 | No BM25/positions — filter, not relevance |
-| Spice runtime as a library | Apache-2.0 | Patches crates.io with forks of DataFusion 54 and arrow-rs (and Ballista, iceberg-rust, Vortex, mistral.rs forks); embedding it ties Operon to Spice's fork cadence (D51). Integrate over Flight SQL instead |
-| Sail crates | Apache-2.0 | Main is on DataFusion 55.1 / arrow 59.2 against Operon's 54 / 58 (Lance 12); its maintainers declined Rust-level Lance integration for the same reason; no Spark Connect surface is planned (D42, D51) |
+| Spice runtime as a library | Apache-2.0 | Patches crates.io with forks of DataFusion 54 and arrow-rs (and Ballista, iceberg-rust, Vortex, mistral.rs forks); embedding it ties Loams to Spice's fork cadence (D51). Integrate over Flight SQL instead |
+| Sail crates | Apache-2.0 | Main is on DataFusion 55.1 / arrow 59.2 against Loams's 54 / 58 (Lance 12); its maintainers declined Rust-level Lance integration for the same reason; no Spark Connect surface is planned (D42, D51) |
 | Polars crates (`polars`, `polars-arrow`) | MIT (`polars-arrow`: MIT AND Apache-2.0) | A second Arrow implementation (arrow2 fork), so every boundary converts; Python users get zero copy through PyCapsule anyway (D51) |
 | TileDB core, `tiledb-rs` | MIT; `tiledb-rs` has no license | `tiledb-rs` is unlicensed and early work; the core pins arrow 55 / DataFusion 47 in its Rust parts; activity slowing; its vector search depends on tiledb-cloud (D51) |
 | Petastorm | Apache-2.0 | Maintenance mode; deprecated by Databricks in favour of Mosaic Streaming; requires pyspark; Lance's PyTorch reader covers it (D51) |
 
 ## 6. Build (the moat)
 
-These are what turbopuffer, LanceDB Enterprise, AutoMQ commercial and ClickHouse Cloud keep closed — and what Operon ships open:
+These are what turbopuffer, LanceDB Enterprise, AutoMQ commercial and ClickHouse Cloud keep closed — and what Loams ships open:
 
 1. **Hybrid planner**: dense + sparse vector + BM25 text + filter + graph expansion + fusion in one DataFusion plan, with tail merge and consistency tokens (§05).
 2. **Stateless serving fleet**: affinity routing, H0–H3 caching, hot-tier lifecycle — the StarRocks data-cache pattern extended to Lance pages, Tantivy splits and adjacency (§04).
@@ -179,7 +179,7 @@ These are what turbopuffer, LanceDB Enterprise, AutoMQ commercial and ClickHouse
 8. **Pluggable metastore**: the semantic `MetaStore` trait with openraft, Postgres and DynamoDB backends and a TiKV backend in track R (D124; it supersedes the M6 TiDB backend), held to one conformance and linearizability suite and a fault matrix per backend, plus the sharded metastore and namespace router (§01 §3.2, §18, D47, D58–D63).
 9. **Iceberg hot tier**: T0 file index, hot projections (MergeTree-on-NVMe), real-time tail (§04 §3).
 10. **Iceberg DV writer / RowDelta** — contributed upstream to iceberg-rust.
-11. **Durable-execution integration**: the Resonate surface on Operon's store, auth and routing; in Phase B the change stream, search index, execution graph and cluster-wide timer shards (§14).
+11. **Durable-execution integration**: the Resonate surface on Loams's store, auth and routing; in Phase B the change stream, search index, execution graph and cluster-wide timer shards (§14).
 12. **AI data ecosystem surface**: scan pinning, retained dataset tags, credential vending for direct fragment reads, and thin Python adapters for Ray Data, Polars, PySpark/Sail and PyTorch, over open formats and protocols only (§17, D51–D54).
 
 ## 7. Key sources

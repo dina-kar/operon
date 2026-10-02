@@ -2,7 +2,7 @@
 
 Status: **Approved (owner)** · 2026-09-26 (decisions D58–D71; §3.5 and §5 amended by D75 and D76; §5, §6 and §9 amended by D86, D90, D95, D96, D98 and D99 after the turbopuffer gap analysis). Three parts are **defaults the owner has not yet confirmed** and may override: the OpenFGA timing (D67), the erasure policy (D69) and ids under sharding (D70). They are marked *(default)* below.
 
-Loam is the product name (D33). API keys carry the `loam_` prefix from the start. Crates keep their working names (`operon-*`) until the rename.
+Loams is the product name (D33, D400). API keys carry the `loams_` prefix from the start, and the crates are `loams-*`.
 
 Markers: **(estimate)** is computed from code or specs, not measured. **(verify)** is not checked against a primary source; the plan that builds it resolves it.
 
@@ -12,7 +12,7 @@ Markers: **(estimate)** is computed from code or specs, not measured. **(verify)
 
 | # | Decision | Milestone |
 |---|---|---|
-| D58 | Postgres **and** DynamoDB metastore backends in v1.0; ~~TiDB (MySQL protocol, sqlx) in M6~~ (superseded by D124 and D260: `operon-meta-tikv`, no TiDB) | M2 |
+| D58 | Postgres **and** DynamoDB metastore backends in v1.0; ~~TiDB (MySQL protocol, sqlx) in M6~~ (superseded by D124 and D260: `loams-meta-tikv`, no TiDB) | M2 |
 | D59 | The `MetaStore` contract is relaxed: `commit_wal` is atomic per partition group; one monotonic clock becomes bounded-skew stamps plus GC claims; composite reads document a safe read order | M2 (first task) |
 | D60 | Backend CI: floci runs the full DynamoDB suite, Alternator 6.2.3 the single-item subset, a fault matrix per backend, a nightly AWS deployment job | M2 |
 | D61 | RustFS 1.0 replaces MinIO as the default self-hosted object store and becomes a per-PR CI target | M2 |
@@ -37,11 +37,11 @@ v1.0 stays M1 + M2 (D46), but M2 grows: a second new backend (DynamoDB), tenancy
 
 | Backend | Crate | Milestone | Use |
 |---|---|---|---|
-| openraft + redb | `operon-meta` | Default (M0) | `operon dev`, standalone, clusters of 3 or 5 `meta` nodes |
-| **Postgres** | `operon-meta-postgres` | **M2 (v1.0)** | Deployments that run managed Postgres (RDS, Aurora, Cloud SQL, Azure Database) |
-| **DynamoDB** | `operon-meta-dynamodb` | **M2 (v1.0)** | AWS-native and serverless deployments; the natural store for the hosted control plane (M2.x), as WarpStream uses it |
-| ~~**TiDB**~~ | ~~`operon-meta-tidb`~~ | ~~M6~~ | Superseded by `operon-meta-tikv` (D124); no TiDB anywhere (D260) |
-| **TiKV** | `operon-meta-tikv` | **R1** (D124, §20 §11) | Loam cloud, cluster and self-hosted metadata and the control plane (D260); metadata that outgrows one Postgres primary; shares the TiKV cluster with Loam Live. `--meta tikv://<pd-hosts>/<keyspace>` on `main`, behind the opt-in cargo feature `tikv` |
+| openraft + redb | `loams-meta` | Default (M0) | `loams dev`, standalone, clusters of 3 or 5 `meta` nodes |
+| **Postgres** | `loams-meta-postgres` | **M2 (v1.0)** | Deployments that run managed Postgres (RDS, Aurora, Cloud SQL, Azure Database) |
+| **DynamoDB** | `loams-meta-dynamodb` | **M2 (v1.0)** | AWS-native and serverless deployments; the natural store for the hosted control plane (M2.x), as WarpStream uses it |
+| ~~**TiDB**~~ | ~~`loams-meta-tidb`~~ | ~~M6~~ | Superseded by `loams-meta-tikv` (D124); no TiDB anywhere (D260) |
+| **TiKV** | `loams-meta-tikv` | **R1** (D124, §20 §11) | Loams cloud, cluster and self-hosted metadata and the control plane (D260); metadata that outgrows one Postgres primary; shares the TiKV cluster with Loams Live. `--meta tikv://<pd-hosts>/<keyspace>` on `main`, behind the opt-in cargo feature `tikv` |
 
 Every backend implements the same `MetaStore` trait (D47) under the relaxed contract (§3), and passes one conformance suite, the linearizability checks and its own fault matrix (§4).
 
@@ -49,7 +49,7 @@ FoundationDB was considered and dropped: TiDB (since replaced by TiKV, D124, D26
 
 ### 2.2 Postgres: Lakekeeper's patterns
 
-Lakekeeper (Apache-2.0, `lakekeeper-storage-postgres` at `b771dbf`) runs the same shape of commit as Operon's manifests: write the object, then compare-and-swap the pointer. The Postgres backend follows it:
+Lakekeeper (Apache-2.0, `lakekeeper-storage-postgres` at `b771dbf`) runs the same shape of commit as Loams's manifests: write the object, then compare-and-swap the pointer. The Postgres backend follows it:
 
 - **Isolation.** READ COMMITTED, the Postgres default. No SERIALIZABLE. Explicit row locks only where needed, taken in a fixed order: `SELECT … FOR UPDATE` on partition heads in key order for `commit_wal`, `FOR UPDATE` on a namespace row when it is dropped.
 - **Compare-and-swap.** One conditional `UPDATE … WHERE version = $expected` per pointer. The code checks the returned row count: no row is a `VersionMismatch`, a missing entity is `NotFound`. Batched pointer updates use `UPDATE … FROM (VALUES …)` as Lakekeeper's multi-table commit does.
@@ -61,7 +61,7 @@ Lakekeeper (Apache-2.0, `lakekeeper-storage-postgres` at `b771dbf`) runs the sam
 - **Clock.** No single clock row. Commands carry bounded-skew stamps (§3.2), so no row is locked by every write.
 - **Singletons.** Maintenance that must run once per cluster takes `pg_advisory_lock`, as Lakekeeper's `advisory_lock.rs` does, where a metastore lease does not already cover it.
 
-What is copied from Lakekeeper, with its NOTICE, is listed in §11 §2. Lakekeeper's `CatalogStore` trait is not copied: it threads one transaction through many calls, while Operon's trait is one call, one transaction (D47). That is what makes Operon's trait servable from DynamoDB and over RPC.
+What is copied from Lakekeeper, with its NOTICE, is listed in §11 §2. Lakekeeper's `CatalogStore` trait is not copied: it threads one transaction through many calls, while Loams's trait is one call, one transaction (D47). That is what makes Loams's trait servable from DynamoDB and over RPC.
 
 ### 2.3 DynamoDB
 
@@ -116,7 +116,7 @@ What is copied from Lakekeeper, with its NOTICE, is listed in §11 §2. Lakekeep
 
 ### 2.4 TiDB (M6)
 
-> **Superseded by D124 (2026-09-27) and D260 (2026-09-29):** the scale-out backend is `operon-meta-tikv` over `tikv-client`, in track R1, mapped in [§20 §11](20-reactive-database-on-tikv.md). D260 removes TiDB from Loam entirely, so no TiDB backend is planned in any milestone and §20 §10's TiDB SQL access is superseded too. This section, and the TiDB rows of the CI and fault tables below, are kept as history.
+> **Superseded by D124 (2026-09-27) and D260 (2026-09-29):** the scale-out backend is `loams-meta-tikv` over `tikv-client`, in track R1, mapped in [§20 §11](20-reactive-database-on-tikv.md). D260 removes TiDB from Loams entirely, so no TiDB backend is planned in any milestone and §20 §10's TiDB SQL access is superseded too. This section, and the TiDB rows of the CI and fault tables below, are kept as history.
 
 - **Protocol.** MySQL, through `sqlx` (feature `mysql`). Not `tikv-client` 0.4: it needs a real PD and TiKV cluster and would rebuild in KV what TiDB's SQL layer already provides.
 - **Transactions.** Pessimistic mode (the default since v3.0.8). REPEATABLE READ is snapshot isolation. `SELECT … FOR UPDATE` has no gap locks, so uniqueness comes from unique indexes.
@@ -183,7 +183,7 @@ A consistency token `{(stream, partition, offset)}` means the same thing on open
 
 ### 4.1 Conformance targets
 
-`operon-meta-conformance` (49 cases and its linearizability histories, M1.2a) runs against every backend:
+`loams-meta-conformance` (49 cases and its linearizability histories, M1.2a) runs against every backend:
 
 | Target | License | Runs | When |
 |---|---|---|---|
@@ -202,7 +202,7 @@ A consistency token `{(stream, partition, offset)}` means the same thing on open
 
 ### 4.2 A fault matrix per backend
 
-Modelled on the S3 fault matrix (`crates/operon/tests/fault_matrix.rs` and its blessed `fault_matrix.expected.md`):
+Modelled on the S3 fault matrix (`crates/loams/tests/fault_matrix.rs` and its blessed `fault_matrix.expected.md`):
 
 - **Cells** cross trait-method groups (catalog creates, `commit_wal`, `swap_segment`, trim, `cas_pointer` with and without a fence, leases, `drop_collection`), faults, and the attempt the fault hits (first or second).
 - **Faults:**
@@ -237,12 +237,12 @@ Runs nightly and on PRs labelled `aws`, with floci started through `docker run` 
 
 | Piece | How it runs | Emulated service |
 |---|---|---|
-| Object store | `s3://loam-ci` at floci's endpoint | floci S3 |
-| Metastore | `operon-meta-dynamodb` | floci DynamoDB |
-| Gateway, query and log roles | `operon cluster` containers (they need a hot tier and long-lived connections) | — |
+| Object store | `s3://loams-ci` at floci's endpoint | floci S3 |
+| Metastore | `loams-meta-dynamodb` | floci DynamoDB |
+| Gateway, query and log roles | `loams cluster` containers (they need a hot tier and long-lived connections) | — |
 | Workers | A Lambda function (`provided.al2023` Rust `bootstrap`, or a container image); each invocation runs `run_once` for a bounded time, coordinated by the existing leases and fencing | floci Lambda |
 | Triggers | EventBridge Scheduler `rate(1 minute)` for maintenance; SQS with an event-source mapping for on-demand work (hot builds, erasure purges) | floci Scheduler, SQS |
-| Credentials | The IAM roles and policies Loam ships in its infrastructure-as-code module, with `FLOCI_SERVICES_IAM_ENFORCEMENT_ENABLED=true`; KMS keys | floci IAM, STS, KMS |
+| Credentials | The IAM roles and policies Loams ships in its infrastructure-as-code module, with `FLOCI_SERVICES_IAM_ENFORCEMENT_ENABLED=true`; KMS keys | floci IAM, STS, KMS |
 
 It checks: deployment from the shipped module; data ingested through the Qdrant, ES and native APIs comes back from queries; Lambda workers advance manifests and GC deletes only unreachable objects; a worker killed by its function timeout loses its lease and the next invocation takes over at the next epoch with nothing applied twice; the shipped least-privilege policy passes and a policy missing an action fails loudly; an erasure request completes end to end through SQS (§9).
 
@@ -252,11 +252,11 @@ It cannot check DynamoDB conflicts and throttling (the in-process fault layer co
 
 ### 4.4 RustFS and the `Store` provider suite (D61)
 
-**RustFS 1.0.0** (Apache-2.0, released 2026-09-16) replaces MinIO as the default local and self-hosted object store in the docs, the docker-compose dev stack, the Helm chart and the agent-fleet demo. MinIO's community edition entered maintenance mode on 2025-12-03 and was later archived (AGPL-3.0). `operon dev` keeps `file://` and `memory://`; the compose file (or a `--with-rustfs` flag) starts RustFS next to it. The pin is `rustfs/rustfs:1.0.x`, moving to 1.0.1 once released for its two security fixes.
+**RustFS 1.0.0** (Apache-2.0, released 2026-09-16) replaces MinIO as the default local and self-hosted object store in the docs, the docker-compose dev stack, the Helm chart and the agent-fleet demo. MinIO's community edition entered maintenance mode on 2025-12-03 and was later archived (AGPL-3.0). `loams dev` keeps `file://` and `memory://`; the compose file (or a `--with-rustfs` flag) starts RustFS next to it. The pin is `rustfs/rustfs:1.0.x`, moving to 1.0.1 once released for its two security fixes.
 
 Checked against RustFS's source (`d8bf268`) and object_store 0.14.2: create-only PUT returns 412 under the commit write lock (atomic across endpoints in distributed mode), `If-Match` returns 412 on a mismatch and 404 on a missing key, and both map correctly to `StoreError`. RustFS never returns S3's 409 or `503 SlowDown`; `FaultyStore` keeps covering those.
 
-A new **`Store` provider conformance suite** (`crates/operon-store/tests/provider.rs`, enabled by `OPERON_TEST_S3_URL`) checks:
+A new **`Store` provider conformance suite** (`crates/loams-store/tests/provider.rs`, enabled by `LOAMS_TEST_S3_URL`) checks:
 
 1. 16 concurrent `put_if_absent` on one key: exactly one `Ok`, 15 `AlreadyExists`.
 2. A `put_if_match` chain v1 → v2 → v3: a stale ETag and a missing key both get `PreconditionFailed`.
@@ -330,7 +330,7 @@ One router places every resource kind.
 
 ### 5.5 Namespace moves are metadata-only
 
-All bulk bytes are already on the bucket under `ns/<id>/`, and a namespace's metadata is small. A move therefore copies only metadata: fence the namespace (its lease epoch), copy its rows to the target shard, flip the directory entry, unfence. Gateways **buffer** the namespace's writes during the flip, as Neki's routers do during cutover, so writes pause for milliseconds instead of failing. The old shard serves reads for the namespace until its copy is removed, then answers `NamespaceMoved` (§3.5). Neki and PgDog move data through logical replication into new shards; Loam never copies data.
+All bulk bytes are already on the bucket under `ns/<id>/`, and a namespace's metadata is small. A move therefore copies only metadata: fence the namespace (its lease epoch), copy its rows to the target shard, flip the directory entry, unfence. Gateways **buffer** the namespace's writes during the flip, as Neki's routers do during cutover, so writes pause for milliseconds instead of failing. The old shard serves reads for the namespace until its copy is removed, then answers `NamespaceMoved` (§3.5). Neki and PgDog move data through logical replication into new shards; Loams never copies data.
 
 ### 5.6 Failures
 
@@ -356,12 +356,12 @@ Collection shards come before stage 5: a sharded collection (M2.x, D95) needs on
 
 Stages 1–3 are what breaks first and are cheap, so they ship in v1.0. The trait changes stage 5 needs (per-group `commit_wal`, bounded-skew stamps, the namespace on every call) land in M2's first task (§3.4), so M6 changes no trait signature. M1.2, which is being implemented, is not changed: its `CatalogCache` is replaced in M2.
 
-### 5.8 What Loam takes from the reference systems
+### 5.8 What Loams takes from the reference systems
 
-- **Neki** (PlanetScale; proprietary, public docs only): a versioned topology document replaced whole and pushed; routers that buffer during cutover; lookup tables for secondary keys (Loam's name → id items already are); shipping without atomic cross-shard commits.
-- **PgDog** (AGPL-3.0; **reference only, no code is copied**): shard routing with a direct/multi/all route; two-phase commit needing a coordinator WAL, which is why Loam avoids cross-shard atomicity (for the retrieval engine's metadata; sharded SQL databases behind PgDog may opt in under D306, [§31](31-loam-router-and-verification.md) §10, which also keeps this router separate from the SQL routers, D321); centroid-based vector sharding (`pgdog-vector`), relevant if very large collections are later sharded by IVF centroid.
-- **turbopuffer**: routing as a soft cache-affinity hint by consistent hash of (org, namespace), about 100k namespaces per node, "unlimited (seen: 250M+)" namespaces, and at most 3 serial object-store round trips on a cold query. Loam does **not** adopt its per-namespace WAL (one entry per second per namespace, one PUT each): Loam's WAL objects span namespaces (D25) and are committed per shard (§3.1).
-- **WarpStream**: a strongly consistent metadata database sequences writes and assigns offsets (DynamoDB on AWS, Spanner on GCP, Cosmos DB on Azure). Loam is already this model (D10: Kafka-rate metadata cannot run on S3 compare-and-swap).
+- **Neki** (PlanetScale; proprietary, public docs only): a versioned topology document replaced whole and pushed; routers that buffer during cutover; lookup tables for secondary keys (Loams's name → id items already are); shipping without atomic cross-shard commits.
+- **PgDog** (AGPL-3.0; **reference only, no code is copied**): shard routing with a direct/multi/all route; two-phase commit needing a coordinator WAL, which is why Loams avoids cross-shard atomicity (for the retrieval engine's metadata; sharded SQL databases behind PgDog may opt in under D306, [§31](31-loams-router-and-verification.md) §10, which also keeps this router separate from the SQL routers, D321); centroid-based vector sharding (`pgdog-vector`), relevant if very large collections are later sharded by IVF centroid.
+- **turbopuffer**: routing as a soft cache-affinity hint by consistent hash of (org, namespace), about 100k namespaces per node, "unlimited (seen: 250M+)" namespaces, and at most 3 serial object-store round trips on a cold query. Loams does **not** adopt its per-namespace WAL (one entry per second per namespace, one PUT each): Loams's WAL objects span namespaces (D25) and are committed per shard (§3.1).
+- **WarpStream**: a strongly consistent metadata database sequences writes and assigns offsets (DynamoDB on AWS, Spanner on GCP, Cosmos DB on Azure). Loams is already this model (D10: Kafka-rate metadata cannot run on S3 compare-and-swap).
 
 **Cold start target.** A query on a cold namespace needs the directory entry (usually cached), `collection_head` (one metastore round trip), a manifest GET, and the Lance and Tantivy footers: at most 3 serial object-store round trips, p50 300–900 ms **(target)**. The prewarm API and pinned namespaces cover planned traffic.
 
@@ -369,7 +369,7 @@ Stages 1–3 are what breaks first and are cheap, so they ship in v1.0. The trai
 
 - **Model:** org (tenant and billing unit) → namespaces (the existing unit of isolation) → collections. Each namespace belongs to one org, and namespace names are unique within an org, so name lookups are keyed by org and name (on DynamoDB, `nsname#<org_id>#<name>`, §2.3); the M2 plan adds the org to the trait's name lookups.
 - **`ControlStore`**, a trait separate from the data-plane `MetaStore`, so it can be hosted remotely (BYOC, §8). It holds orgs, API keys, role bindings, quotas, usage rollups and, from M2.x, the directory (§5.2). In M2 it runs on the cluster's metastore backend; in M2.x the hosted control plane serves it.
-- **API keys:** `loam_<key_id>_<secret>`. The store keeps `{key_id, org, sha256(secret), scopes, expiry, created_by, last_used}`, never the secret. Each surface's credential (§10 §4) resolves to a principal `{org, key or user, scopes}`. Gateways cache resolved keys for 30–60 s, and revocations are pushed through the `ControlStore`'s change feed. OIDC/JWT comes later.
+- **API keys:** `loams_<key_id>_<secret>`. The store keeps `{key_id, org, sha256(secret), scopes, expiry, created_by, last_used}`, never the secret. Each surface's credential (§10 §4) resolves to a principal `{org, key or user, scopes}`. Gateways cache resolved keys for 30–60 s, and revocations are pushed through the `ControlStore`'s change feed. OIDC/JWT comes later.
 - **Quotas:**
 
   | Quota | Enforced |
@@ -386,7 +386,7 @@ Stages 1–3 are what breaks first and are cheap, so they ship in v1.0. The trai
 
 ## 7. Authorization (D66, D67)
 
-**An `Authorizer` trait** in `operon-common`, after Lakekeeper's, in Loam's terms:
+**An `Authorizer` trait** in `loams-common`, after Lakekeeper's, in Loams's terms:
 
 - `check(principal, action, resource)`, `batch_check`, and `filter_visible(list)`;
 - lifecycle hooks `on_created` and `on_deleted` for orgs, namespaces, collections and API keys;
@@ -405,11 +405,11 @@ Every surface maps each request to `(action, resource)` and calls it.
 **OpenFGA:**
 
 - **Dependency:** `openfga-client` 0.6 (Apache-2.0, maintained by Vakamo, gRPC through tonic and prost 0.14, protos vendored). The OpenFGA server is Apache-2.0 and runs as a separate service.
-- **Model:** adapted from Lakekeeper's modular v4.12 model (`authz/openfga/v4.12/components/*.fga`): subjects `[user, api_key, role#assignee]`; a bare grant relation plus an inherited effective relation per privilege; Lakekeeper's server → `platform`, project → `org`, warehouse and namespace → `namespace`, table → `collection`. Object ids are global: `namespace:{org}/{ns_id}`, `collection:{org}/{ns_id}/{cid}`. Loam adds a **tenant fence** Lakekeeper's model lacks: a grant is effective only `and tenant_member`, so no grant can make a subject from another org effective.
+- **Model:** adapted from Lakekeeper's modular v4.12 model (`authz/openfga/v4.12/components/*.fga`): subjects `[user, api_key, role#assignee]`; a bare grant relation plus an inherited effective relation per privilege; Lakekeeper's server → `platform`, project → `org`, warehouse and namespace → `namespace`, table → `collection`. Object ids are global: `namespace:{org}/{ns_id}`, `collection:{org}/{ns_id}/{cid}`. Loams adds a **tenant fence** Lakekeeper's model lacks: a grant is effective only `and tenant_member`, so no grant can make a subject from another org effective.
 - **Copied with attribution:** the `.fga` components and the patterns of Lakekeeper's `migration.rs` (model versions through `TupleModelManager`) and `reconcile.rs`, keeping Lakekeeper's `NOTICE` ("Copyright 2024-2026 Vakamo Inc.") under Apache-2.0 §4(d) and marking changes. Lakekeeper's `Authorizer` trait and `authorizer.rs` are reference only.
 - **Tuple writes through a transactional outbox.** The tuple change is a row written in the same `ControlStore` or metastore transaction as the resource change. A worker drains the outbox with idempotent writes (ignoring duplicates on write and missing tuples on delete), and a `reconcile` job repairs drift. Lakekeeper writes tuples before its database commit and deletes them after it, which orphans tuples when the commit fails; the outbox cannot.
 - **Reads:** a decision cache in the gateway with a TTL of at most 5 s, keyed by (principal, action, object). `MinimizeLatency` reads, and `HigherConsistency` right after the principal's own writes.
-- *(default, D67)* **OpenFGA moves from M6 to M2.x**, with the control plane, and Loam and Lakekeeper (M4) **share one OpenFGA store**: Lakekeeper's types stay unchanged, and Loam's are added beside them as modules of a schema 1.2 model. Whether both products' migration managers can share one store is Q21.
+- *(default, D67)* **OpenFGA moves from M6 to M2.x**, with the control plane, and Loams and Lakekeeper (M4) **share one OpenFGA store**: Lakekeeper's types stay unchanged, and Loams's are added beside them as modules of a schema 1.2 model. Whether both products' migration managers can share one store is Q21.
 
 ## 8. BYOC (D64)
 
@@ -417,17 +417,17 @@ Both modes ship in **M2.x (v1.1)**, after v1.0.
 
 | | **BYOC-managed-meta** (the WarpStream model) | **BYOC-local-meta** (the turbopuffer model) |
 |---|---|---|
-| Metastore | Remote: `operon-meta-remote` in the customer's VPC talks to the hosted metastore in `operon-control` | In the customer's VPC: openraft, or the customer's Postgres or DynamoDB |
+| Metastore | Remote: `loams-meta-remote` in the customer's VPC talks to the hosted metastore in `loams-control` | In the customer's VPC: openraft, or the customer's Postgres or DynamoDB |
 | Control plane role | Serves the metastore and the `ControlStore`; a hard dependency for writes | A pull-based ops agent only (upgrades, scaling, telemetry, billing aggregates); not on the data path |
 | Control plane down | Cached reads continue; writes stall | Nothing on the data path changes |
 
-**`operon-meta-remote`**, a `MetaStore` client over gRPC (tonic):
+**`loams-meta-remote`**, a `MetaStore` client over gRPC (tonic):
 
 - The trait is already shaped for RPC (semantic calls, owned arguments, one transaction per call), so the mapping is mechanical.
 - Every write carries an **idempotency key**. The server keeps call results for `WAL_COMMIT_WINDOW_MS`, which turns most unknown outcomes into known ones, as `ClientRequestToken` does on DynamoDB.
 - `watch_changes` is a server stream with a resume token. `Local` reads come from the client's per-namespace cache (§5.4).
 
-**`operon-control`**, the hosted multi-tenant control plane:
+**`loams-control`**, the hosted multi-tenant control plane:
 
 - Serves many BYOC clusters, each a virtual cluster keyed by `cluster_id`, on DynamoDB, Postgres or TiKV (D124, D260; no TiDB), with the sharded design of §5.
 - Authenticates each data plane with per-cluster mTLS or an agent key and scopes every call to that cluster.
@@ -480,4 +480,4 @@ Risks 22–26 in §12 cover the relaxed contract, emulator fidelity, router comp
 - turbopuffer: turbopuffer.com/docs/{architecture,guarantees,limits,byoc} · turbopuffer.com/blog/{control-plane,object-storage-queue}
 - WarpStream: docs.warpstream.com/warpstream/overview/architecture · warpstream.com/blog/the-art-of-being-lazy-log-lower-latency-and-higher-availability-with-delayed-sequencing · warpstream.com/blog/secure-by-default-how-warpstreams-byoc-deployment-model-secures-the-most-sensitive-workloads
 - Toxiproxy: github.com/Shopify/toxiproxy
-- Operon as built (M1.2a worktree): `crates/operon-meta/src/{state/mod.rs,state_machine.rs,codec.rs,client.rs}`, `crates/operon-query/src/catalog_cache.rs`, `crates/operon-meta-conformance/`, `crates/operon/tests/fault_matrix.rs`
+- Loams as built (M1.2a worktree): `crates/loams-meta/src/{state/mod.rs,state_machine.rs,codec.rs,client.rs}`, `crates/loams-query/src/catalog_cache.rs`, `crates/loams-meta-conformance/`, `crates/loams/tests/fault_matrix.rs`
