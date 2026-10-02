@@ -5,7 +5,7 @@
 
 ## 1. Question and answer
 
-**Can Operon serve its read-only SQL surface (collections as tables, the search table functions) over the Postgres wire protocol, using `datafusion-postgres` 0.18 on Operon's DataFusion 54, well enough for `psql`, `psycopg` 3 and the `pg` npm package?**
+**Can Loams serve its read-only SQL surface (collections as tables, the search table functions) over the Postgres wire protocol, using `datafusion-postgres` 0.18 on Loams's DataFusion 54, well enough for `psql`, `psycopg` 3 and the `pg` npm package?**
 
 **Yes.** With one `SessionContext` per namespace (the one Flight SQL and REST already plan in), `datafusion-pg-catalog`'s `pg_catalog`, and a read-only hook in front of the library's handler, these all work:
 
@@ -32,13 +32,13 @@ The patch touches 8 files: 1,102 lines added, of which about 600 are `Cargo.lock
 
 | Piece | Where | What it does |
 |---|---|---|
-| Feature | `crates/operon/Cargo.toml` | `pgwire = ["dep:datafusion", "dep:datafusion-postgres"]`, **off by default**. `datafusion-postgres = "0.18"` pulls `arrow-pg` 0.15.0, `datafusion-pg-catalog` 0.18.3 and `pgwire` 0.40.7 |
-| Flags | `crates/operon/src/main.rs` | `--pg-listen <addr>` (off unless given) and `--pg-namespace <ns>` (default `default`), on `dev`, `standalone` and `cluster`. Without the feature, the flag logs `this build has no Postgres wire listener (the pgwire feature is off)` |
-| Listener | `crates/operon/src/pg.rs` | `bind` **refuses any non-loopback address**: `postgres listen on 0.0.0.0:5432: only loopback addresses are served until the unified auth plan (D111)`. This is the stricter rule that D121 and D138 use, not D111's warning, because the listener has no auth and reads every collection. The listener has its own accept loop with a `CancellationToken` and a `TaskTracker`, since the library's `serve` binds by itself and has no shutdown. `pgwire::tokio::process_socket` runs per connection with the no-auth startup handler |
+| Feature | `crates/loams/Cargo.toml` | `pgwire = ["dep:datafusion", "dep:datafusion-postgres"]`, **off by default**. `datafusion-postgres = "0.18"` pulls `arrow-pg` 0.15.0, `datafusion-pg-catalog` 0.18.3 and `pgwire` 0.40.7 |
+| Flags | `crates/loams/src/main.rs` | `--pg-listen <addr>` (off unless given) and `--pg-namespace <ns>` (default `default`), on `dev`, `standalone` and `cluster`. Without the feature, the flag logs `this build has no Postgres wire listener (the pgwire feature is off)` |
+| Listener | `crates/loams/src/pg.rs` | `bind` **refuses any non-loopback address**: `postgres listen on 0.0.0.0:5432: only loopback addresses are served until the unified auth plan (D111)`. This is the stricter rule that D121 and D138 use, not D111's warning, because the listener has no auth and reads every collection. The listener has its own accept loop with a `CancellationToken` and a `TaskTracker`, since the library's `serve` binds by itself and has no shutdown. `pgwire::tokio::process_socket` runs per connection with the no-auth startup handler |
 | Session | `pg::session` | `CollectionService::sql_context(ns)`, the same context as Flight SQL (strong consistency, the hot scope captured at start), plus `setup_pg_catalog(ctx, ns, EmptyContextProvider)`. Hooks, in order: the library's `CursorStatementHook`, `SetShowHook` and `TransactionStatementHook`, then **`ReadOnlyHook`** |
-| Read-only guard | `pg::ReadOnlyHook` | `Statement::Query` and `Statement::Explain` are planned with **`operon_query::sql::plan_read_only`**. That call refreshes the namespace catalog, so a new collection is visible, and it runs `read_only_options().verify_plan`, so `SELECT … INTO` is refused. Every other statement the earlier hooks did not take is refused with 25006. In the extended protocol, the plan is checked at Parse and the library executes it |
-| Catalog | `operon-query/src/sql/catalog.rs` | `NamespaceCatalog::register_schema` holds extra schemas beside `collections`, which cannot be replaced. `setup_pg_catalog` needs it to register `pg_catalog` |
-| Tests | `crates/operon/tests/it/pgwire.rs` | Run through the library's `MockClient`: `selects_filters_and_aggregates_read_collections`, `pg_catalog_lists_the_collections`, `writes_are_refused_with_25006` (INSERT, CREATE, DROP, DELETE, UPDATE, COPY, SELECT INTO) and `the_listener_refuses_non_loopback_addresses` |
+| Read-only guard | `pg::ReadOnlyHook` | `Statement::Query` and `Statement::Explain` are planned with **`loams_query::sql::plan_read_only`**. That call refreshes the namespace catalog, so a new collection is visible, and it runs `read_only_options().verify_plan`, so `SELECT … INTO` is refused. Every other statement the earlier hooks did not take is refused with 25006. In the extended protocol, the plan is checked at Parse and the library executes it |
+| Catalog | `loams-query/src/sql/catalog.rs` | `NamespaceCatalog::register_schema` holds extra schemas beside `collections`, which cannot be replaced. `setup_pg_catalog` needs it to register `pg_catalog` |
+| Tests | `crates/loams/tests/it/pgwire.rs` | Run through the library's `MockClient`: `selects_filters_and_aggregates_read_collections`, `pg_catalog_lists_the_collections`, `writes_are_refused_with_25006` (INSERT, CREATE, DROP, DELETE, UPDATE, COPY, SELECT INTO) and `the_listener_refuses_non_loopback_addresses` |
 
 The spike does **not** use `datafusion-postgres`'s `serve()`, `HandlerFactory` (which is private), `AuthManager` or `PermissionsHook`.
 
@@ -46,27 +46,27 @@ The spike does **not** use `datafusion-postgres`'s `serve()`, `HandlerFactory` (
 
 ```bash
 # Worktree
-git -C /home/dinakaran/Documents/Operon-wt/m1.2a fetch origin
-git -C /home/dinakaran/Documents/Operon-wt/m1.2a worktree add -b spike-pgwire /home/dinakaran/Documents/Operon-wt/pgwire origin/main
+git -C /home/dinakaran/Documents/Loams-wt/m1.2a fetch origin
+git -C /home/dinakaran/Documents/Loams-wt/m1.2a worktree add -b spike-pgwire /home/dinakaran/Documents/Loams-wt/pgwire origin/main
 
 # Builds (shared target, measured one after the other)
-export CARGO_BUILD_JOBS=4 CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=$HOME/.cache/cargo-target/operon
-cargo build -p operon --bin operon                              # baseline
-cargo build -p operon --bin operon --features pgwire --timings  # with the feature
-cargo test  -p operon --features pgwire --test it pgwire
+export CARGO_BUILD_JOBS=4 CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=$HOME/.cache/cargo-target/loams
+cargo build -p loams --bin loams                              # baseline
+cargo build -p loams --bin loams --features pgwire --timings  # with the feature
+cargo test  -p loams --features pgwire --test it pgwire
 cargo deny check                                                # deny.toml has [graph] all-features = true
-cargo tree -p operon --features pgwire -e normal -i <crate>
+cargo tree -p loams --features pgwire -e normal -i <crate>
 
 # Server
-operon dev --data-dir ./data --listen 127.0.0.1:18480 --flight-sql-listen 127.0.0.1:18482 \
+loams dev --data-dir ./data --listen 127.0.0.1:18480 --flight-sql-listen 127.0.0.1:18482 \
   --no-qdrant --no-es --pg-listen 127.0.0.1:15432
-# → operon postgres listening on postgres://127.0.0.1:15432/default
+# → loams postgres listening on postgres://127.0.0.1:15432/default
 # The collection `kb`: the M1.6 fixture schema (body text, tenant keyword, n i64,
 # embedding dim 3 cosine), 2 partitions, 4 documents (ids 1, 2, 3, "k-str").
 
 # Clients
 psql -h 127.0.0.1 -p 15432 -U postgres -d default -X -c '\dt'   # psql 18.6
-uv venv ~/.cache/operon-pgspike/venv && uv pip install 'psycopg[binary]>=3.2'  # psycopg 3.3.6
+uv venv ~/.cache/loams-pgspike/venv && uv pip install 'psycopg[binary]>=3.2'  # psycopg 3.3.6
 npm install pg@8                                                   # pg 8.23.0 on Node
 ```
 
@@ -88,7 +88,7 @@ npm install pg@8                                                   # pg 8.23.0 o
 | `vector_search('kb', [1.0,0.0,0.0], 'embedding', 2)`, also with `ARRAY[…]` | ✅ `1 → 1.0`, `2 → 0.99388` |
 | `text_search('kb', 'refund', 'body', 10)` | ✅ 2 rows |
 | `rrf(vector_search(…), text_search(…))` | ✅ 3 fused rows |
-| `hybrid_search('kb', …)` with 3 arguments | ❌ as designed: `hybrid_search takes 6 to 9 arguments` (Operon's own signature) |
+| `hybrid_search('kb', …)` with 3 arguments | ❌ as designed: `hybrid_search takes 6 to 9 arguments` (Loams's own signature) |
 | `EXPLAIN`, `EXPLAIN ANALYZE` | ✅ with `CollectionScanExec` |
 | `BEGIN; SELECT count(*) FROM kb; COMMIT;` | ✅ |
 | `SET statement_timeout = 1000; SHOW statement_timeout` | ✅ `1000ms` |
@@ -160,7 +160,7 @@ Simple queries, `$1` parameters, `count(*)::int` aggregates and `vector_search` 
 
 ### 4.6 Tests
 
-`cargo test -p operon --features pgwire --test it pgwire`: **3 of 4 passed** in 0.64 s. `selects_filters_and_aggregates_read_collections` failed because its `SELECT * FROM vector_search(…)` returns `embedding` and hit G1. The patch changes that query to `SELECT _id, _score`. The test was **not re-run**: free space on `/home` had fallen to 6.1 GB, below the 8 GB floor for builds on this machine. Clippy was not run with the feature for the same reason. The feature-on binary built with no warnings.
+`cargo test -p loams --features pgwire --test it pgwire`: **3 of 4 passed** in 0.64 s. `selects_filters_and_aggregates_read_collections` failed because its `SELECT * FROM vector_search(…)` returns `embedding` and hit G1. The patch changes that query to `SELECT _id, _score`. The test was **not re-run**: free space on `/home` had fallen to 6.1 GB, below the 8 GB floor for builds on this machine. Clippy was not run with the feature for the same reason. The feature-on binary built with no warnings.
 
 ## 5. Dependencies, policy and cost
 
@@ -169,19 +169,19 @@ Simple queries, `$1` parameters, `count(*)::int` aggregates and `vector_search` 
 - **45 packages are added and none removed.** They include `datafusion-postgres` 0.18.0, `datafusion-pg-catalog` 0.18.3, `arrow-pg` 0.15.0, `pgwire` 0.40.7, `postgres-types` 0.2.14, `postgres-protocol` 0.6.12, `pg_interval`, `rust_decimal` features, `x509-certificate`/`bcder`, `lazy-regex`, `smol_str`, `derive-new` 0.7, `getset` and `md5`. DataFusion's default features add `parquet` 58.4, `datafusion-datasource-parquet`, `thrift`, `brotli`, `bzip2`/`libbz2-rs-sys`, `liblzma`, `zstd` 0.14, `snap`, and `recursive`/`stacker`/`psm`.
 - **arrow 58.4 and DataFusion 54.1 unify.** No second arrow, DataFusion or sqlparser version appears.
 - **Seven new duplicate versions**, all small: `zstd` 0.13 and 0.14 (0.14 through `async-compression`, from DataFusion's `compression` feature), `zstd-safe` 7 and 8, `hmac` 0.12 and 0.13 (`postgres-protocol`), `derive-new` 0.5 and 0.7 (`pgwire`), `fallible-iterator` 0.2 and 0.3 (`postgres-protocol`), `integer-encoding` 3 and 4 (`thrift`, from `parquet`), and `object` 0.37 and 0.39 (a build-time dependency of `psm`).
-- **The main cost is DataFusion's default features.** `datafusion-postgres`, `arrow-pg`, `datafusion-pg-catalog` and `datafusion-pg-functions` all depend on `datafusion = "^54"` with default features. Operon's workspace deliberately builds DataFusion with Lance's feature set, without parquet or compression (root `Cargo.toml`). Cargo unifies features, so turning `pgwire` on recompiles DataFusion, Lance, the arrow crates, qdrant-edge and everything above them. The fix is upstream: `default-features = false` plus the `sql` feature in the three crates (PG1 Task 1).
-- **pgwire's features.** `datafusion-postgres` asks for `server-api-ring` and `arrow-pg` for `server-api` and `pg-ext-types`. `ring` and both of rustls's providers were already in Operon's graph, so there is no new crypto library and no new provider ambiguity. `rsa`, `jsonwebtoken`, `aws-lc-rs` from pgwire and `reqwest` 0.13 are not enabled.
+- **The main cost is DataFusion's default features.** `datafusion-postgres`, `arrow-pg`, `datafusion-pg-catalog` and `datafusion-pg-functions` all depend on `datafusion = "^54"` with default features. Loams's workspace deliberately builds DataFusion with Lance's feature set, without parquet or compression (root `Cargo.toml`). Cargo unifies features, so turning `pgwire` on recompiles DataFusion, Lance, the arrow crates, qdrant-edge and everything above them. The fix is upstream: `default-features = false` plus the `sql` feature in the three crates (PG1 Task 1).
+- **pgwire's features.** `datafusion-postgres` asks for `server-api-ring` and `arrow-pg` for `server-api` and `pg-ext-types`. `ring` and both of rustls's providers were already in Loams's graph, so there is no new crypto library and no new provider ambiguity. `rsa`, `jsonwebtoken`, `aws-lc-rs` from pgwire and `reqwest` 0.13 are not enabled.
 - `datafusion-pg-functions` 0.1.0 was **evaluated and not added**. It is 688 lines, only its `math` category has functions, and the other categories register nothing yet. It does not supply `set_config`, `to_char`, JSON or `pg_*_is_visible`. Revisit it when it grows.
 
-### 5.2 `cargo deny check` (Operon's `deny.toml`, `all-features = true`, so `pgwire` is included)
+### 5.2 `cargo deny check` (Loams's `deny.toml`, `all-features = true`, so `pgwire` is included)
 
 `advisories ok, bans ok, licenses ok, sources ok`, exit 0. The new crates are Apache-2.0, MIT or Apache-2.0, and BSD. There is no AGPL, BSL, SSPL or ELv2 code, no new git source and no new advisory ignore.
 
 ### 5.3 Build time and binary size (debug, `CARGO_BUILD_JOBS=4 CARGO_INCREMENTAL=0`, shared target)
 
-| Build | Wall time | Crates compiled | Binary (`debug/operon`, line tables) |
+| Build | Wall time | Crates compiled | Binary (`debug/loams`, line tables) |
 |---|---|---|---|
-| Baseline `-p operon --bin operon`, dependencies warm (workspace crates rebuilt) | 157 s | about 20 workspace crates | 1,080,889,968 B |
+| Baseline `-p loams --bin loams`, dependencies warm (workspace crates rebuilt) | 157 s | about 20 workspace crates | 1,080,889,968 B |
 | `--features pgwire`, first build | **501 s (+344 s)** | **261** (datafusion, lance, arrow, qdrant-edge and their dependents, because of feature unification, plus the new crates) | 1,155,116,560 B (**+74.2 MB, +6.9 %**) |
 | `cargo test … --test it pgwire` after that | 167 s | test binary and dev dependencies | not measured |
 
@@ -193,9 +193,9 @@ Simple queries, `$1` parameters, `count(*)::int` aggregates and `vector_search` 
 
 | # | Gap | Severity | Fix | Plan task |
 |---|---|---|---|---|
-| G1 | `arrow-pg` 0.15 panics encoding `FixedSizeList` (`encoder.rs:488`); `LargeList` is probably also wrong. Every vector column is affected, and the connection drops | **Blocker** for any `SELECT *` | Upstream PR to arrow-pg handling `FixedSizeList` and `LargeList`. Until it merges, Operon's hook casts `FixedSizeList` to `List` before encoding, in both the simple and extended paths | PG1 T1, T2 |
+| G1 | `arrow-pg` 0.15 panics encoding `FixedSizeList` (`encoder.rs:488`); `LargeList` is probably also wrong. Every vector column is affected, and the connection drops | **Blocker** for any `SELECT *` | Upstream PR to arrow-pg handling `FixedSizeList` and `LargeList`. Until it merges, Loams's hook casts `FixedSizeList` to `List` before encoding, in both the simple and extended paths | PG1 T1, T2 |
 | G2 | DataFusion default features through all three crates: parquet, compression, and the 261-crate rebuild | High (build cost, binary size) | Upstream PRs (`default-features = false`, `features = ["sql"]`, and `nested_expressions` where needed). Pin the fixed versions | PG1 T1 |
-| G3 | One namespace per listener, fixed at start. Strong consistency only, the hot scope captured once, no `operon.consistency_token` | Medium | A per-connection session keyed by the startup `database` (= namespace), with `SET operon.consistency_token` and `SET operon.hot`. Needs handlers that choose the context per client; `DfSessionService` holds one context | PG1 T3 |
+| G3 | One namespace per listener, fixed at start. Strong consistency only, the hot scope captured once, no `loams.consistency_token` | Medium | A per-connection session keyed by the startup `database` (= namespace), with `SET loams.consistency_token` and `SET loams.hot`. Needs handlers that choose the context per client; `DfSessionService` holds one context | PG1 T3 |
 | G4 | `search_path`/`current_schema()` is `public`, but the tables are in `collections`. Unqualified `'kb'::regclass` returns nothing | Medium (tools) | Report `search_path = collections` in ParameterStatus and `current_schema()`, or register `public` as an alias of `collections` | PG1 T3 |
 | G5 | Type mapping: vectors show as `text` in `\d`, `_seq_no` (u64) as `numeric`, `information_schema.columns` shows Arrow names | Medium | Vectors as `float4[]` (after G1), `_seq_no` as `int8` with a range check or documented as `numeric`, and serve `information_schema` from the pg catalog | PG1 T2 |
 | G6 | Missing catalog pieces: `pg_function_is_visible`, `pg_type_is_visible`, `set_config`, `array()` (`\d+`), `pg_stat_activity`, `to_char`, JSON functions; relation sizes are 0; `\l` shows a phantom `postgres` database | Low/medium | Upstream to `datafusion-pg-catalog`, or local UDFs; sizes from the manifest's `size_bytes` | PG1 T4 |
@@ -207,11 +207,11 @@ Simple queries, `$1` parameters, `count(*)::int` aggregates and `vector_search` 
 
 ## 7. Recommendation
 
-**Adopt it.** Keep the feature opt-in until G1 and G2 are fixed upstream, then consider turning it on by default. `datafusion-postgres` saves writing a protocol layer, a type encoder and a pg catalog. What Operon adds is small, about 300 lines: the listener, the session and the read-only hook over `plan_read_only`. This follows the owner's preference to buy rather than build. Ownership: datafusion-contrib, Apache-2.0, releases every 6–8 weeks, pgwire by the same maintainer (sunng87).
+**Adopt it.** Keep the feature opt-in until G1 and G2 are fixed upstream, then consider turning it on by default. `datafusion-postgres` saves writing a protocol layer, a type encoder and a pg catalog. What Loams adds is small, about 300 lines: the listener, the session and the read-only hook over `plan_read_only`. This follows the owner's preference to buy rather than build. Ownership: datafusion-contrib, Apache-2.0, releases every 6–8 weeks, pgwire by the same maintainer (sunng87).
 
 - **Read-only first** (PG1 Tasks 1–5): upstream fixes, the listener inside `Server`, per-connection sessions, catalog polish, `COPY TO`, and client tests in CI.
-- **Writes after that** (PG1 Tasks 6–10, behind `--pg-allow-writes`, off by default). They map onto Operon's collection write paths (D-PG-1): `INSERT` is create-if-absent (`ON CONFLICT (_id) DO UPDATE` is upsert, `DO NOTHING` skips existing keys); `UPDATE … WHERE` is `patch_by_filter`; `DELETE … WHERE` is `delete_by_filter`; `COPY … FROM STDIN` is the Flight `DoPut` bulk path. Every statement is autocommit, and a transaction block may hold at most one write. `CREATE TABLE` is not mapped in PG1.
-- **Boundary:** the Postgres wire is for analytics and ingest over collections. It is not an OLTP database. Clients that need multi-statement ACID transactions go to Loam Live and TiDB (D123), which stays the MySQL-protocol OLTP store.
+- **Writes after that** (PG1 Tasks 6–10, behind `--pg-allow-writes`, off by default). They map onto Loams's collection write paths (D-PG-1): `INSERT` is create-if-absent (`ON CONFLICT (_id) DO UPDATE` is upsert, `DO NOTHING` skips existing keys); `UPDATE … WHERE` is `patch_by_filter`; `DELETE … WHERE` is `delete_by_filter`; `COPY … FROM STDIN` is the Flight `DoPut` bulk path. Every statement is autocommit, and a transaction block may hold at most one write. `CREATE TABLE` is not mapped in PG1.
+- **Boundary:** the Postgres wire is for analytics and ingest over collections. It is not an OLTP database. Clients that need multi-statement ACID transactions go to Loams Live and TiDB (D123), which stays the MySQL-protocol OLTP store.
 - **Placement:** PG1 is the first milestone after M1 exits (after M1.7), before M2. Its read-only half (Tasks 0–5) has no dependency on M1.5–M1.7 and could start earlier between builds if the owner wants. The write half needs M1.5 Task 9a (`patch_by_filter` and `delete_by_filter`) merged.
 
 ### Artifacts (outside the repository)

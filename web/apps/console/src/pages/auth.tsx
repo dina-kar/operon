@@ -1,4 +1,4 @@
-import { Badge, Button, buttonClass, Field, Input, Logo, Notice } from '@loam/ui';
+import { Badge, Button, buttonClass, Field, Input, Logo, Notice } from '@loams/ui';
 import { KeyRound, ShieldCheck } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { useSearchParams } from 'react-router';
@@ -63,7 +63,7 @@ export function SignInPage() {
 
   return (
     <AuthFrame
-      title={`Sign in to ${instance.data?.name ?? 'Loam'}`}
+      title={`Sign in to ${instance.data?.name ?? 'Loams'}`}
       foot={
         <>
           New here? Ask an admin for an invitation. <Badge>{instance.data?.version ?? ''}</Badge>
@@ -142,7 +142,7 @@ export function SignInPage() {
 }
 
 export function SetupPage() {
-  usePageTitle('Set up Loam');
+  usePageTitle('Set up Loams');
   const [form, setForm] = useState<Schemas['SetupRequest']>({
     setup_token: '',
     org_name: '',
@@ -188,7 +188,7 @@ export function SetupPage() {
               {...p}
               value={form.setup_token}
               onChange={set('setup_token')}
-              className="loam-mono"
+              className="loams-mono"
               required
             />
           )}

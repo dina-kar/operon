@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Loam's TiKV dev playground (R1 plan Task 1): PD, TiKV on API v2 with Loam's
+# Loams's TiKV dev playground (R1 plan Task 1): PD, TiKV on API v2 with Loams's
 # keyspaces, and optionally a keyspace-mode TiDB, from `tiup playground v8.5.8`.
 #
 #   scripts/tikv/playground.sh start [--with-tidb] [--stores N] [--tag T]
@@ -8,9 +8,9 @@
 #   scripts/tikv/playground.sh stop  [--tag T]
 #   scripts/tikv/playground.sh status [--tag T]
 #
-# Ports: every Loam playground uses --port-offset 17000 (PD 127.0.0.1:19379,
+# Ports: every Loams playground uses --port-offset 17000 (PD 127.0.0.1:19379,
 # TiDB 127.0.0.1:21000), so only one runs at a time on a host. The tag
-# defaults to loam-dev; data lives in ~/.tiup/data/<tag> and is deleted on stop.
+# defaults to loams-dev; data lives in ~/.tiup/data/<tag> and is deleted on stop.
 #
 # Install tiup once (user-local, under ~/.tiup):
 #   curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
@@ -40,7 +40,7 @@ cmd=${1:-}
 [ -n "$cmd" ] || usage
 shift
 
-tag=loam-dev
+tag=loams-dev
 with_tidb=0
 stores=1
 tidb_config=$ROOT/deploy/tikv/tidb.toml
@@ -60,8 +60,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 case $tag in
-  loam-*) ;;
-  *) die "the tag must start with loam- (got '$tag')" ;;
+  loams-*) ;;
+  *) die "the tag must start with loams- (got '$tag')" ;;
 esac
 case $stores in
   '' | *[!0-9]*) die "--stores takes a positive number (got '$stores')" ;;
@@ -90,7 +90,7 @@ start() {
     die "playground '$tag' is already running (scripts/tikv/playground.sh stop --tag $tag)"
   fi
   if curl -s -m 2 -o /dev/null "http://$PD_ADDR/pd/api/v1/version"; then
-    die "something already answers on $PD_ADDR (another Loam playground?)"
+    die "something already answers on $PD_ADDR (another Loams playground?)"
   fi
   [ ! -e "$data_dir" ] || die "$data_dir exists from an earlier run; delete it first"
 
@@ -119,7 +119,7 @@ start() {
     stop
     exit 1
   fi
-  echo "playground: '$tag' ready. export OPERON_TEST_PD=$PD_ADDR"
+  echo "playground: '$tag' ready. export LOAMS_TEST_PD=$PD_ADDR"
 }
 
 stop() {

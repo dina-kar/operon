@@ -3,16 +3,16 @@
 Date: 2026-09-27. D1 plan Task 0 ([`2026-09-27-d1-durable-execution.md`](2026-09-27-d1-durable-execution.md)). Toolchain: rustc/cargo 1.97.1, edition 2024, resolver 3, clang + lld (`~/.cargo/config.toml`); cargo-deny 0.20.2; tiup 1.17.1 with playground v8.5.8; Python 3.13.15 with uv 0.12.13; Node v26.8.2.
 
 Method:
-- A local scratch branch of the workspace (`d1-t0-scratch`, never pushed) added the fork's crates as git dependencies of the workspace, a throwaway crate `crates/operon-durable`, and the features `durable` and `durable-mysql` on `operon`, both default.
+- A local scratch branch of the workspace (`d1-t0-scratch`, never pushed) added the fork's crates as git dependencies of the workspace, a throwaway crate `crates/loams-durable`, and the features `durable` and `durable-mysql` on `loams`, both default.
   - The throwaway crate built the registry (SQLite, MySQL, http-poll, http-push, the HTTP gateway), started it with `resonate_base::build` and `Running::start`, and stubbed Task 6's `InProcNetwork`.
-  - `operon`'s `main` called it when `OPERON_D1_PROBE` was set, so the whole embedded graph, SDK included, was reachable from `main` and linked into the measured binary.
+  - `loams`'s `main` called it when `LOAMS_D1_PROBE` was set, so the whole embedded graph, SDK included, was reachable from `main` and linked into the measured binary.
   - None of it is in this commit: `Cargo.toml`, `Cargo.lock` and `deny.toml` are unchanged.
 - The source is the fork `https://github.com/dina-kar/resonate` at **`c3f25b94301737f4bcfff503e25f2b0e36d57fb9`**. That is the branch `deps/advisories-rustls`: upstream `28dfd01` plus PR 0c (upstream #1164) only.
   - The TiDB fixes (PR 0a #1162, PR 1 #1163) change only `resonate-server-mysql`'s source, not its dependencies, so they do not move any number here.
   - The branch `loam/0.10.1` does not exist yet. Task 1 creates it and pins its own revision.
-- Builds used `CARGO_BUILD_JOBS=4 CARGO_INCREMENTAL=0` and a dedicated target directory, `~/.cache/cargo-target/operon-d1`. That directory was wiped before each cold build.
+- Builds used `CARGO_BUILD_JOBS=4 CARGO_INCREMENTAL=0` and a dedicated target directory, `~/.cache/cargo-target/loams-d1`. That directory was wiped before each cold build.
 - Other agents' builds and tests ran during every build (below), so the times are contended. Each build started only when no other cargo build was running, but builds that started later overlapped it.
-- The TiDB playground ran as `--tag loam-d1-t0 --port-offset 27000` (TiDB `127.0.0.1:31000`), only while no D1 build ran. It was stopped with `kill -INT` and `~/.tiup/data/loam-d1-t0` was deleted.
+- The TiDB playground ran as `--tag loams-d1-t0 --port-offset 27000` (TiDB `127.0.0.1:31000`), only while no D1 build ran. It was stopped with `kill -INT` and `~/.tiup/data/loams-d1-t0` was deleted.
 - Scratch files (lockfiles, cargo-deny output, timings, probe output): `scratchpad/d1t0/` in the session scratch directory (not committed).
 
 **Result:**
@@ -21,7 +21,7 @@ Method:
   - There is no `openssl-sys` anywhere.
   - R1's `tikv-client` pin resolves beside it.
 - `cargo deny check` fails on today's `deny.toml` (sources, and the `rsa` advisory). With the plan's two additions it passes: `advisories ok, bans ok, licenses ok, sources ok`.
-- The embed adds **+13.0 MB stripped** (+18.5 MB unstripped) to a 292.6 MB stripped `operon`, and **+125 s** (+8 %) to a cold release build (1,622 s against 1,497 s, both contended).
+- The embed adds **+13.0 MB stripped** (+18.5 MB unstripped) to a 292.6 MB stripped `loams`, and **+125 s** (+8 %) to a cold release build (1,622 s against 1,497 s, both contended).
 - **Toggling `durable` rebuilds most of the tree.** `verus_syn` (through `resonate-timer-wheel`) turns on `proc-macro2/span-locations`, so every proc-macro and everything downstream of one compiles differently.
   - The incremental build that added `durable` to a warm `--no-default-features` tree recompiled 479 units and took 23 min 44 s. The cold build without `durable` took 24 min 57 s.
   - See (e).
@@ -53,8 +53,8 @@ Method:
 ### Build time and size
 
 ```
-CARGO_BUILD_JOBS=4 CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=~/.cache/cargo-target/operon-d1 \
-  cargo build --release -p operon [--no-default-features --features flight,hnsw,qdrant] --timings
+CARGO_BUILD_JOBS=4 CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=~/.cache/cargo-target/loams-d1 \
+  cargo build --release -p loams [--no-default-features --features flight,hnsw,qdrant] --timings
 ```
 
 | Build | Units | Wall | Summed unit time | Binary unstripped / stripped |
@@ -82,7 +82,7 @@ CARGO_BUILD_JOBS=4 CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=~/.cache/cargo-target/op
 
 ### Duplicates (`cargo tree -d`)
 
-`cargo tree -p operon -e normal,build --target x86_64-unknown-linux-gnu` was run with and without `durable` on the same lockfile:
+`cargo tree -p loams -e normal,build --target x86_64-unknown-linux-gnu` was run with and without `durable` on the same lockfile:
 
 | | Without `durable` | With `durable` |
 |---|---|---|
@@ -104,7 +104,7 @@ The full lockfile gains 103 entries. 22 of them are new versions of existing nam
 | `deny.toml` | Result |
 |---|---|
 | As on `main` | `advisories FAILED, bans ok, licenses ok, sources FAILED`: 13 × `source-not-allowed` (the fork's git source) and RUSTSEC-2023-0071 (`rsa` 0.9.10 through `sqlx-mysql` 0.8.6, "No safe upgrade is available") |
-| With Task 1's additions: `[sources] allow-git = ["https://github.com/dina-kar/resonate"]` and `[advisories] ignore = [{ id = "RUSTSEC-2023-0071", reason = "rsa via sqlx-mysql: used only for RSA password exchange on non-TLS MySQL connections; Loam connects to TiDB over TLS or the cluster network with mysql_native_password (§21 §11.2)" }]` | **`advisories ok, bans ok, licenses ok, sources ok`**: no other advisory, no unmaintained warning, no license finding |
+| With Task 1's additions: `[sources] allow-git = ["https://github.com/dina-kar/resonate"]` and `[advisories] ignore = [{ id = "RUSTSEC-2023-0071", reason = "rsa via sqlx-mysql: used only for RSA password exchange on non-TLS MySQL connections; Loams connects to TiDB over TLS or the cluster network with mysql_native_password (§21 §11.2)" }]` | **`advisories ok, bans ok, licenses ok, sources ok`**: no other advisory, no unmaintained warning, no license finding |
 
 - `[graph] all-features = true` means the check covers `durable-mysql`.
 - Git dependencies without a `version` do not trip `wildcards = "deny"`.
@@ -113,17 +113,17 @@ The full lockfile gains 103 entries. 22 of them are new versions of existing nam
 
 | Question | Command | Result |
 |---|---|---|
-| sqlx version | `cargo tree -p operon -e normal -i sqlx` | 0.8.6 only, used by `resonate-sql`, `-server-mysql` and `-server-sqlite` (the last only for its migrator types; no `sqlx-sqlite`) |
-| A second `libsqlite3-sys`? | `cargo tree -p operon -e normal -i libsqlite3-sys --target all` | No: one, 0.30.1, through `rusqlite` 0.32.1 |
-| OpenSSL | `cargo tree -p operon -e normal -i openssl-sys --target all` | `package ID specification openssl-sys did not match any packages`: no `openssl`, `openssl-sys` or `native-tls` in the lockfile |
+| sqlx version | `cargo tree -p loams -e normal -i sqlx` | 0.8.6 only, used by `resonate-sql`, `-server-mysql` and `-server-sqlite` (the last only for its migrator types; no `sqlx-sqlite`) |
+| A second `libsqlite3-sys`? | `cargo tree -p loams -e normal -i libsqlite3-sys --target all` | No: one, 0.30.1, through `rusqlite` 0.32.1 |
+| OpenSSL | `cargo tree -p loams -e normal -i openssl-sys --target all` | `package ID specification openssl-sys did not match any packages`: no `openssl`, `openssl-sys` or `native-tls` in the lockfile |
 | R1's `tikv-client` | the pin `tikv-client = { git = "https://github.com/tikv/client-rust", rev = "ab4be1c", default-features = false }` added to the scratch crate, then removed | It resolves beside Resonate with no conflict and still no `openssl-sys`. It brings `prometheus` 0.13.4 beside Resonate's 0.14.0, which gives **two separate default registries**. A future `/metrics` has to gather both |
 
 ## (d) Check 3: the Rust SDK
 
-- **A custom `Network` is accepted.** `ResonateConfig { network: Some(Arc::new(stub)), group: Some("loam"), pid: Some("probe"), ttl: Some(60_000), .. }` compiled.
+- **A custom `Network` is accepted.** `ResonateConfig { network: Some(Arc::new(stub)), group: Some("loams"), pid: Some("probe"), ttl: Some(60_000), .. }` compiled.
   - The stub forwards `send` to `ResonateServer::process` in process and implements `recv` as a no-op.
   - `Resonate::new(config)` started.
-  - `sdk.promises.get(<id>)` and `sdk.promises.search(None, Some({"loam:op": <id>}), …)` returned the root and 3 promises, over no socket.
+  - `sdk.promises.get(<id>)` and `sdk.promises.search(None, Some({"loams:op": <id>}), …)` returned the root and 3 promises, over no socket.
 - **The trait as built:** `#[async_trait] pub trait Network: Send + Sync`. The methods are `pid`, `group`, `unicast`, `anycast`, `start`, `stop`, `send(String) -> Result<String>`, `recv(Box<dyn Fn(String) + Send + Sync>)` and `target_resolver(&str) -> String`. The error type is `resonate_sdk::error::Error`, and transport failures use `Error::NetworkError(String)`.
 - **`Resonate::new` returns `Self`, not a `Result`, and has no separate `start`.**
   - It spawns `network.start()` and only logs an error from it, so it needs a Tokio runtime.
@@ -153,8 +153,8 @@ The full lockfile gains 103 entries. 22 of them are new versions of existing nam
 | `reqwest` 0.13 | `default`, `default-tls`, `charset`, `form`, `json`, `query`, `system-proxy` | SDK defaults, `google-cloud-auth` |
 
 - `proc-macro2/span-locations` changes the fingerprint of every proc-macro crate (`serde_derive`, `tokio-macros`, `thiserror-impl` and so on), and so of nearly every crate in the workspace.
-- A build of `operon` with `durable` and a build without it therefore share few artifacts: adding `durable` to a warm tree recompiled 479 crates.
-- A `-p <crate>` build that does not reach `operon` (such as `cargo test -p operon-query`) keeps its own artifacts, as before. With `durable` on by default, `-p operon` builds and `-p <library>` builds no longer share proc-macro artifacts. That costs roughly one more copy of the tree in a shared target directory, and one more cold compile of it.
+- A build of `loams` with `durable` and a build without it therefore share few artifacts: adding `durable` to a warm tree recompiled 479 crates.
+- A `-p <crate>` build that does not reach `loams` (such as `cargo test -p loams-query`) keeps its own artifacts, as before. With `durable` on by default, `-p loams` builds and `-p <library>` builds no longer share proc-macro artifacts. That costs roughly one more copy of the tree in a shared target directory, and one more cold compile of it.
 - The verified timer wheel needs `verus!` at compile time. That macro erases the ghost code under plain rustc, so the dependency cannot simply be dropped. Options are in the plan's owner questions.
 - `system-proxy` on Linux adds no proxy source: reqwest reads `HTTP(S)_PROXY` with or without it.
 - `webpki-roots` makes the push transport trust Mozilla's roots instead of the OS store. Push is off by default.
@@ -162,7 +162,7 @@ The full lockfile gains 103 entries. 22 of them are new versions of existing nam
 ## (f) Check 4: port 8001
 
 - `grep -rnI -E '(^|[^0-9])8001([^0-9]|$)'` over the worktree (target and `.git` excluded) finds 8001 only where Resonate is meant: §01 §3, §10 §2, §13 D138, §21, the design README and the D1 plan.
-- `crates/operon/src/main.rs` defaults are 8080 (HTTP), 8082 (Flight SQL), 6333/6334 (Qdrant); tests use ephemeral ports.
+- `crates/loams/src/main.rs` defaults are 8080 (HTTP), 8082 (Flight SQL), 6333/6334 (Qdrant); tests use ephemeral ports.
 - R1's playgrounds use offset 17000; D1's uses 27000. Neither reaches 8001.
 
 Port 8001 is free in every documented configuration.
@@ -170,22 +170,22 @@ Port 8001 is free in every documented configuration.
 ## (g) Check 5: `promise.search` by tag, in process
 
 ```
-OPERON_D1_PROBE=sqlite:<dir>/default.db OPERON_D1_BIND=127.0.0.1:18001 ./operon            # SQLite
-OPERON_D1_PROBE=mysql://root@127.0.0.1:31000/loam_durable_default OPERON_D1_BIND=… ./operon  # TiDB v8.5.8
+LOAMS_D1_PROBE=sqlite:<dir>/default.db LOAMS_D1_BIND=127.0.0.1:18001 ./loams            # SQLite
+LOAMS_D1_PROBE=mysql://root@127.0.0.1:31000/loams_durable_default LOAMS_D1_BIND=… ./loams  # TiDB v8.5.8
 ```
 
 The probe created 4 promises through `ResonateServer::process`, all answered 200:
-- the root `op-probe<pid>`, tagged `loam:op`, `loam:kind=collection.import`;
-- two branches `op-probe<pid>:f0` and `:f1`, tagged `loam:op`, `loam:kind=file`, `loam:file`;
-- one unrelated promise, tagged `loam:kind=file`.
+- the root `op-probe<pid>`, tagged `loams:op`, `loams:kind=collection.import`;
+- two branches `op-probe<pid>:f0` and `:f1`, tagged `loams:op`, `loams:kind=file`, `loams:file`;
+- one unrelated promise, tagged `loams:kind=file`.
 
 It then settled `:f0` as resolved and searched:
 
 | Search (`promise.search`) | SQLite | TiDB v8.5.8 |
 |---|---|---|
-| `tags: {loam:op}` | 200: root, `:f0`, `:f1` | 200: same |
-| `tags: {loam:op, loam:kind: file}` | 200: `:f0`, `:f1` | 200: same |
-| `tags: {loam:op, loam:kind: file}, state: resolved` | 200: `:f0` | 200: same |
+| `tags: {loams:op}` | 200: root, `:f0`, `:f1` | 200: same |
+| `tags: {loams:op, loams:kind: file}` | 200: `:f0`, `:f1` | 200: same |
+| `tags: {loams:op, loams:kind: file}, state: resolved` | 200: `:f0` | 200: same |
 | SDK `promises.search` over the stub network | 3 | 3 |
 
 - The tag filter is containment: every given pair must be present.
@@ -194,7 +194,7 @@ It then settled `:f0` as resolved and searched:
 
 ## (h) Check 6: SDK versions against server 0.10.1
 
-The embedded server was started with `OPERON_D1_SERVE=1 OPERON_D1_PROBE=sqlite:… OPERON_D1_BIND=127.0.0.1:18001`, and each client ran with `RESONATE_URL=http://127.0.0.1:18001`:
+The embedded server was started with `LOAMS_D1_SERVE=1 LOAMS_D1_PROBE=sqlite:… LOAMS_D1_BIND=127.0.0.1:18001`, and each client ran with `RESONATE_URL=http://127.0.0.1:18001`:
 
 | Client | Version | Program | Result |
 |---|---|---|---|
@@ -247,11 +247,11 @@ The fork's CI run for the pinned `loam/0.10.1` revision is Task 1's to record: s
 
 The engine and port differentials, porcupine and the TiDB leg were not run locally. The fork's CI is where they run (Ruling 4).
 
-**In Operon.** The committed `deny.toml` passes `cargo deny check` with two warnings (`unmatched-source`, `advisory-not-detected`), because no crate uses the pins until Task 2. A throwaway crate `zz-d1t1-probe` depended on all nine Resonate crates and `parquet`, and was then removed with `Cargo.lock` restored:
+**In Loams.** The committed `deny.toml` passes `cargo deny check` with two warnings (`unmatched-source`, `advisory-not-detected`), because no crate uses the pins until Task 2. A throwaway crate `zz-d1t1-probe` depended on all nine Resonate crates and `parquet`, and was then removed with `Cargo.lock` restored:
 
 | Check | Result |
 |---|---|
 | `cargo deny check` | `advisories ok, bans ok, licenses ok, sources ok`, no warnings |
 | `cargo tree -p zz-d1t1-probe -e normal -i {openssl-sys, native-tls, google-cloud-auth} --target all` | no match for any of them |
 | `… -i sqlx`, `-i libsqlite3-sys`, `-i parquet`, `-i jsonwebtoken` | 0.8.6; 0.30.1 only; 58.4.0; 9.3.1 only (`resonate-auth`), since 11 went with `google-cloud-auth` |
-| `cargo check -p zz-d1t1-probe` (target `~/.cache/cargo-target/operon-d1`) | 45 s, clean |
+| `cargo check -p zz-d1t1-probe` (target `~/.cache/cargo-target/loams-d1`) | 45 s, clean |

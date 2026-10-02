@@ -1,8 +1,8 @@
-# 16 — Demo: 100 Coding Agents on Operon
+# 16 — Demo: 100 Coding Agents on Loams
 
 Status: **Approved** (user) · 2026-09-24; the launch demo for the agent track. Builds on §14 (durable execution) and §15 (agent workspaces). Every number below is a design target to be measured, not a result.
 
-**The claim:** one host and one bucket run 100 concurrent coding-agent sessions (Claude Code, Codex and opencode), each in its own microVM. Every session is a Resonate durable execution stored in Operon. Every MCP server speaks the stateless 2026-07-28 spec through Operon's gateway, which sends each model only the tool definitions it needs. Every trace, token and dollar lands in Operon's analytics, cross-checked against tokscale.
+**The claim:** one host and one bucket run 100 concurrent coding-agent sessions (Claude Code, Codex and opencode), each in its own microVM. Every session is a Resonate durable execution stored in Loams. Every MCP server speaks the stateless 2026-07-28 spec through Loams's gateway, which sends each model only the tool definitions it needs. Every trace, token and dollar lands in Loams's analytics, cross-checked against tokscale.
 
 ---
 
@@ -12,17 +12,17 @@ Status: **Approved** (user) · 2026-09-24; the launch demo for the agent track. 
 |---|---|
 | **Density** | 100 microVM sandboxes on one KVM host, forked from warm templates, sharing all read-only layers |
 | **Durability** | Kill sandboxes, a worker and a gateway mid-run; every session still completes, and no settled step (no paid model call) is repeated |
-| **Context efficiency** | Tool-definition tokens per request with all tools loaded, with client-side deferral, and with Operon's graph-based tool retrieval |
+| **Context efficiency** | Tool-definition tokens per request with all tools loaded, with client-side deferral, and with Loams's graph-based tool retrieval |
 | **One system for the whole loop** | Code, environments, sessions, memory, traces and analytics all live in one bucket, queried with SQL, search and graph expansion |
-| **Honest accounting** | Operon's token and cost tables match tokscale's totals per session |
+| **Honest accounting** | Loams's token and cost tables match tokscale's totals per session |
 
 ## 2. Setup
 
 | Item | Choice |
 |---|---|
-| Host | One bare-metal KVM host (e.g. 64 cores, 256 GiB RAM, 2 TB NVMe); Operon `standalone` on the same host or a second one |
+| Host | One bare-metal KVM host (e.g. 64 cores, 256 GiB RAM, 2 TB NVMe); Loams `standalone` on the same host or a second one |
 | Storage | One S3 bucket (RustFS for a local run, D61) |
-| Sandboxes | `operon-sandbox` with the `microsandbox` backend; `firecracker` for the fleet variant (§15 §8) |
+| Sandboxes | `loams-sandbox` with the `microsandbox` backend; `firecracker` for the fleet variant (§15 §8) |
 | Harnesses | 34 Claude Code, 33 Codex, 33 opencode sessions, installed from their official channels at env-build time |
 | Tasks | 100 tasks from a fixed, public benchmark of real repository issues (e.g. a SWE-bench Verified subset over about 10 repositories; license to verify) |
 | Orchestrator | One Resonate workflow per session, plus a parent workflow that fans out 100 sessions (§15 §9) |
@@ -44,22 +44,22 @@ Each session is the durable workflow in §15 §9.2: fork a branch, resolve the e
 **Chaos script** (run during the demo):
 
 1. Kill 10 random sandboxes at random points in their turns.
-2. `kill -9` one Resonate worker and one Operon gateway process.
+2. `kill -9` one Resonate worker and one Loams gateway process.
 3. Expire 5 sandboxes' leases by pausing their VMs.
 
 **Assertions:** all 100 sessions reach a terminal state for task reasons only (solved, failed tests, budget), none for infrastructure; per session, the trace shows each settled step's model calls exactly once; every resumed session's workspace equals its last checkpoint byte for byte.
 
 ## 5. MCP servers and tool retrieval
 
-- **All MCP traffic** goes through Operon's MCP gateway on the 2026-07-28 spec (§15 §10): stateless requests, `Mcp-Method` / `Mcp-Name` routing headers, cacheable `tools/list` (`ttlMs`, `cacheScope`), `traceparent` in `_meta`.
-- **Catalog:** about 20 servers and 300 tools: Operon (search, SQL, graph expansion, memory, repo, sessions), a Git hosting mock (issues, pull requests, reviews), documentation search, a database, a browser, a ticketing mock, a chat mock and a set of distractor servers with overlapping tool names.
+- **All MCP traffic** goes through Loams's MCP gateway on the 2026-07-28 spec (§15 §10): stateless requests, `Mcp-Method` / `Mcp-Name` routing headers, cacheable `tools/list` (`ttlMs`, `cacheScope`), `traceparent` in `_meta`.
+- **Catalog:** about 20 servers and 300 tools: Loams (search, SQL, graph expansion, memory, repo, sessions), a Git hosting mock (issues, pull requests, reviews), documentation search, a database, a browser, a ticketing mock, a chat mock and a set of distractor servers with overlapping tool names.
 - **Three arms**, each run over the same 100 tasks:
 
   | Arm | What the model sees |
   |---|---|
   | A. All tools | Every tool definition in every request |
   | B. Client deferral | Claude Code's built-in MCP tool search (`ENABLE_TOOL_SEARCH`); the other harnesses fall back to A |
-  | C. Operon retrieval | Only `find_tools` and `call_tool`; `find_tools` returns the top *k* definitions from hybrid search + tool-graph expansion (Graph RAG-Tool Fusion) |
+  | C. Loams retrieval | Only `find_tools` and `call_tool`; `find_tools` returns the top *k* definitions from hybrid search + tool-graph expansion (Graph RAG-Tool Fusion) |
 
 - **Metrics:** tool-definition tokens per request (measured at the gateway for C, from request payload size for A/B), total input tokens per turn, task success rate, tool-selection recall (did the agent obtain the tool its successful trajectory used), and added latency of `find_tools`.
 - **Closed loop:** `CO_USED` edges in the tool graph are recomputed nightly from the sessions table, so retrieval improves with use.
@@ -68,13 +68,13 @@ Each session is the durable workflow in §15 §9.2: fork a branch, resolve the e
 
 ### 6.1 Ingest
 
-| Source | Path into Operon |
+| Source | Path into Loams |
 |---|---|
-| Claude Code | OpenTelemetry (`CLAUDE_CODE_ENABLE_TELEMETRY=1`, `OTEL_*` exporters; traces via its beta flag) → Operon OTLP/HTTP endpoint |
-| Codex | `[otel]` in `config.toml` with an `otlp-http` exporter → Operon OTLP endpoint |
+| Claude Code | OpenTelemetry (`CLAUDE_CODE_ENABLE_TELEMETRY=1`, `OTEL_*` exporters; traces via its beta flag) → Loams OTLP/HTTP endpoint |
+| Codex | `[otel]` in `config.toml` with an `otlp-http` exporter → Loams OTLP endpoint |
 | opencode | OpenTelemetry if available (verify); otherwise its session database, parsed from the checkpointed `/agent-home` |
 | All harnesses | Session files in `/agent-home`, parsed by **`tokscale-core`** (MIT, Rust library: session parsing, aggregation, pricing) in a worker link on every checkpoint |
-| MCP gateway, Resonate, `operon-sandbox` | Native spans and metrics (tool calls, retrieval, step transitions, fork time, memory, bytes fetched) |
+| MCP gateway, Resonate, `loams-sandbox` | Native spans and metrics (tool calls, retrieval, step transitions, fork time, memory, bytes fetched) |
 
 OTLP arrives on streams (`otel_spans`, `otel_logs`, `otel_metrics`, `arrow` encoding) and links materialize Iceberg tables. The tail makes a turn visible in queries within seconds of its end.
 
@@ -105,17 +105,17 @@ SELECT model, sum(cache_read_tokens) / sum(input_tokens + cache_read_tokens) AS 
 FROM token_usage GROUP BY model;
 ```
 
-The same SQL runs in Operon over Flight SQL (Grafana through a Flight SQL data source; verify) and in DuckDB reading the tables through Lakekeeper's Iceberg REST catalog, and the two must agree. Other panels: tool-definition tokens by arm, p50/p95 turn latency, tokens per solved task, top tools and co-usage, sandbox fork time and memory, S3 requests per session.
+The same SQL runs in Loams over Flight SQL (Grafana through a Flight SQL data source; verify) and in DuckDB reading the tables through Lakekeeper's Iceberg REST catalog, and the two must agree. Other panels: tool-definition tokens by arm, p50/p95 turn latency, tokens per solved task, top tools and co-usage, sandbox fork time and memory, S3 requests per session.
 
-- **Session memory:** transcripts are in the `session_history` collection, so a new session can search how earlier sessions solved similar issues through the Operon MCP server.
+- **Session memory:** transcripts are in the `session_history` collection, so a new session can search how earlier sessions solved similar issues through the Loams MCP server.
 - **Parity with tokscale:** for every session, `token_usage` totals from `tokscale-core` must equal `tokscale --json` run over the restored `/agent-home`, and the OpenTelemetry-derived totals are reported beside them, with any gap explained.
 
 ## 7. Demo script
 
-1. `operon standalone --bucket s3://demo`; import the task repositories; build the environment images and harness templates (shown once, then cached).
+1. `loams standalone --bucket s3://demo`; import the task repositories; build the environment images and harness templates (shown once, then cached).
 2. Start the parent workflow: 100 sessions fan out; the dashboard shows forks, tokens and cost live.
 3. Run the chaos script (§4) while sessions are in flight.
-4. Open a session's trace: LLM span → `find_tools` → MCP call → Operon query, one trace.
+4. Open a session's trace: LLM span → `find_tools` → MCP call → Loams query, one trace.
 5. Fork session 42 at turn 5 into 3 alternatives; watch them diverge from shared layers.
 6. Approve a session waiting on a human; it resumes on a different host from its checkpoint.
 7. Show the three-arm comparison and the tokscale parity table.
@@ -142,7 +142,7 @@ The same SQL runs in Operon over Flight SQL (Grafana through a Flight SQL data s
 | Graph (tool graph) and the Resonate surface | M3 |
 | Iceberg tables (queried over Flight SQL and by DuckDB) | M4 |
 | MCP server, gateway, repos, OTLP ingest, session workflows | W0–W1 (§15) |
-| `operon-sandbox`, environment images | W2 (§15) |
+| `loams-sandbox`, environment images | W2 (§15) |
 
 Staging: **Demo α** after M3 + W1: 100 sessions on the `microsandbox` backend with Resonate, the MCP gateway and tool retrieval, traces on streams queried with native SQL over the tail. **Demo β** after M4 + W2: the full demo with Iceberg tables, dashboards over Flight SQL and DuckDB, environment images and the Firecracker fleet variant.
 

@@ -1,0 +1,33 @@
+[package]
+name = "loams-stream-grpc"
+description = "Native gRPC stream ingest surface for Loams"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+loams-cloudevents.workspace = true
+loams-log.workspace = true
+loams-query.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+tokio.workspace = true
+time.workspace = true
+tokio-stream.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
+tonic.workspace = true
+tonic-prost.workspace = true
+
+[dev-dependencies]
+loams-common.workspace = true
+
+[build-dependencies]
+tonic-prost-build.workspace = true
+
+[lints]
+workspace = true

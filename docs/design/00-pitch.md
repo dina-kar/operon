@@ -1,6 +1,6 @@
 # 00 — Pitch
 
-> **Operon: the unified hybrid retrieval engine on object storage.**
+> **Loams: the unified hybrid retrieval engine on object storage.**
 > The open-source, S3-native engine for AI retrieval — vectors, full text and GraphRAG expansion in one planned query, over open formats in *your* bucket, with stateless compute and a RAM + NVMe hot tier.
 
 Status: **Approved** · 2026-09-22 · revised 2026-09-25 (architecture review; positioning D50, surfaces D42–D45)
@@ -28,19 +28,19 @@ The consequences:
 4. **No cross-store consistency.** "I just wrote this memory; can the next agent step see it in search, vectors and graph?" has no answer in a five-store stack.
 5. **Agent runs are not durable.** A crash in step 7 of a 10-step agent run repeats paid model calls or loses the run, unless a sixth system tracks workflow state.
 
-## 2. What Operon is
+## 2. What Loams is
 
 A single Rust engine that serves **hybrid retrieval** — dense and sparse vectors, BM25 full text, filters and graph expansion, fused in one DataFusion plan — from **open formats on object storage**, with **five first-class objects**: *streams, tables, collections, graphs, links*.
 
-Operon takes over the role each system plays in an AI retrieval stack, not its wire protocol. It speaks four protocols (D42): its **native REST/gRPC API**, **Arrow Flight SQL**, the **Qdrant** REST + gRPC API and a **targeted Elasticsearch subset**. It does not emulate Neo4j or ClickHouse. OTLP logs ingest joins them in v1.0 (D73), and a Kafka wire-protocol gateway in M5 (D74).
+Loams takes over the role each system plays in an AI retrieval stack, not its wire protocol. It speaks four protocols (D42): its **native REST/gRPC API**, **Arrow Flight SQL**, the **Qdrant** REST + gRPC API and a **targeted Elasticsearch subset**. It does not emulate Neo4j or ClickHouse. OTLP logs ingest joins them in v1.0 (D73), and a Kafka wire-protocol gateway in M5 (D74).
 
-| Role in the stack (today) | Operon object | Durable format | Surface | Milestone |
+| Role in the stack (today) | Loams object | Durable format | Surface | Milestone |
 |---|---|---|---|---|
 | Semantic retrieval (Qdrant) | Collection (vectors) | Lance | Qdrant REST + gRPC | M1 |
 | Keyword / hybrid search (Elasticsearch) | Collection (text) | Tantivy splits | ES subset: document APIs, `_bulk`, `_search` with the core Query DSL, `knn`, hybrid + RRF (D48) | M1 |
-| Graph expansion for GraphRAG (Neo4j) | Graph, mapped over collections and tables | CSR/CSC sidecars | `expand` stage in the native hybrid search API; `graph_expand` / `graph_neighbors` SQL table functions; Operon-native graph-store adapters for LightRAG and the LlamaIndex property graph (D44) | M3 |
+| Graph expansion for GraphRAG (Neo4j) | Graph, mapped over collections and tables | CSR/CSC sidecars | `expand` stage in the native hybrid search API; `graph_expand` / `graph_neighbors` SQL table functions; Loams-native graph-store adapters for LightRAG and the LlamaIndex property graph (D44) | M3 |
 | Analytics, evals, dashboards (ClickHouse) | Table | **Apache Iceberg** (via Lakekeeper) | Flight SQL and the native API; DuckDB, Trino, Spark or ClickHouse through the Iceberg REST catalog (D45) | M4 |
-| Event ingest, agent traces (Kafka) | Stream | Operon log segments on S3 | Flight `DoPut` bulk ingest (D49); native streaming API over HTTP and gRPC (idempotent produce, streaming subscribe, named consumers; D72); OTLP logs ingest (D73); Flight `DoGet` replay (D43); the Kafka wire protocol (D74) | M1 (`DoPut` ingest), M2 (stream API, OTLP logs), M5 (replay, Kafka) |
+| Event ingest, agent traces (Kafka) | Stream | Loams log segments on S3 | Flight `DoPut` bulk ingest (D49); native streaming API over HTTP and gRPC (idempotent produce, streaming subscribe, named consumers; D72); OTLP logs ingest (D73); Flight `DoGet` replay (D43); the Kafka wire protocol (D74) | M1 (`DoPut` ingest), M2 (stream API, OTLP logs), M5 (replay, Kafka) |
 | Connectors/CDC glue | Link, changelog stream | — | Declarative DDL; changelogs read through the native streaming API | M0 (links), M5 (changelogs) |
 | Temporal / queue + cron for agent runs | Durable promises (a service, §14) | One document per workflow origin on S3 | **Resonate protocol** (TS, Python, Rust, Go, Java SDKs) | M3 |
 
@@ -81,7 +81,7 @@ Primary buyer: platform teams at companies running AI apps at scale who are payi
 
 ## 6. Competitive landscape
 
-| Competitor | License | Overlap | Gap Operon exploits |
+| Competitor | License | Overlap | Gap Loams exploits |
 |---|---|---|---|
 | turbopuffer | Closed SaaS | Search + vector on S3 | Closed; no graph expansion, SQL analytics or open formats |
 | LanceDB | OSS format; closed serving | Vector + FTS on S3 | Distributed serving/caching/indexing closed; no graph expansion, no Qdrant/ES compatibility |
@@ -94,20 +94,20 @@ Primary buyer: platform teams at companies running AI apps at scale who are payi
 | Neo4j, Nebula Graph | GPLv3 + commercial; Apache-2.0 | Knowledge graphs for GraphRAG | Stateful graph clusters beside the retrieval stores; expansion cannot be planned together with the vector/BM25 seed query |
 | Apache Fluss | Apache-2.0 (Java, incubating) | Streaming storage for the lakehouse: columnar Arrow log, primary-key tables with changelogs, tiering to Iceberg/Paimon/Lance | JVM + ZooKeeper, data on tablet-server disks with S3 as a tier; no search, vector serving or graph; Flink-centric |
 
-## 7. What Operon is *not* (non-goals)
+## 7. What Loams is *not* (non-goals)
 
-- **Not an OLTP database.** No multi-statement interactive transactions with millisecond commits over mutable rows. Keep a Postgres for application state; stream its CDC into Operon.
-- **Not a Neo4j or ClickHouse protocol emulator.** No Bolt or Cypher (D44), no ClickHouse HTTP interface, dialect or MergeTree DDL (D45). *Proposed amendment 2026-10-01 ([§32](32-loam-flow-fabric-house.md) D347, pending Q333): the separate Loam House service serves a declared, tested ClickHouse surface over the Event Fabric; the engine itself still speaks no ClickHouse protocol.* Graphs are reached through native expansion, analytics through Iceberg and Flight SQL. Streams are reached through the native streaming API and Flight, and from M5 through the Kafka wire protocol, without Kafka transactions (D74).
+- **Not an OLTP database.** No multi-statement interactive transactions with millisecond commits over mutable rows. Keep a Postgres for application state; stream its CDC into Loams.
+- **Not a Neo4j or ClickHouse protocol emulator.** No Bolt or Cypher (D44), no ClickHouse HTTP interface, dialect or MergeTree DDL (D45). *Proposed amendment 2026-10-01 ([§32](32-loams-flow-fabric-house.md) D347, pending Q333): the separate Loams House service serves a declared, tested ClickHouse surface over the Event Fabric; the engine itself still speaks no ClickHouse protocol.* Graphs are reached through native expansion, analytics through Iceberg and Flight SQL. Streams are reached through the native streaming API and Flight, and from M5 through the Kafka wire protocol, without Kafka transactions (D74).
 - **Not a full Elasticsearch or Qdrant clone.** Compatibility is scoped by external conformance suites (client libraries, framework integrations; D13), not by feature parity. The Elasticsearch subset is what the LangChain and LlamaIndex ES suites and BEIR send (D48). No Kibana, Painless or full Query DSL.
 - **Not a general-purpose graph database.** 1–2 hop expansion, shortest path and graph algorithms as table functions, planned with the retrieval query; no graph query language and no deep recursive traversal.
-- **Not a stream processor.** Stateless transforms and mergeable aggregates in links, yes; windowed joins with checkpointed state, no. External stream processors can write their results as Iceberg tables through Lakekeeper. RisingWave, the companion stream processor (D22), connects over the Kafka gateway in M5 (D74); before that it writes to Loam through its Elasticsearch, HTTP and Iceberg sinks (§02 §7.3).
+- **Not a stream processor.** Stateless transforms and mergeable aggregates in links, yes; windowed joins with checkpointed state, no. External stream processors can write their results as Iceberg tables through Lakekeeper. RisingWave, the companion stream processor (D22), connects over the Kafka gateway in M5 (D74); before that it writes to Loams through its Elasticsearch, HTTP and Iceberg sinks (§02 §7.3).
 
 ## 8. Governance and business model (recommendation)
 
 - **License:** Apache-2.0 for the entire engine, all gateways and the operator. Big-company adoption requires it; AGPL/BSL/SSPL dependencies are excluded (§11).
 - **Governance:** start company-led, plan for a foundation (LF AI & Data — as Vortex did — or CNCF) once there are ≥3 corporate contributors.
-- **Monetization (if a company forms):** managed cloud (the ClickHouse/Confluent model) — multi-region control plane, autoscaling, hosted audit UI, long retention, SIEM export, SCIM and enforced SSO, support. **Do not** withhold reliability (quorum WAL) or performance (hot tiers) features from OSS; that is exactly the AutoMQ/LanceDB gap Operon wins on.
+- **Monetization (if a company forms):** managed cloud (the ClickHouse/Confluent model) — multi-region control plane, autoscaling, hosted audit UI, long retention, SIEM export, SCIM and enforced SSO, support. **Do not** withhold reliability (quorum WAL) or performance (hot tiers) features from OSS; that is exactly the AutoMQ/LanceDB gap Loams wins on.
 
 ## 9. Launch demo
 
-A GraphRAG agent stack (LightRAG or a LlamaIndex property-graph app, with LangChain retrieval) running against **one `operon` binary and one bucket** — its vector and text stores through the unmodified Qdrant and Elasticsearch integrations, its graph store through the Operon-native adapter (D44) — side-by-side with the usual docker-compose of Elasticsearch + Qdrant + Neo4j: same answers, one process instead of three clusters, a fraction of the storage cost, and a consistency token proving read-your-writes across search, vectors and graph expansion. The agent's run loop is a Resonate workflow: `kill -9` the agent mid-run and it resumes at the step it was on, without repeating model calls. The demo needs M3 (native graph and Resonate Phase A); evals over the same bucket's Iceberg tables, queried from DuckDB, join it after M4.
+A GraphRAG agent stack (LightRAG or a LlamaIndex property-graph app, with LangChain retrieval) running against **one `loams` binary and one bucket** — its vector and text stores through the unmodified Qdrant and Elasticsearch integrations, its graph store through the Loams-native adapter (D44) — side-by-side with the usual docker-compose of Elasticsearch + Qdrant + Neo4j: same answers, one process instead of three clusters, a fraction of the storage cost, and a consistency token proving read-your-writes across search, vectors and graph expansion. The agent's run loop is a Resonate workflow: `kill -9` the agent mid-run and it resumes at the step it was on, without repeating model calls. The demo needs M3 (native graph and Resonate Phase A); evals over the same bucket's Iceberg tables, queried from DuckDB, join it after M4.

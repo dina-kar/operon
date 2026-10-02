@@ -82,7 +82,7 @@ export function SessionGate({ children }: { children: ReactNode }) {
         <h1>The console can't reach its API</h1>
         <p>{state.message}</p>
         <p>
-          In development, start the mock with <code>cargo run -p operon-console-mock</code>.
+          In development, start the mock with <code>cargo run -p loams-console-mock</code>.
         </p>
       </div>
     );

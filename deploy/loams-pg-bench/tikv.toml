@@ -1,0 +1,20 @@
+# TiKV for the Loams WAL benchmark (design §28 §6.6), on one host.
+# deploy/tikv/tikv.toml plus the WAL settings; smaller caches so that three
+# stores fit next to the Neon stack on a 16 GB machine. Durability settings are
+# TiKV's defaults and are never relaxed: every Raft log write is fsynced
+# (raftstore.sync-log was removed in v5.0 and is always on).
+memory-usage-limit = "1500MB"
+
+[storage]
+api-version = 2
+enable-ttl = true
+
+[storage.block-cache]
+capacity = "256MB"
+
+[raftstore]
+# Async IO: the store writer fsyncs, not the raftstore thread (tikv#10540).
+store-io-pool-size = 1
+
+[raft-engine]
+enable = true

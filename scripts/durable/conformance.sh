@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # Resonate's linearizability check against the durable server embedded in
-# `operon dev` (D1 plan Task 5, D144).
+# `loams dev` (D1 plan Task 5, D144).
 #
 #   scripts/durable/conformance.sh --store sqlite|tidb [--clients N] [--ops M] [--seed S]
-#                                  [--tidb-url URL] [--operon-bin PATH] [--fork DIR] [--out DIR]
+#                                  [--tidb-url URL] [--loams-bin PATH] [--fork DIR] [--out DIR]
 #   scripts/durable/conformance.sh --self-test [--fork DIR]
 #
 # A run:
-#   1. builds `operon` (release, --features durable-mysql) unless --operon-bin
+#   1. builds `loams` (release, --features durable-mysql) unless --loams-bin
 #      names one, and, from the pinned fork (the rev in Cargo.toml),
 #      `conctrace` (`cargo build --release --example conctrace` in
 #      impl/server/core, target dir $DURABLE_FORK_TARGET_DIR, default
 #      ~/.cache/cargo-target/durable-fork);
-#   2. starts `operon dev --durable-debug --durable-listen 127.0.0.1:<free>`
+#   2. starts `loams dev --durable-debug --durable-listen 127.0.0.1:<free>`
 #      on a fresh store: a new data directory, and for tidb a new database on
-#      the TiDB at --tidb-url (default $OPERON_TEST_TIDB, an admin URL without
-#      a database), migrated with `operon durable migrate` first;
+#      the TiDB at --tidb-url (default $LOAMS_TEST_TIDB, an admin URL without
+#      a database), migrated with `loams durable migrate` first;
 #   3. records a concurrent history with `conctrace --clients N --ops M
 #      --seed S` (defaults 8, 600, 1);
 #   4. prints the status tally (2xx, 4xx, 5xx);
@@ -57,12 +57,12 @@ store=
 clients=8
 ops=600
 seed=1
-tidb_url=${OPERON_TEST_TIDB:-}
-operon_bin=
+tidb_url=${LOAMS_TEST_TIDB:-}
+loams_bin=
 fork=${DURABLE_FORK_DIR:-}
 out=
 self_test=0
-# Globals, for the EXIT traps: the operon pid, the TiDB database to drop,
+# Globals, for the EXIT traps: the loams pid, the TiDB database to drop,
 # and the self-test's scratch directory.
 dir=
 pid=
@@ -78,7 +78,7 @@ while [ $# -gt 0 ]; do
     --ops) ops=${2:?--ops needs a value}; shift 2 ;;
     --seed) seed=${2:?--seed needs a value}; shift 2 ;;
     --tidb-url) tidb_url=${2:?--tidb-url needs a value}; shift 2 ;;
-    --operon-bin) operon_bin=${2:?--operon-bin needs a value}; shift 2 ;;
+    --loams-bin) loams_bin=${2:?--loams-bin needs a value}; shift 2 ;;
     --fork) fork=${2:?--fork needs a value}; shift 2 ;;
     --out) out=${2:?--out needs a value}; shift 2 ;;
     --self-test) self_test=1; shift ;;
@@ -139,7 +139,7 @@ summary() {
 self_test() {
   fork_checkout
   [ -f "$FIXTURE" ] || die "the fixture $FIXTURE is missing"
-  dir=$(mktemp -d "${TMPDIR:-/tmp}/loam-conformance-self-test.XXXXXX")
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/loams-conformance-self-test.XXXXXX")
   trap 'rm -rf "$dir"' EXIT
 
   echo "self-test 1/3: the recorded history linearizes"
@@ -216,7 +216,7 @@ run() {
   esac
   if [ "$store" = tidb ]; then
     [ -n "$tidb_url" ] ||
-      die "--store tidb needs --tidb-url or OPERON_TEST_TIDB (scripts/durable/tidb.sh up prints it)"
+      die "--store tidb needs --tidb-url or LOAMS_TEST_TIDB (scripts/durable/tidb.sh up prints it)"
     mysql_client=$(command -v mariadb || command -v mysql || true)
     [ -n "$mysql_client" ] || die "--store tidb needs a mysql or mariadb client"
   fi
@@ -228,20 +228,20 @@ run() {
     CARGO_TARGET_DIR=$fork_target cargo build --release --locked --example conctrace)
   local conctrace=$fork_target/release/examples/conctrace
 
-  if [ -z "$operon_bin" ]; then
-    echo "conformance: building operon (release, durable-mysql)"
-    (cd "$ROOT" && cargo build --release --locked -p operon --features durable-mysql)
-    operon_bin=${CARGO_TARGET_DIR:-$ROOT/target}/release/operon
+  if [ -z "$loams_bin" ]; then
+    echo "conformance: building loams (release, durable-mysql)"
+    (cd "$ROOT" && cargo build --release --locked -p loams --features durable-mysql)
+    loams_bin=${CARGO_TARGET_DIR:-$ROOT/target}/release/loams
   fi
-  [ -x "$operon_bin" ] || die "$operon_bin is not an executable"
-  operon_bin=$(realpath "$operon_bin")
+  [ -x "$loams_bin" ] || die "$loams_bin is not an executable"
+  loams_bin=$(realpath "$loams_bin")
 
   [ -n "$out" ] || out=$ROOT/target/durable-conformance/$store-c$clients-o$ops-s$seed
   # Absolute: the checker runs from the fork's directory.
   out=$(realpath -m "$out")
   rm -rf "$out"
   mkdir -p "$out"
-  local data=$out/data log=$out/operon.log port
+  local data=$out/data log=$out/loams.log port
   port=$(free_port)
   local args=(dev --durable-debug --durable-listen "127.0.0.1:$port" --data-dir "$data"
     --listen 127.0.0.1:0 --no-flight-sql --no-qdrant)
@@ -273,16 +273,16 @@ if u.password:
 print(u.username or "root", u.hostname, u.port or 4000)
 PY
 )
-    database=loam_conf_$$_$(date +%s)
+    database=loams_conf_$$_$(date +%s)
     "$mysql_client" -h"$admin_host" -P"$admin_port" -u"$admin_user" -e "CREATE DATABASE \`$database\`"
     local url=mysql://$admin_user@$admin_host:$admin_port/$database
     echo "conformance: migrating the fresh TiDB database $database"
-    "$operon_bin" durable migrate --durable-store "$url"
+    "$loams_bin" durable migrate --durable-store "$url"
     args+=(--durable-store "$url")
   fi
 
-  echo "conformance: operon ${args[*]}"
-  "$operon_bin" "${args[@]}" >"$log" 2>&1 &
+  echo "conformance: loams ${args[*]}"
+  "$loams_bin" "${args[@]}" >"$log" 2>&1 &
   pid=$!
   local ready=0
   for _ in $(seq 1 120); do
@@ -295,7 +295,7 @@ PY
   done
   if [ "$ready" != 1 ]; then
     tail -n 30 "$log" >&2 || true
-    die "operon dev did not serve the durable API on 127.0.0.1:$port"
+    die "loams dev did not serve the durable API on 127.0.0.1:$port"
   fi
 
   echo "conformance: conctrace --clients $clients --ops $ops --seed $seed"
