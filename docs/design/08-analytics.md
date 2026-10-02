@@ -1,6 +1,6 @@
 # 08 — Analytics (Iceberg)
 
-Status: **Approved** · 2026-09-22 · revised 2026-09-25 (Iceberg only, no ClickHouse surface, D45; M4) · proposed amendment 2026-10-01 ([§32](32-loams-flow-fabric-house.md) D347, pending Q333: a declared ClickHouse surface on the separate Loams House service, over the Event Fabric's Fluss tables and Iceberg snapshots; the tables of this document stay Iceberg-only through Flight SQL and the native API)
+Status: **Approved** · 2026-09-22 · revised 2026-09-25 (Iceberg only, no ClickHouse surface, D45; M4) · amendment approved 2026-10-02 ([§32](32-loams-flow-fabric-house.md) D347, Q333: a declared ClickHouse surface on the separate Loams House service, over the Event Fabric's Fluss tables and Iceberg snapshots; the tables of this document stay Iceberg-only through Flight SQL and the native API)
 
 Tables serve AI-app analytics (product analytics, LLM usage and cost, traces, evals, observability). Storage is **Apache Iceberg** through Lakekeeper, open to every lakehouse engine; speed comes from DataFusion and the Iceberg hot tier (§04 §3); freshness comes from the tail. Loams's SQL surface is DataFusion SQL over Arrow Flight SQL and the native API. External engines, ClickHouse among them, query the same tables through Lakekeeper's Iceberg REST catalog (§8); Loams has no ClickHouse HTTP interface, dialect or MergeTree-engine DDL (D45).
 

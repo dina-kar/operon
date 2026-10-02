@@ -174,7 +174,7 @@ impl RunnerHost { pub async fn invoke(&self, cx: &InvocationCx, dep: &Deployment
 
 ### Task 5: The Lambda bootstrap and `LambdaRunner`
 
-**Gate: Q366 must be answered and recorded in "Rulings made during execution" before this task starts.** The implementation follows the answer: if the owner chooses the measured meter, Rulings 4–5 apply as written; if the owner chooses billed duration, `cpu_usec = billed_ms × 1 000 × memory_mb / 1 769` with `cpu_estimated = true`, and the bootstrap's `cpu_usec` is still read but exported only as the diagnostic gauge `loams_runner_lambda_measured_cpu_seconds_total`. Until Q366 is answered, Tasks 0–4 and 6 proceed and Task 5 waits.
+**Gate: Q366 must be answered and recorded in "Rulings made during execution" before this task starts.** Answered 2026-10-02 by the owner: the measured meter, so Rulings 4–5 apply as written. The implementation follows the answer: if the owner chooses the measured meter, Rulings 4–5 apply as written; if the owner chooses billed duration, `cpu_usec = billed_ms × 1 000 × memory_mb / 1 769` with `cpu_estimated = true`, and the bootstrap's `cpu_usec` is still read but exported only as the diagnostic gauge `loams_runner_lambda_measured_cpu_seconds_total`. Until Q366 is answered, Tasks 0–4 and 6 proceed and Task 5 waits.
 
 **Files:** `crates/loams-lambda-bootstrap/{Cargo.toml,src/lib.rs,src/usage.rs,examples/echo.rs,tests/usage.rs}`, `crates/loams-runner-lambda/{Cargo.toml,src/lib.rs,src/control.rs,src/invoke.rs,src/report_line.rs,src/event.rs,tests/report_line.rs,tests/rie.rs}`, `scripts/runner/{rie.sh,build-lambda-example.sh}`, `.github/workflows/ci.yml` (job `runner-lambda`).
 
