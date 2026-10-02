@@ -68,10 +68,8 @@ fn java_available() -> bool {
 }
 
 #[tokio::test]
+#[ignore = "runs TLC: needs Java 21 and the pinned tools (cargo test -- --include-ignored)"]
 async fn selftest_streams_run_started_then_result() {
-    if !java_available() {
-        return;
-    }
     let cfg = RunConfig {
         root: repo_root(),
         tla: true,
