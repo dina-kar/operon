@@ -141,6 +141,7 @@ thiserror = "2"
 tikv-client = { git = "https://github.com/dina-kar/client-rust", rev = "1f8962b00b33ebc6f34b72d6c52d08b8a8e1906e", default-features = false }
 time = { version = "0.3", features = ["std", "formatting", "parsing", "macros"] }
 time-fmt = "0.3.8"
+toml = "0.8"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tokio-util = { version = "0.7", default-features = false }
@@ -148,6 +149,7 @@ tonic = "0.14"
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
 tower = "0.5"
+tower-http = { version = "0.6", default-features = false, features = ["fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ulid = "3"
