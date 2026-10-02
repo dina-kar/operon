@@ -1,6 +1,6 @@
 # Pending log for §44 (the unified Connect API and the multi-language SDKs)
 
-Staged 2026-10-02 so the decision log, the READMEs and §12 are not edited from this branch. Paste each block into the file named in its heading at merge, renumbering if D600–D619 or Q600–Q619 were taken meanwhile. All rows are **Proposed** until the owner confirms; the owner's own words of 2026-10-02 are the direction they implement, and "do suggested for all" means the defaults stand unless overruled.
+Staged 2026-10-02 so the decision log, the READMEs and §12 are not edited from this branch. Paste each block into the file named in its heading at merge, renumbering if D600–D619 or Q600–Q614 were taken meanwhile. All rows are **Proposed** until the owner confirms; the owner's own words of 2026-10-02 are the direction they implement, and "do suggested for all" means the defaults stand unless overruled.
 
 ## Decisions (paste into `docs/design/13-decision-log.md`, Decisions table, after D599)
 
