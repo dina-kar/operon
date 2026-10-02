@@ -35,6 +35,13 @@ struct Args {
     /// `digest<TAB>reason` lines for statements the target refuses by design.
     #[arg(long)]
     unsupported: Option<std::path::PathBuf>,
+    /// `substring<TAB>reason` lines: a target error containing the substring is `unsupported` by design.
+    #[arg(long)]
+    unsupported_rules: Option<std::path::PathBuf>,
+    /// Lower-case substrings (one per line) of statements that read an instance's identity (version, uuid,
+    /// binlog position): they compare by column names.
+    #[arg(long)]
+    shape_only: Option<std::path::PathBuf>,
     /// A database without the captured schema, for statements whose object already exists.
     #[arg(long)]
     empty_db: Option<String>,
@@ -61,6 +68,18 @@ async fn main() -> anyhow::Result<()> {
         Some(p) => replay::read_unsupported(&std::fs::read_to_string(p)?),
         None => HashMap::new(),
     };
+    let unsupported_rules = match &a.unsupported_rules {
+        Some(p) => replay::read_unsupported_rules(&std::fs::read_to_string(p)?),
+        None => Vec::new(),
+    };
+    let shape_only: Vec<String> = match &a.shape_only {
+        Some(p) => std::fs::read_to_string(p)?
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+            .map(|l| l.trim().to_ascii_lowercase())
+            .collect(),
+        None => Vec::new(),
+    };
     let reference = connector(a.engine, &a.reference)?;
     let target = a
         .target
@@ -75,6 +94,8 @@ async fn main() -> anyhow::Result<()> {
         &unsupported,
         &replay::Options {
             empty_db: a.empty_db.clone(),
+            unsupported_rules,
+            shape_only,
         },
     )
     .await;

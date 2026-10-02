@@ -1,0 +1,5 @@
+# substring of the target's error message<TAB>reason. A WeSQL error that contains the substring is a refusal by design:
+# the row is `unsupported`, with this reason (compat-replay --unsupported-rules). Sources: design 29 (SmartEngine, W1, W2).
+SE only supports READ COMMITTED and REPEATABLE READ	SmartEngine supports only READ COMMITTED and REPEATABLE READ (design 29 s4.2, C-4)
+SE currently doesn't support foreign key	SmartEngine refuses foreign keys (design 29 s5, W1)
+Consensus Replication is enabled	WeSQL replicates through its consensus log; RESET MASTER and RESET BINARY LOGS are refused (WeSQL beta5.40 runs Consensus Replication; design 23 s6.4, 29 s6)

@@ -26,6 +26,9 @@ pub struct CaptureEntry {
     /// `scratch` forces a scratch run; `rolled-back` forces a rolled-back transaction.
     #[serde(default)]
     pub mode: Option<String>,
+    /// A tracking reference for the row (the design's `C-n` items); copied to the `issue` column.
+    #[serde(default)]
+    pub issue: Option<String>,
 }
 
 /// How a statement is isolated from the next one.
@@ -176,6 +179,12 @@ pub struct Options {
     /// object already exists is replayed there, on both engines, so that `CREATE` statements are
     /// compared by what they do and not by an "already exists" error.
     pub empty_db: Option<String>,
+    /// `(substring, reason)` pairs: a target error whose message contains the substring is a refusal
+    /// by design, so the row is `unsupported` with the reason (the owner's rulings, such as
+    /// SmartEngine's isolation levels). A digest in the `unsupported` map takes precedence.
+    pub unsupported_rules: Vec<(String, String)>,
+    /// Lower-case substrings of statements that read an instance's identity; they compare by column names.
+    pub shape_only: Vec<String>,
 }
 
 /// Replays every entry. `target = None` makes every row `pending-target` (Ruling 7), with the
@@ -190,7 +199,12 @@ pub async fn replay_all(
     opts: &Options,
 ) -> Vec<Row> {
     let mut rows = Vec::with_capacity(entries.len());
-    for entry in entries {
+    // Statements that change the engine for good (DDL, globals, replication commands) go last, so that a
+    // `DROP TABLE` early in the list does not turn every later statement on that table into an error.
+    let (scratch, rest): (Vec<&CaptureEntry>, Vec<&CaptureEntry>) = entries
+        .iter()
+        .partition(|e| mode_for(engine, e) == Mode::Scratch);
+    for entry in rest.into_iter().chain(scratch) {
         let mut e = entry.clone();
         let mut r1 = run_once(reference, &e, engine).await;
         let mut moved = false;
@@ -206,11 +220,25 @@ pub async fn replay_all(
             Some(t) => Some(run_once(t, &e, engine).await),
             None => None,
         };
+        let rule_note = match &t {
+            Some(Outcome::Failed(err)) => opts
+                .unsupported_rules
+                .iter()
+                .find(|(sub, _)| err.message.contains(sub.as_str()))
+                .map(|(_, reason)| reason.as_str()),
+            _ => None,
+        };
+        let lower = e.example.to_ascii_lowercase();
+        let shape_only = opts
+            .shape_only
+            .iter()
+            .any(|sub| lower.contains(sub.as_str()));
         let mut verdict = classify::classify(&Observation {
             reference: &r1,
             reference_again: Some(&r2),
             target: t.as_ref(),
-            unsupported_note: unsupported.get(&e.digest).map(String::as_str),
+            unsupported_note: unsupported.get(&e.digest).map(String::as_str).or(rule_note),
+            shape_only,
         });
         if moved {
             let n = "replayed in an empty database: the object exists in the captured schema";
@@ -229,7 +257,7 @@ pub async fn replay_all(
             ref_hash: verdict.ref_hash,
             target_hash: verdict.target_hash,
             note: verdict.note,
-            issue: String::new(),
+            issue: e.issue.clone().unwrap_or_default(),
         });
     }
     debug_assert!(
@@ -260,6 +288,17 @@ pub fn read_unsupported(text: &str) -> HashMap<String, String> {
         .filter_map(|l| {
             l.split_once('\t')
                 .map(|(d, n)| (d.to_string(), n.to_string()))
+        })
+        .collect()
+}
+
+/// Reads unsupported rules: `substring<TAB>reason` per line, `#` comments allowed.
+pub fn read_unsupported_rules(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            l.split_once('\t')
+                .map(|(a, b)| (a.to_string(), b.to_string()))
         })
         .collect()
 }

@@ -60,6 +60,7 @@ fn entry(digest: &str, component: &str, example: &str) -> CaptureEntry {
         session: vec![],
         db: None,
         mode: None,
+        issue: None,
     }
 }
 
@@ -369,6 +370,7 @@ async fn an_already_exists_error_moves_the_replay_to_the_empty_database() {
     e.db = Some("app".into());
     let opts = Options {
         empty_db: Some("empty".into()),
+        ..Options::default()
     };
     let out = replay::replay_all(
         Engine::Postgres,
@@ -392,4 +394,50 @@ async fn an_already_exists_error_moves_the_replay_to_the_empty_database() {
     )
     .await;
     assert!(!out[0].note.contains("empty database"));
+}
+
+#[tokio::test]
+async fn a_rule_turns_a_matching_target_error_into_unsupported() {
+    let r = mock(|_| rows(&["x"], &[&["1"]]));
+    let t = mock(|s| match s {
+        "set tx serializable" => failed(
+            "1105",
+            "SE only supports READ COMMITTED and REPEATABLE READ isolation levels",
+        ),
+        _ => failed("1105", "something else"),
+    });
+    let e = vec![
+        entry("m-iso", "query", "set tx serializable"),
+        entry("m-other", "query", "select 1"),
+    ];
+    let opts = Options {
+        unsupported_rules: replay::read_unsupported_rules(
+            "# comment\nSE only supports READ COMMITTED\tSmartEngine isolation (design 29 s4)\n",
+        ),
+        ..Options::default()
+    };
+    let out = replay::replay_all(Engine::Mysql, &r, Some(&t), &e, &HashMap::new(), &opts).await;
+    let m = by_digest(&out);
+    assert_eq!(m["m-iso"].class, Class::Unsupported);
+    assert!(m["m-iso"].note.contains("SmartEngine isolation"));
+    assert_eq!(m["m-other"].class, Class::Error);
+}
+
+#[tokio::test]
+async fn an_identity_statement_compares_by_shape() {
+    let r = mock(|_| rows(&["@@version"], &[&["8.0.46"]]));
+    let t = mock(|_| rows(&["@@version"], &[&["8.0.35-wesql"]]));
+    let e = vec![
+        entry("m-version", "health", "select @@version"),
+        entry("m-other", "health", "select @@sql_mode"),
+    ];
+    let opts = Options {
+        shape_only: vec!["@@version".to_string()],
+        ..Options::default()
+    };
+    let out = replay::replay_all(Engine::Mysql, &r, Some(&t), &e, &HashMap::new(), &opts).await;
+    let m = by_digest(&out);
+    assert_eq!(m["m-version"].class, Class::Same);
+    assert!(m["m-version"].note.contains("instance identity"));
+    assert_eq!(m["m-other"].class, Class::Differs);
 }
