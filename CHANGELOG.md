@@ -6,6 +6,9 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 - The cordis console (design §37 §5, AP1a, scaffold): `@loams/cordis` (cordis 4.0.0-rc.10, pinned), `@loams/slots`, `@loams/console-host` (the `loams.yml` catalog with no YAML tags, plugin manifests, host-decided trust tiers, the guard proxy, the permission model, the sandbox bridge, boot and the pending sweep), `@loams/platform-web`, the plugins `shell`, `rpc`, `identity`, `stack-status`, `namespaces` and `approvals`, the sandbox runtime and a third-party sample plugin; served at `/ui/cordis.html`, with a demo mode backed by an in-browser mock.
+- `loams-es`: the Elasticsearch 8 Phase A REST API on port 9200, with document and bulk writes, document reads, search and count, Query DSL and vector search, multi-search, by-query writes, and index, mapping and alias administration.
+- `loams`: `--es-listen`, `--es-namespace` and `--no-es` flags, with the `es` feature enabled by default.
+- CI: an elasticsearch-py 8.19 client test against `loams dev`.
 - App protos (design §37 §8, AP0): `loams.instance.v1`, `loams.devices.v1`, `loams.approvals.v1`, `loams.operations.v1`, `loams.notifications.v1` and `loams.errors.v1`; `@loams/proto` (generated protobuf-es v2 messages and Connect service descriptors, `web/packages/proto`); the `buf.gen.swift.yaml` and `buf.gen.kotlin.yaml` templates for `loams-mobile`; the `app-protos` CI job.
 - `loams-apps-mock`: a stateful mock of the app protos over Connect, gRPC and gRPC-Web with seed data, the approval decision rules (`acceptance`), idempotency keys and resumable watch streams (AP0 Task 5, scaffold).
 - Design documents (`docs/design`) and repository governance files.

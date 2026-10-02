@@ -236,6 +236,8 @@ After a segment commits, the sequencer appends each transaction's CloudEvent to 
 
 All four live in `crates/loams-git` and are object-safe (`Arc<dyn …>`). On `wasm32` targets they use `async_trait(?Send)`, because Workers futures are not `Send` (§17).
 
+> **Cross-reference, 2026-10-02 ([§42](42-cloudflare-2026-betas.md) D561, D562).** Cloudflare Artifacts (open beta; 1 GB per repository, 32 MB per blob) is a Git-level service and cannot implement `WalStore`, `RefLog` or `BlobStore`. The bucket WAL stays the default. An open adapter, `loams-git-artifacts`, mirrors commits to Artifacts and implements `Materializer` for agent workspaces; hosted use is private.
+
 ### 5.1 `WalStore`
 
 ```rust
