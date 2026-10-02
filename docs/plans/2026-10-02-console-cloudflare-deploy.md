@@ -40,6 +40,8 @@ Vite+ migration and sign-in work are outside this single deployment task.
 | 6 | Replace the existing cordis meta CSP during staging and preserve exact HTML paths with assets.html_handling=none. | The old meta CSP blocked the configured server; Cloudflare canonical redirects bypassed the sandbox-specific response header path. |
 | 7 | Keep Vitest and Node deploy suites in the test command, excluding deploy files only from Vitest discovery. | Their distinct test APIs cannot share a runner; both suites remain mandatory. |
 
+| 8 | Use explicit deploy test globs on Node 22 and accept browser-recognized script end tags with attributes. | CI Node 22 does not expand test directories; CodeQL identified another end-tag form missed by the original hash matcher. The broader fixture failed before the correction. |
+
 ## Verification
 
 The whitespace-terminated script and invalid-origin tests failed before their

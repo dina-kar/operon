@@ -1,4 +1,4 @@
-// node --test apps/console/deploy/ (CI's web job runs it).
+// node --test apps/console/deploy/*.test.mjs (CI's web job runs it).
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -68,10 +68,11 @@ describe('stage', () => {
     assert.match(contentSecurityPolicy(), /connect-src 'self'(;|$)/);
   });
 
-  test('hashes inline scripts with whitespace before their closing tag', () => {
-    const html = '<script>window.theme = "dark";</script \n>';
+  test('hashes inline scripts with whitespace or attributes in their closing tag', () => {
     const want = `'sha256-${createHash('sha256').update('window.theme = "dark";').digest('base64')}'`;
-    assert.deepEqual(inlineScriptHashes(html), [want]);
+    for (const end of ['</script \n>', '</script\t\n bar>', '</script/>']) {
+      assert.deepEqual(inlineScriptHashes(`<script>window.theme = "dark";${end}`), [want]);
+    }
   });
 
   test('injects the CSP once, after the charset', () => {

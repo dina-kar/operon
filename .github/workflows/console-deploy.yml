@@ -58,7 +58,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: node --test apps/console/deploy/
+      - run: node --test apps/console/deploy/*.test.mjs
       - run: pnpm build
       - name: stage for Workers static assets
         env:

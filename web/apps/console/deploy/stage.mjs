@@ -20,7 +20,7 @@ export const BASE = '/ui/';
 /** The `sha256-...` CSP sources of every inline `<script>` in a page. */
 export function inlineScriptHashes(html) {
   const hashes = [];
-  for (const m of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)) {
+  for (const m of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi)) {
     if (/\bsrc\s*=/i.test(m[1] ?? '')) continue;
     const body = m[2] ?? '';
     hashes.push(`'sha256-${createHash('sha256').update(body, 'utf8').digest('base64')}'`);

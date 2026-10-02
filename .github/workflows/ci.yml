@@ -922,7 +922,7 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - name: the Cloudflare deploy scripts (issue #269)
-        run: node --test apps/console/deploy/
+        run: node --test apps/console/deploy/*.test.mjs
       - run: pnpm build
       - name: the build stages for Workers static assets
         run: node apps/console/deploy/stage.mjs
