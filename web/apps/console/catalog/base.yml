@@ -1,0 +1,30 @@
+# The console's plugin catalog, the `oss` set (design §37 §5.3, §5.8; D423).
+#
+# cordis v4 loader entries: id, name, config, group, disabled, inject. Edition
+# and bundle patch files (`- id:` replaces a row's config, `- insert:` adds
+# rows) are applied after this file. No YAML tags (so no `!!js`): the loader
+# refuses them.
+
+# Core: the layout and router, typed Connect clients, the session.
+- id: shell
+  name: '@loams/plugin-shell'
+- id: rpc
+  name: '@loams/plugin-rpc'
+- id: identity
+  name: '@loams/plugin-identity'
+
+# First-party pages.
+- id: stack-status
+  name: '@loams/plugin-stack-status'
+- id: namespaces
+  name: '@loams/plugin-namespaces'
+- id: approvals
+  name: '@loams/plugin-approvals'
+  config:
+    notify: false
+
+# A sample third-party plugin: it runs in a sandboxed frame, and only when
+# the instance sets the `console.third_party_plugins` feature (off until the
+# unified auth plan can vend attenuated tokens; the demo mock turns it on).
+- id: hello
+  name: '@loams/example-plugin-hello'
