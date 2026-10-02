@@ -65,11 +65,11 @@ The `data` struct is derived at build time from the protobuf descriptor (scalars
 | # | Question | Owner | Needed by |
 |---|---|---|---|
 | Q362 | Showback and single-organisation billing in the open repository, or `loam-platform` only. **Answered by the owner on 2026-10-02: no metering in OSS** (D440, D444); open dashboards over the hooks remain possible for anyone to build | Founder | Resolved |
-| Q366 | Lambda CPU attribution: the bootstrap's `getrusage` delta capped by billed duration × `memory_mb / 1 769`, or billed duration (§27 §3.6) | Founder | RN1 Task 5 |
-| Q367 | Cloud Run and Container Apps runners: build or document only | Founder | After RN1 |
-| Q368 | Iceberg v3 `timestamptz_ns` by M4, or the `time_ns` column (§4) | Eng | Event-table plan |
-| Q369 | Move `loams-stream-grpc` from tonic/prost to connect-rust/buffa (D128), and when | Eng | M2 stream API plan |
-| Q372 | Internal HTTP/3: the condition that enables it | Eng | Later |
-| Q450 | Give §1's decisions their own document, and split GW1's vendor-neutral tasks (`buf breaking`, the CloudEvents profile, the event Arrow mapping) into an open plan | Founder | Before GW1 starts in `loam-platform` (private) |
+| Q366 | ~~Lambda CPU attribution: the bootstrap's `getrusage` delta capped by billed duration × `memory_mb / 1 769`, or billed duration (§27 §3.6)~~ Answered 2026-10-02 by the owner: the recommended default — the measured meter: the bootstrap's `getrusage` delta capped by billed duration × `memory_mb / 1 769` (§27 §3.6, RN1 Rulings 4–5); RN1 Task 5 may start | Founder | Resolved |
+| Q367 | ~~Cloud Run and Container Apps runners: build or document only~~ Answered 2026-10-02 by the owner: the recommended default — document only; build on demand (§24 §16, RN1) | Founder | Resolved |
+| Q368 | ~~Iceberg v3 `timestamptz_ns` by M4, or the `time_ns` column (§4)~~ Answered 2026-10-02 by the owner: the chosen default (the doc gives no recommendation) — the `time_ns` column until Iceberg v3 `timestamptz_ns` is on the pinned iceberg-rust and Lakekeeper (§34 §4); why: it works on today's stack and migrates additively | Eng | Resolved |
+| Q369 | ~~Move `loams-stream-grpc` from tonic/prost to connect-rust/buffa (D128), and when~~ Answered 2026-10-02 by the owner: the chosen default (the doc gives no recommendation) — yes, move to connect-rust/buffa in the M2 stream API plan (D128, D419); why: one RPC stack for the console, the apps (§37) and streams | Eng | Resolved |
+| Q372 | ~~Internal HTTP/3: the condition that enables it~~ Answered 2026-10-02 by the owner: the chosen default (the doc gives no recommendation) — off; internal traffic stays HTTP/2 until a cross-region link measures loss where head-of-line blocking costs latency; why: no cross-region links exist yet | Eng | Resolved |
+| Q450 | ~~Give §1's decisions their own document, and split GW1's vendor-neutral tasks (`buf breaking`, the CloudEvents profile, the event Arrow mapping) into an open plan~~ Answered 2026-10-02 by the owner: the chosen default (the doc gives no recommendation) — §34 itself is that document (it now holds only the retained vendor-neutral decisions), and GW1's vendor-neutral tasks (`buf breaking`, the CloudEvents profile, the event Arrow mapping) become an open plan here, written when GW1 starts; why: D220 keeps standards open, with no new file | Founder | Resolved |
 
 Q360, Q363–Q365, Q370, Q371, Q373 and Q374 moved to `loam-platform` with the gateway and the Cloudflare runner.

@@ -423,6 +423,8 @@ fn factory_run(ctx, signal):
 - **Resumption.** A crash resumes the workflow from its last checkpoint; a model call is never paid twice (§21 §6.6).
 - **Where the loop runs.** In the Loams process that holds Resonate for the org (single org: the one embedded server).
 
+> **Cross-reference, 2026-10-02 ([§42](42-cloudflare-2026-betas.md) D574).** A factory run's coding workspace (stage 4, `forgejo.propose_patch`) is a pause and resume unit behind a `WorkspaceSnapshot` seam: a branch plus a volume snapshot on Knative; on Cloudflare Containers, filesystem snapshots (`snapshotContainer`, beta); that Cloudflare provider is private. Server-side web reach for the agents (Q507) is answered in §42 §4.
+
 ## 11. Safety: budgets, kill switch, loops, audit (D473)
 
 | Rail | Definition | Enforced by |

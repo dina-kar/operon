@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists the interfaces it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (names, paths, formats, constants, error messages), use them verbatim. The code is not pre-written in this plan (M0.3 Ruling 1).
 
-> **Status: Planned** (2026-10-01). Design: [§36](../design/36-loams-git.md) (D388–D399). **Slot: track GT**, beside M, R, D and J, interleaved on the one-build machine; whether GT starts now or waits for §15's W1 slot after M3 is the owner's decision (Q395). Branches `gt1-t<N>`, stacked; PRs target `main`. GT1 adds two crates and one proto package; it changes no existing code path except one small, additive `loams-store` method if Task 0 finds it missing.
+> **Status: Planned** (2026-10-01). Design: [§36](../design/36-loams-git.md) (D388–D399). **Slot: §15's W1, after M3** (Q395, answered 2026-10-02: D411); track GT then interleaves on the one-build machine beside the other tracks. Branches `gt1-t<N>`, stacked; PRs target `main`. GT1 adds two crates and one proto package; it changes no existing code path except one small, additive `loams-store` method if Task 0 finds it missing.
 
 **Goal:** Ship §36's bucket-native Git core and a serverless remote helper:
 - `loams-git`: the `loams.git.v1` formats (segments, checkpoints, `.lpk` pack objects), `BlobStore`, `WalStore`, a pack-cache `Odb`, the ref state machine, `BucketRefLog` (the per-repository sequencer with group commit, fencing, unknown-outcome resolution and idempotency), checkpoints, forks and segment GC;
@@ -162,10 +162,10 @@ pub struct TxnEvent { pub ns: NamespaceId, pub repo: RepoId, pub tenant: String,
                       pub trace: Option<TraceParent>, pub time_unix_ms: i64, pub body: TxnBody }
 pub enum TxnBody { RefTxn(pb::RefTransaction), PackSet(pb::PackSetChange), Config(pb::ConfigChange) }
 pub fn to_cloudevent(e: &TxnEvent, seq: Seq, index: u32) -> CloudEvent;   // §36 §4.3's attribute table exactly
-pub fn from_cloudevent(ce: &CloudEvent) -> Result<TxnEvent, FormatError>;  // refuses a wrong type, schemaversion ≠ "1", a missing extension
+pub fn from_cloudevent(ce: &CloudEvent) -> Result<TxnEvent, FormatError>;  // refuses a wrong type, a `dataschema` that does not match the type, an `id` that is not a key, a missing extension (D415)
 ```
 
-**Semantics:** the header, body and trailer layouts of §36 §4.3, little-endian; CRC32C (Castagnoli) over header and body; a reader accepts format versions 1 and (once a version 2 exists) 1–2; an unknown higher version is `UnknownVersion { found }`. The segment body is the `CloudEventBatch` protobuf. `loamsseq` is the decimal string of the segment's seq and must equal the segment header's seq.
+**Semantics:** the header, body and trailer layouts of §36 §4.3, little-endian; CRC32C (Castagnoli) over header and body; a reader accepts format versions 1 and (once a version 2 exists) 1–2; an unknown higher version is `UnknownVersion { found }`. The segment body is the `CloudEventBatch` protobuf. `loamsseq` is the decimal string of the segment's seq and must equal the segment header's seq. The CloudEvents `id` is the transaction's `IdemKey` in lowercase hex and `dataschema` is `urn:loams:proto:loams.git.v1.<Message>`; there are no `idempotencykey` or `schemaversion` extensions (§36 §4.3, D364, D415).
 
 **Tests:** `segment_round_trip` (proptest over random batches up to the limit); `segment_over_one_mib_is_too_large`; `corrupt_crc_is_error`; `truncated_segment_is_error`; `seq_mismatch_is_error`; `golden_segment_v1` (a checked-in file of a fixed batch decodes, and encoding the batch reproduces it byte for byte); `checkpoint_round_trip`; `golden_checkpoint_v1`; `lpk_footer_round_trip`; `pack_checksum_reads_trailer` (a pack made by `git pack-objects`); `event_attributes_match_design_table`; `event_without_tenantid_is_refused`; `n_minus_one_is_read` (a stub: version 0 bytes are refused with `UnknownVersion`, and the test documents where version 1 readers must keep working when version 2 arrives).
 
