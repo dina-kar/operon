@@ -16,8 +16,8 @@ if [[ "${1:-}" == --self-test ]]; then
   exit 0
 fi
 awk -F '|' '
-  /^[[:space:]]*\|[[:space:]]*[DQ][0-9]+[[:space:]]*\|/ {
-    id = $2
+  /^[[:space:]]*(\|[[:space:]]*)?[DQ][0-9]+[[:space:]]*\|/ {
+    id = ($1 ~ /^[[:space:]]*$/) ? $2 : $1
     gsub(/[[:space:]]/, "", id)
     if (id in seen) {
       printf "%s:%d: duplicate %s (first declaration at line %d)\n", FILENAME, FNR, id, seen[id] > "/dev/stderr"

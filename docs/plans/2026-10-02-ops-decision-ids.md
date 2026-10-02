@@ -31,6 +31,7 @@ existing IDs; preserve the later action text as references in a list.
 | # | Ruling | Reason |
 |---|---|---|
 | 1 | The five later rows are abbreviated action references to the same open questions, not new decisions; preserve them as a list. | Their action and deadline match the canonical rows. Renumbering would create spurious independent questions and break the existing design references. |
+| 3 | Recognize rows with or without the optional leading Markdown pipe; fixtures mix both forms. | CodeRabbit identified that valid GFM rows without a leading pipe otherwise escaped the checker. |
 | 2 | Check bare D/Q identifiers in the first Markdown table cell of the central log, not every textual reference or every design file. | References and scoped design excerpts legitimately reuse canonical IDs; duplicate declarations do not. |
 
 ## Verification
