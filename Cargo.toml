@@ -157,7 +157,7 @@ unicode-segmentation = "1.13"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-zstd = "0.13"
+zstd = "0.14"
 loams-cache = { path = "crates/loams-cache", version = "0.0.1" }
 loams-collection = { path = "crates/loams-collection", version = "0.0.1" }
 loams-cloudevents = { path = "crates/loams-cloudevents", version = "0.0.1" }

@@ -6554,7 +6554,7 @@ dependencies = [
  "tracing",
  "ulid 3.0.0",
  "xxhash-rust",
- "zstd 0.13.3",
+ "zstd 0.14.0",
 ]
 
 [[package]]
