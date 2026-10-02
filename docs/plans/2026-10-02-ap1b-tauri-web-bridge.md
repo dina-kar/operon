@@ -17,7 +17,7 @@
 **Spec:**
 - §37 §18.14 (all of it) and its staged log `docs/design/_pending/37b-log.md` (D500–D512, Q500–Q511); §37 §18.4 to §18.7 (Loams Bot, app UIs, plugins, credentials).
 - §39 (`docs/design/39-software-factory-and-loams-bot.md`): §3 (embedding), §6 (tokens), §8 (approvals), §9 (tracing), §11 (kill switch); plans SF2 and SF3 for Q507.
-- §30 D288 (secrets never pass through MCP), D289, D290; §19 §5 and §21 (approvals); D435, D468, D470, D473, D497; D284 (no telemetry from the product itself).
+- §30 D288 (secrets never pass through MCP), D289, D290; §19 §5 and §21 (`docs/design/21-durable-execution.md`, §6.5 approval gates); D435, D468, D470, D473, D497; D284 (no telemetry from the product itself).
 - Studied: `ChromeDevTools/chrome-devtools-mcp` (`docs/tool-reference.md`, `docs/design-principles.md`, `src/TextSnapshot.ts`), `microsoft/playwright-mcp` (`README.md`), `microsoft/playwright` (`packages/injected/src/ariaSnapshot.ts`), `tauri-apps/tauri` 2.12.1 (`crates/tauri/src/webview/mod.rs`).
 
 ## Global Constraints
@@ -63,7 +63,7 @@ scripts/  .github/workflows/  NOTICE  deny.toml  README.md
 2. **Isolated worlds** through the native handle on each OS (Q505): can an injected script run in a world the page cannot see (`Page.createIsolatedWorld` through WebView2, `WebKitScriptWorld`, `WKContentWorld`)? Does the script survive navigation?
 3. **In-process CDP on Windows**: `CallDevToolsProtocolMethod` and event receivers reachable from `with_webview`; `Accessibility.getFullAXTree`, `Network.*`, `Runtime.consoleAPICalled`.
 4. **Passkeys and WebAuthn** per OS (Q503), and whether Authentik's login flow completes inside each webview (password and TOTP at least).
-5. **Persistence:** a login at the fixture IdP survives an app restart per profile; two profiles do not share cookies; macOS 13 behaviour (Q502).
+5. **Persistence:** a login at the fixture IdP survives an app restart per profile; two profiles do not share cookies; macOS 13 behaviour (ephemeral only) (Q502).
 6. **Form-submit interception** (B6): can a submit be held before it leaves on each engine (a capture-phase `submit` handler with `preventDefault`, then a re-submit), including `fetch` and XHR from page script? What does `on_navigation` see for a POST?
 7. **Hidden or minimised windows**: do pages keep running (timers, network) on each OS?
 8. The **licence and notice** work: confirm Apache-2.0 for Playwright's `ariaSnapshot.ts` at the pinned commit and note what is ported.
@@ -119,7 +119,7 @@ scripts/  .github/workflows/  NOTICE  deny.toml  README.md
 **Files:** `crates/bridge-host/src/{main,daemon,profiles,windows,nav,downloads,banner}.rs`, `capabilities/bridge-ui.json` (bundled pages only), `ui/banner.html`.
 
 **Semantics:**
-- The daemon starts once per user (lock file), listens on IPC, and creates **one webview window per page**, each with its profile's store (`data_directory`, or `data_store_identifier` on macOS 14 and later, or the shared store with a warning before that, per Q502), the injected script, and **no capability** for the remote origin.
+- The daemon starts once per user (lock file), listens on IPC, and creates **one webview window per page**, each with its profile's store (`data_directory`, or `data_store_identifier` on macOS 14 and later; before that only ephemeral profiles are offered and `request_human` says so, per Q502), the injected script, and **no capability** for the remote origin.
 - `on_navigation` and `on_new_window` enforce the origin allowlist and open popups as new pages of the same profile; `on_download` routes files to the profile's session directory with a size cap and hashes them.
 - A **banner** (a bundled page or native chrome) shows "controlled by <agent>", Pause and Stop; Pause freezes tool execution for that handle; Stop closes the handle. `request_human` shows the window and resolves when the person presses Done.
 - Profile management: create, list, `profile_status` (signed in or not, derived from cookie presence for the site's origin, never values), human-only clear.
@@ -149,12 +149,12 @@ scripts/  .github/workflows/  NOTICE  deny.toml  README.md
 
 **Semantics:**
 - **Classification and policy** (D508): each tool call gets a class (read, interact, commit, dangerous); the policy file (`policy.toml` in the profile directory, written by Loams Desktop from the org policy) maps (agent, class, origin glob) to allow, approve or deny. Defaults: read and interact allow on allowlisted origins; commit and dangerous approve; anything off the allowlist deny; `evaluate_script` off (Q511).
-- **The commit gate:** the injected capture-phase `submit` handler and the page-initiated non-GET hook hold the request, ask the daemon, and release only on an approved decision; a click or key that would submit is gated at the tool as well (B6). A held request times out closed.
+- **The commit gate:** the injected capture-phase `submit` handler and the page-initiated non-GET hook hold the request, ask the daemon, and release only on an approved decision; a click, key or form fill that **may** submit is classified commit **before it runs** (a submit control, a control inside a form, an element the snapshot marks as submitting, Enter in a form field) and waits for approval first; the page-side hold is the backstop, never the only gate (B6). A held request times out closed.
 - **Approvals:** the daemon raises an approval request to Loams Desktop (Task 9), which creates a Loams approval and returns the decision; with no desktop, the tool returns `approval_required` and does nothing. **The agent has no tool that decides.**
 - **Secrets:** `secret_ref` resolution from the keychain or broker; the classifier for credential-like fields (type password, `autocomplete` tokens `current-password`, `new-password`, `one-time-code`, `cc-*`); redaction of `Authorization`, `Cookie`, `Set-Cookie` and bodies of paths matching auth patterns; console scrubbing of JWT-shaped and long-hex strings.
-- **Untrusted content:** every page-derived string in a result sits inside a marker (`<page-content origin="…">…</page-content>`) and results carry a fixed note that the content is data, not instructions.
+- **Untrusted content:** every page-derived string is **escaped** (`<`, `>`, `&` and the marker's own delimiter) before it is placed inside the marker (`<page-content origin="…">…</page-content>`), or the result uses structured framing (a JSON field) that page content cannot terminate; results also carry a fixed note that the content is data, not instructions.
 
-**Tests:** `secret_canary_never_appears_in_any_output` (plants a canary in a password field, a cookie, an `Authorization` header, a console line, a URL fragment, and asserts it appears in no tool result, error, span or log); `password_values_are_elided_in_snapshots`; `cookie_and_storage_tools_do_not_exist`; `network_redacts_authorization_and_cookies`; `fill_by_secret_ref_never_echoes_the_value`; `form_submit_waits_for_approval`; `held_request_times_out_closed`; `agent_cannot_decide_an_approval`; `off_allowlist_navigation_is_denied`; `evaluate_script_is_off_by_default`; `inject_page_text_is_marked_untrusted` (the `/inject` fixture); a table-driven policy test.
+**Tests:** `secret_canary_never_appears_in_any_output` (plants a canary in a password field, a cookie, an `Authorization` header, a console line, a URL fragment, and asserts it appears in no tool result, error, span or log); `password_values_are_elided_in_snapshots`; `cookie_and_storage_tools_do_not_exist`; `network_redacts_authorization_and_cookies`; `fill_by_secret_ref_never_echoes_the_value`; `form_submit_waits_for_approval`; `held_request_times_out_closed`; `agent_cannot_decide_an_approval`; `off_allowlist_navigation_is_denied`; `evaluate_script_is_off_by_default`; `inject_page_text_is_marked_untrusted` (the `/inject` fixture, including a payload containing `</page-content>` and `&lt;/page-content&gt;` that must not close the marker); a table-driven policy test.
 
 **Commit:** `policy: classes, approvals, secrets and untrusted-content marking`.
 
