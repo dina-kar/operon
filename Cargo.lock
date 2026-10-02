@@ -6251,7 +6251,7 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "axum 0.8.9",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "clap",
  "datafusion",
@@ -6342,7 +6342,7 @@ dependencies = [
 name = "loams-cloudevents"
 version = "0.0.1"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "http",
  "loams-log",
@@ -6479,7 +6479,7 @@ name = "loams-es"
 version = "0.0.1"
 dependencies = [
  "axum 0.8.9",
- "base64 0.22.1",
+ "base64 0.23.1",
  "futures",
  "loams-collection",
  "loams-common",
@@ -6746,7 +6746,7 @@ dependencies = [
  "anyhow",
  "arrow-flight",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "crc32c",
  "datafusion",
@@ -6797,7 +6797,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bitpacking",
  "bytes",
  "bytesize",
@@ -6935,7 +6935,7 @@ name = "loams-stream-grpc"
 version = "0.0.1"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "loams-cloudevents",
  "loams-common",
