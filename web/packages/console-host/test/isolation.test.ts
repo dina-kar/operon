@@ -138,7 +138,7 @@ describe('sandbox', () => {
     const frame = container.querySelector('iframe');
     expect(frame?.getAttribute('sandbox')).toBe('allow-scripts');
     expect(frame?.getAttribute('sandbox')).not.toContain('allow-same-origin');
-    expect(frame?.src).toContain('#script=%2Fui%2Fplugins%2Fhello%2Fclient.js');
+    expect(frame?.src).toContain('/ui/sandbox/frame.html#plugin=hello');
     handle.dispose();
     expect(container.querySelector('iframe')).toBeNull();
   });

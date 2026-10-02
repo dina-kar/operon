@@ -12,7 +12,7 @@ declare global {
 describe('sandbox runtime', () => {
   it('connects through the host port and resolves calls', async () => {
     document.body.innerHTML = '<div id="root"></div>';
-    window.location.hash = '#script=https%3A%2F%2Fevil.example%2Fx.js';
+    window.location.hash = '#plugin=https%3A%2F%2Fevil.example%2Fx.js';
     // Evaluate the classic script as the frame would.
     new Function(runtime)();
     expect(document.getElementById('root')?.textContent).toContain('Refused');

@@ -3,18 +3,14 @@
 // A classic script, so it needs no CORS from inside an opaque origin. It
 // waits for the host's `loams/init` message carrying a MessagePort, exposes
 // `globalThis.loams` (call a bridged service method, get the plugin's root
-// element), then loads the plugin script named in the fragment
-// (`#script=/ui/plugins/<id>/client.js`), which must be a path on this
-// origin. Everything the plugin does outside its frame goes through
+// element), then loads the plugin named in the fragment (`#plugin=<id>`)
+// from `../plugins/<id>/client.js` on this origin. Everything the plugin does outside its frame goes through
 // `loams.call`, which the host checks against the plugin's permissions.
 (() => {
   const params = new URLSearchParams(location.hash.slice(1));
-  const script = params.get('script') || '';
-  const local =
-    script.startsWith('/') &&
-    !script.startsWith('//') &&
-    !script.includes('..') &&
-    !script.includes(':');
+  const requested = params.get('plugin') || '';
+  // Only an id, never a URL: [a-z0-9-], as the host's sandboxScriptId.
+  const pluginId = /^[a-z0-9][a-z0-9-]{0,63}$/.test(requested) ? requested : '';
 
   let port = null;
   let nextId = 1;
@@ -69,11 +65,11 @@
 
   Object.defineProperty(globalThis, 'loams', { value: loams, writable: false });
 
-  if (local) {
+  if (pluginId) {
     const element = document.createElement('script');
-    element.src = script;
+    element.src = new URL(`../plugins/${pluginId}/client.js`, location.href).pathname;
     document.head.append(element);
-  } else if (script) {
-    loams.root.textContent = 'Refused a plugin script that is not on this origin.';
+  } else if (requested) {
+    loams.root.textContent = 'Refused a plugin name that is not an id.';
   }
 })();

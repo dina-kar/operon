@@ -51,6 +51,7 @@ export {
   SANDBOX_CSP,
   SANDBOX_FLAGS,
   type SandboxHandle,
+  sandboxScriptId,
 } from './sandbox.js';
 export {
   type FlagsService,

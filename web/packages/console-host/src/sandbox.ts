@@ -36,12 +36,27 @@ export interface SandboxHandle {
 }
 
 /** A same-origin path only: a plugin script is never fetched from elsewhere. */
+/**
+ * Plugin scripts live at `<base>plugins/<id>/client.js`, beside the frame's
+ * `<base>sandbox/`; the frame is told only the id (`#plugin=<id>`) and builds
+ * the path itself, so no URL from the fragment ever reaches a script tag.
+ */
+const SCRIPT = /^\/(?:[A-Za-z0-9_-]+\/)*plugins\/([a-z0-9][a-z0-9-]{0,63})\/client\.js$/;
+
+/** The plugin id of a sandbox script path, or undefined if it is not one. */
+export function sandboxScriptId(url: string): string | undefined {
+  return SCRIPT.exec(url)?.[1];
+}
+
 export function isLocalScript(url: string): boolean {
   return url.startsWith('/') && !url.startsWith('//') && !url.includes('..') && !url.includes(':');
 }
 
 export function mountSandboxed(container: HTMLElement, options: SandboxOptions): SandboxHandle {
-  if (!isLocalScript(options.scriptUrl)) {
+  const scriptId = isLocalScript(options.scriptUrl)
+    ? sandboxScriptId(options.scriptUrl)
+    : undefined;
+  if (!scriptId) {
     throw new Error(`refusing a non-local plugin script: ${options.scriptUrl}`);
   }
   const iframe = document.createElement('iframe');
@@ -51,7 +66,7 @@ export function mountSandboxed(container: HTMLElement, options: SandboxOptions):
   iframe.title = options.title ?? `Plugin ${options.policy.pluginId}`;
   iframe.className = 'loams-sandbox-frame';
   iframe.dataset.plugin = options.policy.pluginId;
-  iframe.src = `${options.frameUrl}#script=${encodeURIComponent(options.scriptUrl)}`;
+  iframe.src = `${options.frameUrl}#plugin=${scriptId}`;
   let bridge: Bridge | undefined;
   let loaded = false;
   const onLoad = () => {

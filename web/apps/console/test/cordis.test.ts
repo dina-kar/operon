@@ -80,9 +80,7 @@ describe('the cordis console', () => {
       return f as HTMLIFrameElement;
     });
     expect(frame.getAttribute('sandbox')).toBe('allow-scripts');
-    expect(frame.getAttribute('src')).toBe(
-      '/ui/sandbox/frame.html#script=%2Fui%2Fplugins%2Fhello%2Fclient.js',
-    );
+    expect(frame.getAttribute('src')).toBe('/ui/sandbox/frame.html#plugin=hello');
     expect(root.textContent).toContain('Unverified plugin: @loams/example-plugin-hello');
     expect(handle.plugins().find((p) => p.id === 'hello')?.granted).toEqual(['approvals:read']);
   });
