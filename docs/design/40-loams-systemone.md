@@ -48,7 +48,7 @@ Every row below was checked on 2026-10-02 against the named page or API. "Vendor
 | `nvkudva/laya-web` | **No licence.** The repository has no `LICENSE`, and GitHub reports none, so by default all rights are reserved: **we do not copy or depend on it.** Facts it states: 524 MB int8 weights (1.69 GB fp32), onnxruntime-web, COOP `same-origin` and COEP `require-corp` for threaded WASM, main thread in production, about 340 ms on short states and 2.4 s at 512 tokens, single-thread fallback "roughly 6x slower" | github.com/nvkudva/laya-web |
 | Better browser sources | Official **`laya-ts`** (inside `NandhaKishorM/laya`, Apache-2.0): split `encoder.onnx` + `head.onnx`, Node and browser, "WebGPU to WASM fallback", `onnxruntime-web` an optional peer dependency. **`bvolpato/kevala`** (Apache-2.0): Rust with zero dependencies compiled to WASM plus WebGPU kernels and a **native CPU CLI**; Laya int8 pack 479 MB; "works from any origin and needs no special headers". **`vishalmysore/layaForWeb`** (Apache-2.0) | github.com/NandhaKishorM/laya (`laya-ts/`), github.com/bvolpato/kevala |
 | `browser-use/jev-ultrafast` | **MIT.** It is a browser-agent sample that **calls** the Jev API. Its licence says nothing about the API's terms | github.com/browser-use/jev-ultrafast |
-| **Jev API terms** | TypeSafe publishes Terms of Use (website only), a Privacy Policy, an Acceptable Use Policy and a **Master Customer Agreement** (published 2026-09-28) at typesafe.ai/legal. The MCA covers the API: the licence "includes the right to include the API into one or more software applications developed and operated by Customer"; the customer "will not ... offer or make the Services available as a standalone service", and "will not use the Services or any Output to perform model distillation, train a model to imitate the output of the Services, or develop a similar or competing product". TypeSafe will not put Customer Data in a training dataset without prior consent. Rate limits and option limits are not published, and the model is closed. **Consequences for us:** each user brings their own agreement and key; a Loams-hosted pass-through looks like a "standalone service" and is not planned; **Jev outputs must never be used as training labels** for Laya or any Loams model (§9.4). Whether an OSS client with a user-supplied key and a selectable-backend listing fit is for TypeSafe to confirm: **owner action** (Q520). This corrects an earlier reading of this row that found no API terms | typesafe.ai/legal/mca, /terms, /privacy-policy, docs.typesafe.ai |
+| **Jev API terms** | TypeSafe publishes Terms of Use (website only), a Privacy Policy, an Acceptable Use Policy and a **Master Customer Agreement** (published 2026-09-28) at typesafe.ai/legal. The MCA covers the API: the licence "includes the right to include the API into one or more software applications developed and operated by Customer"; the customer "will not ... offer or make the Services available as a standalone service", and "will not use the Services or any Output to perform model distillation, train a model to imitate the output of the Services, or develop a similar or competing product". TypeSafe will not put Customer Data in a training dataset without prior consent. `docs.typesafe.ai/api` publishes limits of **255 options per `choice` and 2 to 10 levels per `score`**, accepts string, object or array `instructions` and `criteria`, makes `noul` `criteria` optional, and answers 401, 422, 429 and 529; numeric rate limits and a token budget are not published; the model is closed. **Consequences for us:** each user brings their own agreement and key; a Loams-hosted pass-through looks like a "standalone service" and is not planned; **Jev outputs must never be used as training labels** for Laya or any Loams model (§9.4). Whether an OSS client with a user-supplied key and a selectable-backend listing fit is for TypeSafe to confirm: **owner action** (Q520). This corrects an earlier reading of this row that found no API terms | typesafe.ai/legal/mca, /terms, /privacy-policy, docs.typesafe.ai |
 
 ### 2.2 The API surface
 
@@ -68,7 +68,7 @@ Every row below was checked on 2026-10-02 against the named page or API. "Vendor
 | Over-confident, calibrate per (type, option count) | Confirmed: refitting one temperature per (question type, option count) moves mean ECE 0.466 to 0.081 (English) and 0.314 to 0.106 (multilingual) |
 | Do not use `act_probability` | Confirmed: it reads 1.0 for almost every input (AUROC 0.30 on 396 labelled decisions, upstream issue 185) |
 | `noul` workaround A/B | Confirmed: `noul` renders its options as `false:` / `true:` and "that label pair can dominate the answer, returning a confident 'no' for clearly positive input" (upstream issue 156), most strongly on the English checkpoint. Upstream's workaround is a two-option `choice` with neutral keys `A`/`B` |
-| **For Jev, map `noul` and `score` onto choices** | **Not needed.** Jev documents all three primitives natively (`docs.typesafe.ai`): `noul` returns a probability in a `noul` field with no confidence field; `score` returns `score`, `legend`, `probabilities`, `confidence`; `choice` returns `choice`, `probabilities`, `confidence`. The same shape as Laya's. Strong with more than 20 options is third-party only, and Jev documents no option cap |
+| **For Jev, map `noul` and `score` onto choices** | **Not needed.** Jev documents all three primitives natively (`docs.typesafe.ai`): `noul` returns a probability in a `noul` field with no confidence field; `score` returns `score`, `legend`, `probabilities`, `confidence`; `choice` returns `choice`, `probabilities`, `confidence`. The same shape as Laya's. Strong with more than 20 options is third-party only, and Jev's published cap is 255 options (docs.typesafe.ai/api, 2026-10-02) |
 | English checkpoint gives confident wrong answers | Confirmed and sharper: Khmer scores 0.000 accuracy at 0.952 confidence, so confidence gating cannot save you; only 23 of 51 languages are usable on the English checkpoint against 45 of 51 on the multilingual one |
 | A state over the context window | `laya-serve` truncates and **reports it** in `usage.truncated`, `state_tokens_dropped` and `truncated_questions` (the cut is silent otherwise). Core ML's `LayaManager` picks the smallest loaded bucket that fits and truncates on the right in the largest |
 
@@ -152,9 +152,11 @@ message Answer {
   double calibrated_confidence = 9;              // Loams: uniform meaning on every backend (D536)
   bool low_confidence = 10;                      // calibrated_confidence < min_confidence
 }
+message OptionSpans { uint32 total = 1; uint32 distinct = 2; double tokens_per_option = 3; }
 message Usage {
   uint32 input_tokens = 1; uint32 output_tokens = 2; uint32 state_tokens = 3;
   uint32 state_tokens_dropped = 4; bool truncated = 5; repeated string truncated_questions = 6;
+  map<string, OptionSpans> options = 7;          // Laya: present only when a question's options lost their token spans
 }
 message Provenance {
   string backend = 1;                            // laya-coreml | laya-torch | laya-native | laya-mlx | laya-wasm | jev
@@ -184,6 +186,9 @@ The path, request and response follow **Jev's documented fields** (and `laya-ser
 | Response `routing`, `action` | Not returned (our `loams` block replaces `routing`; `act_probability` is never exposed) |
 | `model` | Accepted and ignored (the router picks); a Jev id is never an error |
 | `min_confidence` | Applied to `calibrated_confidence`, not to Laya's `answer_confidence` |
+| Response `usage.options` | Returned (Laya's per-question option-span report) |
+| `instructions` and `criteria` shapes | **v1 supports string `instructions`** and the `criteria` forms below. Jev also accepts object or array `instructions` and free-form `criteria`; those answer `422 UNSUPPORTED_SHAPE` in v1 (a client sending them is not base-URL compatible), and a later version may serialise them to text once we measure whether that helps |
+| `noul` `criteria` (optional in Jev) | Accepted as an optional string; forwarded to Jev; for Laya backends ignored with the warning `noul_criteria_ignored` (Task 0 checks whether Laya reads it) |
 
 ```json
 POST /v1/systemone
@@ -235,7 +240,7 @@ Rules:
 - Unknown request fields are ignored (as Laya does). The five hook arguments Laya refuses are not part of our surface.
 - `routing` and `action` are **not** returned (Laya's extensions, not Jev's); `act_probability` is never exposed (D536).
 - `noul` answers have no native `confidence` (Jev) or one equal to `answer_confidence` (Laya); `calibrated_confidence` is `max(p, 1-p)` after calibration.
-- Limits (ours, enforced before any backend): body 2 MiB, state 50 000 characters, 64 questions, 100 options per `choice`, 32 levels per `score`, 512 options per request, matching `laya-serve` so a Laya sidecar never rejects what we accepted. The backend's own stricter limit (Core ML 32 options) is applied by the router (§6), not by validation.
+- **Limits, two layers.** Validation (before any backend) uses the **largest limit any registered backend accepts**: body 2 MiB, state 50 000 characters, 64 questions, **255 options per `choice`** (Jev's cap), **32 levels per `score`** (Laya's cap; Jev's is 10), 512 options per request. The router then applies each backend's own capability: Core ML 32 options; `laya-serve` 100 options and 32 levels; Jev 255 options and **2 to 10 levels**. A request over a backend's cap simply excludes that backend; if none remains the error is `NO_BACKEND` with the reason per backend (and a hint to split into a two-step choice). So 32 levels is Loams's and Laya's limit, not a universal Jev-compatible one.
 - HTTP status mapping: 400 malformed; 401/403 auth; 413 limits; 422 invalid question; 429 quota; 503 `BACKEND_UNAVAILABLE`; 500 never carries internals.
 - **Listener.** On the desktop and in `loams dev` the route is on the loopback listener (D111). On a server it is on the gateway role behind the normal auth (§19) with a per-org quota (the engine enforces whatever limit it is given; the plan decides the number, D220).
 
@@ -243,7 +248,7 @@ Rules:
 
 Native by default on every backend. Two quirks are handled **inside the adapter**, invisible to callers:
 - **Laya `noul` stuck on its labels** (upstream issue 156). Each Laya backend carries a flag `noul_mode: native | choice_ab`. The self-test (§9.2) includes a pair of `noul` cases with opposite correct answers; if a checkpoint answers both the same way with confidence above 0.9, the adapter switches that checkpoint to `choice_ab` (a two-option `choice` with neutral keys `A` yes and `B` no, upstream's workaround) and reports `warnings: ["noul_via_choice_ab"]`. Operators can force either mode in config.
-- **Jev needs no mapping.** Its `noul` and `score` are native (§2.2); the note's "map them onto choices for Jev" is dropped.
+- **Jev needs no mapping.** Its `noul` and `score` are native (§2.2); the note's "map them onto choices for Jev" is dropped. Its `score` is limited to 2 to 10 levels, which the router enforces (§4.2).
 
 **Locality default.** proto3 gives an omitted enum the zero value, `LOCALITY_UNSPECIFIED`. The service, the HTTP adapter and every client library treat it as `LOCAL_ONLY`; only an explicit `ALLOW_CLOUD` can make a cloud backend eligible. A test pins this for both transports (SO1 Task 2).
 
@@ -263,7 +268,7 @@ pub struct Capabilities {
     pub id: BackendId,
     pub locality: Locality,
     pub question_types: QuestionTypes,            // CHOICE | SCORE | NOUL bits
-    pub max_options_per_choice: u32,              // Core ML 32; laya-serve 100; Jev: None -> u32::MAX
+    pub max_options_per_choice: u32,              // Core ML 32; laya-serve 100; Jev 255
     pub max_levels_per_score: u32,
     pub max_questions: u32,
     pub checkpoints: Vec<Checkpoint>,             // english | multilingual | typed-decisions | custom(id)
@@ -345,7 +350,7 @@ Detection never loads a model and never runs inference. A GPU that exists but wh
 | Rule | Behaviour |
 |---|---|
 | Locality | Default `LOCAL_ONLY`. A cloud backend is eligible only if the request says `ALLOW_CLOUD` **and** the instance, org or user setting allows cloud decisions **and** a key is configured. A forced `backend: "jev"` with locality `LOCAL_ONLY` is an error (`CLOUD_NOT_ALLOWED`), not a quiet fallback |
-| Options over a backend's cap | More than 32 options on any `choice`: exclude `laya-coreml` (its bucket has 32 slots). Over 100 is rejected at validation for every backend (`laya-serve`'s cap, which also bounds Jev use in v1): `INVALID_QUESTION` suggesting a two-step hierarchy |
+| Options over a backend's cap | More than 32 options on any `choice`: exclude `laya-coreml` (its bucket has 32 slots). Over 100 excludes `laya-torch` (its HTTP cap), leaving Jev (cap 255) if cloud is allowed; over 255 is rejected at validation. A `score` with more than 10 levels excludes Jev. If no backend remains: `NO_BACKEND` naming each exclusion and suggesting a two-step hierarchy |
 | More than about 20 options | Laya's accuracy falls off sharply (0.425 on 77 labels vs Jev's 0.870 on 72). Order: `laya-torch` with a widened `head_max_len`/`max_len` (upstream's fix) first if local-only; Jev preferred only if cloud is allowed (the request's `locality` and the instance switch), otherwise stay local; warning `options_over_20` either way. No quality claim for the widened path until SO1's self-test adds a 40-option case and the numbers are measured (Q528) |
 | Language | Only the English checkpoint is English-only. Use it only when the state is detected as English (explicit `lang`, else script and language detection: Latin script and detector says English). **Anything else, including undecided Latin text, goes to the multilingual checkpoint.** A backend that ships only the English checkpoint (`laya-wasm` English, the note's `laya-mlx` English weights) is excluded for non-English text. The cost of the safe default is accuracy on English (MASSIVE intent 0.783 English vs 0.657 multilingual), so on Apple silicon the English-quality gap is Q522 |
 | State over the window | Core ML: the smallest loaded bucket that fits; if even 1024 does not fit, `truncated` is reported and the warning `state_truncated` is added. Laya sidecar: `usage.truncated` becomes the same warning, and `on_truncate` set to `warn`, `widen` or `error` (default `warn`; `widen` retries once with a larger `max_len` up to `LAYA_MAX_TOKEN_BUDGET`). The state is never silently cut |
