@@ -13,7 +13,7 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
-    # Review stacked PRs too: their base is another branch, not the default branch.
+    # Covers dev, main and stacked PRs based on another branch.
     base_branches:
       - ".*"
   path_filters:
