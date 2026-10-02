@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loams.dev/schemas/console/plugin-manifest.schema.json",
+  "title": "Loams console plugin manifest",
+  "description": "The `loams.plugin` block of a console plugin's package.json (design §37 §5.3, D423). @loams/console-host's validateManifest enforces the same rules.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "entry", "tier"],
+  "properties": {
+    "kind": { "const": "console" },
+    "entry": {
+      "type": "string",
+      "description": "The ESM export that holds the plugin, for example ./client."
+    },
+    "tier": {
+      "enum": ["core", "first-party", "third-party"],
+      "description": "What the package claims; the host decides the real tier from where it came from (AP1a Ruling 8)."
+    },
+    "inject": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "provides": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true,
+      "description": "Services it offers, in its own namespace (<plugin-id>.*) unless it is core."
+    },
+    "slots": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "permissions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "collections:read",
+          "collections:write",
+          "query",
+          "documents:delete",
+          "streams:produce",
+          "mcp:tools",
+          "durable:invoke",
+          "durable:resolve",
+          "jobs:read",
+          "jobs:admin",
+          "approvals:decide",
+          "devices:manage",
+          "connectors:read",
+          "connectors:write",
+          "instance:read",
+          "approvals:read",
+          "operations:read",
+          "operations:cancel",
+          "notifications:read",
+          "ui:notifications",
+          "ui:clipboard-write"
+        ]
+      }
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "console": { "type": "string", "description": "A semver range of the console host." },
+        "api": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^loams\\.[a-z]+\\.v[0-9]+$" }
+        }
+      }
+    },
+    "editions": {
+      "type": "array",
+      "items": { "enum": ["oss", "desktop", "cloud"] },
+      "uniqueItems": true
+    },
+    "config": {
+      "type": "string",
+      "description": "Path to the generated JSON Schema of the plugin's Config."
+    },
+    "server": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "ref"],
+          "properties": {
+            "kind": { "enum": ["function", "connector"] },
+            "ref": { "type": "string" }
+          }
+        }
+      ]
+    }
+  }
+}
