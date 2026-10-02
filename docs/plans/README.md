@@ -130,11 +130,11 @@ Design references: [32 Loams Flow, Event Fabric and House](../design/32-loams-fl
 
 ## Track RN: runners and the usage hooks
 
-Design reference: [24 CPU-time runtime](../design/24-cpu-time-runtime.md) §16 (the `Runner` trait, D375) and [27 Usage hooks](../design/27-usage-hooks.md) §3.6 (D376); [34](../design/34-protocol-gateway-and-standards.md) keeps the decision rows. Hooks only: no metering in this repository (D403, D444). The usage-event task and the Cloudflare runner moved to `loam-platform` (private) with the protocol gateway (D440).
+Design reference: [24 CPU-time runtime](../design/24-cpu-time-runtime.md) §16 (the `Runner` trait, D375) and [27 Usage hooks](../design/27-usage-hooks.md) §3.7 (`InvocationObserver`, D549); [34](../design/34-protocol-gateway-and-standards.md) keeps the decision rows. Generic observability only: no metering in this repository (D403, D444, D541), and since 2026-10-02 the usage reporter and `loams.meter.v1` are in `loam-platform` too (D548). The usage-event task and the Cloudflare runner moved to `loam-platform` (private) with the protocol gateway (D440).
 
 | Plan | Scope | Depends on | Status |
 |---|---|---|---|
-| [RN1: Runner trait, external runners, usage reporter](2026-10-01-rn1-runner-usage.md) | `loams.meter.v1` with §27 §3.6's fields and the socket framing; `loams-meter` (host-report emitter, test consumer); `loams-runner` (`Runner`, `RunnerHost` with one reporter per invocation, conformance kit, `RunnerKind::Knative` and `External`); `ProcessRunner`; `LambdaRunner` with Loams's Lambda bootstrap | — | Planned |
+| [RN1: Runner trait, `InvocationObserver`, process and Lambda runners](2026-10-01-rn1-runner-usage.md) | `loams-runner` (`Runner`, `RunnerHost`, `InvocationObserver`, conformance kit, `RunnerKind::Knative` and `External`); `ProcessRunner`; `LambdaRunner` with Loams's Lambda bootstrap and no usage. Tasks 1 and 2 (`loams.meter.v1`, the reporter) moved to `loam-platform` (D548) | — | Planned (amended 2026-10-02) |
 
 ## Track GT: Loams Git, the build cache and the crates mirror
 
@@ -168,8 +168,9 @@ Design reference: [38 Knative, Authentik and GitOps](../design/38-knative-authen
 | Plan | Scope | Depends on | Status |
 |---|---|---|---|
 | [MT1: Authentik as the identity provider](2026-10-02-mt1-authentik-identity.md) | Blueprints and the Enterprise guard; trusted issuers and a JWKS cache; the RFC 8693 exchange for Loams tokens; groups → teams → OpenFGA tuples; console sign-in (PKCE) and `loams login` (device code); the showcase moves from Keycloak; non-loopback listeners behind TLS and verification | §19's M2 identity work, D66's outbox | Planned |
-| [MT2: Knative Serving and Eventing](2026-10-02-mt2-knative.md) | Knative through the Operator, off by default; per-namespace tenancy in `loams-operator`; `KnativeRunner`; hooks with no meter; gateway dispatch for `http-port`; `loams-knative-source` and Loams as a Knative sink | RN1 Tasks 1–3, `loams-operator` | Planned |
+| [MT2: Knative Serving and Eventing](2026-10-02-mt2-knative.md) | Knative through the Operator, off by default; per-namespace tenancy in `loams-operator`; `KnativeRunner`; hooks with no meter; gateway dispatch for `http-port`; `loams-knative-source` and Loams as a Knative sink | RN1 Task 3, `loams-operator` | Planned |
 | [MT3: GitOps with Clever's open-source stack](2026-10-02-mt3-gitops-clever.md) | Waves and `Application`s for CNPG, Authentik and Knative; Lua health checks; Authentik on CNPG; the CKE profile with Clever's Terraform and Karpenter providers; a Flux layout; the measured single-node k3s profile | MT1 Task 1, MT2 Task 1, §25's layout | Planned |
+| [MT4: The open Multitenant BYOC Control Plane with GitOps](2026-10-02-mt4-byoc-control-plane.md) | `loams-control` (operations and limits APIs, authorization, SCIM and enforced-SSO blueprints); tenant onboarding through a tenants Git repository and an `ApplicationSet`; the outbound-only BYOC agent and enrolment; release channels and upgrade rings; enforcement state; the console operator view and CLI; the no-metering CI guard | MT3 Task 1, RN1 Task 3, `loams-operator`, M2's `ControlStore` | Planned |
 
 ## Later milestones
 
