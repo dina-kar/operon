@@ -13,7 +13,7 @@ Four betas become open adapters, each behind a trait Loams already has or is abo
 | Artifacts | `ArtifactsRemote` for Loams Git (§36): a mirror sink and a workspace host, **not** a `WalStore` or `RefLog` | The bucket WAL stays the default (D561, D562) |
 | Browser Run, with Kitesurf as an option | A `remote` provider in the web-bridge toolbox (§37 §18.14), which **answers Q507** | Client-tool relay for credentialed sessions, `remote` for unattended public-web work (D565, D566) |
 | WebMCP | Console and plugin actions registered as WebMCP tools; the bridge calls a page's tools | Progressive enhancement behind feature detection (D568, D569) |
-| R2 Data Catalog (docs now say Basin Catalog) | An external Iceberg REST catalog in `loams-iceberg` | Lakekeeper stays the default; read first (D571, D572) |
+| Basin Catalog (formerly R2 Data Catalog, GA 2026-10-01) | An external Iceberg REST catalog in `loams-iceberg` | Lakekeeper stays the default; read first (D571, D572) |
 
 Two more betas are only cross-referenced here: Containers filesystem snapshots for factory runs (§39 SF4, D574) and Emscripten Rust for Workers (private, CF1, D576).
 
@@ -29,7 +29,7 @@ Two more betas are only cross-referenced here: Containers filesystem snapshots f
 | **Browser Run** ([docs](https://developers.cloudflare.com/browser-run/)) | Available on Free and Paid plans; Quick Actions and Sessions (Puppeteer, Playwright, CDP, Stagehand) | Pay for browser time, free tier (rates not read) | Product page does not say beta; treat as the stable base for the adapter |
 | **WebMCP** ([spec](https://webmachinelearning.github.io/webmcp/)) | **Draft Community Group Report, 2026-09-30**, W3C Web Machine Learning CG; "not a W3C Standard nor on the Standards Track" | The entry point is `document.modelContext` (`registerTool(tool, options)` with `exposedTo` and `signal`). Secondary articles report an origin trial in Chrome 149 to 156, Edge behind a flag, no commitment from Firefox or Safari **(unverified: not read on a primary Chrome page)** | **Experimental.** The older `navigator.modelContext` spelling is deprecated |
 | **Monetization Gateway** ([blog](https://blog.cloudflare.com/monetization-gateway-beta/)) | **Closed beta**, 2026-09-30, eligible US-based sellers and buyers; request access through the dashboard or x402@cloudflare.com | HTTP 402 with the x402 protocol, USDC on Base through Coinbase's facilitator; Cloudflare's fee not stated | **Closed beta; owner action.** Private only (loam-platform doc 07) |
-| **Data Platform** ([blog](https://blog.cloudflare.com/cloudflare-data-platform/)) | The blog is from **2025-09-25** (not Birthday Week 2026): Pipelines, R2 Data Catalog and R2 SQL were open beta then. The docs pages read on 2026-10-01 say **R2 Data Catalog is now "Basin Catalog" and R2 SQL "Basin SQL", both generally available**, old names still working | Planned catalog rates in 2025: $9 per million catalog operations, $0.005 per GB compacted; egress free. 2026 pricing not read | The rename is stated by two docs pages and **not corroborated** by search **(unverified)**; Pipelines status in 2026 not read |
+| **Data Platform, now Basin** ([2025 blog](https://blog.cloudflare.com/cloudflare-data-platform/), [Basin GA blog](https://blog.cloudflare.com/cloudflare-basin/)) | The 2025-09-25 post had Pipelines, R2 Data Catalog and R2 SQL in open beta. **On 2026-10-01 Cloudflare made it Basin, generally available**: Basin Pipelines, **Basin Catalog** (a managed Iceberg REST catalog; formerly R2 Data Catalog) and Basin SQL; old names still work | Usage-based pricing, no egress fees (rates not read; the 2025 plan was $9 per million catalog operations and $0.005 per GB compacted). Cloudflare says PyIceberg, DuckDB, Snowflake and Spark can read and write | **GA** (rename confirmed by the blog and two docs pages). The catalog's endpoint, token scopes and prices are not read **(unverified)** |
 | **Rust on Workers via Emscripten** ([blog](https://blog.cloudflare.com/rust-workers-emscripten-target/)) | "First public **experimental** preview", 2026-09-28 | Tokio works two ways: JSPI, and a `LocalEventLoop` runtime; single-threaded; some patches **not yet upstream**; sockets through `-sNODERAWSOCKETS` | **Experimental.** Confirms §36 and CF1; see D576 |
 
 ## 3. Artifacts as a Loams Git provider (D561–D564)
@@ -63,9 +63,9 @@ WebMCP lets a page register tools with `document.modelContext.registerTool`, so 
 
 ## 6. R2 Data Catalog and Iceberg interop (D571–D573)
 
-R2 Data Catalog is a managed Apache Iceberg REST catalog inside an R2 bucket (renamed Basin Catalog in the 2026 docs). Loams's catalog is Lakekeeper (§08), which also speaks the Iceberg REST protocol, so interop is a catalog configuration, not a new format.
+Basin Catalog (formerly R2 Data Catalog; generally available since 2026-10-01) is a managed Apache Iceberg REST catalog inside an R2 bucket. Loams's catalog is Lakekeeper (§08), which also speaks the Iceberg REST protocol, so interop is a catalog configuration, not a new format.
 
-- **D571: `loams-iceberg` accepts an external REST catalog** (`catalog.kind = "iceberg-rest"` with URI, warehouse and a bearer token) beside Lakekeeper, using the Apache `iceberg-rust` REST client. **D572: read first.** Loams reads tables from R2 Data Catalog for DataFusion queries on day one; Loams **writes** only after a spike shows commits to that catalog pass the conformance tests (optimistic commit, snapshot expiry, compaction), and a table has exactly one writing catalog. **D573:** the provider is a vendor adapter and is open; the hosted analytics service built on Pipelines and Basin SQL is private (loam-platform doc 04). The catalog's REST endpoint and auth are **not stated on the pages read (unverified)**; the spike confirms them.
+- **D571: `loams-iceberg` accepts an external REST catalog** (`catalog.kind = "iceberg-rest"` with URI, warehouse and a bearer token) beside Lakekeeper, using the Apache `iceberg-rust` REST client. **D572: read first.** Loams reads tables from R2 Data Catalog for DataFusion queries on day one; Cloudflare says external engines can write to it, but Loams **writes** only after a spike shows commits to that catalog pass the conformance tests (optimistic commit, snapshot expiry, compaction), and a table has exactly one writing catalog. **D573:** the provider is a vendor adapter and is open; the hosted analytics service built on Pipelines and Basin SQL is private (loam-platform doc 04). The catalog's REST endpoint, token scopes and prices were **not read (unverified)**; the spike confirms them.
 
 ## 7. Cross-references and what stays private
 
@@ -88,7 +88,7 @@ Issues (label `codex-ready,plan`) each carry the gates of the M1.5 plan and are 
 
 ## 9. Risks
 
-1. Betas change or end; every adapter is optional and behind a trait. 2. Artifacts' billing date differs between two Cloudflare pages. 3. WebMCP may change again (it already moved from `navigator` to `document`). 4. A remote browser holds page content in a third party's cloud; D567 defaults to public-web work only. 5. A renamed catalog product (Basin) may change endpoints.
+1. Betas change or end; every adapter is optional and behind a trait. 2. Artifacts' billing date differs between two Cloudflare pages. 3. WebMCP may change again (it already moved from `navigator` to `document`). 4. A remote browser holds page content in a third party's cloud; D567 defaults to public-web work only. 5. The catalog's endpoint and token scopes may change with the Basin rename.
 
 ## 10. Sources (read 2026-10-02)
 

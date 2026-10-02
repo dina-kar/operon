@@ -17,7 +17,7 @@ Staged 2026-10-02 so the decision log is not edited from this branch. Paste each
 | D568 | 2026-10-02 | WebMCP is an enhancement behind feature detection, never the only path (Community Group draft of 2026-09-30) | Experimental | Proposed |
 | D569 | 2026-10-02 | The console and plugins register one WebMCP tool per plugin action from the same action registry as the MCP server, enforcing OpenFGA and approvals | One description per action | Proposed |
 | D570 | 2026-10-02 | The web bridge's v2 adds `list_webmcp_tools` and `call_webmcp_tool` | Functions over UI driving | Proposed |
-| D571 | 2026-10-02 | `loams-iceberg` accepts an external Iceberg REST catalog (R2 Data Catalog, now Basin Catalog) beside Lakekeeper | Open adapter | Proposed |
+| D571 | 2026-10-02 | `loams-iceberg` accepts an external Iceberg REST catalog (Basin Catalog, formerly R2 Data Catalog; GA 2026-10-01) beside Lakekeeper | Open adapter | Proposed |
 | D572 | 2026-10-02 | Read first; write only after a conformance spike; one writing catalog per table | Safety | Proposed |
 | D573 | 2026-10-02 | The hosted analytics on Pipelines and Basin SQL is private | Open-core | Proposed |
 | D574 | 2026-10-02 | SF4 gets a `WorkspaceSnapshot` seam: branch plus volume snapshot on Knative, Containers snapshots on Cloudflare (private) | Pause and resume | Proposed |
@@ -36,5 +36,5 @@ Staged 2026-10-02 so the decision log is not edited from this branch. Paste each
 | Q565 | Is Browser Run generally available or beta, and what are its rates? | Eng | AP1c Task 0 |
 | Q566 | Kitesurf's licence and date when it is open-sourced | Founder | When announced |
 | Q568 | Chrome and Edge WebMCP status on a primary page (origin trial range) | Eng | AP1d Task 0 |
-| Q571 | The REST endpoint, auth and write support of the catalog (R2 Data Catalog, now Basin Catalog); is the rename real? | Eng | FL3 Task 0 |
+| Q571 | The REST endpoint, auth and write support of the catalog (Basin Catalog, formerly R2 Data Catalog; GA 2026-10-01); is the rename real? | Eng | FL3 Task 0 |
 | Q572 | Do commits from `iceberg-rust` to that catalog pass Loams's conformance tests? | Eng | FL3 |
