@@ -28,18 +28,22 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev' }}
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   # Which parts of the tree a pull request touches. The jobs below run on a
   # pull request only when their filter matches; on a push to main and on the
-  # nightly schedule every job runs as before (this job is skipped there).
+  # nightly schedule the relevant jobs run (this job is skipped there).
   # dorny/paths-filter is MIT-licensed; pinned to v4.0.3.
   changes:
     name: changed paths
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_LIGHT || 'ubuntu-latest') }}
     permissions:
       contents: read
       pull-requests: read
@@ -178,10 +182,10 @@ jobs:
               - "crates/loams-stream-grpc/proto/**"
 
   check:
-    name: fmt, clippy, test
+    name: fmt and clippy
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_DEV_HEAVY || 'depot-ubuntu-24.04-4') }}
     steps:
       - uses: actions/checkout@v7
       - name: protoc
@@ -233,8 +237,38 @@ jobs:
             1) ;;
             *) echo "the boundary grep failed ($status)"; exit 1 ;;
           esac
-      - name: test
-        run: cargo test --workspace --locked
+      # nextest does not run doctests; keep the Cargo doc-test pass.
+      - name: doc tests
+        run: cargo test --workspace --doc --locked
+
+  rust-tests:
+    name: Rust tests (${{ matrix.partition }}/2)
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true') }}
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_DEV_HEAVY || 'depot-ubuntu-24.04-4') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2]
+    steps:
+      - uses: actions/checkout@v7
+      - name: protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - name: workspace tests
+        run: cargo nextest run --workspace --locked --partition hash:${{ matrix.partition }}/2
+
+  feature-tests:
+    name: Rust feature tests
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true') }}
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_DEV_HEAVY || 'depot-ubuntu-24.04-4') }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
       - name: loams's MySQL wire listener (mysql-wire feature)
         run: 'cargo test -p loams --features mysql-wire --lib --locked mysql_wire::'
       - name: loams's PostgreSQL wire listener (pgwire feature)
@@ -257,8 +291,8 @@ jobs:
   crash-gate:
     name: kill -9 crash gate
     needs: changes
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.engine == 'true') }}
-    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || (github.base_ref == 'main' && needs.changes.outputs.engine == 'true')) }}
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_DEV_HEAVY || 'depot-ubuntu-24.04-4') }}
     steps:
       - uses: actions/checkout@v7
       - name: protoc
@@ -272,8 +306,8 @@ jobs:
   cluster:
     name: multi-process cluster
     needs: changes
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.engine == 'true') }}
-    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || (github.base_ref == 'main' && needs.changes.outputs.engine == 'true')) }}
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_DEV_HEAVY || 'depot-ubuntu-24.04-4') }}
     steps:
       - uses: actions/checkout@v7
       - name: protoc
@@ -291,7 +325,7 @@ jobs:
     name: Python qdrant-client smoke
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.engine == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_DEV_HEAVY || 'depot-ubuntu-24.04-4') }}
     steps:
       - uses: actions/checkout@v7
       - name: protoc
@@ -328,7 +362,7 @@ jobs:
     name: Elasticsearch client suite
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.es == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_DEV_HEAVY || 'depot-ubuntu-24.04-4') }}
     # The Elasticsearch 8.19 oracle (plan M1.5 Task 11, owner ruling
     # O-M15-6): a CI-only test oracle, never vendored or shipped (R14).
     services:
@@ -364,7 +398,7 @@ jobs:
     name: simulation seed sweep
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.sim == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_DEV_HEAVY || 'depot-ubuntu-24.04-4') }}
     steps:
       - uses: actions/checkout@v7
       - name: protoc
@@ -385,14 +419,14 @@ jobs:
           TAIL_PROP_CASES: "256"
 
   # R1 plan Task 1: the TiKV-backed suites against a tiup playground (PD and
-  # TiKV v8.5.8 on API v2, port offset 17000). Pull requests run it only when
+  # TiKV v8.5.8 on API v2, port offset 17000). Promotion PRs run it only when
   # they touch the TiKV crates, their cluster config or scripts, or the Live
-  # protos (the `tikv` filter in the changes job).
+  # protos (the `tikv` filter in the changes job). Nightly has its own job.
   tikv:
     name: TiKV suites
     needs: changes
-    if: ${{ !cancelled() && (github.event_name != 'schedule' && (github.event_name != 'pull_request' || needs.changes.outputs.tikv == 'true')) }}
-    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && github.event_name != 'schedule' && (github.event_name != 'pull_request' || (github.base_ref == 'main' && needs.changes.outputs.tikv == 'true')) }}
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_DEV_HEAVY || 'depot-ubuntu-24.04-4') }}
     steps:
       - uses: actions/checkout@v7
       - name: protoc
@@ -450,7 +484,7 @@ jobs:
   tikv-nightly:
     name: TiKV suites (nightly)
     if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_DEV_HEAVY || 'depot-ubuntu-24.04-4') }}
     steps:
       - uses: actions/checkout@v7
       - name: paths
@@ -533,7 +567,7 @@ jobs:
     name: durable execution (SQLite linearizability)
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'schedule' && (github.event_name != 'pull_request' || needs.changes.outputs.durable == 'true')) }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_DEV_HEAVY || 'depot-ubuntu-24.04-4') }}
     timeout-minutes: 120
     env:
       DURABLE_FORK_TARGET_DIR: ${{ github.workspace }}/target/durable-fork-build
@@ -574,7 +608,7 @@ jobs:
   durable-tidb:
     name: durable execution on TiDB (nightly)
     if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_DEV_HEAVY || 'depot-ubuntu-24.04-4') }}
     timeout-minutes: 180
     env:
       DURABLE_FORK_TARGET_DIR: ${{ github.workspace }}/target/durable-fork-build
@@ -640,7 +674,7 @@ jobs:
     name: loams.live.v1 protos and generated TypeScript
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.protos == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_LIGHT || 'ubuntu-latest') }}
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -677,7 +711,7 @@ jobs:
     name: app protos, @loams/proto and the mobile templates
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.app-protos == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_LIGHT || 'ubuntu-latest') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -726,7 +760,7 @@ jobs:
     name: licenses, advisories, sources
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.deny == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_LIGHT || 'ubuntu-latest') }}
     steps:
       - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
@@ -735,7 +769,7 @@ jobs:
     name: console and @loams/ui
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.web == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_LIGHT || 'ubuntu-latest') }}
     defaults:
       run:
         working-directory: web
@@ -763,7 +797,7 @@ jobs:
     name: Dapr trigger edge
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.dapr-edge == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_DEV_HEAVY || 'depot-ubuntu-24.04-4') }}
     defaults:
       run:
         working-directory: deploy/dapr/edge
