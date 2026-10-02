@@ -5,20 +5,20 @@
 > **Status: Planned** (2026-10-02). **Slot: track SF, third plan** (proposed; D465, D467, D468, D478). Branches `sf3-t<N>`, stacked; PRs target `main` (mobile: `ostrium-labs/loams-mobile`). Depends on SF2 (the A2A client, agents and token exchange), AP0 (protos, the mock), AP1a (the cordis browser console), the **native desktop shell, a zeron fork** (§37 amended for a native desktop, D440-series pending; Tasks 5 and 6's desktop halves wait for its skeleton and build as standalone crates with GPUI's test context until then) and AP2/AP3 for the phone shells; the push path (D436) is AP4 server work and the phone push tasks (Task 8) use AP0's mock notifier until it lands. Loopback only until the unified auth plan (D111).
 
 **Goal:** One chat, **Loams Bot**, in the native desktop app (a zeron fork), in the browser console (a cordis page and overlay) and on iOS and Android (native), driving the platform agents over A2A:
-- a server, **`operon-bot`**, that runs the harness agent loop headless, as a durable execution per chat thread, with a `subagent-a2a` provider that delegates to the agents of SF2;
-- **`loam.bot.v1`** over Connect for every client (threads, send, watch, cancel, answer, approve-handoff);
+- a server, **`loams-bot`**, that runs the harness agent loop headless, as a durable execution per chat thread, with a `subagent-a2a` provider that delegates to the agents of SF2;
+- **`loams.bot.v1`** over Connect for every client (threads, send, watch, cancel, answer, approve-handoff);
 - **the desktop as a new `Harness` in zeron's engine** (`loams-harness-bot`) so zeron's own conversation, composer, sidebar and trajectory UI show Loams Bot threads, plus GPUI cards and approvals views; and the browser console's `@loams/plugin-bot`, a cordis port of the DeepSeek harness's conversation UI;
 - native chat screens on both phones, with push that opens the right thread, run or approval;
 - Loams Bot as an **A2A server** too, so external A2A clients can drive it: the server, its route and its card are **disabled by default** and exist only with `--bot-a2a` (Q469).
 
 **Architecture:**
 - **`crates/operon-bot`**: the Connect service (`BotService`), the thread store (Live table `bot_threads`, stream `bot_events`), the **harness host manager** (spawns and supervises the harness SDK server process, speaks its JSON-RPC over stdio or a Unix socket), the A2A client wiring (SF2's `A2aClient`, token exchange per call), the push mapping, and the optional A2A server card for `loams-bot`.
-- **`packages/subagent-a2a`** (TypeScript, in the harness-host bundle `web/host-bot/`): a provider on `ctx.subagents` patterned on `subagent-acp`: `start`, `continue`, `cancel`, `list`, over a small `A2aTransport` that calls back to `operon-bot` (the Rust side owns tokens, signing and tracing; the TS side never sees a bearer).
+- **`packages/subagent-a2a`** (TypeScript, in the harness-host bundle `web/host-bot/`): a provider on `ctx.subagents` patterned on `subagent-acp`: `start`, `continue`, `cancel`, `list`, over a small `A2aTransport` that calls back to `loams-bot` (the Rust side owns tokens, signing and tracing; the TS side never sees a bearer).
 - **`web/plugins/bot`** (`@loams/plugin-bot`): the **browser console's** cordis page and overlay: `bot.message.renderer`, `bot.card`, composer, slash commands, mentions, trajectory.
-- **Desktop (the zeron fork; the directory is named by §37's amendment, written `desktop/`):** `loams-harness-bot` (implements zeron's `Harness` trait over `operon-apps-client`'s `BotService` client), `loams-ui-bot` (artifact cards, `@agent` mentions, slash commands, the Loams Bot sidebar section, the approvals handoff) and, from SF4, `loams-ui-factory`.
+- **Desktop (the zeron fork; the directory is named by §37's amendment, written `desktop/`):** `loams-harness-bot` (implements zeron's `Harness` trait over `loams-apps-client`'s `BotService` client), `loams-ui-bot` (artifact cards, `@agent` mentions, slash commands, the Loams Bot sidebar section, the approvals handoff) and, from SF4, `loams-ui-factory`.
 - **`ostrium-labs/loams-mobile`**: `Bot` module in each app: chat list, thread, composer, artifact cards, deep links, notification handlers.
 
-**Tech Stack:** Rust 1.97.1, edition 2024, connect-rust and buffa (D128), `operon-a2a` (SF2), `operon-durable`; the harness core packages (MIT; pinned commit recorded in `THIRD_PARTY_NOTICES.md`; D421: patterns, with any copied file keeping its notice) running on Node 22 or Bun (Task 0 picks), cordis 4 behind `@loams/cordis` for the browser console; TypeScript, React, Vitest, Playwright; for the desktop, Rust with the zeron fork's GPUI revision and its `zeron-harness`, `zeron-proto` and `zeron-ui` crates (MIT; licences of the whole tree checked with `cargo deny` at Task 0); SwiftUI with connect-swift (iOS 17), Jetpack Compose with connect-kotlin (API 29), XCTest, JUnit and Compose UI tests.
+**Tech Stack:** Rust 1.97.1, edition 2024, connect-rust and buffa (D128), `loams-a2a` (SF2), `loams-durable`; the harness core packages (MIT; pinned commit recorded in `THIRD_PARTY_NOTICES.md`; D421: patterns, with any copied file keeping its notice) running on Node 22 or Bun (Task 0 picks), cordis 4 behind `@loams/cordis` for the browser console; TypeScript, React, Vitest, Playwright; for the desktop, Rust with the zeron fork's GPUI revision and its `zeron-harness`, `zeron-proto` and `zeron-ui` crates (MIT; licences of the whole tree checked with `cargo deny` at Task 0); SwiftUI with connect-swift (iOS 17), Jetpack Compose with connect-kotlin (API 29), XCTest, JUnit and Compose UI tests.
 
 **Spec:**
 - [`docs/design/39-software-factory-and-loams-bot.md`](../design/39-software-factory-and-loams-bot.md): §5 (all), §8, §13; D465–D468, D478.
@@ -29,14 +29,14 @@
 ## Global Constraints
 
 - **Clients speak Connect only** (D420). No A2A on the phones or the desktop UI.
-- **Loams Bot never decides an approval, and never answers a question that an agent has not marked `answerable_by_orchestrator`** (design §8). The client UI offers "Review", which opens `loam.approvals.v1`'s screen.
-- **No bearer in the harness host process.** Tokens, signing and tracing live in `operon-bot`. The TS side sends `a2a.call` requests over the host channel and receives results.
+- **Loams Bot never decides an approval, and never answers a question that an agent has not marked `answerable_by_orchestrator`** (design §8). The client UI offers "Review", which opens `loams.approvals.v1`'s screen.
+- **No bearer in the harness host process.** Tokens, signing and tracing live in `loams-bot`. The TS side sends `a2a.call` requests over the host channel and receives results.
 - **A thread is a durable execution.** Closing the app, a locked phone and a crashed host process lose nothing; the thread resumes (§21, D24).
 - **No queued sends offline** (D437). A send needs a connection; the composer says so.
 - **Untrusted content renders as inert text** in every client (design §8 item 5).
 - **Mobile uses the binary Connect codec** (D433); the desktop uses connect-rust clients through the transport and token source of §37's amendment; the browser console uses JSON over fetch.
 - **zeron's sync is not used.** The desktop runs in zeron's Local profile for Loams threads; the Loams instance is the source of truth (design §13).
-- **Loopback only until D111**, as `operon-bot`'s listener and the host channel.
+- **Loopback only until D111**, as `loams-bot`'s listener and the host channel.
 - **The build machine.** One cargo build at a time; Node and Gradle builds one at a time; Xcode builds on the Mac only.
 - **Commit areas:** `bot`, `subagent-a2a`, `web`, `desktop`, `ios`, `android`, `proto`, `docs`.
 
@@ -44,8 +44,8 @@
 
 | # | Ruling | Why | Cost if wrong |
 |---|---|---|---|
-| 1 | **The agent loop is the harness core, run as a supervised child process; `operon-bot` is Rust** | Buy, not build: the harness's loop, sessions, compaction, subagent seam and user-question seam are mature MIT code; a Rust port is a large rewrite with no user-visible gain | A second runtime (Node or Bun) in the server image. Q468 asks whether to port the small loop to Rust later. The channel is narrow so a port is possible |
-| 2 | **`loam.bot.v1` imports A2A's `Message`, `Part`, `Task` and `Artifact` protos if Task 0 shows it works** (Q467); otherwise it mirrors them field for field | One vocabulary from agent to screen | Mirroring needs a conversion layer; fixtures pin it |
+| 1 | **The agent loop is the harness core, run as a supervised child process; `loams-bot` is Rust** | Buy, not build: the harness's loop, sessions, compaction, subagent seam and user-question seam are mature MIT code; a Rust port is a large rewrite with no user-visible gain | A second runtime (Node or Bun) in the server image. Q468 asks whether to port the small loop to Rust later. The channel is narrow so a port is possible |
+| 2 | **`loams.bot.v1` imports A2A's `Message`, `Part`, `Task` and `Artifact` protos if Task 0 shows it works** (Q467); otherwise it mirrors them field for field | One vocabulary from agent to screen | Mirroring needs a conversion layer; fixtures pin it |
 | 3 | **One thread = one A2A `contextId`**; each user message that delegates is one or more A2A tasks | A2A's context model fits chat; multi-turn clarification stays within a context | A thread that touches five agents has five task chains under one context; the UI shows them as subagent cards |
 | 4 | **Routing is the model's, with `@agent` as an override**; the card skills are the model's tool descriptions | No separate router to maintain; the cards are the truth | Wrong routing is possible; `/route` shows the choice and the trajectory view shows why |
 | 5 | **The desktop is a `Harness` in zeron, not a second chat UI** | Reuses zeron's conversation, composer, sidebar and diff pane; Loams Bot threads sit beside local coding sessions | The fork must keep the `Harness` seam stable across zeron upgrades; Loams code is in separate crates and upstreamed where it fits |
@@ -65,7 +65,7 @@
 ## File structure
 
 ```
-proto/loam/bot/v1/bot.proto                            # BotService, Thread, Event, Part, Card, TaskRef
+proto/loams/bot/v1/bot.proto                            # BotService, Thread, Event, Part, Card, TaskRef
 crates/operon-bot/src/{lib.rs,service.rs,threads.rs,host.rs,channel.rs,a2a.rs,approvals.rs,push.rs,card.rs}
 crates/operon-bot/tests/{main.rs,service.rs,threads.rs,host.rs,approvals.rs,push.rs,canary.rs,a2a_server.rs}
 web/host-bot/{package.json,src/{main.ts,channel.ts,provider.ts,transport.ts},test/*}   # harness host bundle + subagent-a2a
@@ -85,14 +85,14 @@ docs/design/39-…  docs/plans/README.md  THIRD_PARTY_NOTICES.md  CHANGELOG.md
 - **Which `ui-*` plugins** are reusable as they are, which need Typert replaced by Connect, which hard-code harness concepts that Loams lacks (workspaces, goals, plans).
 - **zeron** at the pinned commit: the `Harness` trait (`zeron-harness`), `RunRequest` and `AgentEvent` (`zeron-proto`), how `zeron-ui` registers views and sidebar sections, how steering and interrupt reach a harness, how a harness reports questions and approvals, which crates the fork must keep, the licence of every dependency (`cargo deny check`, including the forked GPUI, Loro and `webrtc`), and what sync would do if a Loams build left it on (it must be off).
 - **The mobile harness chat module:** the message model, tool-card model, goal dock, and what is Android-specific; the shape SwiftUI needs.
-- **A2A proto import** (Q467): does importing the spec's `a2a.proto` into buffa and connect-rust work for `loam.bot.v1`, and does connect-swift and connect-kotlin generation handle it.
+- **A2A proto import** (Q467): does importing the spec's `a2a.proto` into buffa and connect-rust work for `loams.bot.v1`, and does connect-swift and connect-kotlin generation handle it.
 - Which Node or Bun, and the host image size delta (estimate).
 
 **Commit:** `docs: reconcile SF3 with main`.
 
-### Task 1: `loam.bot.v1` and the mock
+### Task 1: `loams.bot.v1` and the mock
 
-**Files:** `proto/loam/bot/v1/bot.proto`, `conformance/fixtures/bot/*.json`, AP0's mock server (`operon-apps-mock`) additions.
+**Files:** `proto/loams/bot/v1/bot.proto`, `conformance/fixtures/bot/*.json`, AP0's mock server (`loams-apps-mock`) additions.
 
 **Produces:**
 
@@ -112,13 +112,13 @@ service BotService {
 // TaskRef { agent, task_id, state, status_text, approval_id? }   // states are A2A's, as strings
 ```
 
-`ApprovalRequested` carries `approval_id` and `revision` only; the details come from `loam.approvals.v1`. **There is no `Approve` or `Decide` RPC in `BotService`** (a compile-level guarantee that Task 4 tests).
+`ApprovalRequested` carries `approval_id` and `revision` only; the details come from `loams.approvals.v1`. **There is no `Approve` or `Decide` RPC in `BotService`** (a compile-level guarantee that Task 4 tests).
 
 **Tests:** `buf lint`, `buf breaking`; golden JSON for every event kind round-trips through the generated TS, Swift and Kotlin types (`events_golden`); mock tests: `watch_sends_snapshot_then_changes_then_heartbeat`, `watch_resumes_from_cursor`, `send_is_idempotent_on_key`, `no_decide_rpc_exists` (a reflection test over the service descriptor).
 
-**Commit:** `proto: loam.bot.v1`.
+**Commit:** `proto: loams.bot.v1`.
 
-### Task 2: `operon-bot`: threads as durable executions
+### Task 2: `loams-bot`: threads as durable executions
 
 **Files:** `crates/operon-bot/src/{lib.rs,service.rs,threads.rs}`, `tests/{main.rs,service.rs,threads.rs}`.
 
@@ -162,7 +162,7 @@ export const a2aSubagentProvider: SubagentProvider = {
 };
 ```
 
-**Semantics:** `operon-bot` spawns the host with no environment secrets, passes a per-thread **host token** that is a channel capability, not a bearer: 256 random bits, delivered over an inherited file descriptor (never argv or the environment), bound to one thread id and to the host process's life, never valid on the Connect listener or against any other thread, and authorising exactly these channel calls for that thread: `a2a.send`, `a2a.stream`, `a2a.cancel`, `a2a.list_agents`, `ask_user`, `request_approval` (which creates an approval and can never decide one) and `emit`. A replayed or foreign-thread use is refused and logged. It grants no network access. `a2a.*` requests from the host are executed by `operon-bot`'s `A2aClient`: it exchanges the user's token for an agent-audience token (SF2 Task 4), signs nothing the host can see, forwards `traceparent`, and streams results back as `emit` events. The harness `userQuestions` and approval services are bound to `ask_user` and `request_approval`: they create `INPUT_REQUIRED` handling in `operon-bot` (Task 4). Agent skills from verified cards become tool descriptions (`delegate_to_<agent>` with the skills in its description); `@agent` in a message forces `delegate_to_<agent>` as the first call. The default model route is DeepSeek through the AI gateway; the host calls the gateway through a channel method that attaches the thread's token, so the host never holds a gateway key.
+**Semantics:** `loams-bot` spawns the host with no environment secrets, passes a per-thread **host token** that is a channel capability, not a bearer: 256 random bits, delivered over an inherited file descriptor (never argv or the environment), bound to one thread id and to the host process's life, never valid on the Connect listener or against any other thread, and authorising exactly these channel calls for that thread: `a2a.send`, `a2a.stream`, `a2a.cancel`, `a2a.list_agents`, `ask_user`, `request_approval` (which creates an approval and can never decide one) and `emit`. A replayed or foreign-thread use is refused and logged. It grants no network access. `a2a.*` requests from the host are executed by `loams-bot`'s `A2aClient`: it exchanges the user's token for an agent-audience token (SF2 Task 4), signs nothing the host can see, forwards `traceparent`, and streams results back as `emit` events. The harness `userQuestions` and approval services are bound to `ask_user` and `request_approval`: they create `INPUT_REQUIRED` handling in `loams-bot` (Task 4). Agent skills from verified cards become tool descriptions (`delegate_to_<agent>` with the skills in its description); `@agent` in a message forces `delegate_to_<agent>` as the first call. The default model route is DeepSeek through the AI gateway; the host calls the gateway through a channel method that attaches the thread's token, so the host never holds a gateway key.
 
 **Tests:** Rust: `host_restarts_with_backoff`; `host_channel_carries_no_bearer`; `canary_token_never_reaches_host` (a canary bearer is planted and the host token is a second canary; every byte on the channel and the host's stdout, stderr and environment is scanned for the bearer, and the host token must appear only in the channel handshake, never in a log or span); `a2a_send_adds_traceparent`; `a2a_call_uses_audience_bound_token`; `host_crash_does_not_lose_thread` (see Task 2). TS (Vitest): `provider_start_sends_a2a_send_over_channel`; `provider_continue_uses_task_and_context`; `provider_cancel_propagates`; `skills_become_tool_descriptions`; `at_mention_forces_first_call`; `injected_text_in_data_part_does_not_change_tool_choice` (scripted-model corpus as in SF2 Task 9, over the full path with fake agents).
 
@@ -172,7 +172,7 @@ export const a2aSubagentProvider: SubagentProvider = {
 
 **Files:** `crates/operon-bot/src/approvals.rs`, `tests/approvals.rs`.
 
-**Semantics (design §5.3, §8):** an agent task entering `TASK_STATE_INPUT_REQUIRED` with a question `data` part becomes a `QuestionAsked` event (a card with options if given); the user's `AnswerQuestion` becomes the A2A follow-up message. One rule (design §5.3 and §8): Loams Bot relays every `INPUT_REQUIRED` question to the person, and the model may answer one **only** if the agent marked it `answerable_by_orchestrator`; otherwise the model is told it cannot, and the thread waits. Approvals are never answered by the model. An approval (`data: { approval_id, revision }`) becomes `ApprovalRequested`; the client opens `loam.approvals.v1`'s review screen. Loams Bot **does not call `DecideApproval`**; the service has no code path to it, and `operon-bot`'s service account has no `approvals:decide` scope. When the approval is settled the agent's own durable function resumes; the A2A push or the stream then reports the state change, which becomes a `TaskUpdated` event and a push (Task 8). `AUTH_REQUIRED` is an administrator matter and must not expose a transcript: the thread owner sees only a card saying that an administrator must reconnect the app; admins (`factory:admin`) get a separate **admin notice**, a `loam.factory.v1.ListAgents` health state `AUTH_REQUIRED` and a push category `admin.agent_auth` carrying only the agent and app names and a link to the connect-app page, never thread content.
+**Semantics (design §5.3, §8):** an agent task entering `TASK_STATE_INPUT_REQUIRED` with a question `data` part becomes a `QuestionAsked` event (a card with options if given); the user's `AnswerQuestion` becomes the A2A follow-up message. One rule (design §5.3 and §8): Loams Bot relays every `INPUT_REQUIRED` question to the person, and the model may answer one **only** if the agent marked it `answerable_by_orchestrator`; otherwise the model is told it cannot, and the thread waits. Approvals are never answered by the model. An approval (`data: { approval_id, revision }`) becomes `ApprovalRequested`; the client opens `loams.approvals.v1`'s review screen. Loams Bot **does not call `DecideApproval`**; the service has no code path to it, and `loams-bot`'s service account has no `approvals:decide` scope. When the approval is settled the agent's own durable function resumes; the A2A push or the stream then reports the state change, which becomes a `TaskUpdated` event and a push (Task 8). `AUTH_REQUIRED` is an administrator matter and must not expose a transcript: the thread owner sees only a card saying that an administrator must reconnect the app; admins (`factory:admin`) get a separate **admin notice**, a `loams.factory.v1.ListAgents` health state `AUTH_REQUIRED` and a push category `admin.agent_auth` carrying only the agent and app names and a link to the connect-app page, never thread content.
 
 **Tests:** `question_becomes_card_and_answer_becomes_followup`; `unmarked_question_goes_to_the_user`; `marked_question_may_be_answered_by_model`; `approval_requested_event_has_id_and_revision_only`; `approval_decision_through_bot_is_refused` (every route and the host channel; the service account lacks the scope); `settled_approval_resumes_task`; `rejected_approval_ends_task_rejected`; `stale_revision_card_is_updated_not_decided`; `auth_required_owner_sees_no_link_and_admin_notice_has_no_transcript`; `admin_push_carries_only_agent_and_app`.
 
@@ -218,7 +218,7 @@ export const a2aSubagentProvider: SubagentProvider = {
 
 **Semantics:** as Task 7 in Compose with connect-kotlin over OkHttp. **Push** (D436) categories added by SF3: `bot.task` (an agent finished or needs input), `bot.question` (INPUT_REQUIRED with a question), `bot.approval` (reuses `approvals`), each a sealed notification with a title, a short body, and a deep link to the thread (`loams://bot/threads/<id>#task=<task id>`) or the approval; the engine projects the CloudEvent `io.loams.dev.bot.task.updated.v1` (from SF2's push receiver) through the notifier. Quiet hours and per-category preferences are D436's; `bot.question` and `bot.approval` may bypass quiet hours by the user's setting. **A tap opens the screen and does nothing else.** Android: a `FirebaseMessagingService` and the UnifiedPush flavour; iOS: the notification service extension. If the sealed payload cannot be opened, the generic text stays and the inbox syncs.
 
-**Tests:** Kotlin: `events_golden`; `thread_states_golden`; `compose_snapshot_per_card`; `reconnect_resumes_from_cursor`; `offline_is_read_only`; `push_payload_golden` (the `push.json` rows open sealed payloads to the expected deep links); `tap_navigates_only`; `quiet_hours_respect_category`; `deeplink_table`; TalkBack labels. Swift: `push_payload_golden`, `tap_navigates_only`. Server (Rust, in `operon-bot`): `task_update_becomes_cloudevent`; `notifier_targets_threads_owner_devices_only`; `sealed_notification_has_no_content_beyond_title_and_short_body`.
+**Tests:** Kotlin: `events_golden`; `thread_states_golden`; `compose_snapshot_per_card`; `reconnect_resumes_from_cursor`; `offline_is_read_only`; `push_payload_golden` (the `push.json` rows open sealed payloads to the expected deep links); `tap_navigates_only`; `quiet_hours_respect_category`; `deeplink_table`; TalkBack labels. Swift: `push_payload_golden`, `tap_navigates_only`. Server (Rust, in `loams-bot`): `task_update_becomes_cloudevent`; `notifier_targets_threads_owner_devices_only`; `sealed_notification_has_no_content_beyond_title_and_short_body`.
 
 **Commit (per repository):** `android: Loams Bot chat and push`, `ios: bot push`.
 

@@ -1,0 +1,15 @@
+//! The Loams server: one process running the metastore, the log, the range
+//! cache and the background loops, serving the native HTTP API
+//! (design §10 §1: `loams dev` and `loams standalone`).
+
+pub mod api;
+pub mod cluster;
+mod meta_backend;
+#[cfg(feature = "mysql-wire")]
+pub mod mysql_wire;
+#[cfg(feature = "pgwire")]
+pub mod pg;
+mod server;
+
+pub use meta_backend::{MetaBackend, NO_TIKV_FEATURE, TIKV_SCHEME};
+pub use server::{ClusterConfig, Server, ServerConfig, ServerError};

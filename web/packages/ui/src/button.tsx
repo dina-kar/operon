@@ -15,10 +15,10 @@ export function buttonClass({
   className?: string;
 } = {}): string {
   return cx(
-    'loam-btn',
-    `loam-btn-${variant}`,
-    size === 'sm' && 'loam-btn-sm',
-    size === 'icon' && 'loam-btn-icon',
+    'loams-btn',
+    `loams-btn-${variant}`,
+    size === 'sm' && 'loams-btn-sm',
+    size === 'icon' && 'loams-btn-icon',
     className,
   );
 }

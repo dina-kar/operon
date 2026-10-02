@@ -7,18 +7,18 @@
 **Goal:** Loams Software Factory's loop, for **one organisation that self-hosts it**:
 - the `factory.run` **Resonate workflow** of design §10: intake, triage, plan, fix, review, deploy, observe, close, with `generation` for regressions;
 - **gates, budgets, a kill switch, loop limits and audit** (design §11), enforced in the engine;
-- the **run record** (Live table `factory_runs`, stream `factory_events`, audit events) and the `loam.factory.v1` service;
+- the **run record** (Live table `factory_runs`, stream `factory_events`, audit events) and the `loams.factory.v1` service;
 - the **console pages and mobile views** for runs, approvals, agents, policy and the kill switch;
 - the **`deploy/factory/` package** (chart, catalog patch, manifest) that a single organisation installs with Helm.
 
 **Architecture:**
-- **`crates/operon-factory`**: `FactoryService` (Connect, `loam.factory.v1`), the workflow (`factory_run`, one function per stage, a shared `StageCtx`), `Guard` (budgets, kill flag, cooldowns, concurrency), the intake receivers (`/hooks/glitchtip`, `/hooks/forgejo`, `/hooks/zulip`, `/hooks/plane`), `PolicyStore` (versioned Live document), `RunStore`, and the CloudEvent publisher.
-- **Durable shape:** one Resonate function per run, keyed by `fingerprint ‖ generation`; every stage a `ctx.run` step with the step's promise id as idempotency key; waits (a human decision, CI, an approval, a rollout, the observation window) are promises or durable sleeps. A2A calls go through `operon-a2a`'s client with a deterministic `messageId`.
-- **State:** runs and policy on Live (TiKV in cloud, the local store in `loams dev`); events on a Loam stream; artifacts live in the apps.
+- **`crates/operon-factory`**: `FactoryService` (Connect, `loams.factory.v1`), the workflow (`factory_run`, one function per stage, a shared `StageCtx`), `Guard` (budgets, kill flag, cooldowns, concurrency), the intake receivers (`/hooks/glitchtip`, `/hooks/forgejo`, `/hooks/zulip`, `/hooks/plane`), `PolicyStore` (versioned Live document), `RunStore`, and the CloudEvent publisher.
+- **Durable shape:** one Resonate function per run, keyed by `fingerprint ‖ generation`; every stage a `ctx.run` step with the step's promise id as idempotency key; waits (a human decision, CI, an approval, a rollout, the observation window) are promises or durable sleeps. A2A calls go through `loams-a2a`'s client with a deterministic `messageId`.
+- **State:** runs and policy on Live (TiKV in cloud, the local store in `loams dev`); events on a Loams stream; artifacts live in the apps.
 - **`web/plugins/factory`**: pages, cards, the kill switch for the browser console; **`desktop/crates/loams-ui-factory`**: the same views as native GPUI panels in the zeron fork; **`loams-mobile`**: run list and timeline, kill button.
 - **`deploy/factory/chart`**: the Helm chart of the single-org factory (agents, the factory service, the collector configs of SF5, the edge routes of SF1) and `loams-factory.yaml`, the catalog patch.
 
-**Tech Stack:** Rust 1.97.1, edition 2024, `operon-durable` (Resonate Rust SDK, in-process), `operon-a2a` and `operon-collab`, connect-rust and buffa, Loam Live's client crate, `cloudevents-sdk`, `tokio-test` and a paused clock for time. TypeScript and cordis 4, Vitest, Playwright; Helm 3 and `helm unittest`; `kind` or `k3d` for the install test; SwiftUI and Compose for the phone views. No new durable engine, no new queue.
+**Tech Stack:** Rust 1.97.1, edition 2024, `loams-durable` (Resonate Rust SDK, in-process), `loams-a2a` and `loams-collab`, connect-rust and buffa, Loams Live's client crate, `cloudevents-sdk`, `tokio-test` and a paused clock for time. TypeScript and cordis 4, Vitest, Playwright; Helm 3 and `helm unittest`; `kind` or `k3d` for the install test; SwiftUI and Compose for the phone views. No new durable engine, no new queue.
 
 **Spec:**
 - [`docs/design/39-software-factory-and-loams-bot.md`](../design/39-software-factory-and-loams-bot.md): §8, §10, §11, §12, §14; D472–D475.
@@ -48,9 +48,9 @@
 | 3 | **CI is awaited by promise, settled by Forgejo's webhook** | No polling; works across restarts | A lost webhook stalls a run; a durable timer polls `ci.status` once a minute after 10 minutes of silence |
 | 4 | **Deploy is a Forgejo merge plus a GitOps rollout event** (§38); other deploy mechanisms are a configured webhook and a callback (Q473) | Argo CD is already the layout's deploy path; one mechanism is testable | Orgs with other CD systems wire the callback |
 | 5 | **The observation window is a durable sleep with early exit**: it ends early on `regressed` (recurrence over the threshold) and runs the full window on `resolved` | Fast revert, no wasted wait | Early exit needs a streaming check; polled each minute |
-| 6 | **Policy is a versioned Live document**, edited through `loam.factory.v1`, and edits in protected environments are approval-gated | Auditable and revertable; the policy is itself a risk | The policy editor is a form over JSON Schema (the connector form of §37); a raw JSON editor is available |
+| 6 | **Policy is a versioned Live document**, edited through `loams.factory.v1`, and edits in protected environments are approval-gated | Auditable and revertable; the policy is itself a risk | The policy editor is a form over JSON Schema (the connector form of §37); a raw JSON editor is available |
 | 7 | **Revert is a PR like any other**, gated by the merge approval | No special unsafe path | A broken main waits for a human; the console's "revert now" button opens the approval at once |
-| 8 | **The Plane and Forgejo agents write; the loop reads artifacts back through `loam.collab.v1`** | One audited read path | A little more latency per stage |
+| 8 | **The Plane and Forgejo agents write; the loop reads artifacts back through `loams.collab.v1`** | One audited read path | A little more latency per stage |
 
 ## Review Focus
 
@@ -64,7 +64,7 @@
 ## File structure
 
 ```
-proto/loam/factory/v1/factory.proto                   # FactoryService, Run, Stage, Policy, Budget, KillRequest
+proto/loams/factory/v1/factory.proto                   # FactoryService, Run, Stage, Policy, Budget, KillRequest
 crates/operon-factory/src/{lib.rs,service.rs,run.rs,stages/{intake,triage,plan,fix,review,deploy,observe,close}.rs,guard.rs,policy.rs,store.rs,hooks.rs,events.rs,fakes.rs}
 crates/operon-factory/tests/{main.rs,service.rs,guard.rs,intake.rs,stages.rs,e2e.rs,kill.rs,canary.rs,crash.rs}
 web/plugins/factory/{package.json,src/{index.ts,pages/{Runs,RunDetail,Approvals,Agents,Policy,Kill}.tsx,cards/*},test/*}
@@ -83,9 +83,9 @@ docs/design/39-…  docs/plans/README.md  CHANGELOG.md
 
 **Commit:** `factory: fake agents and reconcile with main`.
 
-### Task 1: `loam.factory.v1` and the run record
+### Task 1: `loams.factory.v1` and the run record
 
-**Files:** `proto/loam/factory/v1/factory.proto`, `crates/operon-factory/src/{service.rs,run.rs,store.rs,events.rs}`, `tests/{main.rs,service.rs}`.
+**Files:** `proto/loams/factory/v1/factory.proto`, `crates/operon-factory/src/{service.rs,run.rs,store.rs,events.rs}`, `tests/{main.rs,service.rs}`.
 
 **Produces:**
 
@@ -110,7 +110,7 @@ service FactoryService {
 
 **Tests:** `list_filters_by_state_and_project`; `get_run_has_links_not_content`; `watch_sends_snapshot_then_changes`; `start_is_idempotent_on_key`; `decide_triage_only_when_waiting`; `kill_requires_admin_and_step_up`; `events_golden` (every CloudEvent type against the CloudEvents profile of §34's open charter); `non_viewer_gets_not_found`.
 
-**Commit:** `factory: loam.factory.v1 and the run record`.
+**Commit:** `factory: loams.factory.v1 and the run record`.
 
 ### Task 2: Policy and the guard
 
@@ -180,7 +180,7 @@ pub struct StageCtx<'a> { pub run: &'a RunRecord, pub guard: &'a Guard<'a>, pub 
 
 **Files:** `crates/operon-factory/src/stages/{review,deploy}.rs`, `tests/stages.rs`, `tests/e2e.rs`.
 
-**Semantics:** **Review:** post the PR link and a summary in the thread; request the merge approval (`loam.approvals.v1`, kind `forgejo.merge`, a hash over repo, PR number, head SHA, base branch); wait on the approval promise (72 h timeout then `abandoned` with the PR left open); a push to the PR head after the request **voids** the approval and re-requests it. **Deploy:** on a settled approval, `prs.merge` (the broker releases the permit only for the matching approval); then the deploy mechanism: **policy auto-merge**, when the org policy lists the repository and path and the required checks pass, replaces the human wait with a recorded **policy authorization** (a record of kind `policy`, which is an authorization under the org's policy and not an approval by a person, hash-bound to the same repo, PR, head SHA and base, created by the factory under the policy version in force and audited); the broker accepts it only for listed repositories and paths and **never in a protected environment**, where the human approval is required. For the §38 layout the merge lands on the environment branch and the run waits on the rollout promise `rollout:<run>:<sha>` settled by the Argo CD notification receiver; for the callback mechanism the promise is settled by the configured webhook. **Every deploy needs an approval by default**: when the policy lists the service with `deploy.auto` in an unprotected environment, the merge approval is the only one; in protected environments, for the first deploy of a service, and whenever `deploy.requires_approval` is set, **two approvals (the merge approval and a deploy approval covering the environment and the sha) both settle before `prs.merge` is called**. Rollout failure marks the run `failed` and opens the revert flow of Task 7. The merge approval is also visible in chat and on phones (SF3).
+**Semantics:** **Review:** post the PR link and a summary in the thread; request the merge approval (`loams.approvals.v1`, kind `forgejo.merge`, a hash over repo, PR number, head SHA, base branch); wait on the approval promise (72 h timeout then `abandoned` with the PR left open); a push to the PR head after the request **voids** the approval and re-requests it. **Deploy:** on a settled approval, `prs.merge` (the broker releases the permit only for the matching approval); then the deploy mechanism: **policy auto-merge**, when the org policy lists the repository and path and the required checks pass, replaces the human wait with a recorded **policy authorization** (a record of kind `policy`, which is an authorization under the org's policy and not an approval by a person, hash-bound to the same repo, PR, head SHA and base, created by the factory under the policy version in force and audited); the broker accepts it only for listed repositories and paths and **never in a protected environment**, where the human approval is required. For the §38 layout the merge lands on the environment branch and the run waits on the rollout promise `rollout:<run>:<sha>` settled by the Argo CD notification receiver; for the callback mechanism the promise is settled by the configured webhook. **Every deploy needs an approval by default**: when the policy lists the service with `deploy.auto` in an unprotected environment, the merge approval is the only one; in protected environments, for the first deploy of a service, and whenever `deploy.requires_approval` is set, **two approvals (the merge approval and a deploy approval covering the environment and the sha) both settle before `prs.merge` is called**. Rollout failure marks the run `failed` and opens the revert flow of Task 7. The merge approval is also visible in chat and on phones (SF3).
 
 **Tests:** `merge_without_approval_never_happens` (every path, including a replayed step); `approval_for_old_head_is_void`; `approval_timeout_abandons_leaves_pr_open`; `deploy_waits_for_rollout_event`; `rollout_failure_starts_revert`; `second_approval_for_protected_env_settles_before_merge`; `deploy_requires_approval_by_default`; `policy_rejects_zero_max_attempts`; `auto_merge_only_for_listed_repo_and_path_with_checks`; `auto_merge_never_in_protected_env`; `merge_approval_requester_cannot_be_the_approver` (SF3's rule, end to end); `e2e_signal_to_deployed_with_fakes` (the paused clock runs the whole loop in under 5 seconds of wall time).
 
@@ -200,7 +200,7 @@ pub struct StageCtx<'a> { pub run: &'a RunRecord, pub guard: &'a Guard<'a>, pub 
 
 **Files:** `web/plugins/factory/**` (browser console), `desktop/crates/loams-ui-factory/**` (the native desktop, a zeron fork; path per §37's amendment, D440-series pending), `loams-mobile` `Factory` modules, `web/apps/console/catalog/*`.
 
-**Desktop (GPUI):** `loams-ui-factory` renders the same Runs, Run detail (stage graph), Approvals, Agents, Policy and budgets, and Kill views from `operon-apps-client`'s `FactoryService` client and registers them in zeron's shell sidebar; "Open trace in Langfuse" and "Open in OpenObserve" go through SF1's `AppOpener` (system browser, or the sidebar browser where it ships); `/kill` and the Kill view need a step-up and a confirmation naming the in-flight tasks. Tests (GPUI test context, fake `FactoryService`): `runs_view_updates_live`, `run_detail_stage_graph_golden`, `trace_links_use_opener_and_are_hidden_when_apps_absent`, `kill_requires_step_up_and_shows_in_flight_count`, `policy_view_shows_diff`, `viewer_cannot_see_kill`.
+**Desktop (GPUI):** `loams-ui-factory` renders the same Runs, Run detail (stage graph), Approvals, Agents, Policy and budgets, and Kill views from `loams-apps-client`'s `FactoryService` client and registers them in zeron's shell sidebar; "Open trace in Langfuse" and "Open in OpenObserve" go through SF1's `AppOpener` (system browser, or the sidebar browser where it ships); `/kill` and the Kill view need a step-up and a confirmation naming the in-flight tasks. Tests (GPUI test context, fake `FactoryService`): `runs_view_updates_live`, `run_detail_stage_graph_golden`, `trace_links_use_opener_and_are_hidden_when_apps_absent`, `kill_requires_step_up_and_shows_in_flight_count`, `policy_view_shows_diff`, `viewer_cannot_see_kill`.
 
 **Produces:** `@loams/plugin-factory`: **Runs** (table, filters, a cost column, live updates through `WatchRuns`); **Run detail** (the stage graph with each stage's state, duration and cost; artifact links that open the SF1 panes and cards; "Open trace in Langfuse" and "Open in OpenObserve" as `embed.pane` actions from SF5, hidden when those apps are not listed; the approvals and the policy snapshot used); **Approvals** (the org's queue, reusing `approval.renderer`); **Agents** (cards, health, last task, principal state, suspend); **Policy and budgets** (a JSON-Schema form plus a raw editor, a diff against the previous version, approval for protected environments); **Kill switch** (scoped, step-up, a confirmation that names the number of in-flight tasks). `operation.detail#factory.run`. Mobile: run list, run timeline, approvals (existing), and a **Kill** action with biometric step-up; push categories `factory.run` (a run needs a decision, paused, completed, regressed) and `factory.budget`.
 
@@ -212,7 +212,7 @@ pub struct StageCtx<'a> { pub run: &'a RunRecord, pub guard: &'a Guard<'a>, pub 
 
 **Files:** `crates/operon-factory/tests/{kill.rs,canary.rs}`, audit event definitions.
 
-**Semantics:** `Kill(scope)`: (1) set the Live flag (run, agent or org); (2) suspend the affected agent principals through §19's suspend (tokens die with the change-feed latency); (3) `CancelTask` on every in-flight A2A task of the scope; (4) cancel the workflows; (5) post a notice to each run's thread; (6) emit `kill.executed`. A killed run's compensation (close its PR, delete its branch, comment) runs with the **factory service's own** principal, which is not suspended. Every command, policy change, gate and kill emits an audit event (OTel logs to a Loam stream, D100) with the actor chain and **no model content**.
+**Semantics:** `Kill(scope)`: (1) set the Live flag (run, agent or org); (2) suspend the affected agent principals through §19's suspend (tokens die with the change-feed latency); (3) `CancelTask` on every in-flight A2A task of the scope; (4) cancel the workflows; (5) post a notice to each run's thread; (6) emit `kill.executed`. A killed run's compensation (close its PR, delete its branch, comment) runs with the **factory service's own** principal, which is not suspended. Every command, policy change, gate and kill emits an audit event (OTel logs to a Loams stream, D100) with the actor chain and **no model content**.
 
 **Tests:** `kill_org_suspends_principals_and_cancels_tasks`; `kill_run_leaves_other_runs_running`; `kill_works_with_model_down` (the AI gateway returns 503; kill still completes in under 2 s of paused-clock time); `kill_mid_stage_stops_before_the_next_step`; `killed_run_compensates_pr_and_branch`; `audit_has_actor_chain_for_every_command`; `canary_never_appears_in_runs_events_audit` (secret canary and a model-content canary); `injection_in_issue_body_cannot_start_merge` (end to end with the scripted model); `budget_exceeded_card_has_no_content`.
 

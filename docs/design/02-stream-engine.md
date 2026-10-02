@@ -2,7 +2,7 @@
 
 Status: **Approved** · 2026-09-22 · revised 2026-09-25 (native streaming API, D43) · revised 2026-09-26 (the stream API core and OTLP logs ingest in M2, the Kafka gateway in M5, D72–D74) · amended 2026-09-26 (envelope encryption of WAL chunks, D96; collection write backpressure, D86) · amended 2026-09-30 (CloudEvents 1.0 ingest and consume, §7.4, D270)
 
-Goal: a partitioned log with **AutoMQ-grade reliability** (RPO 0 on node and AZ loss, seconds-level failover, no data on broker disks) and a choice of latency/cost per stream, reached through Operon's native streaming API and, from M5, the Kafka wire protocol — and it is the internal spine for every other object in Operon.
+Goal: a partitioned log with **AutoMQ-grade reliability** (RPO 0 on node and AZ loss, seconds-level failover, no data on broker disks) and a choice of latency/cost per stream, reached through Loams's native streaming API and, from M5, the Kafka wire protocol — and it is the internal spine for every other object in Loams.
 
 ---
 
@@ -28,7 +28,7 @@ Goal: a partitioned log with **AutoMQ-grade reliability** (RPO 0 on node and AZ 
 | `quorum` | **Journal**: openraft group of 3 `log` nodes (1 per AZ), WAL on local NVMe, offloaded to S3 | Majority fsync | 3–10 ms | Yes | Yes (2 replica copies per byte) | Lowest latency; on-prem (RustFS); clouds without zonal object storage |
 
 Notes:
-- `express` is Operon's answer to AutoMQ's commercial EBS/Regional-EBS WAL: low latency and multi-AZ durability **without stateful broker disks**. A similar multi-zonal-bucket approach has been described by WarpStream (verify). Express storage is expensive ($0.11/GB-month) but WAL objects live only seconds before offload; Express PUTs are cheaper per request than Standard.
+- `express` is Loams's answer to AutoMQ's commercial EBS/Regional-EBS WAL: low latency and multi-AZ durability **without stateful broker disks**. A similar multi-zonal-bucket approach has been described by WarpStream (verify). Express storage is expensive ($0.11/GB-month) but WAL objects live only seconds before offload; Express PUTs are cheaper per request than Standard.
 - On Azure, `express` may map to a single zone-redundant Premium block-blob account (verify). If no zonal/low-latency object store exists, `express` is unavailable and `quorum` is the low-latency option.
 - A future `blockvol` class (AutoMQ-style EBS WAL with multi-attach failover) can be added behind the same trait; not planned for v1.
 
@@ -106,7 +106,7 @@ Read amplification control: reads of recent data are coalesced per WAL object (o
 
 ## 7. Stream APIs
 
-Streams are reached through Operon's own API. The HTTP produce and long-poll fetch routes exist from M0.3. **M2 completes the core for v1.0** (D72): gRPC, idempotent producers, streaming subscribe, named consumers and stream admin. OTLP logs arrive through their own endpoint in M2 (§7.1). M5 adds Flight `DoGet` replay, changelog streams (§8.1) and the Kafka wire-protocol gateway (§7.2). Streams and namespaces are addressed by name. Collection writes go through a collection's implicit stream and are refused with 429 and `Retry-After` while the collection's unapplied backlog is at or above its budget (D86), unless a write sends `Operon-Backpressure: off`, which admits bulk loads up to 4× the budget; explicit streams have no apply backlog, and M2's ingest-bytes quota bounds them (D65).
+Streams are reached through Loams's own API. The HTTP produce and long-poll fetch routes exist from M0.3. **M2 completes the core for v1.0** (D72): gRPC, idempotent producers, streaming subscribe, named consumers and stream admin. OTLP logs arrive through their own endpoint in M2 (§7.1). M5 adds Flight `DoGet` replay, changelog streams (§8.1) and the Kafka wire-protocol gateway (§7.2). Streams and namespaces are addressed by name. Collection writes go through a collection's implicit stream and are refused with 429 and `Retry-After` while the collection's unapplied backlog is at or above its budget (D86), unless a write sends `Loams-Backpressure: off`, which admits bulk loads up to 4× the budget; explicit streams have no apply backlog, and M2's ingest-bytes quota bounds them (D65).
 
 | Feature | Design | Phase |
 |---|---|---|
@@ -126,10 +126,10 @@ The native API offers neither multi-partition transactions nor server-side consu
 
 ### 7.1 OTLP logs ingest (M2, D73)
 
-An OTLP endpoint for **logs only**, so log shippers write to Loam with no custom plugin (§7.3).
+An OTLP endpoint for **logs only**, so log shippers write to Loams with no custom plugin (§7.3).
 
 - **Transports.** OTLP/HTTP at `POST /v1/logs`, with protobuf (`application/x-protobuf`) or JSON (`application/json`) bodies, gzip allowed; OTLP/gRPC `LogsService/Export`. Default ports are the OTLP defaults, 4318 (HTTP) and 4317 (gRPC).
-- **Target.** The namespace and stream come from the `loam-namespace` and `loam-stream` headers (gRPC metadata), which every OTLP exporter can set, and default to the API key's namespace and the stream `otel_logs`. The API key goes in `Authorization: Bearer` (§10 §4).
+- **Target.** The namespace and stream come from the `loams-namespace` and `loams-stream` headers (gRPC metadata), which every OTLP exporter can set, and default to the API key's namespace and the stream `otel_logs`. The API key goes in `Authorization: Bearer` (§10 §4).
 - **Mapping.** Each `LogRecord` becomes one record. The value is one self-contained JSON object: the record in OTLP's JSON encoding, with its resource and scope attributes merged in. The timestamp is `time_unix_nano`, else `observed_time_unix_nano`, else arrival time. The key is empty (round-robin) unless the stream names a key attribute, such as `service.name`, which keeps one service's logs in order. Trace id, span id and severity number are also copied into record headers, so links can filter without parsing the value.
 - **Acknowledgement.** A request succeeds once all its records are committed. Records that fail validation are reported in `partial_success`. Over quota, the endpoint returns HTTP 429 or gRPC `RESOURCE_EXHAUSTED` with a retry delay, which OTLP exporters retry. OTLP has no producer ids, so an exporter that retries after a lost response can write duplicates: OTLP ingest is at-least-once.
 - **Into a collection.** A stream → collection link (§09) makes the logs searchable through the native API and the Qdrant and ES surfaces, visible through the tail within seconds.
@@ -137,11 +137,11 @@ An OTLP endpoint for **logs only**, so log shippers write to Loam with no custom
 
 ### 7.2 Kafka wire-protocol gateway (M5, D74)
 
-> **Proposed amendment (2026-10-01, §32 D331–D332, Q331):** event ingestion moves to the Event Fabric (Apache Iggy and Apache Fluss, [§32](32-loam-flow-fabric-house.md) §5), and Kafka clients of the Fabric use Iggy's Kafka gateway with Loam's contributions; this gateway is deferred, not cancelled, until the owner answers Q331. Streams keep their roles for Loam's own objects, OTLP logs and trigger-rate CloudEvents (§7.1, §7.4).
+> **Proposed amendment (2026-10-01, §32 D331–D332, Q331):** event ingestion moves to the Event Fabric (Apache Iggy and Apache Fluss, [§32](32-loams-flow-fabric-house.md) §5), and Kafka clients of the Fabric use Iggy's Kafka gateway with Loams's contributions; this gateway is deferred, not cancelled, until the owner answers Q331. Streams keep their roles for Loams's own objects, OTLP logs and trigger-rate CloudEvents (§7.1, §7.4).
 
-The Kafka protocol is Loam's long-term source-compatibility protocol. With it, Loam streams are readable and writable by RisingWave, Flink, Spark, Kafka Connect, Debezium, Fluent Bit's `kafka` output and Vector. WarpStream, AutoMQ and Bufstream show the model: a Kafka-compatible log on object storage, with stateless brokers. Nisshi (formerly Tansu; Apache-2.0, Rust, a Kafka broker on S3 or Postgres) is a reference (§11 §1.2).
+The Kafka protocol is Loams's long-term source-compatibility protocol. With it, Loams streams are readable and writable by RisingWave, Flink, Spark, Kafka Connect, Debezium, Fluent Bit's `kafka` output and Vector. WarpStream, AutoMQ and Bufstream show the model: a Kafka-compatible log on object storage, with stateless brokers. Nisshi (formerly Tansu; Apache-2.0, Rust, a Kafka broker on S3 or Postgres) is a reference (§11 §1.2).
 
-- **Mapping.** A Kafka topic is a Loam stream, a Kafka partition is a stream partition, and Kafka offsets are Loam's dense offsets. How topic names map to namespaces and how SASL carries the API key is Q26.
+- **Mapping.** A Kafka topic is a Loams stream, a Kafka partition is a stream partition, and Kafka offsets are Loams's dense offsets. How topic names map to namespaces and how SASL carries the API key is Q26.
 - **Leaderless.** Any `log` node accepts produce and fetch for any partition (§3), so `Metadata` names a node in the client's zone as the leader of every partition, as WarpStream does. A Kafka `Metadata` request carries no rack: `client.rack` reaches a broker only in a consumer's `Fetch` (v11+, KIP-392), and producers never send it. The zone therefore comes from the client id, WarpStream's `ws_az=<zone>` convention (verify), or from a per-zone bootstrap address. A client with neither gets any live `log` node, so its traffic may cross zones.
 - **No re-encoding.** `kafka`-encoded WAL chunks and segments already hold `RecordBatch` v2 bytes (§3, §5). Produce validates the client's batches and the sequencer assigns their offsets; Fetch serves the stored bytes with the assigned `baseOffset`. The segmenter already patches it into segments, and a batch read from a WAL chunk, which still carries the producer's value, gets it from the offset index. `baseOffset` is outside the batch CRC, so nothing is re-encoded. `arrow` streams are served by building batches on the fly.
 - **Staged within M5:**
@@ -150,29 +150,29 @@ The Kafka protocol is Loam's long-term source-compatibility protocol. With it, L
   3. Consumer groups with committed offsets: the classic group protocol (`FindCoordinator`, `JoinGroup`, `SyncGroup`, `Heartbeat`, `OffsetCommit`, `OffsetFetch`) first, then KIP-848 server-side assignment (`ConsumerGroupHeartbeat`). A group's coordinator runs on the rendezvous owner of `(ns, group)` (§18 §5.3); its committed offsets live in the metastore like a named consumer's, and commits are conditional on the group's generation, so a stale coordinator cannot commit.
 - **Not in M5:** Kafka transactions (transactional ids, `AddPartitionsToTxn`, `EndTxn`, read-committed isolation). A later milestone adds them on demand (Q4).
 - **Companion.** The RisingWave companion integration (D22) returns in M5 over this gateway (pending Q331: if the gateway is deferred, RisingWave reads the Event Fabric instead, §32 D341): RisingWave reads streams and changelog streams through its Kafka source and writes back through its Kafka sink.
-- **Gate.** The Kafka client test suites (librdkafka, franz-go or the Java client) pass against Loam, stage by stage; RisingWave, Flink and Kafka Connect run end to end (§12).
+- **Gate.** The Kafka client test suites (librdkafka, franz-go or the Java client) pass against Loams, stage by stage; RisingWave, Flink and Kafka Connect run end to end (§12).
 - **Rejected alternatives.** A Kinesis-compatible subset reaches fewer tools and would become redundant once Kafka exists. A RisingWave-only native connector is not needed: the Kafka gateway covers RisingWave.
 
 ### 7.3 Ecosystem integrations
 
-Tools that read or write Loam with no code of ours in them:
+Tools that read or write Loams with no code of ours in them:
 
 | Tool | Direction | Protocol | Milestone | Status |
 |---|---|---|---|---|
-| Fluent Bit, `opentelemetry` output | Logs into Loam | OTLP/HTTP (§7.1) | M2 | Planned (D73) |
-| OpenTelemetry Collector, `otlp` and `otlphttp` exporters | Logs into Loam | OTLP/gRPC, OTLP/HTTP (§7.1) | M2 | Planned (D73) |
-| Vector, `opentelemetry` sink | Logs into Loam | OTLP/HTTP (§7.1) | M2 | Planned (D73) |
-| Fluent Bit, `http` output (`json` or `json_lines` format) | Records into Loam | Native HTTP produce, plain-JSON body (§7) | M2 | Planned: the route exists since M0.3; the plain-JSON body is M2 |
-| Vector, `http` sink | Records into Loam | Native HTTP produce, plain-JSON body (§7) | M2 | Planned |
+| Fluent Bit, `opentelemetry` output | Logs into Loams | OTLP/HTTP (§7.1) | M2 | Planned (D73) |
+| OpenTelemetry Collector, `otlp` and `otlphttp` exporters | Logs into Loams | OTLP/gRPC, OTLP/HTTP (§7.1) | M2 | Planned (D73) |
+| Vector, `opentelemetry` sink | Logs into Loams | OTLP/HTTP (§7.1) | M2 | Planned (D73) |
+| Fluent Bit, `http` output (`json` or `json_lines` format) | Records into Loams | Native HTTP produce, plain-JSON body (§7) | M2 | Planned: the route exists since M0.3; the plain-JSON body is M2 |
+| Vector, `http` sink | Records into Loams | Native HTTP produce, plain-JSON body (§7) | M2 | Planned |
 | Fluent Bit, `es` output | Documents into a collection | ES `_bulk` subset (§06) | M1.5 | Planned; needs index creation on first write and `Suppress_Type_Name On` (verify) |
 | RisingWave, Elasticsearch sink | Documents into a collection | ES `_bulk` subset (§06) | M1.5 | Planned; the requests it sends are checked against the subset (verify) |
-| RisingWave, HTTP sink | Records into Loam | Native HTTP produce, plain-JSON body (§7) | M2 | Planned; the sink sends one `varchar` or `jsonb` column per row (verify batching) |
+| RisingWave, HTTP sink | Records into Loams | Native HTTP produce, plain-JSON body (§7) | M2 | Planned; the sink sends one `varchar` or `jsonb` column per row (verify batching) |
 | RisingWave, Iceberg sink | Rows into a table | Iceberg REST through Lakekeeper (§08) | M4 | Planned |
 | RisingWave, Kafka source and sink | Streams in and out | Kafka (§7.2) | M5 | Planned (D22, D74); pending Q331: may move to Iggy's Kafka gateway (§32 D332) |
 | Apache Flink, Kafka connector | Streams in and out | Kafka (§7.2) | M5 | Planned (D74); pending Q331: may move to Iggy's Kafka gateway (§32 D332) |
 | Spark Structured Streaming, Kafka source and sink | Streams in and out | Kafka (§7.2) | M5 | Planned (D74); pending Q331: may move to Iggy's Kafka gateway (§32 D332) |
 | Kafka Connect, Debezium | Streams in (CDC) and out | Kafka (§7.2) | M5 | Planned (D74; pending Q331, §32 D332); Connect's internal topics need compacted streams (§5) and consumer groups (verify) |
-| Fluent Bit, `kafka` output | Records into Loam | Kafka (§7.2) | M5 | Planned (D74); pending Q331: may move to Iggy's Kafka gateway (§32 D332) |
+| Fluent Bit, `kafka` output | Records into Loams | Kafka (§7.2) | M5 | Planned (D74); pending Q331: may move to Iggy's Kafka gateway (§32 D332) |
 | Vector, `kafka` source and sink | Streams in and out | Kafka (§7.2) | M5 | Planned (D74); pending Q331: may move to Iggy's Kafka gateway (§32 D332) |
 
 ### 7.4 CloudEvents 1.0 (D270)
@@ -190,7 +190,7 @@ Streams accept and serve [CloudEvents 1.0](https://github.com/cloudevents/spec/b
 | `data` / `data_base64` | Record value: the bytes of `data_base64`; the JSON text of `data` when the data is JSON (`datacontenttype` absent or JSON); the string's UTF-8 otherwise. No data: no value |
 | `source` + `id` | The idempotency key (below), never stored as a separate field |
 
-An extension whose value is not a string in its format (a JSON number or boolean; a protobuf `ce_integer`, `ce_boolean`, `ce_uri`, `ce_uri_ref`, `ce_timestamp` or `ce_bytes`) also gets one entry in the header `loam_ce_types` (`name=integer,other=boolean`, …), so it is written back with its type. Only structured JSON and protobuf output read that header. Binary-mode output (HTTP `ce-*`, Kafka `ce_`) omits it, since those headers carry strings only, so an extension ingested in binary mode is a string when read back; types survive the structured and protobuf paths.
+An extension whose value is not a string in its format (a JSON number or boolean; a protobuf `ce_integer`, `ce_boolean`, `ce_uri`, `ce_uri_ref`, `ce_timestamp` or `ce_bytes`) also gets one entry in the header `loams_ce_types` (`name=integer,other=boolean`, …), so it is written back with its type. Only structured JSON and protobuf output read that header. Binary-mode output (HTTP `ce-*`, Kafka `ce_`) omits it, since those headers carry strings only, so an extension ingested in binary mode is a string when read back; types survive the structured and protobuf paths.
 
 **Validation.** An event is refused, with the attribute named, when `specversion` is not `1.0` (0.3 events included), when `id`, `source` or `type` is missing or empty, when `time` is not RFC 3339, when an attribute name is not 1 or more lowercase ASCII letters and digits (the spec's 20-character limit is a SHOULD, so longer names are accepted), when an attribute other than an extension has the wrong JSON type, or when both `data` and `data_base64` are present. A batch is all or nothing: one invalid event refuses the batch with its index, before anything is claimed or written. A batch that repeats a `source` + `id` is coalesced before the claim: its first occurrence is appended, and every later occurrence is answered `duplicate` with the first's partition and offset, so one request appends at most one record per key.
 
@@ -216,18 +216,18 @@ A request with neither a `ce-specversion` header nor a CloudEvents content type 
 
 **Consume.** `GET /v1/namespaces/{ns}/streams/{stream}/partitions/{p}/events` takes the fetch parameters (§7, `offset`, `max_bytes`, `max_wait_ms`) and `mode`:
 
-- `mode=structured` (default): `application/cloudevents-batch+json`, one event per record; the headers `Operon-Next-Offset` and `Operon-High-Watermark` carry what fetch returns in its body.
-- `mode=binary`: the record at `offset` as one binary-mode HTTP message (`ce-*` headers, `Content-Type`, the value as the body) with `Operon-Offset` and `Operon-Next-Offset`; 204 when the wait ends with no record.
+- `mode=structured` (default): `application/cloudevents-batch+json`, one event per record; the headers `Loams-Next-Offset` and `Loams-High-Watermark` carry what fetch returns in its body.
+- `mode=binary`: the record at `offset` as one binary-mode HTTP message (`ce-*` headers, `Content-Type`, the value as the body) with `Loams-Offset` and `Loams-Next-Offset`; 204 when the wait ends with no record.
 
 A record is read back in the first form that applies:
 
-1. **Ingested as CloudEvents, or produced with `ce_` headers that pass the validation above** (`specversion` `1.0`, and `id`, `source` and `type` present): the event is rebuilt from the headers, the value and `loam_ce_types`. Attribute names, values and order round-trip byte for byte in every format, with one exception: protobuf carries `time` and timestamp extensions as `ce_timestamp` (seconds and nanos), so protobuf output writes them in canonical RFC 3339 UTC form and an offset or trailing fractional zeros of the ingested string are not kept (gRPC consume, which writes protobuf, is not built yet); extension types round-trip where `loam_ce_types` is present (structured JSON and protobuf ingest). A record with partial or invalid `ce_` headers takes step 3. JSON data written with no `datacontenttype` (or a JSON one) comes back as the same JSON text in `data`; text comes back as a `data` string; anything else as `data_base64`.
+1. **Ingested as CloudEvents, or produced with `ce_` headers that pass the validation above** (`specversion` `1.0`, and `id`, `source` and `type` present): the event is rebuilt from the headers, the value and `loams_ce_types`. Attribute names, values and order round-trip byte for byte in every format, with one exception: protobuf carries `time` and timestamp extensions as `ce_timestamp` (seconds and nanos), so protobuf output writes them in canonical RFC 3339 UTC form and an offset or trailing fractional zeros of the ingested string are not kept (gRPC consume, which writes protobuf, is not built yet); extension types round-trip where `loams_ce_types` is present (structured JSON and protobuf ingest). A record with partial or invalid `ce_` headers takes step 3. JSON data written with no `datacontenttype` (or a JSON one) comes back as the same JSON text in `data`; text comes back as a `data` string; anything else as `data_base64`.
 2. **Kafka structured mode** (`content-type: application/cloudevents+json`): the value is the event, validated and passed through unchanged.
-3. **Any other record:** a synthesized envelope. `specversion` `1.0`; `id` `{stream_id}-{offset}` (unique even if the stream is dropped and recreated under its name); `source` `/namespaces/{ns}/streams/{stream}/partitions/{p}`; `type` `dev.loam.stream.record`; `time` the record timestamp in RFC 3339 UTC with milliseconds; `partitionkey` the key, when it is UTF-8 (a binary key is left out); `datacontenttype` the record's `content-type` header if any, else `application/json` when the value is JSON, else `application/octet-stream` with `data_base64`. Other record headers are not carried.
+3. **Any other record:** a synthesized envelope. `specversion` `1.0`; `id` `{stream_id}-{offset}` (unique even if the stream is dropped and recreated under its name); `source` `/namespaces/{ns}/streams/{stream}/partitions/{p}`; `type` `io.loams.dev.stream.record`; `time` the record timestamp in RFC 3339 UTC with milliseconds; `partitionkey` the key, when it is UTF-8 (a binary key is left out); `datacontenttype` the record's `content-type` header if any, else `application/json` when the value is JSON, else `application/octet-stream` with `data_base64`. Other record headers are not carried.
 
 gRPC consume waits for gRPC fetch (§7, D72).
 
-**Codec.** A small hand-written codec (`operon-cloudevents`). `cloudevents-sdk` 0.9 (Apache-2.0, released about once a year) was checked and not taken: it parses `time` into `chrono` and extension values into typed values and writes them back normalized, which breaks the byte-for-byte round trip; it has no protobuf format; and it pulls in `chrono`, `url`, `uuid`, `hostname` and `snafu`.
+**Codec.** A small hand-written codec (`loams-cloudevents`). `cloudevents-sdk` 0.9 (Apache-2.0, released about once a year) was checked and not taken: it parses `time` into `chrono` and extension values into typed values and writes them back normalized, which breaks the byte-for-byte round trip; it has no protobuf format; and it pulls in `chrono`, `url`, `uuid`, `hostname` and `snafu`.
 
 **Dapr.** `deploy/dapr/edge` passes Dapr's pub/sub CloudEvents and webhook CloudEvents (binary or structured) through to `ProduceCloudEvents` unchanged, keeping only Dapr glue: sidecar-only pub/sub routes, the webhook token, the Workflow guard and Dapr's `SUCCESS`/`RETRY`/`DROP` answers. Deduplication by `source` + `id` replaces the edge's own invocation id, so a `Produce` that timed out after appending no longer appends again when Dapr redelivers. Publishers keep `id` stable across their own retries (Dapr's `cloudevent.id` publish metadata, or a publisher-built CloudEvent).
 
@@ -254,7 +254,7 @@ CREATE STREAM tickets_changes AS CHANGELOG OF COLLECTION tickets
 - **Who writes it:** the link-apply worker that resolves upserts and deletes through the PK index already knows the old row, so it appends the batch's change records to the changelog stream before it commits the target.
 - **Exactly-once:** the sequencer records, per changelog partition, the highest source offset already appended (`source_upto`). The append is **fenced**: it is accepted only if the worker's lease epoch is current and the batch covers source offsets starting at `source_upto + 1`. The changelog commits before the target, so a crash between the two re-runs the apply; the retried worker reads `source_upto`, appends only changes beyond it, and then commits the target. No change is lost or duplicated.
 - **Ordering:** per key, changelog order equals commit order of the source partition. The changelog is partitioned like its source.
-- **Uses:** syncing agent memory to caches and external systems, CDC out of Operon (any native-API or Flight client can consume it), and incremental consumers inside Operon (graph links, rollups) that need deletes and before images.
+- **Uses:** syncing agent memory to caches and external systems, CDC out of Loams (any native-API or Flight client can consume it), and incremental consumers inside Loams (graph links, rollups) that need deletes and before images.
 - **Record format:** rows with a row-kind column (`+I`, `-U`, `+U`, `-D`) and the primary key, as Arrow through Flight `DoGet` and links, or as JSON records (key = primary key) over HTTP and gRPC.
 - Phase: M5 (collections and keyed tables), with the native streaming API.
 
