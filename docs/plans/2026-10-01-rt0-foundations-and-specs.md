@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists the interfaces it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (names, paths, flags, constants), use them verbatim. The code is not pre-written in this plan (M0.3 Ruling 1).
 
-> **Status: In progress** (2026-10-02: Tasks 0–4 done in PR rt0-t1; Tasks 5–9 next). Planned 2026-10-01. Track RT, phase RT0 (design [§31](../design/31-loam-router-and-verification.md) §17, D319). Branches `rt0-t<N>`, stacked; PRs target `main`. RT0 adds two crates (`loams-sqlrouter`, `loams-compat`), a `spec/` tree, scripts, inventory tables and two CI jobs. It changes no existing crate, no default feature and no M-track code path. It needs no cluster except the containers the inventory starts. Every decision here is a proposal until the owner answers Q300 (§31 §19); Tasks 1–4 and 7–8 are useful whatever the answer, Tasks 5–6 too.
+> **Status: Done** (2026-10-02: Tasks 0–4 #188, Task 8 #189, Task 7 #191, Task 5 #193/#194, Task 6 #249/#250, Task 9 this PR). Planned 2026-10-01. Track RT, phase RT0 (design [§31](../design/31-loams-router-and-verification.md) §17, D319). Branches `rt0-t<N>`, stacked; PRs target `main`. RT0 adds two crates (`loams-sqlrouter`, `loams-compat`), a `spec/` tree, scripts, inventory tables and two CI jobs. It changes no existing crate, no default feature and no M-track code path. It needs no cluster except the containers the inventory starts. Every decision here is a proposal until the owner answers Q300 (§31 §19); Tasks 1–4 and 7–8 are useful whatever the answer, Tasks 5–6 too.
 
 **Goal:** Lay the foundations the chat dump's M0 asked for, as reconciled in §31:
 - `spec/tla/router/` with **`ShardMap` and `ReshardCutover` checked by TLC at small bounds**, skeletons of `CrossShardCommit`, `PrimaryFailover` and `RouterSession` that parse, and the `tla` CI job (D310);
@@ -23,7 +23,7 @@
 - Containers for the inventory: `postgres:17.11`, `mysql:8.0.46` (verify the tag exists; otherwise the closest 8.0 patch, recorded), the WeSQL image built by `deploy/wesql/` at fork commit `eef34f452` or later, `ghcr.io/pgdogdev/pgdog` v0.1.60 by digest, Vitess v24.0.4 images (`vitess/lite:v24.0.4`, verify the name), `quay.io/coreos/etcd:v3.7.2`.
 
 **Spec:**
-- [`docs/design/31-loam-router-and-verification.md`](../design/31-loam-router-and-verification.md): all of it; §6 (record, rendering, push, cutover, monitor), §7 (seams), §9.2 (C-1–C-7), §11 (specs), §12 (Lean), §15 (inventory method), §16 (licenses).
+- [`docs/design/31-loams-router-and-verification.md`](../design/31-loams-router-and-verification.md): all of it; §6 (record, rendering, push, cutover, monitor), §7 (seams), §9.2 (C-1–C-7), §11 (specs), §12 (Lean), §15 (inventory method), §16 (licenses).
 - [`docs/design/28-loam-postgres.md`](../design/28-loam-postgres.md) §8 (PgDog rules) and §11 (P-phases); [`docs/design/29-wesql-oltp.md`](../design/29-wesql-oltp.md) once PR #172 merges (until then `git show origin/wesql-oltp-design:docs/design/29-wesql-oltp.md`).
 - Neon's spec layout as a reference: `neon/safekeeper/spec/` (`modelcheck.sh`, `MC*.tla`, `models/`).
 
@@ -84,7 +84,7 @@ conformance/router/{pgdog-loampg,vitess-wesql}-statements.tsv
 conformance/router/{pgdog-loampg,vitess-wesql}-suites.tsv
 .github/workflows/ci.yml                        # jobs tla, lean; the changes filter gains spec and router
 deny.toml                                       # only if Task 0 finds a license to allow (none expected)
-docs/design/31-loam-router-and-verification.md  docs/plans/README.md  CHANGELOG.md
+docs/design/31-loams-router-and-verification.md  docs/plans/README.md  CHANGELOG.md
 ```
 
 ### Task 0: Reconcile and check the facts
@@ -285,7 +285,7 @@ pub fn vitess_xxhash(bytes: &[u8]) -> KeyspaceId;
 
 ### Task 9: Docs and the RT0 exit
 
-**Files:** `docs/design/31-loam-router-and-verification.md` (as-built notes: tool versions, bounds and run times, the inventory's headline numbers per class and component, C-1–C-7 observations), `docs/plans/README.md` (RT0 row status), `CHANGELOG.md`.
+**Files:** `docs/design/31-loams-router-and-verification.md` (as-built notes: tool versions, bounds and run times, the inventory's headline numbers per class and component, C-1–C-7 observations), `docs/plans/README.md` (RT0 row status), `CHANGELOG.md`.
 
 **Exit criteria:**
 - `tla` job green: `ShardMap` and `ReshardCutover` pass at PR bounds and fail their unsafe variants as expected; the three skeletons parse.

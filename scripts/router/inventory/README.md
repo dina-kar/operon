@@ -1,7 +1,7 @@
 # Compatibility inventory: capture scripts
 
 The scripts that build the inputs of `crates/loams-compat` (`compat-replay`) for the router inventory
-(design [§31](../../../docs/design/31-loam-router-and-verification.md) §15, RT0 plan Tasks 5 and 6). This directory
+(design [§31](../../../docs/design/31-loams-router-and-verification.md) §15, RT0 plan Tasks 5 and 6). This directory
 holds the **Postgres half** (PgDog v0.1.60 in front of Postgres 17.11) and the **MySQL half** (Vitess v24.0.4 in front
 of MySQL 8.0.46 and WeSQL), the latter from `vitess-*`, `vt-*` and `compose.vitess.yml`. The blessed output lives in
 [`conformance/router/`](../../../conformance/router/README.md).

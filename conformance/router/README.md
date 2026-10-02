@@ -1,7 +1,7 @@
 # Router compatibility inventory
 
 What a router asks of the engine behind it, recorded as data (design
-[§31](../../docs/design/31-loam-router-and-verification.md) §15, RT0 plan Tasks 5 and 6, D309). Two halves:
+[§31](../../docs/design/31-loams-router-and-verification.md) §15, RT0 plan Tasks 5 and 6, D309). Two halves:
 
 | Files | Router | Reference engine | Target |
 |---|---|---|---|
