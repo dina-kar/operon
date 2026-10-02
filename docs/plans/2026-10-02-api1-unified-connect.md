@@ -34,7 +34,7 @@
 | # | Ruling | Why |
 |---|---|---|
 | 1 | `QueryService/Search` is the single RPC behind `loams.search` and `loams.vector` | One IR (§05 §4); two facade names (§44 §7.3) |
-| 2 | `ScrollDocuments` is server-streaming of pages with a cursor field (Q614 default) | Matches Watch conventions; unary pagination also offered via `page_token` |
+| 2 | `ScrollDocuments` is server-streaming of pages with a cursor field (provisional default for Q614; Task 4 may switch to unary pagination if Q614 is answered so) | Matches Watch conventions; unary pagination also offered via `page_token` |
 | 3 | `/health`, `/ready`, OAuth, OIDC and well-known stay HTTP (D602) | RFCs and orchestrators |
 | 4 | Resource names are request fields: `namespace`, `collection` (alias ok), `stream`, `partition` | Connect URLs are `/<package>.<Service>/<Method>` |
 
@@ -45,7 +45,7 @@
 - [ ] **Task 2: `loams.collection.v1` Namespace and Collection services.** Rows of §44 §5.1 for namespaces, collections, fields, versions, aliases, hot/warm, scan (with the pin token and header `loams-consistency-token`). *Tests:* each existing REST collections test ported by its name with an `_rpc` suffix; `create_collection_repeat_is_safe`, `scan_returns_pin_token`.
 - [ ] **Task 3: `DocumentService`.** Write, get, count, delete/patch by filter, with `idempotency_key` (dedupe window equals the REST one) and consistency tokens. *Tests:* ported REST tests; `write_idempotency_key_replays_same_token`; `consistency_at_least_waits`.
 - [ ] **Task 4: `QueryService/Search`, `ScrollDocuments`, filter IR messages.** The native hybrid IR as proto (dense, sparse, text, filters, expand, fusion, `performance`). The §05 §4 body is accepted as the JSON mapping. *Tests:* the hybrid-query fixtures from M1.2 run through the RPC and equal the REST results; `scroll_streams_pages_with_cursor`.
-- [ ] **Task 5: `loams.sql.v1`.** `Query` (rows, truncated), `QueryArrow` (IPC bytes with a cap, Q608). Flight SQL unchanged. *Tests:* ported SQL tests; `query_arrow_roundtrips`; `flight_sql_still_serves_8082`.
+- [ ] **Task 5: `loams.sql.v1`.** `Query` (rows, truncated), `QueryArrow` (IPC bytes with a cap; provisional until Q608 is answered). Flight SQL unchanged. *Tests:* ported SQL tests; `query_arrow_roundtrips`; `flight_sql_still_serves_8082`.
 - [ ] **Task 6: `loams.stream.v1` full surface and `loams.link.v1`.** Move `StreamService` to connect-rust if not yet (D128), add `CreateStream`, `DescribeStream`, `Fetch`, `FetchCloudEvents`, links. Kafka gateway and CloudEvents bindings still call the same traits. *Tests:* ported stream/link tests; `produce_without_key_is_not_retried_by_server`; `cloudevents_http_binding_unchanged`.
 - [ ] **Task 7: `loams.admin.v1` and `loams.auth.v1`.** Org, project, agent, key, audit services and `AuthService` per §44 §5.2; `WatchAuditEvents` stream. Tests are the console mock's. *Tests:* each console-mock route test ported; `session_cookie_and_bearer_both_work`; `oidc_start_remains_http_redirect`.
 - [ ] **Task 8: Mount compat gRPC on the main port; `loams.internal.v1`.** Flight and Qdrant gRPC by service name; the cluster listener's internal service replaces `/internal/*`. *Tests:* `qdrant_grpc_client_works_on_main_port`, `flight_client_works_on_main_port`, `cluster_tests_use_internal_rpc` (the cluster test suite passes).

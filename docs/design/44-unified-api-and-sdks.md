@@ -4,9 +4,9 @@ Status: **Proposed** · 2026-10-02. The direction is the owner's, from 2026-10-0
 
 > "remove the REST API; [make] a unified gRPC API for all services in a single `loams`; dependencies are prebuilt and added to it; all can be accessed as functions in `loams.vector` etc.; also add support for Ruby, PHP, etc.: all the languages gRPC supports generating clients for."
 
-This document turns that into decisions **D600–D619** and open questions **Q600–Q619** (staged in [`_pending/44-log.md`](_pending/44-log.md), not yet in the decision log). Everything past the quotation (the service catalogue, the migration table, the facade generator, the language matrix) is a **proposal** until the owner confirms it; the owner's "do suggested for all" (2026-10-02) means the defaults below stand unless they say otherwise. **No code is written by this document.** Plans: [API1](../plans/2026-10-02-api1-unified-connect.md), [SDK1](../plans/2026-10-02-sdk1-generation-pipeline.md), [SDK2](../plans/2026-10-02-sdk2-languages.md).
+This document turns that into decisions **D600–D619** and open questions **Q600–Q614** (staged in [`_pending/44-log.md`](_pending/44-log.md), not yet in the decision log). Everything past the quotation (the service catalogue, the migration table, the facade generator, the language matrix) is a **proposal** until the owner confirms it; the owner's "do suggested for all" (2026-10-02) means the defaults below stand unless they say otherwise. **No code is written by this document.** Plans: [API1](../plans/2026-10-02-api1-unified-connect.md), [SDK1](../plans/2026-10-02-sdk1-generation-pipeline.md), [SDK2](../plans/2026-10-02-sdk2-languages.md).
 
-**Numbering.** `dev` ends at D459 and Q453; blocks D460–D599 are reserved by other pending documents (§39, §37 §18, §40 to §43). D600–D619 and Q600–Q619 are this document's; renumber at merge if taken.
+**Numbering.** `dev` ends at D459 and Q453; blocks D460–D599 are reserved by other pending documents (§39, §37 §18, §40 to §43). D600–D619 and Q600–Q614 are this document's; renumber at merge if taken.
 
 ## 1. Summary
 
@@ -102,7 +102,7 @@ Resource names move from URL paths into the request message (`namespace`, `colle
 | `POST .../streams/{s}/events`, `GET .../partitions/{p}/events` | `StreamService/ProduceCloudEvents`, `FetchCloudEvents` | the CloudEvents HTTP binding stays on the CloudEvents ingest endpoint (compat, §6) |
 | `POST /v1/namespaces/{ns}/links`, `GET .../links/{l}` | `loams.link.v1.LinkService/CreateLink`, `DescribeLink` | |
 | `GET /health`, `GET /ready` | kept (probes) and `grpc.health.v1` | D602 |
-| `/internal/*` (forwarded reads, node stats, hot status) | `loams.internal.v1` on the cluster listener | not in any SDK (D607) |
+| `/internal/*` (forwarded reads, node stats, hot status) | `loams.internal.v1` on the cluster listener only, never on the public port, keeping today's cluster-token authentication (mTLS when MT adds it); unauthenticated calls are refused | not in any SDK (D607) |
 
 ### 5.2 Console OpenAPI `/api/v1` to Connect (Q423 resolved)
 
@@ -121,11 +121,11 @@ Resource names move from URL paths into the request message (`namespace`, `colle
 | `POST /oauth/consent` | `AuthService/DecideConsent` (console-internal) |
 | `POST /oauth/token`, `GET /oauth/authorize`, well-known, JWKS | **kept**, protocol endpoints (D602) |
 
-The console's `openapi-typescript` step is replaced by `@loams/proto` (AP0). `api/console/openapi.json` is deleted when API1 Task 8 lands.
+The console's `openapi-typescript` step is replaced by `@loams/proto` (AP0). `api/console/openapi.json` is deleted when API1 Task 9 lands.
 
 ### 5.3 Shims (D605)
 
-Each removed route gets a **shim for one release**: the old path answers `308`/`410`-style with a JSON body `{"error":"moved","rpc":"loams.collection.v1.QueryService/Search","docs":"https://loams.dev/docs/api/migrate"}` and the `Deprecation` and `Sunset` headers, behind `--legacy-rest` (off by default from the first release that has the Connect equivalents; the shim is removed in the next minor). Because the product is pre-release, shims may be dropped by owner decision (Q600): there are no external users of the M1.2 REST yet.
+Each removed route gets a **shim for one release**: the old path answers `308`/`410`-style with a JSON body `{"error":"moved","rpc":"<the route's RPC from the table above, e.g. loams.collection.v1.QueryService/Search>","docs":"https://loams.dev/docs/api/migrate"}` and the `Deprecation` and `Sunset` headers, behind `--legacy-rest` (off by default from the first release that has the Connect equivalents; the shim is removed in the next minor). Because the product is pre-release, shims may be dropped by owner decision (Q600): there are no external users of the M1.2 REST yet.
 
 ## 6. Compatibility surfaces that stay (D603)
 
@@ -292,7 +292,7 @@ sdks/
 - **Test server**: `loams dev --listen 127.0.0.1:0` with fixtures loaded (real engines, small), the primary target; `loams-apps-mock` (AP0) covers the app packages (instance, devices, approvals, operations, notifications) and fault injection (retryable `UNAVAILABLE`, `RetryInfo`, mid-stream disconnect, token expiry), which the real server cannot produce on demand. The runner exports `LOAMS_TEST_ENDPOINT`.
 - **Per-SDK suite**: a language's tests run the fixture list through the **public facade** (not the generated stubs), asserting results, error `reason`/`code`, retry counts, idempotency-key reuse, token merge, pagination and streaming resume. A language is publishable only when it passes 100% of the required fixtures; fixtures marked `transport:grpc-only` skip on the Connect-unary fallback.
 - **Protocol conformance**: Connect libraries are additionally run through `connectrpc/conformance` against the server's handler (client and server modes) once per release.
-- CI cost: one job builds `loams` once and uploads it; each SDK job downloads it. Jobs for the second and third waves run on tag and nightly, not on every PR, until they are in the required set (paths filter on `proto/**` and `sdks/<lang>/**`).
+- CI cost: one job builds `loams` once and uploads it; each SDK job downloads it. Jobs for the second and third waves run on tag and nightly, not on every PR, until those jobs are made required checks for merging (paths filter on `proto/**` and `sdks/<lang>/**`).
 
 ### 10.5 Reference docs (D618)
 
@@ -345,7 +345,7 @@ Trusted-publishing availability is re-verified at each language's Task 0 (dated)
 
 ## 14. Open questions
 
-See [`_pending/44-log.md`](_pending/44-log.md) (Q600–Q619). The ones that change work if answered differently: Q600 (shims), Q601 (all 13 languages), Q602 (is the OAuth/OIDC protocol surface acceptable as kept), Q604 (generator vs hand wrappers), Q606 (Connect-unary fallbacks count as "no REST"), Q608 (Arrow IPC over Connect).
+See [`_pending/44-log.md`](_pending/44-log.md) (Q600–Q614). The ones that change work if answered differently: Q600 (shims), Q601 (all 13 languages), Q602 (is the OAuth/OIDC protocol surface acceptable as kept), Q604 (generator vs hand wrappers), Q606 (Connect-unary fallbacks count as "no REST"), Q608 (Arrow IPC over Connect).
 
 ## 15. Contradictions with earlier decisions, and how they are resolved
 
