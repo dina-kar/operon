@@ -1,0 +1,13 @@
+[[spec]]
+name = "Selftest"
+model = "Selftest.tla"
+
+[[spec.variant]]
+cfg = "MCSelftest_Ok.cfg"
+expect = "ok"
+pr = true
+
+[[spec.variant]]
+cfg = "MCSelftest_Violation.cfg"
+expect = "violation:Small"
+pr = true

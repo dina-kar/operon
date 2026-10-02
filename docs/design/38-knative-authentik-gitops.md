@@ -6,6 +6,8 @@ It turns the ruling into decisions **D440–D459** and open questions **Q440–Q
 
 **Amends** [§19](19-console-identity-and-agents.md) (the IdP in front of Loams), [§22](22-showcase-suite.md) (D-SC-3: the suite's IdP), [§24](24-cpu-time-runtime.md) (a Knative runner for the `http-port` contract), [§25](25-clever-cloud-stack.md) (what "GitOps from Clever Cloud" means; new sync waves) and [§27](27-usage-hooks.md) (Knative pods under the hooks contract, with no meter). **Narrows** D111 (the unified auth plan) and D221 (SAML is brokered through Authentik, not Keycloak). The private side of the same ruling (the hosted Loams Cloud on Cloudflare, the protocol gateway, the Cloudflare target, the metering ledger) is designed in `loam-platform`. This repository does not depend on it.
 
+> **Amended 2026-10-02 (later the same day) by [§41](41-multitenant-byoc-control-plane.md) (D540, D541, D548, owner open-core ruling).** The owner ruled that the **Loams Multitenant BYOC Control Plane with GitOps** (multi-tenancy, Knative, Argo CD GitOps with Clever Cloud's operator fork, Authentik, BYOC) is **open source**, and that metering and the commercial APIs are private because **integrity** is the security principle. This document's non-goals that left "multi-org control planes and BYOC management" to `loam-platform` (§2.2, D440's first sentence, §3.3's last clause, MT3's last table, §7) are **superseded**: those are goals of §41. "No metering in this repository" (D444) **stands**, with integrity as the reason. §27's references to a CloudEvents form and a usage reporter are superseded by D548.
+
 Markers: **(verify)** means not checked against a primary source; the task that depends on it checks it first. **(estimate)** means computed, not measured. Every version, licence and status claim with a date was read on 2026-10-02 from the source named in §13.
 
 **Numbering.** D440–D459 and Q440–Q459 are this document's reserved ranges; Q440–Q453 are used.
@@ -16,10 +18,10 @@ Markers: **(verify)** means not checked against a primary source; the task that 
 
 | # | Decision | Status |
 |---|---|---|
-| D440 | **The open-core boundary stands** (D220, reconfirmed by the owner on 2026-10-02). Self-hosting a single organisation is open source; running the multi-tenant paid cloud is `loam-platform`. Knative, Authentik and the GitOps layout are self-hosting features, so they are open. **No metering in this repository**: only §27's hooks stay. The protocol gateway (§34) and the Cloudflare target (the former §35) move to `loam-platform` (private), and §34 becomes a stub | Proposed · owner ruling 2026-10-02 |
+| D440 | **The open-core boundary** (D220, reconfirmed 2026-10-02; **revised later that day by D540, §41**). Open source: self-hosting, and the Multitenant BYOC Control Plane with GitOps (multi-tenancy, BYOC management, Knative, Authentik, the GitOps layout). Private (`loam-platform`): metering, billing, commercial APIs and hosted-only operations (D548, D550). **No metering in this repository**: only §27's generic hooks stay. The protocol gateway (§34) and the Cloudflare target (the former §35) move to `loam-platform` (private), and §34 becomes a stub | Proposed · owner ruling 2026-10-02 |
 | D441 | **Knative Serving is an optional compute layer** for the `http-port` contract (§24 D181, tier T2) in self-hosted clusters. `KnativeRunner` implements the `Runner` trait (D375): one Knative `Service` per function, one `Revision` per version, scale to zero, gVisor through `runtimeClassName`. The node supervisor stays the only runner for `fetch` (T0 workerd) and Wasm (T1), whose many-tenants-per-process model Knative cannot express | Proposed |
 | D442 | **Knative's ingress is Kourier, inside the cluster, behind Loams's edge.** Envoy stays the edge (D184); the gateway routes a function's traffic to Kourier's internal service with the tenant already checked. Knative's own domains are cluster-local (`svc.cluster.local`), so no function is reachable except through the gateway | Proposed |
-| D443 | **Tenancy on Knative: one Kubernetes namespace per Loams namespace** (`loams-ns-<namespace>`), with a default-deny `NetworkPolicy`, a `ResourceQuota` and a `LimitRange` set by `loams-operator` from the namespace's limits. The quota is **enforced** here; who **sets** it per plan is `loam-platform`'s concern (D220). Every pod carries §27 §3.2's labels | Proposed |
+| D443 | **Tenancy on Knative: one Kubernetes namespace per Loams namespace** (`loams-ns-<namespace>`), with a default-deny `NetworkPolicy`, a `ResourceQuota` and a `LimitRange` set by `loams-operator` from the namespace's limits. The quota is **enforced** here (§41 §9); who **sets** it per plan is `loam-platform`'s concern, through the open limits API (D220, D546). Every pod carries §27 §3.2's labels | Proposed |
 | D444 | **No meter on Knative.** `KnativeRunner` returns `usage: None` and writes no host reports, like the supervisor. Usage is visible only through the open hooks: §27 §3.2's pod labels on the pod cgroup, Knative's queue-proxy and activator Prometheus metrics, and the edge's access logs. Aggregating, rating and billing them is `loam-platform` (D190, D202) | Proposed · owner ruling 2026-10-02 |
 | D445 | **Knative Eventing is an adapter, not Loams's event log.** Loams streams (D270) and the Event Fabric (§32 D331) stay the logs. Loams ships `loams-knative-source`, which reads a stream consumer group and delivers binary-mode CloudEvents to any Knative sink, and documents `POST /v1/namespaces/{ns}/streams/{stream}/events` as a Knative sink URI. The broker is the in-memory channel for development; the production broker is an open question (Q443) | Proposed |
 | D446 | **Knative is installed by the Knative Operator** (Apache-2.0), as `KnativeServing` and `KnativeEventing` resources pinned to 1.23 with the features Loams needs turned on (`kubernetes.podspec-runtimeclassname`, `kubernetes.podspec-securitycontext`). It is off by default in the umbrella chart (`knative.enabled: false`) | Proposed |
@@ -43,12 +45,12 @@ Markers: **(verify)** means not checked against a primary source; the task that 
 
 1. **Adoption.** A self-hoster gets a serverless layer (scale to zero), a real identity provider (SSO, MFA, SAML) and a GitOps install from open source, with no paid plan anywhere in the stack.
 2. **No new runtime in the engine.** Knative and Authentik are separate services. The engine binary links neither, and the single-binary install works without them.
-3. **The boundary holds.** Nothing here meters, rates, invoices, provisions orgs across clusters or sets quotas per plan (D220).
+3. **The boundary holds.** Nothing here meters, rates or invoices, or sets quotas per plan (D220). *Amended 2026-10-02 (D540): provisioning orgs across clusters is open and designed in §41; metering, rating and invoicing stay private (D548).*
 4. **Every feature is checked against its licence.** Authentik is open core, so each feature Loams uses is checked against the directory it lives in.
 
 ### 2.2 Non-goals
 
-- **Metering, billing, multi-org control planes and BYOC management.** These stay in `loam-platform` (D220, D440).
+- **Metering and billing.** These stay in `loam-platform` (D190, D440, D548). *Superseded 2026-10-02 (D540): multi-org control planes and BYOC management, listed here as non-goals, are now goals of [§41](41-multitenant-byoc-control-plane.md) and open source.*
 - **Running Loams on Cloudflare.** The Cloudflare target is a commercial component in `loam-platform` (D440). The `Fs` trait's portable part stays here, in §36.
 - **Replacing the node supervisor** with Knative for T0 and T1 (D441).
 - **Replacing Loams streams with Knative Eventing** (D445).
@@ -258,7 +260,7 @@ k3s v1.37.1+k3s1 (2026-09-30) or k3d, started with `--disable traefik`. On it: A
 |---|---|---|
 | The protocol gateway, OpenRTB and Google adapters, the canonical `loams.rtb.v1`, partner negotiation, the ad-tech conformance suite (D366–D371, D373, D377, D379) and plans GW1–GW4 | §34, merged in #177 | `loam-platform` (private). §34 is a stub that keeps the vendor-neutral decisions (the standards charter, the narrow waist, the CloudEvents profile, the high-rate path, state rules, the `Runner` trait, usage hooks from runners) |
 | The Cloudflare target (`CloudflareRunner`, Workers, Durable Objects, R2, Containers placement, the startup credits plan) and plan CF1 | the former §35 (PR #179) | `loam-platform` (private). §36 (Loams Git) and GT1–GT3 stay; the `Fs` trait and `NativeFs` move into §36 |
-| The usage CloudEvents form and its Arrow mapping (RN1 Task 6), and any ledger | RN1, §34 §12 | `loam-platform`. RN1 keeps the `Runner` trait, `RunnerHost`, the process and Lambda runners and §27's host-report emitter |
+| The usage CloudEvents form and its Arrow mapping (RN1 Task 6), and any ledger | RN1, §34 §12 | `loam-platform`. RN1 keeps the `Runner` trait, `RunnerHost`, the process and Lambda runners. *Amended 2026-10-02 (D548): §27's host-report emitter (RN1 Tasks 1 and 2) moved to `loam-platform` too; RN1 gains the open `InvocationObserver`.* |
 
 ## 8. Contradictions with earlier decisions, and how they are resolved
 

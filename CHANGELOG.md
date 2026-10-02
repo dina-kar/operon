@@ -5,6 +5,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ## [Unreleased]
 
 ### Added
+- Router track RT0 (§31 §22): TLA+ models `ShardMap` and `ReshardCutover`, checked with TLC and Apalache, plus skeletons of three more specs, and `scripts/spec/check.sh` with the `tla` CI job; Lean 4 proofs of the key-range partition lemmas and the `loams-router-oracle` differential oracle, with the `lean` job; `loams-sqlrouter`, the sans-I/O kernel (shard-map record, Vitess key ranges, Postgres hash partitioning ported from PostgreSQL 17, Vitess `hash` and `xxhash`, the `Machine`/`Ctx`/`TraceSink` seams); `loams-compat` and the compatibility inventory of PgDog→Postgres and Vitess→WeSQL; `loams-specview`, a live browser view of spec and test runs.
 - App protos (design §37 §8, AP0): `loams.instance.v1`, `loams.devices.v1`, `loams.approvals.v1`, `loams.operations.v1`, `loams.notifications.v1` and `loams.errors.v1`; `@loams/proto` (generated protobuf-es v2 messages and Connect service descriptors, `web/packages/proto`); the `buf.gen.swift.yaml` and `buf.gen.kotlin.yaml` templates for `loams-mobile`; the `app-protos` CI job.
 - `loams-apps-mock`: a stateful mock of the app protos over Connect, gRPC and gRPC-Web with seed data, the approval decision rules (`acceptance`), idempotency keys and resumable watch streams (AP0 Task 5, scaffold).
 - Design documents (`docs/design`) and repository governance files.
