@@ -45,6 +45,10 @@ jobs:
       app-protos: ${{ steps.filter.outputs.app-protos }}
       web: ${{ steps.filter.outputs.web }}
       dapr-edge: ${{ steps.filter.outputs.dapr-edge }}
+      spec: ${{ steps.filter.outputs.spec }}
+      router: ${{ steps.filter.outputs.router }}
+      specview: ${{ steps.filter.outputs.specview }}
+      lean: ${{ steps.filter.outputs.lean }}
     steps:
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
@@ -166,6 +170,30 @@ jobs:
               - "rust-toolchain*"
               - "deploy/dapr/**"
               - "crates/loams-stream-grpc/proto/**"
+            # The router's TLA+ specs and their checker (RT0, D310).
+            spec:
+              - ".github/workflows/**"
+              - "spec/**"
+              - "scripts/spec/**"
+            # The Lean proofs and the Rust code they are the oracle for (RT0 Task 8, D312).
+            lean:
+              - ".github/workflows/**"
+              - "spec/lean/**"
+              - "crates/loams-sqlrouter/src/ranges.rs"
+              - "crates/loams-sqlrouter/src/reference/**"
+            # The router's kernel crate and compatibility inventory (RT0).
+            router:
+              - ".github/workflows/**"
+              - "crates/loams-sqlrouter/**"
+              - "crates/loams-compat/**"
+              - "conformance/**"
+            # loams-specview, the browser view of the spec and test runs. Its
+            # live test runs the Selftest spec, so spec changes count too.
+            specview:
+              - *toolchain
+              - "crates/loams-specview/**"
+              - "scripts/spec/**"
+              - "spec/tla/**"
 
   check:
     name: fmt and clippy
@@ -379,6 +407,112 @@ jobs:
           LOAMS_BIN: target/debug/loams
           ES_ORACLE_URL: http://127.0.0.1:9250
         run: conformance/es-client/run.sh
+
+  # RT0 Task 1 (D310): model-check the router's TLA+ specs. Pull requests run
+  # the PR variants; the nightly schedule runs the larger bounds. Every result
+  # must match its `expect` in spec/tla/*/specs.toml, so the unsafe variants
+  # must fail for the declared reason. Then the PgDog provenance check (D318).
+  tla:
+    name: TLA+ specs
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.spec == 'true' || needs.changes.outputs.router == 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/loam/spec-tools
+          key: spec-tools-${{ hashFiles('scripts/spec/tools.lock') }}
+      - name: checker self-test
+        run: scripts/spec/check.sh --self-test
+      - name: specs (PR bounds)
+        if: github.event_name != 'schedule'
+        run: scripts/spec/check.sh --all
+      - name: specs (nightly bounds)
+        if: github.event_name == 'schedule'
+        run: scripts/spec/check.sh --all --nightly
+      - name: PgDog provenance
+        run: scripts/spec/provenance.sh
+
+  # RT0 Task 8 (D312): build the Lean proofs (building checks every theorem),
+  # run the randomised properties, then run loams-sqlrouter's ranges against
+  # the Lean oracle on 10 000 random cases.
+  lean:
+    name: Lean proofs
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.lean == 'true') }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: spec/lean
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The job runs downloaded tooling (elan, lake); keep the token out of .git/config.
+          persist-credentials: false
+      - name: elan
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o /tmp/elan-init.sh
+          sh /tmp/elan-init.sh -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.elan/toolchains
+            spec/lean/.lake
+          key: lean-${{ hashFiles('spec/lean/lean-toolchain') }}-${{ hashFiles('spec/lean/lake-manifest.json', 'spec/lean/**/*.lean') }}
+          restore-keys: lean-${{ hashFiles('spec/lean/lean-toolchain') }}-
+      - name: build (checks the theorems)
+        run: lake build
+      - name: properties
+        run: lake test
+      - name: no sorry
+        run: '! grep -rn --include=*.lean -w sorry LoamsRouter Main.lean PropTest.lean'
+      - uses: Swatinem/rust-cache@v2
+      - name: Rust against the Lean oracle (10 000 cases)
+        working-directory: .
+        run: cargo test -p loams-sqlrouter --locked --test it lean_oracle -- --nocapture
+
+  # loams-specview (dev tool): the server and its tests, including the live
+  # SSE test that runs TLC on the Selftest spec, then the Leptos frontend built
+  # with trunk. trunk is a prebuilt release (Apache-2.0/MIT) pinned by checksum;
+  # it fetches the wasm-bindgen CLI that matches Cargo.lock.
+  specview:
+    name: loams-specview
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.specview == 'true') }}
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_DEV_HEAVY || 'depot-ubuntu-24.04-4') }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/loam/spec-tools
+          key: spec-tools-${{ hashFiles('scripts/spec/tools.lock') }}
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy (server)
+        run: cargo clippy -p loams-specview --all-targets --locked -- -D warnings
+      - name: tests (the live ones need Java and the pinned tools)
+        run: cargo test -p loams-specview --locked -- --include-ignored
+      - name: wasm target
+        run: rustup target add wasm32-unknown-unknown
+      - name: clippy (frontend)
+        run: cargo clippy -p loams-specview --no-default-features --features web --target wasm32-unknown-unknown --bin loams-specview-web --locked -- -D warnings
+      - name: trunk
+        run: |
+          curl -sSfL -o trunk.tar.gz https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz
+          echo "f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b  trunk.tar.gz" | sha256sum -c -
+          tar xzf trunk.tar.gz -C "$HOME/.cargo/bin" trunk
+      - name: build the frontend
+        working-directory: crates/loams-specview
+        run: trunk build --release --locked
 
   sim:
     name: simulation seed sweep

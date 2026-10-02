@@ -131,7 +131,7 @@ From §25: the umbrella chart, the root `Application`, the existing health custo
 
 | Item | Where |
 |---|---|
-| Multi-cluster hub and spoke for the hosted cloud, BYOC fleet automation | `loam-platform` (D220) |
+| Tenant onboarding through Git, upgrade rings, hub-and-spoke or per-cluster Argo CD, the BYOC agent | [MT4](2026-10-02-mt4-byoc-control-plane.md) (open source since 2026-10-02, D540; this row said `loam-platform`) |
 | A real CKE apply | Manual, after the owner's account decision |
 
 ## PR sizes

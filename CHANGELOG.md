@@ -5,6 +5,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ## [Unreleased]
 
 ### Added
+- Router track RT0 (§31 §22): TLA+ models `ShardMap` and `ReshardCutover`, checked with TLC and Apalache, plus skeletons of three more specs, and `scripts/spec/check.sh` with the `tla` CI job; Lean 4 proofs of the key-range partition lemmas and the `loams-router-oracle` differential oracle, with the `lean` job; `loams-sqlrouter`, the sans-I/O kernel (shard-map record, Vitess key ranges, Postgres hash partitioning ported from PostgreSQL 17, Vitess `hash` and `xxhash`, the `Machine`/`Ctx`/`TraceSink` seams); `loams-compat` and the compatibility inventory of PgDog→Postgres and Vitess→WeSQL; `loams-specview`, a live browser view of spec and test runs.
 - `loams-es`: the Elasticsearch 8 Phase A REST API on port 9200, with document and bulk writes, document reads, search and count, Query DSL and vector search, multi-search, by-query writes, and index, mapping and alias administration.
 - `loams`: `--es-listen`, `--es-namespace` and `--no-es` flags, with the `es` feature enabled by default.
 - CI: an elasticsearch-py 8.19 client test against `loams dev`.

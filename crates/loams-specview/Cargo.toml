@@ -1,0 +1,59 @@
+[package]
+name = "loams-specview"
+description = "Live browser view of the Loams router's TLA+ and Rust test runs (dev tool)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[features]
+# The server and CLI (default): `cargo test -p loams-specview` builds this only.
+default = ["server"]
+server = [
+    "dep:anyhow",
+    "dep:axum",
+    "dep:clap",
+    "dep:futures",
+    "dep:tempfile",
+    "dep:tokio",
+    "dep:tokio-stream",
+    "dep:toml",
+    "dep:tower-http",
+]
+# The Leptos client-side-rendered frontend (wasm32). Built with `trunk`, never
+# by the default build: see README.md.
+web = [
+    "dep:console_error_panic_hook",
+    "dep:leptos",
+    "dep:wasm-bindgen",
+    "dep:web-sys",
+]
+
+[[bin]]
+name = "loams-specview"
+path = "src/main.rs"
+required-features = ["server"]
+
+[[bin]]
+name = "loams-specview-web"
+path = "src/bin/web.rs"
+required-features = ["web"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+anyhow = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+tokio-stream = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+leptos = { version = "0.8", features = ["csr"], optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+web-sys = { version = "0.3", optional = true, features = ["Event", "EventSource", "Location", "EventTarget", "MediaQueryList", "MessageEvent", "Request", "RequestInit", "Window", "Document", "Element", "HtmlElement", "console"] }

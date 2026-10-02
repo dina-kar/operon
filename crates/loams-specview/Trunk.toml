@@ -1,0 +1,5 @@
+# `trunk build` (or `trunk watch`) writes the frontend to dist/, which
+# `loams-specview serve` serves. See README.md.
+[build]
+target = "index.html"
+dist = "dist"

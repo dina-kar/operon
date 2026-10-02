@@ -360,6 +360,10 @@ The map for `ShardMap` (the others follow the same form in their headers):
 | `Fence(s)`, `Unfence(s)` | `Cutover` → `Output::Fence`; `PostgresShard::fence_writes` | `shard.fence {shard, on}` |
 | `ClientWrite(i, k)`, `Accept(s, k)`, `Reject(s, k)` | Workload clients in `loams-detsim` and `loams-nemesis` | `client.write {key, instance, shard, result}` |
 
+### 11.4 As-built tooling: `loams-specview`
+
+`crates/loams-specview` (a dev tool, `publish = false`) shows the spec checks and the router's Rust tests in a browser while they run. `loams-specview serve` runs each `specs.toml` variant under TLC, parses the output (progress lines, counterexample states, `Back to state N` lassos, TLA+ values into JSON) and streams it over SSE with the Rust test results (`cargo nextest run --message-format libtest-json` when nextest is installed, else `cargo test`). The Leptos frontend lists every variant and test, and plays each counterexample step by step with the changed variables highlighted. `ShardMap` and `ReshardCutover` have their own views (owners by generation, instances and fences, write sets with the acknowledged ones marked; the saga phases, the instances' routes to the Src and Dst stores); any other spec gets a variable table. `--record` saves a run as JSON lines and `replay` plays it back. Its `SpecEvent` is a placeholder for the RT1 simulator's §7.1 events: when RT1 emits them as JSON lines the same player will show a simulated run. How to run it: `crates/loams-specview/README.md`.
+
 ## 12. Lean 4 kernels and the differential oracle (D312)
 
 ### 12.1 Scope
@@ -569,3 +573,54 @@ Read on 2026-10-01.
 - **WeSQL** (`ostrium-labs/wesql` at `eef34f452`): `mysql-test/suite/smartengine_consistent_snapshot/t/default_storage_engine.test`; semi-sync tests under `mysql-test/suite/smartengine_rpl_*`.
 - **Tools**: GitHub API for `tlaplus/tlaplus` (MIT; v1.7.4 stable, v1.8.0 rolling pre-release), `apalache-mc/apalache` (Apache-2.0; v0.62.3), `leanprover/lean4` (v4.34.1), `leanprover-community/plausible` (Apache-2.0), `madsim-rs/madsim` (Apache-2.0), `tokio-rs/turmoil` (MIT), `jepsen-io/elle` (EPL-2.0); crates.io for `madsim` 0.2.34, `turmoil` 0.7.2, `proptest` 1.11.0, `des` 0.9.0, `xxhash-rust` 0.8.19. Trace validation: H. Cirstea, M. A. Kuppe, B. Loillier, S. Merz et al., "Validating Traces of Distributed Programs Against TLA+ Specifications" (2024).
 - **Loams**: §12 §2; §18 §5; §20 §10, §14; §21; §23 §6.3, §6.4, §9; §28 §4, §5, §7.2, §8, §11; §29 (PR #172) §4, §6, §7, §9; D11, D28, D148, D153, D154, D236, D260, D264, D273–D280; Q260, Q274.
+
+## 22. RT0 as built (2026-10-02)
+
+RT0 is done: PRs #188 (specs), #189 (Lean), #191 (`loams-sqlrouter`), #193–#194 (Postgres inventory), #249–#250 (MySQL inventory), #190 (`loams-specview`, the browser view of runs) and this exit. The plan's execution rulings E1–E21 hold the details.
+
+### 22.1 Tools
+
+TLC 1.7.4 (`tla2tools.jar`, SHA-256 pinned), Apalache 0.62.3, Lean 4.34.1 through elan. CommunityModules is not pinned yet: its 2026 builds need TLC 1.8, and only RT1's trace validation needs its `Json` module (E1).
+
+### 22.2 Specs: bounds and results
+
+| Spec, variant | Result | States | Time (4 workers, local) |
+|---|---|---|---|
+| `ShardMap` Small, with `Converges` | ok | 655,107 | 14 s |
+| `ShardMap` Small, Apalache `SingleWriter` to length 8 | ok | — | 79 s |
+| `ShardMap` UnsafeConfigMap | violation `SingleWriter`, as declared | 108 | 1 s |
+| `ShardMap` Nightly (2 keys, 3 instances, 3 generations, 4 writes) | ok | 57,401,019 | 247 s (6 workers) |
+| `ReshardCutover` Small, with `Terminates` | ok | 8,257 | 1 s |
+| `ReshardCutover` Small, Apalache `SingleWriterRange` to length 10 | ok | — | 14 s |
+| `ReshardCutover` CrashSaga | ok | 13,541 | 1 s |
+| `ReshardCutover` NoFence | violation `SingleWriterRange`, as declared | 772 | 1 s |
+| `ReshardCutover` Nightly | ok | 791,265 | 24 s |
+| `CrossShardCommit`, `PrimaryFailover`, `RouterSession` | parse | — | — |
+
+The runs found and fixed one modelling bug before any code existed: the first cutover model let the saga switch a designated instance it could not reach, and needed strong fairness for a flapping partition (E5). Mutation runs confirm `SingleWriter` and `ConfigMapSafe` are not vacuous (`spec/tla/router/README.md`).
+
+### 22.3 Lean and the kernel
+
+Proved without `sorry`: `validate_iff`, `partition_total_unique`, `lookup_spec`, `lookup_isSome`, `split_partition`, `merge_partition`, `modulo_partition` and `shardOfRange_total`. A review found that `ShardFn` had never compiled, because the oracle did not import it. The library is now a default build target, so CI checks every theorem.
+
+`loams-sqlrouter` implements the same algorithms. It agrees with the Lean oracle on 10,000 random cases, and a planted `<`-for-`<=` bug is caught at case 108 (E16). Its Postgres hash port matches real `PARTITION BY HASH` in `postgres:17.11` on 38,000+ key and modulus pairs (E15). Its Vitess `hash` and `xxhash` match Vitess's own vectors.
+
+### 22.4 The compatibility inventory (§15)
+
+| Half | Rows | Classes | Suites |
+|---|---|---|---|
+| PgDog v0.1.60 → Postgres | 548 | all `pending-target` (no Loams Postgres compute yet, P2b); the reference errored on 137 | PgDog's `pgbench`, `schema_sync`, `data_sync`, `two_pc` and a baseline pass; `resharding` timed out at 20 minutes under pgbench load; `rewrite`, `logical` and `failover` skipped |
+| Vitess v24.0.4 → WeSQL | 1,981 | 1,822 `same`, 158 `differs` (`schema-engine` 70, `sidecar` 29, `vreplication` 21, `2pc` 16, `vdiff` 11, `onlineddl` 6, `health` 4, `query` 1), 1 `unsupported`, 0 `error` | WeSQL 24 pass, 3 fail, 1 skip; MySQL 8.0.46 reference 26 pass, 1 skip |
+
+Observations on §9.2's items:
+- **C-1:** Vitess's `_vt` sidecar tables land in SmartEngine on WeSQL (InnoDB on MySQL), and vttablet issues no `ALTER … ENGINE` on restart, so its sidecar diff does not loop. The `serverless_honor_innodb_engine` ON case was not run: the published `beta5.40` image lacks the variable (answers Q304).
+- **C-2:** WeSQL has no semi-sync plugins, so keyspaces need durability policy `none`. Vitess prepares 2PC only over a Unix socket, which an unmanaged vttablet must share with its MySQL. **On WeSQL, a 2PC transaction deadlocks at `start_commit`** (D323).
+- **C-4:** `SERIALIZABLE` is refused, consistent with D322's per-shard isolation promise.
+- **C-5:** temporary tables work.
+- **C-7:** MoveTables, Reshard, VDiff and Online DDL pass on WeSQL.
+
+### 22.5 Decisions from RT0
+
+- **D323. No Vitess 2PC on WeSQL keyspaces until the `start_commit` deadlock is understood.** vtgate's `transaction_mode` is `MULTI` (best-effort, with D307's monitor alerting on partial commits), never `TWOPC`, for WeSQL keyspaces. RT3 Task 0 reproduces the deadlock and decides between an upstream WeSQL fix and a Vitess setting.
+- **D324. One vttablet per WeSQL primary, as a sidecar container in the primary's pod**, sharing the MySQL socket directory through an `emptyDir` volume, because Vitess prepares 2PC over the Unix socket. This refines D302 ("separate services") for the tablet. vtgate and vtctld stay separate services.
+- **Q308 answered.** The `lean` job runs on every PR that touches `spec/lean/**` or the ranges code, not only nightly. A cold `lake build` of the package takes well under a minute locally after the toolchain is cached, and `lake test` takes seconds.

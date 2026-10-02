@@ -7,7 +7,7 @@ Method:
   - The throwaway crate built the registry (SQLite, MySQL, http-poll, http-push, the HTTP gateway), started it with `resonate_base::build` and `Running::start`, and stubbed Task 6's `InProcNetwork`.
   - `loams`'s `main` called it when `LOAMS_D1_PROBE` was set, so the whole embedded graph, SDK included, was reachable from `main` and linked into the measured binary.
   - None of it is in this commit: `Cargo.toml`, `Cargo.lock` and `deny.toml` are unchanged.
-- The source is the fork `https://github.com/dina-kar/resonate` at **`c3f25b94301737f4bcfff503e25f2b0e36d57fb9`**. That is the branch `deps/advisories-rustls`: upstream `28dfd01` plus PR 0c (upstream #1164) only.
+- The source is the fork `https://github.com/ostrium-labs/resonate` at **`c3f25b94301737f4bcfff503e25f2b0e36d57fb9`**. That is the branch `deps/advisories-rustls`: upstream `28dfd01` plus PR 0c (upstream #1164) only.
   - The TiDB fixes (PR 0a #1162, PR 1 #1163) change only `resonate-server-mysql`'s source, not its dependencies, so they do not move any number here.
   - The branch `loam/0.10.1` does not exist yet. Task 1 creates it and pins its own revision.
 - Builds used `CARGO_BUILD_JOBS=4 CARGO_INCREMENTAL=0` and a dedicated target directory, `~/.cache/cargo-target/loams-d1`. That directory was wiped before each cold build.
@@ -36,7 +36,7 @@ Method:
 
 | Crate / tool | Version | Source | License | Notes |
 |---|---|---|---|---|
-| `resonate-base`, `-plugin`, `-core`, `-server-sqlite`, `-server-mysql`, `-transport-http-poll`, `-transport-http-push`, `-gateway-http` (+ `-auth`, `-sql`, `-timer-wheel` transitively) | 0.10.1 | git `dina-kar/resonate` rev `c3f25b9` | Apache-2.0 | Path dependencies inside the fork carry versions (PR 0c), so cargo-deny's wildcard ban passes |
+| `resonate-base`, `-plugin`, `-core`, `-server-sqlite`, `-server-mysql`, `-transport-http-poll`, `-transport-http-push`, `-gateway-http` (+ `-auth`, `-sql`, `-timer-wheel` transitively) | 0.10.1 | git `ostrium-labs/resonate` rev `c3f25b9` | Apache-2.0 | Path dependencies inside the fork carry versions (PR 0c), so cargo-deny's wildcard ban passes |
 | Rust SDK | **package `resonate-sdk`** (lib `resonate_sdk`) 0.6.0, with `resonate-sdk-macros` 0.1.0 | same rev, `impl/sdk/rs/resonate` | Apache-2.0 | The package named `resonate` in that repository is the server binary (`impl/server/core`), not the SDK |
 | `rusqlite` / `libsqlite3-sys` | 0.32.1 / 0.30.1 (bundled) | crates.io | MIT | The only `libsqlite3-sys`; no `sqlx-sqlite` in the graph |
 | `sqlx` (`-core`, `-mysql`, `-macros`) | 0.8.6 | crates.io | Apache-2.0 OR MIT | `rsa` 0.9.10 through `sqlx-mysql` |
@@ -104,7 +104,7 @@ The full lockfile gains 103 entries. 22 of them are new versions of existing nam
 | `deny.toml` | Result |
 |---|---|
 | As on `main` | `advisories FAILED, bans ok, licenses ok, sources FAILED`: 13 × `source-not-allowed` (the fork's git source) and RUSTSEC-2023-0071 (`rsa` 0.9.10 through `sqlx-mysql` 0.8.6, "No safe upgrade is available") |
-| With Task 1's additions: `[sources] allow-git = ["https://github.com/dina-kar/resonate"]` and `[advisories] ignore = [{ id = "RUSTSEC-2023-0071", reason = "rsa via sqlx-mysql: used only for RSA password exchange on non-TLS MySQL connections; Loams connects to TiDB over TLS or the cluster network with mysql_native_password (§21 §11.2)" }]` | **`advisories ok, bans ok, licenses ok, sources ok`**: no other advisory, no unmaintained warning, no license finding |
+| With Task 1's additions: `[sources] allow-git = ["https://github.com/ostrium-labs/resonate"]` and `[advisories] ignore = [{ id = "RUSTSEC-2023-0071", reason = "rsa via sqlx-mysql: used only for RSA password exchange on non-TLS MySQL connections; Loams connects to TiDB over TLS or the cluster network with mysql_native_password (§21 §11.2)" }]` | **`advisories ok, bans ok, licenses ok, sources ok`**: no other advisory, no unmaintained warning, no license finding |
 
 - `[graph] all-features = true` means the check covers `durable-mysql`.
 - Git dependencies without a `version` do not trip `wildcards = "deny"`.
@@ -129,7 +129,7 @@ The full lockfile gains 103 entries. 22 of them are new versions of existing nam
   - It spawns `network.start()` and only logs an error from it, so it needs a Tokio runtime.
   - It reads `RESONATE_TOKEN` from the environment even with a custom network. It reads `RESONATE_URL`/`HOST`/`PORT` only without one.
   - `Resonate::stop()` exists.
-- **`reqwest` without default features.** The local copy of the SDK with `reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }` was patched in with `[patch."https://github.com/dina-kar/resonate"]`. `cargo check -p resonate-sdk` passed in 48 s.
+- **`reqwest` without default features.** The local copy of the SDK with `reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }` was patched in with `[patch."https://github.com/ostrium-labs/resonate"]`. `cargo check -p resonate-sdk` passed in 48 s.
   - OpenSSL is not the reason for the fork commit: reqwest 0.13's `default-tls` is rustls.
   - With the defaults, the SDK unifies `charset`, `default` and `system-proxy` into the workspace's `object_store` reqwest 0.13. With the patch those three are gone. `google-cloud-auth` still adds `default-tls`, `form`, `json` and `query`, until Task 1's `gcp-idtoken` feature removes it.
 
@@ -223,7 +223,7 @@ The fork's CI run for the pinned `loam/0.10.1` revision is Task 1's to record: s
 
 ## (j) Task 1: the fork branch `loam/0.10.1`
 
-`dina-kar/resonate` `loam/0.10.1` = **`e3606698e6e3f2502bb018bba1e618deb63f907a`**. It was built in the worktree `~/Documents/research-clones/resonate-loam`.
+`ostrium-labs/resonate` `loam/0.10.1` = **`e3606698e6e3f2502bb018bba1e618deb63f907a`**. It was built in the worktree `~/Documents/research-clones/resonate-loam`.
 
 | Commit | What | Upstream |
 |---|---|---|
@@ -233,7 +233,7 @@ The fork's CI run for the pinned `loam/0.10.1` revision is Task 1's to record: s
 | `3ff482b` | `server-mysql: run on TiDB; xtask and CI legs for it` | #1163 (1); cherry-pick of `f8d7ef2` |
 | `e360669` | `sdk-rs: reqwest without default TLS` (default-on SDK feature `reqwest-default`) | 0e (branch `feat/sdk-rs-reqwest-default-feature`, `e5ddb8a`, on `28dfd01`) |
 
-**Fork CI.** Not run. GitHub keeps a fork's workflows disabled until they are enabled in its Actions tab. `gh api repos/dina-kar/resonate/actions/workflows` lists none, and `gh workflow run server-core-ci.yml --ref loam/0.10.1` answers 404. The workflows also trigger only on pushes to `main`, on PRs and on `workflow_dispatch`.
+**Fork CI.** Not run. GitHub keeps a fork's workflows disabled until they are enabled in its Actions tab. `gh api repos/ostrium-labs/resonate/actions/workflows` lists none, and `gh workflow run server-core-ci.yml --ref loam/0.10.1` answers 404. The workflows also trigger only on pushes to `main`, on PRs and on `workflow_dispatch`.
 
 **Local verification.** It is scoped, because `cargo xtask check` covers the whole workspace, and that includes `resonate-server-scylladb`. The commands used `CARGO_BUILD_JOBS=4 CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=~/.cache/cargo-target/resonate`.
 
