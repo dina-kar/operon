@@ -2,7 +2,7 @@
 # Derived from neondatabase/neon `docker-compose/` (Apache-2.0), with MinIO replaced by RustFS,
 # one safekeeper instead of three, and computes that attach to an explicit tenant/timeline.
 # Not a production layout: no storage controller, no proxy, no TLS, default credentials, loopback ports.
-name: loam-neon
+name: loams-neon
 
 x-neon-image: &neon-image ${NEON_REPOSITORY:-ghcr.io/neondatabase}/neon:${NEON_TAG:-latest}
 x-compute-image: &compute-image ${NEON_REPOSITORY:-ghcr.io/neondatabase}/compute-node-v${PG_VERSION:-16}:${NEON_TAG:-latest}

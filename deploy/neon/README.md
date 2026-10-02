@@ -2,8 +2,8 @@
 
 The stack from the Neon + WeSQL spike ([§23](../../docs/design/23-neon-and-wesql.md)). It runs
 Neon's storage (storage broker, one pageserver, one safekeeper) on a RustFS bucket and starts
-Postgres computes against an explicit tenant and timeline. Loam does not link Neon; in the
-design, Loam plays the part of the control plane that the commands below play by hand.
+Postgres computes against an explicit tenant and timeline. Loams does not link Neon; in the
+design, Loams plays the part of the control plane that the commands below play by hand.
 
 It is derived from `neondatabase/neon` `docker-compose/` (Apache-2.0). `compute/config.json` is
 Neon's compute spec with one safekeeper; `compute/start.sh` replaces Neon's `compute.sh`, because

@@ -3,7 +3,7 @@ import { Button } from './button';
 import { cx } from './cx';
 
 export function Stats({ children }: { children: ReactNode }) {
-  return <div className="loam-stats">{children}</div>;
+  return <div className="loams-stats">{children}</div>;
 }
 
 export function Stat({
@@ -16,7 +16,7 @@ export function Stat({
   detail?: ReactNode;
 }) {
   return (
-    <div className="loam-stat">
+    <div className="loams-stat">
       <span>{label}</span>
       <strong>{value}</strong>
       {detail && <small>{detail}</small>}
@@ -37,7 +37,7 @@ export function Notice({
 }) {
   return (
     <div
-      className={cx('loam-notice', tone !== 'info' && `loam-notice-${tone}`)}
+      className={cx('loams-notice', tone !== 'info' && `loams-notice-${tone}`)}
       role={tone === 'danger' ? 'alert' : 'status'}
     >
       <div>
@@ -65,9 +65,9 @@ export function Snippet({
     return () => clearTimeout(t);
   }, [copied]);
   return (
-    <div className="loam-snippet">
+    <div className="loams-snippet">
       <code>
-        {prompt && <span className="loam-snippet-prompt">$ </span>}
+        {prompt && <span className="loams-snippet-prompt">$ </span>}
         {children}
       </code>
       {copy && (
@@ -88,7 +88,7 @@ export function Meter({ value, max, label }: { value: number; max: number; label
   const ratio = max > 0 ? Math.min(1, value / max) : 0;
   const level = ratio >= 1 ? 'full' : ratio >= 0.8 ? 'high' : undefined;
   return (
-    <div className="loam-meter" data-level={level}>
+    <div className="loams-meter" data-level={level}>
       <meter className="sr-only" value={value} min={0} max={max} aria-label={label} />
       <span aria-hidden="true" style={{ width: `${ratio * 100}%` }} />
     </div>
@@ -115,7 +115,7 @@ export function Avatar({
     .join('');
   return (
     <span
-      className="loam-avatar"
+      className="loams-avatar"
       data-kind={kind}
       style={{ width: size, height: size }}
       aria-hidden="true"
@@ -154,18 +154,18 @@ export function Dialog({
   return (
     <dialog
       ref={ref}
-      className="loam-dialog"
+      className="loams-dialog"
       onClose={() => openRef.current && onClose()}
       aria-labelledby={titleId}
     >
-      <div className="loam-dialog-head">
+      <div className="loams-dialog-head">
         <h2 id={titleId}>{title}</h2>
         <Button variant="quiet" size="icon" aria-label="Close" onClick={onClose}>
           ×
         </Button>
       </div>
-      <div className="loam-dialog-body">{children}</div>
-      {footer && <div className="loam-dialog-foot">{footer}</div>}
+      <div className="loams-dialog-body">{children}</div>
+      {footer && <div className="loams-dialog-foot">{footer}</div>}
     </dialog>
   );
 }

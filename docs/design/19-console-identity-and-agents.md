@@ -2,7 +2,7 @@
 
 Status: **Proposed** · 2026-09-26. Decision numbers are assigned at merge; until then they are P1–P10. This document builds on §18 §6–§8 (D64–D66) and amends one line of D65 (the tenancy model, P2).
 
-> **Amended 2026-10-02** by [§38](38-knative-authentik-gitops.md) (proposed): Authentik's open-source edition is the documented and tested IdP in front of Loam, replacing Keycloak as the SAML broker in P7 and §6 (D447, D450). People sign in through it; the gateway exchanges its token for a Loam access token (RFC 8693, §5.2 flow 1) and stays the authority for Loam tokens; agents, vending and §5.3 are unchanged (D449). The single binary keeps built-in sign-in (D450). §3's hosted identity ("Clerk or Keycloak") is not changed here; it is `loam-platform`'s decision (Q442).
+> **Amended 2026-10-02** by [§38](38-knative-authentik-gitops.md) (proposed): Authentik's open-source edition is the documented and tested IdP in front of Loams, replacing Keycloak as the SAML broker in P7 and §6 (D447, D450). People sign in through it; the gateway exchanges its token for a Loams access token (RFC 8693, §5.2 flow 1) and stays the authority for Loams tokens; agents, vending and §5.3 are unchanged (D449). The single binary keeps built-in sign-in (D450). §3's hosted identity ("Clerk or Keycloak") is not changed here; it is `loam-platform`'s decision (Q442).
 
 Markers: **(verify)** is not checked against a primary source; the plan that builds it resolves it.
 
@@ -12,7 +12,7 @@ Markers: **(verify)** is not checked against a primary source; the plan that bui
 
 | # | Proposal | Milestone |
 |---|---|---|
-| P1 | **One console, three editions.** A React single-page app serves OSS, Loam Cloud and BYOC. The engine embeds its build and serves it at `/ui`; the hosted control plane serves the same build | Mock-backed now; real with M2 |
+| P1 | **One console, three editions.** A React single-page app serves OSS, Loams Cloud and BYOC. The engine embeds its build and serves it at `/ui`; the hosted control plane serves the same build | Mock-backed now; real with M2 |
 | P2 | **Org → projects → environments.** A project groups environments; an environment is exactly one namespace. Amends D65's "org → namespaces" | M2 |
 | P3 | **One org per OSS install.** The schema keeps `org_id` everywhere; Cloud runs many orgs on the same model | M2 |
 | P4 | **Teams** hold members and receive project roles; OIDC groups can map to teams | M2 |
@@ -21,7 +21,7 @@ Markers: **(verify)** is not checked against a primary source; the plan that bui
 | P7 | **Human sign-in in OSS:** first-run setup token, email and password (argon2id) with TOTP, and generic OIDC SSO. Passkeys follow. SAML and SCIM are brokered by an IdP (Authentik by default since §38 D447; Keycloak, Dex, Authentik), not built in | M2; passkeys M2.x |
 | P8 | **Auth is Rust, in the gateway**, on the `ControlStore`: no Node service beside the binary. Built from primitives, not a framework | M2 |
 | P9 | **The console API contract** is OpenAPI 3.1 at `api/console/openapi.json`, the single source for the console's types, the mock server and the gateway's implementation | Now |
-| P10 | **`operon-console-mock`**, an httpmock server with seed data, serves the contract before the gateway does | Now |
+| P10 | **`loams-console-mock`**, an httpmock server with seed data, serves the contract before the gateway does | Now |
 
 ## 2. Why
 
@@ -33,7 +33,7 @@ Markers: **(verify)** is not checked against a primary source; the plan that bui
 
 ## 3. Editions and the console (P1)
 
-| | OSS | Loam Cloud | BYOC |
+| | OSS | Loams Cloud | BYOC |
 |---|---|---|---|
 | Console | Embedded, `/ui` on the native REST listener | Hosted | Hosted, managing the customer's cluster |
 | Orgs | Exactly one | Many | One per customer |
@@ -42,7 +42,7 @@ Markers: **(verify)** is not checked against a primary source; the plan that bui
 
 The console discovers what it can show from `GET /api/v1/instance` (`edition`, enabled sign-in methods, feature flags), so one build serves all three. Cloud-only pages (billing) are hidden, not forked.
 
-**Build and serving.** The console lives in `web/` (a pnpm workspace: `apps/console` and `packages/ui`, the shared `@loam/ui` design system). The `operon` crate embeds `web/apps/console/dist` behind a `console` feature and serves it with an SPA fallback at `/ui`; without the feature the binary builds with no Node toolchain. Fonts and assets are bundled: an air-gapped console loads nothing from the internet.
+**Build and serving.** The console lives in `web/` (a pnpm workspace: `apps/console` and `packages/ui`, the shared `@loams/ui` design system). The `loams` crate embeds `web/apps/console/dist` behind a `console` feature and serves it with an SPA fallback at `/ui`; without the feature the binary builds with no Node toolchain. Fonts and assets are bundled: an air-gapped console loads nothing from the internet.
 
 ## 4. Tenancy (P2, P3, P4)
 
@@ -88,7 +88,7 @@ Every token an agent holds and every call it makes is attributed to it in the au
 
 There are three flows, and none of them stores a secret in the agent's environment.
 
-1. **Workload-identity federation** (RFC 8693 token exchange). The agent's runtime already issues it an OIDC token: GitHub Actions, a Kubernetes service account, AWS, GCP or Azure workload identity, or a sandbox runtime. The agent posts that token to `POST /api/v1/oauth/token`. The gateway verifies it against a **trust policy** on the agent (issuer, audience, a subject pattern such as `repo:acme/search:ref:refs/heads/main`), then issues a Loam access token.
+1. **Workload-identity federation** (RFC 8693 token exchange). The agent's runtime already issues it an OIDC token: GitHub Actions, a Kubernetes service account, AWS, GCP or Azure workload identity, or a sandbox runtime. The agent posts that token to `POST /api/v1/oauth/token`. The gateway verifies it against a **trust policy** on the agent (issuer, audience, a subject pattern such as `repo:acme/search:ref:refs/heads/main`), then issues a Loams access token.
 2. **User delegation** (OAuth 2.1 authorization code with PKCE). An MCP client such as Claude Code or Codex discovers the authorization server the way the MCP authorization spec (2026-07-28) prescribes. A request without a token to a protected route gets `401` with `WWW-Authenticate: Bearer resource_metadata="<origin>/.well-known/oauth-protected-resource"`. That document (RFC 9728) names the resource, the authorization server and the supported scopes, and the server's own metadata is at `/.well-known/oauth-authorization-server` (RFC 8414). `GET /api/v1/oauth/authorize` sends the user to the console's consent screen, which runs inside a signed-in session and shows the agent, the environment and the actions. The user's answer goes to `POST /api/v1/oauth/consent`; the gateway issues a code (or `error=access_denied`) and returns the client's `redirect_uri`, which the console follows. The resulting token carries the user as the subject and the agent as the actor, and it can never exceed either one's rights.
 3. **Vending** from a parent token (§15 §8). A sandbox supervisor holding a token asks for a narrower one for a sandbox: fewer actions, one environment, a shorter TTL. Vended tokens can only attenuate.
 
@@ -105,12 +105,12 @@ Short lifetimes are the main defence. On top of that, the gateways keep a revoca
 
 ### 5.5 API keys
 
-API keys stay for SDK users and service accounts that cannot federate (§18 §6: `loam_<key_id>_<secret>`, hashed). Proposed additions:
+API keys stay for SDK users and service accounts that cannot federate (§18 §6: `loams_<key_id>_<secret>`, hashed). Proposed additions:
 
 - every key is scoped to one environment;
 - keys default to a 90-day expiry;
 - the console marks keys that were not used for 30 days;
-- keys cannot be issued to agents. The CLI follows this rule (D295, §30 §15): `loam keys create` makes keys for apps, written to `.env.loam`; the stdio MCP server never mints or returns keys, and from CLI3 it acts as an agent principal with vended tokens.
+- keys cannot be issued to agents. The CLI follows this rule (D295, §30 §15): `loams keys create` makes keys for apps, written to `.env.loams`; the stdio MCP server never mints or returns keys, and from CLI3 it acts as an agent principal with vended tokens.
 
 ## 6. Human sign-in in OSS (P7)
 
@@ -133,7 +133,7 @@ API keys stay for SDK users and service accounts that cannot federate (§18 §6:
 
 **Sessions** are an `HttpOnly`, `Secure`, `SameSite=Lax` cookie holding an opaque id; the session lives in the `ControlStore` (12 hours idle, 30 days absolute). Mutating requests carry a CSRF token from `GET /api/v1/session`.
 
-Sign-in methods do not depend on the edition: OSS gets SSO and two-factor. Loam charges for running Loam (Cloud, BYOC, support), not for security features.
+Sign-in methods do not depend on the edition: OSS gets SSO and two-factor. Loams charges for running Loams (Cloud, BYOC, support), not for security features.
 
 ## 7. Implementation: Rust primitives on the `ControlStore` (P8)
 
@@ -145,7 +145,7 @@ Auth runs in the gateway role, stores its state in the `ControlStore` (§18 §6)
 | `torii` 0.5 | Last release 2025-12-23; SQL storage (SQLite, Postgres, MySQL) |
 | `auth-framework` 0.4 | Young, one maintainer, and it bundles a whole authorization server whose security we would have to audit |
 
-Loam builds the flows itself (sessions, exchange, consent, vending) on audited primitives:
+Loams builds the flows itself (sessions, exchange, consent, vending) on audited primitives:
 
 | Need | Crate |
 |---|---|
@@ -161,7 +161,7 @@ better-auth's plugin boundaries and its organization, team and invitation shapes
 
 - **`api/console/openapi.json`** (OpenAPI 3.1) defines every `/api/v1` operation the console uses, plus the OAuth endpoints (token exchange, authorize, the consent decision) and the well-known documents (RFC 9728 protected-resource metadata, RFC 8414 server metadata, JWKS). The console generates its TypeScript types from it (`openapi-typescript`); the gateway's handlers are tested against it in M2.
 - **The data API is not in it.** The console reads collections through the existing native API (`/v1/namespaces/{ns}/collections`, the M1.6 wire contract W6–W9), using the environment's namespace.
-- **`crates/operon-console-mock`** runs an `httpmock` server (MIT; used as a library, the `remote` feature) on a fixed port with **seed data**: one org (Acme), three teams, projects with development, staging and production environments, agents with trust policies and live tokens, API keys, audit events, usage series, and collections in the seeded namespaces. `cargo run -p operon-console-mock` serves it; `pnpm dev` in `web/` proxies `/api` and `/v1` to it.
+- **`crates/loams-console-mock`** runs an `httpmock` server (MIT; used as a library, the `remote` feature) on a fixed port with **seed data**: one org (Acme), three teams, projects with development, staging and production environments, agents with trust policies and live tokens, API keys, audit events, usage series, and collections in the seeded namespaces. `cargo run -p loams-console-mock` serves it; `pnpm dev` in `web/` proxies `/api` and `/v1` to it.
 - **Two tests keep the three in step:** every contract operation has a mock, and every seed record carries its schema's required properties.
 - The mock is static: a `POST` returns a plausible created object, but the next `GET` does not show it. That is enough to build and review the console; state belongs to the real gateway.
 

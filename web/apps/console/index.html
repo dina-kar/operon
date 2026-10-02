@@ -4,12 +4,12 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark light" />
-    <title>Loam console</title>
+    <title>Loams console</title>
     <link rel="icon" href="/ui/favicon.svg" type="image/svg+xml" />
     <script>
       // Pick the theme before first paint: the saved choice, else the system's.
       try {
-        const t = localStorage.getItem('loam-theme');
+        const t = localStorage.getItem('loams-theme');
         const dark = t ? t === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
         document.documentElement.classList.toggle('dark', dark);
       } catch {}

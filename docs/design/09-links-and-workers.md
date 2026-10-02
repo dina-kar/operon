@@ -2,7 +2,7 @@
 
 Status: **Approved** · 2026-09-22 · amended 2026-09-26 (M1.2 as built) · amended 2026-09-26 (collection write backpressure, D86)
 
-**Links** are Operon's zero-ETL mechanism: declared, continuously maintained materializations from streams into tables, collections and graphs. **Workers** are the stateless pool that executes links and all other background work.
+**Links** are Loams's zero-ETL mechanism: declared, continuously maintained materializations from streams into tables, collections and graphs. **Workers** are the stateless pool that executes links and all other background work.
 
 ---
 
@@ -37,7 +37,7 @@ CREATE LINK tickets_search
 
 - SQL (DataFusion) over the decoded record batch: projections, filters, JSON extraction, casts, scalar UDFs.
 - Decoders: JSON, Avro/Protobuf (with a registered schema), CSV, raw bytes.
-- **`embed()` UDF (optional):** calls an external embedding endpoint (OpenAI-compatible HTTP, or a self-hosted model server) with batching, retries and rate limiting; results cached by content hash. Off by default; configured per namespace. (Operon does not host models.)
+- **`embed()` UDF (optional):** calls an external embedding endpoint (OpenAI-compatible HTTP, or a self-hosted model server) with batching, retries and rate limiting; results cached by content hash. Off by default; configured per namespace. (Loams does not host models.)
 - Mergeable aggregate states for MV-style links (§08 §4).
 - Not supported: stateful joins across streams, windowed aggregations with watermarks (§00 §7).
 
@@ -95,13 +95,13 @@ Known limits carried to M2's resource budgets (§6): a merge streams its documen
 - **Autoscaling signals:** total link lag (seconds), compaction debt (bytes), queue age per priority.
 - **Resource budgets:** CPU/memory per task class; object-store request budgets (PUT/GET rate) per node to stay under prefix limits.
 
-**As built in M0 (`operon-worker`, M0.4):**
+**As built in M0 (`loams-worker`, M0.4):**
 - A *task source* proposes task keys with work (the segmenter one per partition with a due WAL run, retention and GC one singleton each, link apply one per link, D30). Every node runs one `Worker`, which polls its sources (default every 1 s), orders the candidates by priority, then round-robin across namespaces within a priority, and starts what fits under `max_concurrent` (16) and `max_per_namespace` (4).
 - A task runs under the metastore lease `task/<key>` (TTL 30 s) with a fence at the lease's epoch and a cancellation token. The worker renews every third of the TTL; a renewal that finds the lease expired re-takes it at the same epoch if nobody else took it (`ReacquireLease`), so a slow run keeps its fence; a lease someone else took cancels the run, and every metastore commit it attempts with its fence is rejected. Leases are released when a run ends; a crashed worker's leases expire.
 - Weights, byte-rate caps, autoscaling signals and per-class resource budgets are not built yet.
 
 ## 7. Backpressure
 
-- **Collection links (M1.3, D86):** each collection has a budget on its unapplied backlog, the records past `applied` (`max_unapplied_records`, default 1 000 000) and their log bytes (`max_unapplied_bytes`, default 128 MiB, at most half of `tail.max_bytes`). While the backlog is at either budget, collection writes are refused with HTTP 429 or gRPC `RESOURCE_EXHAUSTED` and `Retry-After` (estimated from the link's recent apply rate, 1–30 s); every write response reports the backlog (`Operon-Unapplied-Records`, `Operon-Unapplied-Bytes`). A bulk load may send `Operon-Backpressure: off` to write up to 4× the budget. M2 makes the budget a per-namespace and per-collection quota (D65) with metrics.
+- **Collection links (M1.3, D86):** each collection has a budget on its unapplied backlog, the records past `applied` (`max_unapplied_records`, default 1 000 000) and their log bytes (`max_unapplied_bytes`, default 128 MiB, at most half of `tail.max_bytes`). While the backlog is at either budget, collection writes are refused with HTTP 429 or gRPC `RESOURCE_EXHAUSTED` and `Retry-After` (estimated from the link's recent apply rate, 1–30 s); every write response reports the backlog (`Loams-Unapplied-Records`, `Loams-Unapplied-Bytes`). A bulk load may send `Loams-Backpressure: off` to write up to 4× the budget. M2 makes the budget a per-namespace and per-collection quota (D65) with metrics.
 - Other links (M4 tables, M3 graphs) may configure a `max_lag` that throttles their source stream's producers the same way, or keep accepting (the log absorbs the backlog).
 - Tail memory is bounded per object on query nodes; when exceeded, strong reads fall back to a range tail read directly from the log (bounded; `Unavailable` beyond the bound) — slower but correct (M1.2).

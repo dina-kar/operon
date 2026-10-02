@@ -1,7 +1,7 @@
 {
-  "name": "@loam/ui",
+  "name": "@loams/ui",
   "version": "0.1.0",
-  "description": "Loam's design system: tokens, the mark, grain textures and React primitives.",
+  "description": "Loams's design system: tokens, the mark, grain textures and React primitives.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

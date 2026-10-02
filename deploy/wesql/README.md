@@ -2,7 +2,7 @@
 
 The stack from the Neon + WeSQL spike ([§23](../../docs/design/23-neon-and-wesql.md)): one
 WeSQL server (apecloud, MySQL 8.0.35 with the SmartEngine storage engine on object storage,
-**GPL-2.0-only**) on a RustFS bucket. Loam runs it as a separate, unmodified service and never
+**GPL-2.0-only**) on a RustFS bucket. Loams runs it as a separate, unmodified service and never
 links it.
 
 Two settings matter on RustFS:
@@ -30,7 +30,7 @@ With Docker, or Podman plus `DOCKER_HOST=unix:///run/user/$UID/podman/podman.soc
 docker compose up -d
 # Ready after about 75 s on first start; the server accepts connections a few seconds before
 # it can write ("Consensus Not Leader"), so retry the first write.
-mysql -h 127.0.0.1 -P 13306 -uroot -ploam-dev
+mysql -h 127.0.0.1 -P 13306 -uroot -ploams-dev
 docker compose down
 ```
 
