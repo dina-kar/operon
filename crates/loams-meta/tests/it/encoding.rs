@@ -8,6 +8,11 @@
 //! Run with `LOAMS_BLESS_GOLDEN=1` to (re)write the files under
 //! `tests/golden/`; otherwise they compare against the committed bytes.
 //! The files are never re-blessed after Task 1 (Global Constraints).
+//! Exception: the Loams rename (D407) re-blessed them once, because the
+//! annotation prefix `operon.` became `loams.` (`operon.owner` ->
+//! `loams.owner`, `operon.updated` -> `loams.updated`); the new bytes equal
+//! the old ones with only those strings (and their length prefixes and the
+//! snapshot crc32c) changed, and the SHA-256 pins below were updated.
 //!
 //! M1.3 (Task 4, Ruling 20) appends `Command::SetCollectionHot` and
 //! `Reply::CollectionHotSet` and snapshot format 6. Its own golden files
@@ -804,7 +809,7 @@ fn the_golden_wal_snapshot_decodes_to_the_same_state() {
 const BASE_GOLDEN_SHA256: [(&str, &str); 4] = [
     (
         "commands.bin",
-        "5f47b867441cb30efdb041c2cade8eed877468034484af934dbbb429bc2add18",
+        "58548632410145a53a684406f74d7550a3e5b6dfbac6e3307f2f8036765c7726",
     ),
     (
         "replies.bin",
@@ -1082,7 +1087,7 @@ fn a_version_above_v_plus_1_is_unsupported() {
 const M1_3_GOLDEN_SHA256: [(&str, &str); 3] = [
     (
         "commands-m1.3.bin",
-        "2bda5efeb8860de6c475a01c7050d54d85363096cbab90b4588553f82aecab4c",
+        "4096715917b2c685a6d1572a23edf62234b6edf1cbddc7d5295fb4ed5a302c4e",
     ),
     (
         "replies-m1.3.bin",
@@ -1090,7 +1095,7 @@ const M1_3_GOLDEN_SHA256: [(&str, &str); 3] = [
     ),
     (
         "snapshot-m1.3.bin",
-        "992c9d15cdb59871a59986d59c4db114f541aaee96e6389f287d79cb251e80d3",
+        "e071a67222381f2dda0ce7bac78bb616b4695bdbebec510375749325a4ea4fae",
     ),
 ];
 
