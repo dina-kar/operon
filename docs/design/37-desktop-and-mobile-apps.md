@@ -5,7 +5,7 @@ Status: **Proposed** · 2026-10-01, revised 2026-10-02 (the Authentik and D220 r
 1. "I downloaded the DeepSeek Harness desktop and mobile app repos. They serve as the base for the Loams desktop app and mobile app, with Connect-RPC. The harness desktop's Rust backend is Tauri, so adapt our control-plane React to Tauri. Mobile is Kotlin, so use Connect-RPC natively in Swift (iOS) and Jetpack Compose (Android)."
 2. The same day's correction: "cordis" is the JavaScript meta-framework the harness is built on (contexts, services, a plugin lifecycle with scoped disposal and hot reload), not Tauri. The intent is to **adapt Loams's control-plane React to cordis so that any code can be loaded as a plugin**: console pages, panels, engine adapters, connectors, agent tools, and the integrations of §26, §30, §32–§34, each a cordis plugin with declared services and dependencies, loaded from a catalog like the harness's `cordis.yml`, in the browser and inside Tauri. **Tauri stays the desktop shell; cordis is the application architecture inside it.** "Native Connect-RPC" on mobile means connect-swift and connect-kotlin generated from the shared protos, with no web view or bridge, in native SwiftUI and Compose.
 
-> **Amended 2026-10-02 (the zeron ruling).** The owner ruled: "instead of Tauri go native for desktop apps also: https://github.com/zeronsh/zeron". **The desktop is no longer a Tauri shell around the cordis console; it is a native app on a fork of zeron** (§18, D480–D499, plan [AP1n](../plans/2026-10-02-ap1n-native-desktop-zeron.md), which replaces AP1). Superseded by §18, kept below for history and marked in place: D420's "Tauri 2", D429–D432, D439's desktop layout, §3.1, §4's desktop half, §6 in full, §9's desktop rows, §12's `tauri-driver` tests, §13's AP1 row, risks 7, 9 and 10, Q428–Q430 and Q437 (as noted). **Unchanged:** the web console on cordis in the browser (D422–D428, AP1a), the phones and the app protos (D433–D438), AP0 and AP2/AP3. The names are the owner's: **Loams Bot** and **Loams Software Factory** (§39).
+> **Amended 2026-10-02 (the zeron ruling).** The owner ruled: "instead of Tauri go native for desktop apps also: https://github.com/zeronsh/zeron". **The desktop is no longer a Tauri shell around the cordis console; it is a native app on a fork of zeron** (§18, D480–D499, plan [AP1n](../plans/2026-10-02-ap1n-native-desktop-zeron.md), which replaces AP1). Superseded by §18, kept below for history and marked in place: D420's "Tauri 2", D429–D432, D439's desktop layout, §3.1, §4's desktop half, §6 in full, §9's desktop rows, §12's `tauri-driver` tests, §13's AP1 row, risks 7, 9 and 10, Q428–Q430 and Q437 (as noted). **Unchanged:** the web console on cordis in the browser (D422–D428, AP1a), the phones and the app protos (D433–D438), AP0 and AP2/AP3. **Later the same day the owner added: "do not drop Tauri; add it as a bridge to control websites"**: Tauri returns, not as the desktop shell but as a separate web bridge that agents drive as MCP tools (§18.14, D500–D512, plan [AP1b](../plans/2026-10-02-ap1b-tauri-web-bridge.md)). The names are the owner's: **Loams Bot** and **Loams Software Factory** (§39).
 
 The owner's standing rulings that apply: Connect-RPC everywhere (connect-es, connect-swift, connect-kotlin, all from the protos connect-rust serves, D128); the package namespace `loams` (crates.io, PyPI, npm `@loams`), Go paths `loams.dev/...`, the domain `loams.dev`, CloudEvents types `io.loams.dev.*`; the repository moving to the GitHub organisation `ostrium-labs`; mobile native per platform, not Kotlin Multiplatform UI. Two further rulings arrived while this document was written (2026-10-01 and 2026-10-02): **the identity provider is Authentik, open-source edition only** (Clerk and Keycloak are gone), so every app sign-in flow targets Authentik (§6.5, §7.2); and **D220's open-core split stands**: the console's multi-tenant, hosted and billing parts stay in the private `loam-cloud` and `loam-platform` repositories, loaded as private plugins from a private registry. This document designs only the open side and names the extension points the private side uses (§5.8); it contains no design for hosted or billing plugins.
 
@@ -769,6 +769,7 @@ Markers: **(verified 2026-10-02)** means read in zeron's tree at `80b946b` (2026
 | §12's `tauri-driver` end-to-end tests | Native tests | D495, §18.11 |
 | §13's AP1 row | Replaced by AP1n | D499 |
 | Q428–Q430, Q437 | Q428, Q429 and Q437 carry over; Q430 becomes Q492 | §18.3, §18.8 |
+| "Tauri is superseded" (D480, this table) | **Amended 2026-10-02 (the owner: "do not drop Tauri")**: Tauri is not the desktop shell, but returns as a separate **web bridge** that agents drive as MCP tools | §18.14, D500–D512 |
 
 Unchanged: D422–D428 (the **web** console on cordis, in the browser at `/ui`), D433–D438 (the phones and the app protos), §10's open-core placement for everything except the desktop's repository.
 
@@ -877,7 +878,7 @@ Zeron's chat surface already gives Loams Bot threads, an attention-sorted sideba
 | **System browser** (the person's own profile, Authentik session, passkeys, extensions) | yes | yes | yes |
 | Zeron's sidebar browser tab | WebKitGTK helper, ephemeral store, no cookies kept between launches | `wry` (WKWebView) | **does not exist** |
 
-So the defaults are: **panels first, "Open in browser" for the full app, and the sidebar browser as an opt-in that is on only where a spike proves it good enough.** Specifically:
+The web bridge of §18.14 now supplies the third column's missing piece: a managed webview with persistent per-profile stores on all three operating systems ("Open in Loams Web"). So the defaults are: **panels first, "Open in browser" for the full app, and the sidebar browser as an opt-in that is on only where a spike proves it good enough.** Specifically:
 
 - **Zulip, Plane, Forgejo, GlitchTip:** a native panel for the objects (from `loams.collab.v1`, SF1), and **Open in browser** to the app's own URL, where the person is already signed in at Authentik.
 - **OpenPanel:** tiles in a panel, "Open" for the full UI. **Langfuse, OpenObserve:** links, never embeds (§39 D461).
@@ -892,7 +893,7 @@ Cordis no longer runs inside the desktop, because there is no webview. The exten
 
 | Tier | Mechanism | Runs in | For | Trust |
 |---|---|---|---|---|
-| **1. Now** | **MCP servers and ACP agents**, configured as zeron already does. The engine injects its own `zeron mcp` into every run; Loams adds a `loams mcp serve` entry (§30 D289) beside it. Skills (`SKILL.md`) and themes (VS Code themes compile to zeron families) are also extension points | Separate processes | Tools, agents, prompts, themes: anything that fits "a process the engine talks to" | The user's own; third-party servers run with the user's rights, as in every MCP client |
+| **1. Now** | **MCP servers and ACP agents**, configured as zeron already does (the web bridge of §18.14 is one such MCP server). The engine injects its own `zeron mcp` into every run; Loams adds a `loams mcp serve` entry (§30 D289) beside it. Skills (`SKILL.md`) and themes (VS Code themes compile to zeron families) are also extension points | Separate processes | Tools, agents, prompts, themes: anything that fits "a process the engine talks to" | The user's own; third-party servers run with the user's rights, as in every MCP client |
 | **2. First-party** | **Native panels**, Rust crates behind cargo features (`loams-panels`), reviewed in-tree | The UI process | Approvals, stacks, operations, collab, factory runs | `first-party` |
 | **3. Later** | **WASM components** on wasmtime with a declarative UI interface: a plugin returns a view tree (lists, forms, tables, charts, text) that the **host** renders in GPUI; it never touches GPUI, the filesystem or the network directly. A permission manifest names the Loams services it may call, intersected with the user's, and calls carry the vended, attenuated token of D426 with the plugin as the actor | A wasmtime instance per plugin | Third-party panels and agent-tool views | `third-party`, always sandboxed |
 
@@ -985,6 +986,138 @@ CI added: the Loams crates on Linux, Windows and macOS; a build of the real bina
 | **D284 and Q433** (no telemetry) | | Consistent: zeron's Rust crates have none |
 | **D220** (open for adoption; commercial in `loam-platform`) | An MIT fork with Apache-2.0 additions | Consistent: both are open; nothing here depends on `loam-platform` |
 
-### 18.14 Sources
+### 18.14 The Tauri web bridge (D500–D512)
+
+Status: **Proposed** · 2026-10-02. The direction is the owner's, given the same day, after the native ruling: **"do not drop Tauri; add it as a bridge to control websites, efficiently, like the Chrome MCP toolbox."** This subsection adds decisions **D500–D512** and questions **Q500–Q511**. The D480–D499 block is full, so the numbers continue at D500 (renumber at merge if another branch took them). They are staged in [`_pending/37b-log.md`](_pending/37b-log.md). The plan is [AP1b](../plans/2026-10-02-ap1b-tauri-web-bridge.md). Markers are as in §18: **(verified 2026-10-02)** means read in the named source that day, **(verify)** means the plan task that builds it checks it first, **(estimate)** means computed, not measured.
+
+**What changes and what does not.** D480 stands: the desktop is the native zeron fork, and Tauri does not come back as the desktop shell, so D429–D432 and D439 stay superseded. Tauri 2 returns in a **different role**: a separate **web bridge** process, a managed webview host that opens and keeps sessions for websites and that agents drive as MCP tools. It also answers the two gaps §18.5 found in zeron's sidebar browser: none on Windows, and no persistent store on Linux.
+
+#### 18.14.1 Role and shape (D500–D502)
+
+```
+  agents: Loams Bot (ACP shim)  ·  Claude Code, Codex, Cursor … in zeron  ·  any MCP client
+        │ MCP over stdio                                    │ (never a Loams token; a scoped session handle)
+        ▼                                                   │
+  `loams-web-bridge mcp`  (thin stdio shim, one per agent session)
+        │ local IPC: Unix socket 0600 / Windows named pipe with an owner-only ACL
+        ▼
+  ┌──────────────── loams-web-bridge daemon (Tauri 2, one per user) ────────────────────────────┐
+  │ MCP tool registry · policy and approvals · redaction · audit · profile manager                │
+  │ windows: one webview per page, one data store per profile (WebView2 · WebKitGTK · WKWebView)  │
+  │ injected script (isolated world) ⇄ eval · native hooks per OS · CDP in-process on Windows     │
+  └───────▲──────────────────────────────────────────────▲───────────────────────────────────────┘
+          │ launch, supervise, approvals                  │ OTLP (content-free; content to Langfuse only, §39 D470)
+   Loams Desktop (zeron fork, loams-link)         collector → OpenObserve, Loams, Langfuse
+```
+
+- **D500, the role.** Loams Desktop stays native. **`loams-web-bridge`** is a separate Tauri 2 application whose job is to host webviews for websites (Zulip, Plane, Forgejo, GlitchTip, Langfuse, OpenObserve, any site) with persistent, isolated sessions, and to expose them as tools. A person can also use its windows by hand ("Open in Loams Web", §18.14.6).
+- **D501, the repository.** Its own repository, **`ostrium-labs/loams-web-bridge`**, Apache-2.0, not a fork, with its own Cargo workspace. Reasons: Tauri's dependency tree and per-OS webview libraries (`webkit2gtk-4.1`, WebView2, WKWebView) must stay out of the engine's `Cargo.lock` (the reason D439 gave for a separate workspace); the three-OS CI and signing are heavy and independent of the engine; and any MCP client may use it without Loams Desktop. It vendors the few protos it needs by pinned ref, as `loams-desktop` does (D493). Q500 asks whether to keep it in the monorepo instead.
+- **D502, processes and transport.** A **daemon** (single instance per user, a lock file) owns the webviews, profiles and policy. Agents never speak to it directly: each agent session spawns the thin stdio shim `loams-web-bridge mcp`, which proxies MCP over **local IPC** to the daemon, exactly as zeron's `zeron mcp` proxies to the engine (§18.1). Callers are identified by a **session handle** minted by Loams Desktop, or, for a standalone client with no Loams Desktop, by the user running `loams-web-bridge handle new --profile … --class … --origin … --ttl …` over the owner-only control channel (the same endpoint Desktop uses, authenticated by OS user identity), which prints the handle for the client's MCP configuration. A handle is random, scoped to a chat, a profile set, tool classes and an expiry, revocable, and passed in the shim's environment. **A handle is not a Loams token** and opens nothing off the machine, so D489 stands. A loopback Streamable-HTTP listener for clients that cannot spawn a process is off by default and needs a per-launch bearer.
+
+#### 18.14.2 The toolbox (D503, D504)
+
+Studied on 2026-10-02: **`ChromeDevTools/chrome-devtools-mcp`** (Apache-2.0 **(verified)**, about 53 k stars, 59 tools in `docs/tool-reference.md`, plus a three-tool `--slim` mode) and **`microsoft/playwright-mcp`** (Apache-2.0 **(verified)**, about 38 k stars, 72 `browser_*` tools, of which storage, routing, tracing and video sit behind capability flags). Their lists overlap on the core, which is the part Loams takes.
+
+| Group | Loams tool (v1) | Modelled on | Notes |
+|---|---|---|---|
+| Pages | `list_pages`, `new_page`, `select_page`, `close_page`, `navigate_page` (url, back, forward, reload) | both | A page belongs to a profile; ids are small integers |
+| **Observe** | **`take_snapshot`** (uids; `verbose`, `depth`, scope by uid, `filename`), **`find`** (text or regex over the snapshot), `take_screenshot` (on demand, a file path back), `list_console_messages` and `get_console_message`, `list_network_requests` and `get_network_request` (paged, redacted) | `take_snapshot`, `take_screenshot`, console and network tools of chrome-devtools-mcp; `browser_snapshot` and `browser_find` of Playwright MCP | Snapshot first; screenshots are never the default path |
+| Act | `click`, `fill`, `fill_form`, `select_option`, `hover`, `press_key`, `type_text`, `drag`, `upload_file`, `handle_dialog` | both | By **uid** from the latest snapshot; `fill` also accepts a `secret_ref` (D507) |
+| Wait | `wait_for` (text, selector, url, network idle, with a timeout) | both | Returns a short result, not a snapshot |
+| Downloads | `list_downloads` (name, size, path) | Playwright MCP's download handling | Files stay on disk; the tool returns paths and hashes (D508 gate) |
+| Script | `evaluate_script` | both | **Off by default**, dangerous class, org policy to enable (Q511) |
+| Sessions | `list_profiles`, `profile_status` (signed in or not, never cookie values), **`request_human`** (shows the window and waits until the person finishes a login, a captcha or a second factor) | Loams | Replaces cookie and storage tools |
+| Left out of v1 | performance traces, heap snapshots, Lighthouse, CSS inspection, extensions, PWA, WebMCP, emulation, video and recording, **cookie and storage get and set**, request routing | the rest of both lists | Not needed for operating apps; cookie and storage access would hand credentials to the model |
+
+Capabilities group the tools as Playwright's `--caps` does: `core` (default, no script, no network detail), `network`, `script`, and a **slim** set (`navigate_page`, `take_snapshot`, `click`, `fill`) for small models, as chrome-devtools-mcp's `--slim` does with three tools.
+
+**Efficiency rules (D504).** These are the token-saving tricks of the two projects, plus two of ours. Cited to their sources: chrome-devtools-mcp's `docs/design-principles.md` ("Token-optimized: return semantic summaries", "Reference over value: for heavy assets return a file path"), its `take_snapshot` with `verbose` and uids of the form `<snapshotId>_<n>` (`src/TextSnapshot.ts`), its `pageSize` and `pageIdx` on list tools; Playwright MCP's README ("accessibility snapshot … better than screenshot", `--snapshot-mode`, `depth`, `filename`, `browser_find`).
+
+1. **Snapshot, not screenshot.** A compact accessibility-style text tree (role, name, state, uid) is the default way to see a page. A screenshot is an explicit tool call and returns a file path.
+2. **Uids carry their snapshot id** (`s12_34`). A uid from an older snapshot returns a **self-healing error** ("snapshot s12 is stale; call `take_snapshot`"), never a click on the wrong element.
+3. **Actions answer small.** After `click` or `fill` the result is a one-line outcome plus a **change summary** (navigated to, dialog opened, N nodes added or removed, a download started), with `snapshot: "none" | "diff" | "full"` per call and a server default of `diff`. Playwright MCP returns a full snapshot after every action by default (`--snapshot-mode full`); that is the main cost Loams avoids.
+4. **Search before dumping.** `find` returns matching nodes with a few lines of context, as Playwright MCP's `browser_find` does, so an agent asks "the Save button" and does not read the page.
+5. **Scope and depth.** `take_snapshot` takes a uid to scope to and a `depth`; the default prunes ignored and presentational nodes, collapses single-child chains, truncates text at 200 characters, and folds repeated siblings ("… 37 more similar rows").
+6. **Paginate lists.** Console and network tools take `pageSize` and `pageIdx` and default to short, summarised rows; bodies come from `get_network_request` by id.
+7. **Reference over value.** Screenshots, downloads, large snapshots (`filename`) and network bodies go to the profile's session directory and return a path.
+8. **A token budget per result** (default 6 000 tokens, **an estimate** to be tuned in AP1b Task 11), with a clear truncation marker and the call to continue.
+9. **Errors say what to do next** (design principle "self-healing errors").
+
+None of this is measured yet. AP1b Task 11 benchmarks snapshot size and steps per task against both projects on the pages of the apps in §39.
+
+#### 18.14.3 Mechanism per platform (D505)
+
+What Tauri 2.12.1 exposes **(verified in `tauri-apps/tauri` at 2.12.1, 2026-09-30)**: `WebviewBuilder::initialization_script` and `initialization_script_for_all_frames` (run at document start, on every navigation); `Webview::eval` and `eval_with_callback` (the result comes back as a JSON string; a thrown exception is ignored on Windows, so scripts wrap their own `try`); `data_directory` (Windows and Linux), `data_store_identifier` (macOS 14 and later, 16 bytes), `incognito`, `proxy_url`; `Webview::cookies`, `cookies_for_url`, `set_cookie` (including HTTP-only cookies, http and https URLs only) and `clear_all_browsing_data`; `on_navigation`, `on_new_window`, `on_download`, `on_page_load`; `additional_browser_args` (Windows only); and `with_webview`, which hands over the platform's native webview handle. Tauri's own end-to-end tests drive Windows through `msedgedriver` and `--remote-debugging-port`, Linux through `WebKitWebDriver`, and macOS through a commercial CrabNebula driver and plugin, which Loams does not use.
+
+| Layer | Windows (WebView2) | Linux (WebKitGTK) | macOS (WKWebView) |
+|---|---|---|---|
+| **Uniform: injected script and `eval_with_callback`** | yes | yes | yes |
+| Isolated script world (so a page cannot tamper with the bridge's script) | CDP `Page.createIsolatedWorld` **(verify)** | `WebKitScriptWorld` through `with_webview` **(verify)** | `WKContentWorld` through `with_webview` **(verify)** |
+| Accessibility tree | **CDP `Accessibility.getFullAXTree`**, in process | DOM-derived (below) | DOM-derived |
+| Network and console | **CDP `Network` and `Runtime` events**, in process | injected `fetch`, XHR and console hooks, plus WebKitGTK resource-load signals **(verify)** | injected hooks, plus `WKNavigationDelegate` callbacks **(verify)** |
+| Dialogs, downloads, permissions | CDP and WebView2 events | WebKitGTK signals through `with_webview` | `WKUIDelegate` and `WKDownloadDelegate` |
+| Cookies (internal, `profile_status`) | Tauri `cookies` | Tauri `cookies` | Tauri `cookies` |
+| Per-profile persistent store | `data_directory` | `data_directory` | `data_store_identifier` on 14 and later; **earlier: ephemeral profiles only** (Q502) |
+
+- **Uniform layer.** The **accessibility-style snapshot is computed by an injected script from the DOM and ARIA attributes**, the way Playwright builds its aria snapshot in `packages/injected/src/ariaSnapshot.ts` (Apache-2.0 **(verified)**), which Loams may port with attribution (Q510). Results return by `eval_with_callback`; there is no page-to-Rust channel.
+- **No Tauri IPC for remote pages.** The webviews load remote origins and are granted **no capability**: `window.__TAURI__` and `invoke` are unreachable from a website, so a page cannot call the bridge or the host. Control is Rust-initiated (eval and native callbacks) only. This is the property D430 had to engineer; here it is the default.
+- **CDP, where the engine has it.** On Windows the bridge uses **in-process CDP** through the WebView2 handle (`CallDevToolsProtocolMethod` and the event receivers, reached through `with_webview` **(verify)**), which gives the real AX tree, network and console without opening a port. WebKit has no CDP; its inspector protocol is different and its remote inspector is a human tool, so Linux and macOS use the injected layer plus native hooks.
+- **Remote debugging ports.** **No listening debug port in the default build.** A development flag (Windows only, loopback, off by default, a warning in the title) may expose WebView2's `--remote-debugging-port` so that `chrome-devtools-mcp --browser-url` can attach, but CDP has no authentication and any local process could then drive a signed-in session, so it is never used in production (Q504).
+- **Degradations, stated.** On Linux and macOS the network list covers what the hooks and signals see, not every sub-resource; there is no heap, trace or Lighthouse tooling; and the accessibility names are an approximation of the browser's. Q509 asks whether that is acceptable.
+
+#### 18.14.4 Security (D506–D510)
+
+**Profiles (D506).** One **profile per site or tenant**, named `<environment>/<site>` (for example `acme-staging/zulip`). Each is a separate persistent store, so signing in to Authentik at one app does not leak into another, and an agent granted `acme-staging/plane` cannot read `acme-staging/zulip`. Persistence is what makes Authentik single sign-on last across restarts (the gap in zeron's Linux browser). Ephemeral profiles (`incognito`) exist for one-off visits. Clearing a store is a human-only action.
+
+**Secrets (D507, the §30 D288 rule applied to the web).** No credential reaches an agent-visible output.
+- `fill` takes a **`secret_ref`** (for example `loams:acme-staging/zulip#password`) that the bridge resolves from the OS keychain or the credential broker (§39 §6); the value never appears in a tool argument, result, snapshot, error or log.
+- Snapshots **elide the values** of password, one-time-code and payment fields and of anything with an `autocomplete` credential token; network results **redact** `Authorization`, `Cookie` and `Set-Cookie` and the bodies of authentication endpoints; console text is scrubbed for token-shaped strings.
+- **No cookie or storage tools** exist (Playwright MCP's `browser_cookie_*` and `browser_localstorage_*` are deliberately not taken).
+- A login, a captcha or a second factor is **handed to the person**: `request_human` shows the window, the tool blocks, and the person finishes. The bridge never types a human secret on the model's behalf.
+
+**Approvals and policy (D508).** Every tool has a class: **read** (list, snapshot, find, screenshot, console, network), **interact** (click, fill without submit, hover, select, press, type, wait), **commit** (a form submit, a non-GET request the page makes right after an agent action, `upload_file`, a download; **and any `click`, `press_key` or `fill_form` that may cause one, which is classified commit before it runs**: a click on a submit control, a control inside a form, a link or button the snapshot marks as submitting, or Enter in a form field, so approval is asked **before** the action starts and a request is never released late), and **dangerous** (`evaluate_script`, navigating off the allowlist, enabling a capability). Policy maps (agent, tool class, origin) to **allow**, **approve** or **deny**; **commit** and **dangerous** default to **approve**, as the factory policy of §39 §8 (D468) does for destructive skills. An approval is a Loams approval (§19, §21) raised through Loams Desktop and decided by a person with the proof of D435, **never auto-approved and never decided by the agent** (D497). The **origin allowlist** defaults to the origins of the environment's apps (from the instance and collab configuration); off-list navigation is denied unless approved. The origin check is enforced at `on_navigation`, `on_new_window` and the request hooks, and again at the tool; like Playwright's own `--allowed-origins`, it is a guard against mistakes, **not a security boundary against a hostile page**, which is why the controls below exist. **(verify)** how reliably a form submit can be intercepted before it leaves on each engine; the fallback is gating the click or key that causes it.
+
+**Untrusted content (D509).** Everything derived from a page (text, names, console lines, network rows) is **untrusted data**. Results wrap it in a marker the harness and the policy can see (escaped so that page text cannot close it), the bridge never follows instructions found in a page, and Loams Bot's rule stands that an approval or a question it did not raise cannot be answered by page content (§39 D468). Pages cannot call the bridge (no IPC), cannot read other profiles, and run in webviews with the user's permissions prompts routed to the bridge window, not auto-granted.
+
+**Audit and observability (D510).** Every tool call emits an OpenTelemetry span (`loams.web.tool`) with the tool, class, profile, **origin (path and query redacted)**, agent principal, chat or run id, approval id, snapshot id, result size and outcome, joined to the agent's trace by the W3C `traceparent` that the shim receives. Spans go to the collector of §39 §9.1: **content-free** to OpenObserve and Loams' own ingest; snapshots and page text **only to Langfuse 4**, under the masking and retention policy of §39 §9.2 (Q476). A **local hash-chained JSONL audit log** in the profile directory (0600) survives a collector outage. The §39 D473 kill switch maps to a **pause-all** command that closes sessions' handles and blocks new calls.
+
+#### 18.14.5 Platform and licence notes
+
+| Item | Windows | Linux | macOS |
+|---|---|---|---|
+| Engine | WebView2 (Evergreen runtime) | WebKitGTK 4.1 (`libwebkit2gtk-4.1`) | WKWebView |
+| Passkeys and WebAuthn in the bridge windows | **(verify)** | not expected (WebKitGTK) | needs an entitlement for arbitrary sites **(verify)** |
+| Per-profile stores | yes | yes | 14 and later |
+| In-process CDP | yes | no | no |
+| Signing | Authenticode (Q421) | none | Developer ID and notarization (Q420) |
+
+Licences **(verified 2026-10-02)**: Tauri 2 and `wry`: Apache-2.0 or MIT; chrome-devtools-mcp, Playwright MCP and Playwright (the source of the aria snapshot): Apache-2.0. The bridge **does not ship either MCP server**: it reimplements the tool contract in Rust, and ports only the injected snapshot code, with attribution in `NOTICE`. This also avoids chrome-devtools-mcp's usage statistics, which are **on by default** (`--no-usage-statistics`), in conflict with D284.
+
+#### 18.14.6 Integration with Loams Desktop and the Factory (D511, D512)
+
+- **Launch and supervision (D511).** `loams-link` gains a `bridge` module: start the daemon on first use (`loams-web-bridge daemon`), health-check it over IPC, restart it with the policy of §18.3 (backoff, five tries in ten minutes), stop it on request. Version skew is a handshake (`bridge_api_version`), not a shared binary.
+- **Agents.** Loams Bot's ACP shim gets the bridge through ACP `mcpServers` in `session/new` (zeron's engine already passes MCP servers to ACP agents); coding agents in zeron get it through the same stamping that adds `zeron mcp`, or through `loams mcp install` (§30 D290). Each gets its own handle.
+- **Windows.** Bridge windows are **separate native windows** with a persistent banner ("controlled by Loams Bot", a Pause and a Stop button) and a taskbar entry. Embedding them into zeron's window (an `NSView`, an `HWND` or an X11 reparent) is deferred (Q508). Background profiles may run with the window minimized or hidden; some sites throttle hidden pages, so the bridge keeps pages visible but off-screen where it must.
+- **Open in Loams Web.** The "Open in browser" action of §18.5's panels gains a second choice: open the app in a bridge window of its profile, with a persistent Authentik session on Windows and Linux too. The system browser stays the default where passkeys matter.
+- **Relation to SF1 (collab panels).** Panels are API-driven and remain the primary view of Zulip, Plane, Forgejo and GlitchTip objects (§39 §3.2). The bridge is the fallback for what an app's API does not offer.
+- **Relation to SF2 (agents).** The platform agents are **server-side** services and cannot reach a person's desktop. Two ways to give them web reach when an API lacks a feature are open (Q507): a **client-tool relay**, where Loams Bot on the server asks the person's Loams Desktop to run a bridge tool through `loams.bot.v1` and returns the result (the desktop executes, the server orchestrates), or a **headless bridge** on the factory host (a Playwright MCP container is the buy option, Apache-2.0). The first keeps credentials on the user's machine; the second suits unattended runs. Desktop-local agents use the bridge directly either way.
+- **D512, buy over build.** The toolbox is a small contract, so Loams builds it; the browser is the platform's. No Node runtime ships. Playwright MCP stays the choice for headless, server-side and CI automation.
+
+#### 18.14.7 Risks
+
+| # | Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|---|
+| B1 | **Prompt injection through page content** steers an agent | High | High | Untrusted-data marking, policy classes, approvals that the agent cannot decide, no secrets in output, profile isolation (D507–D509) |
+| B2 | **A hostile page tampers with the injected script** in the page's world | Medium | Medium | Isolated worlds where the OS offers them, frozen closures and a per-session property name otherwise, and treating every result as untrusted (Q505) |
+| B3 | **WebKit parity gaps** (no CDP, weaker network and a11y data) make tools behave differently per OS | High | Medium | A capability matrix in `list_tools` metadata; the same tool contract, honest degradation notes; conformance tests per OS |
+| B4 | **macOS before 14 has no per-profile store** | Medium | Low | Only ephemeral profiles there (no shared store, so no cross-tenant access), or require 14 (Q502); the minimum macOS is already a question (Q431) |
+| B5 | **Passkeys do not work in an embedded webview** on some OSes | Medium | Medium | `request_human` falls back to the system browser for sign-in; passkey results from the spike (AP1b Task 0) |
+| B6 | **Submit interception is unreliable**, so a commit slips through unapproved | Medium | High | Gate at the tool as well as the page; default commit-class approvals; tests with real forms on every OS |
+| B7 | **Token cost** of snapshots on heavy apps | Medium | Medium | The rules of D504, `find`, scoping, budgets, and a benchmark gate (AP1b Task 11) |
+| B8 | **A second Tauri codebase** to maintain beside the native app | Medium | Low | Small, separate repository; no UI beyond a banner; Tauri's stable 2.x API |
+
+Sources read for this subsection (2026-10-02): `ChromeDevTools/chrome-devtools-mcp` (`README.md`, `docs/{tool-reference,slim-tool-reference,design-principles,configuration}.md`, `src/TextSnapshot.ts`, `src/formatters/SnapshotFormatter.ts`); `microsoft/playwright-mcp` (`README.md`); `microsoft/playwright` (`packages/injected/src` listing); `tauri-apps/tauri` at 2.12.1 (`crates/tauri/src/webview/mod.rs`, `packages/api-e2e/README.md`); GitHub licence and star metadata for all of them. Platform behaviours marked **(verify)** are not yet tested.
+
+### 18.15 Sources
 
 Read on 2026-10-02. **Zeron** (`github.com/zeronsh/zeron`, `80b946b`, 2026-10-01): `README.md`, `ARCHITECTURE.md`, `CONTEXT.md`, `docs/mcp.md`, `docs/reference/{linux-browser,windows-development}.md`, `docs/PARITY.md`, `Cargo.toml`, `apps/zeron/src/{main,update_cli,auth_cli}.rs`, `crates/engine/src/{auth,registry,harness_updates}.rs`, `crates/harness/src/acp/{mod,normalize}.rs`, `crates/update/src/lib.rs`, `crates/ui/src/{lib,browser/mod,icons,pickers}.rs`, `crates/ui/Cargo.toml`, `.github/workflows/{release,windows,ui-tests}.yml`, `.github/actions/*`, `dist/`, `LICENSE`, `THIRD_PARTY_NOTICES.md`; GitHub metadata (stars, contributors, release and commit counts). **Loams:** §19, §30, §37 (this document), §38, §39 and its pending log (branch `software-factory-design`, PR #192), the AP0 branch's `proto/loams/{instance,errors}/v1` (commit `bc3e559`, not yet on `main`) and `loams-apps-mock`, `docs/open-core.md`. **Libraries:** connect-rust 0.9.1 (`connectrpc`, `connectrpc-codegen`), buffa 0.9.2, `keyring` 4.2.0, `gpui-wry` 0.7.0 (crates.io metadata only). **Protocols:** RFC 7636, RFC 8252, RFC 8693, A2A 1.0 as recorded in §39 §5.
