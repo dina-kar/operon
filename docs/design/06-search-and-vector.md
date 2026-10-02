@@ -25,6 +25,8 @@ A collection schema is derived from ES mappings or Qdrant collection config (or 
 
 As built in M1.1 (Ruling 4, §03 §3.1): typed fields are held in Lance only inside `_source` and are indexed in Tantivy; the only Lance columns are the system columns and the dense and sparse vector columns, and the only Lance scalar index is the BTREE on `_pk`. The table's per-field Lance columns and scalar indexes are not built.
 
+In the ES gateway, `dense_vector` values leave `_source` for vector storage on write and are restored at their original paths on read (M1.5 Ruling 2, M1 overview A9).
+
 Dynamic mapping follows ES defaults for unknown fields (string → text + keyword subfield), bounded by a per-collection field limit.
 
 ## 2. Write path
@@ -104,7 +106,18 @@ Phase A is exactly what the gated LangChain and LlamaIndex Elasticsearch suites 
 
 `_delete_by_query` and `_update_by_query` call the native filter writes (D87). A write refused by backpressure answers 429 `es_rejected_execution_exception` with `Retry-After`, which elastic-transport retries (D86).
 
-Implementation starts from **Quickwit's ES-compatible API crates** (DSL parsing → Tantivy queries; aggregation request/response mapping in Phase B), forked and extended with `_doc`-level CRUD, upserts and `knn`.
+The gateway reports Elasticsearch 8.19.0 and sends `X-Elastic-Product: Elasticsearch` on every response (M1.5 Ruling 11). Its `script_score` parser recognises only the fixed cosine, dot-product and L2 vector sources used by the pinned client helpers (Ruling 1, Task 7).
+
+**Phase A deviations from Elasticsearch 8.19:**
+
+- Keyword `ignore_above`, replica count, refresh interval, routing and preference are accepted but not enforced; the shard count maps to collection partitions (Ruling 16). Supported date formats are `strict_date_optional_time`, `date_optional_time`, `strict_date_optional_time_nanos`, `epoch_millis` and their combinations; dynamic date detection has a smaller set (Ruling 17).
+- `_seq_no` is the partition offset and `_version` is `_seq_no + 1`, so versions are not dense (Ruling 4). An unindexed `text` or `binary` field has a fast column, and an `enabled: false` object's contents are mapped dynamically and refused under `dynamic: strict`; stored-only fields and unmapped subtrees need the M2 schema change (O-M15-8/9).
+- Numeric `range` bounds on a `flattened` field compare as numbers rather than keywords (E11). `query_string.lenient` is accepted but not applied; a fieldless `multi_match` or `query_string` searches fewer fields than ES (T7-5).
+- A search across several indices fails as a whole when one index fails; ES returns hits from the other shards with `_shards.failed` (O-M15-10). A field sort key after `_score` is refused, and `_doc` sorts by `_id`; field tiebreaks after `_score` need M2 (O-M15-11).
+- A `script_score` search with `min_score` counts matches within its top `from + size` window (T9-5). `_update_by_query` accepts only `params` assignments and `remove()`; its `scroll_size` is validated but the service chooses batch sizes (T9a-6). By-query `batches` are counted per index (T11-5).
+- Parser locations and JSON syntax errors differ from Elasticsearch's; negative-boost and over-depth query errors, non-array vector errors and the dynamic field-limit count also retain Loams's wording (T11-5). The full deviation list is in the [`loams-es` crate documentation](../../crates/loams-es/src/lib.rs).
+
+The gateway parses the ES DSL into the Loams search IR. Quickwit provides reference shapes and two small helpers with their original attribution (M1.5 Ruling 1); Phase B aggregation mapping may reuse further Quickwit code.
 
 **Conformance:** the LangChain and LlamaIndex ES integration suites, run unmodified, and BEIR (M1 exit gates, §12). Before vendoring Elastic's REST YAML spec tests, verify their license (Elastic relicensed in 2024: AGPL/SSPL/ELv2 options).
 
