@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format follows [Kee
 ## [Unreleased]
 
 ### Added
+- App protos (design §37 §8, AP0): `loams.instance.v1`, `loams.devices.v1`, `loams.approvals.v1`, `loams.operations.v1`, `loams.notifications.v1` and `loams.errors.v1`; `@loams/proto` (generated protobuf-es v2 messages and Connect service descriptors, `web/packages/proto`); the `buf.gen.swift.yaml` and `buf.gen.kotlin.yaml` templates for `loams-mobile`; the `app-protos` CI job.
+- `loams-apps-mock`: a stateful mock of the app protos over Connect, gRPC and gRPC-Web with seed data, the approval decision rules (`acceptance`), idempotency keys and resumable watch streams (AP0 Task 5, scaffold).
 - Design documents (`docs/design`) and repository governance files.
 - Design: durable execution through the Resonate protocol (§14); `arrow` segment encoding and changelog streams, adapted from Apache Fluss (§02).
 - Cargo workspace, CI (fmt, clippy, tests, cargo-deny license policy).

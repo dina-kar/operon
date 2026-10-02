@@ -1282,6 +1282,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "buffa-types"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b15b05c8418f1e200e406e5b19df97400dffa833e2450e4392c506896cbc97ac"
+dependencies = [
+ "buffa",
+ "bytes",
+ "jiff",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1776,6 +1790,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "457cfa540c62e1b0b05db676cc9a9129162ad94d3a3eec6f2d19706c53acae7d"
 dependencies = [
  "async-trait",
+ "axum 0.8.9",
  "base64 0.22.1",
  "buffa",
  "bytes",
@@ -1786,6 +1801,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "libc",
  "percent-encoding",
  "pin-project",
  "serde",
@@ -1795,6 +1811,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower 0.5.3",
+ "tower-http",
  "tracing",
  "wasm-bindgen-futures",
  "zstd 0.13.3",
@@ -5773,6 +5790,718 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
+name = "loams"
+version = "0.0.1"
+dependencies = [
+ "arrow-array",
+ "arrow-flight",
+ "arrow-schema",
+ "async-trait",
+ "axum 0.8.9",
+ "base64 0.22.1",
+ "bytes",
+ "clap",
+ "datafusion",
+ "datafusion-postgres",
+ "fail 0.5.1",
+ "futures",
+ "http",
+ "loams-cache",
+ "loams-cloudevents",
+ "loams-collection",
+ "loams-common",
+ "loams-durable",
+ "loams-es",
+ "loams-hnsw",
+ "loams-hot",
+ "loams-link",
+ "loams-log",
+ "loams-meta",
+ "loams-meta-tikv",
+ "loams-qdrant",
+ "loams-query",
+ "loams-store",
+ "loams-stream-grpc",
+ "loams-tikv",
+ "loams-worker",
+ "object_store 0.14.2",
+ "opensrv-mysql",
+ "proptest",
+ "prost 0.14.4",
+ "prost-types",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tokio-postgres",
+ "tokio-util",
+ "tonic 0.14.6",
+ "tower 0.5.3",
+ "tracing",
+ "tracing-subscriber",
+ "ulid 3.0.0",
+ "url",
+]
+
+[[package]]
+name = "loams-apps-mock"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "axum 0.8.9",
+ "buffa",
+ "buffa-types",
+ "clap",
+ "connectrpc",
+ "connectrpc-build",
+ "futures",
+ "http",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ulid 3.0.0",
+]
+
+[[package]]
+name = "loams-cache"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "crc32c",
+ "foyer",
+ "futures",
+ "loams-store",
+ "moka",
+ "object_store 0.14.2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "loams-cloudevents"
+version = "0.0.1"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "http",
+ "loams-log",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "time",
+]
+
+[[package]]
+name = "loams-collection"
+version = "0.0.1"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "async-trait",
+ "bytes",
+ "crc32c",
+ "fail 0.5.1",
+ "futures",
+ "lance",
+ "lance-file",
+ "lance-index",
+ "lance-io",
+ "lance-linalg",
+ "lance-table",
+ "loams-cache",
+ "loams-collection",
+ "loams-common",
+ "loams-link",
+ "loams-log",
+ "loams-meta",
+ "loams-pk",
+ "loams-quickwit",
+ "loams-store",
+ "loams-text",
+ "loams-worker",
+ "moka",
+ "object_store 0.14.2",
+ "postcard",
+ "proptest",
+ "prost 0.14.4",
+ "prost-build",
+ "roaring",
+ "serde",
+ "serde_json",
+ "tantivy",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "ulid 3.0.0",
+ "url",
+ "uuid",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "loams-common"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "postcard",
+ "serde",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "loams-console-mock"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "httpmock",
+ "humantime",
+ "reqwest 0.12.28",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "loams-durable"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "loams-tikv",
+ "resonate-base",
+ "resonate-core",
+ "resonate-gateway-http",
+ "resonate-plugin",
+ "resonate-sdk",
+ "resonate-server-blob",
+ "resonate-server-mysql",
+ "resonate-server-sqlite",
+ "resonate-transport-http-poll",
+ "resonate-transport-http-push",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sqlx 0.9.0",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "loams-es"
+version = "0.0.1"
+dependencies = [
+ "axum 0.8.9",
+ "base64 0.22.1",
+ "futures",
+ "loams-collection",
+ "loams-common",
+ "loams-query",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tower 0.5.3",
+ "tracing",
+ "ulid 3.0.0",
+]
+
+[[package]]
+name = "loams-hnsw"
+version = "0.0.1"
+dependencies = [
+ "crc32c",
+ "loams-common",
+ "loams-hnsw",
+ "qdrant-edge",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "roaring",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "loams-hot"
+version = "0.0.1"
+dependencies = [
+ "arrow-array",
+ "async-trait",
+ "axum 0.8.9",
+ "bytes",
+ "crc32c",
+ "fail 0.5.1",
+ "futures",
+ "http",
+ "lance",
+ "lance-table",
+ "loams-cache",
+ "loams-collection",
+ "loams-common",
+ "loams-hnsw",
+ "loams-hot",
+ "loams-link",
+ "loams-log",
+ "loams-meta",
+ "loams-query",
+ "loams-quickwit",
+ "loams-store",
+ "loams-worker",
+ "moka",
+ "postcard",
+ "proptest",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "reqwest 0.12.28",
+ "roaring",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "ulid 3.0.0",
+ "xxhash-rust",
+ "zstd 0.13.3",
+]
+
+[[package]]
+name = "loams-link"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "crc32c",
+ "fail 0.5.1",
+ "futures",
+ "loams-cache",
+ "loams-common",
+ "loams-link",
+ "loams-log",
+ "loams-meta",
+ "loams-store",
+ "loams-worker",
+ "postcard",
+ "proptest",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "ulid 3.0.0",
+]
+
+[[package]]
+name = "loams-live"
+version = "0.0.1"
+dependencies = [
+ "buffa",
+ "crc",
+ "data-encoding",
+ "futures",
+ "loams-live-proto",
+ "loams-tikv",
+ "proptest",
+ "rand 0.9.5",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "loams-live-proto"
+version = "0.0.1"
+dependencies = [
+ "buffa",
+ "connectrpc",
+ "connectrpc-build",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "loams-log"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "crc32c",
+ "fail 0.5.1",
+ "futures",
+ "kafka-protocol",
+ "loams-cache",
+ "loams-common",
+ "loams-meta",
+ "loams-store",
+ "loams-worker",
+ "moka",
+ "object_store 0.14.2",
+ "postcard",
+ "proptest",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "ulid 3.0.0",
+]
+
+[[package]]
+name = "loams-meta"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "axum 0.8.9",
+ "bytes",
+ "crc32c",
+ "fail 0.5.1",
+ "futures",
+ "loams-common",
+ "loams-meta",
+ "loams-meta-conformance",
+ "loams-store",
+ "openraft",
+ "postcard",
+ "proptest",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "redb",
+ "reqwest 0.12.28",
+ "serde",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "loams-meta-conformance"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "loams-common",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "tokio",
+]
+
+[[package]]
+name = "loams-meta-tikv"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "fail 0.4.0",
+ "futures",
+ "loams-common",
+ "loams-meta-conformance",
+ "loams-tikv",
+ "postcard",
+ "serde",
+ "tokio",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "loams-pk"
+version = "0.0.1"
+dependencies = [
+ "bytes",
+ "loams-store",
+ "object_store 0.14.2",
+ "slatedb",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "loams-qdrant"
+version = "0.0.1"
+dependencies = [
+ "axum 0.8.9",
+ "bytes",
+ "crc32c",
+ "http",
+ "loams-collection",
+ "loams-common",
+ "loams-query",
+ "loams-text",
+ "proptest",
+ "prost 0.14.4",
+ "prost-types",
+ "serde",
+ "serde_json",
+ "tantivy",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tonic 0.14.6",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tower 0.5.3",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "loams-query"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "arrow-flight",
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "crc32c",
+ "datafusion",
+ "futures",
+ "http",
+ "http-body",
+ "lance",
+ "lance-linalg",
+ "lance-table",
+ "loams-cache",
+ "loams-collection",
+ "loams-common",
+ "loams-link",
+ "loams-log",
+ "loams-meta",
+ "loams-query",
+ "loams-quickwit",
+ "loams-store",
+ "loams-text",
+ "loams-worker",
+ "moka",
+ "object_store 0.14.2",
+ "postcard",
+ "proptest",
+ "prost 0.14.4",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "roaring",
+ "serde",
+ "serde_json",
+ "tantivy",
+ "tantivy-fst",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tonic 0.14.6",
+ "tower 0.5.3",
+ "tracing",
+ "ulid 3.0.0",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "loams-quickwit"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "bitpacking",
+ "bytes",
+ "bytesize",
+ "fnv",
+ "futures",
+ "hex",
+ "humantime",
+ "itertools 0.15.0",
+ "postcard",
+ "proptest",
+ "rand 0.9.5",
+ "regex",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "tantivy",
+ "tantivy-fst",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
+ "time-fmt",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "ulid 3.0.0",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "loams-safekeeper"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "axum 0.8.9",
+ "bytes",
+ "clap",
+ "compio",
+ "crc32c",
+ "futures",
+ "hex",
+ "loams-tikv",
+ "postcard",
+ "proptest",
+ "rustix 1.1.5",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "loams-sim"
+version = "0.0.1"
+dependencies = [
+ "bytes",
+ "loams-cache",
+ "loams-collection",
+ "loams-common",
+ "loams-link",
+ "loams-log",
+ "loams-meta",
+ "loams-meta-conformance",
+ "loams-query",
+ "loams-store",
+ "loams-worker",
+ "object_store 0.14.2",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "loams-store"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures",
+ "object_store 0.14.2",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "loams-stream-grpc"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "loams-cloudevents",
+ "loams-common",
+ "loams-log",
+ "loams-query",
+ "prost 0.14.4",
+ "prost-types",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tonic 0.14.6",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
+name = "loams-text"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "crc32c",
+ "futures",
+ "loams-cache",
+ "loams-common",
+ "loams-quickwit",
+ "loams-store",
+ "object_store 0.14.2",
+ "proptest",
+ "roaring",
+ "tantivy",
+ "thiserror 2.0.21",
+ "tokio",
+ "ulid 3.0.0",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "loams-tikv"
+version = "0.0.1"
+dependencies = [
+ "axum 0.8.9",
+ "fail 0.4.0",
+ "futures",
+ "loams-tikv",
+ "proptest",
+ "rand 0.9.5",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tikv-client",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "loams-worker"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "loams-common",
+ "loams-meta",
+ "loams-store",
+ "loams-worker",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "local-event"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6558,696 +7287,6 @@ name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
-
-[[package]]
-name = "loams"
-version = "0.0.1"
-dependencies = [
- "arrow-array",
- "arrow-flight",
- "arrow-schema",
- "async-trait",
- "axum 0.8.9",
- "base64 0.22.1",
- "bytes",
- "clap",
- "datafusion",
- "datafusion-postgres",
- "fail 0.5.1",
- "futures",
- "http",
- "object_store 0.14.2",
- "opensrv-mysql",
- "loams-cache",
- "loams-cloudevents",
- "loams-collection",
- "loams-common",
- "loams-durable",
- "loams-es",
- "loams-hnsw",
- "loams-hot",
- "loams-link",
- "loams-log",
- "loams-meta",
- "loams-meta-tikv",
- "loams-qdrant",
- "loams-query",
- "loams-store",
- "loams-stream-grpc",
- "loams-tikv",
- "loams-worker",
- "proptest",
- "prost 0.14.4",
- "prost-types",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "time",
- "tokio",
- "tokio-postgres",
- "tokio-util",
- "tonic 0.14.6",
- "tower 0.5.3",
- "tracing",
- "tracing-subscriber",
- "ulid 3.0.0",
- "url",
-]
-
-[[package]]
-name = "loams-cache"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "bytes",
- "crc32c",
- "foyer",
- "futures",
- "moka",
- "object_store 0.14.2",
- "loams-store",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
-name = "loams-cloudevents"
-version = "0.0.1"
-dependencies = [
- "base64 0.22.1",
- "bytes",
- "http",
- "loams-log",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.21",
- "time",
-]
-
-[[package]]
-name = "loams-collection"
-version = "0.0.1"
-dependencies = [
- "arrow-array",
- "arrow-schema",
- "async-trait",
- "bytes",
- "crc32c",
- "fail 0.5.1",
- "futures",
- "lance",
- "lance-file",
- "lance-index",
- "lance-io",
- "lance-linalg",
- "lance-table",
- "moka",
- "object_store 0.14.2",
- "loams-cache",
- "loams-collection",
- "loams-common",
- "loams-link",
- "loams-log",
- "loams-meta",
- "loams-pk",
- "loams-quickwit",
- "loams-store",
- "loams-text",
- "loams-worker",
- "postcard",
- "proptest",
- "prost 0.14.4",
- "prost-build",
- "roaring",
- "serde",
- "serde_json",
- "tantivy",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "ulid 3.0.0",
- "url",
- "uuid",
- "xxhash-rust",
-]
-
-[[package]]
-name = "loams-common"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "postcard",
- "serde",
- "thiserror 2.0.21",
- "tracing",
-]
-
-[[package]]
-name = "loams-console-mock"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "clap",
- "httpmock",
- "humantime",
- "reqwest 0.12.28",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "loams-durable"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "loams-tikv",
- "resonate-base",
- "resonate-core",
- "resonate-gateway-http",
- "resonate-plugin",
- "resonate-sdk",
- "resonate-server-blob",
- "resonate-server-mysql",
- "resonate-server-sqlite",
- "resonate-transport-http-poll",
- "resonate-transport-http-push",
- "rustls",
- "serde",
- "serde_json",
- "sqlx 0.9.0",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "loams-es"
-version = "0.0.1"
-dependencies = [
- "axum 0.8.9",
- "base64 0.22.1",
- "futures",
- "loams-collection",
- "loams-common",
- "loams-query",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "time",
- "tokio",
- "tokio-util",
- "tower 0.5.3",
- "tracing",
- "ulid 3.0.0",
-]
-
-[[package]]
-name = "loams-hnsw"
-version = "0.0.1"
-dependencies = [
- "crc32c",
- "loams-common",
- "loams-hnsw",
- "qdrant-edge",
- "rand 0.9.5",
- "rand_chacha 0.9.0",
- "roaring",
- "serde",
- "tempfile",
- "thiserror 2.0.21",
- "tracing",
-]
-
-[[package]]
-name = "loams-hot"
-version = "0.0.1"
-dependencies = [
- "arrow-array",
- "async-trait",
- "axum 0.8.9",
- "bytes",
- "crc32c",
- "fail 0.5.1",
- "futures",
- "http",
- "lance",
- "lance-table",
- "moka",
- "loams-cache",
- "loams-collection",
- "loams-common",
- "loams-hnsw",
- "loams-hot",
- "loams-link",
- "loams-log",
- "loams-meta",
- "loams-query",
- "loams-quickwit",
- "loams-store",
- "loams-worker",
- "postcard",
- "proptest",
- "rand 0.9.5",
- "rand_chacha 0.9.0",
- "reqwest 0.12.28",
- "roaring",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "tracing",
- "ulid 3.0.0",
- "xxhash-rust",
- "zstd 0.13.3",
-]
-
-[[package]]
-name = "loams-link"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "bytes",
- "crc32c",
- "fail 0.5.1",
- "futures",
- "loams-cache",
- "loams-common",
- "loams-link",
- "loams-log",
- "loams-meta",
- "loams-store",
- "loams-worker",
- "postcard",
- "proptest",
- "serde",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "ulid 3.0.0",
-]
-
-[[package]]
-name = "loams-live"
-version = "0.0.1"
-dependencies = [
- "buffa",
- "crc",
- "data-encoding",
- "futures",
- "loams-live-proto",
- "loams-tikv",
- "proptest",
- "rand 0.9.5",
- "sha2 0.11.0",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "loams-live-proto"
-version = "0.0.1"
-dependencies = [
- "buffa",
- "connectrpc",
- "connectrpc-build",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "loams-log"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "bytes",
- "crc32c",
- "fail 0.5.1",
- "futures",
- "kafka-protocol",
- "moka",
- "object_store 0.14.2",
- "loams-cache",
- "loams-common",
- "loams-meta",
- "loams-store",
- "loams-worker",
- "postcard",
- "proptest",
- "serde",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "ulid 3.0.0",
-]
-
-[[package]]
-name = "loams-meta"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "axum 0.8.9",
- "bytes",
- "crc32c",
- "fail 0.5.1",
- "futures",
- "openraft",
- "loams-common",
- "loams-meta",
- "loams-meta-conformance",
- "loams-store",
- "postcard",
- "proptest",
- "rand 0.9.5",
- "rand_chacha 0.9.0",
- "redb",
- "reqwest 0.12.28",
- "serde",
- "sha2 0.11.0",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "loams-meta-conformance"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "loams-common",
- "rand 0.9.5",
- "rand_chacha 0.9.0",
- "tokio",
-]
-
-[[package]]
-name = "loams-meta-tikv"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "fail 0.4.0",
- "futures",
- "loams-common",
- "loams-meta-conformance",
- "loams-tikv",
- "postcard",
- "serde",
- "tokio",
- "xxhash-rust",
-]
-
-[[package]]
-name = "loams-pk"
-version = "0.0.1"
-dependencies = [
- "bytes",
- "object_store 0.14.2",
- "loams-store",
- "slatedb",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "loams-qdrant"
-version = "0.0.1"
-dependencies = [
- "axum 0.8.9",
- "bytes",
- "crc32c",
- "http",
- "loams-collection",
- "loams-common",
- "loams-query",
- "loams-text",
- "proptest",
- "prost 0.14.4",
- "prost-types",
- "serde",
- "serde_json",
- "tantivy",
- "thiserror 2.0.21",
- "time",
- "tokio",
- "tokio-util",
- "tonic 0.14.6",
- "tonic-prost",
- "tonic-prost-build",
- "tower 0.5.3",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "loams-query"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "arrow-flight",
- "async-trait",
- "base64 0.22.1",
- "bytes",
- "crc32c",
- "datafusion",
- "futures",
- "http",
- "http-body",
- "lance",
- "lance-linalg",
- "lance-table",
- "moka",
- "object_store 0.14.2",
- "loams-cache",
- "loams-collection",
- "loams-common",
- "loams-link",
- "loams-log",
- "loams-meta",
- "loams-query",
- "loams-quickwit",
- "loams-store",
- "loams-text",
- "loams-worker",
- "postcard",
- "proptest",
- "prost 0.14.4",
- "rand 0.9.5",
- "rand_chacha 0.9.0",
- "roaring",
- "serde",
- "serde_json",
- "tantivy",
- "tantivy-fst",
- "tempfile",
- "thiserror 2.0.21",
- "time",
- "tokio",
- "tokio-util",
- "tonic 0.14.6",
- "tower 0.5.3",
- "tracing",
- "ulid 3.0.0",
- "xxhash-rust",
-]
-
-[[package]]
-name = "loams-quickwit"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.22.1",
- "bitpacking",
- "bytes",
- "bytesize",
- "fnv",
- "futures",
- "hex",
- "humantime",
- "itertools 0.15.0",
- "postcard",
- "proptest",
- "rand 0.9.5",
- "regex",
- "rustc-hash",
- "serde",
- "serde_json",
- "serde_with",
- "tantivy",
- "tantivy-fst",
- "tempfile",
- "thiserror 2.0.21",
- "time",
- "time-fmt",
- "tokio",
- "tokio-util",
- "tracing",
- "ulid 3.0.0",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "loams-safekeeper"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "axum 0.8.9",
- "bytes",
- "clap",
- "compio",
- "crc32c",
- "futures",
- "hex",
- "loams-tikv",
- "postcard",
- "proptest",
- "rustix 1.1.5",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "loams-sim"
-version = "0.0.1"
-dependencies = [
- "bytes",
- "object_store 0.14.2",
- "loams-cache",
- "loams-collection",
- "loams-common",
- "loams-link",
- "loams-log",
- "loams-meta",
- "loams-meta-conformance",
- "loams-query",
- "loams-store",
- "loams-worker",
- "rand 0.9.5",
- "rand_chacha 0.9.0",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "loams-store"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "bytes",
- "futures",
- "object_store 0.14.2",
- "rand 0.9.5",
- "rand_chacha 0.9.0",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "loams-stream-grpc"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "bytes",
- "loams-cloudevents",
- "loams-common",
- "loams-log",
- "loams-query",
- "prost 0.14.4",
- "prost-types",
- "time",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tonic 0.14.6",
- "tonic-prost",
- "tonic-prost-build",
-]
-
-[[package]]
-name = "loams-text"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "crc32c",
- "futures",
- "object_store 0.14.2",
- "loams-cache",
- "loams-common",
- "loams-quickwit",
- "loams-store",
- "proptest",
- "roaring",
- "tantivy",
- "thiserror 2.0.21",
- "tokio",
- "ulid 3.0.0",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "loams-tikv"
-version = "0.0.1"
-dependencies = [
- "axum 0.8.9",
- "fail 0.4.0",
- "futures",
- "loams-tikv",
- "proptest",
- "rand 0.9.5",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tikv-client",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "loams-worker"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "loams-common",
- "loams-meta",
- "loams-store",
- "loams-worker",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "tracing",
-]
 
 [[package]]
 name = "option-ext"

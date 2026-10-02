@@ -1,0 +1,226 @@
+// Devices, pairing, push targets and notification preferences (design §37
+// §7.2, §7.4; AP0 Task 2).
+//
+// A phone (or a desktop) is a device credential of a user principal, not a
+// principal of its own (D434). A signed-in user creates a short-lived
+// pairing here; the phone redeems it at the Loams gateway's OAuth token
+// endpoint, not through an RPC of this service:
+//
+//   POST {issuer}/api/v1/oauth/token
+//     grant_type=urn:loams:params:oauth:grant-type:pairing   (RFC 6749 §4.5)
+//     code=<from the QR> | user_code=<8 digits typed>         (exactly one)
+//     client_id=loams-ios | loams-android
+//     device_name, platform, decision_jwk, [key attestation]
+//     DPoP: <proof>                                           (RFC 9449)
+//   → {access_token, token_type: "DPoP", expires_in, refresh_token, device_id}
+//
+// so tokens keep one issuance path (§19 §5.2). A `user_code` is valid only
+// during the pairing's 5 minutes; 5 failed `user_code` attempts burn the
+// pairing (`pairing_used`) and are rate-limited per client address. The
+// unified auth plan implements the grant; this file fixes the contract.
+syntax = "proto3";
+
+package loams.devices.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service DeviceService {
+  // A signed-in user starts pairing a phone; returns the QR payload of
+  // §37 §7.2.1 and the typed 8-digit alternative.
+  rpc CreatePairing(CreatePairingRequest) returns (CreatePairingResponse);
+  // Lists the caller's devices (an org admin may list a member's).
+  rpc ListDevices(ListDevicesRequest) returns (ListDevicesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc RenameDevice(RenameDeviceRequest) returns (RenameDeviceResponse);
+  // Revokes the device's refresh token, its push targets and its decision
+  // key at once, and ends its open streams.
+  rpc RevokeDevice(RevokeDeviceRequest) returns (RevokeDeviceResponse);
+  // Registers where to push and the HPKE key to seal payloads to.
+  rpc RegisterPushTarget(RegisterPushTargetRequest) returns (RegisterPushTargetResponse);
+  rpc UnregisterPushTarget(UnregisterPushTargetRequest) returns (UnregisterPushTargetResponse);
+  rpc GetNotificationPreferences(GetNotificationPreferencesRequest) returns (GetNotificationPreferencesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc SetNotificationPreferences(SetNotificationPreferencesRequest) returns (SetNotificationPreferencesResponse);
+  // Sends a sealed test notification to every push target of a device.
+  rpc SendTestNotification(SendTestNotificationRequest) returns (SendTestNotificationResponse);
+}
+
+message CreatePairingRequest {
+  // Shown on the pairing screen and used as the default device name.
+  string device_name_hint = 1;
+  // Narrows the device's tokens to these environment ids; empty = all the
+  // user can reach.
+  repeated string environments = 2;
+  // A client ULID (AP0 Ruling 5).
+  string idempotency_key = 3;
+}
+
+message CreatePairingResponse {
+  string pairing_id = 1;
+  // The JSON of §37 §7.2.1 (v1): {"v":1,"kind":"loams-pair","issuer",
+  // "instance_id","spki","jkt","code","user_code","exp"}. Rendered as a QR.
+  string qr_payload = 2;
+  // 8 digits, the typed alternative to the QR's `code`.
+  string user_code = 3;
+  // 5 minutes after creation.
+  google.protobuf.Timestamp expires_at = 4;
+}
+
+message Device {
+  string id = 1;
+  string name = 2;
+  Platform platform = 3;
+  string model = 4;
+  string app_version = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp last_seen_at = 7;
+  // The RFC 7638 JWK thumbprint of the device's decision key (§37 §7.3).
+  string decision_key_thumbprint = 8;
+  repeated PushTargetRef push_targets = 9;
+  // Set once revoked; a revoked device is listed for 30 days.
+  google.protobuf.Timestamp revoked_at = 10;
+}
+
+enum Platform {
+  PLATFORM_UNSPECIFIED = 0;
+  PLATFORM_IOS = 1;
+  PLATFORM_ANDROID = 2;
+  PLATFORM_DESKTOP = 3;
+}
+
+message PushTargetRef {
+  string id = 1;
+  PushProvider provider = 2;
+  google.protobuf.Timestamp registered_at = 3;
+}
+
+enum PushProvider {
+  PUSH_PROVIDER_UNSPECIFIED = 0;
+  PUSH_PROVIDER_APNS = 1;
+  PUSH_PROVIDER_FCM = 2;
+  PUSH_PROVIDER_UNIFIEDPUSH = 3;
+  PUSH_PROVIDER_WEBPUSH = 4;
+}
+
+enum ApnsEnvironment {
+  APNS_ENVIRONMENT_UNSPECIFIED = 0;
+  APNS_ENVIRONMENT_SANDBOX = 1;
+  APNS_ENVIRONMENT_PRODUCTION = 2;
+}
+
+message ListDevicesRequest {
+  // Empty: the caller's own devices. An org admin may name a member.
+  string user_id = 1;
+  // Include devices revoked in the last 30 days.
+  bool include_revoked = 2;
+}
+
+message ListDevicesResponse {
+  repeated Device devices = 1;
+}
+
+message RenameDeviceRequest {
+  string device_id = 1;
+  string name = 2;
+  string idempotency_key = 3;
+}
+
+message RenameDeviceResponse {
+  Device device = 1;
+}
+
+message RevokeDeviceRequest {
+  string device_id = 1;
+  string idempotency_key = 2;
+}
+
+message RevokeDeviceResponse {
+  Device device = 1;
+}
+
+message RegisterPushTargetRequest {
+  // The device registering itself; derived from the token when empty.
+  string device_id = 1;
+  PushProvider provider = 2;
+  // The APNs or FCM token, or the UnifiedPush / Web Push endpoint URL.
+  string token_or_endpoint = 3;
+  // The iOS bundle id or the Android package name.
+  string app_id = 4;
+  // APNs only.
+  ApnsEnvironment apns_environment = 5;
+  // The device's X25519 public key, for RFC 9180 HPKE with the suite
+  // DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305 (§37 §7.4).
+  bytes hpke_public_key = 6;
+  string idempotency_key = 7;
+}
+
+message RegisterPushTargetResponse {
+  PushTargetRef target = 1;
+}
+
+message UnregisterPushTargetRequest {
+  string target_id = 1;
+  string idempotency_key = 2;
+}
+
+message UnregisterPushTargetResponse {}
+
+message GetNotificationPreferencesRequest {}
+
+message GetNotificationPreferencesResponse {
+  NotificationPreferences preferences = 1;
+}
+
+message SetNotificationPreferencesRequest {
+  NotificationPreferences preferences = 1;
+  string idempotency_key = 2;
+}
+
+message SetNotificationPreferencesResponse {
+  NotificationPreferences preferences = 1;
+}
+
+message NotificationPreferences {
+  // One row per category; a missing category is on.
+  repeated CategoryPreference categories = 1;
+  // Only these environment ids notify; empty = all.
+  repeated string environments = 2;
+  QuietHours quiet_hours = 3;
+  // Approvals ignore quiet hours (default true, §37 §7.4).
+  bool approvals_bypass_quiet_hours = 4;
+}
+
+message CategoryPreference {
+  NotificationCategory category = 1;
+  bool enabled = 2;
+}
+
+// Shared with loams.notifications.v1, which refers to it.
+enum NotificationCategory {
+  NOTIFICATION_CATEGORY_UNSPECIFIED = 0;
+  NOTIFICATION_CATEGORY_APPROVALS = 1;
+  NOTIFICATION_CATEGORY_OPERATIONS = 2;
+  NOTIFICATION_CATEGORY_JOBS = 3;
+  NOTIFICATION_CATEGORY_RUNS = 4;
+  NOTIFICATION_CATEGORY_SECURITY = 5;
+}
+
+message QuietHours {
+  // Local wall-clock times "HH:MM"; empty start = no quiet hours.
+  string start = 1;
+  string end = 2;
+  // An IANA time zone, for example "Europe/Berlin".
+  string time_zone = 3;
+}
+
+message SendTestNotificationRequest {
+  string device_id = 1;
+  string idempotency_key = 2;
+}
+
+message SendTestNotificationResponse {
+  // How many push targets the gateway accepted.
+  uint32 delivered = 1;
+}
