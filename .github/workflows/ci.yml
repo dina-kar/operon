@@ -4,13 +4,6 @@ name: CI
 on:
   push:
     branches: [main, dev]
-    paths-ignore:
-      - "docs/**"
-      - "**/*.md"
-      - "deploy/**/*.md"
-      - ".superpowers/**"
-      - "LICENSE*"
-      - ".coderabbit*"
   pull_request:
   schedule:
     # Nightly: the long simulation sweep (M0.4 plan Task 6), the tail-merge
