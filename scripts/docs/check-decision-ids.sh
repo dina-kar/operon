@@ -8,7 +8,7 @@ if [[ "${1:-}" == --self-test ]]; then
     echo 'decision IDs: planted duplicates were accepted' >&2
     exit 1
   fi
-  [[ "$output" == *'duplicate D1'* && "$output" == *'duplicate Q2'* ]] || {
+  [[ "$output" == *'duplicate D1'* && "$output" == *'duplicate Q2'* && "$output" == *'duplicate Q-RT-1'* && "$output" == *'duplicate D-SC-1'* ]] || {
     echo "$output" >&2
     exit 1
   }
@@ -16,8 +16,9 @@ if [[ "${1:-}" == --self-test ]]; then
   exit 0
 fi
 awk -F '|' '
-  /^[[:space:]]*(\|[[:space:]]*)?[DQ][0-9]+[[:space:]]*\|/ {
+  /^[[:space:]]*(\|[[:space:]]*)?[DQ]([0-9]+|-[A-Za-z0-9]+-[0-9]+)([[:space:]]+\([^|]*\))?[[:space:]]*\|/ {
     id = ($1 ~ /^[[:space:]]*$/) ? $2 : $1
+    sub(/[[:space:]]+\(.*/, "", id)
     gsub(/[[:space:]]/, "", id)
     if (id in seen) {
       printf "%s:%d: duplicate %s (first declaration at line %d)\n", FILENAME, FNR, id, seen[id] > "/dev/stderr"

@@ -425,6 +425,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Decision ID checker self-test
         run: scripts/docs/check-decision-ids.sh --self-test
       - name: Unique decision and question declarations
