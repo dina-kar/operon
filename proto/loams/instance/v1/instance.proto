@@ -1,0 +1,157 @@
+// Instance discovery and "who am I" for the Loams apps (design §37 §8.2,
+// AP0 Task 1).
+//
+// `GetInstance` needs no credentials: an app calls it first, before sign-in,
+// to learn what this instance is, which API packages it serves and where to
+// sign in. It mirrors the console's `GET /api/v1/instance` (§19 §3) and adds
+// what the desktop and phones need: the OAuth issuer and JWKS, the TLS pin
+// set for paired phones, push configuration and minimum app versions.
+//
+// Rules shared by every app-facing package (AP0 Rulings 2–6): unary and
+// server-streaming RPCs only; every RPC has its own request and response
+// message; idempotent reads are marked NO_SIDE_EFFECTS so Connect clients
+// may send them as HTTP GET; every mutation takes an `idempotency_key`;
+// errors carry a `loams.errors.v1.ErrorInfo` with a stable `reason`.
+syntax = "proto3";
+
+package loams.instance.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service InstanceService {
+  // What this instance is and how to sign in to it. No auth.
+  rpc GetInstance(GetInstanceRequest) returns (GetInstanceResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // The calling principal, its org, and the environments it can reach.
+  rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+message GetInstanceRequest {}
+
+message GetInstanceResponse {
+  // A ULID, stable for the lifetime of the install.
+  string instance_id = 1;
+  // The instance's display name (OpenAPI `Instance.name`).
+  string name = 2;
+  Edition edition = 3;
+  // The server's semver (OpenAPI `Instance.version`).
+  string server_version = 4;
+  // The proto packages this instance serves, for example
+  // "loams.approvals.v1". The console provides an `rpc.<service>` only for a
+  // listed package (AP1a Ruling 6).
+  repeated string api_versions = 5;
+  // Feature flags, for example {"billing": false, "passkeys": true}.
+  map<string, bool> features = 6;
+  // The Loams gateway: the OAuth authorization server for Loams tokens
+  // (pairing grant, RFC 8693 exchange, refresh). Empty before the auth plan.
+  string issuer = 7;
+  // The JWKS of the instance's token-signing keys.
+  string jwks_uri = 8;
+  // How people sign in. Authentik is the identity provider (§37 §6.5).
+  repeated SignInMethod sign_in_methods = 9;
+  // A compact JWS, signed by the instance key, listing the current and next
+  // TLS SPKI hashes (§37 §7.2.3). Empty for instances with public CAs only.
+  string tls_pins = 10;
+  // Present when the instance pushes to phones (§37 §7.4).
+  PushConfig push = 11;
+  // The minimum app version per platform: keys "ios", "android", "desktop".
+  map<string, string> min_app_versions = 12;
+  // True until first-run setup has created the org and its owner.
+  bool setup_required = 13;
+  // Set during a signing-key rotation: the new key's thumbprint, signed by
+  // the old key (§37 §7.2.3).
+  string key_rotation = 14;
+}
+
+enum Edition {
+  EDITION_UNSPECIFIED = 0;
+  EDITION_OSS = 1;
+  EDITION_CLOUD = 2;
+  EDITION_BYOC = 3;
+}
+
+message SignInMethod {
+  SignInKind kind = 1;
+  // The OIDC issuer for KIND_AUTHENTIK (Authentik's application issuer URL).
+  string issuer = 2;
+  // The public OAuth client id for this app, for example "loams-desktop".
+  string client_id = 3;
+  // A label to show on the sign-in button.
+  string display_name = 4;
+}
+
+enum SignInKind {
+  SIGN_IN_KIND_UNSPECIFIED = 0;
+  // No sign-in: a loopback stack before the auth plan (D111).
+  SIGN_IN_KIND_NONE = 1;
+  // OIDC authorization code + PKCE at the instance's Authentik (§38).
+  SIGN_IN_KIND_AUTHENTIK = 2;
+  // Authentik's device authorization flow (RFC 8628).
+  SIGN_IN_KIND_AUTHENTIK_DEVICE_CODE = 3;
+  // A QR or typed pairing code from a signed-in session (§37 §7.2).
+  SIGN_IN_KIND_PAIRING = 4;
+}
+
+message PushConfig {
+  // The push gateway, for example "https://push.loams.dev".
+  string gateway_url = 1;
+  // App ids per platform: "ios" → bundle id, "android" → package name.
+  map<string, string> app_ids = 2;
+  // Whether UnifiedPush endpoints are accepted (Android without Google).
+  bool unifiedpush = 3;
+}
+
+message WhoAmIRequest {}
+
+message WhoAmIResponse {
+  Principal principal = 1;
+  // The RFC 8693 `act` chain, outermost first: an agent acting for a user
+  // lists the agent here and the user as `principal`.
+  repeated Principal actor_chain = 2;
+  Org org = 3;
+  repeated Environment environments = 4;
+  // The device this token is bound to, when it was issued to a device.
+  DeviceRef device = 5;
+  // When the session last authenticated the person; the step-up rule of
+  // AP0 Ruling 7 compares it to now.
+  google.protobuf.Timestamp authenticated_at = 6;
+}
+
+message Principal {
+  string id = 1;
+  PrincipalKind kind = 2;
+  string display_name = 3;
+  // Users only.
+  string email = 4;
+}
+
+enum PrincipalKind {
+  PRINCIPAL_KIND_UNSPECIFIED = 0;
+  PRINCIPAL_KIND_USER = 1;
+  PRINCIPAL_KIND_SERVICE_ACCOUNT = 2;
+  PRINCIPAL_KIND_AGENT = 3;
+}
+
+message Org {
+  string id = 1;
+  string name = 2;
+}
+
+message Environment {
+  string id = 1;
+  // The project's id.
+  string project = 2;
+  string name = 3;
+  // The engine namespace this environment is (1:1).
+  string namespace = 4;
+  // Destructive actions need the project admin role and an approval.
+  bool protected = 5;
+}
+
+message DeviceRef {
+  string id = 1;
+  string name = 2;
+}

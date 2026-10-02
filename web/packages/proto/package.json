@@ -1,0 +1,41 @@
+{
+  "name": "@loams/proto",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Generated protobuf-es messages and Connect service descriptors for the Loams app protos (design §37 §8): loams.instance, devices, approvals, operations, notifications and errors v1.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dina-kar/operon",
+    "directory": "web/packages/proto"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./approvals": "./src/gen/loams/approvals/v1/approvals_pb.ts",
+    "./devices": "./src/gen/loams/devices/v1/devices_pb.ts",
+    "./errors": "./src/gen/loams/errors/v1/errors_pb.ts",
+    "./instance": "./src/gen/loams/instance/v1/instance_pb.ts",
+    "./notifications": "./src/gen/loams/notifications/v1/notifications_pb.ts",
+    "./operations": "./src/gen/loams/operations/v1/operations_pb.ts"
+  },
+  "scripts": {
+    "generate": "cd ../../.. && buf generate --template buf.gen.apps.yaml",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.16.0"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "1.73.0",
+    "@bufbuild/protoc-gen-es": "2.16.0",
+    "@connectrpc/connect": "2.2.0",
+    "typescript": "5.9.3",
+    "vitest": "5.0.3"
+  }
+}

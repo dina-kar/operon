@@ -52,6 +52,7 @@ jobs:
       durable: ${{ steps.filter.outputs.durable }}
       deny: ${{ steps.filter.outputs.deny }}
       protos: ${{ steps.filter.outputs.protos }}
+      app-protos: ${{ steps.filter.outputs.app-protos }}
       web: ${{ steps.filter.outputs.web }}
       dapr-edge: ${{ steps.filter.outputs.dapr-edge }}
       spec: ${{ steps.filter.outputs.spec }}
@@ -159,6 +160,14 @@ jobs:
               - "buf.yaml"
               - "buf.gen.yaml"
               - "sdks/live-typescript/**"
+            # The app protos (design §37 §8, AP0) and @loams/proto.
+            app-protos:
+              - ".github/workflows/**"
+              - "proto/**"
+              - "buf.yaml"
+              - "buf.gen.*.yaml"
+              - "web/packages/proto/**"
+              - "web/pnpm-lock.yaml"
             web:
               - ".github/workflows/**"
               - "web/**"
@@ -746,6 +755,62 @@ jobs:
             echo "sdks/live-typescript/src/gen is stale: run 'pnpm run generate' in sdks/live-typescript and commit the result"; exit 1;
           }
 
+  # AP0 Task 6: the app protos (loams.instance, devices, approvals,
+  # operations, notifications and errors v1) pass `buf lint`, make no
+  # breaking change against main, and the checked-in TypeScript in
+  # web/packages/proto/src/gen (@loams/proto) is what `buf generate` writes.
+  # The Swift and Kotlin templates that ostrium-labs/loams-mobile runs are
+  # smoke-generated into the runner's temp directory (nothing is compiled
+  # here). The Rust side is loams-apps-mock's build.rs, covered by `check`.
+  app-protos:
+    name: app protos, @loams/proto and the mobile templates
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.app-protos == 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: install
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: buf lint
+        run: web/packages/proto/node_modules/.bin/buf lint
+      # buf.yaml ignores loams.live.v1 for breaking changes (R1).
+      - name: buf breaking (against main)
+        run: web/packages/proto/node_modules/.bin/buf breaking --against ".git#branch=origin/main"
+      - name: regenerate @loams/proto
+        working-directory: web
+        run: pnpm --filter @loams/proto generate
+      - name: the generated code is up to date
+        run: |
+          git add -N web/packages/proto/src/gen
+          git diff --exit-code -- web/packages/proto/src/gen || {
+            echo "web/packages/proto/src/gen is stale: run 'pnpm --filter @loams/proto generate' in web/ and commit the result"; exit 1;
+          }
+      - name: typecheck and test @loams/proto
+        working-directory: web
+        run: pnpm --filter @loams/proto typecheck && pnpm --filter @loams/proto test
+      # Remote plugins on buf.build are rate-limited without a token, so a
+      # transient BSR failure does not fail the job; a template error shows
+      # in the step log.
+      - name: the Swift and Kotlin templates generate
+        continue-on-error: true
+        run: |
+          out="$RUNNER_TEMP/mobile-gen"
+          mkdir -p "$out" && cp buf.gen.swift.yaml buf.gen.kotlin.yaml "$out/"
+          web/packages/proto/node_modules/.bin/buf generate --template buf.gen.swift.yaml -o "$out"
+          web/packages/proto/node_modules/.bin/buf generate --template buf.gen.kotlin.yaml -o "$out"
+          find "$out/gen" -type f | sort
+
   deny:
     name: licenses, advisories, sources
     needs: changes
@@ -778,6 +843,7 @@ jobs:
         run: pnpm gen:api && git diff --exit-code -- apps/console/src/api/schema.d.ts
       - run: pnpm lint
       - run: pnpm typecheck
+      - run: pnpm test
       - run: pnpm build
 
   # The Dapr trigger edge (deploy/dapr/edge): a standalone crate with its own
