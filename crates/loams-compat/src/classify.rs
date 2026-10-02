@@ -150,6 +150,25 @@ pub fn shape_hash(o: &Outcome) -> String {
     hex::encode(h.finalize())
 }
 
+/// The column names of an outcome only (or the error code). Used for statements that read an instance's
+/// identity, whose row counts differ between engines too (`SHOW BINARY LOGS`).
+pub fn columns_hash(o: &Outcome) -> String {
+    let mut h = Sha256::new();
+    match o {
+        Outcome::Failed(e) => {
+            h.update(b"error");
+            feed(&mut h, &e.code);
+        }
+        Outcome::Rows(r) => {
+            h.update(b"columns");
+            for c in &r.columns {
+                feed(&mut h, c);
+            }
+        }
+    }
+    hex::encode(h.finalize())
+}
+
 /// What the replay learned about one statement.
 #[derive(Clone, Debug)]
 pub struct Observation<'a> {
@@ -162,15 +181,21 @@ pub struct Observation<'a> {
     /// The reason from the unsupported list, when the owner has ruled that the target refuses
     /// this statement by design.
     pub unsupported_note: Option<&'a str>,
+    /// Compare by shape whatever the reference does: the statement reads an instance's identity
+    /// (version, uuid, binlog position), which two engines never share.
+    pub shape_only: bool,
 }
 
 /// Classify one statement.
 pub fn classify(obs: &Observation<'_>) -> Classified {
-    let volatile = obs
-        .reference_again
-        .is_some_and(|a| canonical_hash(a) != canonical_hash(obs.reference));
+    let volatile = obs.shape_only
+        || obs
+            .reference_again
+            .is_some_and(|a| canonical_hash(a) != canonical_hash(obs.reference));
     let hash = |o: &Outcome| {
-        if volatile {
+        if obs.shape_only {
+            columns_hash(o)
+        } else if volatile {
             shape_hash(o)
         } else {
             canonical_hash(o)
@@ -178,7 +203,12 @@ pub fn classify(obs: &Observation<'_>) -> Classified {
     };
     let ref_hash = hash(obs.reference);
     let mut notes: Vec<String> = Vec::new();
-    if volatile {
+    if obs.shape_only {
+        notes.push(
+            "instance identity (version, uuid, binlog position): compared by column names"
+                .to_string(),
+        );
+    } else if volatile {
         notes.push("volatile on the reference: compared by shape".to_string());
     }
     let Some(target) = obs.target else {

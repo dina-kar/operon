@@ -93,9 +93,30 @@ struct MysqlConn {
     conn: Conn,
 }
 
+/// Statements that would end the replay itself: they are not run, on either engine, and the row says so.
+fn not_executed(sql: &str) -> bool {
+    let u = sql.trim_start().to_ascii_uppercase();
+    [
+        "SHUTDOWN",
+        "RESTART",
+        "DROP DATABASE",
+        "DROP SCHEMA",
+        "ALTER INSTANCE",
+        "CLONE",
+    ]
+    .iter()
+    .any(|p| u.starts_with(p))
+}
+
 #[async_trait]
 impl Connector for MysqlConn {
     async fn run(&mut self, req: &Request<'_>) -> Outcome {
+        if not_executed(req.statement) {
+            return Outcome::Failed(DbError {
+                code: "NOT-EXECUTED".into(),
+                message: "not run: it would end the replay".into(),
+            });
+        }
         let tx = req.mode == Mode::RolledBack;
         if tx && let Err(e) = self.conn.query_drop("START TRANSACTION").await {
             return err(&e);
@@ -110,6 +131,16 @@ impl Connector for MysqlConn {
         }
         let out = run_text(&mut self.conn, req.statement, req.ordered).await;
         let _ = self.conn.query_drop("ROLLBACK").await;
+        if !tx {
+            // Undo what a global or locking statement may have left behind for the next replay.
+            for fix in [
+                "UNLOCK TABLES",
+                "SET GLOBAL super_read_only = OFF",
+                "SET GLOBAL read_only = OFF",
+            ] {
+                let _ = self.conn.query_drop(fix).await;
+            }
+        }
         out
     }
 }

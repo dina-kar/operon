@@ -2,8 +2,8 @@
 
 The scripts that build the inputs of `crates/loams-compat` (`compat-replay`) for the router inventory
 (design [§31](../../../docs/design/31-loam-router-and-verification.md) §15, RT0 plan Tasks 5 and 6). This directory
-holds the **Postgres half** (PgDog v0.1.60 in front of Postgres 17.11); the MySQL half (Vitess v24.0.4 in front of
-MySQL 8.0.46 and WeSQL) is added by a later PR of the stack. The blessed output lives in
+holds the **Postgres half** (PgDog v0.1.60 in front of Postgres 17.11) and the **MySQL half** (Vitess v24.0.4 in front
+of MySQL 8.0.46 and WeSQL), the latter from `vitess-*`, `vt-*` and `compose.vitess.yml`. The blessed output lives in
 [`conformance/router/`](../../../conformance/router/README.md).
 
 ## Rules
@@ -16,12 +16,13 @@ MySQL 8.0.46 and WeSQL) is added by a later PR of the stack. The blessed output 
     trigger body a scenario's fixtures define, strips SQL comments, and caps what a scenario's own workload and its
     replicated schema contribute (see "What the merge keeps").
   - `scripts/spec/provenance.sh` (run by CI) scans `conformance/`.
-- **Pinned checkouts live outside the repository**: `$HOME/.cache/loam/pgdog-v0.1.60` (`PGDOG_SRC`, a clone at the
-  tag).
+- **Vitess is Apache-2.0**, so `vitess-static.sh` records statement text with its source path.
+- **Pinned checkouts live outside the repository**: `$HOME/.cache/loam/pgdog-v0.1.60` (`PGDOG_SRC`) and
+  `$HOME/.cache/loam/vitess-v24.0.4` (`VITESS_SRC`), clones at the tags.
 - **Containers use podman or docker.** With podman the scripts use `docker-compose` over podman's socket
   (`DOCKER_HOST=unix:///run/user/$UID/podman/podman.sock`, set by the scripts).
 - **Machine limits** (15 GB of RAM, a small tmpfs `/tmp`): stop every container before a cargo build, never run the
-  Postgres stack next to the Vitess stack (added later), keep all output under `$HOME/.cache/loam/inventory/`. The
+  Postgres stack next to the Vitess stack, keep all output under `$HOME/.cache/loam/inventory/`. The
   scripts stop when `$HOME` has under 8 GB free.
 
 ## Image pins
@@ -30,6 +31,11 @@ MySQL 8.0.46 and WeSQL) is added by a later PR of the stack. The blessed output 
 |---|---|
 | Postgres | `docker.io/library/postgres:17.11` |
 | PgDog | `ghcr.io/pgdogdev/pgdog@sha256:25d1908886f595a2e3b00ec59783326712e3c0f75f91d29f032ff712b30f2266`: the v0.1.60 image index (its amd64 manifest is `sha256:1bf5346dbeecdaea832a48e477294c66a2f284aba34863270b3aa96392191589`; the `org.opencontainers.image.revision` label is `0d040f92`, the v0.1.60 tag) |
+| MySQL | `docker.io/library/mysql:8.0.46` (`sha256:62fb722c…2497b`) |
+| Vitess | `docker.io/vitess/lite:v24.0.4` (`sha256:4b1f89a6…7b97`; vtctld, vtgate, vttablet, vtctldclient; Go 1.26.8, revision `967ff0b9`) |
+| etcd | `quay.io/coreos/etcd:v3.7.2` (`sha256:3b705ec7…f543`) |
+| WeSQL | `docker.io/apecloud/wesql-server:8.0.35-0.1.0_beta5.40` (`sha256:90d4c9e3…d4fc`), the image `deploy/wesql/` runs, on `docker.io/rustfs/rustfs:1.0.0`. The fork build (commit `eef34f452`, `serverless_honor_innodb_engine`) was not built here |
+
 
 `pg-capture.sh` takes the PgDog binary out of that image (`podman create` and `cp`) because the two-phase-commit
 scenario kills PgDog, which a `podman run` wrapper cannot do. The bits are the image's; `shims/pgdog` runs the image
@@ -50,7 +56,7 @@ itself when the extraction fails.
 | `pg-baseline.sql`, `pgdog-two-shard/` | Our own two-shard workload through PgDog's container (DDL, cross-shard DML, 2PC, aggregates, COPY), and its configuration. |
 | `shims/`, `pgdog-resharding.override.yaml` | Let PgDog's scripts run on podman: a `docker` wrapper, `pgbench` from the postgres image, the PgDog container wrapper, and a compose override that puts Postgres 17.11 with `pg_stat_statements` under PgDog's resharding stack. |
 
-## Scenarios
+## Scenarios (Postgres)
 
 PgDog's scenarios run from `$PGDOG_SRC/integration/`; the suites table records each one.
 
@@ -117,3 +123,40 @@ cp "$OUT/suites.tsv"     conformance/router/pgdog-loampg-suites.tsv
 `SCENARIOS="pgbench two_pc" pg-capture.sh "$OUT"` re-runs a subset and keeps the other rows of `steps.tsv`.
 `pg-replay.sh "$OUT" postgres://user:pw@host:port/db` replays against a target too. A PR that changes a pinned version
 re-runs the inventory and shows the diff of the TSVs.
+
+## MySQL half
+
+`compose.vitess.yml` runs etcd, three backends (`my-a/b/c`, mysql:8.0.46, or `wesql-a/b/c` with RustFS), vtctld, vtgate and
+four `--unmanaged` vttablets (Ruling 6): `commerce/0` and `customer/-80` on backend A, `customer/0` on B, `customer/80-` on C
+(one backend per primary of a keyspace, because the sidecar database `_vt`, or `_vt_customer`, must not be shared). The MySQL
+settings are those of the plan (`gtid_mode`, `enforce_gtid_consistency`, ROW and FULL binlog, `performance_schema`, the
+semi-sync source plugin). The tablets connect over a Unix socket (a volume shared with the backend), because Vitess refuses to
+prepare a two-phase-commit transaction on a TCP connection. Profiles: `ref` and `wesql`.
+
+| Script | Role |
+|---|---|
+| `vitess-static.sh` | Static half: `source_path:line<TAB>statement` over the paths of §31 §15 step 1 plus the 2PC and Online DDL files. Drops log messages that start with a SQL verb. |
+| `vitess-capture.sh ref\|wesql [dir]` | Brings the stack up, runs the scenario steps, snapshots `performance_schema.events_statements_summary_by_digest` around every step, dumps digests and schemas, writes `steps.tsv` and `observations.tsv`, stops the stack. |
+| `vt-corpus.py` | The vtgate DML and SELECT corpus: 1 320 distinct statements from `go/vt/vtgate/planbuilder/testdata/*_cases.json`. |
+| `vt-merge.py` | Static plus dynamic into `capture.jsonl`; the digests each step touched; the `C-n` tags (the `issue` column). |
+| `vitess-replay.sh <dir>` | Merge, MySQL 8.0.46 and WeSQL up together, schemas restored on both, `compat-replay`, suites table. |
+| `vitess-unsupported-rules.tsv`, `vitess-shape-only.txt` | WeSQL refusals that are by design (SmartEngine's isolation levels, foreign keys, consensus replication); statements that read an instance's identity (compared by column names). |
+
+Steps of one run: bring-up (vtctld, tablets, `TabletExternallyReparented`, vtgate), `ApplySchema`/`ApplyVSchema`,
+the corpus, a hand-written DML set, `MoveTables` (create, VDiff, SwitchTraffic, ReverseTraffic, SwitchTraffic, Complete),
+`Reshard 0 -> -80,80-` (create, VDiff, SwitchTraffic, Complete), an Online DDL `ALTER` (`vitess` strategy), a repeated
+`TabletExternallyReparented`, `PlannedReparentShard` (skipped: unmanaged tablets refuse it), a vttablet restart (C-1), isolation
+levels and temporary tables through vtgate (C-4, C-5), and last a two-phase-commit transaction across the keyspaces (C-2; when
+it fails it can leave a prepared transaction that blocks DDL on the table, which a first order of the steps showed).
+
+Replay notes: statements that change the engine for good (DDL, globals, replication commands) run last; their side effects
+(`read_only`, table locks) are undone; `SHUTDOWN`, `DROP DATABASE` and the like are never run. Static statements with Go format
+verbs or bind variables cannot run as written; they compare by error code (usually 1064), which the row's note shows.
+
+```sh
+OUT=$HOME/.cache/loam/inventory/mysql/$(date +%F)
+scripts/router/inventory/vitess-capture.sh ref   $OUT/ref
+scripts/router/inventory/vitess-capture.sh wesql $OUT/wesql
+scripts/router/inventory/vitess-replay.sh $OUT
+cp $OUT/statements.tsv conformance/router/vitess-wesql-statements.tsv; cp $OUT/suites.tsv conformance/router/vitess-wesql-suites.tsv
+```
