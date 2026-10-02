@@ -6700,6 +6700,7 @@ dependencies = [
 name = "loams-pk"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
  "bytes",
  "loams-store",
  "object_store 0.14.2",
