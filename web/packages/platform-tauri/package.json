@@ -1,0 +1,50 @@
+{
+  "name": "@loams/platform-tauri",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Loams Desktop's `platform`, `transport` and `platform.stacks` services: every request goes through the Rust bridge (`net_fetch`), so tokens never reach JavaScript (design §37 §6.4, AP1 Task 5).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "loams": {
+    "plugin": {
+      "kind": "console",
+      "entry": ".",
+      "tier": "core",
+      "inject": [],
+      "provides": [
+        "platform",
+        "transport",
+        "platform.stacks"
+      ],
+      "slots": [],
+      "permissions": [],
+      "editions": [
+        "desktop"
+      ]
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@connectrpc/connect": "2.2.0",
+    "@connectrpc/connect-web": "2.2.0",
+    "@loams/console-host": "workspace:*",
+    "@loams/cordis": "workspace:*",
+    "@tauri-apps/api": "2.12.1",
+    "@tauri-apps/plugin-opener": "2.7.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vitest": "5.0.3"
+  }
+}

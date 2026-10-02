@@ -1,0 +1,14 @@
+# The `desktop` plugin set: the oss catalog (web/apps/console/catalog/base.yml)
+# plus the desktop's own plugins (design §37 §5.8). `platform-tauri` is
+# passed to the host directly, as every platform plugin is.
+- insert:
+    - id: stacks
+      name: '@loams/plugin-stacks'
+# Native notifications for new approvals while the app runs (AP1 Task 8).
+- id: approvals
+  config:
+    notify: true
+# Sandboxed third-party frames on the desktop load from the loams-plugin://
+# scheme (§37 §5.6), which the scaffold does not register yet.
+- id: hello
+  disabled: true

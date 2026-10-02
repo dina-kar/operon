@@ -21,6 +21,8 @@ The console is becoming a [cordis](https://github.com/cordiverse/cordis) v4 appl
 | `plugins/*` | `shell` (layout, nav, `router`), `rpc` (`rpc.*` clients, gated on `api_versions`), `identity` (`session`), `stack-status`, `namespaces`, `approvals`, and `sandbox` (the in-frame runtime) |
 | `examples/plugin-hello` | A third-party plugin that runs in a sandboxed frame |
 | `apps/console/catalog/base.yml` | The `oss` plugin set |
+| `apps/desktop` (`@loams/desktop`) | Loams Desktop: the console with the `desktop` set in a Tauri 2 shell; `src-tauri` is its Rust host (see [docs/guides/desktop.md](../docs/guides/desktop.md)) |
+| `packages/platform-tauri`, `plugins/stacks` | The desktop's `platform` (fetch over the Rust bridge) and its local-stack page |
 
 ```bash
 pnpm dev                                     # then open http://localhost:5173/ui/cordis.html (demo mode, no server)

@@ -49,6 +49,8 @@
   },
   "exports": {
     "./cordis": "./src/cordis/start.ts",
-    "./catalog/base.yml": "./catalog/base.yml"
+    "./catalog/base.yml": "./catalog/base.yml",
+    "./cordis.css": "./src/cordis/console.css",
+    "./package.json": "./package.json"
   }
 }

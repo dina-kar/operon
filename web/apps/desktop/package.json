@@ -1,0 +1,37 @@
+{
+  "name": "@loams/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Loams Desktop: the cordis console with the desktop plugin set, in a Tauri 2 shell (design §37 §6, AP1).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "dev:web": "vite",
+    "build:web": "tsc -p tsconfig.json && vite build",
+    "typecheck": "tsc -p tsconfig.json",
+    "tauri": "tauri",
+    "sidecar:placeholder": "node ../../../scripts/desktop/prepare-sidecar.mjs --placeholder",
+    "check:capabilities": "node ../../../scripts/desktop/check-capabilities.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/archivo": "5.3.0",
+    "@fontsource-variable/martian-mono": "5.3.0",
+    "@loams/console": "workspace:*",
+    "@loams/console-host": "workspace:*",
+    "@loams/platform-tauri": "workspace:*",
+    "@loams/platform-web": "workspace:*",
+    "@loams/plugin-stacks": "workspace:*",
+    "@loams/ui": "workspace:*",
+    "@tauri-apps/api": "2.12.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.1",
+    "@vitejs/plugin-react": "6.1.1",
+    "typescript": "5.9.3",
+    "vite": "8.3.1"
+  }
+}

@@ -123,3 +123,18 @@ body {
     padding: 16px;
   }
 }
+.lc-log figcaption {
+  font-size: 12px;
+  opacity: 0.7;
+  margin: 12px 0 4px;
+}
+.lc-log pre {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: 8px;
+  background: var(--op-raised);
+  font-family: var(--loams-font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
