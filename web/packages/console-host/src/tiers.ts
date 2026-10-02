@@ -9,7 +9,6 @@ export const CORE_PLUGINS = new Set([
   '@loams/plugin-rpc',
   '@loams/plugin-identity',
   '@loams/platform-web',
-  '@loams/platform-tauri',
 ]);
 
 /** Always trusted for `first-party`, in every build. */

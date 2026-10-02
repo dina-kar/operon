@@ -62,7 +62,7 @@ export interface BootOptions {
   manifests: unknown[];
   /** Bundled plugin code, by package name. */
   modules: ModuleTable;
-  /** Provides `platform` and `transport` (@loams/platform-web or -tauri). */
+  /** Provides `platform` and `transport` (@loams/platform-web, or another shell's). */
   platform: PluginModule;
   /** Where each package came from; default: bundled if in `modules`. */
   sources?: Record<string, PluginSource>;

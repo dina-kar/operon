@@ -6,7 +6,7 @@
 // removes both, so its routes disappear with it.
 //
 // Scaffold: hash routing (`#/approvals/apr_1`) in both shells, which needs no
-// server fallback and survives reloads in Tauri's asset protocol. A browser
+// server fallback and survives reloads. A browser
 // history router with `basename: '/ui'` follows AP1 Task 0's spike.
 
 import type { Location, PageProps, PageSpec, RouterService } from '@loams/console-host';

@@ -1,7 +1,7 @@
 // @loams/plugin-identity: the `session` service from WhoAmI (§37 §5.4).
 //
 // Scaffold: the browser's sign-in pages (§19, today's console) move here in
-// AP1a Task 5; on the desktop, sign-in is the Rust bridge's (AP1 Task 7).
+// AP1a Task 5.
 // This plugin only reads who is signed in and keeps the environment
 // selection.
 

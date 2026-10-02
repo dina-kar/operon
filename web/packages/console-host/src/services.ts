@@ -14,10 +14,10 @@ import type { approvals, devices, instance, notifications, operations } from '@l
 import type { EnvironmentRef, SlotRegistry } from '@loams/slots';
 import type { ComponentType } from 'react';
 
-/** What differs between the browser and the desktop shell. */
+/** What differs between the shells the console runs in (today: the browser). */
 export interface PlatformService {
   kind: 'web' | 'desktop';
-  /** The fetch every request goes through (on desktop: the Rust bridge). */
+  /** The fetch every request goes through. */
   fetch: typeof globalThis.fetch;
   /** The Connect base URL of the active environment. */
   baseUrl: string;

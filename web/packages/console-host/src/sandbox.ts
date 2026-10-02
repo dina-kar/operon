@@ -7,8 +7,7 @@
 // iframe `csp` attribute (CSP Embedded Enforcement) is not used: Chrome then
 // refuses any frame whose response does not send `Allow-CSP-From`. The in-frame runtime (@loams/plugin-sandbox) loads the
 // plugin's script and talks to the host only through the MessagePort it
-// receives here. On the desktop the frame loads from the `loams-plugin://`
-// scheme instead, a different origin from the app's (AP1).
+// receives here.
 
 import { type Bridge, type BridgePolicy, createBridge, type Invoke } from './bridge.js';
 
