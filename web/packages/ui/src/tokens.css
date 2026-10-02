@@ -1,10 +1,10 @@
 /*
- * Loam tokens. Light mode stands on white; dark mode is humus with chalk
+ * Loams tokens. Light mode stands on white; dark mode is humus with chalk
  * text. Ochre is the only brand accent and means "fresh": the write path,
  * the newest thing, focus. Sprout means built or healthy, gley planned or
  * informational, oxide failed. Put the class `dark` on <html> for dark mode.
  *
- * Fonts: set --loam-font-sans and --loam-font-mono to your loaded faces
+ * Fonts: set --loams-font-sans and --loams-font-mono to your loaded faces
  * (Archivo and Martian Mono); the fallbacks keep text readable without them.
  */
 :root {
@@ -29,8 +29,8 @@
   --op-danger-soft: #f8dcd2;
 
   --op-ease: cubic-bezier(0.22, 1, 0.36, 1);
-  --loam-font-sans: "Archivo", "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
-  --loam-font-mono:
+  --loams-font-sans: "Archivo", "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
+  --loams-font-mono:
     "Martian Mono", "Martian Mono Variable", ui-monospace, "SFMono-Regular", monospace;
   color-scheme: light;
 }

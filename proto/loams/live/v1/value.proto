@@ -1,0 +1,51 @@
+// Loams Live values and stored documents (design §20 §4.1, §4.3; D121).
+//
+// One definition serves storage, the wire and every generated client, so a
+// value means the same everywhere. `int64` and `double` are distinct types:
+// `1` and `1.0` are different values. In the Connect JSON encoding an int64
+// is a string ("-9223372036854775808"), so it stays lossless in JavaScript.
+syntax = "proto3";
+
+package loams.live.v1;
+
+// A Loams Live value.
+message Value {
+  // Exactly one kind is set; a Value with none set is invalid.
+  oneof kind {
+    Null null_value = 1;
+    int64 int64_value = 2;
+    double double_value = 3;
+    bool bool_value = 4;
+    string string_value = 5;
+    bytes bytes_value = 6;
+    Array array_value = 7;
+    Object object_value = 8;
+  }
+}
+
+// The null value. An empty message rather than an enum, so the JSON form is
+// `{"nullValue": {}}` in every client.
+message Null {}
+
+// An ordered list of values (at most 8 192 elements in R1).
+message Array {
+  repeated Value values = 1;
+}
+
+// A map of field name to value (at most 1 024 fields in R1). Field order is
+// not significant.
+message Object {
+  map<string, Value> fields = 1;
+}
+
+// A stored document: the value of a document key (§20 §4.3). The system
+// fields `_id` and `_creationTime` are not in `fields`: the id is the key and
+// the creation time is `creation_ms`.
+message DocumentRecord {
+  // The encoding version; 1 in R1.
+  uint32 format = 1;
+  // Milliseconds since the epoch: the TSO physical time of the inserting
+  // transaction's start timestamp.
+  uint64 creation_ms = 2;
+  map<string, Value> fields = 3;
+}

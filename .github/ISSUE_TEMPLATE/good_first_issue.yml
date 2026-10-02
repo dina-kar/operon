@@ -19,7 +19,7 @@ body:
       label: Where to look
       description: Files and line numbers, and any design doc section.
       placeholder: |
-        - `crates/operon-log/src/segment.rs:120`
+        - `crates/loams-log/src/segment.rs:120`
     validations:
       required: true
   - type: textarea
@@ -36,7 +36,7 @@ body:
       description: A checklist, including the scoped test or clippy command.
       placeholder: |
         - [ ] ...
-        - [ ] `cargo test -p operon-log` passes
+        - [ ] `cargo test -p loams-log` passes
     validations:
       required: true
   - type: textarea

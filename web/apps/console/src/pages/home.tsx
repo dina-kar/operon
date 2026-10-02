@@ -1,4 +1,4 @@
-import { Badge, Card, formatBytes, formatNumber, Stat, Stats } from '@loam/ui';
+import { Badge, Card, formatBytes, formatNumber, Stat, Stats } from '@loams/ui';
 import { Bot, Lock } from 'lucide-react';
 import { Link } from 'react-router';
 import { api, type Schemas } from '../api/client';

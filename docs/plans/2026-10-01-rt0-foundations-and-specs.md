@@ -2,38 +2,38 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists the interfaces it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (names, paths, flags, constants), use them verbatim. The code is not pre-written in this plan (M0.3 Ruling 1).
 
-> **Status: In progress** (2026-10-02: Tasks 0–4 done in PR rt0-t1; Tasks 5–9 next). Planned 2026-10-01. Track RT, phase RT0 (design [§31](../design/31-loam-router-and-verification.md) §17, D319). Branches `rt0-t<N>`, stacked; PRs target `main`. RT0 adds two crates (`operon-sqlrouter`, `operon-compat`), a `spec/` tree, scripts, inventory tables and two CI jobs. It changes no existing crate, no default feature and no M-track code path. It needs no cluster except the containers the inventory starts. Every decision here is a proposal until the owner answers Q300 (§31 §19); Tasks 1–4 and 7–8 are useful whatever the answer, Tasks 5–6 too.
+> **Status: In progress** (2026-10-02: Tasks 0–4 in #188, Task 8 in #189, Task 7 in #191, Task 5 in #193/#194; Task 6 and Task 9 next). Planned 2026-10-01. Track RT, phase RT0 (design [§31](../design/31-loams-router-and-verification.md) §17, D319). Branches `rt0-t<N>`, stacked; PRs target `main`. RT0 adds two crates (`loams-sqlrouter`, `loams-compat`), a `spec/` tree, scripts, inventory tables and two CI jobs. It changes no existing crate, no default feature and no M-track code path. It needs no cluster except the containers the inventory starts. Every decision here is a proposal until the owner answers Q300 (§31 §19); Tasks 1–4 and 7–8 are useful whatever the answer, Tasks 5–6 too.
 
 **Goal:** Lay the foundations the chat dump's M0 asked for, as reconciled in §31:
 - `spec/tla/router/` with **`ShardMap` and `ReshardCutover` checked by TLC at small bounds**, skeletons of `CrossShardCommit`, `PrimaryFailover` and `RouterSession` that parse, and the `tla` CI job (D310);
-- **the compatibility inventory**, static and dynamic halves, for PgDog in front of Postgres and for Vitess v24 in front of MySQL 8.0.46, replayed against WeSQL and Loam Postgres where they are available (D309, §31 §15);
-- **`operon-sqlrouter`**, the sans-I/O kernel crate: the shard-map types, key ranges with split and merge, the hash functions with reference vectors, the `Machine`/`Ctx`/`TraceSink` seams and the lints that keep the crate free of I/O (§31 §7.1);
+- **the compatibility inventory**, static and dynamic halves, for PgDog in front of Postgres and for Vitess v24 in front of MySQL 8.0.46, replayed against WeSQL and Loams Postgres where they are available (D309, §31 §15);
+- **`loams-sqlrouter`**, the sans-I/O kernel crate: the shard-map types, key ranges with split and merge, the hash functions with reference vectors, the `Machine`/`Ctx`/`TraceSink` seams and the lints that keep the crate free of I/O (§31 §7.1);
 - **the Lean 4 project** `spec/lean/` with the range-partition theorems proved and an oracle binary that the Rust tests call, with the `lean` CI job (D312).
 
 **Architecture:**
 - **Specs are their own tree.** `spec/tla/router/*.tla` with `MC*.tla` models and `.cfg` variants listed in `spec/tla/router/specs.toml`; `scripts/spec/check.sh` runs TLC and Apalache from pinned downloads. A variant may be marked `expect = "violation:<Invariant>"`, which must fail exactly that way.
-- **The kernel crate does no I/O.** `crates/operon-sqlrouter` depends on `serde`, `postcard`, `thiserror`, `rand_core`, `des` and `xxhash-rust` only; its own `clippy.toml` bans clocks, threads, env reads and unseeded randomness; it has no `tokio`.
-- **The inventory is data plus small tools.** `crates/operon-compat` (test-only, `publish = false`) holds the `compat-replay` binary; capture scripts live in `scripts/router/inventory/`; blessed TSVs in `conformance/router/`. Pinned PgDog and Vitess checkouts live outside the repository in `$HOME/.cache/loam/` and are never committed.
-- **Lean builds an executable.** `spec/lean/` is a Lake package `LoamRouter` with library modules and an executable `loam-router-oracle` speaking JSON lines.
+- **The kernel crate does no I/O.** `crates/loams-sqlrouter` depends on `serde`, `postcard`, `thiserror`, `rand_core`, `des` and `xxhash-rust` only; its own `clippy.toml` bans clocks, threads, env reads and unseeded randomness; it has no `tokio`.
+- **The inventory is data plus small tools.** `crates/loams-compat` (test-only, `publish = false`) holds the `compat-replay` binary; capture scripts live in `scripts/router/inventory/`; blessed TSVs in `conformance/router/`. Pinned PgDog and Vitess checkouts live outside the repository in `$HOME/.cache/loams/` and are never committed.
+- **Lean builds an executable.** `spec/lean/` is a Lake package `LoamsRouter` with library modules and an executable `loams-router-oracle` speaking JSON lines.
 
 **Tech Stack:**
-- Rust 1.97.1, edition 2024, workspace lints. New dependencies (Task 0 checks versions and `cargo deny`): `des` 0.9 (MIT OR Apache-2.0), `postcard` and `serde` (workspace), `rand_core` (workspace through `rand` 0.9), `xxhash-rust` 0.8 (workspace). For `operon-compat` only: `tokio-postgres` 0.7 (already a dev-dependency of `operon`), `mysql_async` (MIT OR Apache-2.0, version checked in Task 0), `sha2`, `csv` (workspace if present; else MIT OR Unlicense, checked).
+- Rust 1.97.1, edition 2024, workspace lints. New dependencies (Task 0 checks versions and `cargo deny`): `des` 0.9 (MIT OR Apache-2.0), `postcard` and `serde` (workspace), `rand_core` (workspace through `rand` 0.9), `xxhash-rust` 0.8 (workspace). For `loams-compat` only: `tokio-postgres` 0.7 (already a dev-dependency of `loams`), `mysql_async` (MIT OR Apache-2.0, version checked in Task 0), `sha2`, `csv` (workspace if present; else MIT OR Unlicense, checked).
 - TLA+: `tla2tools.jar` v1.7.4 (MIT, 2024-08-05), CommunityModules (MIT, the release Task 0 picks), Apalache v0.62.3 (Apache-2.0). Java 21 (Temurin) in CI.
 - Lean: `leanprover/lean4:v4.34.1` through elan, Plausible (Apache-2.0) pinned in `lake-manifest.json`.
 - Containers for the inventory: `postgres:17.11`, `mysql:8.0.46` (verify the tag exists; otherwise the closest 8.0 patch, recorded), the WeSQL image built by `deploy/wesql/` at fork commit `eef34f452` or later, `ghcr.io/pgdogdev/pgdog` v0.1.60 by digest, Vitess v24.0.4 images (`vitess/lite:v24.0.4`, verify the name), `quay.io/coreos/etcd:v3.7.2`.
 
 **Spec:**
-- [`docs/design/31-loam-router-and-verification.md`](../design/31-loam-router-and-verification.md): all of it; §6 (record, rendering, push, cutover, monitor), §7 (seams), §9.2 (C-1–C-7), §11 (specs), §12 (Lean), §15 (inventory method), §16 (licenses).
-- [`docs/design/28-loam-postgres.md`](../design/28-loam-postgres.md) §8 (PgDog rules) and §11 (P-phases); [`docs/design/29-wesql-oltp.md`](../design/29-wesql-oltp.md) once PR #172 merges (until then `git show origin/wesql-oltp-design:docs/design/29-wesql-oltp.md`).
+- [`docs/design/31-loams-router-and-verification.md`](../design/31-loams-router-and-verification.md): all of it; §6 (record, rendering, push, cutover, monitor), §7 (seams), §9.2 (C-1–C-7), §11 (specs), §12 (Lean), §15 (inventory method), §16 (licenses).
+- [`docs/design/28-loams-postgres.md`](../design/28-loams-postgres.md) §8 (PgDog rules) and §11 (P-phases); [`docs/design/29-wesql-oltp.md`](../design/29-wesql-oltp.md) once PR #172 merges (until then `git show origin/wesql-oltp-design:docs/design/29-wesql-oltp.md`).
 - Neon's spec layout as a reference: `neon/safekeeper/spec/` (`modelcheck.sh`, `MC*.tla`, `models/`).
 
 ## Global Constraints
 
 Same as the M1 overview §8, plus:
-- **No PgDog code or text in Loam.** PgDog (AGPL-3.0) is read as a reference and run as an unmodified container (D236, D318). Specs are written from its documentation and observed behaviour; inventory rows record source paths and captured statements, never PgDog source lines; no PgDog test is copied. A reviewer rejects any PR that pastes or translates PgDog code.
+- **No PgDog code or text in Loams.** PgDog (AGPL-3.0) is read as a reference and run as an unmodified container (D236, D318). Specs are written from its documentation and observed behaviour; inventory rows record source paths and captured statements, never PgDog source lines; no PgDog test is copied. A reviewer rejects any PR that pastes or translates PgDog code.
 - **Vitess material only with its notice.** Test vectors copied from Vitess (`go/vt/vtgate/vindexes/hash_test.go`) carry the Apache-2.0 notice in the fixture's header; no other Vitess code is ported in RT0.
 - **PostgreSQL's hash functions** are ported from PostgreSQL's `src/common/hashfn.c` and `src/backend/access/hash/hashfunc.c` (PostgreSQL License) with the notice in the module header, never from PgDog's `hashfn.c` copy.
-- **Pinned external checkouts stay outside the repository**, in `$HOME/.cache/loam/{pgdog-v0.1.60,vitess-v24.0.4}` (shallow clones by tag). Scripts take the path as `PGDOG_SRC` and `VITESS_SRC`.
+- **Pinned external checkouts stay outside the repository**, in `$HOME/.cache/loams/{pgdog-v0.1.60,vitess-v24.0.4}` (shallow clones by tag). Scripts take the path as `PGDOG_SRC` and `VITESS_SRC`.
 - **The build machine.** One cargo build at a time, the shared target directory, `-j 6`, lld. Containers are stopped before a cargo build. TLC runs with `-workers 2` locally. Stop and report if `/home` has under 8 GB free.
 - **Commit areas:** `spec`, `router`, `compat`, `ci`, `docs`.
 
@@ -46,8 +46,8 @@ Same as the M1 overview §8, plus:
 | 3 | **A spec that documents an unsafe configuration carries an `expect = "violation:<Inv>"` variant** | Keeps the reason for each rule (fence before ConfigMap, durable 2PC log) executable | None |
 | 4 | **Postgres hash ground truth comes from real Postgres hash partitioning** (`CREATE TABLE … PARTITION BY HASH`, then which partition a key lands in), not from PgDog's code | PgDog documents that it matches Postgres's hash partitioning; Postgres is the primary source | If PgDog differs from Postgres for some type, RT1's routing test finds it, and the type is recorded as a deviation |
 | 5 | **The kernel crate has no async and no I/O**, enforced by its `clippy.toml` and by a test that greps its `Cargo.toml` for forbidden dependencies (`tokio`, `reqwest`, `tikv-client`, `tokio-postgres`) | D313's determinism rests on it | None |
-| 6 | **The inventory's dynamic half runs vttablet in unmanaged mode against MySQL 8.0.46**, the mode WeSQL will use (D302) | Managed-mode statements (mysqlctl, backups) are not what Loam runs | Statements only managed mode sends are missed; they are out of Loam's scope anyway |
-| 7 | **An inventory row whose target is not yet runnable is `pending-target`**, not a failure | Loam Postgres computes need P2b; WeSQL's image exists today | RT0 exits with Postgres-side rows pending; RT1 Task 0 re-runs them if P2b merged |
+| 6 | **The inventory's dynamic half runs vttablet in unmanaged mode against MySQL 8.0.46**, the mode WeSQL will use (D302) | Managed-mode statements (mysqlctl, backups) are not what Loams runs | Statements only managed mode sends are missed; they are out of Loams's scope anyway |
+| 7 | **An inventory row whose target is not yet runnable is `pending-target`**, not a failure | Loams Postgres computes need P2b; WeSQL's image exists today | RT0 exits with Postgres-side rows pending; RT1 Task 0 re-runs them if P2b merged |
 | 8 | **`ShardMapRecord` is postcard-encoded with a leading format byte `1`** | The metastore's encoding (D16); a byte lets RT1 change the layout | A layout change needs a new format byte and a reader for `1` |
 
 ## Review Focus
@@ -56,7 +56,7 @@ Same as the M1 overview §8, plus:
 2. **No PgDog code anywhere.** Spec text, inventory rows, fixtures. Tests: the `license-provenance` check of Task 1 (a grep for PgDog's license header and for its identifiers in `spec/` and `conformance/`).
 3. **Hash vectors are from primary sources.** Tests: Task 7 (`pg_hash_matches_postgres_partitioning`, `vitess_hash_matches_vitess_vectors`).
 4. **The kernel crate cannot do I/O.** Tests: Task 7 (`kernel_crate_has_no_io_dependencies`, clippy with the crate's `clippy.toml`).
-5. **Lean proves what the Rust checks.** The theorem statements of Task 8 match `operon_sqlrouter::ranges`' doc comments one to one.
+5. **Lean proves what the Rust checks.** The theorem statements of Task 8 match `loams_sqlrouter::ranges`' doc comments one to one.
 
 ## File structure
 
@@ -70,30 +70,30 @@ spec/tla/router/MCShardMap_{Small,UnsafeConfigMap,Nightly}.cfg
 spec/tla/router/MCReshardCutover_{Small,NoFence,CrashSaga,Nightly}.cfg
 spec/tla/selftest/{Selftest.tla,MCSelftest_Violation.cfg}
 spec/lean/{lakefile.lean,lean-toolchain,lake-manifest.json,Main.lean}
-spec/lean/LoamRouter/{KeyRange.lean,ShardFn.lean,Oracle.lean,Json.lean}
+spec/lean/LoamsRouter/{KeyRange.lean,ShardFn.lean,Oracle.lean,Json.lean}
 scripts/spec/{check.sh,tools.lock,provenance.sh}
 scripts/router/inventory/{pg-static.sh,pg-capture.sh,vitess-static.sh,vitess-capture.sh,compose.pg.yml,compose.vitess.yml,README.md}
 scripts/router/gen-pg-hash-vectors.sh
-crates/operon-sqlrouter/{Cargo.toml,clippy.toml}
-crates/operon-sqlrouter/src/{lib.rs,record.rs,ranges.rs,hash/mod.rs,hash/pg.rs,hash/vitess.rs,machine.rs,trace.rs}
-crates/operon-sqlrouter/tests/it/{main.rs,record.rs,ranges.rs,hash.rs,lean_oracle.rs,deps.rs}
-crates/operon-sqlrouter/tests/fixtures/{pg_hash_vectors.json,vitess_hash_vectors.json}
-crates/operon-compat/{Cargo.toml,src/main.rs,src/replay.rs,src/classify.rs,src/tsv.rs,tests/it/main.rs}
+crates/loams-sqlrouter/{Cargo.toml,clippy.toml}
+crates/loams-sqlrouter/src/{lib.rs,record.rs,ranges.rs,hash/mod.rs,hash/pg.rs,hash/vitess.rs,machine.rs,trace.rs}
+crates/loams-sqlrouter/tests/it/{main.rs,record.rs,ranges.rs,hash.rs,lean_oracle.rs,deps.rs}
+crates/loams-sqlrouter/tests/fixtures/{pg_hash_vectors.json,vitess_hash_vectors.json}
+crates/loams-compat/{Cargo.toml,src/main.rs,src/replay.rs,src/classify.rs,src/tsv.rs,tests/it/main.rs}
 conformance/router/README.md
-conformance/router/{pgdog-loampg,vitess-wesql}-statements.tsv
-conformance/router/{pgdog-loampg,vitess-wesql}-suites.tsv
+conformance/router/{pgdog-loamspg,vitess-wesql}-statements.tsv
+conformance/router/{pgdog-loamspg,vitess-wesql}-suites.tsv
 .github/workflows/ci.yml                        # jobs tla, lean; the changes filter gains spec and router
 deny.toml                                       # only if Task 0 finds a license to allow (none expected)
-docs/design/31-loam-router-and-verification.md  docs/plans/README.md  CHANGELOG.md
+docs/design/31-loams-router-and-verification.md  docs/plans/README.md  CHANGELOG.md
 ```
 
 ### Task 0: Reconcile and check the facts
 
-**Files:** read §31, §28 §8, §29 (PR #172 or `main`), `crates/operon-safekeeper/` (as-built Arm A names), `.github/workflows/ci.yml` (the `changes` job's filters), `deny.toml`, `Cargo.toml`. Fill this plan's "Rulings made during execution" table.
+**Files:** read §31, §28 §8, §29 (PR #172 or `main`), `crates/loams-safekeeper/` (as-built Arm A names), `.github/workflows/ci.yml` (the `changes` job's filters), `deny.toml`, `Cargo.toml`. Fill this plan's "Rulings made during execution" table.
 
 **Checks** (record each result with the command):
 - Whether PR #172 (§29) has merged, and §29's final decision numbers (D273–D280 expected).
-- Whether §28's P2b and P3 have merged (Loam Postgres computes and PgDog routing in `deploy/`), which decides Ruling 7's `pending-target` rows.
+- Whether §28's P2b and P3 have merged (Loams Postgres computes and PgDog routing in `deploy/`), which decides Ruling 7's `pending-target` rows.
 - The latest PgDog release and the image digest for v0.1.60 (or the newer release, recorded, if the owner wants to move the pin); PgDog's license is still AGPL-3.0.
 - Vitess: the latest v24 patch (v24.0.4 on 2026-10-01), the image names for vtgate, vttablet and vtctld at that tag, and whether vitess.io still says v24 is the last release with MySQL 8.0.
 - `tla2tools.jar` v1.7.4 SHA-256; the CommunityModules release that works with it (its `Json` module is what RT1's trace validation needs; record the version); Apalache v0.62.3 SHA-256; Lean v4.34.1 still the latest stable, Plausible's tag for it.
@@ -107,7 +107,7 @@ docs/design/31-loam-router-and-verification.md  docs/plans/README.md  CHANGELOG.
 **Files:** `spec/README.md`, `spec/tla/router/{README.md,specs.toml}`, `spec/tla/selftest/*`, `scripts/spec/{check.sh,tools.lock,provenance.sh}`, `.github/workflows/ci.yml`.
 
 **Produces:**
-- `scripts/spec/tools.lock`: one line per tool, `name version url sha256`. `check.sh` downloads into `$HOME/.cache/loam/spec-tools/` and verifies the hash before use; a mismatch exits 2 with `checksum mismatch for <name>`.
+- `scripts/spec/tools.lock`: one line per tool, `name version url sha256`. `check.sh` downloads into `$HOME/.cache/loams/spec-tools/` and verifies the hash before use; a mismatch exits 2 with `checksum mismatch for <name>`.
 - `scripts/spec/check.sh <Spec> [<variant>] [--parse-only] [--nightly]`: reads `specs.toml`, runs SANY (`--parse-only`), TLC (`java -XX:+UseParallelGC -cp tla2tools.jar:CommunityModules.jar tlc2.TLC -workers ${TLC_WORKERS:-2} -deadlock -config <cfg> <model>`) and, for variants with `apalache = ["Inv", …]`, `apalache-mc check --inv=<Inv> --length=<k>`. Exit 0 when every result matches `expect` (`"ok"` or `"violation:<Inv>"`), 1 otherwise, printing the variant, the expected and actual outcome, the states found and the time.
 - `specs.toml` format:
 
@@ -123,8 +123,8 @@ docs/design/31-loam-router-and-verification.md  docs/plans/README.md  CHANGELOG.
   apalache_length = 8
   ```
 
-- `scripts/spec/provenance.sh`: fails if any file under `spec/`, `conformance/` or `crates/operon-sqlrouter/` contains `GNU AFFERO`, `pgdog::`, `use pgdog` or a line PgDog's source has verbatim (a list of 20 distinctive identifiers from PgDog's 2PC and resharding modules, kept in the script, chosen in this task); run in the `tla` job.
-- CI: the `changes` job gains filters `spec` (`spec/**`, `scripts/spec/**`) and `router` (`crates/operon-sqlrouter/**`, `crates/operon-compat/**`, `conformance/**`). Job `tla` (needs `changes`; runs when `spec` or `router` changed, or on schedule): Temurin 21, cache `~/.cache/loam/spec-tools`, `scripts/spec/check.sh --all` (PR variants) or `--all --nightly` on schedule, then `provenance.sh`, which covers `spec/`, `conformance/` and `crates/operon-sqlrouter/`.
+- `scripts/spec/provenance.sh`: fails if any file under `spec/`, `conformance/` or `crates/loams-sqlrouter/` contains `GNU AFFERO`, `pgdog::`, `use pgdog` or a line PgDog's source has verbatim (a list of 20 distinctive identifiers from PgDog's 2PC and resharding modules, kept in the script, chosen in this task); run in the `tla` job.
+- CI: the `changes` job gains filters `spec` (`spec/**`, `scripts/spec/**`) and `router` (`crates/loams-sqlrouter/**`, `crates/loams-compat/**`, `conformance/**`). Job `tla` (needs `changes`; runs when `spec` or `router` changed, or on schedule): Temurin 21, cache `~/.cache/loams/spec-tools`, `scripts/spec/check.sh --all` (PR variants) or `--all --nightly` on schedule, then `provenance.sh`, which covers `spec/`, `conformance/` and `crates/loams-sqlrouter/`.
 
 **Semantics:** `spec/tla/selftest/Selftest.tla` is a three-line counter with an invariant that the counter stays under 3; `MCSelftest_Violation.cfg` sets the bound so TLC must find the violation. It proves the job detects failures and is listed with `expect = "violation:Small"`.
 
@@ -179,12 +179,12 @@ docs/design/31-loam-router-and-verification.md  docs/plans/README.md  CHANGELOG.
 
 ### Task 5: The compatibility inventory, Postgres half
 
-**Files:** `scripts/router/inventory/{pg-static.sh,pg-capture.sh,compose.pg.yml,README.md}`, `crates/operon-compat/{Cargo.toml,src/{main.rs,replay.rs,classify.rs,tsv.rs},tests/it/main.rs}`, `conformance/router/{README.md,pgdog-loampg-statements.tsv,pgdog-loampg-suites.tsv}`.
+**Files:** `scripts/router/inventory/{pg-static.sh,pg-capture.sh,compose.pg.yml,README.md}`, `crates/loams-compat/{Cargo.toml,src/{main.rs,replay.rs,classify.rs,tsv.rs},tests/it/main.rs}`, `conformance/router/{README.md,pgdog-loamspg-statements.tsv,pgdog-loamspg-suites.tsv}`.
 
 **Produces:**
 - `pg-static.sh $PGDOG_SRC`: greps `pgdog/src/backend/{replication,schema,pool}/`, `pgdog/src/frontend/client/query_engine/two_pc/` and `pgdog/src/healthcheck.rs` for SQL string literals and replication commands (`START_REPLICATION`, `CREATE_REPLICATION_SLOT`, `IDENTIFY_SYSTEM`, `PREPARE TRANSACTION`, `COMMIT PREPARED`, `ROLLBACK PREPARED`, `pg_prepared_xacts`, `pg_is_in_recovery`, `pg_current_wal_lsn`, `COPY … (FORMAT BINARY)`, `pg_dump` invocations) and prints `source_path:line<TAB>statement-kind` rows, **never the line's text**. A human classifies each kind into a digest row.
 - `compose.pg.yml`: `postgres:17.11` ×3 (`shard0`, `shard1`, `ref`) with `shared_preload_libraries = pg_stat_statements`, `log_statement = all`, `max_prepared_transactions = 16`, `wal_level = logical`; PgDog v0.1.60 by digest with a two-shard config rendered by hand for this task (RT1 renders it from code).
-- `pg-capture.sh`: starts the compose file, runs PgDog's integration scenarios `resharding`, `logical`, `failover`, `pgbench`, `rewrite` and the 2PC tests from `$PGDOG_SRC/integration/` against it (run, not copied), then dumps `pg_stat_statements` (query text normalized by Postgres, calls, rows) from every shard into `capture.jsonl` under `$HOME/.cache/loam/inventory/pg/<date>/`.
+- `pg-capture.sh`: starts the compose file, runs PgDog's integration scenarios `resharding`, `logical`, `failover`, `pgbench`, `rewrite` and the 2PC tests from `$PGDOG_SRC/integration/` against it (run, not copied), then dumps `pg_stat_statements` (query text normalized by Postgres, calls, rows) from every shard into `capture.jsonl` under `$HOME/.cache/loams/inventory/pg/<date>/`.
 - `compat-replay` binary:
 
   ```text
@@ -194,9 +194,9 @@ docs/design/31-loam-router-and-verification.md  docs/plans/README.md  CHANGELOG.
   For each digest it runs the captured example (session `SET`s first) on both URLs in a fresh connection, in a transaction rolled back at the end unless the statement is a transaction or replication command (those run in a scratch database per statement), and writes one TSV row: `digest, component, source, example, class, ref_hash, target_hash, note, issue`. `class ∈ {same, differs, error, unsupported, pending-target}`; `unsupported` needs a non-empty `note`.
 - `conformance/router/README.md`: the method (§31 §15), the column meanings, how to re-run, and the rule that a pin bump re-runs the inventory.
 
-**Semantics:** the target is a Loam Postgres compute from `deploy/neon` when P2b is merged (Task 0); otherwise every row is `pending-target` with the reference result recorded. `component` is one of `pool`, `health`, `schema-sync`, `copy`, `replication`, `2pc`, `query`.
+**Semantics:** the target is a Loams Postgres compute from `deploy/neon` when P2b is merged (Task 0); otherwise every row is `pending-target` with the reference result recorded. `component` is one of `pool`, `health`, `schema-sync`, `copy`, `replication`, `2pc`, `query`.
 
-**Tests:** `crates/operon-compat/tests/it`: `classify_same_differs_error` (fixtures over two in-process mock connectors: identical rows, a different row, an error), `tsv_round_trip`, `unsupported_needs_note`; a CI-less manual run whose TSVs are committed, with the run's date and pins in the README.
+**Tests:** `crates/loams-compat/tests/it`: `classify_same_differs_error` (fixtures over two in-process mock connectors: identical rows, a different row, an error), `tsv_round_trip`, `unsupported_needs_note`; a CI-less manual run whose TSVs are committed, with the run's date and pins in the README.
 
 **PR size:** the tool and scripts (about 600 lines) in one PR, the blessed TSVs in a second.
 
@@ -220,9 +220,9 @@ docs/design/31-loam-router-and-verification.md  docs/plans/README.md  CHANGELOG.
 
 **Commit:** `compat: inventory what Vitess v24 asks of MySQL and replay it on WeSQL`.
 
-### Task 7: `operon-sqlrouter`: records, ranges, hashes and the machine seam
+### Task 7: `loams-sqlrouter`: records, ranges, hashes and the machine seam
 
-**Files:** `crates/operon-sqlrouter/{Cargo.toml,clippy.toml,src/*,tests/it/*,tests/fixtures/*}`, `scripts/router/gen-pg-hash-vectors.sh`, root `Cargo.toml` (workspace member and dependencies).
+**Files:** `crates/loams-sqlrouter/{Cargo.toml,clippy.toml,src/*,tests/it/*,tests/fixtures/*}`, `scripts/router/gen-pg-hash-vectors.sh`, root `Cargo.toml` (workspace member and dependencies).
 
 **Produces:**
 
@@ -270,28 +270,28 @@ pub fn vitess_xxhash(bytes: &[u8]) -> KeyspaceId;
 
 ### Task 8: The Lean project, the partition proofs and the oracle
 
-**Files:** `spec/lean/{lakefile.lean,lean-toolchain,lake-manifest.json,Main.lean}`, `spec/lean/LoamRouter/{KeyRange.lean,ShardFn.lean,Oracle.lean,Json.lean}`, `crates/operon-sqlrouter/tests/it/lean_oracle.rs`, `.github/workflows/ci.yml` (job `lean`).
+**Files:** `spec/lean/{lakefile.lean,lean-toolchain,lake-manifest.json,Main.lean}`, `spec/lean/LoamsRouter/{KeyRange.lean,ShardFn.lean,Oracle.lean,Json.lean}`, `crates/loams-sqlrouter/tests/it/lean_oracle.rs`, `.github/workflows/ci.yml` (job `lean`).
 
 **Produces:**
 - `KeyRange.lean`: `abbrev KsId := Fin (2^64)`; `structure KeyRange where lo : Nat; hi : Option Nat`; `def IsPartition (rs : List KeyRange) : Prop` (non-empty, first `lo = 0`, each `hi = some (next lo)`, last `hi = none`, every `lo < hi`); `def lookup`; theorems `lookup_total_unique : IsPartition rs → id < 2^64 → ∃! i, i < rs.length ∧ inRange (rs.get i) id`, `split_preserves : IsPartition rs → validSplit rs i at → IsPartition (split rs i at)`, `merge_preserves`.
 - `ShardFn.lean`: `shardOfModulo (n : Nat) (h : Nat) : Fin n` for `n > 0`, `modulo_partition`; `shardOfRange` through `lookup`; `shardOf_deterministic`.
-- `Oracle.lean` and `Main.lean`: the `loam-router-oracle` executable reads JSON lines `{"op":"partition_check","ranges":[[lo,hi|null],…]}`, `{"op":"lookup","ranges":…,"id":n}`, `{"op":"split",…}`, `{"op":"merge",…}` and writes `{"ok":true,"result":…}` or `{"ok":false,"error":"Gap"|"Overlap"|"NotSorted"|"Empty","at":n}` per line, with the same error vocabulary as `PartitionError`.
+- `Oracle.lean` and `Main.lean`: the `loams-router-oracle` executable reads JSON lines `{"op":"partition_check","ranges":[[lo,hi|null],…]}`, `{"op":"lookup","ranges":…,"id":n}`, `{"op":"split",…}`, `{"op":"merge",…}` and writes `{"ok":true,"result":…}` or `{"ok":false,"error":"Gap"|"Overlap"|"NotSorted"|"Empty","at":n}` per line, with the same error vocabulary as `PartitionError`.
 - Plausible properties for split and merge on random partitions (`#test` in the modules, run by `lake test`).
-- CI job `lean` (path-filtered on `spec/lean/**`, `crates/operon-sqlrouter/src/ranges.rs` and `crates/operon-sqlrouter/src/reference/**`, listed as three separate patterns): elan with `lean-toolchain`, cache `spec/lean/.lake` keyed by `lean-toolchain` and `lake-manifest.json`, `lake build`, `lake test`, then `cargo test -p operon-sqlrouter --test it lean_oracle` with the oracle on `PATH`.
+- CI job `lean` (path-filtered on `spec/lean/**`, `crates/loams-sqlrouter/src/ranges.rs` and `crates/loams-sqlrouter/src/reference/**`, listed as three separate patterns): elan with `lean-toolchain`, cache `spec/lean/.lake` keyed by `lean-toolchain` and `lake-manifest.json`, `lake build`, `lake test`, then `cargo test -p loams-sqlrouter --test it lean_oracle` with the oracle on `PATH`.
 
-**Tests:** `lake build` (the theorems are checked by building); `lake test`; `partition_matches_lean_oracle` (10 000 random cases, valid and invalid partitions, lookups, splits and merges; Rust and Lean must agree on result or error kind), skipped with `skipped: needs loam-router-oracle` when the binary is absent.
+**Tests:** `lake build` (the theorems are checked by building); `lake test`; `partition_matches_lean_oracle` (10 000 random cases, valid and invalid partitions, lookups, splits and merges; Rust and Lean must agree on result or error kind), skipped with `skipped: needs loams-router-oracle` when the binary is absent.
 
 **Commit:** `spec: prove the key-range partition lemmas in Lean and wire the oracle`.
 
 ### Task 9: Docs and the RT0 exit
 
-**Files:** `docs/design/31-loam-router-and-verification.md` (as-built notes: tool versions, bounds and run times, the inventory's headline numbers per class and component, C-1–C-7 observations), `docs/plans/README.md` (RT0 row status), `CHANGELOG.md`.
+**Files:** `docs/design/31-loams-router-and-verification.md` (as-built notes: tool versions, bounds and run times, the inventory's headline numbers per class and component, C-1–C-7 observations), `docs/plans/README.md` (RT0 row status), `CHANGELOG.md`.
 
 **Exit criteria:**
 - `tla` job green: `ShardMap` and `ReshardCutover` pass at PR bounds and fail their unsafe variants as expected; the three skeletons parse.
 - `lean` job green: the partition theorems build; 10 000 oracle cases agree.
 - The inventory TSVs exist for both halves; every row is classified or `pending-target`; C-1–C-7 have observations.
-- `cargo test -p operon-sqlrouter`, `cargo clippy -p operon-sqlrouter` (with its `clippy.toml`) and `cargo deny check` clean.
+- `cargo test -p loams-sqlrouter`, `cargo clippy -p loams-sqlrouter` (with its `clippy.toml`) and `cargo deny check` clean.
 - Answers or updated wording recorded for Q304 (from Task 6's C-1 row) and Q308 (the `lean` job's measured time).
 
 **Commit:** `docs: record RT0 as built and close RT0`.

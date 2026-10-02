@@ -1,4 +1,4 @@
-"""elasticsearch-py's `helpers.vectorstore` against Operon (plan M1.5 Task
+"""elasticsearch-py's `helpers.vectorstore` against Loams (plan M1.5 Task
 11): the retrieval strategies LangChain builds its requests with (C5–C7,
 C14, C18–C25). Each check builds a `VectorStore` with fixed 3-dimensional
 vectors and asserts the top results and the score formulas.
@@ -37,24 +37,24 @@ def ids_of(hits):
     return [hit["_id"] for hit in hits]
 
 
-def knn_tolerance(is_operon):
-    """Operon scores knn hits exactly; Elasticsearch 8.19 quantizes float
+def knn_tolerance(is_loams):
+    """Loams scores knn hits exactly; Elasticsearch 8.19 quantizes float
     vectors (`int8_hnsw` by default), so its scores are close only."""
-    return 1e-5 if is_operon else 5e-3
+    return 1e-5 if is_loams else 5e-3
 
 def cos(a, b):
     dot = sum(x * y for x, y in zip(a, b))
     return dot / (math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b)))
 
 
-def test_dense_vector_strategy_knn(es, index, is_operon):
+def test_dense_vector_strategy_knn(es, index, is_loams):
     vs = store(es, index, DenseVectorStrategy())
     fill(vs)
     q = [0.9, 0.1, 0.0]
     hits = vs.search(query_vector=q, k=2)
     assert ids_of(hits) == ["0", "3"]
     for hit in hits:
-        assert hit["_score"] == pytest.approx((1 + cos(q, VECTORS[int(hit["_id"])])) / 2, rel=knn_tolerance(is_operon))
+        assert hit["_score"] == pytest.approx((1 + cos(q, VECTORS[int(hit["_id"])])) / 2, rel=knn_tolerance(is_loams))
     assert hits[0]["_source"] == {"text_field": "foo", "metadata": {"page": 0, "kind": "a"}}
     # A filter narrows the knn.
     hits = vs.search(query_vector=q, k=2, filter=[{"term": {"metadata.kind": "b"}}])

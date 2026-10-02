@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
 # A TiDB for the durable store's tests (D1 plan Task 4): a plain TiDB v8.5.8
-# from `tiup playground`, with the database loam_durable_default.
+# from `tiup playground`, with the database loams_durable_default.
 #
 #   scripts/durable/tidb.sh up     [--tag T] [--port-offset N] [--timeout S] [--force]
 #   scripts/durable/tidb.sh down   [--tag T]
 #   scripts/durable/tidb.sh status [--tag T] [--port-offset N]
 #
-# `up` prints the OPERON_TEST_TIDB line for `cargo test -p operon-durable
-# --features mysql --test tidb` and the --durable-store URL for operon.
+# `up` prints the LOAMS_TEST_TIDB line for `cargo test -p loams-durable
+# --features mysql --test tidb` and the --durable-store URL for loams.
 #
-# Defaults: tag loam-durable, port offset 17000 (TiDB on 127.0.0.1:21000),
+# Defaults: tag loams-durable, port offset 17000 (TiDB on 127.0.0.1:21000),
 # which is R1's playground offset: run one of them at a time, or pass another
 # offset (D1 uses 27000 beside R1). This is not scripts/tikv/playground.sh:
-# that one runs a keyspace-mode TiDB for Loam's TiKV, while Resonate's MySQL
+# that one runs a keyspace-mode TiDB for Loams's TiKV, while Resonate's MySQL
 # plugin is verified on a plain TiDB (resonatehq/resonate#1161). Data lives in
 # ~/.tiup/data/<tag> and is deleted by `down`.
 set -euo pipefail
 
 VERSION=v8.5.8
-DATABASE=loam_durable_default
+DATABASE=loams_durable_default
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 RUN_DIR=$ROOT/target/durable-tidb
@@ -38,7 +38,7 @@ cmd=${1:-}
 [ -n "$cmd" ] || usage
 shift
 
-tag=loam-durable
+tag=loams-durable
 offset=17000
 timeout=120
 force=0
@@ -52,8 +52,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 case $tag in
-  loam-*) ;;
-  *) die "the tag must start with loam- (got '$tag')" ;;
+  loams-*) ;;
+  *) die "the tag must start with loams- (got '$tag')" ;;
 esac
 case $offset in
   '' | *[!0-9]*) die "--port-offset takes a number (got '$offset')" ;;
@@ -112,8 +112,8 @@ up() {
   done
   sql -e "CREATE DATABASE IF NOT EXISTS $DATABASE"
   echo "tidb: '$tag' ready ($(sql -N -e 'select version()'))"
-  echo "export OPERON_TEST_TIDB=mysql://root@127.0.0.1:$port"
-  echo "operon: --durable-store mysql://root@127.0.0.1:$port/$DATABASE"
+  echo "export LOAMS_TEST_TIDB=mysql://root@127.0.0.1:$port"
+  echo "loams: --durable-store mysql://root@127.0.0.1:$port/$DATABASE"
 }
 
 down() {

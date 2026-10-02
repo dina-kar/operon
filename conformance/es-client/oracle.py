@@ -1,11 +1,11 @@
 """The ES 8.19 oracle probes (plan M1.5 Task 11, owner ruling O-M15-6).
 
-Each probe runs the same requests against Operon and against a real
+Each probe runs the same requests against Loams and against a real
 Elasticsearch 8.19, used only as a test oracle (nothing from it is vendored
 or shipped, R14), and compares what the plan marks "verify": the status and
 the error's `type` and `reason` (with its root cause and `caused_by`), or a
 normalised body. `test_oracle.py` runs every probe as a test when
-`ES_ORACLE_URL` is set; `python oracle.py <operon-url> <oracle-url>` prints
+`ES_ORACLE_URL` is set; `python oracle.py <loams-url> <oracle-url>` prints
 a report.
 
 Raw HTTP, not the client: the texts, statuses and headers are the subject.
@@ -63,7 +63,7 @@ POSITION = re.compile(r"^\[\d+:\d+\] ")
 
 
 def _norm_text(text):
-    """A reason without its leading `[line:col] `: Operon reports `[1:1]`
+    """A reason without its leading `[line:col] `: Loams reports `[1:1]`
     where ES reports the value's position (row T4-5, a kept deviation)."""
     return POSITION.sub("", text) if isinstance(text, str) else text
 
@@ -114,7 +114,7 @@ class Probe:
     setup: list = field(default_factory=list)
     view: Callable[[Answer], Any] = error_view
     indices: tuple = ()
-    # A recorded deviation: the plan row that keeps Operon's answer.
+    # A recorded deviation: the plan row that keeps Loams's answer.
     deviation: Optional[str] = None
 
 
@@ -510,13 +510,13 @@ PROBES += [
 
 
 def main(argv):
-    operon, oracle = argv[1], argv[2]
+    loams, oracle = argv[1], argv[2]
     only = set(argv[3:])
     same = differ = 0
     for probe in PROBES:
         if only and probe.id not in only:
             continue
-        a = run_probe(operon, probe)
+        a = run_probe(loams, probe)
         b = run_probe(oracle, probe)
         if a == b:
             same += 1
@@ -525,7 +525,7 @@ def main(argv):
             differ += 1
             tag = "KEPT  " if probe.deviation else "DIFF  "
             print(f"{tag} {probe.id}  ({probe.item})")
-            print(f"   operon: {json.dumps(a)}")
+            print(f"   loams: {json.dumps(a)}")
             print(f"   oracle: {json.dumps(b)}")
     print(f"{same} same, {differ} different")
 

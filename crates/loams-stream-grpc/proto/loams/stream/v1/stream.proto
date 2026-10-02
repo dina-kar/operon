@@ -1,0 +1,77 @@
+syntax = "proto3";
+
+package loams.stream.v1;
+
+import "io/cloudevents/v1/cloudevents.proto";
+
+// Native stream ingest, used by protocol adapters through Dapr invocation.
+service StreamService {
+  rpc Produce(ProduceRequest) returns (ProduceResponse);
+  // Appends CloudEvents, once per source + id within the stream's dedup
+  // window (design 02 section 7.4). Answers per event; fails only for an
+  // invalid event (INVALID_ARGUMENT) or an unavailable log.
+  rpc ProduceCloudEvents(ProduceCloudEventsRequest) returns (ProduceCloudEventsResponse);
+}
+
+message ProduceRequest {
+  string namespace = 1;
+  string stream = 2;
+  uint32 partition = 3;
+  repeated Record records = 4;
+}
+
+message Record {
+  optional bytes key = 1;
+  optional bytes value = 2;
+  repeated Header headers = 3;
+  // A negative value asks the log writer to assign its clock.
+  int64 timestamp_ms = 4;
+}
+
+message Header {
+  string key = 1;
+  optional bytes value = 2;
+}
+
+message ProduceResponse {
+  uint64 stream_id = 1;
+  uint64 base_offset = 2;
+  uint64 last_offset = 3;
+}
+
+message ProduceCloudEventsRequest {
+  string namespace = 1;
+  string stream = 2;
+  // The partition for every event; absent: each event's key picks one.
+  optional uint32 partition = 3;
+  oneof events {
+    // The CloudEvents protobuf format.
+    io.cloudevents.v1.CloudEventBatch batch = 4;
+    // A JSON array of events in the batched JSON format
+    // (application/cloudevents-batch+json), kept exactly as sent: a
+    // pass-through for senders that already hold JSON, such as Dapr.
+    bytes json_batch = 5;
+  }
+}
+
+enum EventStatus {
+  EVENT_STATUS_UNSPECIFIED = 0;
+  // Appended by this request.
+  EVENT_STATUS_APPENDED = 1;
+  // Appended before; partition and offset are the first write's.
+  EVENT_STATUS_DUPLICATE = 2;
+  // Another request is appending it; retry after retry_after_ms.
+  EVENT_STATUS_IN_FLIGHT = 3;
+}
+
+message EventResult {
+  EventStatus status = 1;
+  uint32 partition = 2;
+  uint64 offset = 3;
+  uint64 retry_after_ms = 4;
+}
+
+message ProduceCloudEventsResponse {
+  // One per event, in request order.
+  repeated EventResult results = 1;
+}

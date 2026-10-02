@@ -1,10 +1,10 @@
 """Fixtures of the elasticsearch-py 8.19 client suite (plan M1.5 Task 11).
 
-The session fixture `operon` starts `operon dev` with the Elasticsearch
-gateway on an ephemeral port and yields its URL. With `OPERON_ES_URL` set,
-the suite runs against that server instead (for example a running Operon,
+The session fixture `loams` starts `loams dev` with the Elasticsearch
+gateway on an ephemeral port and yields its URL. With `LOAMS_ES_URL` set,
+the suite runs against that server instead (for example a running Loams,
 or the Elasticsearch 8.19 oracle, to check the expectations themselves);
-checks of Operon-only answers are skipped against a real Elasticsearch.
+checks of Loams-only answers are skipped against a real Elasticsearch.
 
 `ES_ORACLE_URL`, when set, names an Elasticsearch 8.19 used by
 `test_oracle.py` only as a test oracle (owner ruling O-M15-6).
@@ -23,12 +23,12 @@ import uuid
 import pytest
 from elasticsearch import Elasticsearch
 
-LISTENING = re.compile(r"^operon es listening on (http://\S+)$")
+LISTENING = re.compile(r"^loams es listening on (http://\S+)$")
 
 
-def _start_operon():
-    binary = os.environ.get("OPERON_BIN", "target/debug/operon")
-    data = tempfile.mkdtemp(prefix="operon-es-client-")
+def _start_loams():
+    binary = os.environ.get("LOAMS_BIN", "target/debug/loams")
+    data = tempfile.mkdtemp(prefix="loams-es-client-")
     proc = subprocess.Popen(
         [
             binary,
@@ -57,24 +57,24 @@ def _start_operon():
         match = LISTENING.match(line)
         if match:
             url = match.group(1)
-        if line.startswith("operon listening on "):
+        if line.startswith("loams listening on "):
             break
     if url is None:
         proc.kill()
-        raise RuntimeError(f"operon dev did not print its ES address: {seen}")
+        raise RuntimeError(f"loams dev did not print its ES address: {seen}")
     # Keep draining stdout so the process never blocks on a full pipe.
     threading.Thread(target=lambda: [None for _ in proc.stdout], daemon=True).start()
     return proc, data, url
 
 
 @pytest.fixture(scope="session")
-def operon():
+def loams():
     """The URL of the Elasticsearch API under test."""
-    url = os.environ.get("OPERON_ES_URL")
+    url = os.environ.get("LOAMS_ES_URL")
     if url:
         yield url
         return
-    proc, data, url = _start_operon()
+    proc, data, url = _start_loams()
     try:
         yield url
     finally:
@@ -88,18 +88,18 @@ def operon():
 
 
 @pytest.fixture(scope="session")
-def is_operon(operon):
-    """Whether the server under test is Operon (and not a real ES)."""
-    client = Elasticsearch(operon, request_timeout=30)
+def is_loams(loams):
+    """Whether the server under test is Loams (and not a real ES)."""
+    client = Elasticsearch(loams, request_timeout=30)
     try:
-        return client.info()["name"] == "operon"
+        return client.info()["name"] == "loams"
     finally:
         client.close()
 
 
 @pytest.fixture
-def es(operon):
-    client = Elasticsearch(operon, request_timeout=30)
+def es(loams):
+    client = Elasticsearch(loams, request_timeout=30)
     yield client
     client.close()
 

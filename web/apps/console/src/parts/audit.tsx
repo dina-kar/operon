@@ -1,4 +1,4 @@
-import { Avatar, Badge, formatRelative, StatusTag, Table } from '@loam/ui';
+import { Avatar, Badge, formatRelative, StatusTag, Table } from '@loams/ui';
 import type { Schemas } from '../api/client';
 
 type Event = Schemas['AuditEvent'];

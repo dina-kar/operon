@@ -19,10 +19,10 @@
   description: "Retrieval engine: store, cache, meta, log, worker, link, pk, collection, text, query, hnsw, hot, sim"
 - name: area/live
   color: "0e8a16"
-  description: "Loam Live and TiKV: operon-live, operon-live-proto, operon-tikv, operon-meta-tikv"
+  description: "Loams Live and TiKV: loams-live, loams-live-proto, loams-tikv, loams-meta-tikv"
 - name: area/durable
   color: "5319e7"
-  description: "Loam Durable, the embedded Resonate server: operon-durable"
+  description: "Loams Durable, the embedded Resonate server: loams-durable"
 - name: area/wire
   color: "0969da"
   description: "Protocol surfaces: native HTTP API, Flight SQL, Qdrant, Elasticsearch, Postgres, MySQL, gRPC"
@@ -34,7 +34,7 @@
   description: "Client SDKs in sdks/ and the generated clients"
 - name: area/web
   color: "d4c5f9"
-  description: "The web console and @loam/ui in web/"
+  description: "The web console and @loams/ui in web/"
 - name: area/docs
   color: "0075ca"
   description: "README, crate docs, design docs and plans"
