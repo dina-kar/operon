@@ -26,6 +26,7 @@ Issue #232 has no linked implementation plan or named tests. At the start of thi
 | 2 | Use the issue's named labels as fallbacks for `RUNNER_MAIN`, `RUNNER_DEV_HEAVY` and `RUNNER_LIGHT`. | The organization variables cannot be read with the current token, and an unset variable must not leave a job queued with an empty runner label. |
 | 3 | Partition only the workspace test pass with nextest; retain Cargo doctests and feature-specific test passes. | nextest does not run doctests, while existing feature passes exercise distinct configurations. |
 | 4 | Keep the existing Rust cache action on both providers and defer sccache until a measured gain exists. | Depot routes GitHub cache API actions to Depot Cache automatically; the issue asks for sccache only where measured to help. |
+| 5 | Pin the Rust cache action and nextest installer to verified upstream commits. | CodeRabbit found the new mutable action references; the v2.9.2 rust-cache tag resolves to `6323deb102c322ba6fcbdcafc7e3dddab59af2b6` and the nextest installer tag to `badb8c3638e0b773c6c17a6025c2306a8f1c4303` on 2026-10-02. |
 
 ## Measurement
 
