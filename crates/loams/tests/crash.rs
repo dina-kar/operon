@@ -1,0 +1,1451 @@
+//! The M0 kill -9 crash gate (M0.4 plan Task 5, rulings 2 and 1).
+//!
+//! For every named failpoint, `loams dev` runs as a child process with the
+//! point armed to `abort()` on its n-th hit, while a client produces
+//! numbered records to several partitions and a link sums them. After the
+//! abort the process restarts without failpoints, the background work
+//! settles, and the gate checks that every acknowledged record is readable
+//! exactly once at its acknowledged offset, offsets are dense, the link's
+//! sums equal the log's records exactly once, and the metastore's
+//! invariants hold. A random-time SIGKILL loop does the same.
+//!
+//! The collection scenario (plan M1.1 Task 13) does the same for a
+//! collection: document ops are produced to its implicit stream, and after
+//! the abort and a restart every acknowledged record must be in the stream
+//! at its offset, the committed collection must equal the fold of the
+//! stream (`fold_stream`, `verify_collection`) and the metastore's
+//! invariants must hold. Its rows cover every collection commit failpoint
+//! and both index-build failpoints. The maintenance scenario (plan M1.3
+//! Task 13) runs it with merges, compactions and hot artifact builds within
+//! seconds, over every merge, compaction and hot-build failpoint, and adds
+//! two checks: the Lance mainline stays at version 1, and every referenced
+//! hot artifact downloads.
+//!
+//! Runs only with `--features failpoints`:
+//! `cargo test -p loams --features failpoints --test crash`.
+//! `CRASH_KILLS=<n>` sets the SIGKILL loops' iterations (default 20, and 10
+//! for the collection loop).
+//!
+//! `LOAMS_GATE_META=tikv://<pd>/<keyspace>` runs the gate on the TiKV
+//! metastore (R1 plan Task 6; CI's nightly TiKV job): every `loams dev`
+//! gets `--meta` with a random root per test, and the checks open that root
+//! in this process. The two snapshot rows are openraft-only and skip there.
+#![cfg(feature = "failpoints")]
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::BufRead;
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use loams_cache::{RangeCache, RangeCacheConfig};
+use loams_collection::{
+    CollectionConfig, CollectionContext, CollectionManifest, CollectionSchema, DocOp, Document,
+    DynamicMapping, FieldKind, FieldSpec, LanceConfig, LanceEnv, ManifestCache, PrimaryKey,
+    VectorSpec, fold_stream, live_manifest, partition_of, verify_collection,
+};
+use loams_common::meta::MetaStore;
+use loams_common::{CollectionId, NamespaceId, StreamId};
+use loams_log::{FetchRequest, LogReader};
+use loams_meta::{
+    Consistency, MetaClient, MetaClientConfig, MetaConfig, MetaNode, Router, SystemClock,
+};
+use loams_store::Store;
+use reqwest::StatusCode;
+use serde_json::{Value, json};
+use tempfile::TempDir;
+
+const EVENTS_PARTITIONS: u32 = 4;
+const LOGS_PARTITIONS: u32 = 2;
+/// How long a failpoint may take to be hit, and background work to settle.
+const WAIT: Duration = Duration::from_secs(90);
+
+/// The gate's GC grace: short, so GC races the background work. It also
+/// sets every freshness deadline to half of it (750 ms).
+const GC_GRACE_MS: &str = "1500";
+
+/// A GC grace for rows whose failpoint sits behind a build's freshness
+/// deadline (index builds, merges, compactions, hot builds): their deadlines
+/// become 5 s, so a build on a starved CI runner still commits and reaches
+/// the failpoint instead of ending `Blocked` on every retry (CI fix C2).
+const BUILD_GC_GRACE: &[&str] = &["--gc-grace-ms", "10000"];
+
+/// Runs the gate on this metastore instead of the embedded one (module
+/// docs).
+const GATE_META_ENV: &str = "LOAMS_GATE_META";
+
+/// The `--meta` URL of the test using `dir`: `LOAMS_GATE_META` with a
+/// random root, drawn on first use and kept in `<dir>/meta-url` so restarts
+/// and checks use the same one; `None` on the embedded metastore.
+fn gate_meta(dir: &Path) -> Option<String> {
+    let path = dir.join("meta-url");
+    if let Ok(url) = std::fs::read_to_string(&path) {
+        return Some(url);
+    }
+    let base = std::env::var(GATE_META_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())?;
+    if !cfg!(feature = "tikv") {
+        panic!("{GATE_META_ENV} needs the tikv feature (build with --features tikv)");
+    }
+    let url = format!(
+        "{}?root={:032x}",
+        base.trim().trim_end_matches('/'),
+        ulid::Ulid::generate().0
+    );
+    std::fs::write(&path, &url).expect("write the metastore URL");
+    Some(url)
+}
+
+/// Whether the gate runs on the TiKV metastore; prints a `skipped:` line for
+/// `row` when it does, for rows that only exist on the embedded one.
+fn skipped_on_tikv(row: &str) -> bool {
+    let on = std::env::var(GATE_META_ENV).is_ok_and(|v| !v.trim().is_empty());
+    if on {
+        eprintln!("skipped: {row} is an openraft row ({GATE_META_ENV} is set)");
+    }
+    on
+}
+
+/// A metastore opened in this process while no server runs.
+enum OpenMeta {
+    Raft(MetaNode),
+    #[cfg(feature = "tikv")]
+    Tikv,
+}
+
+impl OpenMeta {
+    async fn shutdown(self) {
+        match self {
+            OpenMeta::Raft(node) => node.shutdown().await.expect("shutdown"),
+            #[cfg(feature = "tikv")]
+            OpenMeta::Tikv => {}
+        }
+    }
+}
+
+/// The TiKV metastore named by `url`.
+#[cfg(feature = "tikv")]
+async fn open_tikv(url: &str) -> loams_meta_tikv::TikvMeta {
+    match loams::MetaBackend::parse(url).expect("the gate's metastore URL") {
+        loams::MetaBackend::Tikv(config) => loams_meta_tikv::TikvMeta::open(config)
+            .await
+            .expect("open the TiKV metastore"),
+        loams::MetaBackend::Raft => unreachable!("a tikv:// URL"),
+    }
+}
+
+/// A running `loams dev` child process.
+struct Dev {
+    child: Child,
+    base: String,
+    /// Standard error lines of a run with an armed failpoint.
+    stderr: Arc<Mutex<Vec<String>>>,
+}
+
+impl Dev {
+    fn start(dir: &Path, failpoint: Option<(&str, u32)>) -> Self {
+        Self::start_with(dir, failpoint, &[])
+    }
+
+    /// [`Dev::start`] with `extra` flags after the gate's own.
+    fn start_with(dir: &Path, failpoint: Option<(&str, u32)>, extra: &[&str]) -> Self {
+        // Through `sh`, to turn core dumps off: an armed failpoint aborts,
+        // and dumping the core of a binary this large (Lance, DataFusion)
+        // can take the host's core handler most of a minute, while the
+        // process has stopped serving. `exec` keeps the child's pid the
+        // server's.
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "ulimit -c 0 && exec \"$0\" \"$@\""])
+            .arg(env!("CARGO_BIN_EXE_loams"))
+            .args([
+                "dev",
+                "--listen",
+                "127.0.0.1:0",
+                "--flush-interval-ms",
+                "10",
+                // Parallel servers must not share Flight SQL's fixed port.
+                "--flight-sql-listen",
+                "127.0.0.1:0",
+                // Nor the Qdrant gateway's.
+                "--no-qdrant",
+                // Nor the durable listener's (feature durable).
+                "--no-durable",
+                "--no-es",
+            ])
+            .arg("--data-dir")
+            .arg(dir)
+            .args([
+                "--segment-min-bytes",
+                "1",
+                "--poll-interval-ms",
+                "50",
+                "--lease-ttl-ms",
+                "1500",
+                "--retention-interval-ms",
+                "200",
+                "--gc-interval-ms",
+                "300",
+                "--link-batch-interval-ms",
+                "0",
+                "--link-batch-records",
+                "25",
+                "--snapshot-every",
+                "64",
+                "--collection-trim",
+                "false",
+                "--collection-index-min-rows",
+                "40",
+                "--collection-index-delta-min-rows",
+                "40",
+                "--collection-index-poll-interval-ms",
+                "200",
+            ])
+            .args(extra);
+        if let Some(url) = gate_meta(dir) {
+            command.arg("--meta").arg(url);
+        }
+        if !extra.contains(&"--gc-grace-ms") {
+            command.args(["--gc-grace-ms", GC_GRACE_MS]);
+        }
+        command
+            .env("RUST_LOG", "error")
+            .env_remove("LOAMS_FAILPOINTS")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        if let Some((name, hit)) = failpoint {
+            command
+                .env("LOAMS_FAILPOINTS", name)
+                .env("LOAMS_FAILPOINT_HIT", hit.to_string())
+                .stderr(Stdio::piped());
+        }
+        let mut child = command.spawn().expect("spawn loams");
+        let stdout = child.stdout.take().expect("stdout");
+        let mut lines = std::io::BufReader::new(stdout).lines();
+        let base = loop {
+            let line = lines
+                .next()
+                .expect("loams exited before listening")
+                .expect("read stdout");
+            if let Some(url) = line.strip_prefix("loams listening on ") {
+                break url.trim().to_string();
+            }
+        };
+        std::thread::spawn(move || for _ in lines {});
+        let stderr = Arc::new(Mutex::new(Vec::new()));
+        if let Some(pipe) = child.stderr.take() {
+            let stderr = stderr.clone();
+            std::thread::spawn(move || {
+                for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
+                    stderr.lock().expect("lock").push(line);
+                }
+            });
+        }
+        Self {
+            child,
+            base,
+            stderr,
+        }
+    }
+
+    /// Whether the process reported aborting at `point`.
+    fn aborted_at(&self, point: &str) -> bool {
+        let wanted = format!("failpoint {point} hit");
+        self.stderr
+            .lock()
+            .expect("lock")
+            .iter()
+            .any(|line| line.contains(&wanted))
+    }
+
+    fn exited(&mut self) -> bool {
+        self.child.try_wait().expect("try_wait").is_some()
+    }
+
+    /// SIGKILL.
+    fn kill(mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for Dev {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[derive(Clone)]
+struct Api {
+    base: String,
+    http: reqwest::Client,
+}
+
+fn unb64(v: &Value) -> String {
+    let bytes = BASE64
+        .decode(v.as_str().expect("base64 string"))
+        .expect("base64");
+    String::from_utf8(bytes).expect("utf-8")
+}
+
+impl Api {
+    fn new(dev: &Dev) -> Self {
+        Self {
+            base: dev.base.clone(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .expect("client"),
+        }
+    }
+
+    async fn post(&self, path: &str, body: Value) -> Result<(StatusCode, Value), reqwest::Error> {
+        let response = self
+            .http
+            .post(format!("{}{path}", self.base))
+            .json(&body)
+            .send()
+            .await?;
+        let status = response.status();
+        Ok((status, response.json().await.unwrap_or(Value::Null)))
+    }
+
+    async fn get(&self, path: &str) -> Result<(StatusCode, Value), reqwest::Error> {
+        let response = self.http.get(format!("{}{path}", self.base)).send().await?;
+        let status = response.status();
+        Ok((status, response.json().await.unwrap_or(Value::Null)))
+    }
+
+    /// Creates the namespace, the two streams and the link (a 409 means an
+    /// earlier incarnation created it).
+    async fn setup(&self) {
+        let created = |status: StatusCode| {
+            assert!(
+                status == StatusCode::CREATED || status == StatusCode::CONFLICT,
+                "{status}"
+            );
+        };
+        let (status, _) = self
+            .post("/v1/namespaces", json!({ "name": "acme" }))
+            .await
+            .expect("namespace");
+        created(status);
+        let (status, _) = self
+            .post(
+                "/v1/namespaces/acme/streams",
+                json!({ "name": "events", "partitions": EVENTS_PARTITIONS }),
+            )
+            .await
+            .expect("stream");
+        created(status);
+        let (status, _) = self
+            .post(
+                "/v1/namespaces/acme/streams",
+                json!({
+                    "name": "logs",
+                    "partitions": LOGS_PARTITIONS,
+                    "retention": { "max_bytes": 600 },
+                }),
+            )
+            .await
+            .expect("stream");
+        created(status);
+        let (status, _) = self
+            .post(
+                "/v1/namespaces/acme/links",
+                json!({ "name": "counts", "source": "events" }),
+            )
+            .await
+            .expect("link");
+        created(status);
+    }
+
+    /// Produces one record; `Some(offset)` once acknowledged, `None` if the
+    /// outcome is unknown (an error or a dead server).
+    async fn produce(&self, stream: &str, partition: u32, key: &str, value: &str) -> Option<u64> {
+        self.produce_bytes(stream, partition, key.as_bytes(), value.as_bytes())
+            .await
+    }
+
+    /// [`Api::produce`] of a binary key and value.
+    async fn produce_bytes(
+        &self,
+        stream: &str,
+        partition: u32,
+        key: &[u8],
+        value: &[u8],
+    ) -> Option<u64> {
+        let body =
+            json!({ "records": [{ "key": BASE64.encode(key), "value": BASE64.encode(value) }] });
+        let path = format!("/v1/namespaces/acme/streams/{stream}/partitions/{partition}/records");
+        match self.post(&path, body).await {
+            Ok((StatusCode::OK, body)) => body["base_offset"].as_u64(),
+            _ => None,
+        }
+    }
+
+    /// `(log_start, high_watermark)` per partition.
+    async fn partitions(&self, stream: &str) -> Vec<(u64, u64)> {
+        let (status, body) = self
+            .get(&format!("/v1/namespaces/acme/streams/{stream}"))
+            .await
+            .expect("describe");
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body["partitions"]
+            .as_array()
+            .expect("partitions")
+            .iter()
+            .map(|p| {
+                (
+                    p["log_start_offset"].as_u64().expect("start"),
+                    p["high_watermark"].as_u64().expect("hwm"),
+                )
+            })
+            .collect()
+    }
+
+    /// Every record of a partition from `from`: `(offset, key, value)`.
+    async fn fetch_all(
+        &self,
+        stream: &str,
+        partition: u32,
+        from: u64,
+    ) -> Result<Vec<(u64, String, String)>, u64> {
+        let mut out = Vec::new();
+        let mut offset = from;
+        loop {
+            let path = format!(
+                "/v1/namespaces/acme/streams/{stream}/partitions/{partition}/records?offset={offset}&max_bytes=65536"
+            );
+            let (status, body) = self.get(&path).await.expect("fetch");
+            if status == StatusCode::RANGE_NOT_SATISFIABLE {
+                return Err(body["log_start_offset"].as_u64().expect("log start"));
+            }
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let records = body["records"].as_array().expect("records");
+            if records.is_empty() {
+                return Ok(out);
+            }
+            for r in records {
+                out.push((
+                    r["offset"].as_u64().expect("offset"),
+                    unb64(&r["key"]),
+                    unb64(&r["value"]),
+                ));
+            }
+            offset = body["next_offset"].as_u64().expect("next");
+        }
+    }
+
+    /// The link: `(applied per partition, counters, skipped)`.
+    async fn link(&self) -> (BTreeMap<u32, u64>, BTreeMap<String, i64>, u64) {
+        let body = self.describe_link("counts").await;
+        let counters = body["counters"]
+            .as_object()
+            .expect("counters")
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_i64().expect("i64")))
+            .collect();
+        (
+            applied(&body),
+            counters,
+            body["skipped"].as_u64().expect("skipped"),
+        )
+    }
+
+    async fn describe_link(&self, name: &str) -> Value {
+        let (status, body) = self
+            .get(&format!("/v1/namespaces/acme/links/{name}"))
+            .await
+            .expect("link");
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    }
+
+    /// The high watermarks of `stream`'s non-empty partitions.
+    async fn high_watermarks(&self, stream: &str) -> BTreeMap<u32, u64> {
+        self.partitions(stream)
+            .await
+            .into_iter()
+            .enumerate()
+            .map(|(p, (_, hwm))| (u32::try_from(p).expect("u32"), hwm))
+            .filter(|(_, hwm)| *hwm > 0)
+            .collect()
+    }
+}
+
+/// A link description's applied offsets, of non-empty partitions.
+fn applied(body: &Value) -> BTreeMap<u32, u64> {
+    body["applied"]
+        .as_array()
+        .expect("applied")
+        .iter()
+        .map(|a| {
+            (
+                u32::try_from(a["partition"].as_u64().expect("p")).expect("u32"),
+                a["offset"].as_u64().expect("offset"),
+            )
+        })
+        .filter(|(_, offset)| *offset > 0)
+        .collect()
+}
+
+/// What the client knows: acknowledged records (stream, partition, offset →
+/// value) and records whose outcome is unknown (stream, partition, value).
+/// Events records carry a counter name and a unique delta, so a duplicate is
+/// visible; logs records a unique value.
+#[derive(Clone, Default)]
+struct Model {
+    acked: BTreeMap<(String, u32), BTreeMap<u64, String>>,
+    unknown: BTreeSet<(String, u32, String)>,
+    next: u64,
+}
+
+/// Produces the next numbered record and records its outcome.
+async fn produce_one(api: &Api, model: &Mutex<Model>) {
+    let n = {
+        let mut m = model.lock().expect("lock");
+        m.next += 1;
+        m.next
+    };
+    let (stream, partitions) = if n % 3 == 0 {
+        ("logs", LOGS_PARTITIONS)
+    } else {
+        ("events", EVENTS_PARTITIONS)
+    };
+    let partition = u32::try_from(n).expect("u32") % partitions;
+    let key = format!("c{}", n % 5);
+    let value = if stream == "events" {
+        n.to_string()
+    } else {
+        format!("log-{n}")
+    };
+    let offset = api.produce(stream, partition, &key, &value).await;
+    let mut m = model.lock().expect("lock");
+    match offset {
+        Some(offset) => {
+            m.acked
+                .entry((stream.to_string(), partition))
+                .or_default()
+                .insert(offset, value);
+        }
+        None => {
+            m.unknown.insert((stream.to_string(), partition, value));
+        }
+    }
+}
+
+/// Waits until the link has applied every committed record.
+async fn settle(api: &Api) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let hwms: BTreeMap<u32, u64> = api
+            .partitions("events")
+            .await
+            .into_iter()
+            .enumerate()
+            .map(|(p, (_, hwm))| (u32::try_from(p).expect("u32"), hwm))
+            .filter(|(_, hwm)| *hwm > 0)
+            .collect();
+        let (applied, _, _) = api.link().await;
+        if applied == hwms {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the link never caught up: applied {applied:?}, high watermarks {hwms:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// The gate's assertions against a settled server.
+async fn check(api: &Api, model: &Model, what: &str) {
+    let mut sums: BTreeMap<String, i64> = BTreeMap::new();
+    let mut seen_values = BTreeSet::new();
+    for (stream, partitions) in [("events", EVENTS_PARTITIONS), ("logs", LOGS_PARTITIONS)] {
+        let bounds = api.partitions(stream).await;
+        for partition in 0..partitions {
+            let (start, hwm) = bounds[partition as usize];
+            if stream == "events" {
+                assert_eq!(start, 0, "{what}: events is never trimmed");
+            }
+            let records = match api.fetch_all(stream, partition, start).await {
+                Ok(records) => records,
+                Err(start) => api
+                    .fetch_all(stream, partition, start)
+                    .await
+                    .unwrap_or_else(|_| panic!("{what}: {stream}/{partition} keeps moving")),
+            };
+            let first = records.first().map_or(hwm, |r| r.0);
+            // Dense offsets up to the high watermark.
+            for (i, (offset, _, _)) in records.iter().enumerate() {
+                assert_eq!(
+                    *offset,
+                    first + i as u64,
+                    "{what}: {stream}/{partition} offsets are not dense"
+                );
+            }
+            assert_eq!(
+                first + records.len() as u64,
+                hwm,
+                "{what}: {stream}/{partition} ends before its high watermark"
+            );
+            let by_offset: BTreeMap<u64, &str> =
+                records.iter().map(|(o, _, v)| (*o, v.as_str())).collect();
+            let key = (stream.to_string(), partition);
+            let acked = model.acked.get(&key).cloned().unwrap_or_default();
+            for (offset, value) in &acked {
+                if *offset < first {
+                    continue; // trimmed by retention
+                }
+                assert_eq!(
+                    by_offset.get(offset).copied(),
+                    Some(value.as_str()),
+                    "{what}: acknowledged {stream}/{partition}@{offset} is missing or different"
+                );
+            }
+            let acked_values: BTreeSet<&str> = acked.values().map(String::as_str).collect();
+            for (offset, key_name, value) in &records {
+                assert!(
+                    seen_values.insert((stream, value.clone())),
+                    "{what}: {stream}/{partition}@{offset} duplicates {value}"
+                );
+                assert!(
+                    acked_values.contains(value.as_str())
+                        || model
+                            .unknown
+                            .contains(&(stream.to_string(), partition, value.clone())),
+                    "{what}: {stream}/{partition}@{offset} holds {value}, which was never produced there"
+                );
+                if stream == "events" {
+                    *sums.entry(key_name.clone()).or_default() +=
+                        value.parse::<i64>().expect("delta");
+                }
+            }
+        }
+    }
+    let (applied, counters, skipped) = api.link().await;
+    assert_eq!(skipped, 0, "{what}: the link skipped records");
+    assert_eq!(
+        counters, sums,
+        "{what}: the link's sums are not exactly once"
+    );
+    let hwms: BTreeMap<u32, u64> = api
+        .partitions("events")
+        .await
+        .into_iter()
+        .enumerate()
+        .map(|(p, (_, hwm))| (u32::try_from(p).expect("u32"), hwm))
+        .filter(|(_, hwm)| *hwm > 0)
+        .collect();
+    assert_eq!(applied, hwms, "{what}: applied offsets");
+}
+
+/// Opens the stopped server's metastore in this process and checks its
+/// invariants.
+async fn check_meta(dir: &Path, what: &str) {
+    #[cfg(feature = "tikv")]
+    if let Some(url) = gate_meta(dir) {
+        let violations = open_tikv(&url)
+            .await
+            .check_invariants()
+            .await
+            .expect("read");
+        assert!(violations.is_empty(), "{what}: {violations:?}");
+        return;
+    }
+    let bucket = url::Url::from_directory_path(dir.join("bucket").canonicalize().expect("bucket"))
+        .expect("url");
+    let store = Store::from_url(bucket.as_str(), Vec::<(String, String)>::new()).expect("store");
+    let node = MetaNode::start(MetaConfig::new(1, dir.join("meta"), store), &Router::new())
+        .await
+        .expect("open the metastore");
+    let violations = node
+        .read(Consistency::Local, |s| s.check_invariants())
+        .await
+        .expect("read");
+    assert!(violations.is_empty(), "{what}: {violations:?}");
+    node.shutdown().await.expect("shutdown");
+}
+
+/// Arms `point` to abort on its `hit`-th hit, drives load until the process
+/// dies, restarts it, and checks everything.
+async fn crash_at(point: &str, hit: u32) {
+    if point.starts_with("meta.snapshot.") && skipped_on_tikv(point) {
+        return;
+    }
+    let dir = TempDir::new().expect("temp dir");
+    let mut dev = Dev::start(dir.path(), Some((point, hit)));
+    let api = Api::new(&dev);
+    api.setup().await;
+    let model = Arc::new(Mutex::new(Model::default()));
+    let deadline = Instant::now() + WAIT;
+    while !dev.exited() {
+        assert!(
+            Instant::now() < deadline,
+            "{point} was not hit {hit} times within {WAIT:?}"
+        );
+        for _ in 0..8 {
+            produce_one(&api, &model).await;
+        }
+    }
+    // The reader thread may still be draining the pipe.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !dev.aborted_at(point) {
+        assert!(
+            Instant::now() < deadline,
+            "the process exited, but not at {point}: {:?}",
+            dev.stderr.lock().expect("lock")
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    dev.kill();
+
+    let dev = Dev::start(dir.path(), None);
+    let api = Api::new(&dev);
+    // The restarted server keeps taking writes.
+    for _ in 0..20 {
+        produce_one(&api, &model).await;
+    }
+    settle(&api).await;
+    let snapshot = model.lock().expect("lock").clone();
+    assert!(
+        !snapshot.acked.is_empty(),
+        "{point}: nothing was acknowledged"
+    );
+    check(&api, &snapshot, point).await;
+    dev.kill();
+    check_meta(dir.path(), point).await;
+}
+
+macro_rules! crash_tests {
+    ($($name:ident: $point:literal @ $hit:literal,)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+            async fn $name() {
+                crash_at($point, $hit).await;
+            }
+        )*
+    };
+}
+
+crash_tests! {
+    abort_after_the_wal_put: "wal.after_put" @ 30,
+    abort_after_the_wal_commit: "wal.after_commit" @ 30,
+    abort_after_the_segment_put: "seg.after_put" @ 3,
+    abort_after_the_segment_swap: "seg.after_swap" @ 3,
+    abort_after_the_link_data_put: "link.after_data_put" @ 3,
+    abort_after_the_link_manifest_put: "link.after_manifest_put" @ 3,
+    abort_after_the_link_cas: "link.after_cas" @ 3,
+    abort_after_gc_deletes: "gc.after_delete" @ 1,
+    abort_after_the_snapshot_put: "meta.snapshot.after_put" @ 1,
+    abort_after_the_snapshot_pointer: "meta.snapshot.after_pointer" @ 1,
+    abort_after_a_retention_trim: "retention.after_trim" @ 2,
+}
+
+/// A deterministic pseudo-random sequence for the SIGKILL loop.
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self, bound: u64) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.0 >> 33) % bound
+    }
+}
+
+/// Ruling 2: SIGKILL at random times under load covers points nobody named.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn random_sigkills_under_load_lose_nothing() {
+    let kills: u32 = std::env::var("CRASH_KILLS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20);
+    let seed: u64 = std::env::var("CRASH_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0x5eed);
+    eprintln!("random SIGKILL loop: {kills} kills, seed {seed}");
+    let mut rng = Lcg(seed);
+    let dir = TempDir::new().expect("temp dir");
+    let model = Arc::new(Mutex::new(Model::default()));
+    for kill in 0..kills {
+        let dev = Dev::start(dir.path(), None);
+        let api = Api::new(&dev);
+        api.setup().await;
+        let run_for = Duration::from_millis(200 + rng.next(1_300));
+        let until = Instant::now() + run_for;
+        while Instant::now() < until {
+            let batch: Vec<_> = (0..4)
+                .map(|_| {
+                    let api = api.clone();
+                    let model = model.clone();
+                    tokio::spawn(async move { produce_one(&api, &model).await })
+                })
+                .collect();
+            for handle in batch {
+                handle.await.expect("producer");
+            }
+        }
+        dev.kill();
+        if kill % 5 == 4 {
+            // Every few kills, settle and check everything so far.
+            let dev = Dev::start(dir.path(), None);
+            let api = Api::new(&dev);
+            settle(&api).await;
+            let snapshot = model.lock().expect("lock").clone();
+            check(&api, &snapshot, &format!("after kill {kill}")).await;
+            dev.kill();
+        }
+    }
+    let dev = Dev::start(dir.path(), None);
+    let api = Api::new(&dev);
+    settle(&api).await;
+    let snapshot = model.lock().expect("lock").clone();
+    check(&api, &snapshot, "after the last kill").await;
+    dev.kill();
+    check_meta(dir.path(), "after the last kill").await;
+}
+
+// The collection scenario (plan M1.1 Task 13).
+
+const COLLECTION_PARTITIONS: u32 = 3;
+/// The key space `k0..k49` of the commit rows and the SIGKILL loop.
+const COMMIT_KEYS: u64 = 50;
+/// The key space `k0..k399` of the index rows: at least 256 keys must be
+/// live for a vector index to be trained (Lance's 8-bit PQ, controller
+/// ruling P1), and one pass over 400 keys leaves about 320.
+const INDEX_KEYS: u64 = 400;
+
+/// The collection the scenario writes to.
+#[derive(Clone)]
+struct Docs {
+    ns: NamespaceId,
+    cid: CollectionId,
+    stream: StreamId,
+    /// The implicit stream's and link's name, `_collection.docs.<cid>`.
+    name: String,
+    schema: CollectionSchema,
+    /// Op `n` writes key `k<n % keys>`.
+    keys: u64,
+}
+
+/// What the client knows of the collection: every acknowledged record
+/// `(partition, offset) → (key, value)`, and the next op number.
+#[derive(Clone, Default)]
+struct DocModel {
+    acked: BTreeMap<(u32, u64), (Vec<u8>, Vec<u8>)>,
+    next: u64,
+}
+
+fn bucket_store(dir: &Path) -> Store {
+    let bucket = dir.join("bucket");
+    std::fs::create_dir_all(&bucket).expect("bucket dir");
+    let url = url::Url::from_directory_path(bucket.canonicalize().expect("bucket")).expect("url");
+    Store::from_url(url.as_str(), Vec::<(String, String)>::new()).expect("store")
+}
+
+/// The stopped server's metastore, opened in this process: the embedded
+/// one, or the gate's TiKV root.
+async fn open_meta(dir: &Path, store: &Store) -> (OpenMeta, Arc<dyn MetaStore>) {
+    #[cfg(feature = "tikv")]
+    if let Some(url) = gate_meta(dir) {
+        return (OpenMeta::Tikv, Arc::new(open_tikv(&url).await));
+    }
+    let (node, meta) = open_raft(dir, store).await;
+    (OpenMeta::Raft(node), meta.into())
+}
+
+/// The stopped server's embedded metastore, with a client.
+async fn open_raft(dir: &Path, store: &Store) -> (MetaNode, MetaClient) {
+    let node = MetaNode::start(
+        MetaConfig::new(1, dir.join("meta"), store.clone()),
+        &Router::new(),
+    )
+    .await
+    .expect("open the metastore");
+    node.initialize([1]).await.expect("initialize");
+    node.wait_for_leader(WAIT).await.expect("leader");
+    let meta = MetaClient::new(
+        node.clone(),
+        Vec::new(),
+        Arc::new(SystemClock),
+        MetaClientConfig::default(),
+    );
+    (node, meta)
+}
+
+fn field(name: &str, kind: FieldKind) -> FieldSpec {
+    FieldSpec {
+        name: name.to_string(),
+        source_path: name.to_string(),
+        kind,
+        indexed: true,
+        fast: true,
+        ignore_malformed: false,
+    }
+}
+
+/// Before the first start: namespace `acme` and collection `docs` (3
+/// partitions; `tag` Keyword, `n` I64; vector `v` of dim 4, Cosine, `Auto`;
+/// dynamic mapping `Ignore`), created in this process.
+async fn create_docs(dir: &Path, keys: u64) -> Docs {
+    let store = bucket_store(dir);
+    let (node, meta) = open_meta(dir, &store).await;
+    let ns = meta.create_namespace("acme").await.expect("namespace");
+    let vector = VectorSpec {
+        name: "v".to_string(),
+        dim: 4,
+        distance: loams_collection::Distance::Cosine,
+        element: loams_collection::VectorElement::F32,
+        index: loams_collection::VectorIndexSpec::Auto,
+        hnsw: loams_collection::HnswParams::default(),
+        quantization: None,
+    };
+    let schema = CollectionSchema::new(
+        vec![field("tag", FieldKind::Keyword), field("n", FieldKind::I64)],
+        vec![vector],
+        DynamicMapping::Ignore,
+    );
+    schema.validate().expect("valid schema");
+    let (cid, stream, _) = meta
+        .create_collection(ns, "docs", schema.clone(), COLLECTION_PARTITIONS)
+        .await
+        .expect("collection");
+    node.shutdown().await;
+    Docs {
+        ns,
+        cid,
+        stream,
+        name: loams_meta::implicit_name("docs", cid),
+        schema,
+        keys,
+    }
+}
+
+/// Whether op `n` is a delete (one in five, spread over the keys).
+fn is_delete(n: u64) -> bool {
+    let mut x = n.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    x ^= x >> 29;
+    x.is_multiple_of(5)
+}
+
+/// Op `n` on key `k<i>`: 80 % `Upsert { tag, n, v }`, 20 % `Delete`.
+fn doc_op(n: u64, i: u64) -> DocOp {
+    let pk = PrimaryKey::Str(format!("k{i}"));
+    if is_delete(n) {
+        return DocOp::Delete(pk);
+    }
+    let source = serde_json::Map::from_iter([
+        ("tag".to_string(), json!(format!("t{}", i % 3))),
+        ("n".to_string(), json!(n)),
+    ]);
+    let vector = vec![i as f32, 1.0, 0.0, 0.0];
+    DocOp::Upsert(Document {
+        pk,
+        source,
+        vectors: BTreeMap::from([("v".to_string(), vector)]),
+        sparse_vectors: BTreeMap::new(),
+    })
+}
+
+/// Produces the next op, on key `k<n % keys>`, to its partition of the
+/// implicit stream and records it if acknowledged.
+async fn produce_doc(api: &Api, docs: &Docs, model: &Mutex<DocModel>) {
+    produce_doc_on(api, docs, model, |n| n % docs.keys).await;
+}
+
+/// Produces the next op `n` on key `k<key(n)>`; whether it was
+/// acknowledged, and whether it was a delete.
+async fn produce_doc_on(
+    api: &Api,
+    docs: &Docs,
+    model: &Mutex<DocModel>,
+    key: impl FnOnce(u64) -> u64,
+) -> Option<bool> {
+    let n = {
+        let mut m = model.lock().expect("lock");
+        m.next += 1;
+        m.next
+    };
+    let op = doc_op(n, key(n));
+    let delete = matches!(op, DocOp::Delete(_));
+    let partition = partition_of(op.pk(), COLLECTION_PARTITIONS);
+    let record = loams_collection::encode(&op).expect("encode");
+    let key = record.key.expect("a key").to_vec();
+    let value = record.value.expect("a value").to_vec();
+    let offset = api
+        .produce_bytes(&docs.name, partition, &key, &value)
+        .await?;
+    model
+        .lock()
+        .expect("lock")
+        .acked
+        .insert((partition, offset), (key, value));
+    Some(delete)
+}
+
+/// The key indexes of the model's acknowledged ops: all of them, and those
+/// whose last acknowledged op (in offset order; a key has one partition)
+/// is an upsert.
+fn acked_keys(model: &DocModel) -> (Vec<u64>, BTreeSet<u64>) {
+    let mut touched = BTreeSet::new();
+    let mut live = BTreeSet::new();
+    for (key, value) in model.acked.values() {
+        let record = loams_log::Record {
+            key: Some(key.clone().into()),
+            value: Some(value.clone().into()),
+            headers: Vec::new(),
+            timestamp_ms: 0,
+        };
+        let op = loams_collection::decode(&record).expect("decode");
+        let PrimaryKey::Str(name) = op.pk() else {
+            panic!("an unexpected key {:?}", op.pk());
+        };
+        let i: u64 = name[1..].parse().expect("key index");
+        touched.insert(i);
+        match op {
+            DocOp::Delete(_) => live.remove(&i),
+            _ => live.insert(i),
+        };
+    }
+    (touched.into_iter().collect(), live)
+}
+
+/// After a restart: 20 ops on keys acknowledged before it, so upserts and
+/// deletes resolve keys the crashed commits wrote (Review Focus 2: a
+/// missing PK repair would leave a duplicate row). At least one must hit a
+/// key that was live, or the check would pass vacuously.
+async fn rewrite_acked_keys(api: &Api, docs: &Docs, model: &Mutex<DocModel>, what: &str) {
+    let (touched, live) = acked_keys(&model.lock().expect("lock"));
+    assert!(!touched.is_empty(), "{what}: nothing was acknowledged");
+    let mut hit_live = false;
+    for j in 0..20 {
+        let i = touched[j % touched.len()];
+        if produce_doc_on(api, docs, model, |_| i).await.is_some() {
+            hit_live |= live.contains(&i);
+        }
+    }
+    assert!(
+        hit_live,
+        "{what}: no acknowledged op after the restart hit a key live before it"
+    );
+}
+
+/// Waits until the collection's link has applied its whole stream.
+async fn settle_docs(api: &Api, docs: &Docs) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let hwms = api.high_watermarks(&docs.name).await;
+        let applied = applied(&api.describe_link(&docs.name).await);
+        if applied == hwms {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the collection link never caught up: applied {applied:?}, high watermarks {hwms:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Every record of the implicit stream, from offset 0 (it is never
+/// trimmed: `--collection-trim false`).
+async fn read_stream(reader: &LogReader, stream: StreamId) -> Vec<(u32, loams_log::OffsetRecord)> {
+    let mut out = Vec::new();
+    for partition in 0..COLLECTION_PARTITIONS {
+        let mut offset = 0;
+        loop {
+            let response = reader
+                .fetch(FetchRequest {
+                    stream,
+                    partition,
+                    offset,
+                    max_bytes: 16 << 20,
+                    max_wait: Duration::ZERO,
+                })
+                .await
+                .expect("fetch");
+            if response.records.is_empty() {
+                break;
+            }
+            offset = response.next_offset;
+            out.extend(response.records.into_iter().map(|r| (partition, r)));
+        }
+    }
+    out
+}
+
+/// The gate's collection checks against the stopped server's data, in this
+/// process: every acknowledged record is in the stream at its offset, and
+/// the committed collection is the fold of the stream. Returns the live
+/// manifest.
+async fn check_docs(dir: &Path, docs: &Docs, model: &DocModel, what: &str) -> CollectionManifest {
+    let store = bucket_store(dir);
+    let (node, meta) = open_meta(dir, &store).await;
+    let cache = RangeCache::new(
+        store.clone(),
+        RangeCacheConfig {
+            memory_bytes: 64 << 20,
+            ..RangeCacheConfig::default()
+        },
+    )
+    .await
+    .expect("cache");
+    let reader = LogReader::new(meta.clone(), cache.clone());
+    let records = read_stream(&reader, docs.stream).await;
+    let by_offset: BTreeMap<(u32, u64), &loams_log::Record> = records
+        .iter()
+        .map(|(partition, r)| ((*partition, r.offset), &r.record))
+        .collect();
+    for ((partition, offset), (key, value)) in &model.acked {
+        let found = by_offset.get(&(*partition, *offset));
+        assert!(
+            found.is_some_and(|r| r.key.as_deref() == Some(key.as_slice())
+                && r.value.as_deref() == Some(value.as_slice())),
+            "{what}: acknowledged {}/{partition}@{offset} is missing or different",
+            docs.name
+        );
+    }
+    let expected = fold_stream(&docs.schema, COLLECTION_PARTITIONS, &records);
+    let config = CollectionConfig::default();
+    let ctx = CollectionContext {
+        meta: meta.clone(),
+        store: store.clone(),
+        cache: cache.clone(),
+        lance: LanceEnv::new(store.clone(), LanceConfig::default()),
+        manifests: ManifestCache::new(config.manifest_cache_entries),
+        config,
+    };
+    let problems = verify_collection(&ctx, docs.ns, docs.cid, &expected)
+        .await
+        .expect("verify");
+    assert!(problems.is_empty(), "{what}: {problems:#?}");
+    let manifest = live_manifest(
+        &*ctx.meta,
+        &ctx.store,
+        &ctx.manifests,
+        docs.ns,
+        docs.cid,
+        Consistency::Linearizable,
+    )
+    .await
+    .expect("live manifest")
+    .map_or_else(
+        || CollectionManifest::empty(docs.cid),
+        |(_, m)| (*m).clone(),
+    );
+    assert!(
+        !expected.is_empty() && manifest.version > 0,
+        "{what}: nothing was committed"
+    );
+    if !manifest.vector_indexes.is_empty() {
+        query_vector_index(&ctx, docs, what).await;
+    }
+    cache.close().await.expect("close the cache");
+    node.shutdown().await;
+    manifest
+}
+
+/// A nearest-neighbour query on `v` through the live version's vector
+/// index: the plan must use the index (an ANN node, not a brute-force
+/// scan) and return rows, so every index file the query needs exists (GC
+/// deleted none of them).
+async fn query_vector_index(ctx: &CollectionContext, docs: &Docs, what: &str) {
+    let snapshot = loams_collection::CollectionSnapshot::open(
+        ctx,
+        docs.ns,
+        docs.cid,
+        Consistency::Linearizable,
+    )
+    .await
+    .expect("snapshot");
+    let dataset = snapshot.dataset().expect("a lance version");
+    let query = arrow_array::Float32Array::from(vec![1.0, 1.0, 0.0, 0.0]);
+    let mut scanner = dataset.scan();
+    scanner
+        .nearest(&loams_collection::vector_column(0), &query, 5)
+        .expect("nearest");
+    let plan = scanner.explain_plan(false).await.expect("plan");
+    assert!(
+        plan.contains("ANN"),
+        "{what}: the query does not use the index: {plan}"
+    );
+    let batch = scanner
+        .try_into_batch()
+        .await
+        .unwrap_or_else(|err| panic!("{what}: the vector index cannot be queried: {err}"));
+    assert_eq!(batch.num_rows(), 5, "{what}: the vector query");
+}
+
+/// Arms `point` to abort on its `hit`-th hit, produces document ops until
+/// the process dies, restarts it, and checks everything. An index-build
+/// point is checked until the restarted server has built the index.
+async fn collection_crash_at(point: &str, hit: u32) {
+    let extra: &[&str] = match point.starts_with("collection.index.") {
+        true => BUILD_GC_GRACE,
+        false => &[],
+    };
+    collection_crash_with(point, hit, extra).await;
+}
+
+/// [`collection_crash_at`] with `extra` server flags on every start; when
+/// they start with [`MAINTENANCE`], the maintenance checks run too.
+async fn collection_crash_with(point: &str, hit: u32, extra: &[&str]) {
+    let index_point = point.starts_with("collection.index.");
+    let maintenance = extra.starts_with(MAINTENANCE);
+    let dir = TempDir::new().expect("temp dir");
+    // Maintenance needs splits to pile up: over 50 keys, rewrites delete
+    // whole splits as fast as link apply writes them, and no level ever
+    // holds the policy's 10 splits (row 13.2).
+    let keys = if index_point || maintenance {
+        INDEX_KEYS
+    } else {
+        COMMIT_KEYS
+    };
+    let docs = create_docs(dir.path(), keys).await;
+    let mut dev = Dev::start_with(dir.path(), Some((point, hit)), extra);
+    let api = Api::new(&dev);
+    let model = Mutex::new(DocModel::default());
+    let deadline = Instant::now() + WAIT;
+    while !dev.exited() {
+        assert!(
+            Instant::now() < deadline,
+            "{point} was not hit {hit} times within {WAIT:?}"
+        );
+        for _ in 0..8 {
+            produce_doc(&api, &docs, &model).await;
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !dev.aborted_at(point) {
+        assert!(
+            Instant::now() < deadline,
+            "the process exited, but not at {point}: {:?}",
+            dev.stderr.lock().expect("lock")
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    dev.kill();
+
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let dev = Dev::start_with(dir.path(), None, extra);
+        let api = Api::new(&dev);
+        // The restarted server keeps taking writes, over the keys the
+        // crashed commits wrote.
+        rewrite_acked_keys(&api, &docs, &model, point).await;
+        settle_docs(&api, &docs).await;
+        if index_point {
+            // Give the index build a moment before the check.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        dev.kill();
+        let snapshot = model.lock().expect("lock").clone();
+        let manifest = check_docs(dir.path(), &docs, &snapshot, point).await;
+        if maintenance {
+            check_maintenance(dir.path(), &docs, &manifest, point).await;
+        }
+        if !index_point || !manifest.vector_indexes.is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{point}: the restarted server never built the vector index"
+        );
+    }
+    check_meta(dir.path(), point).await;
+}
+
+macro_rules! collection_crash_tests {
+    ($($name:ident: $point:literal @ $hit:literal,)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+            async fn $name() {
+                collection_crash_at($point, $hit).await;
+            }
+        )*
+    };
+}
+
+collection_crash_tests! {
+    abort_after_the_collection_lance_commit: "collection.after_lance_commit" @ 3,
+    abort_after_the_collection_split_put: "collection.after_split_put" @ 3,
+    abort_after_the_collection_manifest_put: "collection.after_manifest_put" @ 3,
+    abort_after_the_collection_cas: "collection.after_cas" @ 3,
+    abort_after_the_collection_pk_write: "collection.after_pk_write" @ 3,
+    abort_after_the_index_lance_commit: "collection.index.after_lance_commit" @ 1,
+    abort_after_the_index_cas: "collection.index.after_cas" @ 1,
+}
+
+/// Ruling 2 for collections: SIGKILL at random times under the collection
+/// workload.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn random_sigkills_under_collection_load_lose_nothing() {
+    random_sigkills_with(&[]).await;
+}
+
+/// The collection SIGKILL loop with `extra` server flags; when they start
+/// with [`MAINTENANCE`], the maintenance checks run too.
+async fn random_sigkills_with(extra: &[&str]) {
+    let maintenance = extra.starts_with(MAINTENANCE);
+    let kills: u32 = std::env::var("CRASH_KILLS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    let seed: u64 = std::env::var("CRASH_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0x5eed);
+    eprintln!("random SIGKILL loop under collection load ({extra:?}): {kills} kills, seed {seed}");
+    let mut rng = Lcg(seed);
+    let dir = TempDir::new().expect("temp dir");
+    let keys = match maintenance {
+        true => INDEX_KEYS,
+        false => COMMIT_KEYS,
+    };
+    let docs = create_docs(dir.path(), keys).await;
+    let model = Arc::new(Mutex::new(DocModel::default()));
+    for kill in 0..kills {
+        let dev = Dev::start_with(dir.path(), None, extra);
+        let api = Api::new(&dev);
+        let run_for = Duration::from_millis(200 + rng.next(1_300));
+        let until = Instant::now() + run_for;
+        while Instant::now() < until {
+            let batch: Vec<_> = (0..4)
+                .map(|_| {
+                    let (api, docs, model) = (api.clone(), docs.clone(), model.clone());
+                    tokio::spawn(async move { produce_doc(&api, &docs, &model).await })
+                })
+                .collect();
+            for handle in batch {
+                handle.await.expect("producer");
+            }
+        }
+        dev.kill();
+        if kill % 5 == 4 {
+            let dev = Dev::start_with(dir.path(), None, extra);
+            settle_docs(&Api::new(&dev), &docs).await;
+            dev.kill();
+            let snapshot = model.lock().expect("lock").clone();
+            let what = format!("after kill {kill}");
+            let manifest = check_docs(dir.path(), &docs, &snapshot, &what).await;
+            if maintenance {
+                check_maintenance(dir.path(), &docs, &manifest, &what).await;
+            }
+        }
+    }
+    let dev = Dev::start_with(dir.path(), None, extra);
+    settle_docs(&Api::new(&dev), &docs).await;
+    dev.kill();
+    let snapshot = model.lock().expect("lock").clone();
+    let manifest = check_docs(dir.path(), &docs, &snapshot, "after the last kill").await;
+    if maintenance {
+        check_maintenance(dir.path(), &docs, &manifest, "after the last kill").await;
+    }
+    check_meta(dir.path(), "after the last kill").await;
+}
+
+// The maintenance scenario (plan M1.3 Task 13): the collection scenario
+// with split merges, Lance compaction and hot artifact builds running
+// within seconds.
+
+/// Server flags that make merges, compactions and artifact builds happen
+/// within seconds (rule 1).
+const MAINTENANCE: &[&str] = &[
+    "--merge-poll-interval-ms",
+    "200",
+    "--merge-min-level-docs",
+    "10",
+    "--compaction-min-small-fragments",
+    "2",
+    "--compaction-target-rows",
+    "200",
+    "--hot-pin-all",
+    "--hot-build-poll-interval-ms",
+    "200",
+    "--hot-rebuild-max-staleness-ms",
+    "500",
+    "--hot-reconcile-interval-ms",
+    "100",
+];
+
+/// The maintenance checks besides [`check_docs`]: the Lance mainline never
+/// moved past version 1 (R7: every commit, compactions included, is
+/// detached), and every hot artifact the live manifest references
+/// downloads whole.
+async fn check_maintenance(dir: &Path, docs: &Docs, manifest: &CollectionManifest, what: &str) {
+    let store = bucket_store(dir);
+    let versions = format!("ns/{}/collections/{}/lance/_versions/", docs.ns, docs.cid);
+    let names: Vec<String> = store
+        .list(&versions)
+        .await
+        .expect("list the Lance versions")
+        .into_iter()
+        .filter_map(|info| info.path.rsplit('/').next().map(str::to_string))
+        .filter(|name| name.ends_with(".manifest"))
+        .collect();
+    let mainline: Vec<&String> = names.iter().filter(|n| !n.starts_with('d')).collect();
+    assert_eq!(
+        mainline,
+        vec![&format!("{:020}.manifest", u64::MAX - 1)],
+        "{what}: the Lance mainline moved: {names:?}"
+    );
+    for artifact in &manifest.hot_artifacts {
+        let local = TempDir::new().expect("temp dir");
+        loams_hot::download(&store, &artifact.prefix, local.path(), 4)
+            .await
+            .unwrap_or_else(|err| {
+                panic!(
+                    "{what}: the artifact {} does not download: {err}",
+                    artifact.prefix
+                )
+            });
+    }
+}
+
+async fn maintenance_crash_at(point: &str, hit: u32) {
+    // Every maintenance row's failpoint is reached only by a build that
+    // commits within its deadline (CI fix C2); the SIGKILL loop keeps the
+    // short grace, so GC still races maintenance there.
+    let extra = [MAINTENANCE, BUILD_GC_GRACE].concat();
+    collection_crash_with(point, hit, &extra).await;
+}
+
+macro_rules! maintenance_crash_tests {
+    ($($name:ident: $point:literal @ $hit:literal,)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+            async fn $name() {
+                maintenance_crash_at($point, $hit).await;
+            }
+        )*
+    };
+}
+
+maintenance_crash_tests! {
+    abort_after_the_merge_split_put: "merge.after_split_put" @ 1,
+    abort_after_the_merge_manifest_put: "merge.after_manifest_put" @ 1,
+    abort_after_the_merge_cas: "merge.after_cas" @ 1,
+    abort_after_the_compaction_lance_commit: "compaction.after_lance_commit" @ 1,
+    abort_after_the_compaction_manifest_put: "compaction.after_manifest_put" @ 1,
+    abort_after_the_compaction_cas: "compaction.after_cas" @ 1,
+    abort_after_the_hot_artifact_put: "hot.after_artifact_put" @ 1,
+    abort_after_the_hot_manifest_put: "hot.after_manifest_put" @ 1,
+    abort_after_the_hot_cas: "hot.after_cas" @ 1,
+}
+
+/// Rule 1: SIGKILL at random times under the collection workload with
+/// maintenance and artifact builds running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn random_sigkills_under_maintenance_lose_nothing() {
+    random_sigkills_with(MAINTENANCE).await;
+}

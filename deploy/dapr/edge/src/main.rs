@@ -21,15 +21,15 @@ mod generated {
             }
         }
     }
-    pub mod loam {
+    pub mod loams {
         pub mod stream {
             pub mod v1 {
-                tonic::include_proto!("loam.stream.v1");
+                tonic::include_proto!("loams.stream.v1");
             }
         }
     }
 }
-use generated::loam::stream::v1 as stream;
+use generated::loams::stream::v1 as stream;
 use stream::{Header, ProduceRequest, Record, stream_service_client::StreamServiceClient};
 
 #[derive(Clone)]
@@ -101,8 +101,8 @@ async fn guard_workflow() -> Result<(), Box<dyn std::error::Error>> {
     if env_or("DAPR_WORKFLOW_ENABLED", "false") != "false" {
         return Err("Dapr Workflow must remain disabled; Resonate owns durable execution".into());
     }
-    let namespace = env_or("POD_NAMESPACE", "operon");
-    let config_name = env_or("DAPR_CONFIG_NAME", "operon-no-workflow");
+    let namespace = env_or("POD_NAMESPACE", "loams");
+    let config_name = env_or("DAPR_CONFIG_NAME", "loams-no-workflow");
     let config = kube_get(&format!(
         "/apis/dapr.io/v1alpha1/namespaces/{namespace}/configurations/{config_name}"
     ))
@@ -290,9 +290,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let channel = Channel::from_shared(endpoint)?.connect_lazy();
     let state = Arc::new(AppState {
-        stream_app_id: env_or("OPERON_STREAM_APP_ID", "operon-stream"),
-        namespace: env_or("OPERON_NAMESPACE", "default"),
-        trigger_stream: env_or("OPERON_TRIGGER_STREAM", "workflow-triggers"),
+        stream_app_id: env_or("LOAMS_STREAM_APP_ID", "loams-stream"),
+        namespace: env_or("LOAMS_NAMESPACE", "default"),
+        trigger_stream: env_or("LOAMS_TRIGGER_STREAM", "workflow-triggers"),
         stream_client: StreamServiceClient::new(channel),
         webhook_token: env::var("EDGE_WEBHOOK_TOKEN")
             .ok()

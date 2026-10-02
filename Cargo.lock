@@ -6605,7 +6605,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
-name = "operon"
+name = "loams"
 version = "0.0.1"
 dependencies = [
  "arrow-array",
@@ -6623,24 +6623,24 @@ dependencies = [
  "http",
  "object_store 0.14.2",
  "opensrv-mysql",
- "operon-cache",
- "operon-cloudevents",
- "operon-collection",
- "operon-common",
- "operon-durable",
- "operon-es",
- "operon-hnsw",
- "operon-hot",
- "operon-link",
- "operon-log",
- "operon-meta",
- "operon-meta-tikv",
- "operon-qdrant",
- "operon-query",
- "operon-store",
- "operon-stream-grpc",
- "operon-tikv",
- "operon-worker",
+ "loams-cache",
+ "loams-cloudevents",
+ "loams-collection",
+ "loams-common",
+ "loams-durable",
+ "loams-es",
+ "loams-hnsw",
+ "loams-hot",
+ "loams-link",
+ "loams-log",
+ "loams-meta",
+ "loams-meta-tikv",
+ "loams-qdrant",
+ "loams-query",
+ "loams-store",
+ "loams-stream-grpc",
+ "loams-tikv",
+ "loams-worker",
  "proptest",
  "prost 0.14.4",
  "prost-types",
@@ -6662,7 +6662,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-cache"
+name = "loams-cache"
 version = "0.0.1"
 dependencies = [
  "async-trait",
@@ -6672,20 +6672,20 @@ dependencies = [
  "futures",
  "moka",
  "object_store 0.14.2",
- "operon-store",
+ "loams-store",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
 ]
 
 [[package]]
-name = "operon-cloudevents"
+name = "loams-cloudevents"
 version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
  "bytes",
  "http",
- "operon-log",
+ "loams-log",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -6694,7 +6694,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-collection"
+name = "loams-collection"
 version = "0.0.1"
 dependencies = [
  "arrow-array",
@@ -6712,17 +6712,17 @@ dependencies = [
  "lance-table",
  "moka",
  "object_store 0.14.2",
- "operon-cache",
- "operon-collection",
- "operon-common",
- "operon-link",
- "operon-log",
- "operon-meta",
- "operon-pk",
- "operon-quickwit",
- "operon-store",
- "operon-text",
- "operon-worker",
+ "loams-cache",
+ "loams-collection",
+ "loams-common",
+ "loams-link",
+ "loams-log",
+ "loams-meta",
+ "loams-pk",
+ "loams-quickwit",
+ "loams-store",
+ "loams-text",
+ "loams-worker",
  "postcard",
  "proptest",
  "prost 0.14.4",
@@ -6742,7 +6742,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-common"
+name = "loams-common"
 version = "0.0.1"
 dependencies = [
  "async-trait",
@@ -6753,7 +6753,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-console-mock"
+name = "loams-console-mock"
 version = "0.0.1"
 dependencies = [
  "anyhow",
@@ -6768,11 +6768,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-durable"
+name = "loams-durable"
 version = "0.0.1"
 dependencies = [
  "async-trait",
- "operon-tikv",
+ "loams-tikv",
  "resonate-base",
  "resonate-core",
  "resonate-gateway-http",
@@ -6796,15 +6796,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-es"
+name = "loams-es"
 version = "0.0.1"
 dependencies = [
  "axum 0.8.9",
  "base64 0.22.1",
  "futures",
- "operon-collection",
- "operon-common",
- "operon-query",
+ "loams-collection",
+ "loams-common",
+ "loams-query",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -6817,12 +6817,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-hnsw"
+name = "loams-hnsw"
 version = "0.0.1"
 dependencies = [
  "crc32c",
- "operon-common",
- "operon-hnsw",
+ "loams-common",
+ "loams-hnsw",
  "qdrant-edge",
  "rand 0.9.5",
  "rand_chacha 0.9.0",
@@ -6834,7 +6834,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-hot"
+name = "loams-hot"
 version = "0.0.1"
 dependencies = [
  "arrow-array",
@@ -6848,18 +6848,18 @@ dependencies = [
  "lance",
  "lance-table",
  "moka",
- "operon-cache",
- "operon-collection",
- "operon-common",
- "operon-hnsw",
- "operon-hot",
- "operon-link",
- "operon-log",
- "operon-meta",
- "operon-query",
- "operon-quickwit",
- "operon-store",
- "operon-worker",
+ "loams-cache",
+ "loams-collection",
+ "loams-common",
+ "loams-hnsw",
+ "loams-hot",
+ "loams-link",
+ "loams-log",
+ "loams-meta",
+ "loams-query",
+ "loams-quickwit",
+ "loams-store",
+ "loams-worker",
  "postcard",
  "proptest",
  "rand 0.9.5",
@@ -6879,7 +6879,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-link"
+name = "loams-link"
 version = "0.0.1"
 dependencies = [
  "async-trait",
@@ -6887,13 +6887,13 @@ dependencies = [
  "crc32c",
  "fail 0.5.1",
  "futures",
- "operon-cache",
- "operon-common",
- "operon-link",
- "operon-log",
- "operon-meta",
- "operon-store",
- "operon-worker",
+ "loams-cache",
+ "loams-common",
+ "loams-link",
+ "loams-log",
+ "loams-meta",
+ "loams-store",
+ "loams-worker",
  "postcard",
  "proptest",
  "serde",
@@ -6905,15 +6905,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-live"
+name = "loams-live"
 version = "0.0.1"
 dependencies = [
  "buffa",
  "crc",
  "data-encoding",
  "futures",
- "operon-live-proto",
- "operon-tikv",
+ "loams-live-proto",
+ "loams-tikv",
  "proptest",
  "rand 0.9.5",
  "sha2 0.11.0",
@@ -6924,7 +6924,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-live-proto"
+name = "loams-live-proto"
 version = "0.0.1"
 dependencies = [
  "buffa",
@@ -6935,7 +6935,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-log"
+name = "loams-log"
 version = "0.0.1"
 dependencies = [
  "async-trait",
@@ -6946,11 +6946,11 @@ dependencies = [
  "kafka-protocol",
  "moka",
  "object_store 0.14.2",
- "operon-cache",
- "operon-common",
- "operon-meta",
- "operon-store",
- "operon-worker",
+ "loams-cache",
+ "loams-common",
+ "loams-meta",
+ "loams-store",
+ "loams-worker",
  "postcard",
  "proptest",
  "serde",
@@ -6962,7 +6962,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-meta"
+name = "loams-meta"
 version = "0.0.1"
 dependencies = [
  "async-trait",
@@ -6972,10 +6972,10 @@ dependencies = [
  "fail 0.5.1",
  "futures",
  "openraft",
- "operon-common",
- "operon-meta",
- "operon-meta-conformance",
- "operon-store",
+ "loams-common",
+ "loams-meta",
+ "loams-meta-conformance",
+ "loams-store",
  "postcard",
  "proptest",
  "rand 0.9.5",
@@ -6991,26 +6991,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-meta-conformance"
+name = "loams-meta-conformance"
 version = "0.0.1"
 dependencies = [
  "async-trait",
- "operon-common",
+ "loams-common",
  "rand 0.9.5",
  "rand_chacha 0.9.0",
  "tokio",
 ]
 
 [[package]]
-name = "operon-meta-tikv"
+name = "loams-meta-tikv"
 version = "0.0.1"
 dependencies = [
  "async-trait",
  "fail 0.4.0",
  "futures",
- "operon-common",
- "operon-meta-conformance",
- "operon-tikv",
+ "loams-common",
+ "loams-meta-conformance",
+ "loams-tikv",
  "postcard",
  "serde",
  "tokio",
@@ -7018,12 +7018,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-pk"
+name = "loams-pk"
 version = "0.0.1"
 dependencies = [
  "bytes",
  "object_store 0.14.2",
- "operon-store",
+ "loams-store",
  "slatedb",
  "thiserror 2.0.21",
  "tokio",
@@ -7031,17 +7031,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-qdrant"
+name = "loams-qdrant"
 version = "0.0.1"
 dependencies = [
  "axum 0.8.9",
  "bytes",
  "crc32c",
  "http",
- "operon-collection",
- "operon-common",
- "operon-query",
- "operon-text",
+ "loams-collection",
+ "loams-common",
+ "loams-query",
+ "loams-text",
  "proptest",
  "prost 0.14.4",
  "prost-types",
@@ -7061,7 +7061,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-query"
+name = "loams-query"
 version = "0.0.1"
 dependencies = [
  "anyhow",
@@ -7079,17 +7079,17 @@ dependencies = [
  "lance-table",
  "moka",
  "object_store 0.14.2",
- "operon-cache",
- "operon-collection",
- "operon-common",
- "operon-link",
- "operon-log",
- "operon-meta",
- "operon-query",
- "operon-quickwit",
- "operon-store",
- "operon-text",
- "operon-worker",
+ "loams-cache",
+ "loams-collection",
+ "loams-common",
+ "loams-link",
+ "loams-log",
+ "loams-meta",
+ "loams-query",
+ "loams-quickwit",
+ "loams-store",
+ "loams-text",
+ "loams-worker",
  "postcard",
  "proptest",
  "prost 0.14.4",
@@ -7113,7 +7113,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-quickwit"
+name = "loams-quickwit"
 version = "0.0.1"
 dependencies = [
  "anyhow",
@@ -7149,7 +7149,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-safekeeper"
+name = "loams-safekeeper"
 version = "0.0.1"
 dependencies = [
  "async-trait",
@@ -7160,7 +7160,7 @@ dependencies = [
  "crc32c",
  "futures",
  "hex",
- "operon-tikv",
+ "loams-tikv",
  "postcard",
  "proptest",
  "rustix 1.1.5",
@@ -7174,21 +7174,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-sim"
+name = "loams-sim"
 version = "0.0.1"
 dependencies = [
  "bytes",
  "object_store 0.14.2",
- "operon-cache",
- "operon-collection",
- "operon-common",
- "operon-link",
- "operon-log",
- "operon-meta",
- "operon-meta-conformance",
- "operon-query",
- "operon-store",
- "operon-worker",
+ "loams-cache",
+ "loams-collection",
+ "loams-common",
+ "loams-link",
+ "loams-log",
+ "loams-meta",
+ "loams-meta-conformance",
+ "loams-query",
+ "loams-store",
+ "loams-worker",
  "rand 0.9.5",
  "rand_chacha 0.9.0",
  "serde_json",
@@ -7198,7 +7198,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-store"
+name = "loams-store"
 version = "0.0.1"
 dependencies = [
  "async-trait",
@@ -7214,16 +7214,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-stream-grpc"
+name = "loams-stream-grpc"
 version = "0.0.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bytes",
- "operon-cloudevents",
- "operon-common",
- "operon-log",
- "operon-query",
+ "loams-cloudevents",
+ "loams-common",
+ "loams-log",
+ "loams-query",
  "prost 0.14.4",
  "prost-types",
  "time",
@@ -7236,7 +7236,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-text"
+name = "loams-text"
 version = "0.0.1"
 dependencies = [
  "anyhow",
@@ -7245,10 +7245,10 @@ dependencies = [
  "crc32c",
  "futures",
  "object_store 0.14.2",
- "operon-cache",
- "operon-common",
- "operon-quickwit",
- "operon-store",
+ "loams-cache",
+ "loams-common",
+ "loams-quickwit",
+ "loams-store",
  "proptest",
  "roaring",
  "tantivy",
@@ -7259,13 +7259,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-tikv"
+name = "loams-tikv"
 version = "0.0.1"
 dependencies = [
  "axum 0.8.9",
  "fail 0.4.0",
  "futures",
- "operon-tikv",
+ "loams-tikv",
  "proptest",
  "rand 0.9.5",
  "reqwest 0.12.28",
@@ -7279,14 +7279,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "operon-worker"
+name = "loams-worker"
 version = "0.0.1"
 dependencies = [
  "async-trait",
- "operon-common",
- "operon-meta",
- "operon-store",
- "operon-worker",
+ "loams-common",
+ "loams-meta",
+ "loams-store",
+ "loams-worker",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

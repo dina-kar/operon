@@ -948,7 +948,7 @@ export interface components {
         ApiKey: {
             id: string;
             name: string;
-            /** @description loam_<key_id>, safe to show; the secret is never returned again. */
+            /** @description loams_<key_id>, safe to show; the secret is never returned again. */
             prefix: string;
             environment: string;
             principal: components["schemas"]["SubjectRef"];

@@ -1,8 +1,8 @@
 # 07 — Graph (native GraphRAG)
 
-Status: **Approved** · 2026-09-22 · revised 2026-09-25 (native only, D44; M3) · confirmed 2026-10-01 ([§32](32-loam-flow-fabric-house.md) D350: Grafeo evaluated and not adopted as the graph engine; a `grafeo-server` companion only if Q339 asks for Cypher or GQL)
+Status: **Approved** · 2026-09-22 · revised 2026-09-25 (native only, D44; M3) · confirmed 2026-10-01 ([§32](32-loams-flow-fabric-house.md) D350: Grafeo evaluated and not adopted as the graph engine; a `grafeo-server` companion only if Q339 asks for Cypher or GQL)
 
-Graphs in Operon are **property graphs mapped over collections and tables**, accelerated by dense vertex IDs and CSR/CSC adjacency sidecars. The graph is not a separate copy of the data: the same rows that are searchable and analyzable are traversable. Traversal is a DataFusion operator, so a GraphRAG retrieval (vector/BM25 seeds → 1–2 hops → rerank) is one planned query. Graphs are reached through SQL table functions, the `expand` stage of the native hybrid search API, and Operon-native graph-store adapters for the AI frameworks; there is no Cypher, Bolt or Neo4j procedure surface (D44).
+Graphs in Loams are **property graphs mapped over collections and tables**, accelerated by dense vertex IDs and CSR/CSC adjacency sidecars. The graph is not a separate copy of the data: the same rows that are searchable and analyzable are traversable. Traversal is a DataFusion operator, so a GraphRAG retrieval (vector/BM25 seeds → 1–2 hops → rerank) is one planned query. Graphs are reached through SQL table functions, the `expand` stage of the native hybrid search API, and Loams-native graph-store adapters for the AI frameworks; there is no Cypher, Bolt or Neo4j procedure surface (D44).
 
 ---
 
@@ -17,7 +17,7 @@ From GraphRAG, LightRAG, Cognee, Graphiti/Zep and the LangChain/LlamaIndex graph
 5. Occasionally **shortest path** between two entities.
 6. **Offline** PageRank / community detection (Leiden) for community summaries.
 
-Arbitrary-depth traversal, cyclic pattern matching and a graph query language are not needed for this workload. The frameworks reach a graph store through a small storage interface (LightRAG `BaseGraphStorage`, LlamaIndex `PropertyGraphStore`), so Operon implements that interface natively (§6).
+Arbitrary-depth traversal, cyclic pattern matching and a graph query language are not needed for this workload. The frameworks reach a graph store through a small storage interface (LightRAG `BaseGraphStorage`, LlamaIndex `PropertyGraphStore`), so Loams implements that interface natively (§6).
 
 ## 2. Model and DDL
 
@@ -33,7 +33,7 @@ CREATE GRAPH kg
   EDGE   MENTIONS SOURCE chunk(chunk_id) DESTINATION entity(entity_id)          FROM COLLECTION mentions;
 ```
 
-- `CREATE GRAPH` is an Operon DDL extension to DataFusion SQL, aligned with SQL/PGQ `CREATE PROPERTY GRAPH` (ISO/IEC 9075-16) where practical. The native API has the same resource: `POST|GET /v1/namespaces/{ns}/graphs`, `GET|DELETE /v1/namespaces/{ns}/graphs/{g}`.
+- `CREATE GRAPH` is a Loams DDL extension to DataFusion SQL, aligned with SQL/PGQ `CREATE PROPERTY GRAPH` (ISO/IEC 9075-16) where practical. The native API has the same resource: `POST|GET /v1/namespaces/{ns}/graphs`, `GET|DELETE /v1/namespaces/{ns}/graphs/{g}`.
 - A vertex key is the source's primary key or a keyword, integer or UUID field; an edge endpoint column holds a key of the endpoint label.
 - `TYPE FROM (column)` maps one edge source that holds many relation types (the framework adapters' `relations` collection, §6); otherwise the declared name is the type of every row.
 - Edge properties (weight, description, `valid_from`/`valid_to`, source chunk ids) are the edge source's fields; vertex properties are the vertex source's fields, embeddings included.
@@ -99,7 +99,7 @@ graph_shortest_path(graph => 'kg', from => …, to => …, label => 'entity', di
 ```
 
 - `graph_expand` returns distinct reached vertices; `graph_neighbors` returns incident edges (the adapters' `get_node_edges`, §6). Properties come from joining the vertex or edge source (`JOIN collections.entities e ON e._pk = n.key`), which the planner turns into `DocFetchExec`.
-- The lateral form (`… JOIN LATERAL graph_expand('kg', m.entity_id, hops => 2) AS n ON true`, §05 §4) is rewritten by an Operon planner rule into `ExpandExec` over the left input (verify DataFusion's `LATERAL` support for table functions; fallback: a `seeds => 'SELECT …'` query argument).
+- The lateral form (`… JOIN LATERAL graph_expand('kg', m.entity_id, hops => 2) AS n ON true`, §05 §4) is rewritten by a Loams planner rule into `ExpandExec` over the left input (verify DataFusion's `LATERAL` support for table functions; fallback: a `seeds => 'SELECT …'` query argument).
 
 ### 5.2 The `expand` stage in the native hybrid search API
 
@@ -152,16 +152,16 @@ Results are deterministic for a fixed `seed` and snapshot. They are written back
 
 ## 6. Framework adapters (LightRAG, LlamaIndex)
 
-Operon-native graph-store adapters ship in the Python SDK and are the M3 gate (D44). They talk to the native API and Flight SQL. Each adapter creates, on first use, a mapped graph over two collections in its namespace: `entities` (vertex: PK = entity id; type, description, source chunk ids, embedding) and `relations` (edge: PK = `src ⟂ type ⟂ dst`, with the endpoint pair canonicalized for undirected stores; `TYPE FROM (rel_type)`; description, weight, source chunk ids).
+Loams-native graph-store adapters ship in the Python SDK and are the M3 gate (D44). They talk to the native API and Flight SQL. Each adapter creates, on first use, a mapped graph over two collections in its namespace: `entities` (vertex: PK = entity id; type, description, source chunk ids, embedding) and `relations` (edge: PK = `src ⟂ type ⟂ dst`, with the endpoint pair canonicalized for undirected stores; `TYPE FROM (rel_type)`; description, weight, source chunk ids).
 
 | Adapter | Framework interface | Mapping |
 |---|---|---|
-| `operon.graph_stores.lightrag.OperonGraphStorage` | LightRAG `BaseGraphStorage` (verify the method set at the pinned version): `has_node`/`has_edge`, `node_degree`/`edge_degree`, `get_node`/`get_edge`, `get_node_edges`, the `*_batch` variants, `upsert_node`/`upsert_edge`, `delete_node`, `remove_nodes`/`remove_edges`, `get_all_labels`, `get_knowledge_graph(label, max_depth, max_nodes)`, `drop` | Upserts are PK writes; reads are `get` by PK, `graph_neighbors` and `graph_degree`; `get_knowledge_graph` is `graph_expand` with a node budget; LightRAG's graph is undirected, so every call uses `direction => 'both'` |
-| `operon.graph_stores.llama_index.OperonPropertyGraphStore` | LlamaIndex `PropertyGraphStore`: `upsert_nodes`, `upsert_relations`, `get`, `get_triplets`, `get_rel_map(depth)`, `delete`, `vector_query`, `get_schema` | `get_rel_map` is `graph_expand` (depth ≤ 2); `vector_query` is a native hybrid search on `entities` (`supports_vector_queries = True`); `structured_query` accepts Operon SQL (verify that the framework's retrievers tolerate a non-Cypher dialect; otherwise `supports_structured_queries = False`) |
+| `loams.graph_stores.lightrag.LoamsGraphStorage` | LightRAG `BaseGraphStorage` (verify the method set at the pinned version): `has_node`/`has_edge`, `node_degree`/`edge_degree`, `get_node`/`get_edge`, `get_node_edges`, the `*_batch` variants, `upsert_node`/`upsert_edge`, `delete_node`, `remove_nodes`/`remove_edges`, `get_all_labels`, `get_knowledge_graph(label, max_depth, max_nodes)`, `drop` | Upserts are PK writes; reads are `get` by PK, `graph_neighbors` and `graph_degree`; `get_knowledge_graph` is `graph_expand` with a node budget; LightRAG's graph is undirected, so every call uses `direction => 'both'` |
+| `loams.graph_stores.llama_index.LoamsPropertyGraphStore` | LlamaIndex `PropertyGraphStore`: `upsert_nodes`, `upsert_relations`, `get`, `get_triplets`, `get_rel_map(depth)`, `delete`, `vector_query`, `get_schema` | `get_rel_map` is `graph_expand` (depth ≤ 2); `vector_query` is a native hybrid search on `entities` (`supports_vector_queries = True`); `structured_query` accepts Loams SQL (verify that the framework's retrievers tolerate a non-Cypher dialect; otherwise `supports_structured_queries = False`) |
 
-- Installed as extras (`operon[lightrag]`, `operon[llama-index]`); contributed upstream once stable (§12 risk 19).
+- Installed as extras (`loams[lightrag]`, `loams[llama-index]`); contributed upstream once stable (§12 risk 19).
 - Deleting a vertex also deletes its incident relations (a delete-by-filter on `relations` for `src = key OR dst = key`), matching the frameworks' reference stores.
-- Chunk and entity vector stores stay on Operon collections through the frameworks' Qdrant or Elasticsearch backends or the native SDK, so one namespace holds a deployment's graph, vectors and chunks.
+- Chunk and entity vector stores stay on Loams collections through the frameworks' Qdrant or Elasticsearch backends or the native SDK, so one namespace holds a deployment's graph, vectors and chunks.
 
 ## 7. Write semantics
 

@@ -14,7 +14,7 @@ body:
     id: proposal
     attributes:
       label: Proposed behavior
-      description: What should Loam do? An example request and response helps.
+      description: What should Loams do? An example request and response helps.
     validations:
       required: true
   - type: textarea
