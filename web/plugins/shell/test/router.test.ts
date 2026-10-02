@@ -50,9 +50,15 @@ describe('router', () => {
       params: { id: 'apr_9' },
     });
     expect(slots.keys('console.page')).toEqual(['approval']);
+    // A parameterized page gets no nav link (it would link to `:id`).
+    expect(slots.entries('console.nav')).toEqual([]);
+    router.page(
+      { id: 'list', path: '/approvals', title: 'Approvals', nav: { group: 'Operate', order: 1 } },
+      () => null,
+    );
     expect(slots.entries('console.nav')[0]?.meta).toEqual({
-      label: 'Approval',
-      href: '/approvals/:id',
+      label: 'Approvals',
+      href: '/approvals',
       group: 'Operate',
     });
     source.go('/elsewhere');
@@ -62,8 +68,7 @@ describe('router', () => {
     expect(seen).toEqual(['/approvals/apr_9', '/elsewhere', '/approvals/apr_2']);
     // dispose_removes_slot_entries_and_routes
     dispose();
-    expect(slots.keys('console.page')).toEqual([]);
-    expect(slots.entries('console.nav')).toEqual([]);
+    expect(slots.keys('console.page')).toEqual(['list']);
     expect(router.current().pageId).toBeUndefined();
   });
 

@@ -79,7 +79,8 @@ export class HashRouter implements RouterService {
     const disposers = [
       this.slots.register({ name: 'console.page', plugin, key: spec.id }, component),
     ];
-    if (spec.nav) {
+    // A parameterized page (`/approvals/:id`) has no concrete link to show.
+    if (spec.nav && route.keys.length === 0) {
       disposers.push(
         this.slots.register(
           {
