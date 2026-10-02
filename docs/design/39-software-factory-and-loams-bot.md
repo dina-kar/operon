@@ -358,7 +358,7 @@ A third exporter sends the same stream to Loam's own OTLP ingest (D73, Q43) so t
 
 ### 9.2 What content is captured (Q476)
 
-Default: prompts and completions are captured **in Langfuse only**, in a project per environment, with Langfuse's masking function configured to drop values matching the secret canary's patterns and the `untrusted` data parts' bodies over 2 KB; **OpenObserve never receives content**. Production environments may turn content capture off per org. Either way the console's run view shows the step's summary from `factory_events`, which holds no model content.
+Default: prompts and completions are captured **in Langfuse only**, in a project per environment, with **the collector as the only masking boundary** (§9.1: it drops values matching the secret canary's patterns and the `untrusted` data parts' bodies over 2 KB, and fails closed; Langfuse's own server-side masking is an `ee/` feature we do not use); **OpenObserve never receives content**. Production environments may turn content capture off per org. Either way the console's run view shows the step's summary from `factory_events`, which holds no model content.
 
 ## 10. The Loams Software Factory loop (D472)
 
@@ -381,7 +381,7 @@ Default: prompts and completions are captured **in Langfuse only**, in a project
 | 3 | **Plan**: create the Plane issue (title, evidence, links, label `factory`, run id), add to the active cycle if policy says | `plane` | None (write, non-protected) | Issue key and URL |
 | 4 | **Fix**: `forgejo.propose_patch` (sandbox coding session on a workspace branch, §15, §36), `branches.create` `factory/<run>`, `prs.open` linking the issue; wait for CI (a promise settled by Forgejo's webhook); on CI failure feed the log tail back to the coder, up to `max_attempts` (default 3) | `forgejo` (+ coding sandbox) | None until merge | Branch, PR, CI status, attempt count |
 | 5 | **Review**: post the PR link and a summary in the Zulip thread; wait for human review in Forgejo and a merge **approval** (D435) | `forgejo`, `zulip` | **Approval required** (D468) | Approval id, reviewer |
-| 6 | **Deploy**: merge, then the org's deploy mechanism. For Loams' own GitOps layout (§38) merging to the environment branch makes Argo CD sync; the run waits on the rollout event (a CloudEvent from Argo's notifications). Other mechanisms are a webhook plus a wait on a callback (Q473) | `forgejo`; deploy by the org's GitOps | **Approval required for every deploy by default**; a policy may set `deploy.auto` for listed services in unprotected environments only (never protected ones), and the first deploy of any new service always needs one | Deploy ref, rollout state |
+| 6 | **Deploy**: merge, then the org's deploy mechanism. For Loams' own GitOps layout (§38) merging to the environment branch makes Argo CD sync; the run waits on the rollout event (a CloudEvent from Argo's notifications). Other mechanisms are a webhook plus a wait on a callback (Q473) | `forgejo`; deploy by the org's GitOps | **Approval required for every deploy by default**, ordered by mechanism: with the §38 GitOps layout the merge to the environment branch *is* the deploy, so the merge approval and the deploy approval (covering the environment and the resulting commit) both settle before the merge; with a separate deploy step the order is merge approval, merge, then a deploy approval bound to the exact merge commit and the target, then the deploy; a policy may set `deploy.auto` for listed services in unprotected environments only (never protected ones), and the first deploy of any new service always needs one | Deploy ref, rollout state |
 | 7 | **Observe**: for the observation window (default 30 min, configurable), check recurrence of the fingerprint in GlitchTip, the OpenPanel metric against its baseline, Langfuse evaluation scores for agent-facing changes, OpenObserve error rate and latency for the touched service. Verdict: `resolved`, `regressed`, `inconclusive` | `glitchtip`, `analytics`, `operon-factory` (Langfuse and OpenObserve through their APIs) | None | Verdict, evidence links |
 | 8 | **Close**: `resolved` closes the Plane issue and posts a summary; `regressed` opens a **revert PR** (needs the same merge approval) and a new signal linked to the run (`generation + 1`); `inconclusive` extends the window once, then asks a person | `plane`, `zulip`, `forgejo` | Revert needs approval | Final record |
 
@@ -409,7 +409,7 @@ fn factory_run(ctx, signal):
     guard.check(ctx)?
     approve(ctx, merge_approval(run, pr))                # waits on approvals promise (§21 §6.5)
     guard.check(ctx)?
-    deploy = deploy_stage(ctx, run, pr)                  # both approvals, when two are needed, settle before the merge; then GitOps and the rollout promise
+    deploy = deploy_stage(ctx, run, pr)                  # approval order depends on the mechanism (§10.1 stage 6): GitOps (merge is the deploy) settles both approvals before the merge; a separate deploy step merges first, then asks a deploy approval bound to the merge commit
     guard.check(ctx)?
     verdict = observe(ctx, run, window=policy.observe_window)
     match verdict:
@@ -419,7 +419,7 @@ fn factory_run(ctx, signal):
 ```
 
 - **Idempotency.** Every `a2a(...)` call carries a deterministic `messageId` (promise id of the step); agents dedupe on it; the Forgejo and Plane skills are written as create-if-absent keyed by `run id` (a Plane issue with external id `factory:<run>`, a branch named `factory/<run>`).
-- **Compensation.** A failed or killed run before merge closes its PR, deletes its branch, comments on the issue, and posts the outcome in the thread (a saga, §21 §6.3). After merge the compensation is the revert PR, which is itself gated.
+- **Compensation.** A run that is **killed, ignored or abandoned** before merge closes its PR, deletes its branch, comments on the issue, and posts the outcome in the thread (a saga, §21 §6.3). **`fail_safe` (CI attempts exhausted) is a deliberate human handoff, not a failure to compensate**: it keeps the draft PR and its branch, labelled `factory:needs-human`, and the run ends `failed`; compensation does not touch it. After merge the compensation is the revert PR, which is itself gated.
 - **Resumption.** A crash resumes the workflow from its last checkpoint; a model call is never paid twice (§21 §6.6).
 - **Where the loop runs.** In the Loams process that holds Resonate for the org (single org: the one embedded server).
 
