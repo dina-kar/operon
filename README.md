@@ -269,4 +269,4 @@ Loams builds on great open-source work, including [DataFusion](https://datafusio
 
 Loams is licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for third-party attributions.
 
-**Open core.** Everything you need to self-host Loams for a single organisation is open source in this repository. Only what is needed to run Loams as a multi-tenant paid cloud (billing, metering and the hosted control plane) lives in a separate, proprietary platform. The boundary is spelled out in [docs/open-core.md](docs/open-core.md).
+**Open core.** Everything you need to self-host Loams for a single organisation is open source in this repository. The **Multitenant BYOC Control Plane with GitOps** (multi-tenancy, Knative, Argo CD, Authentik, bring-your-own-cloud) is open source too. Only metering, billing and the commercial APIs live in a separate, proprietary platform, because usage figures and paid endpoints must not be open to manipulation (integrity is the security principle). The boundary is spelled out in [docs/open-core.md](docs/open-core.md).

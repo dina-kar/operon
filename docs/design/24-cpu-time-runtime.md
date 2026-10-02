@@ -216,6 +216,8 @@ Only SDK code is evicted, because only SDK code is replayable. The Resonate SDKs
 
 ## 7. Metering hooks (D175, D190)
 
+> **Amended 2026-10-02 ([§41](41-multitenant-byoc-control-plane.md), D541, D548, owner ruling): superseded in part.** The table below is **generic observability**, not metering. The per-invocation host reports and the usage reporter that §27 §3.3 and §3.6 and §16 below described are **moved to `loam-platform`** (doc 06, private, authoritative) because integrity is the security principle: billing-grade producers and validators are not published. What stays here is the metrics, the cgroup layout and pod labels, Envoy access logs, OTLP spans and the `InvocationObserver` extension point (§27 §3.7).
+
 **Billing and metering live in the private `loam-platform` repository** (owner decision, 2026-09-29; D190). That covers the aggregation pipeline, meter events, rating, invoices and pricing. This open repository only **exposes hooks** that `loam-platform`, or a self-hoster's own tooling, reads:
 
 | Hook | Where | What it carries |
@@ -225,7 +227,7 @@ Only SDK code is evicted, because only SDK code is replayable. The Resonate SDKs
 | **Envoy access logs** | the edge | request count, bytes and status per tenant (`x-loams-tenant` set by the gateway) |
 | **OTLP spans** | supervisor and `loams-dapr` | invocation spans with CPU time as an attribute (D73) |
 
-The exact contract (metric families and labels, the cgroup layout and pod labels, the host-report socket and the tenant header) is [§27](27-usage-hooks.md) (D200–D202). The CPU sources behind those hooks are unchanged (D175): wasmtime fuel or epochs for T1; the per-tenant cgroup's `cpu.stat` for T0 (workerd, cross-checked with `getrusage`); the sandbox cgroup's `cpu.stat` for T2. eBPF (aya, `sched_switch`) comes last, as a cross-check, because a per-switch BPF map update taxes every tenant's hot path. Inside one workerd process, CPU is exact per tenant but only estimated per invocation (Q-RT-6). Runners outside Loams's nodes (Lambda, Workers) report through the runner host into the same contract, one reporter per invocation (§16, D376).
+The exact contract (metric families and labels, the cgroup layout and pod labels, the host-report socket and the tenant header) is [§27](27-usage-hooks.md) (D200–D202). The CPU sources behind those hooks are unchanged (D175): wasmtime fuel or epochs for T1; the per-tenant cgroup's `cpu.stat` for T0 (workerd, cross-checked with `getrusage`); the sandbox cgroup's `cpu.stat` for T2. eBPF (aya, `sched_switch`) comes last, as a cross-check, because a per-switch BPF map update taxes every tenant's hot path. Inside one workerd process, CPU is exact per tenant but only estimated per invocation (Q-RT-6). Runners outside Loams's nodes (Lambda, Workers) report plain measurements to the `InvocationObserver` (§16; the billing-grade usage contract of D376 moved to `loam-platform`, 2026-10-02).
 
 ## 8. Storage and the data plane
 
@@ -365,8 +367,8 @@ pub struct InvokeResponse { pub response: http::Response<Bytes>, pub usage: Opti
 
 **Placement.** D170's advantage is placement next to the data; a function on Lambda loses it and pays the round trips and egress. External runners are for burst capacity and BYOC accounts that want their own cloud bill, not the default.
 
-**Usage (D376).** For external runners the gateway process that invoked the runner reports each invocation on `/run/loams/meter.sock` from the runner's measurement (Lambda: the bootstrap's `getrusage` delta, capped by the billed duration, Q366). These are hooks only: nothing in this repository aggregates, rates or bills them (§38 D444). The supervisor keeps reporting its own tiers (§7). `loams.meter.v1.Invocation` gains additive fields for the runner, the region, the provider's billed duration, compile CPU and overhead CPU ([§27 §3.6](27-usage-hooks.md)).
+**Usage (D376; superseded 2026-10-02 by D548).** The billing-grade usage rules for external runners (the host report on a node-local socket, the Lambda `getrusage` delta and its billed-duration cap, Q366, the additive `loams.meter.v1` fields) moved to `loam-platform` doc 06 and are no longer specified here. In this repository every runner, the supervisor included, calls `InvocationObserver` ([§27 §3.7](27-usage-hooks.md)) with plain measurements at the end of each invocation; nothing aggregates, rates or bills them (§38 D444, §41).
 
-**Track F.** F1 is unchanged. RN1 adds `loams-meter` (the host-report emitter of §27 §3.3, which F1's supervisor then uses), `loams-runner`, `ProcessRunner` and `LambdaRunner`; it does not build the supervisor.
+**Track F.** F1 is unchanged. RN1 adds `loams-runner` (the trait, `RunnerHost` and `InvocationObserver`, which F1's supervisor then calls), `ProcessRunner` and `LambdaRunner`; it does not build the supervisor. The reporter crate `loams-meter` that this paragraph once listed moved to `loam-platform` (D548).
 
 **Knative (2026-10-02, §38 D441).** When `knative.enabled`, the `http-port` contract (T2) runs on Knative Serving through `KnativeRunner`, which takes over F2's pod scheduling; F2 keeps the gVisor node setup and the `gvisor` `RuntimeClass`. T0 and T1 stay on the supervisor.
