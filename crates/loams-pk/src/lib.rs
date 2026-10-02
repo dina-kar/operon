@@ -32,6 +32,8 @@ pub struct PkIndexConfig {
     /// database sharing a cache must have a unique ID, reused on reopen
     /// when persistent cache recovery is desired. The caller owns the
     /// cache and closes it after all indexes using it have closed.
+    /// Reusing an ID for different databases in that cache can serve
+    /// cached blocks from the wrong database and return incorrect data.
     pub cache: Option<(Arc<dyn DbCache>, u64)>,
 }
 
