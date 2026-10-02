@@ -89,7 +89,7 @@ docs/design/31-loam-router-and-verification.md  docs/plans/README.md  CHANGELOG.
 
 ### Task 0: Reconcile and check the facts
 
-**Files:** read §31, §28 §8, §29 (PR #172 or `main`), `crates/operon-safekeeper/` (as-built Arm A names), `.github/workflows/ci.yml` (the `changes` job's filters), `deny.toml`, `Cargo.toml`. Fill this plan's "Rulings made during execution" table.
+**Files:** read §31, §28 §8, §29 (PR #172 or `main`), `crates/loams-safekeeper/` (as-built Arm A names), `.github/workflows/ci.yml` (the `changes` job's filters), `deny.toml`, `Cargo.toml`. Fill this plan's "Rulings made during execution" table.
 
 **Checks** (record each result with the command):
 - Whether PR #172 (§29) has merged, and §29's final decision numbers (D273–D280 expected).
