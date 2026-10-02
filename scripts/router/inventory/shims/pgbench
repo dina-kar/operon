@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# pgbench from the pinned postgres image, on the host network, for scripts that call `pgbench`.
+set -euo pipefail
+exec podman run --rm --network host -v "$PWD":/w:ro -w /w \
+  -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE \
+  docker.io/library/postgres:17.11 pgbench "$@"
