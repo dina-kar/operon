@@ -21,14 +21,14 @@ export function Card({
 }) {
   const H = headingLevel === 2 ? 'h2' : 'h3';
   return (
-    <section className={cx('loam-card', className)} style={style}>
+    <section className={cx('loams-card', className)} style={style}>
       {(title || actions) && (
-        <div className="loam-card-head">
+        <div className="loams-card-head">
           {title ? <H>{title}</H> : <span />}
           {actions && <div>{actions}</div>}
         </div>
       )}
-      <div className={cx('loam-card-body', flush && 'loam-card-flush')}>{children}</div>
+      <div className={cx('loams-card-body', flush && 'loams-card-flush')}>{children}</div>
     </section>
   );
 }

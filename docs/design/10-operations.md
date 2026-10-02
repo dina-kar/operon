@@ -1,6 +1,6 @@
 # 10 — Operations
 
-Status: **Approved** · 2026-09-22 · revised 2026-09-25 (architecture review: surfaces D42–D45, M2 hardening D46, metastore backends D47) · revised 2026-09-26 (backends, RustFS, BYOC, tenancy, authorization, erasure: D58–D70, §18) · amended 2026-09-26 (turbopuffer gap analysis: backpressure and weighted concurrency quotas, customer-managed keys, audit events, SSO and private networking, performance and usage metrics, branches; D86, D90, D92, D96, D98, D100, D102, D103) · amended 2026-09-27 (M1.3 as built: `operon cluster` and its flags)
+Status: **Approved** · 2026-09-22 · revised 2026-09-25 (architecture review: surfaces D42–D45, M2 hardening D46, metastore backends D47) · revised 2026-09-26 (backends, RustFS, BYOC, tenancy, authorization, erasure: D58–D70, §18) · amended 2026-09-26 (turbopuffer gap analysis: backpressure and weighted concurrency quotas, customer-managed keys, audit events, SSO and private networking, performance and usage metrics, branches; D86, D90, D92, D96, D98, D100, D102, D103) · amended 2026-09-27 (M1.3 as built: `loams cluster` and its flags)
 
 ---
 
@@ -8,18 +8,18 @@ Status: **Approved** · 2026-09-22 · revised 2026-09-25 (architecture review: s
 
 | Mode | Command | Object store | Meta | Use |
 |---|---|---|---|---|
-| Dev | `operon dev` | Local filesystem (`object_store` LocalFileSystem), or RustFS started next to it by the compose file (D61) | Single-node Raft | Laptop, CI |
-| Standalone | `operon standalone --bucket s3://…` | S3/GCS/Azure, or RustFS self-hosted | Single-node Raft (snapshots to bucket) | Small prod, edge |
-| Cluster | `operon cluster --roles meta,log,query,worker,gateway …` | Cloud object storage, or RustFS on premises | 3 or 5 `meta` nodes across AZs, or Postgres or DynamoDB (M2), or TiKV (R1, D124) | Production |
-| Kubernetes | Helm chart + `operon-operator` (M2) | Cloud object storage, or RustFS | StatefulSet (openraft `meta` only), or external Postgres or DynamoDB, or TiKV (PD + TiKV via TiDB Operator v2, D179) | Production |
-| BYOC-managed-meta (M2.x) | Data plane in the customer's VPC | The customer's bucket | Hosted, through `operon-meta-remote` to `operon-control` | Managed service; the control plane is on the write path (§18 §8) |
+| Dev | `loams dev` | Local filesystem (`object_store` LocalFileSystem), or RustFS started next to it by the compose file (D61) | Single-node Raft | Laptop, CI |
+| Standalone | `loams standalone --bucket s3://…` | S3/GCS/Azure, or RustFS self-hosted | Single-node Raft (snapshots to bucket) | Small prod, edge |
+| Cluster | `loams cluster --roles meta,log,query,worker,gateway …` | Cloud object storage, or RustFS on premises | 3 or 5 `meta` nodes across AZs, or Postgres or DynamoDB (M2), or TiKV (R1, D124) | Production |
+| Kubernetes | Helm chart + `loams-operator` (M2) | Cloud object storage, or RustFS | StatefulSet (openraft `meta` only), or external Postgres or DynamoDB, or TiKV (PD + TiKV via TiDB Operator v2, D179) | Production |
+| BYOC-managed-meta (M2.x) | Data plane in the customer's VPC | The customer's bucket | Hosted, through `loams-meta-remote` to `loams-control` | Managed service; the control plane is on the write path (§18 §8) |
 | BYOC-local-meta (M2.x) | Data plane and metastore in the customer's VPC | The customer's bucket | openraft, or the customer's Postgres or DynamoDB | Managed service; a pull-based ops agent only (§18 §8) |
 
 **Cluster mode as built (M1.3).** Every node runs a metastore replica: voters on `meta` nodes, non-voting learners elsewhere (§01 §3.2). The lowest-id peer in `--peers` initializes the cluster, and every node joins through the peers; a learner leaves on graceful shutdown, and one whose `node/<id>` lease has been expired for 10 minutes is removed by the `meta-membership` task. Adding or removing voters is M2. The internal routes (`/internal/v1/raft/*`, `/internal/v1/meta/*`, `/internal/v1/reads/*`, `/internal/v1/hot/*`, `/internal/v1/node/*`) share `--listen` with the API, are unauthenticated in M1 like every other listener, and **must be on a private network**.
 
-**On a laptop** (D285, §30 §8), `loam stack create` runs `dev` or `standalone` as a supervised local process. The engine registry generates the flags, every address is loopback, and the endpoints are written to `.env.loam`. `sudo loam storage prepare` sets up an NVMe disk for the cache (D287).
+**On a laptop** (D285, §30 §8), `loams stack create` runs `dev` or `standalone` as a supervised local process. The engine registry generates the flags, every address is loopback, and the endpoints are written to `.env.loams`. `sudo loams storage prepare` sets up an NVMe disk for the cache (D287).
 
-Lakekeeper is deployed next to Operon, not inside it (bundled in the Helm chart and the `docker-compose` examples from M4). RustFS (`rustfs/rustfs:1.0.x`, Apache-2.0) is the default self-hosted object store in the docs, the docker-compose dev stack, the Helm chart and the agent-fleet demo; it replaces MinIO, whose community edition is archived (D61).
+Lakekeeper is deployed next to Loams, not inside it (bundled in the Helm chart and the `docker-compose` examples from M4). RustFS (`rustfs/rustfs:1.0.x`, Apache-2.0) is the default self-hosted object store in the docs, the docker-compose dev stack, the Helm chart and the agent-fleet demo; it replaces MinIO, whose community edition is archived (D61).
 
 All roles ship in one binary. Kubernetes: `meta` is the only StatefulSet (small PVCs for the Raft log), and it disappears with an external metastore backend; every other role is a Deployment with local NVMe (ephemeral) for cache, autoscaled by HPA/KEDA on role-specific signals (§01 §3.1). The operator (M2) deploys and scales roles, replaces lost nodes and drives rolling upgrades (§7); its end-to-end tests run on kind (deploy, scale, upgrade, node loss).
 
@@ -33,7 +33,7 @@ The metastore is chosen per cluster behind `trait MetaStore` (§01 §3.2, D47):
 | `postgres` | M2 | An existing managed Postgres; no `meta` role | The provider's (Multi-AZ, Aurora, Cloud SQL HA) | The provider's backups and point-in-time recovery |
 | `dynamodb` | M2 | One DynamoDB table (on demand or provisioned); no `meta` role | DynamoDB's multi-AZ replication | Point-in-time recovery, on-demand backups |
 | ~~`tidb`~~ `tikv` | ~~M6~~ R1 | A PD + TiKV cluster (API v2 keyspace), over `tikv-client`; `--meta tikv://<pd-hosts>/<keyspace>`, cargo feature `tikv`. Replaces the TiDB backend (D124, D260: no TiDB) | TiKV's Raft replication | Planned: BR full and log backups with PITR, pending tested API v2 keyspace restore coverage (D131, Q37) |
-| `remote` | M2.x | `operon-meta-remote` to the hosted control plane (BYOC-managed-meta) | The control plane's | The control plane's |
+| `remote` | M2.x | `loams-meta-remote` to the hosted control plane (BYOC-managed-meta) | The control plane's | The control plane's |
 
 Every backend serves the same relaxed contract (D59, §18 §3).
 
@@ -44,14 +44,14 @@ A cluster does not switch backends in place in v1.0; moving an existing cluster 
 ```toml
 [cluster]
 name = "prod-us-east-1"
-bucket = "s3://acme-operon/prod"
+bucket = "s3://acme-loams/prod"
 zones = ["use1-az1", "use1-az2", "use1-az4"]
 
 [meta]
 backend = "raft"            # raft | postgres (M2) | dynamodb (M2) | tikv (R1; D260: no tidb) | remote (M2.x)
 peers = ["meta-0:7400", "meta-1:7400", "meta-2:7400"]   # raft only
-# postgres = { url = "postgres://operon@pg.internal:5432/operon", read_pool = 10, write_pool = 5 }
-# dynamodb = { table = "loam-meta", region = "us-east-1" }
+# postgres = { url = "postgres://loams@pg.internal:5432/loams", read_pool = 10, write_pool = 5 }
+# dynamodb = { table = "loams-meta", region = "us-east-1" }
 
 [wal.express]
 buckets = { "use1-az1" = "s3://acme-wal--use1-az1--x-s3", "use1-az2" = "…", "use1-az4" = "…" }
@@ -59,7 +59,7 @@ write_quorum = 2
 
 [cache]
 ram = "48GiB"
-nvme_path = "/mnt/nvme/operon"
+nvme_path = "/mnt/nvme/loams"
 nvme = "1.5TiB"
 
 [catalog.iceberg]
@@ -77,12 +77,12 @@ resonate = { listen = "127.0.0.1:8001" } # durable execution (§21, D138); Reson
 admin = { listen = "0.0.0.0:8090" }      # /metrics, /health, diagnostic dump (§5); not a data surface
 
 [tls]                                     # M2: applies to every listener
-cert = "/etc/operon/tls/tls.crt"
-key = "/etc/operon/tls/tls.key"
-client_ca = "/etc/operon/tls/ca.crt"      # set to require client certificates (mTLS)
+cert = "/etc/loams/tls/tls.crt"
+key = "/etc/loams/tls/tls.key"
+client_ca = "/etc/loams/tls/ca.crt"      # set to require client certificates (mTLS)
 ```
 
-**M1 flags.** M1 has no configuration file: `operon cluster` takes flags (M1.3 Ruling 15), and a configuration file is M2. The keys of the sketch above that M1 implements map to flags as follows:
+**M1 flags.** M1 has no configuration file: `loams cluster` takes flags (M1.3 Ruling 15), and a configuration file is M2. The keys of the sketch above that M1 implements map to flags as follows:
 
 | TOML key | M1 flag |
 |---|---|
@@ -112,7 +112,7 @@ Each gateway is individually enabled; disabled gateways load no code paths (feat
 
 Security ships in M2, before v1.0; its gate is that unauthenticated and cross-tenant requests are rejected on every surface (native, Flight SQL, Qdrant, ES, MCP, OTLP).
 
-- **AuthN (M2):** API keys on every surface, each carried the way that surface's clients already send credentials. A key has the form `loam_<key_id>_<secret>`; the `ControlStore` keeps only a hash of the secret, with the key's org, scopes, expiry, creator and last use. Gateways cache resolved keys for 30–60 s, and revocations are pushed through the `ControlStore`'s change feed (D65):
+- **AuthN (M2):** API keys on every surface, each carried the way that surface's clients already send credentials. A key has the form `loams_<key_id>_<secret>`; the `ControlStore` keeps only a hash of the secret, with the key's org, scopes, expiry, creator and last use. Gateways cache resolved keys for 30–60 s, and revocations are pushed through the `ControlStore`'s change feed (D65):
 
   | Surface | Credential |
   |---|---|
@@ -154,7 +154,7 @@ The M2 baseline, on every node:
 - System tables: `system.queries`, `system.links`, `system.tasks`, `system.streams`, `system.collections`, `system.tables`, `system.parts`, `system.cache`, `system.namespaces`; from §14 Phase B, `system.durable_promises` and `system.durable_tasks` (`system.tasks` stays the worker task table).
 - Per-query profiles (DataFusion metrics tree) retrievable by query id.
 - **Per-response performance (M1.6, D92):** every native search response carries `performance` (timings, queue wait, tail and stale records, rows scanned per retriever, hot structures used, H1 cache hit ratio, object-store requests); `POST …/collections/{c}/recall` measures ANN recall on demand (M1.7), and M2 exports sampled continuous recall per collection.
-- **Backlog (M1.3, D86):** every collection write response carries `Operon-Unapplied-Records` and `Operon-Unapplied-Bytes`; `CollectionInfo` reports the backlog and the backpressure state; M2 exports them as gauges with a counter of throttled writes.
+- **Backlog (M1.3, D86):** every collection write response carries `Loams-Unapplied-Records` and `Loams-Unapplied-Bytes`; `CollectionInfo` reports the backlog and the backpressure state; M2 exports them as gauges with a counter of throttled writes.
 - **Usage (M2, D103):** per-namespace logical bytes written, stored, queried and returned, queries and hot-tier GB-hours, rolled up in the `ControlStore`; the hosted service bills on them (M2.x).
 
 ## 6. Backup, DR and time travel
@@ -172,7 +172,7 @@ The M2 baseline, on every node:
 ## 7. Upgrades
 
 - **Zero-downtime rolling upgrades (M2)**, node by node and role by role, driven by the operator; wire protocols between roles are versioned (N/N−1 compatibility). The M2 gate: a rolling upgrade of a 3-node cluster under load loses no acknowledged write and fails no read beyond client retries.
-- **Format-version checks:** every Operon format carries `magic + format_version` and readers support N and N−1 (§03). A node refuses to start if the cluster's enabled format versions are outside what it reads, and a new format is enabled only after every node runs a version that reads it.
+- **Format-version checks:** every Loams format carries `magic + format_version` and readers support N and N−1 (§03). A node refuses to start if the cluster's enabled format versions are outside what it reads, and a new format is enabled only after every node runs a version that reads it.
 - Format changes are opt-in and rolled forward by compaction (§03 §6).
 - Metastore migrations are versioned: applied through the Raft log (openraft), as `sqlx` schema migrations (Postgres, TiDB), or as item-format versions read N and N−1 (DynamoDB).
 

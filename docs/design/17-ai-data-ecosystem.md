@@ -2,25 +2,25 @@
 
 Status: **Approved** · 2026-09-25 (decisions D51–D56) · amended 2026-09-26 (§3.7, M1.2 as built). Items marked (verify) are resolved in the implementation plans.
 
-This document uses the product name **Loam** and the package name `loamdb` (D33). Everything here ships after the M1 rename except scan pinning (M1.2) and `to_arrow()` / `to_polars()` (M1.6), which land under the working names (`operon-*`, `operon-client`).
+This document uses the product name **Loams** and the package name `loams` (D33, D400). Scan pinning (M1.2) and `to_arrow()` / `to_polars()` (M1.6) landed before the rename; everything else here ships after it.
 
 ---
 
 ## 1. Goal and principle
 
-Frontier AI labs run their data pipelines on a small set of tools: Ray Data for curation, deduplication and batch inference; PySpark (on Apache Spark, and increasingly on Sail) for large filters and joins; PyTorch and JAX loaders for training; Polars and DuckDB for local inspection. A lab adopts a new store when those tools read and write it without a copy step. Loam's retrieval data (documents, vectors, the eval sets built from them) must therefore be a **source and a sink for those tools**, alongside the Qdrant, Elasticsearch and Flight SQL surfaces that agent frameworks use (D42).
+Frontier AI labs run their data pipelines on a small set of tools: Ray Data for curation, deduplication and batch inference; PySpark (on Apache Spark, and increasingly on Sail) for large filters and joins; PyTorch and JAX loaders for training; Polars and DuckDB for local inspection. A lab adopts a new store when those tools read and write it without a copy step. Loams's retrieval data (documents, vectors, the eval sets built from them) must therefore be a **source and a sink for those tools**, alongside the Qdrant, Elasticsearch and Flight SQL surfaces that agent frameworks use (D42).
 
 **Principle (D51): integrate over protocols and open formats, never by embedding other engines.** The integration surfaces are:
 
 | Surface | Stable because | Used by |
 |---|---|---|
 | Arrow Flight SQL and Flight `DoGet`/`DoPut` (ADBC) | Wire protocol with a versioned protobuf schema | Spice, ADBC clients, the Flight fallback of every adapter, every sink |
-| Lance files of a pinned version, handed out by **scan pinning** (§3, D53) | Lance file format 2.1 is pinned (§03 §6) | Ray Data, Polars, PySpark, `loamdb.torch`, Daft |
+| Lance files of a pinned version, handed out by **scan pinning** (§3, D53) | Lance file format 2.1 is pinned (§03 §6) | Ray Data, Polars, PySpark, `loams.torch`, Daft |
 | Iceberg REST (Lakekeeper) | Open catalog protocol and table spec | DuckDB, Trino, Spark, Sail, ClickHouse, PyIceberg (M4) |
 | Arrow C data interface (PyCapsule `__arrow_c_stream__`) | ABI-stable C structs | Polars, pandas, DuckDB, pyarrow in the same process |
-| Native REST/gRPC API | Loam's own versioned API | Scan plans, dataset tags, search |
+| Native REST/gRPC API | Loams's own versioned API | Scan plans, dataset tags, search |
 
-**Lockstep rationale.** A Rust binary links one version of DataFusion and one of arrow-rs, and engines built on them upgrade together. Lance 12 pins DataFusion 54 / arrow 58, which fixes Loam's versions (§11 §1). Sail's main branch moved to DataFusion 55.1 / arrow 59.2 on 2026-09-17; Spice patches crates.io with its own forks of DataFusion 54 and arrow-rs; Polars carries a second Arrow implementation (`polars-arrow`, forked from arrow2). Linking any of them would tie Loam's upgrade cadence to the slowest of Lance, Sail and Spice, or force a fork (risk 21). Sail's maintainers declined a Rust-level Lance integration for the same reason. Protocols and file formats do not move in lockstep, so every integration in this document crosses a process or format boundary, is pinned, and is tested in CI against the released tool.
+**Lockstep rationale.** A Rust binary links one version of DataFusion and one of arrow-rs, and engines built on them upgrade together. Lance 12 pins DataFusion 54 / arrow 58, which fixes Loams's versions (§11 §1). Sail's main branch moved to DataFusion 55.1 / arrow 59.2 on 2026-09-17; Spice patches crates.io with its own forks of DataFusion 54 and arrow-rs; Polars carries a second Arrow implementation (`polars-arrow`, forked from arrow2). Linking any of them would tie Loams's upgrade cadence to the slowest of Lance, Sail and Spice, or force a fork (risk 21). Sail's maintainers declined a Rust-level Lance integration for the same reason. Protocols and file formats do not move in lockstep, so every integration in this document crosses a process or format boundary, is pinned, and is tested in CI against the released tool.
 
 ## 2. Integration map
 
@@ -28,24 +28,24 @@ Frontier AI labs run their data pipelines on a small set of tools: Ray Data for 
 |---|---|---|---|---|
 | Python SDK `to_arrow()` / `to_polars()` | Arrow PyCapsule, zero-copy (§5.2) | Local inspection of search results and SQL output in notebooks; eval analysis | M1.6 | M1.6 plan tests |
 | ADBC Flight SQL drivers (Python, Go) | Flight SQL queries and `DoPut` ingest | SQL and bulk loads from any language | M1.2 | **M1** (D49) |
-| Spice | Spice's Flight SQL connector against Loam's Flight SQL frontend (§6.2) | Federated and accelerated SQL + search for agent apps | M1.2 | **M1** (D56) |
-| Ray Data | `loamdb[ray]` datasource (scan plan + direct Lance fragment reads, built on `lance-ray`) and datasink (Flight `DoPut`) (§5.3) | Curation, deduplication, filtering; embedding backfills with `ray.data.llm`; batch inference | M2 | **M2** |
-| Polars | `to_polars()` (M1.6); `loamdb[polars]` `scan_loam()`, an experimental IO plugin over the scan plan (§5.4) | Local and single-node inspection of collections and eval sets | M1.6 / M2 | **M2** |
-| PySpark on Apache Spark 4 and on Sail | `loamdb[spark]` Python data source `format("loam")`: reads the scan plan (direct or Flight), writes through `DoPut` (§5.6) | Large curation and dedup jobs; joins of retrieval data with other lab data | M2 | **M2** |
-| PyTorch / JAX | `loamdb[torch]` (`loamdb.torch`): Lance's PyTorch reader, an elastic deterministic sampler, mid-epoch resume, reads a tag (§5.5) | Training ingestion; reproducible eval sets | M2 | **M2** |
-| DuckDB, Trino, Spark, Sail, ClickHouse | Iceberg REST catalog (Lakekeeper) over Loam tables | Eval results, usage and cost analytics, trace analysis | M4 | **M4** (D45, D55) |
-| Ray Data, Polars, `loamdb.torch` over tables | Tagged Iceberg snapshots (`ray.data.read_iceberg(snapshot_id=…)`, `pl.scan_iceberg`) (§4.4) | Training and eval over analytical tables | M4 | **M4** |
+| Spice | Spice's Flight SQL connector against Loams's Flight SQL frontend (§6.2) | Federated and accelerated SQL + search for agent apps | M1.2 | **M1** (D56) |
+| Ray Data | `loams[ray]` datasource (scan plan + direct Lance fragment reads, built on `lance-ray`) and datasink (Flight `DoPut`) (§5.3) | Curation, deduplication, filtering; embedding backfills with `ray.data.llm`; batch inference | M2 | **M2** |
+| Polars | `to_polars()` (M1.6); `loams[polars]` `scan_loams()`, an experimental IO plugin over the scan plan (§5.4) | Local and single-node inspection of collections and eval sets | M1.6 / M2 | **M2** |
+| PySpark on Apache Spark 4 and on Sail | `loams[spark]` Python data source `format("loams")`: reads the scan plan (direct or Flight), writes through `DoPut` (§5.6) | Large curation and dedup jobs; joins of retrieval data with other lab data | M2 | **M2** |
+| PyTorch / JAX | `loams[torch]` (`loams.torch`): Lance's PyTorch reader, an elastic deterministic sampler, mid-epoch resume, reads a tag (§5.5) | Training ingestion; reproducible eval sets | M2 | **M2** |
+| DuckDB, Trino, Spark, Sail, ClickHouse | Iceberg REST catalog (Lakekeeper) over Loams tables | Eval results, usage and cost analytics, trace analysis | M4 | **M4** (D45, D55) |
+| Ray Data, Polars, `loams.torch` over tables | Tagged Iceberg snapshots (`ray.data.read_iceberg(snapshot_id=…)`, `pl.scan_iceberg`) (§4.4) | Training and eval over analytical tables | M4 | **M4** |
 | Daft | Its Lance reader with version pinning, given the scan plan's dataset URI and version (subject to Q20) | Curation on Daft's Rust engine | M1.2 (scan pinning) | Not gated |
 | Hugging Face `datasets` | Reads Lance (the Hub hosts Lance datasets) and Iceberg, given a pinned version or a tagged snapshot (verify) | Dataset sharing and loading | M1.2 / M4 | Not gated |
 | Agent frameworks (LangChain, LlamaIndex, LightRAG) | Qdrant API, Elasticsearch subset, native graph adapters (§06, §07) | Agent retrieval and memory | M1 / M3 | M1 / M3 |
 
-Daft and Hugging Face `datasets` need nothing from Loam beyond scan pinning; they are listed so that the scan plan stays readable by any Lance reader that accepts a dataset URI and a version.
+Daft and Hugging Face `datasets` need nothing from Loams beyond scan pinning; they are listed so that the scan plan stays readable by any Lance reader that accepts a dataset URI and a version.
 
 Log shippers and stream tools (Fluent Bit, the OpenTelemetry Collector, Vector, RisingWave, Flink, Kafka Connect) are listed in §02 §7.3, with OTLP logs ingest in M2 (D73) and the Kafka gateway in M5 (D74).
 
 ## 3. Scan pinning (D53, M1.2)
 
-Loam commits Lance as **detached versions** (D34): the dataset's mainline holds only the empty version 1, and every collection manifest names its own detached `lance_version`. A plain `ray.data.read_lance(uri)` or `lance.dataset(uri)` therefore opens an empty dataset. Typed fields exist only in Tantivy (D36), and writes newer than the manifest are in the stream tail, not in Lance. External readers therefore get a pinned, consistent Lance version only by asking Loam for a **scan plan** (§03 §3.3).
+Loams commits Lance as **detached versions** (D34): the dataset's mainline holds only the empty version 1, and every collection manifest names its own detached `lance_version`. A plain `ray.data.read_lance(uri)` or `lance.dataset(uri)` therefore opens an empty dataset. Typed fields exist only in Tantivy (D36), and writes newer than the manifest are in the stream tail, not in Lance. External readers therefore get a pinned, consistent Lance version only by asking Loams for a **scan plan** (§03 §3.3).
 
 ### 3.1 Request and plan
 
@@ -64,12 +64,12 @@ The plan:
 
 | Field | Content |
 |---|---|
-| `collection`, `manifest_version`, `resolved_from` | The collection id and name, the pinned Loam manifest version, and how it was resolved |
+| `collection`, `manifest_version`, `resolved_from` | The collection id and name, the pinned Loams manifest version, and how it was resolved |
 | `lance.uri` | The dataset root, `s3://<bucket>/ns/<ns>/collections/<cid>/lance` (§01 §6) |
 | `lance.version` | The manifest's detached Lance version id (D34) |
 | `lance.manifest_path` | `_versions/d<id>.manifest`, for readers that cannot open a detached version by id (§3.5) |
 | `schema` | The Arrow schema of the Lance columns (`_pk`, `_source`, `_ingest_partition`, `_ingest_offset`, `_vector_<i>`, `_sparse_<j>`, `_rowid`), the map from each vector and sparse-vector name to its column, and the collection's field schema (kinds of the typed fields, for client-side projection from `_source`) |
-| `fragments[]` | Per fragment: its id, physical row count, live row count (after its Lance deletion file), and a Flight ticket that streams the same rows through Loam |
+| `fragments[]` | Per fragment: its id, physical row count, live row count (after its Lance deletion file), and a Flight ticket that streams the same rows through Loams |
 | `tail` | Absent, or the tail descriptor of §3.2 |
 | `row_filter` | Absent, or per-fragment row selections for the request's filter (§3.3) |
 | `storage` | The object-store endpoint and region; from M2, vended credentials and their expiry (§3.4) |
@@ -98,7 +98,7 @@ Lance holds `_source`, system columns and vectors; typed fields exist only in Ta
 | Predicate or projection on | Where it runs |
 |---|---|
 | System columns (`_pk`, `_ingest_*`, `_rowid`) and vector nullness | In the reader, as a Lance scanner filter (`_pk` has a BTREE index) |
-| Typed fields (keyword, numeric, date, boolean, JSON paths) | In Loam: the plan request carries the filter in the native filter IR; Loam evaluates it on the pinned manifest's splits (and on the tail, for `merge`) and returns `row_filter`, the matching rows per fragment as row offsets, so each read task receives only its own selection (applied with a fragment `take`; verify the pylance API) |
+| Typed fields (keyword, numeric, date, boolean, JSON paths) | In Loams: the plan request carries the filter in the native filter IR; Loams evaluates it on the pinned manifest's splits (and on the tail, for `merge`) and returns `row_filter`, the matching rows per fragment as row offsets, so each read task receives only its own selection (applied with a fragment `take`; verify the pylance API) |
 | Relevance (vector top-k, BM25, hybrid) | Not a scan: native search or Flight SQL, whose results carry `_rowid` and `_pk`; small result sets come back as Arrow directly (§5.2) |
 | A predicate the adapter cannot translate to the filter IR | Post-filter on `_source` in the reader (JSON decode), after the pushed-down part |
 | A projection of typed fields | Extracted from `_source` in the reader, typed by the plan's field schema (the adapters do this; `_source` stays available as a column) |
@@ -109,14 +109,14 @@ Server-side filtering keeps one filter evaluator (Tantivy, R5 of the M1 overview
 
 | Stage | Direct fragment reads |
 |---|---|
-| M1 (`operon dev`, local filesystem or RustFS) | No vending: the reader uses the object-store configuration its operator already has; the plan carries only the endpoint |
+| M1 (`loams dev`, local filesystem or RustFS) | No vending: the reader uses the object-store configuration its operator already has; the plan carries only the endpoint |
 | M2 (v1.0) | **Credential vending**: with `credentials: true` and the `read` permission on the collection (§10 §4), the plan carries short-lived, read-only object-store credentials scoped to the collection's `lance/` prefix: an S3 STS session with an inline session policy, a GCS downscoped token (Credential Access Boundaries), or an Azure user-delegation SAS (verify each), as Lakekeeper vends table credentials. The SDK refreshes them before expiry through a `refresh` call on the plan |
 
-Direct reads bypass per-request authorization inside a collection, so credentials are vended only to principals whose read is unrestricted on that collection; a principal with field-level masking (Phase B) or any other restricted read gets Flight tickets only, and Loam enforces the restriction on the Flight path.
+Direct reads bypass per-request authorization inside a collection, so credentials are vended only to principals whose read is unrestricted on that collection; a principal with field-level masking (Phase B) or any other restricted read gets Flight tickets only, and Loams enforces the restriction on the Flight path.
 
 ### 3.5 Opening a detached version (Q20)
 
-**Answered (Q20, M1.2 Task 0):** pylance 12.0.0 and the Rust `lance` crate 12.0.0 open a detached version by id: `lance.dataset(uri, version=<detached id>)` and `DatasetBuilder::from_uri(uri).with_version(id).load()`, with Lance's default session and registry, both accept the u64 id (bit 63 set). The fallbacks below are not needed; the plan keeps `lance.manifest_path` anyway. Opening from the manifest file's bytes does not work (`serialized_manifest` expects the bare protobuf). The original question: whether pylance (and the Rust `lance` crate behind `lance-ray` and Daft) opens a detached version by id, e.g. `lance.dataset(uri, version=<detached id>)`. If it cannot, the fallbacks, in order: open the Lance manifest at `lance.manifest_path` through a Lance API that accepts a manifest location; have the Loam adapters build Lance fragment objects from the plan's fragment metadata; or, if Lance tags can reference detached versions, mirror each dataset tag (§4) as a Lance tag so that readers that know only Lance tags work unmodified (verify; Lance cleanup is never run, D35, so a Lance tag would not change GC). Daft and Hugging Face `datasets` work without a Loam adapter only under the first answer.
+**Answered (Q20, M1.2 Task 0):** pylance 12.0.0 and the Rust `lance` crate 12.0.0 open a detached version by id: `lance.dataset(uri, version=<detached id>)` and `DatasetBuilder::from_uri(uri).with_version(id).load()`, with Lance's default session and registry, both accept the u64 id (bit 63 set). The fallbacks below are not needed; the plan keeps `lance.manifest_path` anyway. Opening from the manifest file's bytes does not work (`serialized_manifest` expects the bare protobuf). The original question: whether pylance (and the Rust `lance` crate behind `lance-ray` and Daft) opens a detached version by id, e.g. `lance.dataset(uri, version=<detached id>)`. If it cannot, the fallbacks, in order: open the Lance manifest at `lance.manifest_path` through a Lance API that accepts a manifest location; have the Loams adapters build Lance fragment objects from the plan's fragment metadata; or, if Lance tags can reference detached versions, mirror each dataset tag (§4) as a Lance tag so that readers that know only Lance tags work unmodified (verify; Lance cleanup is never run, D35, so a Lance tag would not change GC). Daft and Hugging Face `datasets` work without a Loams adapter only under the first answer.
 
 ### 3.6 Validity
 
@@ -125,9 +125,9 @@ A plan pins a manifest without a metastore hold (D38): it stays readable while t
 ### 3.7 As built (M1.2)
 
 M1.2 ships the core of §3.1–§3.6; the rest (filters, projections, Flight tickets per fragment, `tail: merge|wait|none`, credentials, multi-target aliases) stays with the SDK adapters (M1.6, M2) and D52–D57's milestones.
-- **Route:** `POST /v1/namespaces/{ns}/collections/{c}/scan` (alias ok), body `{"at"?: …}`, answering the plan and the header `Operon-Consistency-Token: <pin.token>`. `at` is `"current"` (the default), `{"manifest_version": v}` or `{"token": "v1:…"}`; `{"tag": …}` is refused ("tags arrive in M2 (D52)"). Any node serves it: it reads the metastore, the manifest chain and one Lance manifest, never the tail.
-- **The plan:** `namespace`, `collection`, `collection_id`, `manifest_version`, `schema_version`; `lance` (`null` before the first Lance version, else `{uri, version, manifest_path, storage_format, stable_row_ids}`, `version` the detached id); `fragments[]` in Lance's order (`id`, `physical_rows`, `deleted_rows`, `live_rows`, `files` as `data/…` paths, `deletion_file` as `{path, kind, deleted_rows}` or `null`, and `lance`, Lance's own `Fragment` JSON for `FragmentMetadata.from_json`); `live_rows` (equal to the manifest's live document count, checked); `columns` (the Lance version's schema with roles `pk`, `source`, `ingest_partition`, `ingest_offset`, `vector`, `sparse_vector`, and each vector's name, dim, distance or modifier); `pk_encoding` `operon_canonical_v1`; `tail`, `tail_records` and per-partition `offsets` (`applied` against `target`); `durable_token`; `pin`; `planned_at_ms` and `expires_at_ms`. The plan carries no credentials (D54, M2).
-- **Lance deletion files are authoritative** (M1.2 Ruling 22): M1.1's commits delete every removed and superseded row in Lance itself, so the Lance version holds exactly the manifest's live rows, and the plan lists each fragment's deletion file for readers that bypass Lance; split delete bitmaps are not in the plan. What Lance cannot hold is the tail: the plan reports it (`tail`, `tail_records`, `offsets`) and carries a `pin` (`{manifest_version, token}`) that reads exactly the requested state, tail included, through the native API (`"consistency": {"pinned": …}`) or Flight SQL (metadata `operon-pin-manifest` with `operon-consistency-token`).
+- **Route:** `POST /v1/namespaces/{ns}/collections/{c}/scan` (alias ok), body `{"at"?: …}`, answering the plan and the header `Loams-Consistency-Token: <pin.token>`. `at` is `"current"` (the default), `{"manifest_version": v}` or `{"token": "v1:…"}`; `{"tag": …}` is refused ("tags arrive in M2 (D52)"). Any node serves it: it reads the metastore, the manifest chain and one Lance manifest, never the tail.
+- **The plan:** `namespace`, `collection`, `collection_id`, `manifest_version`, `schema_version`; `lance` (`null` before the first Lance version, else `{uri, version, manifest_path, storage_format, stable_row_ids}`, `version` the detached id); `fragments[]` in Lance's order (`id`, `physical_rows`, `deleted_rows`, `live_rows`, `files` as `data/…` paths, `deletion_file` as `{path, kind, deleted_rows}` or `null`, and `lance`, Lance's own `Fragment` JSON for `FragmentMetadata.from_json`); `live_rows` (equal to the manifest's live document count, checked); `columns` (the Lance version's schema with roles `pk`, `source`, `ingest_partition`, `ingest_offset`, `vector`, `sparse_vector`, and each vector's name, dim, distance or modifier); `pk_encoding` `loams_canonical_v1`; `tail`, `tail_records` and per-partition `offsets` (`applied` against `target`); `durable_token`; `pin`; `planned_at_ms` and `expires_at_ms`. The plan carries no credentials (D54, M2).
+- **Lance deletion files are authoritative** (M1.2 Ruling 22): M1.1's commits delete every removed and superseded row in Lance itself, so the Lance version holds exactly the manifest's live rows, and the plan lists each fragment's deletion file for readers that bypass Lance; split delete bitmaps are not in the plan. What Lance cannot hold is the tail: the plan reports it (`tail`, `tail_records`, `offsets`) and carries a `pin` (`{manifest_version, token}`) that reads exactly the requested state, tail included, through the native API (`"consistency": {"pinned": …}`) or Flight SQL (metadata `loams-pin-manifest` with `loams-consistency-token`).
 - **Token scans wait for durability, not for the tail** (M1.2 Ruling 24): `{"token": t}` waits up to `consistency_wait` (10 s) for a live manifest whose `applied` offsets cover `t`, then plans it (its target is `max(token, applied)` per partition, M1.2 plan row 14.2), else `Timeout`; `current` never waits and reports the tail; a manifest version is planned as it is, with no tail.
 - **Expiry** (D38, A21): `expires_at_ms` is `planned_at_ms + time_travel_retention` for the live manifest, the child manifest's `created_at_ms + time_travel_retention` for a superseded one, and `null` for manifest version 0. Both are on the metastore clock, which advances only with time-stamped metastore writes, so `planned_at_ms` is 0 on a cluster that has had none (M1.2 plan row 15.5). A reader compares `expires_at_ms − planned_at_ms` with its own clock.
 - **Verified** with the Rust `lance` crate over `file://` (the Lance version holds exactly the folded live documents); pylance, Daft, `FragmentMetadata.from_json` and `s3://` URIs are checked by M1.6 and M1.7.
@@ -161,7 +161,7 @@ Tags are covered by the M2 tenant quotas: a per-namespace `max_tags_per_collecti
 
 ### 4.4 Tags on tables (M4)
 
-A tag on a table creates an Iceberg **tag ref** on the snapshot through Lakekeeper, with no `max-ref-age-ms`, so Iceberg snapshot expiry retains it for as long as the Loam tag exists. External engines read it with Iceberg's own syntax (Spark `VERSION AS OF '<tag>'`, Trino `FOR VERSION AS OF '<tag>'`; verify per engine), and Ray Data, Polars and `loamdb.torch` read it through the snapshot id the tag resolves to (M4 gate). Keyed tables read at a tag apply their deletion vectors as of that snapshot.
+A tag on a table creates an Iceberg **tag ref** on the snapshot through Lakekeeper, with no `max-ref-age-ms`, so Iceberg snapshot expiry retains it for as long as the Loams tag exists. External engines read it with Iceberg's own syntax (Spark `VERSION AS OF '<tag>'`, Trino `FOR VERSION AS OF '<tag>'`; verify per engine), and Ray Data, Polars and `loams.torch` read it through the snapshot id the tag resolves to (M4 gate). Keyed tables read at a tag apply their deletion vectors as of that snapshot.
 
 ## 5. Python SDK extras (D54)
 
@@ -171,12 +171,12 @@ The SDK's runtime dependencies stay minimal (the M1.6 plan's `httpx` and `anyio`
 
 | Extra | Module | Adds | Milestone |
 |---|---|---|---|
-| `loamdb[flight]` | `loamdb.flight` | `adbc-driver-flightsql`, `adbc-driver-manager`, `pyarrow` (as in M1.6's `flight` extra) | M1.6 |
-| `loamdb[polars]` | `loamdb.polars` | `polars`, `pyarrow` | M1.6 (`to_polars()`); M2 (`scan_loam()`) |
-| `loamdb[lance]` | `loamdb.scan` | `pylance`, `pyarrow` (direct fragment reads; pulled in by the three extras below) | M2 |
-| `loamdb[ray]` | `loamdb.ray` | `ray[data]`, `lance-ray` | M2 |
-| `loamdb[torch]` | `loamdb.torch` | `torch` (declared as a lower bound only; the lab's own build is used) | M2 |
-| `loamdb[spark]` | `loamdb.spark` | `pyspark` ≥ 4.0 (the client; Sail is reached through its Spark Connect endpoint) | M2 |
+| `loams[flight]` | `loams.flight` | `adbc-driver-flightsql`, `adbc-driver-manager`, `pyarrow` (as in M1.6's `flight` extra) | M1.6 |
+| `loams[polars]` | `loams.polars` | `polars`, `pyarrow` | M1.6 (`to_polars()`); M2 (`scan_loams()`) |
+| `loams[lance]` | `loams.scan` | `pylance`, `pyarrow` (direct fragment reads; pulled in by the three extras below) | M2 |
+| `loams[ray]` | `loams.ray` | `ray[data]`, `lance-ray` | M2 |
+| `loams[torch]` | `loams.torch` | `torch` (declared as a lower bound only; the lab's own build is used) | M2 |
+| `loams[spark]` | `loams.spark` | `pyspark` ≥ 4.0 (the client; Sail is reached through its Spark Connect endpoint) | M2 |
 
 Versions are pinned in the M2 plan and each extra is tested in CI against the released tool (risk 21).
 
@@ -188,31 +188,31 @@ Query results, search results and fetched documents expose `to_arrow()` (a `pyar
 
 ```python
 import ray
-from loamdb.ray import read_loam, LoamDatasink
+from loams.ray import read_loams, LoamsDatasink
 
-ds = read_loam(client, "web_docs", tag="dedup-2026-09-25",
+ds = read_loams(client, "web_docs", tag="dedup-2026-09-25",
                columns=["_pk", "text", "embedding"], filter={"term": {"lang": "en"}})
 ds = ds.map_batches(Embedder, concurrency=16, num_gpus=1, batch_size=256)
-sink = LoamDatasink(client, "web_docs", write="patch", vectors=["embedding_v2"])
+sink = LoamsDatasink(client, "web_docs", write="patch", vectors=["embedding_v2"])
 ds.write_datasink(sink)
 token = sink.consistency_token
 ```
 
-- **Read.** `read_loam` requests a scan plan (§3) and builds a `ray.data.Datasource` whose `get_read_tasks(parallelism)` returns one read task per fragment (small fragments packed together up to `parallelism`), each with its live row count and size estimate as block metadata. Tasks read fragments directly with `lance-ray`'s fragment reader (Flight tickets when `mode="flight"`), apply their `row_filter` slice and the superseded-row set, and project typed fields from `_source`. Ray's projection and predicate pushdown hooks map onto `columns` and `filter`; the tail, when merged, is one extra read task.
-- **Write.** `LoamDatasink` implements `on_write_start` (checks or creates the collection), `write` (each task streams its blocks through Flight `DoPut` with a path descriptor, `["collections", c]`, and returns the merged `PutAck` token of its puts; M1.2 Task 13) and `on_write_complete` (merges every task's token into one consistency token, exposed as `sink.consistency_token`, which a following `read_loam(…, at=token)` or tag creation uses). `on_write_failed` has nothing to roll back: acknowledged batches are visible, and writes are upserts keyed by `_id`, so a retried Ray task or a rerun job converges to the same documents.
-- **Embedding backfills** write only the new vector column: the sink's `write="patch"` sends a `DoPut` write mode that maps each row to a `Patch` of the listed vectors instead of an `Upsert` (a `DoPut` option added in M2; verify against M1.2 Task 13's mapping). Large backfills run on the lab's own Ray cluster with `ray.data.llm`; Loam's `embed()` links (§09) serve continuous, smaller streams. Both are documented with an example.
+- **Read.** `read_loams` requests a scan plan (§3) and builds a `ray.data.Datasource` whose `get_read_tasks(parallelism)` returns one read task per fragment (small fragments packed together up to `parallelism`), each with its live row count and size estimate as block metadata. Tasks read fragments directly with `lance-ray`'s fragment reader (Flight tickets when `mode="flight"`), apply their `row_filter` slice and the superseded-row set, and project typed fields from `_source`. Ray's projection and predicate pushdown hooks map onto `columns` and `filter`; the tail, when merged, is one extra read task.
+- **Write.** `LoamsDatasink` implements `on_write_start` (checks or creates the collection), `write` (each task streams its blocks through Flight `DoPut` with a path descriptor, `["collections", c]`, and returns the merged `PutAck` token of its puts; M1.2 Task 13) and `on_write_complete` (merges every task's token into one consistency token, exposed as `sink.consistency_token`, which a following `read_loams(…, at=token)` or tag creation uses). `on_write_failed` has nothing to roll back: acknowledged batches are visible, and writes are upserts keyed by `_id`, so a retried Ray task or a rerun job converges to the same documents.
+- **Embedding backfills** write only the new vector column: the sink's `write="patch"` sends a `DoPut` write mode that maps each row to a `Patch` of the listed vectors instead of an `Upsert` (a `DoPut` option added in M2; verify against M1.2 Task 13's mapping). Large backfills run on the lab's own Ray cluster with `ray.data.llm`; Loams's `embed()` links (§09) serve continuous, smaller streams. Both are documented with an example.
 - Streams become a Ray source in M5, over the native streaming subscribe (which ships in M2, D72).
 
-### 5.4 Polars `scan_loam()` (M2, experimental)
+### 5.4 Polars `scan_loams()` (M2, experimental)
 
-`loamdb.polars.scan_loam(client, collection, tag=…)` returns a `LazyFrame` registered with `polars.io.plugins.register_io_source`, whose generator receives `with_columns`, `predicate`, `n_rows` and `batch_size`. It is marked experimental because Polars marks `register_io_source` unstable.
+`loams.polars.scan_loams(client, collection, tag=…)` returns a `LazyFrame` registered with `polars.io.plugins.register_io_source`, whose generator receives `with_columns`, `predicate`, `n_rows` and `batch_size`. It is marked experimental because Polars marks `register_io_source` unstable.
 
 - `with_columns` becomes the plan's `columns`.
 - The predicate is translated from Polars expressions to the native filter IR where it can be (comparisons, `is_in`, `is_null`, `&`, `|`, `~` over typed fields and system columns) and sent with the plan request (§3.3). The generator applies any untranslated remainder with `DataFrame.filter` before yielding each batch.
 - `n_rows` stops the scan early; `batch_size` sizes the Lance reads.
-- Tables (M4) use Polars' native `scan_iceberg` against Lakekeeper; `scan_loam()` is for collections. Polars' own `scan_lance` (a draft PR upstream) would still need a scan plan to find the version.
+- Tables (M4) use Polars' native `scan_iceberg` against Lakekeeper; `scan_loams()` is for collections. Polars' own `scan_lance` (a draft PR upstream) would still need a scan plan to find the version.
 
-### 5.5 `loamdb.torch` (M2)
+### 5.5 `loams.torch` (M2)
 
 A thin training adapter, not a data-loading framework. It reads with Lance's PyTorch reader (`lance.torch.data.LanceDataset`) and replaces Lance's `ShardedFragmentSampler` / `ShardedBatchSampler`, which are deterministic for a fixed world size only, with a sampler that is **elastic**:
 
@@ -222,23 +222,23 @@ A thin training adapter, not a data-loading framework. It reads with Lance's PyT
 - **Mid-epoch resume.** `state_dict()` returns `{format: 1, tag, manifest_version, seed, epoch, P, consumed}`, where `consumed` counts samples handed to the trainer (prefetched batches are not counted), and `load_state_dict()` continues from it on any world size; it fits a stateful DataLoader's checkpoint hook (e.g. torchdata's `StatefulDataLoader`; verify).
 - **Uneven input.** With `"pad"` and `"drop"`, every rank runs the same number of steps per epoch, so a synchronous DDP collective never waits on a rank that has already finished. `uneven=` chooses how the epoch's tail is handled: `"pad"` (default) fills the short ranks' last batches with samples repeated from the start of the epoch order, flagged by a boolean `_pad` column so the trainer masks them out of the loss, and `consumed` counts only unpadded samples; `"drop"` drops the tail that does not fill one step on every rank (as `drop_last` across ranks), so those samples are not seen that epoch; `"none"` leaves step counts uneven, for callers that wrap training in DDP's `Join` context manager or an equivalent.
 - **Columns.** `_source` fields named in `columns` are decoded into tensors or strings; vector columns are yielded as tensors; a user `transform` runs per batch.
-- **JAX.** The sampler and batch iterator are framework-neutral; `loamdb.torch` also yields NumPy batches for JAX input pipelines.
+- **JAX.** The sampler and batch iterator are framework-neutral; `loams.torch` also yields NumPy batches for JAX input pipelines.
 
-### 5.6 PySpark data source `format("loam")` (M2)
+### 5.6 PySpark data source `format("loams")` (M2)
 
 A PySpark Python data source (`pyspark.sql.datasource.DataSource`, Spark 4) that runs unchanged on Apache Spark 4 and on Sail, which serves PySpark through Spark Connect and runs Python data sources in-process (verify the Sail version that supports them):
 
 ```python
-from loamdb.spark import LoamDataSource
-spark.dataSource.register(LoamDataSource)
+from loams.spark import LoamsDataSource
+spark.dataSource.register(LoamsDataSource)
 
-df = (spark.read.format("loam")
-      .option("endpoint", "https://loam.internal:8080")
+df = (spark.read.format("loams")
+      .option("endpoint", "https://loams.internal:8080")
       .option("namespace", "ml").option("collection", "web_docs")
       .option("tag", "dedup-2026-09-25")
       .load())
-(df.write.format("loam").mode("append")
-   .option("endpoint", "https://loam.internal:8080")
+(df.write.format("loams").mode("append")
+   .option("endpoint", "https://loams.internal:8080")
    .option("namespace", "ml").option("collection", "web_docs_clean")
    .save())
 ```
@@ -248,7 +248,7 @@ df = (spark.read.format("loam")
 | Read | The driver requests the scan plan; `DataSourceReader.partitions()` returns one partition per fragment (packed as in §5.3); `read(partition)` reads the fragment directly with pylance, or its Flight ticket, and yields Arrow record batches. Options: `tag`, `manifest_version` or `consistency_token`; `columns`; `filter` (native filter IR as JSON); `mode` (`direct`, `flight`, `auto`); `token` (M2 auth). Spark filters are pushed into `filter` where the Spark version's Python data source API offers filter pushdown (verify version) |
 | Write | Each task streams its rows through Flight `DoPut` (path descriptor) and returns its merged token in its commit message; `commit` merges the tokens and logs the job's consistency token. Writes are upserts keyed by `_id` (or `patch`, as §5.3), so task retries are idempotent; there is no all-or-nothing job commit, and `abort` has nothing to roll back |
 
-Tables (M4) are read by Spark and Sail through Iceberg REST (§6.1), not through `format("loam")`.
+Tables (M4) are read by Spark and Sail through Iceberg REST (§6.1), not through `format("loams")`.
 
 ## 6. Spark and Sail (D55), Spice (D56)
 
@@ -256,38 +256,38 @@ Tables (M4) are read by Spark and Sail through Iceberg REST (§6.1), not through
 
 | Path | Objects | How | Milestone |
 |---|---|---|---|
-| Python data source `format("loam")` | Collections | §5.6; the same code on Spark 4 and Sail | M2 |
+| Python data source `format("loams")` | Collections | §5.6; the same code on Spark 4 and Sail | M2 |
 | Iceberg REST | Tables (append-only and keyed) | Spark's Iceberg runtime or Sail's Iceberg support with a REST catalog pointed at Lakekeeper; credential vending by Lakekeeper (§10 §4) | M4 |
 
-- **Sail is a named Iceberg reader in the M4 gate (D55).** Sail 0.7.1 writes Iceberg copy-on-write only and lists position deletes, equality deletes and deletion vectors as under construction. Loam's keyed tables carry deletion vectors (§03 §2.3), so M4 budgets an upstream contribution of DV and delete-file reads to Sail; the reader mirrors the DV writer M4 builds for iceberg-rust anyway.
-- A table has one writer class (§03 §2.3): Spark and Sail may write tables that are not Loam link targets, never the keyed tables Loam's links maintain.
-- Loam serves no Spark Connect endpoint (D42): Sail is the Spark Connect server; Loam is its source and sink.
+- **Sail is a named Iceberg reader in the M4 gate (D55).** Sail 0.7.1 writes Iceberg copy-on-write only and lists position deletes, equality deletes and deletion vectors as under construction. Loams's keyed tables carry deletion vectors (§03 §2.3), so M4 budgets an upstream contribution of DV and delete-file reads to Sail; the reader mirrors the DV writer M4 builds for iceberg-rust anyway.
+- A table has one writer class (§03 §2.3): Spark and Sail may write tables that are not Loams link targets, never the keyed tables Loams's links maintain.
+- Loams serves no Spark Connect endpoint (D42): Sail is the Spark Connect server; Loams is its source and sink.
 - Sail's stateless workers with blocking shuffle to object storage and checkpointing (0.7) are the reference design for M6's distributed shuffle (§11 §3).
 
 ### 6.2 Spice
 
 Spice (Apache-2.0 runtime; Spice.ai Enterprise proprietary) federates and accelerates data for agent apps on its own DataFusion fork. It is both a distribution channel and a competitor (risk 11).
 
-- **Flight SQL source (M1 gate).** Spice's Flight SQL connector (beta) is a client in the M1.7 Flight SQL gate: a spicepod declares Loam collections as Flight SQL datasets, and the gate compares Spice's results with Loam's own, federated (no acceleration) and accelerated (Spice's Arrow accelerator). Spice's accelerators copy the data, so accelerated reads have Spice's refresh staleness, not Loam's consistency tokens. The namespace travels in the `operon-namespace` gRPC metadata (M1.6 W14); if Spice's connector cannot set custom metadata, the Flight SQL frontend also accepts namespace-qualified table names (verify in M1.7).
-- **Function names (D56).** Loam's SQL search functions use Spice's names where they overlap:
+- **Flight SQL source (M1 gate).** Spice's Flight SQL connector (beta) is a client in the M1.7 Flight SQL gate: a spicepod declares Loams collections as Flight SQL datasets, and the gate compares Spice's results with Loams's own, federated (no acceleration) and accelerated (Spice's Arrow accelerator). Spice's accelerators copy the data, so accelerated reads have Spice's refresh staleness, not Loams's consistency tokens. The namespace travels in the `loams-namespace` gRPC metadata (M1.6 W14); if Spice's connector cannot set custom metadata, the Flight SQL frontend also accepts namespace-qualified table names (verify in M1.7).
+- **Function names (D56).** Loams's SQL search functions use Spice's names where they overlap:
 
-  | Function | Loam | Spice |
+  | Function | Loams | Spice |
   |---|---|---|
   | `vector_search` | Table function: dense or sparse top-k over a collection's vector (M1.2) | Vector search over an accelerated dataset |
   | `text_search` | Table function: BM25 over Tantivy (M1.2) | BM25 over Tantivy |
   | `rrf` | Reciprocal-rank fusion of two or more ranked table-function results (M1.2) | Reciprocal-rank fusion |
   | `rerank` | Reserved for M3's rerank stage | Model reranking |
-  | `hybrid_search` | Loam's shorthand for filter + retrievers + fusion in one call (§05 §4); no Spice equivalent | — |
+  | `hybrid_search` | Loams's shorthand for filter + retrievers + fusion in one call (§05 §4); no Spice equivalent | — |
 
   Argument lists follow Spice's where the semantics match and extend them with named arguments (a vector literal, `k`, a filter); signatures are fixed in the M1.2 plan (verify against Spice's documentation).
-- Whether Spice's federation pushes table-function calls down to a Flight SQL source is unverified; if it does not, Loam's search reaches Spice users through Loam views or direct Flight SQL queries.
+- Whether Spice's federation pushes table-function calls down to a Flight SQL source is unverified; if it does not, Loams's search reaches Spice users through Loams views or direct Flight SQL queries.
 - `datafusion-federation` (Apache-2.0, from Spice) is a candidate for M4, pinned at 0.5.5, the last release on DataFusion 54 (§11 §1.2). The Spice runtime itself is never embedded (§7).
 
-## 7. What Loam does not build
+## 7. What Loams does not build
 
-- **Distributed Python compute.** Ray and Spark/Sail schedule the work; Loam hands out scan plans and accepts `DoPut` writes.
-- **Dataframes.** Polars, pandas and DuckDB consume Arrow; Loam ships no dataframe API.
-- **Training loaders beyond the thin adapter.** `loamdb.torch` is a sampler and resume state on top of Lance's reader; no prefetching framework, caching layer, sample-format codec or streaming shard format of its own.
+- **Distributed Python compute.** Ray and Spark/Sail schedule the work; Loams hands out scan plans and accepts `DoPut` writes.
+- **Dataframes.** Polars, pandas and DuckDB consume Arrow; Loams ships no dataframe API.
+- **Training loaders beyond the thin adapter.** `loams.torch` is a sampler and resume state on top of Lance's reader; no prefetching framework, caching layer, sample-format codec or streaming shard format of its own.
 - **GPU scheduling and model serving.** Embedding backfills and batch inference run on the lab's Ray or Spark cluster; `embed()` links and the M3 rerank stage call external model endpoints (§09).
 - **A Spark Connect server, Lance or Iceberg forks, or engine plugins** in other engines' processes beyond the Python data source and IO plugin above.
 
@@ -295,8 +295,8 @@ Rejected dependencies:
 
 | Project | License | Why not a dependency |
 |---|---|---|
-| Spice runtime (spiceai/spiceai) | Apache-2.0 (Enterprise edition proprietary) | Patches crates.io with forks of DataFusion 54 and arrow-rs (and forks of Ballista, iceberg-rust, Vortex, mistral.rs); embedding it would put Loam on Spice's fork cadence. A peer reached over Flight SQL (§6.2) |
-| Sail crates (lakehq/sail) | Apache-2.0 | Main is on DataFusion 55.1 / arrow 59.2 while Loam is on 54 / 58 (Lance 12); its maintainers declined a Rust-level Lance integration for the same lockstep reason; Loam needs no Spark Connect server (D42) |
+| Spice runtime (spiceai/spiceai) | Apache-2.0 (Enterprise edition proprietary) | Patches crates.io with forks of DataFusion 54 and arrow-rs (and forks of Ballista, iceberg-rust, Vortex, mistral.rs); embedding it would put Loams on Spice's fork cadence. A peer reached over Flight SQL (§6.2) |
+| Sail crates (lakehq/sail) | Apache-2.0 | Main is on DataFusion 55.1 / arrow 59.2 while Loams is on 54 / 58 (Lance 12); its maintainers declined a Rust-level Lance integration for the same lockstep reason; Loams needs no Spark Connect server (D42) |
 | Polars crates (`polars`, `polars-arrow`) | MIT (`polars-arrow`: MIT AND Apache-2.0) | A second Arrow implementation (forked from arrow2, no arrow-rs), so every boundary would convert; PyCapsule already gives Python users zero-copy exchange |
 | TileDB core and `tiledb-rs` | MIT core; `tiledb-rs` has no license file | `tiledb-rs` is unusable without a license and "early wip"; the core embeds Rust pinned to arrow 55 / DataFusion 47; activity is slowing and TileDB Vector Search depends on tiledb-cloud. Its ideas (named retained snapshots, a tensor column type) are taken (§4, Q19) |
 | Petastorm (uber/petastorm) | Apache-2.0 | Maintenance mode; Databricks marks it deprecated in favour of Mosaic Streaming; requires `pyspark`; Lance's PyTorch reader covers its role |
@@ -305,9 +305,9 @@ Rejected dependencies:
 
 | Milestone | Deliverables (§12) | Exit gate (§12) |
 |---|---|---|
-| M1 | Scan pinning (D53) in the native API (M1.2); `to_arrow()` / `to_polars()` (M1.6) | The ADBC Flight SQL drivers (Python and Go) and Spice's Flight SQL connector pass against Loam (D49, D56). Proposed plan-level test for M1.2 (not an exit gate): a scan plan's fragments, read with pylance (after Q20) and through their Flight tickets, return the rows of a native scan of the same manifest |
-| M2 (v1.0) | The AI data ecosystem workstream: dataset tags (D52), credential vending for direct fragment reads, the Ray Data datasource and datasink, Polars `scan_loam()` (experimental), `loamdb.torch`, the PySpark/Sail data source (D54) | A tagged collection read through Ray Data, Polars, PySpark (Spark 4 and Sail) and `loamdb.torch` returns identical rows, and a torch run resumed mid-epoch on a different GPU count, with the default `uneven="pad"`, runs equal step counts on every rank and sees each unpadded sample exactly once per epoch (§5.5) |
-| M4 | Iceberg analytics; table tags as Iceberg tag refs (§4.4); Sail DV and delete-file reads upstream (D55) | Spark, Sail, Trino, DuckDB and ClickHouse read Loam tables (keyed tables with deletion vectors included) through Lakekeeper's Iceberg REST catalog; Ray Data, Polars and the torch loader read tagged table snapshots |
+| M1 | Scan pinning (D53) in the native API (M1.2); `to_arrow()` / `to_polars()` (M1.6) | The ADBC Flight SQL drivers (Python and Go) and Spice's Flight SQL connector pass against Loams (D49, D56). Proposed plan-level test for M1.2 (not an exit gate): a scan plan's fragments, read with pylance (after Q20) and through their Flight tickets, return the rows of a native scan of the same manifest |
+| M2 (v1.0) | The AI data ecosystem workstream: dataset tags (D52), credential vending for direct fragment reads, the Ray Data datasource and datasink, Polars `scan_loams()` (experimental), `loams.torch`, the PySpark/Sail data source (D54) | A tagged collection read through Ray Data, Polars, PySpark (Spark 4 and Sail) and `loams.torch` returns identical rows, and a torch run resumed mid-epoch on a different GPU count, with the default `uneven="pad"`, runs equal step counts on every rank and sees each unpadded sample exactly once per epoch (§5.5) |
+| M4 | Iceberg analytics; table tags as Iceberg tag refs (§4.4); Sail DV and delete-file reads upstream (D55) | Spark, Sail, Trino, DuckDB and ClickHouse read Loams tables (keyed tables with deletion vectors included) through Lakekeeper's Iceberg REST catalog; Ray Data, Polars and the torch loader read tagged table snapshots |
 
 Risks: 11 (Spice, among others, competes for the same slot) and 21 (DataFusion/Arrow lockstep, mitigated by D51) in §12.
 
@@ -316,7 +316,7 @@ Open questions (§13):
 | # | Question | Needed by |
 |---|---|---|
 | Q19 | A tensor column type for collections (Arrow `fixed_shape_tensor`; idea from TileDB) and how Lance stores it; relevant to training data beyond text and embeddings | M4 design |
-| Q20 | Can pylance open a detached Lance version by id, or must Loam expose a manifest path or a custom opener (§3.5)? | M1.2 Task 0 |
+| Q20 | Can pylance open a detached Lance version by id, or must Loams expose a manifest path or a custom opener (§3.5)? | M1.2 Task 0 |
 
 ## 9. Sources
 

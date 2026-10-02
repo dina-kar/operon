@@ -1,0 +1,29 @@
+[package]
+name = "loams-worker"
+description = "Loams's worker task framework: lease-fenced background tasks with priorities and fair share."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+loams-common.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[features]
+# Test hooks (pausing lease renewals). Not part of the stable API.
+test-util = []
+
+[dev-dependencies]
+loams-meta = { workspace = true, features = ["test-util"] }
+loams-worker = { path = ".", features = ["test-util"] }
+loams-store.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

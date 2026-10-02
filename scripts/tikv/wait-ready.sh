@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Waits until a Loam TiKV playground is ready (R1 plan Task 1): PD lists every
+# Waits until a Loams TiKV playground is ready (R1 plan Task 1): PD lists every
 # keyspace pre-allocated in deploy/tikv/pd.toml, and with --with-tidb the TiDB
 # answers `select 1` over MySQL.
 #

@@ -1,9 +1,9 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Loam console API",
+    "title": "Loams console API",
     "version": "0.1.0",
-    "summary": "The control API behind the Loam console: org, teams, projects, environments, agents, keys and audit.",
+    "summary": "The control API behind the Loams console: org, teams, projects, environments, agents, keys and audit.",
     "description": "Design: docs/design/19-console-identity-and-agents.md. The data API (collections, documents, query) is the native API under /v1 and is not part of this contract. Timestamps are RFC 3339 in UTC. Lists are wrapped in an object keyed by the plural resource name.",
     "license": {
       "name": "Apache-2.0",
@@ -3948,7 +3948,7 @@
           },
           "prefix": {
             "type": "string",
-            "description": "loam_<key_id>, safe to show; the secret is never returned again."
+            "description": "loams_<key_id>, safe to show; the secret is never returned again."
           },
           "environment": {
             "type": "string"
@@ -4481,7 +4481,7 @@
       "session": {
         "type": "apiKey",
         "in": "cookie",
-        "name": "loam_session",
+        "name": "loams_session",
         "description": "Console sessions; mutating requests also send X-CSRF-Token."
       },
       "bearer": {

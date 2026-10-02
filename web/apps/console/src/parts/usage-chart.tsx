@@ -1,4 +1,4 @@
-import { formatNumber } from '@loam/ui';
+import { formatNumber } from '@loams/ui';
 import { useState } from 'react';
 import type { Schemas } from '../api/client';
 

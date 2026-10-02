@@ -1,0 +1,57 @@
+[package]
+name = "loams-safekeeper"
+description = "Loams's WAL service for Neon computes: the safekeeper wire protocol (v3), the acceptor state machine and the WalStore trait that the TiKV hot tier implements (§28 P4a)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+# The TiKV WalStore (the production hot tier). Off by default, so the crate
+# builds without the tikv-client git dependency.
+tikv = ["dep:loams-tikv", "dep:futures"]
+# Arm A's local-NVMe store (§28 §7.2): the journal, its I/O tiers and the
+# acceptor metadata.
+nvme = ["dep:rustix", "dep:crc32c"]
+# Arm A's compio data path (§28 §7.2, D263): thread-per-core shards with the
+# io_uring journal engine.
+compio = ["nvme", "server", "dep:compio", "dep:futures"]
+# The network service, its HTTP API and the loams-wal binary.
+server = ["dep:axum", "dep:clap", "dep:serde_json", "dep:tracing-subscriber"]
+
+[[bin]]
+name = "loams-wal"
+path = "src/bin/loams-wal.rs"
+required-features = ["server"]
+
+[[example]]
+name = "tikv_commit_modes"
+required-features = ["tikv"]
+
+[dependencies]
+async-trait.workspace = true
+axum = { workspace = true, optional = true }
+bytes.workspace = true
+clap = { workspace = true, optional = true, features = ["env"] }
+compio = { workspace = true, optional = true }
+crc32c = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+hex.workspace = true
+loams-tikv = { workspace = true, optional = true }
+postcard.workspace = true
+rustix = { workspace = true, optional = true, features = ["fs"] }
+serde.workspace = true
+serde_json = { workspace = true, optional = true }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
+
+[dev-dependencies]
+postcard.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

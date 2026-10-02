@@ -2,9 +2,9 @@
 
 Status: **Approved** (direction, user) · 2026-09-24. Items marked (verify) are resolved in the implementation plan.
 
-> **Amended 2026-09-27 by [§21](21-durable-execution.md) (D138–D147).** The server is embedded in the `operon` binary behind the `durable` feature instead of running in a `gateway` role. Its storage is SQLite (dev) and a native TiKV `Store` (clusters, cloud and self-hosted; D261, which retires TiDB) rather than the blob server over `operon-store`. Phase A moves from M3 to track D (D1). §1 (the protocol), §5 (consistency) and §7 (non-goals) still hold; §3, §4 and §6 are superseded where §21 differs.
+> **Amended 2026-09-27 by [§21](21-durable-execution.md) (D138–D147).** The server is embedded in the `loams` binary behind the `durable` feature instead of running in a `gateway` role. Its storage is SQLite (dev) and a native TiKV `Store` (clusters, cloud and self-hosted; D261, which retires TiDB) rather than the blob server over `loams-store`. Phase A moves from M3 to track D (D1). §1 (the protocol), §5 (consistency) and §7 (non-goals) still hold; §3, §4 and §6 are superseded where §21 differs.
 
-AI agents need more than memory and retrieval. A multi-step agent run calls models and tools for minutes or hours, waits for humans, fans out sub-tasks and must survive crashes without redoing paid work. Today that means a sixth system (Temporal, or a queue + cron + Postgres). Operon serves the **Resonate protocol** instead, so agent workflows run durably in the same system that holds their memory, search indexes and traces. (Since §21, durable state lives in SQLite or TiKV, not in the bucket: D139, D261.)
+AI agents need more than memory and retrieval. A multi-step agent run calls models and tools for minutes or hours, waits for humans, fans out sub-tasks and must survive crashes without redoing paid work. Today that means a sixth system (Temporal, or a queue + cron + Postgres). Loams serves the **Resonate protocol** instead, so agent workflows run durably in the same system that holds their memory, search indexes and traces. (Since §21, durable state lives in SQLite or TiKV, not in the bucket: D139, D261.)
 
 ---
 
@@ -25,12 +25,12 @@ Protocol vocabulary (from the Lean specification, `spec/spec/01-protocol/types.l
 
 Workers receive tasks through transports: HTTP push (Resonate calls the worker), HTTP long-poll / SSE (the worker holds a connection) and Google Pub/Sub.
 
-## 2. Why this fits Operon
+## 2. Why this fits Loams
 
-1. **It already runs on a bucket.** Resonate's `resonate-server-blob` crate stores each origin as one canonical document at `wf/<origin>` and commits every transition with one conditional PUT (`If-None-Match: *` / `If-Match: <etag>`). Deadlines are zero-byte timer objects `t/<NN>/<deadline>_<target>@<token>`. It needs no log, lock or consensus, and it is built on **`object_store` 0.14** — the same crate as `operon-store`.
-2. **It is a plugin architecture.** A Resonate server is assembled from *server* (storage), *worker* (transport) and *gateway* (edge) plugins behind the `ResonateServer` trait (`resonate-core`). Operon registers its own plugins; it does not fork the protocol.
-3. **It is formally specified and differentially tested.** Every storage engine is compared step by step against an executable oracle on randomized traffic, with a linearizability checker and a trace checker against the Lean/TLA+ models. An Operon backend inherits that harness as its conformance gate.
-4. **Its task leases match Operon's model.** Task `version` is a fencing token, exactly like the metastore's lease epochs (§09 §3), so zombie workers are rejected the same way.
+1. **It already runs on a bucket.** Resonate's `resonate-server-blob` crate stores each origin as one canonical document at `wf/<origin>` and commits every transition with one conditional PUT (`If-None-Match: *` / `If-Match: <etag>`). Deadlines are zero-byte timer objects `t/<NN>/<deadline>_<target>@<token>`. It needs no log, lock or consensus, and it is built on **`object_store` 0.14** — the same crate as `loams-store`.
+2. **It is a plugin architecture.** A Resonate server is assembled from *server* (storage), *worker* (transport) and *gateway* (edge) plugins behind the `ResonateServer` trait (`resonate-core`). Loams registers its own plugins; it does not fork the protocol.
+3. **It is formally specified and differentially tested.** Every storage engine is compared step by step against an executable oracle on randomized traffic, with a linearizability checker and a trace checker against the Lean/TLA+ models. A Loams backend inherits that harness as its conformance gate.
+4. **Its task leases match Loams's model.** Task `version` is a fencing token, exactly like the metastore's lease epochs (§09 §3), so zombie workers are rejected the same way.
 
 ## 3. Architecture
 
@@ -39,7 +39,7 @@ Workers receive tasks through transports: HTTP push (Resonate calls the worker),
                                                    │ auth → namespace
                                                    ▼
                                      ResonateServer (per namespace)
-                                     = resonate-server-blob kernel over operon-store
+                                     = resonate-server-blob kernel over loams-store
                                                    │ one conditional PUT per origin batch
                                                    ▼
              s3://<bucket>/<cluster_prefix>/ns/<ns>/durable/{wf,sched,t}/…
@@ -58,19 +58,19 @@ Workers receive tasks through transports: HTTP push (Resonate calls the worker),
 ### Phase A — the Resonate surface on the blob backend (M3)
 
 - Fork, pinned to a git revision (the crates are not on crates.io): `resonate-core`, `resonate-plugin`, `resonate-gateway-http`, `resonate-server-blob`, `resonate-transport-http-push`, `resonate-transport-http-poll`. Workspace version at research time: 0.10.1.
-- Hand the blob server an `object_store` built by `operon-store` (so fault injection, provider conformance and credentials are shared) with the namespace prefix.
-- Replace `resonate-auth` with Operon's authN/Z (§10 §4); keep the protocol and error codes byte-compatible.
+- Hand the blob server an `object_store` built by `loams-store` (so fault injection, provider conformance and credentials are shared) with the namespace prefix.
+- Replace `resonate-auth` with Loams's authN/Z (§10 §4); keep the protocol and error codes byte-compatible.
 - Promise and task search keep the blob backend's semantics: a scan of the namespace's documents, correct but not atomic and not fast. Off by default for large namespaces.
 
-**Exit gates:** Resonate's TypeScript and Python SDK test suites pass unmodified against Operon; Resonate's differential and linearizability harness passes against a 3-gateway Operon deployment over one bucket, including object-store fault injection (412/409/5xx, lost responses).
+**Exit gates:** Resonate's TypeScript and Python SDK test suites pass unmodified against Loams; Resonate's differential and linearizability harness passes against a 3-gateway Loams deployment over one bucket, including object-store fault injection (412/409/5xx, lost responses).
 
-### Phase B — Operon-native value (M4)
+### Phase B — Loams-native value (M4)
 
 1. **Search and observability via a change stream.** After each committed origin write, the server appends the changed promises and tasks to the namespace's `durable_events` stream (at-least-once, idempotent by `(origin, generation)`). A link maintains a keyed table `system.durable_promises` and `system.durable_tasks`, so SQL and the Resonate `search` operations run against an index instead of a scan. A worker repair sweep re-emits documents whose generation is ahead of the index. These reads are eventually consistent, as Resonate's searches already are.
-2. **Execution graphs.** The same events feed a mapped Operon graph (§07): promises as vertices, callbacks as edges, so a call tree is a `graph_expand` from its root promise (Resonate's Neo4j backend does the same in Neo4j).
+2. **Execution graphs.** The same events feed a mapped Loams graph (§07): promises as vertices, callbacks as edges, so a call tree is a `graph_expand` from its root promise (Resonate's Neo4j backend does the same in Neo4j).
 3. **Cluster-wide timer shards.** Phase A keeps timers per namespace, which is fine for thousands of active namespaces but makes timer scanning grow with namespace count. Phase B moves timer objects to cluster-level shards (`durable/t/<NN>/<deadline>_<ns>_<target>@<token>`), each shard leased to one worker through meta leases, so one sweeper per shard lists only due deadlines.
 4. **Low-latency namespaces.** Place a namespace's `durable/` prefix on the `express` zonal buckets (§02 §2) for single-digit-ms transitions (verify that S3 Express One Zone supports `If-Match` on PUT).
-5. **Workers on streams (M5+).** A transport plugin that publishes tasks to an Operon stream, so named consumers of the native streaming API (§02 §7) can serve as a worker pool.
+5. **Workers on streams (M5+).** A transport plugin that publishes tasks to a Loams stream, so named consumers of the native streaming API (§02 §7) can serve as a worker pool.
 
 ## 5. Consistency and failure model
 
@@ -79,7 +79,7 @@ Workers receive tasks through transports: HTTP push (Resonate calls the worker),
 | One origin | Linearizable: each transition is one conditional write, decided against the latest document (Resonate's checker verifies this) |
 | Across origins | Independent; the protocol never asks for cross-origin atomicity |
 | Searches | Surveys, not atomic (Phase A: document scan; Phase B: eventually consistent index) |
-| Workflow step + Operon data write | Not atomic, but idempotent: write data keyed by the step's promise id (an upsert), and return the write's consistency token as the step's value so later steps read their own writes |
+| Workflow step + Loams data write | Not atomic, but idempotent: write data keyed by the step's promise id (an upsert), and return the write's consistency token as the step's value so later steps read their own writes |
 
 Failure behavior comes from the blob backend's effect order — **arm deadline → commit document → disarm old deadline → send messages → answer** — which leaves every crash window in a state a timer or a client retry repairs (see `impl/server/s3/docs/on-s3.md` upstream). A lost gateway node loses no state; requests are retried against another node.
 
@@ -90,7 +90,7 @@ Each transition costs one conditional PUT ($0.005 per 1,000 on S3 Standard) plus
 ## 7. Non-goals
 
 - Not a general workflow product: no workflow DSL, no visual designer beyond Resonate's own console (`resonate-gateway-web`, optional).
-- Not a replacement for Resonate's SDKs: Operon ships no SDK of its own for durable execution.
+- Not a replacement for Resonate's SDKs: Loams ships no SDK of its own for durable execution.
 - No cross-origin transactions and no transactional coupling with collection/table writes (see §5 for the idempotent pattern).
 
 ## 8. Open questions
@@ -98,4 +98,4 @@ Each transition costs one conditional PUT ($0.005 per 1,000 on S3 Standard) plus
 1. SDK support for per-namespace auth headers or base paths (verify per SDK).
 2. `If-Match` support on S3 Express One Zone, GCS Rapid and Azure for the low-latency option.
 3. Whether Phase B's change stream should be emitted by a fork of the blob kernel or by a wrapper `ResonateServer` that diffs documents before and after `process`.
-4. Upstream relationship: contribute the Operon server plugin back, or keep it in-tree.
+4. Upstream relationship: contribute the Loams server plugin back, or keep it in-tree.

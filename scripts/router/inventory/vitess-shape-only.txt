@@ -1,0 +1,18 @@
+# Lower-case substrings of statements that read an instance's identity: two engines never agree on them, so
+# compat-replay compares these by column names, not by value or row count (--shape-only).
+@@version
+@@global.version
+version_comment
+select version()
+server_uuid
+@@hostname
+@@port
+@@server_id
+@@global.gtid_executed
+@@gtid_executed
+gtid_purged
+show master status
+show binary log
+show binlog
+show replica status
+show slave status

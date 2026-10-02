@@ -1,0 +1,36 @@
+[package]
+name = "loams-es"
+description = "Loams's Elasticsearch-compatible gateway: the Elasticsearch 8 REST API over the collection service."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+axum.workspace = true
+base64.workspace = true
+futures.workspace = true
+loams-collection.workspace = true
+loams-common.workspace = true
+loams-query.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tower.workspace = true
+tracing.workspace = true
+ulid.workspace = true
+
+[features]
+# `dsl::reference_eval`, the reference evaluator of the differential DSL
+# tests (Task 7).
+test-util = []
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

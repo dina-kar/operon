@@ -1,0 +1,43 @@
+// The Loams Live catalog records (design §20 §4.1–§4.3; R1 plan Task 8).
+// Internal: stored in TiKV by the server under the catalog prefix `0x01`
+// and never sent to clients, so the TypeScript client does not generate it.
+syntax = "proto3";
+
+package loams.live.v1;
+
+// A table: the value of its catalog record `0x01 ‖ 0x02 ‖ id:u32 BE`. The
+// built-in indexes `by_id` (id 0, the document key itself) and
+// `by_creation_time` (id 1) are implicit and not listed.
+message TableDef {
+  // The encoding version; 1 in R1.
+  uint32 format = 1;
+  // The table id, the `table_id:u32` of its document and index keys.
+  uint32 id = 2;
+  string name = 3;
+  // The user indexes, in definition order.
+  repeated IndexDef indexes = 4;
+  // The id the next user index gets; ids are never reused, so the entries
+  // of a removed index can never be read as another index's.
+  uint32 next_index_id = 5;
+}
+
+// A user index of a table. `_creationTime` and then `_id` are appended to
+// every index, so entries are unique and stably ordered.
+message IndexDef {
+  // The index id, from 2 (0 and 1 are the built-in indexes).
+  uint32 id = 1;
+  string name = 2;
+  // The indexed top-level fields, at most 16.
+  repeated string fields = 3;
+}
+
+// The app's own settings: the value of its catalog record `0x01 ‖ 0x05`
+// (R1 plan row T10-1), written when the app's runner first opens.
+message AppDef {
+  // The encoding version; 1 in R1.
+  uint32 format = 1;
+  // The journal shard count, 1 to 1 024 (16 by default). It changes only
+  // while the journal is empty (no head, entry or checkpoint); R2 migrates
+  // a non-empty journal.
+  uint32 journal_shards = 2;
+}

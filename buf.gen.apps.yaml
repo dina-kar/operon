@@ -1,0 +1,25 @@
+# TypeScript for @loams/proto (design §37 §8.4, AP0 Task 6): protoc-gen-es v2
+# writes the messages and service descriptors of the app packages, which
+# @connectrpc/connect v2 turns into clients (`createClient(Service, t)`).
+# Run `pnpm --filter @loams/proto generate` in web/ (it pins buf and the
+# plugin); CI regenerates and fails on a diff. The generated code is
+# committed. The Swift and Kotlin templates beside this file are run by
+# ostrium-labs/loams-mobile against a pinned ref of this repository.
+version: v2
+inputs:
+  - directory: proto
+    paths:
+      - proto/loams/instance/v1
+      - proto/loams/devices/v1
+      - proto/loams/approvals/v1
+      - proto/loams/operations/v1
+      - proto/loams/notifications/v1
+      - proto/loams/errors/v1
+plugins:
+  - local: web/packages/proto/node_modules/.bin/protoc-gen-es
+    out: web/packages/proto/src/gen
+    include_imports: false
+    opt:
+      - target=ts
+      - import_extension=js
+clean: true
