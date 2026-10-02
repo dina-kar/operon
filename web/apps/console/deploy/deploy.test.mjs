@@ -253,6 +253,29 @@ describe('smoke', () => {
     assert.deepEqual(await smoke('https://console.loams.dev', site(false)), []);
   });
 
+  test('fails a hosted deploy with missing, invalid or mismatched API configuration', async () => {
+    for (const value of [{}, { server: 'not a url' }, { server: 'https://wrong.example' }]) {
+      const fetcher = async (url) =>
+        new URL(url).pathname === '/ui/config.json' ? Response.json(value) : site(false)(url);
+      const failures = await smoke('https://console.loams.dev', fetcher, 'https://api.example');
+      assert.ok(
+        failures.some((failure) => failure.includes('server origin')),
+        failures.join('\n'),
+      );
+    }
+  });
+
+  test('compares normalized API origins after a hosted deploy', async () => {
+    const fetcher = async (url) =>
+      new URL(url).pathname === '/ui/config.json'
+        ? Response.json({ server: 'https://api.example/path' })
+        : site(false)(url);
+    assert.deepEqual(
+      await smoke('https://console.loams.dev', fetcher, 'https://api.example/other'),
+      [],
+    );
+  });
+
   test('fails when scripts come back as the HTML fallback', async () => {
     const failures = await smoke('https://console.loams.dev', site(true));
     assert.ok(

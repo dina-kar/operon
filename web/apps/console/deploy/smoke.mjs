@@ -19,7 +19,7 @@ export function isJavaScript(type) {
   return /^(text|application)\/javascript\b/i.test(type ?? '');
 }
 
-export async function smoke(origin, fetcher = fetch) {
+export async function smoke(origin, fetcher = fetch, expectedServer) {
   const failures = [];
   const get = async (path) => {
     const res = await fetcher(new URL(path, origin), { redirect: 'follow' });
@@ -54,12 +54,27 @@ export async function smoke(origin, fetcher = fetch) {
   const config = await get('/ui/config.json');
   expect(config.res.status === 200, `/ui/config.json returned ${config.res.status}`);
   expect(config.type.includes('json'), `/ui/config.json is ${config.type}, not JSON`);
+  if (expectedServer) {
+    let expectedOrigin;
+    let actualOrigin;
+    try {
+      expectedOrigin = new URL(expectedServer).origin;
+      const server = JSON.parse(config.body)?.server;
+      if (typeof server === 'string') actualOrigin = new URL(server).origin;
+    } catch {
+      // Invalid or missing configuration fails the deployed-origin comparison.
+    }
+    expect(
+      expectedOrigin !== undefined && actualOrigin === expectedOrigin,
+      `/ui/config.json server origin is ${actualOrigin ?? '<missing or invalid>'}, expected ${expectedOrigin ?? '<invalid>'}`,
+    );
+  }
   return failures;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const origin = process.argv[2] ?? 'https://console.loams.dev';
-  const failures = await smoke(origin);
+  const failures = await smoke(origin, fetch, process.env.LOAMS_CONSOLE_SERVER);
   for (const f of failures) console.error(`FAIL ${f}`);
   if (failures.length) process.exit(1);
   console.log(`${origin}: ok`);

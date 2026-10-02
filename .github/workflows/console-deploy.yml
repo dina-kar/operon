@@ -79,5 +79,7 @@ jobs:
           workingDirectory: web/apps/console
           command: deploy
       - name: smoke check
+        env:
+          LOAMS_CONSOLE_SERVER: ${{ vars.LOAMS_CONSOLE_SERVER }}
         if: steps.secrets.outputs.ok == 'true'
         run: node apps/console/deploy/smoke.mjs https://console.loams.dev
