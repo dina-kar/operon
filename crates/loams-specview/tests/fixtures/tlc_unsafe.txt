@@ -1,0 +1,54 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 57 and seed -5763791691218346025 with 2 workers on 14 cores with 3445MB heap and 64MB offheap memory [pid: 131683] (Linux 7.2.4-3-cachyos amd64, Arch Linux 25.0.4.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/dinakaran/Documents/Operon-wt/rt0-specview/spec/tla/router/MCShardMap.tla
+Parsing file /home/dinakaran/Documents/Operon-wt/rt0-specview/spec/tla/router/ShardMap.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module ShardMap
+Semantic processing of module MCShardMap
+Starting... (2026-10-02 05:10:48)
+Computing initial states...
+Computed 2 initial states...
+Computed 4 initial states...
+Computed 8 initial states...
+Finished computing initial states: 9 distinct states generated at 2026-10-02 05:10:48.
+Error: Invariant SingleWriter is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ fenced = [s1 |-> FALSE, s2 |-> FALSE, s3 |-> FALSE]
+/\ data = [s1 |-> {}, s2 |-> {}, s3 |-> {}]
+/\ applied = [i1 |-> 0, i2 |-> 0]
+/\ configmap = 0
+/\ nextWrite = 1
+/\ history = <<[k1 |-> "s1", k2 |-> "s1"]>>
+/\ record = [gen |-> 0, owner |-> [k1 |-> "s1", k2 |-> "s1"]]
+/\ acked = {}
+
+State 2: <Publish line 124, col 5 to line 130, col 71 of module ShardMap>
+/\ fenced = [s1 |-> FALSE, s2 |-> FALSE, s3 |-> FALSE]
+/\ data = [s1 |-> {}, s2 |-> {}, s3 |-> {}]
+/\ applied = [i1 |-> 0, i2 |-> 0]
+/\ configmap = 0
+/\ nextWrite = 1
+/\ history = <<[k1 |-> "s1", k2 |-> "s1"], [k1 |-> "s1", k2 |-> "s2"]>>
+/\ record = [gen |-> 1, owner |-> [k1 |-> "s1", k2 |-> "s2"]]
+/\ acked = {}
+
+State 3: <WriteConfigMap line 159, col 5 to line 164, col 77 of module ShardMap>
+/\ fenced = [s1 |-> FALSE, s2 |-> FALSE, s3 |-> FALSE]
+/\ data = [s1 |-> {}, s2 |-> {}, s3 |-> {}]
+/\ applied = [i1 |-> 0, i2 |-> 0]
+/\ configmap = 1
+/\ nextWrite = 1
+/\ history = <<[k1 |-> "s1", k2 |-> "s1"], [k1 |-> "s1", k2 |-> "s2"]>>
+/\ record = [gen |-> 1, owner |-> [k1 |-> "s1", k2 |-> "s2"]]
+/\ acked = {}
+
+121 states generated, 103 distinct states found, 90 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 10 (minimum is 10, the maximum 10 and the 95th percentile is 10).
+Finished in 00s at (2026-10-02 05:10:48)

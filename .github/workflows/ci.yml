@@ -57,6 +57,7 @@ jobs:
       dapr-edge: ${{ steps.filter.outputs.dapr-edge }}
       spec: ${{ steps.filter.outputs.spec }}
       router: ${{ steps.filter.outputs.router }}
+      specview: ${{ steps.filter.outputs.specview }}
       lean: ${{ steps.filter.outputs.lean }}
     steps:
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -196,6 +197,13 @@ jobs:
               - "crates/loams-sqlrouter/**"
               - "crates/loams-compat/**"
               - "conformance/**"
+            # loams-specview, the browser view of the spec and test runs. Its
+            # live test runs the Selftest spec, so spec changes count too.
+            specview:
+              - *toolchain
+              - "crates/loams-specview/**"
+              - "scripts/spec/**"
+              - "spec/tla/**"
 
   check:
     name: fmt, clippy, test
@@ -448,6 +456,43 @@ jobs:
       - name: Rust against the Lean oracle (10 000 cases)
         working-directory: .
         run: cargo test -p loams-sqlrouter --locked --test it lean_oracle -- --nocapture
+
+  # loams-specview (dev tool): the server and its tests, including the live
+  # SSE test that runs TLC on the Selftest spec, then the Leptos frontend built
+  # with trunk. trunk is a prebuilt release (Apache-2.0/MIT) pinned by checksum;
+  # it fetches the wasm-bindgen CLI that matches Cargo.lock.
+  specview:
+    name: loams-specview
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.specview == 'true') }}
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_DEV_HEAVY || 'depot-ubuntu-24.04-4') }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/loam/spec-tools
+          key: spec-tools-${{ hashFiles('scripts/spec/tools.lock') }}
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy (server)
+        run: cargo clippy -p loams-specview --all-targets --locked -- -D warnings
+      - name: tests (the live ones need Java and the pinned tools)
+        run: cargo test -p loams-specview --locked -- --include-ignored
+      - name: wasm target
+        run: rustup target add wasm32-unknown-unknown
+      - name: clippy (frontend)
+        run: cargo clippy -p loams-specview --no-default-features --features web --target wasm32-unknown-unknown --bin loams-specview-web --locked -- -D warnings
+      - name: trunk
+        run: |
+          curl -sSfL -o trunk.tar.gz https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz
+          echo "f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b  trunk.tar.gz" | sha256sum -c -
+          tar xzf trunk.tar.gz -C "$HOME/.cargo/bin" trunk
+      - name: build the frontend
+        working-directory: crates/loams-specview
+        run: trunk build --release --locked
 
   sim:
     name: simulation seed sweep

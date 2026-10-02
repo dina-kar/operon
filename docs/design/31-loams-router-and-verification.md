@@ -360,6 +360,10 @@ The map for `ShardMap` (the others follow the same form in their headers):
 | `Fence(s)`, `Unfence(s)` | `Cutover` → `Output::Fence`; `PostgresShard::fence_writes` | `shard.fence {shard, on}` |
 | `ClientWrite(i, k)`, `Accept(s, k)`, `Reject(s, k)` | Workload clients in `loams-detsim` and `loams-nemesis` | `client.write {key, instance, shard, result}` |
 
+### 11.4 As-built tooling: `loams-specview`
+
+`crates/loams-specview` (a dev tool, `publish = false`) shows the spec checks and the router's Rust tests in a browser while they run. `loams-specview serve` runs each `specs.toml` variant under TLC, parses the output (progress lines, counterexample states, `Back to state N` lassos, TLA+ values into JSON) and streams it over SSE with the Rust test results (`cargo nextest run --message-format libtest-json` when nextest is installed, else `cargo test`). The Leptos frontend lists every variant and test, and plays each counterexample step by step with the changed variables highlighted. `ShardMap` and `ReshardCutover` have their own views (owners by generation, instances and fences, write sets with the acknowledged ones marked; the saga phases, the instances' routes to the Src and Dst stores); any other spec gets a variable table. `--record` saves a run as JSON lines and `replay` plays it back. Its `SpecEvent` is a placeholder for the RT1 simulator's §7.1 events: when RT1 emits them as JSON lines the same player will show a simulated run. How to run it: `crates/loams-specview/README.md`.
+
 ## 12. Lean 4 kernels and the differential oracle (D312)
 
 ### 12.1 Scope
