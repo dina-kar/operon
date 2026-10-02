@@ -1,6 +1,6 @@
 # Pending log for §42 (Cloudflare's Birthday Week 2026 betas)
 
-Staged 2026-10-02 so the decision log is not edited from this branch. Paste each block into `docs/design/13-decision-log.md` after D559 and Q559, renumbering if D560–D579 or Q560–Q579 were taken meanwhile. All rows are **Proposed**; the direction is the owner's of 2026-10-02: "search the latest beta features in the Cloudflare blog and use them."
+Staged 2026-10-02 so the decision log is not edited from this branch. Paste each block into `docs/design/13-decision-log.md` after D559 and Q559, renumbering if D560–D578 or Q560–Q572 were taken meanwhile (D560–D579 and Q560–Q579 are reserved). All rows are **Proposed**; the direction is the owner's of 2026-10-02: "search the latest beta features in the Cloudflare blog and use them."
 
 ## Decisions
 
@@ -13,7 +13,7 @@ Staged 2026-10-02 so the decision log is not edited from this branch. Paste each
 | D564 | 2026-10-02 | Hosted Artifacts use (namespaces, jurisdiction, quotas) is private | Open-core | Proposed |
 | D565 | 2026-10-02 | **Q507 default: the client-tool relay for credentialed work; a `remote` provider for unattended public-web work**, one tool contract | Credentials stay on the person's machine | Proposed |
 | D566 | 2026-10-02 | The remote provider targets Browser Run CDP and Playwright endpoints; Kitesurf is optional because it is closed source with no licence yet; Playwright MCP stays the self-host provider | Stable, documented surface | Proposed |
-| D567 | 2026-10-02 | A remote browser is a third party: no user-credential `secret_ref` fills and no persistent profile by default; full audit | Integrity | Proposed |
+| D567 | 2026-10-02 | A remote browser is a third party: no user-credential `secret_ref` fills; service-account fills only on an allowlisted hostname; no persistent profile by default; full audit | Integrity | Proposed |
 | D568 | 2026-10-02 | WebMCP is an enhancement behind feature detection, never the only path (Community Group draft of 2026-09-30) | Experimental | Proposed |
 | D569 | 2026-10-02 | The console and plugins register one WebMCP tool per plugin action from the same action registry as the MCP server, enforcing OpenFGA and approvals | One description per action | Proposed |
 | D570 | 2026-10-02 | The web bridge's v2 adds `list_webmcp_tools` and `call_webmcp_tool` | Functions over UI driving | Proposed |
