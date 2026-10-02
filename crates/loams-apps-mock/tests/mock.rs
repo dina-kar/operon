@@ -220,6 +220,39 @@ async fn stale_session_requires_step_up_and_requester_cannot_approve() {
     assert_eq!(err.code, ErrorCode::PermissionDenied);
     assert_eq!(reason(&err), "requester_cannot_approve");
 
+    // An agent acting for Dana cannot approve Dana's own request either.
+    let err = client
+        .decide_approval_with_options(
+            DecideApprovalRequest {
+                approval_id: CREATE_KEY.into(),
+                revision: 1,
+                decision: DecisionKind::DECISION_KIND_APPROVE.into(),
+                ..Default::default()
+            },
+            auth("Bearer mock-access-agt_claude"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    assert_eq!(reason(&err), "requester_cannot_approve");
+    let key = client
+        .get_approval_with_options(
+            GetApprovalRequest {
+                approval_id: CREATE_KEY.into(),
+                ..Default::default()
+            },
+            auth(OMAR),
+        )
+        .await
+        .unwrap()
+        .into_owned();
+    let key = key.approval.as_option().unwrap();
+    assert_eq!(key.requested_by.as_option().unwrap().id, "usr_dana");
+    assert_eq!(
+        key.state.as_known(),
+        Some(ApprovalState::APPROVAL_STATE_PENDING)
+    );
+
     let err = client
         .decide_approval_with_options(
             DecideApprovalRequest {
