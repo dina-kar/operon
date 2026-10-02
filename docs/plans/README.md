@@ -79,16 +79,16 @@ Design reference: [22 Loams Commons: an open-source showcase suite on Loams](../
 | [SC1: Loams Commons](2026-09-28-sc1-showcase-suite.md) | Suite repo and license check; Keycloak realm and SSO for every app (Plane through Forgejo); the cross-app OpenFGA model; provisioning sagas and reconcile on Loams Durable; RustFS storage; Forgejo's issue search on Loams's ES API; OTLP logs; unified search, the Live activity feed and the MCP assistant; Compose and Helm; the dogfooding cutover | v1.0 (M1 + M2), the unified auth plan (Q30) implemented, §19 OIDC login, M2 OTLP logs (D73), D2 durable tenancy, R1/R2 sync API | Not started |
 | SC2+ | The owner's 2026-09-28 directions (D-SC-12, D-SC-13): apps moved onto Loams's Postgres write surface, one at a time; the OpenPanel fork on Loams's Iceberg analytics in place of ClickHouse (D-SC-15) | the engine's Postgres-write design over TiKV, M4 (Iceberg) | Not yet planned |
 
-## Track W: WeSQL as the MySQL-on-the-bucket OLTP engine (fork and this repository)
+## Track WS: WeSQL as the MySQL-on-the-bucket OLTP engine (fork and this repository)
 
-Design reference: [29 WeSQL as Loams's MySQL-on-the-bucket OLTP engine](../design/29-wesql-oltp.md) (D273–D280). Four milestones, each a small stack of PRs in the fork `ostrium-labs/wesql` (F) and in this repository (L). The names W1–W4 are §29's and are not the agent-workspace phases W0–W3 of §15 (row W of §12). Whether W1–W4 beat reversing D260 is the owner's Q273.
+Design reference: [29 WeSQL as Loams's MySQL-on-the-bucket OLTP engine](../design/29-wesql-oltp.md) (D273–D280). Four milestones, each a small stack of PRs in the fork `ostrium-labs/wesql` (F) and in this repository (L). §29's milestones are WS1–WS4 (renamed from W1–W4 on 2026-10-02, D416, so they no longer clash with §15's agent-workspace phases W0–W3, row W of §12). They go ahead and D260 stands (Q273, D409).
 
 | Plan | Scope | Depends on | Status |
 |---|---|---|---|
-| W1 | Foreign keys enforced in the fork's SQL layer behind `wesql_enforce_foreign_keys` (D275) | — (the W1 spike, Q275) | Not yet planned |
-| W2 | The binlog made durable in a Loams WAL quorum before a commit is acknowledged: the `mysql-binlog` timeline kind in `loams-wal`, the GPL-2.0-only client in the fork (D276, D277) | The Arm A gate (§28); Q271 | Not yet planned |
-| W3 | Failover on the WAL quorum: term fencing, the `x/` record, leases, promotion as a saga (D278) | W2 | Not yet planned |
-| W4 | Analytics through Iceberg: the binlog-to-changelog bridge and a keyed Iceberg table (D279) | W2 for the WAL source (the first half from D154's N6) | Not yet planned |
+| WS1 | Foreign keys enforced in the fork's SQL layer behind `wesql_enforce_foreign_keys` (D275) | — (the WS1 spike, Q275) | Not yet planned |
+| WS2 | The binlog made durable in a Loams WAL quorum before a commit is acknowledged: the `mysql-binlog` timeline kind in `loams-wal`, the GPL-2.0-only client in the fork (D276, D277) | The Arm A gate (§28); Q271 | Not yet planned |
+| WS3 | Failover on the WAL quorum: term fencing, the `x/` record, leases, promotion as a saga (D278) | WS2 | Not yet planned |
+| WS4 | Analytics through Iceberg: the binlog-to-changelog bridge and a keyed Iceberg table (D279) | WS2 for the WAL source (the first half from D154's N6) | Not yet planned |
 
 ## Track CLI: the `loams` CLI, installer and agent bootstrap (parallel to M1)
 
@@ -109,8 +109,8 @@ Design reference: [31 Loams Router and verification](../design/31-loams-router-a
 | [RT0: Router foundations, specs and the compatibility inventory](2026-10-01-rt0-foundations-and-specs.md) | `spec/tla/router` with `ShardMap` and `ReshardCutover` checked and skeletons of the others, the `tla` job; the compatibility inventory for PgDog→Postgres and Vitess v24→MySQL 8.0.46, replayed on WeSQL and Loams Postgres; `loams-sqlrouter` (records, ranges, Postgres and Vitess hashes with reference vectors, the sans-I/O `Machine` seam and its lints); the Lean project with the partition proofs, the oracle and the `lean` job | — | **Done** (§31 §22) |
 | [RT1: Postgres single-shard slice and the deterministic simulator](2026-10-01-rt1-postgres-slice-and-sim.md) | `loams-detsim` (bit-exact scheduler, network model, fault points, shrinking); `ShardMapStore` on TiKV; PgDog rendering and admin adapter; the Postgres backend adapter; models with shared contract suites; the `ConfigPush` machine; trace validation of `ShardMap`; the `shardmap` DST scenario and `router-sim` job; the compose stack with a single-shard differential | RT0; §28 P3 for Loams Postgres computes (Postgres 17.11 until then) | Planned |
 | [RT2: Scatter, merge and aggregate with the Lean oracle, Postgres 2PC and the change stream](2026-10-01-rt2-scatter-oracle-2pc.md) | Lean merge, limit and aggregate theorems and the oracle; the three-way cross-shard differential through PgDog; prepared transactions on Loams Postgres; PgDog 2PC under the durable-log rule; `CrossShardCommit` checked; the in-doubt monitor and the `two_phase` scenario; the change stream and the exact snapshot boundary; a split verified by checksums | RT1; §28 P2b for the Loams Postgres tests | Planned |
-| RT3 | Vitess v24 with WeSQL: dynamic inventory against WeSQL and the RT3 gate; vtgate as the MySQL front end (D320); VSchema and auth rendering; unsharded then two-shard keyspaces; MySQL differential; Vitess end-to-end subset pass rates | RT0 inventory; §29 W2; Q301–Q304, Q313 | Not yet planned |
-| RT4 | `PrimaryFailover` (Arm A and W3) and the Vitess 2PC variant checked; the multi-instance cutover orchestrator (D305) with trace validation; the full fault catalog in DST; the `RouterSession` contract; Q303 and Q306 decided | RT2, RT3; §28 P4c; §29 W3 | Not yet planned |
+| RT3 | Vitess v24 with WeSQL: dynamic inventory against WeSQL and the RT3 gate; vtgate as the MySQL front end (D320); VSchema and auth rendering; unsharded then two-shard keyspaces; MySQL differential; Vitess end-to-end subset pass rates | RT0 inventory; §29 WS2; Q301–Q304, Q313 | Not yet planned |
+| RT4 | `PrimaryFailover` (Arm A and WS3) and the Vitess 2PC variant checked; the multi-instance cutover orchestrator (D305) with trace validation; the full fault catalog in DST; the `RouterSession` contract; Q303 and Q306 decided | RT2, RT3; §28 P4c; §29 WS3 | Not yet planned |
 | RT5 | Resharding end to end on real clusters (PgDog across instances, Vitess `Reshard`); `loams-nemesis` (D315); performance baselines; the published compatibility matrix | RT4 | Not yet planned |
 
 ## Track FL and CN: Loams Flow, the Event Fabric, Loams House and connectors (beside M, R, D and J)
@@ -138,7 +138,7 @@ Design reference: [24 CPU-time runtime](../design/24-cpu-time-runtime.md) §16 (
 
 ## Track GT: Loams Git, the build cache and the crates mirror
 
-Design references: [36 Loams Git](../design/36-loams-git.md) (D388–D399), extending [15 Agent workspaces](../design/15-agent-workspaces.md) §3, §6 and §7; [36 §17](../design/36-loams-git.md) (D381, D382). Track GT carries §15's W1 repository scope and parts of W2. Whether it starts now or in W1's slot after M3 is the owner's decision (Q395). Like tracks R, D and J it interleaves on the one-build machine.
+Design references: [36 Loams Git](../design/36-loams-git.md) (D388–D399), extending [15 Agent workspaces](../design/15-agent-workspaces.md) §3, §6 and §7; [36 §17](../design/36-loams-git.md) (D381, D382). Track GT carries §15's W1 repository scope and parts of W2. It starts in §15's W1 slot after M3 (Q395, answered 2026-10-02: D411). Like tracks R, D and J it interleaves on the one-build machine.
 
 | Plan | Scope | Depends on | Status |
 |---|---|---|---|

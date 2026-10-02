@@ -402,7 +402,7 @@ TiKV keeps old versions until a GC safe point passes them. TiDB advances it for 
 
 ## 10. TiDB SQL coexistence (D123): superseded by D260
 
-> **Proposed 2026-10-01** ([§31](31-loams-router-and-verification.md), Q314): OLTP MySQL wire access comes from vtgate in front of WeSQL (§29, PR #172; D320), so Q260 would narrow to whether Loams also serves read-only MySQL wire access over DataFusion. Not decided.
+> **Decided 2026-10-02** ([§31](31-loams-router-and-verification.md), Q314): OLTP MySQL wire access comes from vtgate in front of WeSQL (§29, PR #172; D320), so Q260 narrows to whether Loams also serves read-only MySQL wire access over DataFusion, which stays open.
 >
 > **Superseded 2026-09-29 by D260.** Loams deploys no TiDB, so there is no TiDB SQL beside Live. The subsections below are kept for their TiDB and keyspace facts. What replaces them is **open (Q260)**, with two candidates and no decision:
 >
