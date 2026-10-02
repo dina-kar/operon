@@ -5,8 +5,8 @@
 # Needs the `production` environment's CLOUDFLARE_API_TOKEN (Workers Scripts
 # edit, on the loams.dev account) and CLOUDFLARE_ACCOUNT_ID. Without them the
 # job builds and stages, then skips the deploy with a notice, and stays green.
-# The optional variable LOAMS_CONSOLE_SERVER names the Loams server the
-# console talks to (written to /ui/config.json); unset means same origin.
+# LOAMS_CONSOLE_SERVER is required for a credentialed hosted deployment.
+# Engine-hosted builds retain the same-origin empty config.
 name: console deploy
 
 on:
@@ -63,7 +63,12 @@ jobs:
       - name: stage for Workers static assets
         env:
           LOAMS_CONSOLE_SERVER: ${{ vars.LOAMS_CONSOLE_SERVER }}
-        run: node apps/console/deploy/stage.mjs
+        run: |
+          if [ "${{ steps.secrets.outputs.ok }}" = true ]; then
+            node apps/console/deploy/stage.mjs --require-server
+          else
+            node apps/console/deploy/stage.mjs
+          fi
       - name: deploy
         if: steps.secrets.outputs.ok == 'true'
         uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3

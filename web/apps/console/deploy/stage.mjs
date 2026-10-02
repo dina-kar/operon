@@ -98,7 +98,10 @@ export function checkBase(html) {
 }
 
 /** Stages `dist` into `out`. `server` is the Loams server origin for config.json, if any. */
-export function stage({ dist, out, server }) {
+export function stage({ dist, out, server, requireServer = false }) {
+  if (requireServer && !server) {
+    throw new Error('LOAMS_CONSOLE_SERVER is required for the hosted console deployment');
+  }
   if (server) {
     let url;
     try {
@@ -143,6 +146,11 @@ export function stage({ dist, out, server }) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const server = process.env.LOAMS_CONSOLE_SERVER?.trim() || undefined;
-  stage({ dist: join(root, 'dist'), out: join(root, 'dist-cloudflare'), server });
+  stage({
+    dist: join(root, 'dist'),
+    out: join(root, 'dist-cloudflare'),
+    server,
+    requireServer: process.argv.includes('--require-server'),
+  });
   console.log(`staged dist-cloudflare/ (server: ${server ?? 'same origin'})`);
 }

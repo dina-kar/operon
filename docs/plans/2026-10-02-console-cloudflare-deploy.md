@@ -42,11 +42,13 @@ Vite+ migration and sign-in work are outside this single deployment task.
 
 | 8 | Use explicit deploy test globs on Node 22 and accept browser-recognized script end tags with attributes. | CI Node 22 does not expand test directories; CodeQL identified another end-tag form missed by the original hash matcher. The broader fixture failed before the correction. |
 
+| 9 | Require LOAMS_CONSOLE_SERVER for credentialed hosted deployment while keeping same-origin engine builds. | The static-only Worker has no API handler. Deploying an empty config would direct API requests to its HTML fallback. The new staging regression failed before this guard. |
+
 ## Verification
 
 The whitespace-terminated script and invalid-origin tests failed before their
 fixes. The stalled-config test exceeded the external three-second test deadline
-before an abort was added. All 17 deploy/config tests and 66 Vitest tests pass after the corrections.
+before an abort was added. All 18 deploy/config tests and 66 Vitest tests pass after the corrections.
 Frozen pnpm install, lint, typecheck, existing tests, build and stage are checked
 locally. Cloudflare production environment is absent (GitHub environments API
 returned an empty list); owner credentials are needed before live deployment.

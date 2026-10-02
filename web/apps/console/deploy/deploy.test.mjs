@@ -100,6 +100,18 @@ describe('stage', () => {
   const tmp = join(here, '.test-tmp');
   after(() => rmSync(tmp, { recursive: true, force: true }));
 
+  test('requires a server before altering files for a credentialed hosted deployment', () => {
+    const dist = join(tmp, 'missing-server-dist');
+    mkdirSync(dist, { recursive: true });
+    writeFileSync(join(dist, 'index.html'), INDEX);
+    writeFileSync(join(dist, 'config.json'), '{}\n');
+    const out = join(tmp, 'missing-server-out');
+    mkdirSync(out, { recursive: true });
+    writeFileSync(join(out, 'sentinel'), 'keep');
+    assert.throws(() => stage({ dist, out, requireServer: true }), /LOAMS_CONSOLE_SERVER/);
+    assert.equal(readFileSync(join(out, 'sentinel'), 'utf8'), 'keep');
+  });
+
   test('rejects insecure or non-HTTP server configuration before altering staged files', () => {
     const dist = join(tmp, 'invalid-dist');
     const out = join(tmp, 'invalid-out');
