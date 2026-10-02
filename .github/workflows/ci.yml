@@ -944,10 +944,15 @@ jobs:
     needs:
       - changes
       - check
+      - rust-tests
+      - feature-tests
       - crash-gate
       - cluster
       - qdrant-client
       - es-client
+      - tla
+      - lean
+      - specview
       - sim
       - tikv
       - tikv-nightly
