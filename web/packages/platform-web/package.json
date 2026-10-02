@@ -1,0 +1,45 @@
+{
+  "name": "@loams/platform-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The browser's `platform` and `transport` services for the Loams console (design §37 §5.4).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "loams": {
+    "plugin": {
+      "kind": "console",
+      "entry": ".",
+      "tier": "core",
+      "inject": [],
+      "provides": [
+        "platform",
+        "transport"
+      ],
+      "slots": [],
+      "permissions": [],
+      "editions": [
+        "oss",
+        "cloud"
+      ]
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@connectrpc/connect": "2.2.0",
+    "@connectrpc/connect-web": "2.2.0",
+    "@loams/console-host": "workspace:*",
+    "@loams/cordis": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

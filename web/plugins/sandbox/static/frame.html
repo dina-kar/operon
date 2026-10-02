@@ -1,0 +1,28 @@
+<!doctype html>
+<!--
+  The sandbox frame for third-party console plugins (design §37 §5.6).
+  Loaded in <iframe sandbox="allow-scripts">: an opaque origin, no cookies,
+  no storage, no access to the console's DOM. This CSP gives it no network
+  at all (connect-src 'none'); it reaches the console only through the
+  MessagePort runtime.js receives. Keep it in step with SANDBOX_CSP in
+  @loams/console-host (a test checks).
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Loams plugin</title>
+    <style>
+      :root { color-scheme: light dark; font: 14px/1.5 system-ui, sans-serif; }
+      body { margin: 0; padding: 16px; background: transparent; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="runtime.js"></script>
+  </body>
+</html>
