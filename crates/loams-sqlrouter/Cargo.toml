@@ -15,7 +15,7 @@ publish = false
 [dependencies]
 des = "0.9"
 postcard.workspace = true
-rand_core = "0.9"
+rand_core = "0.10"
 serde.workspace = true
 thiserror.workspace = true
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
@@ -23,7 +23,7 @@ xxhash-rust = { version = "0.8", features = ["xxh64"] }
 [dev-dependencies]
 hex.workspace = true
 proptest.workspace = true
-rand.workspace = true
+rand = { version = "0.10", default-features = false, features = ["chacha"] }
 rand_chacha.workspace = true
 serde_json.workspace = true
 

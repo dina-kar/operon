@@ -25,7 +25,7 @@ impl Machine for Counter {
 
 #[test]
 fn trace_sink_records_in_order() {
-    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(7);
+    let mut rng = rand::rngs::ChaCha8Rng::seed_from_u64(7);
     let mut sink = VecSink::default();
     let mut m = Counter(0);
     let mut outs = Vec::new();
@@ -57,4 +57,22 @@ fn trace_sink_records_in_order() {
         json,
         r#"{"spec":"ShardMap","action":"Reload","fields":[["instance","pgdog-1"],["gen",1],["ok",true]]}"#
     );
+}
+
+#[test]
+fn driver_randomness_preserves_the_legacy_seeded_stream() {
+    use rand_chacha::rand_core::{RngCore as _, SeedableRng as _};
+    for seed in [0, 7, u64::MAX] {
+        let mut legacy = rand_chacha::ChaCha8Rng::seed_from_u64(seed);
+        let mut current = rand::rngs::ChaCha8Rng::seed_from_u64(seed);
+        let mut sink = VecSink::default();
+        let ctx = Ctx {
+            now: Millis(0),
+            rng: &mut current,
+            trace: &mut sink,
+        };
+        for _ in 0..64 {
+            assert_eq!(ctx.rng.next_u64(), legacy.next_u64(), "seed {seed}");
+        }
+    }
 }

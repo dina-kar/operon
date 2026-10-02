@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 
 use loams_sqlrouter::KeyRange;
 use loams_sqlrouter::ranges::{PartitionError, lookup, merge, split, validate_partition};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use serde_json::{Value, json};
 
 fn oracle_path() -> Option<std::path::PathBuf> {
@@ -60,7 +60,7 @@ fn rust_answer(req: &Value, rs: &[KeyRange]) -> Value {
 /// A random list of ranges: usually a partition, sometimes broken on purpose.
 /// Half the lists use cut points below 16, so ids, splits and edits collide
 /// with the bounds often enough to reach every boundary case.
-fn random_ranges(rng: &mut impl Rng) -> Vec<KeyRange> {
+fn random_ranges(rng: &mut impl RngExt) -> Vec<KeyRange> {
     let max = if rng.random() { 16 } else { u64::MAX };
     let cuts: Vec<u64> = (0..rng.random_range(0..8))
         .map(|_| rng.random_range(1..max))
@@ -119,7 +119,7 @@ fn partition_matches_lean_oracle() {
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(20261002);
+    let mut rng = rand::rngs::ChaCha8Rng::seed_from_u64(20261002);
     for n in 0..cases {
         let rs = random_ranges(&mut rng);
         let len = rs.len().max(1) as u64;
