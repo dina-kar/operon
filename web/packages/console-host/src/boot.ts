@@ -279,7 +279,14 @@ export async function boot(options: BootOptions): Promise<ConsoleHandle> {
       const record = records.get(id);
       // Only a disabled row can be enabled: a row that failed a boot-time
       // check (for example an inject list wider than its manifest) stays off.
-      if (!record || record.fiber || record.status !== 'disabled') return;
+      if (
+        !record ||
+        record.fiber ||
+        record.status !== 'disabled' ||
+        record.tier === 'third-party'
+      ) {
+        return;
+      }
       record.entry = { ...record.entry, disabled: false };
       await load(record);
     },

@@ -1,7 +1,7 @@
 import type { Transport } from '@connectrpc/connect';
 import { type Context, FiberStates } from '@loams/cordis';
 import type { SlotRegistry } from '@loams/slots';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   boot,
   type ModuleTable,
@@ -207,6 +207,28 @@ describe('boot', () => {
     ).toBe(true);
     const live = [...handle.ctx.registry.values()].flatMap((r) => [...r.fibers]);
     expect(live.filter((f) => f.state === FiberStates.active)).toEqual([]);
+  });
+
+  it('enable_does_not_run_a_disabled_third_party_plugin_in_the_host', async () => {
+    const mock = createMockControl({ features: { [THIRD_PARTY_FLAG]: false } });
+    const apply = vi.fn();
+    const load = vi.fn(async () => ({ apply }));
+    const handle = await boot({
+      catalog: [{ id: 'third', name: '@acme/plugin-third', disabled: true }],
+      manifests,
+      modules: { '@acme/plugin-third': load },
+      platform: platformWith(mock.transport),
+    });
+    try {
+      expect(handle.plugins()[0]).toMatchObject({ tier: 'third-party', status: 'disabled' });
+      await handle.enable('third');
+      await settle();
+      expect(load).not.toHaveBeenCalled();
+      expect(apply).not.toHaveBeenCalled();
+      expect(handle.plugins()[0]).toMatchObject({ tier: 'third-party', status: 'disabled' });
+    } finally {
+      await handle.dispose();
+    }
   });
 });
 
