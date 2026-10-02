@@ -45,10 +45,11 @@ export function contentSecurityPolicy({ scriptHashes = [], server } = {}) {
   ].join('; ');
 }
 
-/** Adds a CSP `<meta>` after the charset, unless the page already carries one. */
-export function injectCsp(html, csp) {
-  if (/http-equiv=["']Content-Security-Policy["']/i.test(html)) return html;
+/** Adds a CSP once; staging replaces the build's policy with its runtime server policy. */
+export function injectCsp(html, csp, replaceExisting = false) {
   const meta = `<meta http-equiv="Content-Security-Policy" content="${csp.replaceAll('"', '&quot;')}" />`;
+  const existing = /<meta\b[^>]*http-equiv=["']Content-Security-Policy["'][^>]*>/i;
+  if (existing.test(html)) return replaceExisting ? html.replace(existing, meta) : html;
   const charset = /<meta charset="utf-8"\s*\/?>/i;
   if (!charset.test(html)) throw new Error('index.html has no <meta charset="utf-8" />');
   return html.replace(charset, (m) => `${m}\n    ${meta}`);
@@ -64,10 +65,16 @@ export function headersFile() {
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
   Strict-Transport-Security: max-age=31536000; includeSubDomains
 
+${BASE}sandbox/frame.html
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'; sandbox allow-scripts
+
 ${BASE}assets/*
   Cache-Control: public, max-age=31536000, immutable
 
 ${BASE}config.json
+  Cache-Control: no-store
+
+/config.json
   Cache-Control: no-store
 `;
 }
@@ -122,9 +129,10 @@ export function stage({ dist, out, server }) {
     const file = join(ui, name);
     const html = readFileSync(file, 'utf8');
     const csp = contentSecurityPolicy({ scriptHashes: inlineScriptHashes(html), server });
-    writeFileSync(file, injectCsp(html, csp));
+    writeFileSync(file, injectCsp(html, csp, true));
   }
   cpSync(join(ui, 'index.html'), join(out, 'index.html'));
+  cpSync(join(ui, 'config.json'), join(out, 'config.json'));
 
   writeFileSync(join(out, '_headers'), headersFile());
   writeFileSync(join(out, '_redirects'), redirectsFile());

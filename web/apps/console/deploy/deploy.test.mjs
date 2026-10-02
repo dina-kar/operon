@@ -47,6 +47,7 @@ describe('wrangler.jsonc', () => {
   test('serves the staged directory with an SPA fallback', () => {
     assert.equal(config.assets.directory, './dist-cloudflare');
     assert.equal(config.assets.not_found_handling, 'single-page-application');
+    assert.equal(config.assets.html_handling, 'none', 'preserve exact sandbox paths and headers');
   });
 });
 
@@ -111,6 +112,26 @@ describe('stage', () => {
     }
   });
 
+  test('stages the existing cordis CSP with the configured server and opaque sandbox response', () => {
+    const dist = join(tmp, 'cordis-dist');
+    const out = join(tmp, 'cordis-out');
+    mkdirSync(dist, { recursive: true });
+    writeFileSync(join(dist, 'index.html'), INDEX);
+    writeFileSync(join(dist, 'cordis.html'), injectCsp(INDEX, "connect-src 'self'"));
+    stage({ dist, out, server: 'https://runtime.example' });
+    const cordis = readFileSync(join(out, 'ui', 'cordis.html'), 'utf8');
+    assert.match(cordis, /connect-src 'self' https:\/\/runtime\.example/);
+    assert.equal(cordis.match(/http-equiv="Content-Security-Policy"/g)?.length, 1);
+    const headers = readFileSync(join(out, '_headers'), 'utf8');
+    const sandbox = headers.split('/ui/sandbox/frame.html\n')[1];
+    assert.ok(sandbox, 'sandbox frame needs its own response policy');
+    assert.match(sandbox, /Content-Security-Policy: .*connect-src 'none'.*sandbox allow-scripts/);
+    const frame = readFileSync(join(console_, '../../plugins/sandbox/static/frame.html'), 'utf8');
+    const frameCsp = /Content-Security-Policy"\s+content="([^"]+)"/.exec(frame)?.[1];
+    assert.ok(frameCsp);
+    assert.ok(sandbox.includes(`Content-Security-Policy: ${frameCsp}; sandbox allow-scripts`));
+  });
+
   test('lays the build out under /ui with a root fallback page and runtime config', () => {
     const dist = join(tmp, 'dist');
     const out = join(tmp, 'out');
@@ -131,6 +152,10 @@ describe('stage', () => {
       server: 'https://loams.example.com',
     });
     assert.equal(readFileSync(join(out, '.assetsignore'), 'utf8'), '*.map\n');
+    assert.equal(
+      readFileSync(join(out, 'config.json'), 'utf8'),
+      readFileSync(join(out, 'ui', 'config.json'), 'utf8'),
+    );
     assert.ok(existsSync(join(out, '_headers')));
     assert.ok(existsSync(join(out, '_redirects')));
 

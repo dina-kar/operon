@@ -83,6 +83,10 @@ cd apps/console && wrangler deploy
 node deploy/smoke.mjs https://console.loams.dev
 ```
 
-The stage step adds a Content-Security-Policy `<meta>` (inline scripts by hash, no eval, fetches only to itself and the configured server), security headers, long caching for hashed assets and `/` → `/ui/`. Set `LOAMS_CONSOLE_SERVER=https://...` to write `ui/config.json`: the console reads the server's origin from it at runtime, so nothing is baked into the bundle. The engine serves the default `{}` (same origin).
+The stage step adds a Content-Security-Policy `<meta>` (inline scripts by hash, no eval, fetches only to itself and the configured server), security headers, long caching for hashed assets and `/` → `/ui/`. Set `LOAMS_CONSOLE_SERVER=https://...` to write both `/config.json` and `/ui/config.json`: both console entries read the server's origin from it at runtime, so nothing is baked into the bundle. The engine serves the default `{}` (same origin).
 
 `.github/workflows/console-deploy.yml` deploys on every push to `main` that touches `web/`, and on demand. It needs `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the `production` environment; without them it builds and stages, then skips the deploy. `node --test apps/console/deploy/` tests the stage and smoke scripts and the runtime config.
+
+The staging step replaces the cordis build CSP with the configured HTTPS API
+origin. Sandbox frames receive their own response CSP with `sandbox allow-scripts`;
+HTML paths stay exact so their security headers apply without canonical redirects.

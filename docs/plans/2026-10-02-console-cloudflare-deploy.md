@@ -1,6 +1,6 @@
 # Console Cloudflare deployment — #269 Task 3
 
-Status: Implemented for the existing console; review corrections in progress.
+Status: Implemented for both console entries; CI and review pending.
 
 ## Global constraints
 
@@ -23,7 +23,7 @@ Vite+ migration and sign-in work are outside this single deployment task.
 - [x] Load runtime server config before rendering; add stage/smoke tests.
 - [x] Bound config fetches, reject invalid/insecure hosted server origins,
   hash whitespace-terminated inline scripts, and pin third-party actions.
-- [ ] Integrate the merged cordis entry and verify its runtime config/CSP.
+- [x] Integrate the merged cordis entry and verify its runtime config/CSP.
 - [ ] Obtain green CI/DCO, address CodeRabbit, and merge #301.
 - [ ] Deploy and smoke-check console.loams.dev once owner secrets exist.
 
@@ -36,11 +36,21 @@ Vite+ migration and sign-in work are outside this single deployment task.
 | 3 | Hosted server URLs must be HTTPS; runtime parsing retains HTTP for local engine development. Validate before replacing staged files. | An HTTPS hosted page cannot fetch a remote HTTP server; invalid schemes must not destroy a previous stage. |
 | 4 | Abort config fetches after three seconds and keep the existing same-origin fallback. | A stalled configuration request otherwise leaves the page blank indefinitely. |
 
+| 5 | Load the same runtime config before cordis startup; use the build-time override only in development. | The production cordis entry ignored config.json, unlike the legacy entry. The new entry test failed before this change. |
+| 6 | Replace the existing cordis meta CSP during staging and preserve exact HTML paths with assets.html_handling=none. | The old meta CSP blocked the configured server; Cloudflare canonical redirects bypassed the sandbox-specific response header path. |
+| 7 | Keep Vitest and Node deploy suites in the test command, excluding deploy files only from Vitest discovery. | Their distinct test APIs cannot share a runner; both suites remain mandatory. |
+
 ## Verification
 
 The whitespace-terminated script and invalid-origin tests failed before their
 fixes. The stalled-config test exceeded the external three-second test deadline
-before an abort was added. All 16 deploy/config tests pass after the corrections.
+before an abort was added. All 17 deploy/config tests and 66 Vitest tests pass after the corrections.
 Frozen pnpm install, lint, typecheck, existing tests, build and stage are checked
 locally. Cloudflare production environment is absent (GitHub environments API
 returned an empty list); owner credentials are needed before live deployment.
+
+Chromium against local Wrangler proved production API requests target the
+runtime-configured HTTPS origin. The sample plugin executes in an opaque frame,
+cannot read the parent DOM or fetch, and the directly opened sandbox document
+has an opaque origin from its response CSP. Cloudflare HTML behavior was checked
+against https://developers.cloudflare.com/workers/static-assets/routing/advanced/html-handling/.

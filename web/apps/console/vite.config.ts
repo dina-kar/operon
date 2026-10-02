@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
+import { configDefaults } from 'vitest/config';
 
 // The engine serves the build at /ui (design §19 §3). In development the
 // console API comes from loams-console-mock (`cargo run -p
@@ -95,5 +96,7 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
+    // Deployment tests use node:test and run in the package test command.
+    exclude: [...configDefaults.exclude, 'deploy/**'],
   },
 });
