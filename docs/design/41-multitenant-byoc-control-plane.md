@@ -135,7 +135,8 @@ tenants/
 
 **Properties.**
 
-- **Idempotent and replayable.** Rebuilding the tenants repository from the `ControlStore` yields identical bytes; rebuilding the `ControlStore` from Git is also possible for the fields Git holds (the repository is the audit trail of tenant changes).
+- **Source of truth.** The `ControlStore` is authoritative for tenant records; Git holds the rendered desired state and is the audit trail of changes. If they disagree (someone edited Git by hand), the Git writer re-renders from the store on its next run and the manual edit is overwritten and reported as a `Drift` event; a protected branch with required review is the way to make Git edits legitimate (they go through the API, not around it).
+- **Idempotent and replayable.** Rebuilding the tenants repository from the `ControlStore` yields identical bytes.
 - **Drift.** Argo CD's self-heal reverts out-of-band edits; the operator reports a `Drift` condition for objects it does not own.
 - **Offboarding.** `DeleteNamespace` marks the namespace `deleting` in the directory (gateways stop routing), commits the removal, the operator deletes the Kubernetes namespace after the data-plane erasure of §18 §9 (GDPR, D68 and D69) has completed, then the record. Argo CD's `prune` with a finalizer prevents data loss from an accidental directory deletion: removing `tenants/<org>/` does not delete data without the erasure workflow's receipt (the operator refuses to delete a namespace whose erasure receipt is absent).
 - **Failure.** A failed sync leaves the previous state in force; the control plane reports the namespace as `provisioning` with the Argo CD condition; nothing is retried by hand.
@@ -276,7 +277,7 @@ The platform may not need the observer at all: cgroups are authoritative for T0 
 | Under-reported CPU to avoid a charge | A tenant-reachable usage header or an in-sandbox rusage | Private; billed from cgroup totals and provider figures (doc 06 PD63, PD66, PD67) |
 | Scripted loops on a paid endpoint | A public validator for plan changes, entitlements or credits | Those endpoints are commercial and private; the open operations API spends nothing (§12) |
 | An agent raising its own quota | The limits API | Writers are operator credentials or the private plan mapping; agent principals cannot hold `limits:write` |
-| An agent minting tenants to exhaust a cluster | The operations API | `CreateOrg` and `CreateNamespace` are rate limited per principal and bounded by a per-deployment tenant cap, both enforced here (limits, not charges) |
+| An agent minting tenants to exhaust a cluster | The operations API | `CreateOrg` and `CreateNamespace` are rate limited per principal and bounded by a per-deployment tenant cap, both enforced here (limits, not charges). **Fail closed:** if the limits store is unavailable, tenant creation is refused, while gateways keep enforcing the last pushed limits on existing tenants |
 
 ### 11.2 The control plane's own threats
 

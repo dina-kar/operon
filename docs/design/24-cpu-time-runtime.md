@@ -362,7 +362,7 @@ pub struct InvokeResponse { pub response: http::Response<Bytes>, pub usage: Opti
 | `SupervisorRunner` | `fetch`, `http-port`, `static` (D181) | this document's tiers | the supervisor's hooks (D175, D201); `usage: None` | F1 builds the supervisor; RN1 the adapter |
 | `KnativeRunner` | `http-port` | gVisor pods (§38 §3) | the pod cgroup and its labels (§27 §3.2); `usage: None`, no meter (§38 D444) | MT2 |
 | `ProcessRunner` (dev and tests) | `fetch` over a child process | cgroup v2 when delegated, else none | child `cpu.stat` or `wait4` rusage | RN1 |
-| `LambdaRunner` | `fetch` through Loams's Lambda bootstrap | Firecracker (AWS) | **open (Q366)**: either the in-process `getrusage(RUSAGE_SELF)` delta capped by the billed duration × `memory_mb / 1 769`, or the billed duration itself | RN1 (Task 5 waits for Q366) |
+| `LambdaRunner` | `fetch` through Loams's Lambda bootstrap | Firecracker (AWS) | **Q366 moved to `loam-platform` (2026-10-02, D548); no billing figure here.** Formerly: either the in-process `getrusage(RUSAGE_SELF)` delta capped by the billed duration × `memory_mb / 1 769`, or the billed duration itself | RN1 (Task 5, no longer waits for Q366) |
 | Cloud Run, Container Apps | `http-port` | gVisor or VM (provider) | in-container cgroup `cpu.stat` **(verify)** | not planned (Q367) |
 
 **Placement.** D170's advantage is placement next to the data; a function on Lambda loses it and pays the round trips and egress. External runners are for burst capacity and BYOC accounts that want their own cloud bill, not the default.

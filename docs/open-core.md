@@ -59,5 +59,5 @@ Quotas show the split: the engine and operator enforce whatever limits they are 
 
 - A feature goes here if a person running Loams for **many tenants on their own clusters or clouds** needs it. It goes to `loam-platform` only if it **produces or validates a figure that sets a charge, or is an API that spends money**, or exists solely to sell or operate the hosted cloud.
 - When the platform needs something from the engine or the control plane, add an open extension point here (an API, a trait, a label), not platform-specific code. A new open extension point must not carry a billing-grade wire format.
-- CI keeps the boundary: `scripts/ci/no-metering.sh` (MT4) fails the build if a billing-grade metering name (`loams.meter`, `meter.sock`, `HostReport`, `x-loams-usage`) appears outside the allowlist of historical documents.
+- CI keeps the boundary: `scripts/ci/no-metering.sh` (planned: MT4 Task 8, issue #258; not present until it lands) will fail the build if a billing-grade metering name (`loams.meter`, `meter.sock`, `HostReport`, `x-loams-usage`) appears outside the allowlist of historical documents.
 - Before adding a metric, ask: could a tenant or an agent profit from forging it? If a charge could depend on it, it does not belong here.

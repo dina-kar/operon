@@ -65,7 +65,7 @@ The `data` struct is derived at build time from the protobuf descriptor (scalars
 | # | Question | Owner | Needed by |
 |---|---|---|---|
 | Q362 | Showback and single-organisation billing in the open repository, or `loam-platform` only. **Answered by the owner on 2026-10-02: no metering in OSS** (D440, D444); open dashboards over the hooks remain possible for anyone to build | Founder | Resolved |
-| Q366 | Lambda CPU attribution: the bootstrap's `getrusage` delta capped by billed duration × `memory_mb / 1 769`, or billed duration (§27 §3.6) | Founder | RN1 Task 5 |
+| Q366 | ~~Lambda CPU attribution~~ Moved to `loam-platform` (doc 06 PD66, default: billed duration) on 2026-10-02 (D548); no longer an RN1 Task 5 dependency | Founder | Resolved here |
 | Q367 | Cloud Run and Container Apps runners: build or document only | Founder | After RN1 |
 | Q368 | Iceberg v3 `timestamptz_ns` by M4, or the `time_ns` column (§4) | Eng | Event-table plan |
 | Q369 | Move `loams-stream-grpc` from tonic/prost to connect-rust/buffa (D128), and when | Eng | M2 stream API plan |
