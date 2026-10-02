@@ -19,7 +19,7 @@ import {
   Stats,
   StatusTag,
   Table,
-} from '@loam/ui';
+} from '@loams/ui';
 import { KeyRound, Lock } from 'lucide-react';
 import { useState } from 'react';
 import { useParams } from 'react-router';
@@ -247,7 +247,7 @@ export function EnvironmentPage() {
         </Card>
         <Card title="Connect">
           <p>Query this environment's namespace over the native API with a token or a key:</p>
-          <Snippet>{`curl -H "Authorization: Bearer $LOAM_TOKEN" \\\n  -X POST ${window.location.origin}/v1/namespaces/${e.namespace}/query -d @query.json`}</Snippet>
+          <Snippet>{`curl -H "Authorization: Bearer $LOAMS_TOKEN" \\\n  -X POST ${window.location.origin}/v1/namespaces/${e.namespace}/query -d @query.json`}</Snippet>
           <p>
             Agents exchange their workload identity for a token scoped to it; see an agent's page.
           </p>
@@ -334,7 +334,7 @@ function NewKey({
       {created ? (
         <>
           <Notice tone="warn" title="This is the only time the secret is shown">
-            Loam keeps only its hash. If you lose it, revoke the key and create another.
+            Loams keeps only its hash. If you lose it, revoke the key and create another.
           </Notice>
           <Snippet prompt={false}>{created.secret}</Snippet>
         </>

@@ -1,4 +1,4 @@
-import { Notice } from '@loam/ui';
+import { Notice } from '@loams/ui';
 import { createContext, type ReactNode, useContext, useEffect, useState } from 'react';
 
 const Crumb = createContext<{ tail?: string; setTail: (t: string | undefined) => void }>({
@@ -18,7 +18,7 @@ export function useCrumbTail(): string | undefined {
 export function usePageTitle(title: string | undefined, crumb?: string) {
   const { setTail } = useContext(Crumb);
   useEffect(() => {
-    if (title) document.title = `${title} · Loam console`;
+    if (title) document.title = `${title} · Loams console`;
     setTail(crumb);
     return () => setTail(undefined);
   }, [title, crumb, setTail]);

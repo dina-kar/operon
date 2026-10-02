@@ -1,0 +1,39 @@
+// The Loams Live commit journal (design §20 §5.3, D119). Internal: stored in
+// TiKV by the server and never sent to clients, so the TypeScript client does
+// not generate it.
+syntax = "proto3";
+
+package loams.live.v1;
+
+// One mutation's changes, written at `seq = head + 1` of one journal shard in
+// the mutation's own transaction.
+message JournalEntry {
+  // The TSO physical time of the transaction's start timestamp, in ms.
+  // Diagnostics only; the commit timestamp orders entries.
+  uint64 commit_hint_ms = 1;
+  repeated WriteRecord writes = 2;
+  // The mutation's function path ("module:export" or "_system:insert").
+  string function = 3;
+  // The request id, for tracing.
+  string request_id = 4;
+}
+
+// What a write did to one document: its key and the index entries it
+// removed and added, so the subscription manager can match both the old and
+// the new position of the document (§20 §8.2).
+message WriteRecord {
+  uint32 table_id = 1;
+  // The 16 random bytes of the document id.
+  bytes doc_id = 2;
+  WriteKind kind = 3;
+  repeated bytes index_keys_removed = 4;
+  repeated bytes index_keys_added = 5;
+}
+
+// The kind of a write. A patch is a replace of the merged document.
+enum WriteKind {
+  WRITE_KIND_UNSPECIFIED = 0;
+  WRITE_KIND_INSERT = 1;
+  WRITE_KIND_REPLACE = 2;
+  WRITE_KIND_DELETE = 3;
+}

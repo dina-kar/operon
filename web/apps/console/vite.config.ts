@@ -2,9 +2,9 @@ import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
 // The engine serves the build at /ui (design §19 §3). In development the
-// console API comes from operon-console-mock (`cargo run -p
-// operon-console-mock`, port 8081) unless LOAM_API points at an engine.
-const api = process.env.LOAM_API ?? 'http://127.0.0.1:8081';
+// console API comes from loams-console-mock (`cargo run -p
+// loams-console-mock`, port 8081) unless LOAMS_API points at an engine.
+const api = process.env.LOAMS_API ?? 'http://127.0.0.1:8081';
 
 export default defineConfig({
   base: '/ui/',

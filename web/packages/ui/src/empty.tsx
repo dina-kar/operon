@@ -16,11 +16,11 @@ export function Empty({
   seed?: number;
 }) {
   return (
-    <div className="loam-empty">
+    <div className="loams-empty">
       <Grain kind={grain} seed={seed} />
       <strong>{title}</strong>
       {children && <p>{children}</p>}
-      {actions && <div className="loam-empty-actions">{actions}</div>}
+      {actions && <div className="loams-empty-actions">{actions}</div>}
     </div>
   );
 }

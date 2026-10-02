@@ -19,7 +19,7 @@ import {
   StatusTag,
   Table,
   Textarea,
-} from '@loam/ui';
+} from '@loams/ui';
 import { Bot, Fingerprint, Pause, Play, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
@@ -625,7 +625,7 @@ function AddTrust({
   const chosen = presets[preset] ?? presets[0];
   const [issuer, setIssuer] = useState(chosen?.issuer ?? '');
   const [subject, setSubject] = useState(chosen?.subject ?? '');
-  const [audience, setAudience] = useState('loam');
+  const [audience, setAudience] = useState('loams');
   const [envs, setEnvs] = useState('development');
   const [error, setError] = useState<string>();
 
@@ -699,7 +699,7 @@ function AddTrust({
               {...p}
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
-              className="loam-mono"
+              className="loams-mono"
             />
           )}
         </Field>

@@ -1,0 +1,34 @@
+// The Loams Live idempotency record (design §20 §5.1, §4.3; R1 plan Task 10).
+// Internal: stored in TiKV by the server under the tag `0x05` and never sent
+// to clients, so the TypeScript client does not generate it.
+syntax = "proto3";
+
+package loams.live.v1;
+
+import "loams/live/v1/value.proto";
+
+// The record of one idempotent mutation: the value of
+// `0x05 ‖ first 16 bytes of SHA-256(idempotency key)`, written in the
+// mutation's own transaction.
+message IdempotencyRecord {
+  // The encoding version; 1 in R1.
+  uint32 format = 1;
+  // The mutation's result. A retry of the call returns it without running
+  // the function again.
+  Value result = 2;
+  // The TSO physical time (ms) after which the record no longer counts and
+  // the janitor deletes it: the transaction's start time plus 24 h.
+  uint64 expires_ms = 3;
+  // The function that ran, so a key reused for another function is refused.
+  string function = 4;
+  // The TSO start timestamp of the transaction that wrote the record, for
+  // diagnostics. A transaction cannot write its own commit timestamp; a
+  // retry returns the timestamp of the read that found the record, which is
+  // at or after the commit.
+  uint64 start_ts = 5;
+  // SHA-256 of the canonical encoding of the call's arguments
+  // (`LiveValue::digest`), so a key reused with other arguments is refused
+  // rather than replayed. Empty in records written before it existed, which
+  // replay on the function check alone.
+  bytes args_hash = 6;
+}
