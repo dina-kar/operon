@@ -401,6 +401,13 @@ Living document. Newest decisions at the bottom of each table.
 | D457 | 2026-10-02 | **Licences** (§38 §9): Knative (Serving, Eventing, Operator, Kourier, `func`) Apache-2.0; Authentik MIT outside `authentik/enterprise/`, unmodified; its chart GPL-3.0, referenced only; CNPG, Argo CD, Flux, k3s Apache-2.0; the operator fork MIT | D11; nothing enterprise or copyleft linked or vendored | Proposed |
 | D458 | 2026-10-02 | **A CI guard keeps Authentik free of Enterprise** (§38 §1; MT1 Ruling 7): no licence in values, no `AUTHENTIK_TENANTS__ENABLED`, a blueprint lint against enterprise app labels derived from the image, and an e2e check that the licence summary is empty | An open-core dependency needs a mechanical check, not a promise | Proposed |
 | D459 | 2026-10-02 | **Track MT** (§38 §10): MT1 Authentik identity, MT2 Knative, MT3 GitOps; MT1 and MT2 independent, MT3 wires both | Small stacked PRs on the one-build machine | Proposed |
+| D460 | 2026-09-24 | **The ES gateway parses its own DSL into the Loams search IR**, using Quickwit for request shapes and two attributed helpers | Quickwit's parser emits a different IR and omits gated query forms | Approved (M1.5 plan, ruling 1) |
+| D461 | 2026-09-24 | **ES dense vectors leave `_source` on write and are restored on read** | Store each vector once while preserving the `_source` shape clients expect | Approved (M1.5 plan, ruling 2) |
+| D462 | 2026-09-24 | **ES `_seq_no` is the partition offset and `_version` is `_seq_no + 1`** | The partition log already gives a monotonic position without a second per-document counter | Approved (M1.5 plan, ruling 4) |
+| D463 | 2026-09-24 | **ES `_delete_by_query` is in Phase A** | The gated LlamaIndex and LangChain suites use it | Approved (M1.5 plan, ruling 6) |
+| D464 | 2026-09-24 | **Multi-target aliases preserve M1.1's catalog encoding**: append a command, keep a second alias map, and write the new snapshot format only when that map is non-empty | Old log entries and snapshots must decode unchanged | Approved (M1.5 plan, ruling 22) |
+| D465 | 2026-09-24 | **The ES gateway reports version 8.19.0 and sends `X-Elastic-Product: Elasticsearch` on every response** | The pinned client checks the product header and needs the 8.14+ hybrid surface | Approved (M1.5 plan, ruling 11) |
+| D466 | 2026-09-24 | **Wildcard and `_all` index deletes are refused** | Elasticsearch 8's default requires a concrete index name and the gated suites delete by name | Approved (M1.5 plan, ruling 21) |
 
 ## Open questions
 
