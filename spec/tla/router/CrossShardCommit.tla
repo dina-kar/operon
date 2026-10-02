@@ -53,7 +53,8 @@ Done == coordUp /\ coordLog = "phase2" /\ \A p \in Participants : partState[p] =
         /\ coordLog' = "done" /\ UNCHANGED <<coordUp, partState, alerts>>
 \* RT2: a crash keeps or loses the log; the participant states survive (prepared transactions are durable).
 CoordinatorCrash(keep) == coordUp /\ coordUp' = FALSE
-        /\ coordLog' = IF keep THEN coordLog ELSE "none" /\ UNCHANGED <<partState, alerts>>
+        /\ coordLog' = (IF keep THEN coordLog ELSE "none")
+        /\ UNCHANGED <<partState, alerts>>
 \* RT2: recovery rolls back Phase 1 and commits Phase 2 (one participant per step, modelled in RT2).
 Recover == ~coordUp /\ coordUp' = TRUE /\ UNCHANGED <<coordLog, partState, alerts>>
 \* RT2: a participant restart keeps prepared transactions and aborts working ones.
