@@ -1,6 +1,6 @@
 # Loams governance
 
-Loams has two maintainers with equal roles: [Dinakaran V (@dina-kar)](https://github.com/dina-kar) and [Keshav (@Kesh3805)](https://github.com/Kesh3805). They make project decisions by consensus and can add trusted people to the maintainer teams. Changes to formats, protocols, licensing or the [decision log](docs/design/13-decision-log.md) need an issue or design PR and a 72-hour comment window.
+Loams has two maintainers with equal roles: [Dinakaran V (@dina-kar)](https://github.com/dina-kar) and [Keshav (@Kesh3805)](https://github.com/Kesh3805). The current roster is in [MAINTAINERS.md](MAINTAINERS.md). They make project decisions by consensus and can add trusted people to the maintainer teams. Changes to formats, protocols, licensing or the [decision log](docs/design/13-decision-log.md) need an issue or design PR and a 72-hour comment window.
 
 ## Contribution ladder
 
@@ -15,7 +15,7 @@ Both branches require PRs and passing CI and DCO checks. The branch rules, rathe
 
 Start partner or ecosystem proposals in [Discussions](https://github.com/ostrium-labs/loams/discussions), then write an RFC issue before implementation PRs to `dev`. Contribute broadly useful changes upstream first.
 
-Forks, embedded uses, hosted services and products built on Loams are welcome. “Built on Loams” is fine; do not name a separate product “Loams”.
+Forks, embedded uses, hosted services and products built on Loams are welcome. See the [ecosystem policy](https://github.com/ostrium-labs/loams/blob/e443ed77a57d59eb1f0b589ff27671dd30b5ab2c/ECOSYSTEM.md) and [trademark guidance](https://github.com/ostrium-labs/loams/blob/e443ed77a57d59eb1f0b589ff27671dd30b5ab2c/TRADEMARKS.md) from [PR #262](https://github.com/ostrium-labs/loams/pull/262). “Built on Loams” is fine; do not name a separate product “Loams”.
 
 ## Principles and longer-term governance
 

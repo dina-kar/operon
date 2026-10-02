@@ -113,7 +113,7 @@ The client conformance suites live in [`crates/loams-qdrant/tests/python`](crate
 3. **Fill in the template.** Say what changed, why, and how you tested it.
 4. **Review.** [CodeRabbit](https://coderabbit.ai) reviews every PR automatically, and a maintainer reviews after it. Address or answer each comment; it is fine to disagree with a bot comment and say why. Small follow-ups can go in a follow-up PR if the reviewer agrees.
 5. **CI must be green** before merge. If a failure looks unrelated to your change, say so in the PR.
-6. **Merge.** Committers and maintainers merge into `dev` with a merge commit once the review is done and CI is green. Maintainers merge `dev` into `main` for releases. The contributor roles are described in [GOVERNANCE.md](GOVERNANCE.md).
+6. **Merge.** Committers and maintainers merge into `dev` with a merge commit once the review is done and CI is green. Maintainers merge `dev` into `main` for releases. The contributor roles are described in [GOVERNANCE.md](GOVERNANCE.md), and the current maintainers are listed in [MAINTAINERS.md](MAINTAINERS.md).
 
 ## Commit messages
 
