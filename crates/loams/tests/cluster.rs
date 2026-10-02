@@ -524,7 +524,10 @@ async fn a_cluster_node_serves_on_an_inherited_listener() {
         .stderr(log)
         .spawn()
         .expect("spawn loams");
-    let http = reqwest::Client::new();
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("readiness client");
     let deadline = Instant::now() + WAIT;
     let ready = loop {
         if child.try_wait().expect("child status").is_some() {
