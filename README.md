@@ -256,11 +256,10 @@ Contributions of every size are welcome: bug reports, compatibility reports from
 
 ## Community
 
-- **Questions, bugs and ideas:** [GitHub issues](../../issues).
+- **Questions and ideas:** [GitHub Discussions](https://github.com/ostrium-labs/loams/discussions). **Bugs and RFCs:** [GitHub issues](../../issues).
 - **Security issues:** please report them privately, as described in [SECURITY.md](SECURITY.md).
 - **Conduct:** everyone who takes part agrees to the [Code of Conduct](CODE_OF_CONDUCT.md).
 - **Governance and maintainers:** [GOVERNANCE.md](GOVERNANCE.md) and [MAINTAINERS.md](MAINTAINERS.md).
-- **Discussions:** [questions, ideas and partnerships](https://github.com/ostrium-labs/loams/discussions).
 - **Wiki:** [guides and overviews](https://github.com/ostrium-labs/loams/wiki).
 - **Roadmap board:** [Loams Roadmap](https://github.com/orgs/ostrium-labs/projects).
 - **Build on Loams:** [ECOSYSTEM.md](ECOSYSTEM.md) (upstream first), the [trademark policy](TRADEMARKS.md) and [Deploy buttons](docs/ecosystem/deploy-buttons.md).

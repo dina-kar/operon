@@ -51,7 +51,7 @@ Suppose a team that builds an AI coding tool wants to ship a hosted cloud produc
 | A `Runner` adapter or provider that other products would also use | Their prompt library, agents and product logic |
 | Compatibility tests and docs for flows they rely on | Their hosted operations and support tooling |
 
-They would say "built on Loams" (see [TRADEMARKS.md](TRADEMARKS.md)), run Loams from a tagged release plus a short, documented patch queue, and use [Discussions](https://github.com/ostrium-labs/loams/discussions) to agree each upstream change before sending it.
+They would say "built on Loams" (see [TRADEMARKS.md](TRADEMARKS.md), a provisional policy pending legal review), run Loams from a tagged release plus a short, documented patch queue, and use [Discussions](https://github.com/ostrium-labs/loams/discussions) to agree each upstream change before sending it.
 
 ### A "Deploy to Cloudflare" button
 
