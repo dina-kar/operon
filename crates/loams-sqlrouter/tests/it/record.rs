@@ -151,3 +151,21 @@ proptest! {
         prop_assert_eq!(r.validate(), Ok(()));
     }
 }
+
+#[test]
+fn zero_hash_shards_are_refused() {
+    let mut r = pg_hash(1);
+    r.scheme = Scheme::PgHash {
+        column: "id".into(),
+        data_type: PgKeyType::Int8,
+        shards: 0,
+    };
+    r.shards.clear();
+    assert_eq!(
+        r.validate(),
+        Err(RecordError::ShardCount {
+            scheme: 0,
+            listed: 0
+        })
+    );
+}

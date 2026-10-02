@@ -1,5 +1,7 @@
-# The loams.live.v1 protos (R1 plan Task 7). `buf lint` runs the STANDARD
-# rules; `buf breaking` is not enforced in R1 (the API is unstable).
+# The loams.live.v1 protos (R1 plan Task 7) and the app protos (design §37
+# §8, AP0). `buf lint` runs the STANDARD rules. `buf breaking` is enforced
+# for the app packages (CI job `app-protos`); loams.live.v1 is ignored, as
+# breaking changes are not enforced in R1 (the API is unstable).
 version: v2
 modules:
   - path: proto
@@ -14,3 +16,5 @@ lint:
 breaking:
   use:
     - FILE
+  ignore:
+    - proto/loams/live

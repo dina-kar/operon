@@ -1,0 +1,92 @@
+// The in-app inbox (design §37 §7.4, AP0 Task 4).
+//
+// Notifications are a per-user projection of `io.loams.dev.*` CloudEvents,
+// kept 30 days (estimate). Push is only a sealed wake-up: a phone unseals a
+// push, shows it, and fetches details over these RPCs. Job and durable-run
+// events refer to loams.jobs.v1 objects by id only, so this package does not
+// depend on §26 J1.
+syntax = "proto3";
+
+package loams.notifications.v1;
+
+import "google/protobuf/timestamp.proto";
+import "loams/devices/v1/devices.proto";
+
+service NotificationService {
+  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // A snapshot of unread notifications, then new ones, then a heartbeat
+  // every 15 s (AP0 Ruling 3).
+  rpc WatchNotifications(WatchNotificationsRequest) returns (stream WatchNotificationsResponse);
+  rpc MarkRead(MarkReadRequest) returns (MarkReadResponse);
+}
+
+message Notification {
+  // A ULID.
+  string id = 1;
+  loams.devices.v1.NotificationCategory category = 2;
+  // The CloudEvent type, for example "io.loams.dev.approval.requested.v1".
+  string cloudevent_type = 3;
+  // The CloudEvent subject.
+  string subject = 4;
+  // Server-rendered in the user's locale.
+  string title = 5;
+  string body = 6;
+  // What a tap opens.
+  oneof ref {
+    string approval_id = 7;
+    string operation_id = 8;
+    // "<queue>/<job id>" (loams.jobs.v1).
+    string job_ref = 9;
+    // A durable run id.
+    string run_ref = 10;
+  }
+  // The environment id, when the event belongs to one.
+  string environment = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp read_at = 13;
+}
+
+message ListNotificationsRequest {
+  bool unread_only = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListNotificationsResponse {
+  repeated Notification notifications = 1;
+  string next_page_token = 2;
+}
+
+message WatchNotificationsRequest {
+  string resume_cursor = 1;
+}
+
+message WatchNotificationsResponse {
+  oneof event {
+    NotificationSnapshot snapshot = 1;
+    Notification upsert = 2;
+    string remove = 3;
+    Heartbeat heartbeat = 4;
+  }
+  string cursor = 5;
+  bool snapshot_reset = 6;
+}
+
+message NotificationSnapshot {
+  repeated Notification notifications = 1;
+}
+
+message Heartbeat {}
+
+message MarkReadRequest {
+  // Empty with `all` = mark everything read.
+  repeated string notification_ids = 1;
+  bool all = 2;
+  string idempotency_key = 3;
+}
+
+message MarkReadResponse {
+  uint32 marked = 1;
+}
