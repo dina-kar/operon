@@ -20,7 +20,7 @@ export const BASE = '/ui/';
 /** The `sha256-...` CSP sources of every inline `<script>` in a page. */
 export function inlineScriptHashes(html) {
   const hashes = [];
-  for (const m of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+  for (const m of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)) {
     if (/\bsrc\s*=/i.test(m[1] ?? '')) continue;
     const body = m[2] ?? '';
     hashes.push(`'sha256-${createHash('sha256').update(body, 'utf8').digest('base64')}'`);
@@ -92,6 +92,18 @@ export function checkBase(html) {
 
 /** Stages `dist` into `out`. `server` is the Loams server origin for config.json, if any. */
 export function stage({ dist, out, server }) {
+  if (server) {
+    let url;
+    try {
+      url = new URL(server);
+    } catch {
+      throw new Error('hosted console server must be a valid HTTPS URL');
+    }
+    if (url.protocol !== 'https:') {
+      throw new Error('hosted console server must use HTTPS');
+    }
+    server = url.origin;
+  }
   const index = join(dist, 'index.html');
   if (!existsSync(index)) throw new Error(`${index} is missing: run the console build first`);
   checkBase(readFileSync(index, 'utf8'));

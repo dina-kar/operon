@@ -67,6 +67,12 @@ describe('stage', () => {
     assert.match(contentSecurityPolicy(), /connect-src 'self'(;|$)/);
   });
 
+  test('hashes inline scripts with whitespace before their closing tag', () => {
+    const html = '<script>window.theme = "dark";</script \n>';
+    const want = `'sha256-${createHash('sha256').update('window.theme = "dark";').digest('base64')}'`;
+    assert.deepEqual(inlineScriptHashes(html), [want]);
+  });
+
   test('injects the CSP once, after the charset', () => {
     const once = injectCsp(INDEX, "default-src 'self'");
     assert.match(once, /<meta charset="utf-8" \/>\n {4}<meta http-equiv="Content-Security-Policy"/);
@@ -91,6 +97,19 @@ describe('stage', () => {
 
   const tmp = join(here, '.test-tmp');
   after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  test('rejects insecure or non-HTTP server configuration before altering staged files', () => {
+    const dist = join(tmp, 'invalid-dist');
+    const out = join(tmp, 'invalid-out');
+    mkdirSync(dist, { recursive: true });
+    mkdirSync(out, { recursive: true });
+    writeFileSync(join(dist, 'index.html'), INDEX);
+    writeFileSync(join(out, 'sentinel'), 'keep');
+    for (const server of ['http://loams.example.com', 'javascript:alert(1)', 'not a url']) {
+      assert.throws(() => stage({ dist, out, server }), /HTTPS/);
+      assert.equal(readFileSync(join(out, 'sentinel'), 'utf8'), 'keep');
+    }
+  });
 
   test('lays the build out under /ui with a root fallback page and runtime config', () => {
     const dist = join(tmp, 'dist');
@@ -132,6 +151,19 @@ describe('runtime config', () => {
     assert.deepEqual(parseRuntimeConfig({ server: 'not a url' }), {});
     assert.deepEqual(parseRuntimeConfig([]), {});
     assert.deepEqual(parseRuntimeConfig(null), {});
+  });
+
+  test('a stalled configuration request aborts and keeps the same-origin fallback', async () => {
+    let aborted = false;
+    const stalled = (_url, options) =>
+      new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener('abort', () => {
+          aborted = true;
+          reject(new Error('aborted'));
+        });
+      });
+    assert.deepEqual(await loadRuntimeConfig('/ui/', stalled, 10), {});
+    assert.equal(aborted, true);
   });
 
   test('loads <base>config.json and ignores an HTML fallback or a failure', async () => {

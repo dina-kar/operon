@@ -30,9 +30,15 @@ export function parseRuntimeConfig(raw: unknown): RuntimeConfig {
 export async function loadRuntimeConfig(
   base: string,
   fetcher: typeof fetch = fetch,
+  deadlineMs = 3_000,
 ): Promise<RuntimeConfig> {
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), deadlineMs);
   try {
-    const res = await fetcher(`${base}config.json`, { cache: 'no-store' });
+    const res = await fetcher(`${base}config.json`, {
+      cache: 'no-store',
+      signal: controller.signal,
+    });
     if (!res.ok) return {};
     const type = res.headers.get('content-type') ?? '';
     // An SPA fallback answers a missing file with index.html.
@@ -40,5 +46,7 @@ export async function loadRuntimeConfig(
     return parseRuntimeConfig(await res.json());
   } catch {
     return {};
+  } finally {
+    clearTimeout(deadline);
   }
 }
