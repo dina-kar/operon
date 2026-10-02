@@ -57,6 +57,7 @@ jobs:
       dapr-edge: ${{ steps.filter.outputs.dapr-edge }}
       spec: ${{ steps.filter.outputs.spec }}
       router: ${{ steps.filter.outputs.router }}
+      lean: ${{ steps.filter.outputs.lean }}
     steps:
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
@@ -183,6 +184,12 @@ jobs:
               - ".github/workflows/**"
               - "spec/**"
               - "scripts/spec/**"
+            # The Lean proofs and the Rust code they are the oracle for (RT0 Task 8, D312).
+            lean:
+              - ".github/workflows/**"
+              - "spec/lean/**"
+              - "crates/loams-sqlrouter/src/ranges.rs"
+              - "crates/loams-sqlrouter/src/reference/**"
             # The router's kernel crate and compatibility inventory (RT0).
             router:
               - ".github/workflows/**"
@@ -402,6 +409,41 @@ jobs:
         run: scripts/spec/check.sh --all --nightly
       - name: PgDog provenance
         run: scripts/spec/provenance.sh
+
+  # RT0 Task 8 (D312): build the Lean proofs (building checks every theorem),
+  # run the randomised properties, and keep the oracle binary for the Rust
+  # differential test (wired in with the loams-sqlrouter crate, Task 7).
+  lean:
+    name: Lean proofs
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.lean == 'true') }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: spec/lean
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The job runs downloaded tooling (elan, lake); keep the token out of .git/config.
+          persist-credentials: false
+      - name: elan
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o /tmp/elan-init.sh
+          sh /tmp/elan-init.sh -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.elan/toolchains
+            spec/lean/.lake
+          key: lean-${{ hashFiles('spec/lean/lean-toolchain') }}-${{ hashFiles('spec/lean/lake-manifest.json', 'spec/lean/**/*.lean') }}
+          restore-keys: lean-${{ hashFiles('spec/lean/lean-toolchain') }}-
+      - name: build (checks the theorems)
+        run: lake build
+      - name: properties
+        run: lake test
+      - name: no sorry
+        run: '! grep -rn --include=*.lean -w sorry LoamsRouter Main.lean PropTest.lean'
 
   sim:
     name: simulation seed sweep

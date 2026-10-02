@@ -23,7 +23,7 @@ Variants and their expected outcome live in [`specs.toml`](specs.toml). An `expe
 | `ShardMap` | `Small` (PR) | 2 keys, 3 shards, 2 instances, 2 generations, 3 writes; with `Converges` | ok | 655,107 | 14 s |
 | `ShardMap` | `Small`, Apalache `SingleWriter` | length 8 | ok | — | 79 s |
 | `ShardMap` | `UnsafeConfigMap` (PR) | `Small` with the ConfigMap written first | `violation:SingleWriter` | 108 | 1 s |
-| `ShardMap` | `Nightly` | 2 keys, 3 shards, 3 instances, 3 generations, 4 writes | ok | see the nightly job | — |
+| `ShardMap` | `Nightly` | 2 keys, 3 shards, 3 instances, 3 generations, 4 writes | ok | 57,401,019 | 247 s (6 workers) |
 | `ReshardCutover` | `Small` (PR) | 1 key, instances `d` (designated) and `i2`, 3 writes, 1 saga crash; with `Terminates` | ok | 8,257 | 1 s |
 | `ReshardCutover` | `Small`, Apalache `SingleWriterRange` | length 10 | ok | — | 14 s |
 | `ReshardCutover` | `CrashSaga` (PR) | `Small` with 2 saga crashes | ok | 13,541 | 1 s |
