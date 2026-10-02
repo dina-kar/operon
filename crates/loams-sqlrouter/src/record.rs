@@ -187,6 +187,8 @@ impl ShardMapRecord {
                     listed,
                 })
             }
+            // Zero shards cannot route anything, and pg_partition_index needs a positive modulus.
+            Scheme::PgHash { shards: 0, .. } => Err(RecordError::ShardCount { scheme: 0, listed }),
             Scheme::PgHash { .. } => Ok(()),
             Scheme::PgRange { ranges, .. } => ranges.iter().try_for_each(|(_, _, s)| known(*s)),
             Scheme::PgList { lists, .. } => lists.iter().try_for_each(|(_, s)| known(*s)),

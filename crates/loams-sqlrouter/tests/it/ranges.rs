@@ -122,8 +122,10 @@ proptest! {
         let i = pick % p.len();
         let r = p[i];
         let hi = r.hi.unwrap_or(u64::MAX);
-        prop_assume!(r.lo + 1 < hi);
-        let at = r.lo + 1 + at % (hi - r.lo - 1);
+        // A range [u64::MAX, end) has no interior point; skip it without overflowing.
+        let Some(first) = r.lo.checked_add(1) else { return Ok(()) };
+        prop_assume!(first < hi);
+        let at = first + at % (hi - first);
         let s = split(&p, i, at).unwrap();
         prop_assert_eq!(validate_partition(&s), Ok(()));
         prop_assert_eq!(merge(&s, i).unwrap(), p);

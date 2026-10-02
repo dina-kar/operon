@@ -154,6 +154,9 @@ def check(specs, tl, only=None, variant=None, nightly=False, parse_only=False) -
         if only and spec["name"] != only:
             continue
         if parse_only or spec.get("parse_only"):
+            if variant:
+                # A variant was named; a parse-only spec has none, so it does not match.
+                continue
             ran += 1
             result, out = run_sany(tl["tla2tools"], d, spec["model"])
             report(spec["name"], "(parse)", "ok", result, 0.0, out)
