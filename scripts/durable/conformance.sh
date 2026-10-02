@@ -40,7 +40,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 HERE=$ROOT/scripts/durable
-FORK_URL=https://github.com/dina-kar/resonate
+FORK_URL=https://github.com/ostrium-labs/resonate
 FIXTURE=$HERE/testdata/embedded-sqlite.history
 
 usage() {

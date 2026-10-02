@@ -923,7 +923,7 @@ Read on 2026-09-29.
   - tikv.org/docs/7.1/develop/rawkv/cas, tikv.org/docs/6.1/deploy/performance/overview;
   - the PingCAP Raft Engine blog;
   - `tikv/client-rust` (`src/store/request.rs`, PR #562), and `tikv/client-go` `config/client.go`;
-  - bitsand.cloud/posts/cross-az-latencies; the AWS fault-isolation whitepaper (AZs); smalldatum.blogspot.com (2026-01, SSD power-loss protection and fsync); `dina-kar/client-rust` at `1f8962b` (`src/raw/client.rs`, `src/transaction/transaction.rs`, `src/config.rs`); `docs/plans/r1-dependency-spike.md` §(i).
+  - bitsand.cloud/posts/cross-az-latencies; the AWS fault-isolation whitepaper (AZs); smalldatum.blogspot.com (2026-01, SSD power-loss protection and fsync); `ostrium-labs/client-rust` at `1f8962b` (`src/raw/client.rs`, `src/transaction/transaction.rs`, `src/config.rs`); `docs/plans/r1-dependency-spike.md` §(i).
 - **Loams:**
   - §02 (WAL classes), §04, §20 (D126, D130), §22 §6.4, §23;
   - `crates/loams-log/src/writer.rs` (the `standard` write path: one flush in flight, ack after the PUT and `CommitWal`);
