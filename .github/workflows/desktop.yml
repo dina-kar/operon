@@ -149,6 +149,9 @@ jobs:
       - name: tauri build (unsigned bundles)
         if: github.event_name != 'pull_request'
         working-directory: web/apps/desktop
+        env:
+          # linuxdeploy is itself an AppImage; runners have no FUSE.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
         run: pnpm tauri build --bundles ${{ matrix.bundles }}
       - name: upload the bundles
         if: github.event_name != 'pull_request'
