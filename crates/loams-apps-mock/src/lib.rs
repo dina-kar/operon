@@ -100,7 +100,10 @@ impl MockHandle {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
-        if tokio::time::timeout(STOP_GRACE, &mut self.task).await.is_err() {
+        if tokio::time::timeout(STOP_GRACE, &mut self.task)
+            .await
+            .is_err()
+        {
             self.task.abort();
         }
     }
