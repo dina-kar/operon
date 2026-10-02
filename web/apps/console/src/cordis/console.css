@@ -1,0 +1,125 @@
+/* The cordis console's layout. Tokens and components come from @loams/ui. */
+html {
+  --loams-font-sans: "Archivo Variable", system-ui, sans-serif;
+  --loams-font-mono: "Martian Mono Variable", ui-monospace, monospace;
+}
+body {
+  margin: 0;
+  background: var(--op-bg);
+  color: var(--op-ink);
+  font-family: var(--loams-font-sans);
+}
+.lc-shell {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  min-height: 100vh;
+}
+.lc-side {
+  border-right: 1px solid var(--op-rule);
+  padding: 20px 16px;
+}
+.lc-brand {
+  display: block;
+  margin-bottom: 24px;
+  color: inherit;
+}
+.lc-nav-group + .lc-nav-group {
+  margin-top: 20px;
+}
+.lc-nav-heading {
+  margin: 0 0 6px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+.lc-nav ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.lc-nav a {
+  display: block;
+  padding: 6px 8px;
+  color: inherit;
+  text-decoration: none;
+  border-radius: 4px;
+}
+.lc-nav a[aria-current="page"] {
+  background: var(--op-raised);
+}
+.lc-main {
+  padding: 24px 32px;
+  min-width: 0;
+}
+.lc-overlays {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  min-height: 28px;
+}
+.lc-chip {
+  padding: 4px 10px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: inherit;
+  font-size: 13px;
+  text-decoration: none;
+}
+.lc-page {
+  display: grid;
+  gap: 16px;
+  max-width: 960px;
+}
+.lc-page-head h1 {
+  margin: 0;
+}
+.lc-page-head p,
+.lc-muted {
+  margin: 4px 0 0;
+  opacity: 0.7;
+}
+.lc-api-list {
+  list-style: none;
+  margin: 0;
+  padding: 12px 16px;
+  display: grid;
+  gap: 6px;
+}
+.lc-detail-lines {
+  margin: 8px 0 16px;
+  padding-left: 18px;
+}
+.lc-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.lc-cards {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+.loams-sandbox-frame {
+  width: 100%;
+  min-height: 360px;
+  border: 1px dashed var(--op-rule);
+  background: transparent;
+}
+.loams-boot {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+}
+@media (max-width: 720px) {
+  .lc-shell {
+    grid-template-columns: 1fr;
+  }
+  .lc-side {
+    border-right: 0;
+    border-bottom: 1px solid var(--op-rule);
+  }
+  .lc-main {
+    padding: 16px;
+  }
+}

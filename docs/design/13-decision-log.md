@@ -658,13 +658,13 @@ Living document. Newest decisions at the bottom of each table.
 
 On 2026-10-02 the owner accepted the recommended or proposed default for every open question and proposed decision of the 2026-10-01/02 design work ("do suggested for all"): D273–D459 are approved, D408–D419 record the defaults that create or change a decision, and each answered question says which default it took. The items below need an action only the owner can take (accounts, keys, money, legal), so their rows stay open with owner "Owner action":
 
-| # | Action | Needed by |
-|---|---|---|
-| Q271 | Counsel reviews WeSQL's licensing boundary: a GPL-2.0-only WAL client in `mysqld` speaking a documented protocol to Apache-2.0 acceptors (§29 §6.4, §10) | Before the WS2 plan |
-| Q282 | Generate the minisign release key offline and hold it; name the reviewers of the `release` environment (the design stays minisign plus attestations, D292) | CLI2 Task 4 |
-| Q420 | Enrol `ostrium-labs` in the Apple Developer Program (D-U-N-S number, legal name) and Google Play; decide who holds the Developer ID identity and the upload keys | AP1 Task 11, AP2 Task 10, AP3 Task 10 |
-| Q421 | Choose and pay for Windows code signing (Azure Artifact Signing with organisation validation, or a Key Vault certificate); betas ship unsigned until then | AP1 Task 11 |
-| Q434 | A trademark check of "Loams" (counsel) before the store names are registered | Store releases |
+These are references to the canonical question rows above, not additional questions:
+
+- **Q271:** Counsel reviews WeSQL's licensing boundary: a GPL-2.0-only WAL client in `mysqld` speaking a documented protocol to Apache-2.0 acceptors (§29 §6.4, §10). Needed by: Before the WS2 plan.
+- **Q282:** Generate the minisign release key offline and hold it; name the reviewers of the `release` environment (the design stays minisign plus attestations, D292). Needed by: CLI2 Task 4.
+- **Q420:** Enrol `ostrium-labs` in the Apple Developer Program (D-U-N-S number, legal name) and Google Play; decide who holds the Developer ID identity and the upload keys. Needed by: AP1 Task 11, AP2 Task 10, AP3 Task 10.
+- **Q421:** Choose and pay for Windows code signing (Azure Artifact Signing with organisation validation, or a Key Vault certificate); betas ship unsigned until then. Needed by: AP1 Task 11.
+- **Q434:** A trademark check of "Loams" (counsel) before the store names are registered. Needed by: Store releases.
 
 Not question rows, but owner actions the answered defaults depend on:
 
