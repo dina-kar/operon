@@ -289,7 +289,14 @@ async fn tlc_child(
         .context("starting java (Java 21+ is required)")?;
     let mut lines = BufReader::new(child.stdout.take().expect("piped")).lines();
     let mut parser = TlcParser::new();
+    let mut tail: std::collections::VecDeque<String> = Default::default();
     while let Some(line) = lines.next_line().await? {
+        if !line.trim().is_empty() {
+            if tail.len() == 4 {
+                tail.pop_front();
+            }
+            tail.push_back(line.chars().take(200).collect());
+        }
         for e in parser.push_line(&line) {
             let _ = tx.send(Event::Run(e));
         }
@@ -297,7 +304,17 @@ async fn tlc_child(
     for e in parser.finish() {
         let _ = tx.send(Event::Run(e));
     }
-    child.wait().await?;
+    let status = child.wait().await?;
+    // "No error" is only believed when TLC also exited cleanly.
+    if parser.outcome() == Outcome::Ok && !status.success() {
+        anyhow::bail!("TLC reported no error but exited with {status}");
+    }
+    if parser.outcome() == Outcome::Error {
+        anyhow::bail!(
+            "TLC gave no verdict (exit {status}); last output: {}",
+            tail.iter().cloned().collect::<Vec<_>>().join(" | ")
+        );
+    }
     Ok((parser.outcome(), parser.distinct))
 }
 
@@ -404,6 +421,11 @@ async fn run_rust(cfg: &RunConfig, tx: &Tx) -> bool {
         Ok(c) => c,
         Err(e) => {
             eprintln!("loams-specview: cannot start cargo: {e}");
+            let _ = tx.send(Event::Test(TestEvent::Failed {
+                name: "cargo (could not start)".into(),
+                secs: 0.0,
+                output: e.to_string(),
+            }));
             return false;
         }
     };
