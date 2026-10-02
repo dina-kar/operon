@@ -1,6 +1,6 @@
 # OPS — Safekeeper journal replay correction
 
-> **Status: Implemented; CI and merge evidence tracked in #303** (2026-10-02).
+> **Status: Complete; merged in #308, CI run 37039007140 green** (2026-10-02).
 > Issues: #303 and #278. Design: [§28 §7.2](../design/28-loams-postgres.md), D265–D267.
 
 ## Global constraints
@@ -27,7 +27,7 @@ a block boundary, including a zero-length record whose CRC is zero.
 - [x] Correct padding recognition while preserving CRC-validated records and torn-tail handling.
 - [x] Run fmt, clippy, and the crate tests with `server,nvme`; retain both original failing tests.
 - [x] Require 20 consecutive successful runs of `pipelined_appends_are_acknowledged_when_durable_and_survive_a_restart` in CI, with no retries or failure suppression.
-- [ ] Record the proven cause and verification, obtain green CI and DCO, address CodeRabbit, and close #303 and #278.
+- [x] Record the proven cause and verification, obtain green CI and DCO, address CodeRabbit, and close #303 and #278.
 
 ## Rulings made during execution
 
@@ -50,3 +50,9 @@ pass. No test was weakened, and no on-disk format or acknowledgement rule change
 Both original replay/restart regressions also passed 20 consecutive local runs
 with test files under `~/.cache` (btrfs). The default-feature crate tests passed
 as well. The deterministic pre-fix failure used tmpfs; CI uses the runner disk.
+
+CI run 37039007140 passed all 20 consecutive iterations of both original
+regressions. DCO, CodeQL, and CodeRabbit review passed; #308 merged as
+`1da3ca9e71c181f0a4fa2027b7f3b311d686ae50`, closing #303 and #278.
+The CI follow-up #306 checks exact test names before the loop so a later
+rename cannot silently remove repeated regression coverage.
