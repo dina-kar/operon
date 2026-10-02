@@ -1,0 +1,85 @@
+# Deploys the console to Cloudflare Workers static assets at
+# https://console.loams.dev (issue #269): the assets-only Worker
+# `loams-console` on the free plan (web/apps/console/wrangler.jsonc).
+#
+# Needs the `production` environment's CLOUDFLARE_API_TOKEN (Workers Scripts
+# edit, on the loams.dev account) and CLOUDFLARE_ACCOUNT_ID. Without them the
+# job builds and stages, then skips the deploy with a notice, and stays green.
+# LOAMS_CONSOLE_SERVER is required for a credentialed hosted deployment.
+# Engine-hosted builds retain the same-origin empty config.
+name: console deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/console-deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: console-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: console.loams.dev
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://console.loams.dev
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Cloudflare secrets present
+        id: secrets
+        working-directory: .
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -n "$TOKEN" ] && [ -n "$ACCOUNT" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID is not set in the production environment; the deploy is skipped."
+          fi
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.0
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: node --test apps/console/deploy/*.test.mjs
+      - run: pnpm build
+      - name: stage for Workers static assets
+        env:
+          LOAMS_CONSOLE_SERVER: ${{ vars.LOAMS_CONSOLE_SERVER }}
+        run: |
+          if [ "${{ steps.secrets.outputs.ok }}" = true ]; then
+            node apps/console/deploy/stage.mjs --require-server
+          else
+            node apps/console/deploy/stage.mjs
+          fi
+      - name: deploy
+        if: steps.secrets.outputs.ok == 'true'
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4.146.0"
+          workingDirectory: web/apps/console
+          command: deploy
+      - name: smoke check
+        env:
+          LOAMS_CONSOLE_SERVER: ${{ vars.LOAMS_CONSOLE_SERVER }}
+        if: steps.secrets.outputs.ok == 'true'
+        run: node apps/console/deploy/smoke.mjs https://console.loams.dev

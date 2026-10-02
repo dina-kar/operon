@@ -15,36 +15,43 @@ import './console.css';
 import { THIRD_PARTY_FLAG } from '@loams/console-host';
 import { createMockTransport } from '@loams/console-host/testing';
 import { createWebPlatform } from '@loams/platform-web';
+import { loadRuntimeConfig } from '../runtime-config.js';
 import { startConsole } from './start.js';
 
-const appsUrl = import.meta.env.VITE_LOAMS_APPS_URL as string | undefined;
+const appsUrl = import.meta.env.DEV
+  ? (import.meta.env.VITE_LOAMS_APPS_URL as string | undefined)
+  : undefined;
 const demo =
   new URLSearchParams(globalThis.location.search).has('demo') || (import.meta.env.DEV && !appsUrl);
 
-const platform = createWebPlatform(
-  demo
-    ? { transport: createMockTransport({ features: { [THIRD_PARTY_FLAG]: true } }) }
-    : {
-        baseUrl: appsUrl,
-        devBearer: import.meta.env.DEV
-          ? (import.meta.env.VITE_LOAMS_DEV_BEARER as string | undefined)
-          : undefined,
-      },
-);
-
 const root = document.getElementById('root');
 if (root) {
-  startConsole({
-    platform,
-    root,
-    // Demo only: grant a sandboxed plugin what it declares (start.ts).
-    grant: demo ? (manifest) => manifest.permissions : undefined,
-  }).then((handle) => {
-    // For debugging in the browser console: the plugin table and the sweep.
-    Object.assign(globalThis, { loamsConsole: handle });
-    setTimeout(() => {
-      const stuck = handle.pending().filter((p) => !p.silent);
-      if (stuck.length > 0) console.warn('loams console: plugins still pending', stuck);
-    }, 10_000);
-  });
+  loadRuntimeConfig(import.meta.env.BASE_URL)
+    .then((config) => {
+      const platform = createWebPlatform(
+        demo
+          ? { transport: createMockTransport({ features: { [THIRD_PARTY_FLAG]: true } }) }
+          : {
+              baseUrl: appsUrl ?? config.server,
+              devBearer: import.meta.env.DEV
+                ? (import.meta.env.VITE_LOAMS_DEV_BEARER as string | undefined)
+                : undefined,
+            },
+      );
+
+      return startConsole({
+        platform,
+        root,
+        // Demo only: grant a sandboxed plugin what it declares (start.ts).
+        grant: demo ? (manifest) => manifest.permissions : undefined,
+      });
+    })
+    .then((handle) => {
+      // For debugging in the browser console: the plugin table and the sweep.
+      Object.assign(globalThis, { loamsConsole: handle });
+      setTimeout(() => {
+        const stuck = handle.pending().filter((p) => !p.silent);
+        if (stuck.length > 0) console.warn('loams console: plugins still pending', stuck);
+      }, 10_000);
+    });
 }
