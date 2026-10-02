@@ -510,6 +510,7 @@ fn expected_owner(ns: NamespaceId, cid: CollectionId, ids: impl IntoIterator<Ite
     owners(ns, cid, &nodes, 1)[0].node_id
 }
 
+/// A node accepts HTTP on the listener that the parent keeps bound.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cluster_node_serves_on_an_inherited_listener() {
     let dir = TempDir::new().expect("temp dir");

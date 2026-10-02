@@ -1935,6 +1935,7 @@ async fn bind(addr: SocketAddr) -> Result<(tokio::net::TcpListener, SocketAddr),
 }
 
 #[cfg(unix)]
+/// Takes the test harness's bound listener from stdin and validates its address.
 fn inherited_listener(
     addr: SocketAddr,
 ) -> Result<(tokio::net::TcpListener, SocketAddr), ServerError> {
@@ -1962,6 +1963,7 @@ fn inherited_listener(
 }
 
 #[cfg(not(unix))]
+/// Rejects the Unix-only listener handoff on other platforms.
 fn inherited_listener(
     _addr: SocketAddr,
 ) -> Result<(tokio::net::TcpListener, SocketAddr), ServerError> {
