@@ -55,18 +55,6 @@ async fn read_sse(addr: std::net::SocketAddr, stop: impl Fn(&Event) -> bool) -> 
     out
 }
 
-fn java_available() -> bool {
-    let ok = std::process::Command::new("java")
-        .arg("-version")
-        .output()
-        .is_ok();
-    if !ok {
-        assert!(std::env::var_os("CI").is_none(), "java is required in CI");
-        eprintln!("skipping: java not found");
-    }
-    ok
-}
-
 #[tokio::test]
 #[ignore = "runs TLC: needs Java 21 and the pinned tools (cargo test -- --include-ignored)"]
 async fn selftest_streams_run_started_then_result() {
