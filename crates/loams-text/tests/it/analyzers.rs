@@ -64,9 +64,10 @@ fn english_matches_lucenes_chain() {
         "the stop word leaves a gap at 0"
     );
 
-    assert_eq!(texts(ENGLISH, "Loams’s"), ["loams"]);
-    assert_eq!(texts(ENGLISH, "LOAMS'S"), ["loams"]);
-    assert_eq!(texts(ENGLISH, "Loams＇s"), ["loams"]);
+    // A word the stemmer leaves alone, so only the possessive is removed.
+    assert_eq!(texts(ENGLISH, "Kafka’s"), ["kafka"]);
+    assert_eq!(texts(ENGLISH, "KAFKA'S"), ["kafka"]);
+    assert_eq!(texts(ENGLISH, "Kafka＇s"), ["kafka"]);
     // Only a trailing possessive is removed, before stemming.
     assert_eq!(texts(ENGLISH, "cats"), ["cat"]);
     assert_eq!(
