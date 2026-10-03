@@ -1,0 +1,102 @@
+name: Auto-promote
+
+# Seats a first-time contributor on the committers team after their first PR is
+# merged into dev (GOVERNANCE.md: "a first merged PR makes the contributor
+# eligible for the committers team"). Idempotent, and safe to run twice.
+#
+# `pull_request_target` rather than `pull_request`, deliberately:
+#   * a PR from a fork is given a read-only GITHUB_TOKEN by `pull_request`, and
+#     gets no repository secrets at all, so the fallback comment could never be
+#     posted and no credential could ever be read for exactly the contributors
+#     this workflow exists to recognise;
+#   * the workflow never checks out the PR head and never executes anything from
+#     it. It checks out the *base* branch to read the script, and everything it
+#     acts on comes from the event payload, so there is no untrusted code path.
+# See docs/plans/2026-10-03-ops-auto-promote.md.
+on:
+  pull_request_target:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      login:
+        description: 'Account to evaluate (defaults to the PR author).'
+        required: false
+        default: ''
+      pr_number:
+        description: 'Merged PR to comment on; 0 for no comment. Manual runs are dry runs.'
+        required: false
+        default: '0'
+      dry_run:
+        description: 'Manual runs only. Report what would happen without changing membership. Turning this off on a dispatch re-runs the real promotion.'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: auto-promote-${{ github.event.pull_request.number || github.event.inputs.login || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Promote to committers
+    # Only a PR merged into dev promotes anyone. A PR closed unmerged, or one
+    # aimed at main, is not a first contribution to the integration branch.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'dev')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ORG: ostrium-labs
+      TEAM: committers
+      LOGIN: ${{ github.event.pull_request.user.login || inputs.login }}
+      USER_TYPE: ${{ github.event.pull_request.user.type || 'User' }}
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number || '0' }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
+      ORG_APP_ID: ${{ vars.ORG_APP_ID || secrets.ORG_APP_ID }}
+    steps:
+      # The base branch is the only thing checked out; the PR's own commits are
+      # never fetched. Pinned to a SHA: this job carries the App's private key,
+      # so a moved tag must not be able to change the code that runs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.ref || 'dev' }}
+          persist-credentials: false
+
+      # Gated on the app id alone, which is a variable and so readable in a step
+      # condition; a configured id with a missing key is a misconfiguration and
+      # fails here rather than silently falling back. The private key is scoped
+      # to this step, so no other step's environment can see it.
+      - name: Mint an organisation-members token (GitHub App)
+        id: app
+        if: env.ORG_APP_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        env:
+          PRIVATE_KEY: ${{ secrets.ORG_APP_PRIVATE_KEY }}
+        with:
+          app-id: ${{ env.ORG_APP_ID }}
+          private-key: ${{ env.PRIVATE_KEY }}
+
+      - name: Promote the author, or hand the promotion to a maintainer
+        env:
+          ORG_MEMBERS_TOKEN: ${{ steps.app.outputs.token || secrets.ORG_MEMBERS_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          args=(--org "$ORG" --team "$TEAM" --login "$LOGIN" --user-type "$USER_TYPE" --repo "$GITHUB_REPOSITORY")
+          if [[ "$PR_NUMBER" != 0 ]]; then
+            args+=(--pr "$PR_NUMBER")
+          fi
+          if [[ "$DRY_RUN" == true ]]; then
+            args+=(--dry-run)
+          fi
+          if [[ -n "$ORG_MEMBERS_TOKEN" ]]; then
+            args+=(--token "$ORG_MEMBERS_TOKEN")
+          fi
+          # The PR comment is posted as the job, not as the App: the App has
+          # organisation-members rights and no repository scope.
+          args+=(--comment-token "$GH_TOKEN")
+          python3 scripts/ci/auto-promote.py "${args[@]}"
