@@ -101,7 +101,7 @@ Knative pods are T2 sandboxes in §27's terms, so §27 §3.2 already covers them
 - **queue-proxy and activator metrics** (Prometheus): request counts, latencies and concurrency per revision, which carry the revision's labels;
 - **the edge's access logs**, with `x-loams-tenant` set by the gateway (§27 §3.4).
 
-`KnativeRunner` writes no `HostReport`; Q-UH-3 (the final cgroup reading for pods) applies unchanged. Whoever wants usage per tenant, a self-hoster's dashboard or `loam-platform`, reads these hooks.
+`KnativeRunner` writes no billing-grade host report; Q-UH-3 (the final cgroup reading for pods) applies unchanged. Whoever wants usage per tenant, a self-hoster's dashboard or `loam-platform`, reads these hooks.
 
 ### 3.5 Knative Eventing (D445)
 

@@ -35,6 +35,9 @@ license-files = [{ path = "LICENSE", hash = 0x0fb72a18 }]
 multiple-versions = "allow"
 wildcards = "deny"
 allow-wildcard-paths = true
+# Prefix variants are rejected by scripts/ci/no-metering.sh; cargo-deny package
+# selectors are exact names (https://embarkstudios.github.io/cargo-deny/checks/cfg.html).
+deny = [{ name = "loam-platform", reason = "The OSS engine cannot depend on the private platform (D551)" }]
 
 [advisories]
 yanked = "deny"

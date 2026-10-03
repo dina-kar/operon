@@ -367,7 +367,7 @@ pub struct InvokeResponse { pub response: http::Response<Bytes>, pub usage: Opti
 
 **Placement.** D170's advantage is placement next to the data; a function on Lambda loses it and pays the round trips and egress. External runners are for burst capacity and BYOC accounts that want their own cloud bill, not the default.
 
-**Usage (D376; superseded 2026-10-02 by D548).** The billing-grade usage rules for external runners (the host report on a node-local socket, the Lambda `getrusage` delta and its billed-duration cap, Q366, the additive `loams.meter.v1` fields) moved to `loam-platform` doc 06 and are no longer specified here. In this repository every runner, the supervisor included, calls `InvocationObserver` ([§27 §3.7](27-usage-hooks.md)) with plain measurements at the end of each invocation; nothing aggregates, rates or bills them (§38 D444, §41).
+**Usage (D376; superseded 2026-10-02 by D548).** The billing-grade usage rules for external runners (the host report on a node-local socket, the Lambda `getrusage` delta and its billed-duration cap, Q366, the additive private meter-record fields) moved to `loam-platform` doc 06 and are no longer specified here. In this repository every runner, the supervisor included, calls `InvocationObserver` ([§27 §3.7](27-usage-hooks.md)) with plain measurements at the end of each invocation; nothing aggregates, rates or bills them (§38 D444, §41).
 
 **Track F.** F1 is unchanged. RN1 adds `loams-runner` (the trait, `RunnerHost` and `InvocationObserver`, which F1's supervisor then calls), `ProcessRunner` and `LambdaRunner`; it does not build the supervisor. The reporter crate `loams-meter` that this paragraph once listed moved to `loam-platform` (D548).
 
