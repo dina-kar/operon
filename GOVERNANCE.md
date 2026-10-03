@@ -4,7 +4,7 @@ Loams has two maintainers with equal roles: [Dinakaran V (@dina-kar)](https://gi
 
 ## Contribution ladder
 
-- Anyone can open an issue or a pull request against `dev`. A first merged PR makes the contributor eligible for the `committers` team; a team maintainer adds them.
+- Anyone can open an issue or a pull request against `dev`. A first merged PR makes the contributor eligible for the `committers` team, and the [auto-promote workflow](.github/workflows/auto-promote.yml) adds them on the merge. If the repository has no organisation-members credential configured, the workflow says so on the PR instead, and a team maintainer adds them by hand. Adding someone is reversible: ask a maintainer and they will remove them from the team.
 - `committers` may review and merge PRs into `dev` once required checks and review are complete. The team has write permission.
 - `maintainers` set release direction and merge `dev` into `main`. The team has maintain permission. A PR to `main` requires one approval from this team.
 - `main` is the release branch; `dev` is the default integration branch. Neither branch accepts force pushes or deletion. Use merge commits, not squash merges.
