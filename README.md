@@ -264,6 +264,7 @@ Contributions of every size are welcome: bug reports, compatibility reports from
 - **Roadmap board:** [Loams Roadmap](https://github.com/orgs/ostrium-labs/projects).
 - **Build on Loams:** [ECOSYSTEM.md](ECOSYSTEM.md) (upstream first), the [trademark policy](TRADEMARKS.md) and [Deploy buttons](docs/ecosystem/deploy-buttons.md).
 - **Publish to the marketplace:** [the developer guide](docs/marketplace/publishing.md).
+- **Release Loams itself:** [the registries, secrets and release path](docs/release/publishing.md) (nothing is published yet).
 - **Sponsor** the maintainers through the Sponsor button once their GitHub Sponsors profiles are live.
 
 ## Built on

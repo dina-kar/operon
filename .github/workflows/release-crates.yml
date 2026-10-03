@@ -1,0 +1,211 @@
+name: Release (crates.io)
+
+# The crates.io half of the release path (issue #254, D400). D292's cargo-dist
+# pipeline owns binaries, archives and the GitHub Release; this workflow owns the
+# library crates, and nothing else: no PyPI, no npm, no Maven, no Go module, no
+# container image. docs/release/publishing.md says why each of those is out of
+# scope for today.
+#
+# Two jobs, and the second one is off unless a maintainer asks for it by hand:
+#
+#   verify   runs on a published release (and on any manual run). It proves the
+#            tag is a real release on the integration branch at the workspace
+#            version, that the declared crate list still matches the manifests,
+#            and that every crate packages and builds the way crates.io will
+#            build it: `cargo publish --dry-run --locked`, in dependency order.
+#   publish  runs only on a manual run with `publish: true`, inside the
+#            `crates-io` environment, and only if verify passed. It mints a
+#            short-lived token with crates.io trusted publishing (OIDC) and
+#            uploads, so no long-lived token is stored anywhere.
+#
+# Merging this file publishes nothing. Nothing is published until the owner
+# configures the registry, the environment and the first crate, and then cuts a
+# release and dispatches publish deliberately.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Published release tag to publish, vX.Y.Z. Required when publish is true.'
+        required: false
+        default: ''
+      publish:
+        description: 'Upload to crates.io. Without this the run verifies only.'
+        type: boolean
+        required: false
+        default: false
+
+# Nothing here needs to write to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-crates-${{ github.event.release.tag_name || github.event.inputs.tag || github.run_id }}
+  # A publish must never be cancelled half way through by a second dispatch.
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # The branch whose code runs. The default branch is the integration branch;
+  # a repository that tags releases from somewhere else sets RELEASE_BRANCH.
+  RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH || github.event.repository.default_branch }}
+  # Every crate a release may upload, in dependency order. It is a declaration,
+  # not a guess: publishable-crates.py fails when the manifests say otherwise.
+  CRATES: >-
+    loams-store,loams-cache,loams-common,loams-worker,loams-log,
+    loams-cloudevents,loams-link,loams-pk,loams-quickwit,loams-text,
+    loams-collection,loams-query,loams-es,loams-hnsw,loams-hot,loams-meta,
+    loams-qdrant,loams-stream-grpc
+
+jobs:
+  # Nothing downstream runs until the tag is a published release whose commit is
+  # on the integration branch and whose version is the workspace version. The
+  # code that runs is the branch's, never the tag's and never a pull request's.
+  guard:
+    name: release tag guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.guard.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ vars.RELEASE_BRANCH || github.event.repository.default_branch }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: the tag is a published release on the release branch
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          test -n "$TAG" || { echo 'no release tag: dispatch with the tag input'; exit 1; }
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "$TAG is not a vX.Y.Z(-pre) tag"; exit 1
+          fi
+          # A draft release is not a release, and a tag with no release has no
+          # notes and no provenance.
+          gh release view "$TAG" --json isDraft,tagName -q '"release " + .tagName' \
+            || { echo "$TAG is not a published release"; exit 1; }
+          git rev-parse --verify "refs/tags/$TAG^{commit}" > "$RUNNER_TEMP/tag.sha" \
+            || { echo "$TAG has no commit in this repository"; exit 1; }
+          tag_sha=$(cat "$RUNNER_TEMP/tag.sha")
+          # The branch's code is what runs, so the release must be on it.
+          git merge-base --is-ancestor "$tag_sha" HEAD \
+            || { echo "$TAG is not on $RELEASE_BRANCH; refusing to publish a tag from anywhere else"; exit 1; }
+          # crates.io has no idea what the workspace version is, so a mismatch
+          # is only visible here.
+          version=$(python3 -c 'import tomllib,sys;print(tomllib.load(open(sys.argv[1],"rb"))["workspace"]["package"]["version"])' Cargo.toml)
+          if [ "${TAG#v}" != "$version" ]; then
+            echo "the workspace version is $version but the release tag is $TAG"; exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "$TAG ($version) is a published release on $RELEASE_BRANCH at $tag_sha"
+
+  # Proves every crate in the list packages and compiles as crates.io will
+  # compile it. This is the job a release always runs, publish or not.
+  verify:
+    name: verify the crates
+    needs: guard
+    # The owner's fast runner when there is one; release days can be long.
+    runs-on: ${{ vars.RUNNER_MAIN || 'ubuntu-latest' }}
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ vars.RELEASE_BRANCH || github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libprotobuf-dev
+      - name: the declared crate list matches the manifests
+        run: |
+          # Comma-joined, one line, so the workflow's CRATES is the one input
+          # both this check and the publish job read.
+          python3 scripts/ci/publishable-crates.py --self-test
+          declared=$(echo "$CRATES" | tr -d '[:space:]')
+          python3 scripts/ci/publishable-crates.py --expect "$declared"
+      - name: cargo publish --dry-run, in dependency order
+        run: |
+          set -euo pipefail
+          # Cargo uploads a crate only after the ones it depends on are indexed,
+          # so the declared order is the upload order too.
+          IFS=',' read -ra crates <<< "$(echo "$CRATES" | tr -d '[:space:]')"
+          for crate in "${crates[@]}"; do
+            echo "::group::$crate"
+            cargo publish --dry-run --locked -p "$crate"
+            echo "::endgroup::"
+          done
+      - name: what a maintainer must still configure
+        env:
+          DECLARED: ${{ env.CRATES }}
+        run: |
+          set -euo pipefail
+          # A dry run never reaches crates.io's own checks, so a release says
+          # them out loud instead of passing silently.
+          python3 - <<'PY'
+          import json, os, subprocess
+          metadata = json.loads(
+              subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"])
+          )
+          wanted = [name for name in os.environ["DECLARED"].replace("\n", " ").split(",") if name.strip()]
+          packages = {package["name"]: package for package in metadata["packages"]}
+          for name in (name.strip() for name in wanted):
+              package = packages[name]
+              for field in ("repository", "homepage", "documentation", "keywords"):
+                  if not package.get(field):
+                      print(f"::warning::{name} has no {field}: crates.io will not link it to ostrium-labs/loams")
+          PY
+
+  # Off by default. A release event never reaches this job; only a manual run
+  # with publish: true does, and only after verify passed for the same tag.
+  publish:
+    name: publish to crates.io
+    needs: [guard, verify]
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == true
+    # The owner creates this environment with required reviewers, so the upload
+    # waits for a second person. crates.io's trusted publisher names the same
+    # environment, so a token cannot be minted outside it.
+    environment: crates-io
+    # The owner's fast runner when there is one; release days can be long.
+    runs-on: ${{ vars.RUNNER_MAIN || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # The OIDC claim crates.io exchanges for a short-lived upload token.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ vars.RELEASE_BRANCH || github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libprotobuf-dev
+      - name: the release being published is the guarded one
+        env:
+          EXPECTED: ${{ needs.guard.outputs.tag }}
+          REQUESTED: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "$EXPECTED" ] || [ "$REQUESTED" != "$EXPECTED" ]; then
+            echo "the dispatch asked for '${REQUESTED:-<none>}' but the guard accepted '${EXPECTED:-<none>}'"; exit 1
+          fi
+          python3 scripts/ci/publishable-crates.py --expect "$(echo "$CRATES" | tr -d '[:space:]')"
+      - name: a short-lived crates.io token (trusted publishing, OIDC)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+      - name: upload, in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          args=()
+          IFS=',' read -ra crates <<< "$(echo "$CRATES" | tr -d '[:space:]')"
+          for crate in "${crates[@]}"; do
+            args+=(-p "$crate")
+          done
+          cargo publish --locked "${args[@]}"
