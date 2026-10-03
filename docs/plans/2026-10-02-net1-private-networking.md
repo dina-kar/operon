@@ -144,7 +144,7 @@ tests/e2e/net/               # docker compose: headscale + tailscaled containers
 
 ### Task 7: Docs, the e2e and close
 
-**Files:** `docs/guides/private-networking.md`, `tests/e2e/net/*`, the plan's status line, the decision log paste (the staged the canonical decision log), README rows.
+**Files:** `docs/guides/private-networking.md`, `tests/e2e/net/*`, the plan's status line, the decision-log paste in the canonical decision log, README rows.
 
 **Produces:** the guide: choosing the provider (the setting, creating the tailnet and OAuth client, the free-plan limits and their non-commercial terms); running the template; joining each platform; MagicDNS names; the three TLS choices (D593); reaching an instance from `loams`, the desktop and the phones; the pairing `net` hint; what happens when the control server (Tailscale's or Headscale) or Authentik is down; backups and the restore drill; BYOC tailnet mode. The e2e (Headscale, Caddy, Authentik or `mockoidc`, and `tailscale/tailscale:v1.102.5` containers; Tailscale itself is not in CI because it needs a live account, so its steps are a documented manual check): (a) default deny, (b) tenant A cannot reach tenant B or an operator tag, (c) an ephemeral node is deleted after the timeout, (d) after restoring a backup into a new Headscale, existing nodes reconnect, (e) with Headscale stopped an established ping continues, (f) peers without a rule are absent from each other's network map. AP0's pairing fixtures gain a `net` case (a PR against the AP0 task, noted here).
 
