@@ -11,7 +11,30 @@ use std::path::{Path, PathBuf};
 /// A route: an upper-case HTTP method and an axum path.
 type Route = (String, String);
 
-const METHODS: [&str; 5] = ["get", "post", "put", "delete", "patch"];
+const METHODS: [&str; 7] = ["get", "post", "put", "delete", "patch", "head", "options"];
+
+/// How many `/v1` method+path pairs the as-built router serves (ruling 0.1 in
+/// `docs/api/route-map.md`): 25 registered in `api::router` plus `hot` and
+/// `warm`, which `hot::routes()` registers separately and `api::router`
+/// merges. `/health`, `/ready` and the `/internal/*` routes are not app
+/// routes, so they are not counted. Changing a router without updating this
+/// number and ruling 0.1 fails here.
+const APP_ROUTE_COUNT: usize = 27;
+
+/// Whether a path is an app route (under `/v1`, but not the console's
+/// `/api/v1`).
+fn is_app_path(path: &str) -> bool {
+    matches!(path.strip_prefix("/v1"), Some(rest) if rest.is_empty() || rest.starts_with('/'))
+}
+
+/// The `/v1` method+path pairs of a route set.
+fn app_routes(routes: &BTreeSet<Route>) -> BTreeSet<Route> {
+    routes
+        .iter()
+        .filter(|(_, path)| is_app_path(path))
+        .cloned()
+        .collect()
+}
 
 fn workspace() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -267,12 +290,30 @@ fn route_map_covers_every_route() {
         "PUT".into(),
         "/v1/namespaces/{ns}/collections/{c}/hot".into()
     )));
+    // The exact count of the app routes, so the coverage check above cannot
+    // stay green while ruling 0.1 claims a different number.
+    assert_eq!(
+        app_routes(&actual).len(),
+        APP_ROUTE_COUNT,
+        "the routers serve {APP_ROUTE_COUNT} `/v1` method+path pairs; a route was added or removed, so update this number, ruling 0.1 of docs/api/route-map.md and the execution ruling in docs/plans/2026-10-02-api1-unified-connect.md"
+    );
     actual.extend(contract_routes());
     let mapped = mapped_routes();
+    assert_eq!(
+        app_routes(&mapped).len(),
+        APP_ROUTE_COUNT,
+        "docs/api/route-map.md must list exactly the {APP_ROUTE_COUNT} `/v1` method+path pairs the routers serve, the count ruling 0.1 records"
+    );
     let missing: Vec<_> = actual.difference(&mapped).collect();
     let stale: Vec<_> = mapped.difference(&actual).collect();
     assert!(
         missing.is_empty() && stale.is_empty(),
         "docs/api/route-map.md is out of date.\nmissing from the map: {missing:#?}\nmapped but not served: {stale:#?}"
     );
+}
+
+#[test]
+fn chained_head_and_options_are_inventoried() {
+    let methods = route_methods("get(read).head(head_only).options(preflight)");
+    assert_eq!(methods, vec!["GET", "HEAD", "OPTIONS"]);
 }

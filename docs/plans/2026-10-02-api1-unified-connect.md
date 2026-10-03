@@ -56,4 +56,4 @@
 
 | # | Task | Ruling | Why |
 |---|---|---|---|
-| 0.1–0.4 | 0 | Recorded in [`docs/api/route-map.md`](../api/route-map.md) §"Rulings made in this reconciliation": 28 native routes as built; the console contract is served only by `loams-console-mock`; the metastore Raft transport is mapped to `loams.internal.v1` (moved in Task 8 if openraft's wire types allow, else a follow-up); hot and warm are `SetHot` and `WarmCollection`. | As built on `dev`, 2026-10-02 |
+| 0.1–0.4 | 0 | Recorded in [`docs/api/route-map.md`](../api/route-map.md) §"Rulings made in this reconciliation": 27 `/v1` method/path pairs as built (the 25 `api::router` registers plus `hot` and `warm`, which `hot::routes()` registers separately); the console contract is served only by `loams-console-mock`; the metastore Raft transport is mapped to `loams.internal.v1` (moved in Task 8 if openraft's wire types allow, else a follow-up); hot and warm are `SetHot` and `WarmCollection`. | As built on `dev`, 2026-10-02 |
