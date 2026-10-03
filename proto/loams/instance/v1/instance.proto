@@ -64,6 +64,24 @@ message GetInstanceResponse {
   // Set during a signing-key rotation: the new key's thumbprint, signed by
   // the old key (§37 §7.2.3).
   string key_rotation = 14;
+  // Every public package of the API catalogue (design §44 §4, D600), and
+  // whether this binary serves it. A package whose engine is not in the
+  // build variant (§30 §9) is listed with `available = false`; its RPCs
+  // answer `unimplemented` with reason `feature_not_in_variant`. SDKs
+  // feature-detect with this list.
+  repeated ServiceStatus services = 15;
+}
+
+message ServiceStatus {
+  // The proto package, for example "loams.collection.v1".
+  string package = 1;
+  // The package's API version, for example "v1".
+  string version = 2;
+  // Whether this binary serves the package.
+  bool available = 3;
+  // The package's services, for example
+  // "loams.collection.v1.CollectionService".
+  repeated string services = 4;
 }
 
 enum Edition {

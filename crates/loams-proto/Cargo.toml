@@ -1,0 +1,33 @@
+[package]
+name = "loams-proto"
+description = "The public loams.*.v1 protos of the unified Connect API (design §44): buffa messages, connect-rust service traits and, with the `client` feature, clients, generated at build time; plus the descriptor set for gRPC reflection."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+# Not published yet: build.rs reads the protos from the workspace's proto/
+# directory (as loams-live-proto). SDK1 decides how the Rust SDK ships them.
+publish = false
+
+[features]
+# The generated service clients (connect-rust's client transport), for tests
+# and the Rust SDK. Off by default, so the server does not pull in the
+# client stack.
+client = ["connectrpc/client"]
+
+[dependencies]
+buffa.workspace = true
+buffa-types = { version = "0.9.2", features = ["json"] }
+connectrpc.workspace = true
+# The generated JSON mapping derives serde (connectrpc's default json feature).
+serde.workspace = true
+
+[build-dependencies]
+connectrpc-build.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
