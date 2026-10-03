@@ -983,12 +983,30 @@ jobs:
       - name: audit all tracked files and Cargo packages
         run: scripts/ci/no-metering.sh
 
+  # The Linux signing scope (issue #253, PR: SignPath). scripts/ci/
+  # signpath-artifacts.py is what refuses to submit a Windows or macOS artifact
+  # to SignPath, and the owner's ruling of 2026-10-03 is that those platforms
+  # stay unsigned. An unconditional job with no path filter on purpose: the
+  # invariant is "no artifact outside Linux is ever submitted", so it should be
+  # checked on every pull request rather than only on ones that touch the
+  # script. The self-test is pure-python fixtures and takes about a second.
+  signing:
+    name: Linux signing scope
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_LIGHT || 'ubuntu-latest') }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: the SignPath artifact guard self-test
+        run: python3 scripts/ci/signpath-artifacts.py --self-test
+
   required:
     name: CI required
     if: always()
     needs:
       - changes
       - no-metering
+      - signing
       - docs
       - check
       - rust-tests
