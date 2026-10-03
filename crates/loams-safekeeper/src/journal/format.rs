@@ -127,6 +127,14 @@ pub fn parse_record(buf: &[u8], seq: u64, offset: usize) -> Parsed<'_> {
     }
     let u32_at = |i: usize| u32::from_le_bytes(buf[i..i + 4].try_into().unwrap_or_default());
     let u64_at = |i: usize| u64::from_le_bytes(buf[i..i + 8].try_into().unwrap_or_default());
+    // With only eight padding bytes, buf[8] belongs to the next unit.
+    // Still validate a record first: a zero-length record with CRC zero
+    // has the same first eight bytes and may cross a block boundary.
+    let invalid = if offset % BLOCK == BLOCK - 8 && buf[..8] == [0; 8] {
+        Parsed::Pad
+    } else {
+        Parsed::End
+    };
     if buf[8] == 0 {
         return if offset.is_multiple_of(BLOCK) {
             Parsed::End
@@ -135,7 +143,7 @@ pub fn parse_record(buf: &[u8], seq: u64, offset: usize) -> Parsed<'_> {
         };
     }
     let Some(kind) = Kind::from_u8(buf[8]) else {
-        return Parsed::End;
+        return invalid;
     };
     let len = u32_at(0);
     let size = record_size(len as usize);
@@ -144,7 +152,7 @@ pub fn parse_record(buf: &[u8], seq: u64, offset: usize) -> Parsed<'_> {
     }
     let crc = crc32c::crc32c_append(seed(seq), &buf[8..RECORD_HEADER + len as usize]);
     if crc != u32_at(4) {
-        return Parsed::End;
+        return invalid;
     }
     let mut tl = [0u8; 32];
     tl.copy_from_slice(&buf[16..48]);
@@ -256,6 +264,33 @@ mod tests {
         assert_eq!(parse_record(&z, 1, BLOCK), Parsed::End);
         assert_eq!(parse_record(&z, 1, BLOCK + 88), Parsed::Pad);
         assert_eq!(parse_record(&z[..10], 1, BLOCK + 88), Parsed::End);
+    }
+
+    #[test]
+    fn eight_padding_bytes_before_an_append_skip_to_the_next_block() {
+        let mut out = vec![0; 8];
+        let h = hdr(Kind::Append, 3000);
+        put_record(&mut out, 1, &h, &[&[7; 3000]]);
+        assert_eq!(parse_record(&out, 1, BLOCK - 8), Parsed::Pad);
+        assert!(matches!(
+            parse_record(&out[8..], 1, BLOCK),
+            Parsed::Record { header, .. } if header == h
+        ));
+    }
+
+    #[test]
+    fn a_zero_crc_record_crossing_a_block_boundary_is_not_padding() {
+        let mut h = hdr(Kind::Progress, 0);
+        // CRC32C of segment 1 and this header is zero, so the length and
+        // CRC fields look exactly like eight bytes of padding.
+        h.aux = 0x8970_dad8;
+        let mut out = Vec::new();
+        put_record(&mut out, 1, &h, &[]);
+        assert_eq!(&out[..8], &[0; 8]);
+        assert!(matches!(
+            parse_record(&out, 1, BLOCK - 8),
+            Parsed::Record { header, .. } if header == h
+        ));
     }
 
     #[test]

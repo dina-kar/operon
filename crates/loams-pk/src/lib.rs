@@ -28,8 +28,13 @@ pub struct PkIndexConfig {
     /// [`PkIndex::write`] waits for its own flush, so this bounds write
     /// latency. Default: SlateDB's (100 ms).
     pub flush_interval: Duration,
-    /// A block cache shared by indexes, or `None` for none.
-    pub cache: Option<Arc<dyn DbCache>>,
+    /// A shared block cache and its scope ID, or `None` for none. Each
+    /// database sharing a cache must have a unique ID, reused on reopen
+    /// when persistent cache recovery is desired. The caller owns the
+    /// cache and closes it after all indexes using it have closed.
+    /// Reusing an ID for different databases in that cache can serve
+    /// cached blocks from the wrong database and return incorrect data.
+    pub cache: Option<(Arc<dyn DbCache>, u64)>,
 }
 
 impl Default for PkIndexConfig {
@@ -148,7 +153,7 @@ impl PkIndex {
         };
         let mut builder = Db::builder(DB_ROOT, scoped(store, path)?).with_settings(settings);
         builder = match config.cache {
-            Some(cache) => builder.with_db_cache(cache),
+            Some((cache, id)) => builder.with_db_cache(cache, id),
             None => builder.with_db_cache_disabled(),
         };
         let db = builder.build().await?;
@@ -282,5 +287,115 @@ mod tests {
         assert!(matches!(PkError::from(lost), PkError::Store(_)));
         let corrupt = slatedb::Error::data("checksum mismatch".to_string());
         assert!(matches!(PkError::from(corrupt), PkError::Corrupt(_)));
+    }
+}
+
+#[cfg(test)]
+mod cache_upgrade_tests {
+    use super::*;
+    fn b(s: &str) -> Bytes {
+        Bytes::copy_from_slice(s.as_bytes())
+    }
+    fn put(key: &str, value: &str) -> (Bytes, Option<Bytes>) {
+        (b(key), Some(b(value)))
+    }
+    fn config() -> PkIndexConfig {
+        PkIndexConfig {
+            flush_interval: Duration::from_millis(10),
+            ..PkIndexConfig::default()
+        }
+    }
+    const PATH: &str = "ns/1/pk/7/";
+    // A shared cache without optional cache backends.
+    #[derive(Default)]
+    struct ScopeCache {
+        entries: std::sync::Mutex<
+            std::collections::HashMap<slatedb::db_cache::CachedKey, slatedb::db_cache::CachedEntry>,
+        >,
+        closed: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl slatedb::db_cache::DbCache for ScopeCache {
+        async fn get_block(
+            &self,
+            key: &slatedb::db_cache::CachedKey,
+        ) -> Result<Option<slatedb::db_cache::CachedEntry>, slatedb::Error> {
+            Ok(self.entries.lock().unwrap().get(key).cloned())
+        }
+        async fn get_index(
+            &self,
+            key: &slatedb::db_cache::CachedKey,
+        ) -> Result<Option<slatedb::db_cache::CachedEntry>, slatedb::Error> {
+            self.get_block(key).await
+        }
+        async fn get_filter(
+            &self,
+            key: &slatedb::db_cache::CachedKey,
+        ) -> Result<Option<slatedb::db_cache::CachedEntry>, slatedb::Error> {
+            self.get_block(key).await
+        }
+        async fn get_stats(
+            &self,
+            key: &slatedb::db_cache::CachedKey,
+        ) -> Result<Option<slatedb::db_cache::CachedEntry>, slatedb::Error> {
+            self.get_block(key).await
+        }
+        async fn insert(
+            &self,
+            key: slatedb::db_cache::CachedKey,
+            value: slatedb::db_cache::CachedEntry,
+        ) {
+            self.entries.lock().unwrap().insert(key, value);
+        }
+        async fn remove(&self, key: &slatedb::db_cache::CachedKey) {
+            self.entries.lock().unwrap().remove(key);
+        }
+        fn entry_count(&self) -> u64 {
+            self.entries.lock().unwrap().len() as u64
+        }
+        async fn close(&self) -> Result<(), slatedb::Error> {
+            self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_cache_preserves_caller_scopes_and_ownership_across_reopen() {
+        let store = Store::in_memory();
+        let cache = Arc::new(ScopeCache::default());
+        let cached = |id| PkIndexConfig {
+            cache: Some((cache.clone(), id)),
+            ..config()
+        };
+        let first = PkIndex::open(&store, PATH, cached(11)).await.unwrap();
+        let second = PkIndex::open(&store, "ns/1/pk/8/", cached(22))
+            .await
+            .unwrap();
+        first.write(vec![put("same", "first")]).await.unwrap();
+        second.write(vec![put("same", "second")]).await.unwrap();
+        let flush = slatedb::config::FlushOptions {
+            flush_type: slatedb::config::FlushType::MemTable,
+        };
+        first.db.flush_with_options(flush.clone()).await.unwrap();
+        second.db.flush_with_options(flush).await.unwrap();
+        assert_eq!(first.get(b"same").await.unwrap(), Some(b("first")));
+        assert_eq!(second.get(b"same").await.unwrap(), Some(b("second")));
+        first.close().await.unwrap();
+        assert!(!cache.closed.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(second.get(b"same").await.unwrap(), Some(b("second")));
+        let reopened = PkIndex::open(&store, PATH, cached(11)).await.unwrap();
+        assert_eq!(reopened.get(b"same").await.unwrap(), Some(b("first")));
+        reopened.close().await.unwrap();
+        second.close().await.unwrap();
+        let scopes: std::collections::BTreeSet<_> = cache
+            .entries
+            .lock()
+            .unwrap()
+            .keys()
+            .map(|key| key.db_cache_id())
+            .collect();
+        assert_eq!(scopes, std::collections::BTreeSet::from([11, 22]));
+        assert!(!cache.closed.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

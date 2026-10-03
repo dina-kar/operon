@@ -1075,6 +1075,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn eight_byte_padding_does_not_hide_the_next_durable_unit() {
+        for tier in [Tier::Buffered, Tier::Pwritev2 { depth: 3 }] {
+            let d = tempfile::tempdir().unwrap();
+            let config = cfg(d.path(), tier);
+            let (j, _) = replay(config.clone());
+            j.start();
+            // Leave exactly eight padding bytes at the end of the first unit.
+            let first = vec![1; BLOCK - RECORD_HEADER - 8];
+            let a = j
+                .append(&append_hdr(tl(1), 0, first.len()), &[&first])
+                .unwrap();
+            j.wait(a.unit).await.unwrap();
+            let second = vec![2; 3000];
+            let b = j
+                .append(
+                    &append_hdr(tl(1), first.len() as u64, second.len()),
+                    &[&second],
+                )
+                .unwrap();
+            assert_eq!(b.unit, a.unit + 1);
+            j.wait(b.unit).await.unwrap();
+            j.close();
+
+            let (reopened, got) = replay(config);
+            assert_eq!(got.len(), 2, "both acknowledged units must survive replay");
+            assert_eq!(got[0].1.lsn, Lsn(0));
+            assert_eq!(got[1].1.lsn, Lsn(first.len() as u64));
+            assert_eq!(
+                reopened.read(a.seq, a.payload_off, first.len()).unwrap(),
+                first
+            );
+            assert_eq!(
+                reopened.read(b.seq, b.payload_off, second.len()).unwrap(),
+                second
+            );
+            reopened.close();
+        }
+    }
+
+    #[tokio::test]
     async fn a_torn_unit_ends_the_replay_and_writing_resumes_after_it() {
         let d = tempfile::tempdir().unwrap();
         let (j, _) = replay(cfg(d.path(), Tier::Buffered));

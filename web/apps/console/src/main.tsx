@@ -7,12 +7,14 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createBrowserRouter, Outlet } from 'react-router';
 import { RouterProvider } from 'react-router/dom';
+import { setServer } from './api/client';
 import { AgentPage, AgentsPage } from './pages/agents';
 import { ConsentPage, NotFound, SetupPage, SignInPage } from './pages/auth';
 import { EnvironmentPage } from './pages/environment';
 import { Home } from './pages/home';
 import { AccessPage, AuditPage, MembersPage, SettingsPage, TeamPage, TeamsPage } from './pages/org';
 import { ProjectPage } from './pages/project';
+import { loadRuntimeConfig } from './runtime-config';
 import { SessionGate } from './session';
 import { Shell } from './shell';
 
@@ -52,10 +54,14 @@ const router = createBrowserRouter(
   { basename: '/ui' },
 );
 
-const root = document.getElementById('root');
-if (root)
-  createRoot(root).render(
-    <StrictMode>
-      <RouterProvider router={router} />
-    </StrictMode>,
-  );
+// The server URL comes from config.json at runtime, never from the build.
+loadRuntimeConfig(import.meta.env.BASE_URL).then((config) => {
+  setServer(config.server);
+  const root = document.getElementById('root');
+  if (root)
+    createRoot(root).render(
+      <StrictMode>
+        <RouterProvider router={router} />
+      </StrictMode>,
+    );
+});

@@ -50,14 +50,14 @@ License (its notice is in the file), and rustproto.proto from rust-protobuf
 
 Resonate (https://github.com/resonatehq/resonate), Apache License 2.0.
 loams-durable links the Resonate server plugins and the Resonate Rust SDK
-from the fork https://github.com/dina-kar/resonate, branch loam/0.10.1
+from the fork https://github.com/ostrium-labs/resonate, branch loam/0.10.1
 (upstream revision 28dfd016aa970332dc283e2431c406845e2ccc8f plus the
 patches listed in docs/plans/d1-dependency-spike.md), pinned by revision in
 Cargo.toml. Copyright 2026 Resonate HQ, Inc.
 
 TiKV Rust client (https://github.com/tikv/client-rust), Apache License 2.0.
 loams-tikv, loams-meta-tikv and loams-live link tikv-client from the fork
-https://github.com/dina-kar/client-rust, branch loam (upstream revision
+https://github.com/ostrium-labs/client-rust, branch loam (upstream revision
 ab4be1c2cdd58d4e593202991fb520221c83bdfd plus the patches listed in
 docs/plans/r1-dependency-spike.md), pinned by revision in Cargo.toml. Its
 generated protobuf code comes from pingcap/kvproto (Apache License 2.0).
@@ -71,3 +71,20 @@ libs/utils/src/pageserver_feedback.rs and pgxn/neon/walproposer.c, revision
 77e22e4bf09d88b70b4a83a38c2f6de6301816b4 (the last published images), via
 the fork https://github.com/ostrium-labs/neon. deploy/neon/ is derived from
 Neon's docker-compose/ at the same revision.
+
+cordis (https://github.com/cordiverse/cordis), MIT License, Copyright (c)
+Shigma and the cordis contributors. The cordis console (web/packages/cordis and the
+packages and plugins built on it) depends on cordis 4.0.0-rc.10 and bundles
+it into the console build. No cordis source is copied. Its MIT notice:
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to
+  deal in the Software without restriction, including without limitation the
+  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+  sell copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions: The above
+  copyright notice and this permission notice shall be included in all copies
+  or substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+  WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.
+The console's plugin model follows the patterns of DeepSeek Harness's
+client (https://github.com/dina-kar/deepseek-harness-desktop, MIT,
+Copyright (c) 2026 DeepSeek); no file of it is copied.

@@ -1,0 +1,24 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running tests/zz_sample.rs (/mnt/Projects/rust-cache/target/debug/deps/zz_sample-166875f75b19a857)
+
+running 3 tests
+test skipped ... ignored
+test passes ... ok
+test fails ... FAILED
+
+failures:
+
+---- fails stdout ----
+before
+
+thread 'fails' (137151) panicked at crates/loams-specview/tests/zz_sample.rs:2:42:
+boom
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    fails
+
+test result: FAILED. 1 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p loams-specview --test zz_sample`

@@ -1,0 +1,133 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 110 and seed 6555965499914337738 with 2 workers on 14 cores with 3445MB heap and 64MB offheap memory [pid: 131714] (Linux 7.2.4-3-cachyos amd64, Arch Linux 25.0.4.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/dinakaran/Documents/Operon-wt/rt0-specview/spec/tla/router/MCReshardCutover.tla
+Parsing file /home/dinakaran/Documents/Operon-wt/rt0-specview/spec/tla/router/ReshardCutover.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module ReshardCutover
+Semantic processing of module MCReshardCutover
+Starting... (2026-10-02 05:10:49)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-10-02 05:10:49.
+Error: Invariant SingleWriterRange is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ srcData = {}
+/\ paused = [d |-> FALSE, i2 |-> FALSE]
+/\ dstData = {}
+/\ crashed = FALSE
+/\ crashes = 0
+/\ dstFenced = FALSE
+/\ routesTo = [d |-> "Src", i2 |-> "Src"]
+/\ reachable = [d |-> TRUE, i2 |-> TRUE]
+/\ phase = "Copy"
+/\ nextWrite = 1
+/\ srcFenced = FALSE
+/\ acked = {}
+
+State 2: <Saga line 108, col 14 to line 113, col 56 of module ReshardCutover>
+/\ srcData = {}
+/\ paused = [d |-> FALSE, i2 |-> FALSE]
+/\ dstData = {}
+/\ crashed = FALSE
+/\ crashes = 0
+/\ dstFenced = FALSE
+/\ routesTo = [d |-> "Src", i2 |-> "Src"]
+/\ reachable = [d |-> TRUE, i2 |-> TRUE]
+/\ phase = "CatchUp"
+/\ nextWrite = 1
+/\ srcFenced = FALSE
+/\ acked = {}
+
+State 3: <Partition line 224, col 5 to line 227, col 64 of module ReshardCutover>
+/\ srcData = {}
+/\ paused = [d |-> FALSE, i2 |-> FALSE]
+/\ dstData = {}
+/\ crashed = FALSE
+/\ crashes = 0
+/\ dstFenced = FALSE
+/\ routesTo = [d |-> "Src", i2 |-> "Src"]
+/\ reachable = [d |-> TRUE, i2 |-> FALSE]
+/\ phase = "CatchUp"
+/\ nextWrite = 1
+/\ srcFenced = FALSE
+/\ acked = {}
+
+State 4: <Saga line 117, col 13 to line 122, col 56 of module ReshardCutover>
+/\ srcData = {}
+/\ paused = [d |-> TRUE, i2 |-> FALSE]
+/\ dstData = {}
+/\ crashed = FALSE
+/\ crashes = 0
+/\ dstFenced = FALSE
+/\ routesTo = [d |-> "Src", i2 |-> "Src"]
+/\ reachable = [d |-> TRUE, i2 |-> FALSE]
+/\ phase = "Paused"
+/\ nextWrite = 1
+/\ srcFenced = FALSE
+/\ acked = {}
+
+State 5: <Saga line 124, col 16 to line 129, col 56 of module ReshardCutover>
+/\ srcData = {}
+/\ paused = [d |-> TRUE, i2 |-> FALSE]
+/\ dstData = {}
+/\ crashed = FALSE
+/\ crashes = 0
+/\ dstFenced = FALSE
+/\ routesTo = [d |-> "Src", i2 |-> "Src"]
+/\ reachable = [d |-> TRUE, i2 |-> FALSE]
+/\ phase = "Fenced"
+/\ nextWrite = 1
+/\ srcFenced = FALSE
+/\ acked = {}
+
+State 6: <Saga line 133, col 22 to line 141, col 56 of module ReshardCutover>
+/\ srcData = {}
+/\ paused = [d |-> TRUE, i2 |-> FALSE]
+/\ dstData = {}
+/\ crashed = FALSE
+/\ crashes = 0
+/\ dstFenced = FALSE
+/\ routesTo = [d |-> "Dst", i2 |-> "Src"]
+/\ reachable = [d |-> TRUE, i2 |-> FALSE]
+/\ phase = "CutOver"
+/\ nextWrite = 1
+/\ srcFenced = FALSE
+/\ acked = {}
+
+State 7: <Saga line 144, col 21 to line 149, col 56 of module ReshardCutover>
+/\ srcData = {}
+/\ paused = [d |-> TRUE, i2 |-> FALSE]
+/\ dstData = {}
+/\ crashed = FALSE
+/\ crashes = 0
+/\ dstFenced = FALSE
+/\ routesTo = [d |-> "Dst", i2 |-> "Src"]
+/\ reachable = [d |-> TRUE, i2 |-> FALSE]
+/\ phase = "Published"
+/\ nextWrite = 1
+/\ srcFenced = FALSE
+/\ acked = {}
+
+State 8: <Saga line 151, col 14 to line 156, col 56 of module ReshardCutover>
+/\ srcData = {}
+/\ paused = [d |-> FALSE, i2 |-> FALSE]
+/\ dstData = {}
+/\ crashed = FALSE
+/\ crashes = 0
+/\ dstFenced = FALSE
+/\ routesTo = [d |-> "Dst", i2 |-> "Src"]
+/\ reachable = [d |-> TRUE, i2 |-> FALSE]
+/\ phase = "Resumed"
+/\ nextWrite = 1
+/\ srcFenced = FALSE
+/\ acked = {}
+
+1932 states generated, 663 distinct states found, 270 states left on queue.
+The depth of the complete state graph search is 9.
+The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 6 and the 95th percentile is 5).
+Finished in 00s at (2026-10-02 05:10:49)

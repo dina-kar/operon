@@ -1,6 +1,8 @@
 packages:
   - apps/*
   - packages/*
+  - plugins/*
+  - examples/*
 allowBuilds:
   esbuild: true
   # pnpm 11: @bufbuild/buf's postinstall only swaps its JS shim for the

@@ -216,8 +216,16 @@ impl ApprovalService for Approvals {
                 .as_deref()
                 .and_then(|r| self.0.seed.acts_for(r))
                 .or(requester.as_deref());
+            // An agent decides on behalf of its user (RFC 8693 `act`), so
+            // Q432 compares the user, not the agent; `Decision.by` keeps
+            // the caller itself.
+            let decider_user = self
+                .0
+                .seed
+                .acts_for(&me.principal.id)
+                .unwrap_or(&me.principal.id);
             let decider = Decider {
-                principal_id: &me.principal.id,
+                principal_id: decider_user,
                 authenticated_at: me.authenticated_at,
             };
             check_decision(

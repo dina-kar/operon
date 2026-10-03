@@ -19,9 +19,26 @@ const csrfHeader: Middleware = {
   },
 };
 
+let server = window.location.origin;
+
+function connect(baseUrl: string) {
+  const client = createClient<paths>({ baseUrl, credentials: 'include' });
+  client.use(csrfHeader);
+  return client;
+}
+
 /** Typed client for the console API. Paths are absolute: `/api/v1/...`. */
-export const api = createClient<paths>({ baseUrl: window.location.origin, credentials: 'include' });
-api.use(csrfHeader);
+export let api = connect(server);
+
+/**
+ * Points every request at the Loams server named by the runtime config
+ * (`config.json`), before the first render. Unset keeps the console's origin.
+ * `api` is a live binding, so importers see the new client.
+ */
+export function setServer(origin: string | undefined) {
+  server = origin ?? window.location.origin;
+  api = connect(server);
+}
 
 /** The engine's collection description (M1.6 wire contract W7, W8), the fields the console reads. */
 export type CollectionInfo = {
@@ -49,7 +66,7 @@ export type CollectionInfo = {
 
 /** The data API is outside the console contract, so it is fetched directly. */
 export async function listCollections(namespace: string): Promise<CollectionInfo[]> {
-  const res = await fetch(`/v1/namespaces/${encodeURIComponent(namespace)}/collections`, {
+  const res = await fetch(`${server}/v1/namespaces/${encodeURIComponent(namespace)}/collections`, {
     credentials: 'include',
   });
   if (!res.ok) throw new Error(`collections: ${res.status}`);
