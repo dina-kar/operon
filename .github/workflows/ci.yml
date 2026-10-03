@@ -422,9 +422,14 @@ jobs:
           ES_ORACLE_URL: http://127.0.0.1:9250
         run: conformance/es-client/run.sh
 
+  # The remaining light jobs (docs, TLA+, Lean, the boundary guard and the
+  # required summary) run the same light expression as `changes`: main takes
+  # RUNNER_MAIN, dev takes RUNNER_LIGHT. Until #268's routing reached them they
+  # pinned ubuntu-latest, so a single change to RUNNER_MAIN left five jobs
+  # behind on the default pool (ruling 6).
   docs:
     name: decision log IDs
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_LIGHT || 'ubuntu-latest') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -442,7 +447,7 @@ jobs:
     name: TLA+ specs
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.spec == 'true' || needs.changes.outputs.router == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_LIGHT || 'ubuntu-latest') }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
@@ -471,7 +476,7 @@ jobs:
     name: Lean proofs
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.lean == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_LIGHT || 'ubuntu-latest') }}
     defaults:
       run:
         working-directory: spec/lean
@@ -970,7 +975,7 @@ jobs:
 
   no-metering:
     name: open-core boundary (no metering)
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_LIGHT || 'ubuntu-latest') }}
     steps:
       - uses: actions/checkout@v7
       - name: boundary guard regression fixtures
@@ -1005,7 +1010,7 @@ jobs:
       - deny
       - web
       - dapr-edge
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_LIGHT || 'ubuntu-latest') }}
     steps:
       - name: Require all selected CI jobs to pass
         env:
