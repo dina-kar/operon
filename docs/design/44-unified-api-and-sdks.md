@@ -4,9 +4,9 @@ Status: **Proposed** · 2026-10-02. The direction is the owner's, from 2026-10-0
 
 > "remove the REST API; [make] a unified gRPC API for all services in a single `loams`; dependencies are prebuilt and added to it; all can be accessed as functions in `loams.vector` etc.; also add support for Ruby, PHP, etc.: all the languages gRPC supports generating clients for."
 
-This document turns that into decisions **D600–D619** and open questions **Q600–Q614** (staged in [`_pending/44-log.md`](_pending/44-log.md), not yet in the decision log). Everything past the quotation (the service catalogue, the migration table, the facade generator, the language matrix) is a **proposal** until the owner confirms it; the owner's "do suggested for all" (2026-10-02) means the defaults below stand unless they say otherwise. **No code is written by this document.** Plans: [API1](../plans/2026-10-02-api1-unified-connect.md), [SDK1](../plans/2026-10-02-sdk1-generation-pipeline.md), [SDK2](../plans/2026-10-02-sdk2-languages.md).
+This document turns that into decisions **D600–D619** and open questions **Q600–Q614** (recorded in the [decision log](13-decision-log.md), now in the decision log). Everything past the quotation (the service catalogue, the migration table, the facade generator, the language matrix) is a **proposal** until the owner confirms it; the owner's "do suggested for all" (2026-10-02) means the defaults below stand unless they say otherwise. **No code is written by this document.** Plans: [API1](../plans/2026-10-02-api1-unified-connect.md), [SDK1](../plans/2026-10-02-sdk1-generation-pipeline.md), [SDK2](../plans/2026-10-02-sdk2-languages.md).
 
-**Numbering.** `dev` ends at D459 and Q453; blocks D460–D599 are reserved by other pending documents (§39, §37 §18, §40 to §43). D600–D619 and Q600–Q614 are this document's; renumber at merge if taken.
+**Numbering.** `dev` ends at D459 and Q453; blocks D-SF-1–D599 are reserved by other pending documents (§39, §37 §18, §40 to §43). D600–D619 and Q600–Q614 are this document's; renumber at merge if taken.
 
 ## 1. Summary
 
@@ -345,7 +345,7 @@ Trusted-publishing availability is re-verified at each language's Task 0 (dated)
 
 ## 14. Open questions
 
-See [`_pending/44-log.md`](_pending/44-log.md) (Q600–Q614). The ones that change work if answered differently: Q600 (shims), Q601 (all 13 languages), Q602 (is the OAuth/OIDC protocol surface acceptable as kept), Q604 (generator vs hand wrappers), Q606 (Connect-unary fallbacks count as "no REST"), Q608 (Arrow IPC over Connect).
+See [decision log](13-decision-log.md) (Q600–Q614). The ones that change work if answered differently: Q600 (shims), Q601 (all 13 languages), Q602 (is the OAuth/OIDC protocol surface acceptable as kept), Q604 (generator vs hand wrappers), Q606 (Connect-unary fallbacks count as "no REST"), Q608 (Arrow IPC over Connect).
 
 ## 15. Contradictions with earlier decisions, and how they are resolved
 

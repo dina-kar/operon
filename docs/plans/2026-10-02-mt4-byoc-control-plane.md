@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists the interfaces it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (names, paths, ports, defaults), use them verbatim. The code is not pre-written in this plan (M0.3 Ruling 1).
 
-> **Status: Planned** (2026-10-02). **Track MT** (design [§41](../design/41-multitenant-byoc-control-plane.md), D540–D559, staged in [`_pending/41-log.md`](../design/_pending/41-log.md); the owner's open-core ruling of 2026-10-02). Adds what MT1 to MT3 leave out: the control plane itself, tenant onboarding through Git, the BYOC agent, upgrade rings, the limits API and the no-metering guard. Depends on MT3 Task 1 (waves and `Application`s), RN1 Task 3 (`InvocationObserver`), `loams-operator` (D185) and §18's `ControlStore` (M2). **No metering, billing, plan or commercial API is built here, and none may be (D541, D550).** Branches `mt4-t<N>`, stacked; PRs target `main`. New crates are outside `loams`'s default build.
+> **Status: Planned** (2026-10-02). **Track MT** (design [§41](../design/41-multitenant-byoc-control-plane.md), D540–D559, recorded in the [decision log](../design/13-decision-log.md); the owner's open-core ruling of 2026-10-02). Adds what MT1 to MT3 leave out: the control plane itself, tenant onboarding through Git, the BYOC agent, upgrade rings, the limits API and the no-metering guard. Depends on MT3 Task 1 (waves and `Application`s), RN1 Task 3 (`InvocationObserver`), `loams-operator` (D185) and §18's `ControlStore` (M2). **No metering, billing, plan or commercial API is built here, and none may be (D541, D550).** Branches `mt4-t<N>`, stacked; PRs target `main`. New crates are outside `loams`'s default build.
 
 **Goal:**
 - `loams-control`: the hub's operations API and limits API (`loams.control.v1`) over the `ControlStore`, with OpenFGA authorization (§41 §4).
@@ -180,7 +180,7 @@ docs/design/41-multitenant-byoc-control-plane.md  docs/design/13-decision-log.md
 
 ### Task 9: The exit gate, docs and close
 
-**Files:** `.github/workflows/ci.yml` (job `mt4-e2e`), `docs/design/41-multitenant-byoc-control-plane.md` (as built), the decision log fold (the integrator, #235, does the merge of `_pending/41-log.md`), `CHANGELOG.md`.
+**Files:** `.github/workflows/ci.yml` (job `mt4-e2e`), `docs/design/41-multitenant-byoc-control-plane.md` (as built), the decision log fold (the integrator, #235, does the merge of the canonical decision log), `CHANGELOG.md`.
 
 **Produces:** the exit gate of D558 as one CI job: create an org and a namespace (Task 4 e2e); enrol a second k3d cluster as BYOC through the agent and onboard a tenant there; promote a release through ring 0, fail a gate on purpose and see promotion stop; exceed a limit, receive 429 and see no usage record; run the guard.
 

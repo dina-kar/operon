@@ -17,9 +17,9 @@
 **Tech Stack:** Rust (zeron's `rust-toolchain.toml`, stable; edition 2024) and GPUI as pinned by zeron (`zeronsh/zui`); `connectrpc` 0.9.1 and `buffa` 0.9.2 with the `buf` CLI and `protoc-gen-buffa`, `protoc-gen-buffa-packaging` and `connectrpc-codegen` 0.9.0; `keyring` 4.2; `webbrowser` 1; `reqwest` (zeron's rustls build); `rcgen` for TLS tests (Task 4); `ed25519-dalek` for manifest signatures (Task 9); wasmtime only in the deferred Task 11.
 
 **Spec:**
-- [§37 §18](../design/37-desktop-and-mobile-apps.md) (all of it) and its staged log [`_pending/37b-log.md`](../design/_pending/37b-log.md); the superseded §37 sections are historical.
+- [§37 §18](../design/37-desktop-and-mobile-apps.md) (all of it) and the [decision log](../design/13-decision-log.md); the superseded §37 sections are historical.
 - §39 (`docs/design/39-software-factory-and-loam-bot.md`, PR #192, branch `software-factory-design`, not yet on `main`): §3 (embedding), §5 (A2A), §6 (tokens), §8 (approvals), §13 (Loams Bot in the apps), and its plans SF1, SF2, SF3.
-- [§30](../design/30-loam-cli.md) D283, D285 (the CLI JSON contract); [§38](../design/38-knative-authentik-gitops.md) (Authentik); [§19](../design/19-console-identity-and-agents.md) §5 (principals and tokens); D111 (loopback); D128 (one protobuf toolchain); D284 (no telemetry); D435 (approvals); D220.
+- [§30](../design/30-loams-cli.md) D283, D285 (the CLI JSON contract); [§38](../design/38-knative-authentik-gitops.md) (Authentik); [§19](../design/19-console-identity-and-agents.md) §5 (principals and tokens); D111 (loopback); D128 (one protobuf toolchain); D284 (no telemetry); D435 (approvals); D220.
 - In the fork: `LOAMS.md`, `crates/loams-link/**`, `crates/harness/src/acp/loams_bot.rs`, zeron's `ARCHITECTURE.md`, `docs/mcp.md`, `docs/reference/linux-browser.md`, `docs/reference/windows-development.md`.
 
 ## Global Constraints
@@ -182,7 +182,7 @@ dist/loams/  scripts/loams/  .github/workflows/loams*.yml  LOAMS.md  NOTICE
 
 **Semantics:**
 - **Collab panels** over `loams.collab.v1` for Zulip threads, Plane issues, Forgejo PRs and checks, GlitchTip error groups, OpenPanel tiles; each with **Open in browser** to the app's URL (§37 §18.5).
-- **Factory:** runs list and a run's stage graph, budgets, agents, and the kill switch (a confirm step; the server enforces D473).
+- **Factory:** runs list and a run's stage graph, budgets, agents, and the kill switch (a confirm step; the server enforces D-SF-14).
 - **Stacks panel:** per Q497 (a stack as a zeron space, or its own sidebar section).
 - **Pairing:** a QR panel for the phone pairing flow (§37 §7.2), rendered natively; the pairing code expires and the panel says so.
 - **Brand:** the Loams icon and theme family (Q499) shipped as configuration; the placeholder SVG is replaced.

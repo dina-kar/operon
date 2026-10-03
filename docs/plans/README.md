@@ -156,10 +156,12 @@ Design reference: [37 Loams desktop and mobile apps](../design/37-desktop-and-mo
 |---|---|---|---|
 | [AP0: app protos, the apps mock and generation](2026-10-01-ap0-app-protos.md) | `loams.instance.v1`, `loams.devices.v1`, `loams.approvals.v1`, `loams.operations.v1`, `loams.notifications.v1`, `loams.errors.v1` (D438); `loams-apps-mock` with seed data, YAML scenarios and a shared acceptance module; TypeScript generation into `@loams/proto` and the Swift and Kotlin templates; the `protos` CI job | `main` | In progress (scaffold) |
 | [AP1a: the console as a cordis application](2026-10-01-ap1a-cordis-console.md) | `@loams/cordis` (pinned, patch log), `@loams/console-host` (boot manifest, SRI module table, all-fibers sweep), plugin builds and the `loams.yml` catalog (no `!!js`), `@loams/slots`, the shell and router, core services and gated `rpc.*` clients, today's pages as first-party plugins with a parity suite, trust tiers with sandboxed frames and attenuated tokens, `loams.console.v1.PluginService` and live reload, approvals, operations, devices, jobs, connectors and engine views (D422–D428) | AP0 Task 6; the auth plan for Tasks 6–7 against a real server | In progress (scaffold) |
-| [AP1: Loams Desktop on Tauri 2](2026-10-01-ap1-desktop-tauri.md) | The CLI bridge and stacks with a restart policy (D429); capabilities, CSP and the allowlist check (D430); the `net_fetch` bridge; single instance, tray and logs; PKCE sign-in and the keychain (D431); approvals and notifications; pairing a phone; deep links; packaging, signing and updates (D432) | AP1a Task 3; CLI1 Tasks 1–6; for publishing D33, the repository move (D406), Q420, Q421 | Dropped (2026-10-02, AP1a Ruling E10): redesigned separately; Tauri returns as the AP1b web bridge |
+| [AP1: Loams Desktop on Tauri 2](2026-10-01-ap1-desktop-tauri.md) | The CLI bridge and stacks with a restart policy (D429); capabilities, CSP and the allowlist check (D430); the `net_fetch` bridge; single instance, tray and logs; PKCE sign-in and the keychain (D431); approvals and notifications; pairing a phone; deep links; packaging, signing and updates (D432) | AP1a Task 3; CLI1 Tasks 1–6; for publishing D33, the repository move (D406), Q420, Q421 | Superseded by AP1n (D480/D499); Tauri returns separately as AP1b (D500) |
 | [AP2: Loams for Android](2026-10-01-ap2-android-compose.md) | `:core`, `:proto`, `:data`, `:push`, `:app`, `:conformance` in `ostrium-labs/loams-mobile`; connect-kotlin clients and pinned trust; StrongBox keys; pairing three ways; the cache; approvals with biometric-bound proofs; operations, jobs and the inbox; sealed FCM and UnifiedPush; the shared scenarios; Play internal testing (D433–D437) | AP0; for a real server the auth plan and AP4; Q420 | Planned |
 | [AP3: Loams for iOS](2026-10-01-ap3-ios-swiftui.md) | `LoamsCore`, `LoamsProto`, `LoamsData`, the app and the Notification Service Extension; connect-swift clients and pinned trust; Secure Enclave keys; pairing three ways; SwiftData cache; approvals; sealed APNs; the shared scenarios; TestFlight (D433–D437) | AP0; as AP2 | Planned |
 | AP4 | The server side: AP0's services in the gateway, the pairing grant and DPoP, decision-proof verification, the notifier over `io.loams.dev.*` events, `loams-push`, `PluginService` and plugin serving | The unified auth plan (D111, Q30, Q438); §21 D2; §26 J1 for job events | Not yet planned |
+| [AP1n: native desktop on the zeron fork](2026-10-02-ap1n-native-desktop-zeron.md) | Small additive native crates, Connect clients, Authentik sign-in, CLI stacks, Loams Bot ACP shim, approvals, branding and signed updates | AP0, CLI1; separate loams-desktop repository | In progress (scaffold; see plan) |
+| [AP1b: Tauri web bridge](2026-10-02-ap1b-tauri-web-bridge.md) | A separate daemon and MCP shim with profile isolation, efficient snapshots, credential redaction, approvals and native webviews | AP1n integration; own repository | Planned |
 
 ## Track MT: Knative, Authentik and GitOps for self-hosted Loams
 
@@ -172,6 +174,37 @@ Design reference: [38 Knative, Authentik and GitOps](../design/38-knative-authen
 | [MT3: GitOps with Clever's open-source stack](2026-10-02-mt3-gitops-clever.md) | Waves and `Application`s for CNPG, Authentik and Knative; Lua health checks; Authentik on CNPG; the CKE profile with Clever's Terraform and Karpenter providers; a Flux layout; the measured single-node k3s profile | MT1 Task 1, MT2 Task 1, §25's layout | Planned |
 | [NET1: Private networking, a pluggable tailnet (Tailscale BYOK or Headscale)](2026-10-02-net1-private-networking.md) | A default-deny policy shared by both providers, as code with an evaluated test suite (lint, Headscale gate, `gitops-acl-action` for Tailscale); the tenant-section renderer with generated isolation tests; an Authentik roster sync that proposes pull requests; node, compose and k3s templates for either provider with the OIDC blueprint; `loams-net` (`NetProvider`, Headscale and Tailscale clients) and BYOC tailnet mode with a per-tenant provider knob; a node inventory diff; docs and a real-`tailscaled` e2e | §43 (D580–D599); MT1; MT4 (Task 5) | Planned |
 | [MT4: The open Multitenant BYOC Control Plane with GitOps](2026-10-02-mt4-byoc-control-plane.md) | `loams-control` (operations and limits APIs, authorization, SCIM and enforced-SSO blueprints); tenant onboarding through a tenants Git repository and an `ApplicationSet`; the outbound-only BYOC agent and enrolment; release channels and upgrade rings; enforcement state; the console operator view and CLI; the no-metering CI guard | MT3 Task 1, RN1 Task 3, `loams-operator`, M2's `ControlStore` | Planned |
+
+## Track SF: Loams Software Factory and Loams Bot
+
+Design: [§39](../design/39-software-factory-and-loams-bot.md), D-SF-1–D-SF-20. Phase 1 is Zulip, Plane and Forgejo; hosted factory and marketplace work remains private.
+
+| Plan | Scope | Depends on | Status |
+|---|---|---|---|
+| [SF1: collaboration app UIs as cordis plugins](2026-10-02-sf1-collab-ui-plugins.md) | The `embed` plugin and `embed.pane` slot; the edge (framing headers, forward-auth) and its CI harness; `loams.collab.v1`, `loams-collab`, the credential broker and OpenFGA filtering; Zulip, Plane and Forgejo plugins with native panels and cards; the desktop client crate, system-browser opener and optional sidebar browser; mobile deep links and native issue, PR and thread views (D-SF-2–D-SF-5) | AP0, AP1a, the native desktop shell (§37 amended, D480–D499); AP2/AP3 for Task 8 | Planned |
+| [SF2: the A2A host and the Zulip, Plane and Forgejo agents](2026-10-02-sf2-a2a-agents.md) | `loams-a2a` (A2A 1.0 over JSON-RPC and HTTP+JSON, tasks as operations, signed cards, audience-bound tokens, client, push receiver); the three agents with risk-tagged skills; `propose_patch`; injection and secret tests (D-SF-6–D-SF-12, D-SF-18) | SF1 Tasks 1, 3, 4; D1; the unified auth plan for non-loopback | Planned |
+| [SF3: Loams Bot chat for desktop and mobile](2026-10-02-sf3-loams-bot-chat.md) | `loams.bot.v1`; `loams-bot` with threads as durable executions and the harness host; `subagent-a2a`; questions and approvals without a decision path; Loams Bot as a `Harness` in the zeron-based desktop plus a cordis browser plugin; native SwiftUI and Compose chat; sealed push; Loams Bot as an optional A2A server (D-SF-6, D-SF-8, D-SF-9, D-SF-19) | SF2; AP0, AP1a, the native desktop shell, AP2, AP3 | Planned |
+| [SF4: the factory loop](2026-10-02-sf4-factory-loop.md) | `loams.factory.v1`; the `factory.run` workflow (intake to close); policy, budgets, loop limits and the kill switch; the run record; console and phone views; the single-organisation Helm package (D-SF-13–D-SF-16) | SF2, SF3 Task 4, D1 | Planned |
+| [SF5: observability UIs and agents](2026-10-02-sf5-observability-ui.md) | GlitchTip and OpenPanel adapters, plugins and agents; the collector with Langfuse and OpenObserve pipelines (content only to Langfuse); embed panes and readers; one trace across chat, A2A, agents and apps; the factory's real `Observer`; mobile error and analytics views (D-SF-11, D-SF-17) | SF1–SF4 | Planned |
+
+## Track SO: Loams SystemOne
+
+Design: [§40](../design/40-loams-systemone.md), D520–D539. Decisions are advisory; no decision approves or grants an action.
+
+| Plan | Scope | Status |
+|---|---|---|
+| [SO1: SystemOne engine, API and backends](2026-10-02-so1-systemone.md) | Spike (kevala, `ort`, `laya-serve`); `loams.systemone.v1`; the `loams-systemone` crate; `laya-serve` sidecar; Jev adapter; calibration; self-test; model manager; route, CLI, MCP; decision log | Planned |
+| [SO2: SystemOne on the desktop](2026-10-02-so2-systemone-desktop.md) | Swift Core ML sidecar; `loams-systemone-link`; Model Manager and Settings; Loams Bot decisions; zeron MCP tool; optional browser plugin, CPU and MLX paths | Planned |
+
+## Track API and SDK: unified Connect services and generated clients
+
+Design: [§44](../design/44-unified-api-and-sdks.md), D600–D619. All 13 gRPC-supported languages are included; compatibility adapters remain.
+
+| Plan | Scope | Depends on | Status |
+|---|---|---|---|
+| [API1: unified Connect API](2026-10-02-api1-unified-connect.md) | Service protos, handlers and one listener; REST migration; compatibility adapters | AP0, R1 and D128 | Planned; see plan for current task progress |
+| [SDK1: generation pipeline](2026-10-02-sdk1-generation-pipeline.md) | buf pins, facade generation, runtime fixtures, conformance, releases and API docs | API1 Tasks 1–2; may start with AP0 | Planned |
+| [SDK2: language clients](2026-10-02-sdk2-languages.md) | Thirteen language tasks with public facades, transports, conformance, examples and registry packages | SDK1 Tasks 1–4 and the services each fixture uses | Planned |
 
 ## Later milestones
 

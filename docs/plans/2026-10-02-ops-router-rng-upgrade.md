@@ -1,6 +1,6 @@
 # OPS — Router RNG 0.10 upgrade (#311)
 
-Status: Implemented; CI and review pending.
+Status: Complete; merged #311 after actual Lean agreement, green CI/DCO and addressed CodeRabbit.
 
 ## Global constraints and Task 0
 
@@ -18,7 +18,7 @@ RngCore. There are no Ctx consumers outside this crate in dev.
 - [x] Verify three seeds and 64 draws per seed against the original 0.9
   generator; preserve all existing tests, kernel lints and licenses.
 - [x] Trigger Lean validation for oracle-driver/manifest/toolchain changes.
-- [ ] Obtain actual 10,000-case Lean agreement on CI, green CI/DCO and
+- [x] Obtain actual 10,000-case Lean agreement on CI, green CI/DCO and
   CodeRabbit, review the full diff, and merge #311.
 
 ## Rulings made during execution
@@ -42,3 +42,6 @@ execute the oracle. Actual 10,000-case agreement is a CI gate, not claimed
 from the local fallback. RT0 E22 records this dependency follow-up; the
 §31 machine example reflects the new trait. No tests or lints are weakened.
 Primary migration guide: https://rust-random.github.io/book/update-0.10.html.
+
+Merged commit verified through the GitHub PR API: `c11e093f66d91efef5613698ef1742c9ac6a329b`.
+Actual Lean agreement passed in [CI run 37052445546, job 110989089920](https://github.com/ostrium-labs/loams/actions/runs/37052445546/job/110989089920): 10,000 cases, no local-oracle skip.

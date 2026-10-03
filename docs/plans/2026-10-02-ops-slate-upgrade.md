@@ -1,6 +1,6 @@
 # OPS — SlateDB 0.17 upgrade (#307)
 
-Status: Implemented; CI and review pending.
+Status: Complete; merged #307 after green CI/DCO and addressed CodeRabbit.
 
 ## Global constraints and Task 0
 
@@ -16,7 +16,7 @@ production adaptation is the cache API; build only loams-pk under the lock.
 - [x] Require an explicit caller-assigned scope alongside a shared cache.
 - [x] Verify reopen durability, distinct cached scopes, cache ownership,
   default existing tests, fmt/clippy and dependency/license checks.
-- [ ] Obtain green CI/DCO and CodeRabbit review, merge #307.
+- [x] Obtain green CI/DCO and CodeRabbit review, merge #307.
 
 ## Rulings made during execution
 
@@ -37,3 +37,5 @@ workspace fmt, strict crate clippy and cargo deny pass. The additional
 async-trait dev edge uses the existing resolved dependency, with no new package.
 Production adapter changes are seven lines; the remainder is test coverage.
 Upstream API: https://github.com/slatedb/slatedb/blob/v0.17.0/slatedb/src/db/builder.rs.
+
+Merged commit verified through the GitHub PR API: `e370217dc248d8b65b08513bfbe053e05b4af0ee`.

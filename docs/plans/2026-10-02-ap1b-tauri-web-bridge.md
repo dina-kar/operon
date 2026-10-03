@@ -15,9 +15,9 @@
 **Tech Stack:** Rust (stable, edition 2024); Tauri 2.12 (`tauri`, `wry`, `tao`; verify the version at Task 0); the MCP Rust SDK `rmcp` (as `loams mcp serve` uses, §30 D289) for the shim; `tokio`; `serde`; `opentelemetry` and `opentelemetry-otlp`; `keyring` for `secret_ref`; `webview2-com` (Windows CDP), `webkit2gtk` (Linux hooks) and `objc2-web-kit` (macOS hooks) behind `cfg` through `with_webview`; the injected script is plain JavaScript (no bundler) tested with Vitest and jsdom; a local fixture website (static, with a login form, a password field, a prompt-injection page, a file download and a multi-step form) for end-to-end tests; the MCP Inspector for conformance.
 
 **Spec:**
-- §37 §18.14 (all of it) and its staged log `docs/design/_pending/37b-log.md` (D500–D512, Q500–Q511); §37 §18.4 to §18.7 (Loams Bot, app UIs, plugins, credentials).
+- §37 §18.14 (all of it) and the canonical decision log (D500–D512, Q500–Q511); §37 §18.4 to §18.7 (Loams Bot, app UIs, plugins, credentials).
 - §39 (`docs/design/39-software-factory-and-loams-bot.md`): §3 (embedding), §6 (tokens), §8 (approvals), §9 (tracing), §11 (kill switch); plans SF2 and SF3 for Q507.
-- §30 D288 (secrets never pass through MCP), D289, D290; §19 §5 and §21 (`docs/design/21-durable-execution.md`, §6.5 approval gates); D435, D468, D470, D473, D497; D284 (no telemetry from the product itself).
+- §30 D288 (secrets never pass through MCP), D289, D290; §19 §5 and §21 (`docs/design/21-durable-execution.md`, §6.5 approval gates); D435, D-SF-9, D-SF-11, D-SF-14, D497; D284 (no telemetry from the product itself).
 - Studied: `ChromeDevTools/chrome-devtools-mcp` (`docs/tool-reference.md`, `docs/design-principles.md`, `src/TextSnapshot.ts`), `microsoft/playwright-mcp` (`README.md`), `microsoft/playwright` (`packages/injected/src/ariaSnapshot.ts`), `tauri-apps/tauri` 2.12.1 (`crates/tauri/src/webview/mod.rs`).
 
 ## Global Constraints
@@ -180,7 +180,7 @@ scripts/  .github/workflows/  NOTICE  deny.toml  README.md
 **Semantics:**
 - One OpenTelemetry span `loams.web.tool` per tool call with the attributes of D510, parented by the `traceparent` the shim receives from the harness; exported over OTLP to the collector address in `LOAMS_WEB_OTLP` (none by default: **no telemetry unless configured**, D284). Content-free by default; an explicit `LOAMS_WEB_CONTENT_SPANS=langfuse` sends page content only to the Langfuse exporter, under §39 §9.2's masking.
 - A local, append-only **hash-chained JSONL audit log** in the profile directory (0600): each line includes the hash of the previous line; a `loams-web-bridge audit verify` command checks the chain.
-- **Pause-all** (the kill switch, §39 D473): a control-channel command that revokes every handle, blocks new calls and closes pages if asked; Loams Desktop calls it when the factory kill switch fires.
+- **Pause-all** (the kill switch, §39 D-SF-14): a control-channel command that revokes every handle, blocks new calls and closes pages if asked; Loams Desktop calls it when the factory kill switch fires.
 
 **Tests:** `every_tool_call_emits_one_span`; `span_has_no_content_by_default`; `origin_has_path_and_query_redacted`; `traceparent_is_propagated_from_the_shim`; `audit_chain_detects_tampering`; `pause_all_revokes_handles_and_blocks_calls`; `no_export_without_configuration`.
 
@@ -196,7 +196,7 @@ scripts/  .github/workflows/  NOTICE  deny.toml  README.md
 - **Approvals:** the daemon's approval requests arrive at `loams-link`, which creates a Loams approval and shows it in the approvals panel (AP1n Task 6); the decision, with its proof, goes back. **Never auto-approved** (D497).
 - **"Open in Loams Web":** a panel action that opens the app URL in a bridge window of its profile, and a `loams://web/<env>/<site>/<path>` deep link (navigation only).
 - **Client-tool relay (Q507, if chosen):** `loams.bot.v1` carries a tool call from the server-side Loams Bot to the desktop, which runs it through the same handle and policy and returns the result.
-- **Kill switch:** the factory kill switch (§39 D473) triggers pause-all.
+- **Kill switch:** the factory kill switch (§39 D-SF-14) triggers pause-all.
 
 **Tests:** `daemon_is_started_once_and_restarted_with_backoff`; `version_skew_is_refused_with_a_clear_message`; `handle_is_minted_per_session_and_revoked_at_the_end`; `agent_env_has_a_handle_and_no_loams_token`; `approval_is_raised_in_loams_desktop`; `deep_link_opens_a_bridge_window_and_performs_no_action`; `kill_switch_pauses_the_bridge`; an end-to-end test where Loams Bot's mock agent calls `take_snapshot` on the fixture site through zeron's harness.
 
