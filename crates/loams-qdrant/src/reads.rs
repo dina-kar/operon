@@ -208,7 +208,7 @@ async fn retrieve_bounded(
         true,
         request.with_vector.as_ref(),
     )?;
-    let mut pks: Vec<PrimaryKey> = Vec::with_capacity(len.min(max));
+    let mut pks: Vec<PrimaryKey> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for id in &request.ids {
         let pk = PointId::from_json(id)?.to_pk();

@@ -1107,7 +1107,7 @@ pub(crate) async fn run_batch(
     let max = gw.config().max_batch_queries;
     let len = requests.len();
     crate::check_request_len("The query batch", len, max)?;
-    let mut out = Vec::with_capacity(len.min(max));
+    let mut out = Vec::new();
     for req in requests {
         let points = Box::pin(run_query(gw.clone(), ctx.clone(), collection.clone(), req)).await?;
         out.push(QueryResponse { points });

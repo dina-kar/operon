@@ -1,6 +1,6 @@
 # OPS — CodeQL alerts (#298)
 
-Status: Task 1 implemented; 163 Qdrant integration tests pass, including both CodeRabbit regressions. Updated strict clippy, full touched-crate tests and CI pending; Tasks 2–3 pending.
+Status: Task 1 implemented; native-ceiling and single-point fixes pass all local gates. Bounded vector growth follow-up awaiting local checks and CI; Tasks 2–3 pending.
 
 ## Global Constraints
 
@@ -77,6 +77,7 @@ mark all tasks complete and close #298; update #237.
 | 5 | REST discover batches check count before per-entry validation. | The shared legacy path converts later; consistent oversized-request errors must precede discovery validation too. |
 | 6 | Use min(max_point_ids, native max_get_keys) for REST and gRPC list retrieval. | CodeRabbit identified that the native ceiling can be configured below the gateway ceiling; reject before allocation/conversion consistently. |
 | 7 | Single-point GET has a fixed one-ID executor bound, independent of the configurable list limit. | A zero list limit must not disable a separately documented single-point API; the native service still enforces its own limit. |
+| 8 | Retain count checks and grow initially empty result/key vectors within their enforced bounds instead of eagerly allocating from client lengths. | CodeQL still flags the configuration-capped preallocation expressions; bounded incremental growth removes the eager client-sized allocation and also avoids capacity allocation for empty requests. |
 
 ## References
 
@@ -102,4 +103,7 @@ Workspace fmt, strict all-targets clippy for loams-qdrant and loams,
 provenance and decision-ID checks pass. Full default-feature tests for both
 touched crates run with CARGO_PROFILE_TEST_DEBUG=0 to limit disk use; this
 changes debug symbols only, preserving assertions. CI uses its normal
-profile. No dependency change requires cargo deny for this task.
+profile. Both touched crates' full default-feature tests pass, including
+the complete fault matrix after providing its local target report directory
+through an untracked symlink to the shared cache. No test source, assertion
+or expectation changes. No dependency change requires cargo deny for this task.
