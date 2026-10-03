@@ -188,7 +188,17 @@ pub(crate) async fn retrieve(
     collection: String,
     request: PointRequest,
 ) -> Result<Vec<Record>, GatewayError> {
-    let max = gw.config().max_point_ids;
+    let max = gw.retrieve_id_limit();
+    retrieve_bounded(gw, ctx, collection, request, max).await
+}
+
+async fn retrieve_bounded(
+    gw: QdrantGateway,
+    ctx: RequestCtx,
+    collection: String,
+    request: PointRequest,
+    max: usize,
+) -> Result<Vec<Record>, GatewayError> {
     let len = request.ids.len();
     crate::check_request_len("The id list", len, max)?;
     let info = gw.service().get_collection(&ctx.ns, &collection).await?;
@@ -242,7 +252,7 @@ pub(crate) async fn get_point(
         with_payload: Some(WithPayload::Bool(true)),
         with_vector: Some(WithVector::Bool(true)),
     };
-    retrieve(gw, ctx, collection, request)
+    retrieve_bounded(gw, ctx, collection, request, 1)
         .await?
         .pop()
         .ok_or(GatewayError::PointNotFound(shown))

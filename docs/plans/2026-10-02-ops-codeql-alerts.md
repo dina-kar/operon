@@ -1,6 +1,6 @@
 # OPS — CodeQL alerts (#298)
 
-Status: Task 1 implemented; fmt, strict clippy and 161 Qdrant integration tests pass. Full touched-crate tests and CI pending; Tasks 2–3 pending.
+Status: Task 1 implemented; 163 Qdrant integration tests pass, including both CodeRabbit regressions. Updated strict clippy, full touched-crate tests and CI pending; Tasks 2–3 pending.
 
 ## Global Constraints
 
@@ -39,11 +39,14 @@ change that would move keys to other shards.
   query_batch_refuses_more_than_max_batch_queries,
   retrieve_refuses_more_ids_than_max_point_ids,
   grpc_batch_counts_are_checked_before_conversion,
-  grpc_retrieve_count_is_checked_before_conversion.
+  grpc_retrieve_count_is_checked_before_conversion,
+  retrieve_limit_tracks_native_configuration,
+  retrieve_limit_does_not_block_single_point_get.
 - [x] Reject batch counts above 1,000 and retrieve IDs above 10,000 by
   default before executor allocations; configurable limits accept zero
-  and their exact boundary. Test shared REST/gRPC behavior and legacy
-  search/recommend/discover batches, including malformed oversized gRPC.
+  and their exact boundary. Cap list retrieval by native max_get_keys;
+  single-point GET uses its own fixed one-ID bound. Test shared REST/gRPC
+  behavior and legacy search/recommend/discover batches, including malformed oversized gRPC.
 - [x] Document defaults, error text and compatibility divergence.
 - [ ] fmt, strict clippy, touched-crate tests; required CI/DCO/CodeQL,
   CodeRabbit and complete diff review; merge and update #237.
@@ -72,6 +75,8 @@ mark all tasks complete and close #298; update #237.
 | 3 | Separate allocation fixes, privacy fixes and final alert audit. | One plan task per PR and individually reviewable security changes. |
 | 4 | Replace the stopped retrieve default with 10,000 IDs. | Before-fix tests exposed the native max_get_keys ceiling of 10,000; increasing native limits is outside this security task. |
 | 5 | REST discover batches check count before per-entry validation. | The shared legacy path converts later; consistent oversized-request errors must precede discovery validation too. |
+| 6 | Use min(max_point_ids, native max_get_keys) for REST and gRPC list retrieval. | CodeRabbit identified that the native ceiling can be configured below the gateway ceiling; reject before allocation/conversion consistently. |
+| 7 | Single-point GET has a fixed one-ID executor bound, independent of the configurable list limit. | A zero list limit must not disable a separately documented single-point API; the native service still enforces its own limit. |
 
 ## References
 
@@ -87,7 +92,9 @@ With executor and gRPC guards absent, both REST regressions and both gRPC
 count regressions failed. The first retrieve run also exposed that the
 stopped 100,000 default exceeded native max_get_keys=10,000. After aligning
 the default and guarding REST discovery before entry validation, all 161
-Qdrant integration tests pass. The malformed query fixture explicitly
+Qdrant integration tests initially passed; both native-limit and single-point
+GET review regressions then failed before their fixes. With the shared
+effective list limit and fixed single-point bound, all 163 pass. The malformed query fixture explicitly
 asserts that direct gRPC conversion fails; the guarded oversized batch
 returns the count error instead. Existing tests are retained unchanged.
 

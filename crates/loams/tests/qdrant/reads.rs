@@ -626,3 +626,54 @@ async fn grpc_retrieve_count_is_checked_before_conversion() {
         assert!(result.result.is_empty());
     }
 }
+
+#[tokio::test]
+async fn retrieve_limit_tracks_native_configuration() {
+    let qd = Qd::start_with(|config| {
+        config.query.max_get_keys = 2;
+        config.qdrant.as_mut().unwrap().max_point_ids = 5;
+    })
+    .await;
+    create_single(&qd, "native_limit").await;
+    let (status, reply) = retrieve(&qd, "native_limit", json!({"ids": [0, 1, 2]})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let message = "Wrong input: The id list holds 3 entries, more than the limit of 2";
+    assert_eq!(error(&reply), message);
+    let err = qd
+        .points()
+        .await
+        .get(pb::GetPoints {
+            collection_name: "native_limit".into(),
+            ids: vec![pb::PointId::default(); 3],
+            ..Default::default()
+        })
+        .await
+        .expect_err("native ceiling before conversion");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    assert_eq!(err.message(), message);
+    let (status, reply) = retrieve(&qd, "native_limit", json!({"ids": [0, 1]})).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["result"], json!([]));
+}
+
+#[tokio::test]
+async fn retrieve_limit_does_not_block_single_point_get() {
+    let qd = Qd::start_with(|config| {
+        config.qdrant.as_mut().unwrap().max_point_ids = 0;
+    })
+    .await;
+    create_single(&qd, "single").await;
+    upsert(&qd, "single", json!([{"id": 1, "vector": [1.0, 2.0]}])).await;
+    let (status, reply) = qd.get("/collections/single/points/1", None).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["result"]["id"], 1);
+    let (status, reply) = retrieve(&qd, "single", json!({"ids": [1]})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error(&reply),
+        "Wrong input: The id list holds 1 entries, more than the limit of 0"
+    );
+    let (status, reply) = retrieve(&qd, "single", json!({"ids": []})).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["result"], json!([]));
+}

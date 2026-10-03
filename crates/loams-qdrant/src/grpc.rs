@@ -558,7 +558,7 @@ service! {
             request: Request<pb::GetPoints>,
         ) -> Result<Response<pb::GetResponse>, Status> {
             let r = request.get_ref();
-            crate::check_request_len("The id list", r.ids.len(), self.gw.config().max_point_ids)
+            crate::check_request_len("The id list", r.ids.len(), self.gw.retrieve_id_limit())
                 .map_err(|e| e.grpc_status())?;
             let ids = r
                 .ids
