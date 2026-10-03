@@ -198,7 +198,7 @@ PgDog's open-source `RESHARD` runs schema sync, parallel binary `COPY`, replicat
 
 1. **Copy and catch up** on a designated instance *d*: `RESHARD <source> <destination> <publication>` against *d*'s admin database; poll `SHOW TASKS` and `SHOW REPLICATION` until lag is under the stop threshold. The destination is a second database entry (`<db>__reshard_<g>`) rendered into every instance at generation *g* but unused by clients.
 2. **Pause** `<db>` on every instance (`PAUSE <db>`), so new queries queue (PgDog's own barrier).
-3. **Fence the source in Postgres**, which is what makes the cutover safe when an instance is unreachable: on every source shard, `ALTER ROLE <app_role> NOLOGIN`, then `pg_terminate_backend` for that role's sessions. Any PgDog instance that still routes to a source shard can no longer complete an operation: checked directly against Postgres, a new connection is refused with SQLSTATE 28000 and a terminated in-flight session ends with 57P01, while a routed query through PgDog surfaces PgDog's own checkout error (58000 in the pinned-image probe) rather than a forwarded SQLSTATE. The guarantee is that a write fails instead of being lost and a stale read fails instead of returning old data, not any particular error code. `default_transaction_read_only` is not a fence: a client's `BEGIN READ WRITE` or `SET` overrides it. The replication role PgDog uses for the reverse stream is a different role and is not fenced (Q307).
+3. **Fence the source in Postgres**, which is what makes the cutover safe when an instance is unreachable: on every source shard, `ALTER ROLE <app_role> NOLOGIN`, then `pg_terminate_backend` for that role's sessions. Sending the signal is not the same as the session ending: with no timeout argument `pg_terminate_backend` returns `true` whether or not the backend has actually terminated, and a positive timeout only bounds how long it waits ([PostgreSQL 17 §9.28.2](https://www.postgresql.org/docs/17/functions-admin.html)). Step 3 therefore ends only when `pg_stat_activity` on every source shard shows no backend still logged in as `<app_role>`. A signalled backend can still commit in the window before it acts on the signal, and a `CUTOVER` after that commit drops the write, which is what `ReshardCutover`'s `NoLostWrite` forbids. Any PgDog instance that still routes to a source shard can then no longer complete an operation: checked directly against Postgres, a new connection is refused with SQLSTATE 28000 and a terminated in-flight session ends with 57P01, while a routed query through PgDog surfaces PgDog's own checkout error (58000 in the pinned-image probe) rather than a forwarded SQLSTATE. The guarantee is that a write fails instead of being lost and a stale read fails instead of returning old data, not any particular error code. `default_transaction_read_only` is not a fence: a client's `BEGIN READ WRITE` or `SET` overrides it. The replication role PgDog uses for the reverse stream is a different role and is not fenced (Q307).
 4. **Cut over** on *d* (`CUTOVER <task>`), which drains and swaps the two databases' identity in *d*'s routing table and starts the reverse stream (`pgdog/pgdog/src/admin/cutover.rs`, `RESHARDING.md` "Point of no return").
 5. **Publish generation *g*+1** in the record (the destination is now `<db>`), write the ConfigMap, and `RELOAD` every other instance.
 6. **Resume** `<db>` on every instance.
@@ -259,7 +259,7 @@ pub trait RouterInstance: Send + Sync {
 #[async_trait]
 pub trait ShardBackend: Send + Sync {
     async fn status(&self) -> Result<BackendStatus, BackendError>;          // role, read-only, lag, LSN/GTID
-    async fn fence_writes(&self, role: &str) -> Result<(), BackendError>;   // §6.4 step 3
+    async fn fence_writes(&self, role: &str) -> Result<(), BackendError>;   // §6.4 step 3; returns only once no backend of `role` remains
     async fn unfence_writes(&self, role: &str) -> Result<(), BackendError>;
     async fn prepared(&self) -> Result<Vec<PreparedXact>, BackendError>;    // pg_prepared_xacts
     async fn checksum(&self, table: &str, by: &ShardFn) -> Result<TableDigest, BackendError>; // split verification
@@ -456,7 +456,7 @@ Every run asserts that no acknowledged commit is lost and no committed transacti
 
 ### 14.1 Contract suites (D316)
 
-`shard_backend_conformance!(Backend)` and `router_fleet_conformance!(Fleet)` expand the same cases against the model and the real thing: role and read-only reporting, fence then write fails with the documented error, unfence restores, prepared transactions listed with their gids, checksums equal for equal data, `RELOAD` applies a generation, `PAUSE` queues and `RESUME` releases. Real backends: Postgres 17.11 in CI, Loams Postgres computes from `deploy/neon` once P2b is merged, WeSQL in RT3.
+`shard_backend_conformance!(Backend)` and `router_fleet_conformance!(Fleet)` expand the same cases against the model and the real thing: role and read-only reporting, fence, waiting for the role's backends to exit, then write fails with the documented error, unfence restores, prepared transactions listed with their gids, checksums equal for equal data, `RELOAD` applies a generation, `PAUSE` queues and `RESUME` releases. Real backends: Postgres 17.11 in CI, Loams Postgres computes from `deploy/neon` once P2b is merged, WeSQL in RT3.
 
 ### 14.2 Differential tests
 
