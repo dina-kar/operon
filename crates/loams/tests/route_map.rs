@@ -170,7 +170,8 @@ fn route_methods(handler: &str) -> Vec<String> {
         let mut from = 0;
         while let Some(at) = handler[from..].find(&format!("{method}(")) {
             let at = from + at;
-            let boundary = at == 0 || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_');
+            let boundary =
+                at == 0 || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_');
             if boundary {
                 out.push(method.to_ascii_uppercase());
             }
@@ -203,7 +204,10 @@ fn served_routes() -> BTreeSet<Route> {
             let (path_expr, handler) = first_arg(args);
             let route = route_path(path_expr, &bindings);
             let methods = route_methods(handler);
-            assert!(!methods.is_empty(), "no method in .route({args}) in {path:?}");
+            assert!(
+                !methods.is_empty(),
+                "no method in .route({args}) in {path:?}"
+            );
             for method in methods {
                 routes.insert((method, route.clone()));
             }
@@ -240,7 +244,9 @@ fn mapped_routes() -> BTreeSet<Route> {
             continue;
         }
         let method = cells[1];
-        if !METHODS.iter().any(|m| m.eq_ignore_ascii_case(method)) || method != method.to_ascii_uppercase() {
+        if !METHODS.iter().any(|m| m.eq_ignore_ascii_case(method))
+            || method != method.to_ascii_uppercase()
+        {
             continue;
         }
         let Some(route) = cells[2].strip_prefix('`').and_then(|r| r.strip_suffix('`')) else {
@@ -257,7 +263,10 @@ fn route_map_covers_every_route() {
     // Sanity: the parser found the routers, not an empty set.
     assert!(actual.contains(&("POST".into(), "/v1/namespaces/{ns}/query".into())));
     assert!(actual.contains(&("POST".into(), "/internal/v1/reads/{op}".into())));
-    assert!(actual.contains(&("PUT".into(), "/v1/namespaces/{ns}/collections/{c}/hot".into())));
+    assert!(actual.contains(&(
+        "PUT".into(),
+        "/v1/namespaces/{ns}/collections/{c}/hot".into()
+    )));
     actual.extend(contract_routes());
     let mapped = mapped_routes();
     let missing: Vec<_> = actual.difference(&mapped).collect();
