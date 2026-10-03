@@ -1,0 +1,24 @@
+{
+  "name": "@loams/cordis",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The one place the Loams console imports cordis from: a facade over the pinned cordis v4 release candidate, with its patch log (design §37 §14 risk 1, AP1a Ruling 1).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "cordis": "4.0.0-rc.10"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

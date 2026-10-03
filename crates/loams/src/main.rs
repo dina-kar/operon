@@ -686,6 +686,9 @@ enum Command {
         /// Address of this node's HTTP listener (API, internal and metastore routes).
         #[arg(long)]
         listen: SocketAddr,
+        /// Use the listener inherited on stdin (cluster test harness only).
+        #[arg(long, hide = true)]
+        listen_stdin: bool,
         /// The ip:port other nodes reach this node at [default: --listen].
         #[arg(long)]
         advertise: Option<String>,
@@ -773,6 +776,7 @@ fn config(command: Command) -> ServerConfig {
             node_id,
             roles,
             listen,
+            listen_stdin,
             advertise,
             peers,
             bucket,
@@ -795,6 +799,7 @@ fn config(command: Command) -> ServerConfig {
             }
             let advertise = advertise.unwrap_or_else(|| listen.to_string());
             let mut cluster = ClusterConfig::new(node_id, roles, advertise, peers);
+            cluster.listen_stdin = listen_stdin;
             cluster.zone = zone;
             cluster.replication = replication;
             if let Some(v) = registry_ttl_ms {

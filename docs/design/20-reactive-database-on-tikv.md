@@ -402,7 +402,7 @@ TiKV keeps old versions until a GC safe point passes them. TiDB advances it for 
 
 ## 10. TiDB SQL coexistence (D123): superseded by D260
 
-> **Proposed 2026-10-01** ([§31](31-loams-router-and-verification.md), Q314): OLTP MySQL wire access comes from vtgate in front of WeSQL (§29, PR #172; D320), so Q260 would narrow to whether Loams also serves read-only MySQL wire access over DataFusion. Not decided.
+> **Decided 2026-10-02** ([§31](31-loams-router-and-verification.md), Q314): OLTP MySQL wire access comes from vtgate in front of WeSQL (§29, PR #172; D320), so Q260 narrows to whether Loams also serves read-only MySQL wire access over DataFusion, which stays open.
 >
 > **Superseded 2026-09-29 by D260.** Loams deploys no TiDB, so there is no TiDB SQL beside Live. The subsections below are kept for their TiDB and keyspace facts. What replaces them is **open (Q260)**, with two candidates and no decision:
 >
@@ -508,7 +508,7 @@ WAL object names are ULIDs, which are time-ordered, so their keys get an 8-byte 
      - **Keyspace required on API v2.** A client without a keyspace fails with `InvalidKeyMode` on an API v2 cluster, so every client must be configured with one.
      - **Error messages** include keyspace-prefixed raw keys, which must be scrubbed before they reach users.
    - **Upstream first.** Loams pins a version, runs its own conformance and fault suites against it, and contributes fixes upstream (D126). The **first upstream PR candidates** are (1) reconnecting the TSO stream after a PD stall and (2) exposing the generated proto modules (`cdcpb`, `pdpb`, `keyspacepb`) as a public module. Two follow-ups come after: setting `max_commit_ts` in async commit, and optional pessimistic lock retry at a new `for_update_ts`. A third is **resolving async-commit and 1PC locks on the read path** (`CheckSecondaryLocks` from the reader's lock resolver; today only GC's `cleanup_locks` checks secondaries, so a crashed async-commit writer blocks readers until GC). Until it lands, the metastore and Live commit with `two_pc` (R1 plan rows T6-5, T7-1).
-   - **Loams's fork (R1 plan rows F1–F5).** On the owner's direction, `tikv-client` now comes from `https://github.com/dina-kar/client-rust`, branch `loam` (pinned by rev), which carries the TSO reconnect, the public proto modules, read-path async-commit lock resolution and `max_commit_ts`. Each fix is drafted as an upstream PR. Pessimistic lock retry stays the runner's job (row F5).
+   - **Loams's fork (R1 plan rows F1–F5).** On the owner's direction, `tikv-client` now comes from `https://github.com/ostrium-labs/client-rust`, branch `loam` (pinned by rev), which carries the TSO reconnect, the public proto modules, read-path async-commit lock resolution and `max_commit_ts`. Each fix is drafted as an upstream PR. Pessimistic lock retry stays the runner's job (row F5).
 3. **Latency.** Each call costs a TSO fetch plus prewrite and commit round trips. In the spike, commit p50 was about 3.5–7 ms under heavy host load (1PC or async commit at the low end, 2PC at the high end). A 10-key pessimistic transaction took about 13–25 ms in total, dominated by ten sequential `get_for_update` round trips of about 1 ms each **(spike; indicative only)**. Batching locks (`batch_get_for_update`) matters for `commit_wal`. `commit_wal` sits on the write path; M2's write-latency budget must include it for TiKV deployments.
 4. **Commit mode.** Async commit with 1PC was planned as the default here too (§5.1). As built, the metastore and Live commit with `two_pc` until the read-path lock resolution of item 2 is in the pinned `tikv-client` (R1 plan rows T6-5, T7-1); the `commit_mode` switch moves a component back to async commit then, by a ruling, once its linearizability histories and checkers pass with it. With the fork, the read-path resolution is in the pinned client; the metastore stays on `two_pc` pending an owner ruling (R1 plan row F4: async commit passed the matrix once but was less reliable on a hot partition head under load), and Live stays on `two_pc` until its checkers exist (Task 16).
 5. **Hot keys.** A busy partition head is written by every flush that touches it. Pessimistic locking bounds the damage; TiKV splits regions by load but cannot split one key.
@@ -573,7 +573,7 @@ The owner's item (e), and the reason Loams Live is more than a Convex clone.
 | TiFlash | Apache-2.0 | ~~Optional columnar and vector add-on for SQL tenants (R4, D131)~~ Not used (D260) |
 | BR (a tool in the TiDB repo; no TiDB server needed) and TiKV `backup-stream` | Apache-2.0 | Mandatory backup and PITR of Live and metastore keyspaces to object storage (D131) |
 | kvproto (`pdpb`, `cdcpb`, `keyspacepb`) | Apache-2.0 | Vendored protos for the GC-state client |
-| `tikv-client` (client-rust) 0.4.0, from Loams's fork `dina-kar/client-rust` (R1 plan row F1) | Apache-2.0 | Dependency |
+| `tikv-client` (client-rust) 0.4.0, from Loams's fork `ostrium-labs/client-rust` (R1 plan row F1) | Apache-2.0 | Dependency |
 | `connectrpc` 0.9 (connect-rust) | Apache-2.0 | Dependency |
 | `buffa` 0.9 | Apache-2.0 | Dependency |
 | `rquickjs` 0.14, QuickJS-ng | MIT | Dependency |

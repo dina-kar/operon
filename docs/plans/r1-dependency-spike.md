@@ -167,7 +167,7 @@ It was ready (all six pre-allocated keyspaces listed, and `select 1` answered th
 
 Added 2026-09-27 (R1 plan rows F1–F5), on the owner's direction "for both tikv and resonate ... change and merge".
 
-**Where it lives.** The fork is `https://github.com/dina-kar/client-rust`. Its branch `loam` starts at upstream `ab4be1c` (upstream master on 2026-09-27) and merges one topic branch per fix, each with a merge commit. Loams pins `loam` by rev (`1f8962b00b33ebc6f34b72d6c52d08b8a8e1906e`). Every topic commit is signed off, because upstream's README asks for a DCO sign-off. Each fix is drafted as an upstream PR; none is posted yet.
+**Where it lives.** The fork is `https://github.com/ostrium-labs/client-rust`. Its branch `loam` starts at upstream `ab4be1c` (upstream master on 2026-09-27) and merges one topic branch per fix, each with a merge commit. Loams pins `loam` by rev (`1f8962b00b33ebc6f34b72d6c52d08b8a8e1906e`). Every topic commit is signed off, because upstream's README asks for a DCO sign-off. Each fix is drafted as an upstream PR; none is posted yet.
 
 | Branch | Commit | Fix | Tests |
 |---|---|---|---|

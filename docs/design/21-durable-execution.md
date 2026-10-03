@@ -356,12 +356,12 @@ Every crate Loams links is Apache-2.0: `resonate-base`, `-core`, `-plugin`, `-au
 
 ### 11.2 Source: the fork (D140)
 
-- The dependencies are git dependencies on **`dina-kar/resonate`** at a pinned revision, until upstream publishes the server crates. They are not on crates.io.
+- The dependencies are git dependencies on **`ostrium-labs/resonate`** at a pinned revision, until upstream publishes the server crates. They are not on crates.io.
 - The fork branch `loam/0.10.1` is upstream `28dfd01` plus exactly three kinds of commits, each also proposed upstream:
   - the dependency-hygiene commit (PR 0c);
   - the TiDB fixes (PR 0a, PR 1);
   - once needed, the library-entry change (PR 4).
-- `deny.toml` gains `[sources] allow-git = ["https://github.com/dina-kar/resonate"]`.
+- `deny.toml` gains `[sources] allow-git = ["https://github.com/ostrium-labs/resonate"]`.
 - With the hygiene commit, one advisory remains, and it has no fix. It is **RUSTSEC-2023-0071**: `rsa` through `sqlx-mysql`, the Marvin timing attack. `sqlx-mysql` uses RSA only for the `caching_sha2_password`/`sha256_password` key exchange on connections without TLS. Loams connects to TiDB over TLS or inside the cluster network, and the durable TiDB user uses `mysql_native_password`. So `deny.toml` ignores that ID with this rationale.
 
 ### 11.3 Duplicates against the Loams workspace **(spike)**

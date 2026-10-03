@@ -1,0 +1,29 @@
+suite	test	result	rows
+bringup	start vtctld, register the cell, create the keyspaces [reference: pass]	pass	0
+bringup	start two unmanaged vttablets (commerce/0, customer/0) [reference: pass]	pass	8
+bringup	TabletExternallyReparented for the shard primaries (durability policy semi_sync) [reference: pass]	fail	2
+bringup	SetKeyspaceDurabilityPolicy none, then TabletExternallyReparented [reference: n/a]	pass	105
+bringup	start vtgate and wait for the commerce primary [reference: pass]	pass	19
+keyspace-vschema	ApplySchema commerce (planbuilder test schema plus product, shopper, corder) [reference: pass]	pass	121
+keyspace-vschema	ApplyVSchema commerce [reference: pass]	pass	1
+keyspace-vschema	ReloadSchemaKeyspace and GetSchema [reference: pass]	pass	37
+vtgate	DML and SELECT corpus from the planbuilder test data [reference: pass]	pass	1173
+vtgate	inserts, updates, deletes, joins and aggregates on product, shopper, corder [reference: pass]	pass	15
+movetables	MoveTables create commerce2customer (shopper, corder) [reference: pass]	pass	151
+movetables	VDiff create and show [reference: pass]	pass	98
+movetables	MoveTables SwitchTraffic [reference: pass]	pass	147
+movetables	MoveTables ReverseTraffic [reference: pass]	pass	82
+movetables	MoveTables SwitchTraffic again, then Complete [reference: pass]	pass	152
+reshard	ApplySchema and sharded VSchema on customer [reference: pass]	pass	20
+reshard	start the unmanaged vttablets of customer/-80 and customer/80- and reparent them [reference: pass]	pass	69
+reshard	Reshard create cust2cust 0 -> -80,80- [reference: pass]	pass	87
+reshard	VDiff on the reshard [reference: pass]	pass	89
+reshard	Reshard SwitchTraffic [reference: pass]	pass	65
+reshard	Reshard Complete [reference: pass]	pass	15
+onlineddl	ALTER with ddl_strategy=vitess [reference: pass]	pass	151
+reparent	TabletExternallyReparented for commerce/0 again [reference: pass]	pass	0
+reparent	PlannedReparentShard (unmanaged tablets refuse InitShardPrimary, PlannedReparentShard, EmergencyReparentShard and ReparentTablet) [reference: skip]	skip	0
+sidecar	restart vttablet commerce/0 and watch for ALTER TABLE ... ENGINE [reference: pass]	pass	38
+isolation	SET SESSION TRANSACTION ISOLATION LEVEL via vtgate (RC, RR, SERIALIZABLE) then a read [reference: pass]	fail	4
+temporary-tables	CREATE TEMPORARY TABLE through vtgate and on the backend [reference: pass]	pass	6
+2pc	transaction_mode=twopc across commerce and customer [reference: pass]	fail	15

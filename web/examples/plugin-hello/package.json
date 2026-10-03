@@ -1,0 +1,40 @@
+{
+  "name": "@loams/example-plugin-hello",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A sample third-party console plugin. It runs in a sandboxed frame, reads pending approvals through the bridge, and shows that it can neither fetch nor call what it did not declare (design §37 §5.6, AP1a Task 9's sample).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "loams": {
+    "plugin": {
+      "kind": "console",
+      "entry": "./client",
+      "tier": "third-party",
+      "inject": [
+        "rpc.approvals",
+        "rpc.devices"
+      ],
+      "provides": [],
+      "slots": [
+        "console.page"
+      ],
+      "permissions": [
+        "approvals:read"
+      ],
+      "requires": {
+        "console": "^0.1.0",
+        "api": [
+          "loams.approvals.v1"
+        ]
+      },
+      "editions": [
+        "oss",
+        "desktop"
+      ]
+    }
+  }
+}

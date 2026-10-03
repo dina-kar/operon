@@ -1,0 +1,15 @@
+// The console on Cloudflare Workers static assets, at console.loams.dev
+// (issue #269). Assets only, no Worker code, so it stays on the free plan.
+// Build and stage first (web/README.md "Deploy to Cloudflare"):
+//   pnpm build && node apps/console/deploy/stage.mjs
+{
+  "name": "loams-console",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./dist-cloudflare",
+    "html_handling": "none",
+    "not_found_handling": "single-page-application"
+  },
+  "routes": [{ "pattern": "console.loams.dev", "custom_domain": true }],
+  "observability": { "enabled": true }
+}

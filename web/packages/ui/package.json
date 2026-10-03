@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dina-kar/operon",
+    "url": "https://github.com/ostrium-labs/loams",
     "directory": "web/packages/ui"
   },
   "type": "module",

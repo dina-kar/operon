@@ -53,4 +53,4 @@ unknown-git = "deny"
 # tikv-client is pinned by rev to Loams's fork, branch `loam` (R1 plan rows R4
 # and F1). Resonate is pinned by rev to the fork's loam/0.10.1 (D1 plan Task
 # 1, D140).
-allow-git = ["https://github.com/dina-kar/client-rust", "https://github.com/dina-kar/resonate"]
+allow-git = ["https://github.com/ostrium-labs/client-rust", "https://github.com/ostrium-labs/resonate"]
