@@ -24,6 +24,38 @@ pub enum Coerced {
     Never,
 }
 
+impl Coerced {
+    /// The variant's name, without its payload.
+    ///
+    /// Bounds reach panic sinks in `compile` when a coercion's kind and
+    /// the code that consumes it disagree. `Debug` cannot be used there:
+    /// `Coerced::Str` carries the caller's own text, so a `{:?}` in a
+    /// panic message would copy query text — a UUID among it — into the
+    /// process log. The variant name is what a mismatch report actually
+    /// needs, and it is a `&'static str` that can never carry a value.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Coerced::Str(_) => "Str",
+            Coerced::I64(_) => "I64",
+            Coerced::F64(_) => "F64",
+            Coerced::Bool(_) => "Bool",
+            Coerced::DateMs(_) => "DateMs",
+            Coerced::Never => "Never",
+        }
+    }
+
+    /// A mismatch report for a panic message, naming `expected` and the
+    /// variant actually seen.
+    ///
+    /// This is the only formatting a bound's panic sink is allowed to do.
+    /// It exists so the sink cannot reach [`Coerced`]'s payload by
+    /// accident: `kind` is a `&'static str`, so the returned text is
+    /// bounded by `expected` and one variant name.
+    pub fn mismatch(&self, expected: &str) -> String {
+        format!("{expected}, not {}", self.kind())
+    }
+}
+
 /// The comparison a range bound makes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RangeOp {

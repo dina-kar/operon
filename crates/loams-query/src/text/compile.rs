@@ -1329,7 +1329,7 @@ impl<'c, 'a> Build<'c, 'a> {
                 }
                 let ms = |c: Coerced| match c {
                     Coerced::DateMs(ms) => ms,
-                    other => unreachable!("a date bound is DateMs, not {other:?}"),
+                    other => panic!("{}", other.mismatch("a date bound is DateMs")),
                 };
                 match (lo.map(ms), hi.map(ms)) {
                     (Bound::Unbounded, Bound::Unbounded) => {
@@ -1388,7 +1388,7 @@ impl<'c, 'a> Build<'c, 'a> {
             match value {
                 Coerced::I64(n) => term.append_type_and_fast_value(n),
                 Coerced::F64(x) => term.append_type_and_fast_value(x),
-                other => unreachable!("a numeric bound, not {other:?}"),
+                other => panic!("{}", other.mismatch("a numeric bound")),
             }
             term
         };
