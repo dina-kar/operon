@@ -901,6 +901,9 @@ Living document. Newest decisions at the bottom of each table.
 | Q561 | Which Git protocol versions and push limits does Artifacts support? (Not stated) | Eng | GT5 Task 0 |
 | Q562 | Billing starts 2026-10-14 (docs) or 2026-10-15 (blog)? | Eng | Before any live use |
 | Q565 | Is Browser Run generally available or beta, and what are its rates? | Eng | AP1c Task 0 |
+| Q567 | The `keep_alive` ceiling: Cloudflare's CDP table says 1 200 000 ms, its FAQ and limits page say ten minutes. Which is the account's real bound? (AP1c sends at most ten minutes) | Eng | Before a live spike |
+| Q569 | Does a Kitesurf session support `Target.createTarget` and `Target.attachToTarget` (one target per session), and is `backendDOMNodeId` stable there? AP1c's click and fill depend on it | Eng | AP1c live spike |
+| Q570 | When Browser Run's free daily ceiling (10 browser minutes) is exhausted, what does the CDP endpoint return, and does `X-Browser-Ms-Used` cover sessions as well as Quick Actions? The local budget guard assumes a `429` we can pre-empt | Eng | AP1c live spike |
 | Q566 | Kitesurf's licence and date when it is open-sourced | Founder | When announced |
 | Q568 | Chrome and Edge WebMCP status on a primary page (origin trial range) | Eng | AP1d Task 0 |
 | Q571 | The REST endpoint, auth and write support of the catalog (Basin Catalog, formerly R2 Data Catalog; GA 2026-10-01); is the rename real? | Eng | FL3 Task 0 |

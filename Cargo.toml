@@ -149,6 +149,10 @@ time-fmt = "0.3.8"
 toml = "0.8"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"] }
+# Browser Run's CDP endpoint is a WebSocket (design §42 §4, AP1c). rustls with the
+# webpki roots: the endpoint is always api.cloudflare.com, so the system trust
+# store is not needed. MIT/Apache-2.0 (cargo deny).
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 tokio-util = { version = "0.7", default-features = false }
 tonic = "0.14"
 tonic-prost = "0.14"
@@ -189,6 +193,7 @@ loams-quickwit = { path = "crates/loams-quickwit", version = "0.0.1" }
 loams-store = { path = "crates/loams-store", version = "0.0.1" }
 loams-text = { path = "crates/loams-text", version = "0.0.1" }
 loams-tikv = { path = "crates/loams-tikv", version = "0.0.1" }
+loams-web-bridge = { path = "crates/loams-web-bridge", version = "0.0.1" }
 loams-worker = { path = "crates/loams-worker", version = "0.0.1" }
 
 [profile.dev]
