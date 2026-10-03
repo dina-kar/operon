@@ -43,6 +43,7 @@ jobs:
       deny: ${{ steps.filter.outputs.deny }}
       protos: ${{ steps.filter.outputs.protos }}
       app-protos: ${{ steps.filter.outputs.app-protos }}
+      sdk-typescript: ${{ steps.filter.outputs.sdk-typescript }}
       web: ${{ steps.filter.outputs.web }}
       dapr-edge: ${{ steps.filter.outputs.dapr-edge }}
       spec: ${{ steps.filter.outputs.spec }}
@@ -141,81 +142,7 @@ jobs:
               - "crates/loams/Cargo.toml"
               - "crates/loams/tests/durable.rs"
               - "scripts/durable/**"
-            # SDK2 Task 0: the TypeScript SDK. The facade is generated from the
-  # loams.options.v1 annotations by crates/loams-facade-gen and committed, so
-  # this job regenerates and fails on a diff; the runtime suite replays the
-  # recorded conformance corpus (design §44 §10.4), which needs no server.
-  sdk-typescript:
-    name: the TypeScript SDK and its conformance suite
-    needs: changes
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.sdk-typescript == 'true') }}
-    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_LIGHT || 'ubuntu-latest') }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: . >-
-      - uses: pnpm/action-setup@v6
-        with:
-          package_json_file: web/package.json
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-      - name: install
-        working-directory: web
-        run: pnpm install --frozen-lockfile
-      # The facade generator reads the descriptors and writes the SDK's
-      # generated module surface; `strategy: all` in the template is what
-      # makes buf invoke it once with the whole proto module.
-      - name: regenerate the SDK facade
-        run: ./scripts/sdk/gen.sh typescript
-      - name: the generated facade is up to date
-        run: |
-          git add -N sdks/typescript/packages/client/src/gen
-          git diff --exit-code -- sdks/typescript/packages/client/src/gen || {
-            echo "sdks/typescript/packages/client/src/gen is stale: run 'scripts/sdk/gen.sh typescript' and commit the result"; exit 1;
-          }
-      # The golden test compares the committed facade against the generator's
-      # output over the real proto/ tree, so a proto edit that changed the SDK
-      # surface cannot pass with a stale file.
-      - name: the facade generator's tests
-        run: cargo test -j 4 -p loams-facade-gen
-      - name: lint the facade generator
-        run: |
-          cargo fmt -p loams-facade-gen -- --check
-          cargo clippy -j 4 -p loams-facade-gen --all-targets -- -D warnings
-      - name: typecheck the SDK
-        working-directory: web
-        run: |
-          pnpm --filter @loams/client typecheck
-          pnpm --filter @loams/live typecheck
-          pnpm --filter @loams/proto typecheck
-      - name: the SDK conformance suite
-        working-directory: web
-        run: pnpm --filter @loams/client test
-      # The same suite against a real server. This is the job that can afford
-      # it, and it is what catches a recorded corpus that has drifted from the
-      # API (design §44 §10.4).
-      - name: the conformance suite against a live server
-        run: ./sdks/conformance/run.sh typescript
-      # A generation difference must be a dependency bump in a PR, not whatever
-      # the runner happened to have. The pins are exact versions for that
-      # reason, and this fails if one is ever loosened to a range.
-      - name: the generation tools are pinned to exact versions
-        run: |
-          for pin in '"@bufbuild/buf": "1.73.0"' '"@bufbuild/protoc-gen-es": "2.16.0"' '"@bufbuild/protobuf": "2.16.0"'; do
-            grep -qF "$pin" sdks/typescript/packages/client/package.json || {
-              echo "sdks/typescript/packages/client/package.json is missing the exact pin $pin"; exit 1;
-            }
-          done
-          sdks/typescript/packages/client/node_modules/.bin/buf --version
-
-  deny:
+            deny:
               - *toolchain
               - "crates/*/Cargo.toml"
               - "deny.toml"
@@ -996,6 +923,77 @@ jobs:
           web/packages/proto/node_modules/.bin/buf generate --template buf.gen.swift.yaml -o "$out"
           web/packages/proto/node_modules/.bin/buf generate --template buf.gen.kotlin.yaml -o "$out"
           find "$out/gen" -type f | sort
+
+  # SDK2 Task 0: the TypeScript SDK. The facade is generated from the
+  # loams.options.v1 annotations by crates/loams-facade-gen and committed, so
+  # this job regenerates and fails on a diff; the runtime suite replays the
+  # recorded conformance corpus (design §44 §10.4), which needs no server.
+  sdk-typescript:
+    name: the TypeScript SDK and its conformance suite
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.sdk-typescript == 'true') }}
+    runs-on: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && (vars.RUNNER_MAIN || 'blacksmith-4vcpu-ubuntu-2404') || (vars.RUNNER_LIGHT || 'ubuntu-latest') }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libprotobuf-dev
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.27.1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: install
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      # The facade generator reads the descriptors and writes the SDK's
+      # generated module surface; `strategy: all` in the template is what makes
+      # buf invoke it once with the whole proto module.
+      - name: regenerate the SDK facade
+        run: ./scripts/sdk/gen.sh typescript
+      - name: the generated facade is up to date
+        run: |
+          git add -N sdks/typescript/packages/client/src/gen
+          git diff --exit-code -- sdks/typescript/packages/client/src/gen || {
+            echo "sdks/typescript/packages/client/src/gen is stale: run 'scripts/sdk/gen.sh typescript' and commit the result"; exit 1;
+          }
+      # The golden test compares the committed facade against the generator's
+      # output over the real proto/ tree, so a proto edit that changed the SDK
+      # surface cannot pass with a stale file.
+      - name: the facade generator's tests
+        run: cargo test -j 4 -p loams-facade-gen
+      - name: lint the facade generator
+        run: |
+          cargo fmt -p loams-facade-gen -- --check
+          cargo clippy -j 4 -p loams-facade-gen --all-targets -- -D warnings
+      - name: typecheck the SDK
+        working-directory: web
+        run: |
+          pnpm --filter @loams/client typecheck
+          pnpm --filter @loams/live typecheck
+          pnpm --filter @loams/proto typecheck
+      - name: the SDK conformance suite
+        working-directory: web
+        run: pnpm --filter @loams/client test
+      # The same suite against a real server. This is the job that can afford
+      # it, and it is what catches a recorded corpus that has drifted from the
+      # API (design §44 §10.4).
+      - name: the conformance suite against a live server
+        run: ./sdks/conformance/run.sh typescript
+      # A generation difference must be a dependency bump in a PR, not whatever
+      # the runner happened to have. The pins are exact versions for that
+      # reason, and this fails if one is ever loosened to a range.
+      - name: the generation tools are pinned to exact versions
+        run: |
+          for pin in '"@bufbuild/buf": "1.73.0"' '"@bufbuild/protoc-gen-es": "2.16.0"' '"@bufbuild/protobuf": "2.16.0"'; do
+            grep -qF "$pin" sdks/typescript/packages/client/package.json || {
+              echo "sdks/typescript/packages/client/package.json is missing the exact pin $pin"; exit 1;
+            }
+          done
+          sdks/typescript/packages/client/node_modules/.bin/buf --version
 
   deny:
     name: licenses, advisories, sources
