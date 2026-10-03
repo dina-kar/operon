@@ -15,7 +15,7 @@ Kinds: **app** is application API, replaced by the RPC and deleted in Task 9; **
 | `connectrpc` (connect-rust) | 0.9.1 | workspace `Cargo.toml`, `Cargo.lock` |
 | `connectrpc-build` / `connectrpc-codegen` | 0.9.0 / 0.9.0 | build dependency of the proto crates |
 | `buffa` / `buffa-types` / `buffa-codegen` | 0.9.2 / 0.9.2 / 0.9.2 | messages and well-known types (JSON feature) |
-| `connectrpc-health`, `connectrpc-reflection` | 0.9.0 (crates.io) | `grpc.health.v1`, `grpc.reflection.v1` for Task 1 (not yet a dependency) |
+| `connectrpc-health`, `connectrpc-reflection` | 0.9.0 (crates.io) | `grpc.health.v1`, `grpc.reflection.v1`, added in Task 1 |
 | `axum` | 0.8.9 | the one HTTP router; connect-rust mounts as an axum service |
 | `tonic` | 0.14 | the tonic-era `loams-stream-grpc` (moves to connect-rust in Task 6, D128) and the Qdrant and Flight gRPC compat servers (stay tonic: compat) |
 
@@ -58,6 +58,8 @@ Served by `api::router` on `--listen` (gateway role). Tests are in `crates/loams
 | POST | `/v1/namespaces/{ns}/sql` | app | `loams.sql.v1.SqlService/Query` | `CollectionService::sql_context_with`, `loams_query::sql::run_read_only` | `native_sql.rs::sql_over_http_returns_columns_and_rows`, `sql_ddl_is_400` |
 
 Router-level behaviour pinned by `http.rs::framework_rejections_use_the_json_error_body` (the `no_route` fallback and `method_not_allowed`) is replaced by connect-rust's error envelope for RPC paths; the fallback stays for unknown paths.
+
+As built in Task 1 (2026-10-03): none of these rows is gone. Every route above still answers as it did, **and** the same port now serves the Connect protocol, gRPC and gRPC-Web beside them, plus `grpc.health.v1` and (in `loams dev`) `grpc.reflection.v1`. The RPC paths are registered as their own axum routes rather than as the router's fallback, precisely so the `no_route` fallback keeps its JSON body for a path neither API knows (ruling 1.1 of the [plan](../plans/2026-10-02-api1-unified-connect.md)). One application RPC exists so far, `loams.instance.v1.InstanceService/GetInstance`, and its sibling `WhoAmI` answers `unimplemented` with reason `not_implemented` because there is no authentication on this port yet. The one catalogue package whose engine is not in this build, `loams.live.v1`, answers `unimplemented` with reason `feature_not_in_variant`. Tasks 2–8 add one RPC per row above and Task 9 deletes the row.
 
 ## Internal node routes (`crates/loams/src/api/internal.rs`, `loams_hot::READS_PATH`)
 

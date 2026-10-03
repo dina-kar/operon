@@ -23,8 +23,15 @@ path = "src/main.rs"
 async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true
+buffa.workspace = true
 bytes.workspace = true
 clap.workspace = true
+# The Connect router mounts into this server's axum app (design §44 §4).
+connectrpc = { workspace = true, features = ["axum", "server"] }
+# `grpc.health.v1` and `grpc.reflection.v1` on the main port (design §44 §4,
+# API1 Task 1).
+connectrpc-health.workspace = true
+connectrpc-reflection.workspace = true
 datafusion = { workspace = true, optional = true }
 datafusion-postgres = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
@@ -40,9 +47,17 @@ loams-es = { workspace = true, optional = true }
 loams-hnsw.workspace = true
 loams-hot.workspace = true
 loams-link.workspace = true
+# `loams.live.v1`, for the `LiveService` stub that answers
+# `feature_not_in_variant` while the live engine is out of the build variant
+# (design §44 §4). R1's crate owns those protos; `loams-proto` does not
+# generate them a second time.
+loams-live-proto.workspace = true
 loams-log.workspace = true
 loams-meta.workspace = true
 loams-meta-tikv = { workspace = true, optional = true }
+# The public `loams.*.v1` packages the main port serves and reflects on
+# (design §44 §7–§8, API1 Task 1).
+loams-proto.workspace = true
 opensrv-mysql = { workspace = true, optional = true }
 loams-qdrant = { workspace = true, optional = true }
 loams-query.workspace = true
@@ -122,6 +137,9 @@ loams-qdrant = { workspace = true, features = ["test-util"] }
 proptest.workspace = true
 prost.workspace = true
 prost-types.workspace = true
+# HTTP/2 with prior knowledge, so `connect_api.rs` can put a gRPC frame on the
+# main port the way `grpcurl` does (h2c, not TLS ALPN).
+reqwest = { workspace = true, features = ["http2"] }
 tempfile.workspace = true
 time.workspace = true
 # The client of the PostgreSQL wire listener's tests (`pg::tests`).

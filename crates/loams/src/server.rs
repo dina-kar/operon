@@ -262,6 +262,11 @@ pub struct ServerConfig {
     /// serves no Elasticsearch API; the CLI sets it unless `--no-es`.
     #[cfg(feature = "es")]
     pub es: Option<loams_es::EsConfig>,
+    /// Serve `grpc.reflection.v1` on the main port (design §44 §4). Off
+    /// (the default here); `loams dev` turns it on, which is Q603's proposed
+    /// answer. Reflection publishes the schema of the API to anyone who can
+    /// reach the port, so it is a development convenience, not a default.
+    pub reflection: bool,
 }
 
 impl ServerConfig {
@@ -305,6 +310,7 @@ impl ServerConfig {
             meta: MetaBackend::Raft,
             #[cfg(feature = "es")]
             es: None,
+            reflection: false,
         }
     }
 
@@ -1650,6 +1656,7 @@ impl Server {
             forward_stats,
             node_info,
             cloudevents: config.cloudevents,
+            reflection: config.reflection,
         };
         let app = match roles.gateway {
             true => api::router(state),

@@ -4,8 +4,13 @@
 //! Task 11): [`collections`], [`query`] and [`sql`]; so does the scan plan
 //! route (Task 14). The hot routes (plan M1.3 Task 8) are [`hot`], and the
 //! internal routes a node calls on a collection's owner are [`internal`].
+//! Beside them, on the same port, is the Connect API ([`connect`], design §44
+//! §4): one port serves the Connect protocol, gRPC and gRPC-Web, plus health
+//! and reflection. It does not replace any route here yet — API1 Tasks 2–8
+//! add one RPC per route and Task 9 deletes the route.
 
 mod collections;
+pub mod connect;
 mod errors;
 pub mod events;
 pub mod hot;
@@ -101,6 +106,11 @@ pub struct AppState {
     pub node_info: Option<Arc<dyn internal::NodeInfo>>,
     /// CloudEvents ingest (design §02 §7.4).
     pub cloudevents: events::EventsConfig,
+    /// Serve `grpc.reflection.v1` on the main port (design §44 §4, Q603's
+    /// proposed default: on in `loams dev`, off elsewhere unless a deployment
+    /// turns it on). It publishes the schema of the API to anyone who can
+    /// reach the port, so it is not on by default.
+    pub reflection: bool,
 }
 
 /// What a query node needs to run forwarded reads (plan M1.3 Task 11).
@@ -113,9 +123,13 @@ pub struct ForwardedReads {
 
 /// The API's routes, inside `HotLayer` (the `Loams-Hot` switch, with the
 /// service's `hot_default` for requests without it), and the internal hot
-/// routes outside it.
+/// routes outside it. The Connect RPCs of [`connect`] share the port and are
+/// merged last, after `HotLayer`: a Connect call carries its own consistency
+/// and pinning in the request message (design §44 §7.4), not in the headers
+/// the layer reads.
 pub fn router(state: AppState) -> Router {
     let internal = internal::routes().with_state(state.clone());
+    let connect = connect::routes(&state);
     let hot_layer = HotLayer::new(state.collections.config().hot_default);
     let collection = "/v1/namespaces/{ns}/collections/{c}";
     Router::new()
@@ -186,10 +200,14 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
         .layer(hot_layer)
         .merge(internal)
+        .merge(connect)
 }
 
 /// The routes of a node without the `gateway` role (plan M1.3 Task 11):
-/// `/health`, `/ready` and the internal routes, no native API.
+/// `/health`, `/ready` and the internal routes, no native API. The Connect
+/// API is not served here either: `loams.internal.v1` moves onto this
+/// listener in API1 Task 8, and a node without the gateway role has no
+/// application API to speak.
 pub fn internal_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))

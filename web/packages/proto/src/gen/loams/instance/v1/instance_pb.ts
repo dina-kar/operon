@@ -27,7 +27,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file loams/instance/v1/instance.proto.
  */
 export const file_loams_instance_v1_instance: GenFile = /*@__PURE__*/
-  fileDesc("CiBsb2Ftcy9pbnN0YW5jZS92MS9pbnN0YW5jZS5wcm90bxIRbG9hbXMuaW5zdGFuY2UudjEiFAoSR2V0SW5zdGFuY2VSZXF1ZXN0IuIEChNHZXRJbnN0YW5jZVJlc3BvbnNlEhMKC2luc3RhbmNlX2lkGAEgASgJEgwKBG5hbWUYAiABKAkSKwoHZWRpdGlvbhgDIAEoDjIaLmxvYW1zLmluc3RhbmNlLnYxLkVkaXRpb24SFgoOc2VydmVyX3ZlcnNpb24YBCABKAkSFAoMYXBpX3ZlcnNpb25zGAUgAygJEkYKCGZlYXR1cmVzGAYgAygLMjQubG9hbXMuaW5zdGFuY2UudjEuR2V0SW5zdGFuY2VSZXNwb25zZS5GZWF0dXJlc0VudHJ5Eg4KBmlzc3VlchgHIAEoCRIQCghqd2tzX3VyaRgIIAEoCRI4Cg9zaWduX2luX21ldGhvZHMYCSADKAsyHy5sb2Ftcy5pbnN0YW5jZS52MS5TaWduSW5NZXRob2QSEAoIdGxzX3BpbnMYCiABKAkSKwoEcHVzaBgLIAEoCzIdLmxvYW1zLmluc3RhbmNlLnYxLlB1c2hDb25maWcSVAoQbWluX2FwcF92ZXJzaW9ucxgMIAMoCzI6LmxvYW1zLmluc3RhbmNlLnYxLkdldEluc3RhbmNlUmVzcG9uc2UuTWluQXBwVmVyc2lvbnNFbnRyeRIWCg5zZXR1cF9yZXF1aXJlZBgNIAEoCBIUCgxrZXlfcm90YXRpb24YDiABKAkaLwoNRmVhdHVyZXNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAg6AjgBGjUKE01pbkFwcFZlcnNpb25zRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASJ0CgxTaWduSW5NZXRob2QSKwoEa2luZBgBIAEoDjIdLmxvYW1zLmluc3RhbmNlLnYxLlNpZ25JbktpbmQSDgoGaXNzdWVyGAIgASgJEhEKCWNsaWVudF9pZBgDIAEoCRIUCgxkaXNwbGF5X25hbWUYBCABKAkioQEKClB1c2hDb25maWcSEwoLZ2F0ZXdheV91cmwYASABKAkSOgoHYXBwX2lkcxgCIAMoCzIpLmxvYW1zLmluc3RhbmNlLnYxLlB1c2hDb25maWcuQXBwSWRzRW50cnkSEwoLdW5pZmllZHB1c2gYAyABKAgaLQoLQXBwSWRzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASIPCg1XaG9BbUlSZXF1ZXN0IrMCCg5XaG9BbUlSZXNwb25zZRIvCglwcmluY2lwYWwYASABKAsyHC5sb2Ftcy5pbnN0YW5jZS52MS5QcmluY2lwYWwSMQoLYWN0b3JfY2hhaW4YAiADKAsyHC5sb2Ftcy5pbnN0YW5jZS52MS5QcmluY2lwYWwSIwoDb3JnGAMgASgLMhYubG9hbXMuaW5zdGFuY2UudjEuT3JnEjQKDGVudmlyb25tZW50cxgEIAMoCzIeLmxvYW1zLmluc3RhbmNlLnYxLkVudmlyb25tZW50EiwKBmRldmljZRgFIAEoCzIcLmxvYW1zLmluc3RhbmNlLnYxLkRldmljZVJlZhI0ChBhdXRoZW50aWNhdGVkX2F0GAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCJsCglQcmluY2lwYWwSCgoCaWQYASABKAkSLgoEa2luZBgCIAEoDjIgLmxvYW1zLmluc3RhbmNlLnYxLlByaW5jaXBhbEtpbmQSFAoMZGlzcGxheV9uYW1lGAMgASgJEg0KBWVtYWlsGAQgASgJIh8KA09yZxIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJIl4KC0Vudmlyb25tZW50EgoKAmlkGAEgASgJEg8KB3Byb2plY3QYAiABKAkSDAoEbmFtZRgDIAEoCRIRCgluYW1lc3BhY2UYBCABKAkSEQoJcHJvdGVjdGVkGAUgASgIIiUKCURldmljZVJlZhIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJKlgKB0VkaXRpb24SFwoTRURJVElPTl9VTlNQRUNJRklFRBAAEg8KC0VESVRJT05fT1NTEAESEQoNRURJVElPTl9DTE9VRBACEhAKDEVESVRJT05fQllPQxADKp8BCgpTaWduSW5LaW5kEhwKGFNJR05fSU5fS0lORF9VTlNQRUNJRklFRBAAEhUKEVNJR05fSU5fS0lORF9OT05FEAESGgoWU0lHTl9JTl9LSU5EX0FVVEhFTlRJSxACEiYKIlNJR05fSU5fS0lORF9BVVRIRU5USUtfREVWSUNFX0NPREUQAxIYChRTSUdOX0lOX0tJTkRfUEFJUklORxAEKoYBCg1QcmluY2lwYWxLaW5kEh4KGlBSSU5DSVBBTF9LSU5EX1VOU1BFQ0lGSUVEEAASFwoTUFJJTkNJUEFMX0tJTkRfVVNFUhABEiIKHlBSSU5DSVBBTF9LSU5EX1NFUlZJQ0VfQUNDT1VOVBACEhgKFFBSSU5DSVBBTF9LSU5EX0FHRU5UEAMyyAEKD0luc3RhbmNlU2VydmljZRJhCgtHZXRJbnN0YW5jZRIlLmxvYW1zLmluc3RhbmNlLnYxLkdldEluc3RhbmNlUmVxdWVzdBomLmxvYW1zLmluc3RhbmNlLnYxLkdldEluc3RhbmNlUmVzcG9uc2UiA5ACARJSCgZXaG9BbUkSIC5sb2Ftcy5pbnN0YW5jZS52MS5XaG9BbUlSZXF1ZXN0GiEubG9hbXMuaW5zdGFuY2UudjEuV2hvQW1JUmVzcG9uc2UiA5ACAWIGcHJvdG8z", [file_google_protobuf_timestamp]);
+  fileDesc("CiBsb2Ftcy9pbnN0YW5jZS92MS9pbnN0YW5jZS5wcm90bxIRbG9hbXMuaW5zdGFuY2UudjEiFAoSR2V0SW5zdGFuY2VSZXF1ZXN0IpYFChNHZXRJbnN0YW5jZVJlc3BvbnNlEhMKC2luc3RhbmNlX2lkGAEgASgJEgwKBG5hbWUYAiABKAkSKwoHZWRpdGlvbhgDIAEoDjIaLmxvYW1zLmluc3RhbmNlLnYxLkVkaXRpb24SFgoOc2VydmVyX3ZlcnNpb24YBCABKAkSFAoMYXBpX3ZlcnNpb25zGAUgAygJEkYKCGZlYXR1cmVzGAYgAygLMjQubG9hbXMuaW5zdGFuY2UudjEuR2V0SW5zdGFuY2VSZXNwb25zZS5GZWF0dXJlc0VudHJ5Eg4KBmlzc3VlchgHIAEoCRIQCghqd2tzX3VyaRgIIAEoCRI4Cg9zaWduX2luX21ldGhvZHMYCSADKAsyHy5sb2Ftcy5pbnN0YW5jZS52MS5TaWduSW5NZXRob2QSEAoIdGxzX3BpbnMYCiABKAkSKwoEcHVzaBgLIAEoCzIdLmxvYW1zLmluc3RhbmNlLnYxLlB1c2hDb25maWcSVAoQbWluX2FwcF92ZXJzaW9ucxgMIAMoCzI6LmxvYW1zLmluc3RhbmNlLnYxLkdldEluc3RhbmNlUmVzcG9uc2UuTWluQXBwVmVyc2lvbnNFbnRyeRIWCg5zZXR1cF9yZXF1aXJlZBgNIAEoCBIUCgxrZXlfcm90YXRpb24YDiABKAkSMgoIc2VydmljZXMYDyADKAsyIC5sb2Ftcy5pbnN0YW5jZS52MS5TZXJ2aWNlU3RhdHVzGi8KDUZlYXR1cmVzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgIOgI4ARo1ChNNaW5BcHBWZXJzaW9uc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiaAoNU2VydmljZVN0YXR1cxIPCgdwYWNrYWdlGAEgASgJEg8KB3ZlcnNpb24YAiABKAkSEQoJYXZhaWxhYmxlGAMgASgIEhAKCHNlcnZpY2VzGAQgAygJEhAKCHVuc3RhYmxlGAUgASgIInQKDFNpZ25Jbk1ldGhvZBIrCgRraW5kGAEgASgOMh0ubG9hbXMuaW5zdGFuY2UudjEuU2lnbkluS2luZBIOCgZpc3N1ZXIYAiABKAkSEQoJY2xpZW50X2lkGAMgASgJEhQKDGRpc3BsYXlfbmFtZRgEIAEoCSKhAQoKUHVzaENvbmZpZxITCgtnYXRld2F5X3VybBgBIAEoCRI6CgdhcHBfaWRzGAIgAygLMikubG9hbXMuaW5zdGFuY2UudjEuUHVzaENvbmZpZy5BcHBJZHNFbnRyeRITCgt1bmlmaWVkcHVzaBgDIAEoCBotCgtBcHBJZHNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBIg8KDVdob0FtSVJlcXVlc3QiswIKDldob0FtSVJlc3BvbnNlEi8KCXByaW5jaXBhbBgBIAEoCzIcLmxvYW1zLmluc3RhbmNlLnYxLlByaW5jaXBhbBIxCgthY3Rvcl9jaGFpbhgCIAMoCzIcLmxvYW1zLmluc3RhbmNlLnYxLlByaW5jaXBhbBIjCgNvcmcYAyABKAsyFi5sb2Ftcy5pbnN0YW5jZS52MS5PcmcSNAoMZW52aXJvbm1lbnRzGAQgAygLMh4ubG9hbXMuaW5zdGFuY2UudjEuRW52aXJvbm1lbnQSLAoGZGV2aWNlGAUgASgLMhwubG9hbXMuaW5zdGFuY2UudjEuRGV2aWNlUmVmEjQKEGF1dGhlbnRpY2F0ZWRfYXQYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wImwKCVByaW5jaXBhbBIKCgJpZBgBIAEoCRIuCgRraW5kGAIgASgOMiAubG9hbXMuaW5zdGFuY2UudjEuUHJpbmNpcGFsS2luZBIUCgxkaXNwbGF5X25hbWUYAyABKAkSDQoFZW1haWwYBCABKAkiHwoDT3JnEgoKAmlkGAEgASgJEgwKBG5hbWUYAiABKAkiXgoLRW52aXJvbm1lbnQSCgoCaWQYASABKAkSDwoHcHJvamVjdBgCIAEoCRIMCgRuYW1lGAMgASgJEhEKCW5hbWVzcGFjZRgEIAEoCRIRCglwcm90ZWN0ZWQYBSABKAgiJQoJRGV2aWNlUmVmEgoKAmlkGAEgASgJEgwKBG5hbWUYAiABKAkqWAoHRWRpdGlvbhIXChNFRElUSU9OX1VOU1BFQ0lGSUVEEAASDwoLRURJVElPTl9PU1MQARIRCg1FRElUSU9OX0NMT1VEEAISEAoMRURJVElPTl9CWU9DEAMqnwEKClNpZ25JbktpbmQSHAoYU0lHTl9JTl9LSU5EX1VOU1BFQ0lGSUVEEAASFQoRU0lHTl9JTl9LSU5EX05PTkUQARIaChZTSUdOX0lOX0tJTkRfQVVUSEVOVElLEAISJgoiU0lHTl9JTl9LSU5EX0FVVEhFTlRJS19ERVZJQ0VfQ09ERRADEhgKFFNJR05fSU5fS0lORF9QQUlSSU5HEAQqhgEKDVByaW5jaXBhbEtpbmQSHgoaUFJJTkNJUEFMX0tJTkRfVU5TUEVDSUZJRUQQABIXChNQUklOQ0lQQUxfS0lORF9VU0VSEAESIgoeUFJJTkNJUEFMX0tJTkRfU0VSVklDRV9BQ0NPVU5UEAISGAoUUFJJTkNJUEFMX0tJTkRfQUdFTlQQAzLIAQoPSW5zdGFuY2VTZXJ2aWNlEmEKC0dldEluc3RhbmNlEiUubG9hbXMuaW5zdGFuY2UudjEuR2V0SW5zdGFuY2VSZXF1ZXN0GiYubG9hbXMuaW5zdGFuY2UudjEuR2V0SW5zdGFuY2VSZXNwb25zZSIDkAIBElIKBldob0FtSRIgLmxvYW1zLmluc3RhbmNlLnYxLldob0FtSVJlcXVlc3QaIS5sb2Ftcy5pbnN0YW5jZS52MS5XaG9BbUlSZXNwb25zZSIDkAIBYgZwcm90bzM", [file_google_protobuf_timestamp]);
 
 /**
  * @generated from message loams.instance.v1.GetInstanceRequest
@@ -75,7 +75,8 @@ export type GetInstanceResponse = Message<"loams.instance.v1.GetInstanceResponse
   /**
    * The proto packages this instance serves, for example
    * "loams.approvals.v1". The console provides an `rpc.<service>` only for a
-   * listed package (AP1a Ruling 6).
+   * listed package (AP1a Ruling 6). The same list, with what is *not*
+   * served, is `services`.
    *
    * @generated from field: repeated string api_versions = 5;
    */
@@ -146,6 +147,20 @@ export type GetInstanceResponse = Message<"loams.instance.v1.GetInstanceResponse
    * @generated from field: string key_rotation = 14;
    */
   keyRotation: string;
+
+  /**
+   * The public packages of the API catalogue (design §44 §4, D600) that
+   * exist, and whether this binary serves each. A package whose engine is
+   * not in the build variant (§30 §9) is listed with `available = false`, and
+   * its RPCs answer `unimplemented` with reason `feature_not_in_variant`, so
+   * an SDK feature-detects from this list instead of by calling and reading
+   * the error. A package whose services have not been defined yet has no
+   * entry, so this list never advertises a contract that does not exist. It
+   * is the long form of `api_versions`, which lists only what is served.
+   *
+   * @generated from field: repeated loams.instance.v1.ServiceStatus services = 15;
+   */
+  services: ServiceStatus[];
 };
 
 /**
@@ -154,6 +169,58 @@ export type GetInstanceResponse = Message<"loams.instance.v1.GetInstanceResponse
  */
 export const GetInstanceResponseSchema: GenMessage<GetInstanceResponse> = /*@__PURE__*/
   messageDesc(file_loams_instance_v1_instance, 1);
+
+/**
+ * One package of the API catalogue and what this binary does with it.
+ *
+ * @generated from message loams.instance.v1.ServiceStatus
+ */
+export type ServiceStatus = Message<"loams.instance.v1.ServiceStatus"> & {
+  /**
+   * The proto package, for example "loams.collection.v1".
+   *
+   * @generated from field: string package = 1;
+   */
+  package: string;
+
+  /**
+   * The package's API version, for example "v1".
+   *
+   * @generated from field: string version = 2;
+   */
+  version: string;
+
+  /**
+   * Whether this binary serves the package. False means every one of its RPCs
+   * answers `unimplemented` with reason `feature_not_in_variant`.
+   *
+   * @generated from field: bool available = 3;
+   */
+  available: boolean;
+
+  /**
+   * The services in the package, fully qualified, for example
+   * "loams.collection.v1.CollectionService".
+   *
+   * @generated from field: repeated string services = 4;
+   */
+  services: string[];
+
+  /**
+   * True for a package whose wire contract may still change
+   * (`loams.options.v1.ModuleOptions.unstable`, §44 §10.3).
+   *
+   * @generated from field: bool unstable = 5;
+   */
+  unstable: boolean;
+};
+
+/**
+ * Describes the message loams.instance.v1.ServiceStatus.
+ * Use `create(ServiceStatusSchema)` to create a new message.
+ */
+export const ServiceStatusSchema: GenMessage<ServiceStatus> = /*@__PURE__*/
+  messageDesc(file_loams_instance_v1_instance, 2);
 
 /**
  * @generated from message loams.instance.v1.SignInMethod
@@ -191,7 +258,7 @@ export type SignInMethod = Message<"loams.instance.v1.SignInMethod"> & {
  * Use `create(SignInMethodSchema)` to create a new message.
  */
 export const SignInMethodSchema: GenMessage<SignInMethod> = /*@__PURE__*/
-  messageDesc(file_loams_instance_v1_instance, 2);
+  messageDesc(file_loams_instance_v1_instance, 3);
 
 /**
  * @generated from message loams.instance.v1.PushConfig
@@ -224,7 +291,7 @@ export type PushConfig = Message<"loams.instance.v1.PushConfig"> & {
  * Use `create(PushConfigSchema)` to create a new message.
  */
 export const PushConfigSchema: GenMessage<PushConfig> = /*@__PURE__*/
-  messageDesc(file_loams_instance_v1_instance, 3);
+  messageDesc(file_loams_instance_v1_instance, 4);
 
 /**
  * @generated from message loams.instance.v1.WhoAmIRequest
@@ -237,7 +304,7 @@ export type WhoAmIRequest = Message<"loams.instance.v1.WhoAmIRequest"> & {
  * Use `create(WhoAmIRequestSchema)` to create a new message.
  */
 export const WhoAmIRequestSchema: GenMessage<WhoAmIRequest> = /*@__PURE__*/
-  messageDesc(file_loams_instance_v1_instance, 4);
+  messageDesc(file_loams_instance_v1_instance, 5);
 
 /**
  * @generated from message loams.instance.v1.WhoAmIResponse
@@ -287,7 +354,7 @@ export type WhoAmIResponse = Message<"loams.instance.v1.WhoAmIResponse"> & {
  * Use `create(WhoAmIResponseSchema)` to create a new message.
  */
 export const WhoAmIResponseSchema: GenMessage<WhoAmIResponse> = /*@__PURE__*/
-  messageDesc(file_loams_instance_v1_instance, 5);
+  messageDesc(file_loams_instance_v1_instance, 6);
 
 /**
  * @generated from message loams.instance.v1.Principal
@@ -321,7 +388,7 @@ export type Principal = Message<"loams.instance.v1.Principal"> & {
  * Use `create(PrincipalSchema)` to create a new message.
  */
 export const PrincipalSchema: GenMessage<Principal> = /*@__PURE__*/
-  messageDesc(file_loams_instance_v1_instance, 6);
+  messageDesc(file_loams_instance_v1_instance, 7);
 
 /**
  * @generated from message loams.instance.v1.Org
@@ -343,7 +410,7 @@ export type Org = Message<"loams.instance.v1.Org"> & {
  * Use `create(OrgSchema)` to create a new message.
  */
 export const OrgSchema: GenMessage<Org> = /*@__PURE__*/
-  messageDesc(file_loams_instance_v1_instance, 7);
+  messageDesc(file_loams_instance_v1_instance, 8);
 
 /**
  * @generated from message loams.instance.v1.Environment
@@ -386,7 +453,7 @@ export type Environment = Message<"loams.instance.v1.Environment"> & {
  * Use `create(EnvironmentSchema)` to create a new message.
  */
 export const EnvironmentSchema: GenMessage<Environment> = /*@__PURE__*/
-  messageDesc(file_loams_instance_v1_instance, 8);
+  messageDesc(file_loams_instance_v1_instance, 9);
 
 /**
  * @generated from message loams.instance.v1.DeviceRef
@@ -408,7 +475,7 @@ export type DeviceRef = Message<"loams.instance.v1.DeviceRef"> & {
  * Use `create(DeviceRefSchema)` to create a new message.
  */
 export const DeviceRefSchema: GenMessage<DeviceRef> = /*@__PURE__*/
-  messageDesc(file_loams_instance_v1_instance, 9);
+  messageDesc(file_loams_instance_v1_instance, 10);
 
 /**
  * @generated from enum loams.instance.v1.Edition

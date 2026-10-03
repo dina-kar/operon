@@ -11,24 +11,12 @@ package loams.errors.v1;
 
 // The stable, machine-readable cause of a failed RPC.
 //
-// Reasons defined so far (snake_case, never renamed once released):
-//
-// | reason                     | Connect code          | Raised by |
-// |----------------------------|-----------------------|-----------|
-// | `approval_expired`         | failed_precondition   | DecideApproval |
-// | `approval_already_decided` | failed_precondition   | DecideApproval |
-// | `approval_stale_revision`  | failed_precondition   | DecideApproval |
-// | `requester_cannot_approve` | permission_denied     | DecideApproval |
-// | `decision_proof_invalid`   | permission_denied     | DecideApproval |
-// | `step_up_required`         | unauthenticated       | DecideApproval, CreatePairing |
-// | `reason_required`          | invalid_argument      | DecideApproval |
-// | `invalid_decision`         | invalid_argument      | DecideApproval |
-// | `pairing_expired`          | failed_precondition   | the pairing grant |
-// | `pairing_used`             | failed_precondition   | the pairing grant |
-// | `device_revoked`           | unauthenticated       | every RPC from a revoked device |
-// | `push_target_unknown`      | not_found             | UnregisterPushTarget |
-// | `cursor_expired`           | (never an error: the stream resets) | Watch* |
-// | `not_implemented`          | unimplemented         | stub handlers before AP4 |
+// Every reason is `snake_case` and is registered in `docs/api/reasons.md`
+// (API1 Task 1), the single registry: a reason may be added there but never
+// renamed or removed within an API major version. The test
+// `reasons_are_snake_case_and_unique` (`crates/loams/tests/connect_api.rs`)
+// reads that page and fails on a duplicate or on a name that is not
+// `snake_case`.
 message ErrorInfo {
   // The stable cause, for example `approval_expired`.
   string reason = 1;
