@@ -188,6 +188,9 @@ pub(crate) async fn retrieve(
     collection: String,
     request: PointRequest,
 ) -> Result<Vec<Record>, GatewayError> {
+    let max = gw.config().max_point_ids;
+    let len = request.ids.len();
+    crate::check_request_len("The id list", len, max)?;
     let info = gw.service().get_collection(&ctx.ns, &collection).await?;
     let sel = resolve_selectors(
         &info.schema,
@@ -195,7 +198,7 @@ pub(crate) async fn retrieve(
         true,
         request.with_vector.as_ref(),
     )?;
-    let mut pks: Vec<PrimaryKey> = Vec::with_capacity(request.ids.len());
+    let mut pks: Vec<PrimaryKey> = Vec::with_capacity(len.min(max));
     let mut seen = std::collections::HashSet::new();
     for id in &request.ids {
         let pk = PointId::from_json(id)?.to_pk();

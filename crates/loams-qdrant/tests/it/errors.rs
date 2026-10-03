@@ -275,3 +275,24 @@ async fn ctx_timeout_fires() {
     let fast = ctx.run(async { Ok::<_, GatewayError>(7) }).await;
     assert_eq!(fast.expect("in time"), 7);
 }
+
+#[test]
+fn check_request_len_refuses_huge_lengths() {
+    // Issue #298: client-sized lists are checked before allocation.
+    let config = QdrantConfig::default();
+    assert_eq!(config.max_batch_queries, 1_000);
+    assert_eq!(config.max_point_ids, 10_000);
+    loams_qdrant::check_request_len("The id list", 0, 10).expect("empty");
+    loams_qdrant::check_request_len("The id list", 10, 10).expect("at the limit");
+    loams_qdrant::check_request_len("The id list", 0, 0).expect("zero limit accepts empty");
+    assert!(loams_qdrant::check_request_len("The id list", 1, 0).is_err());
+    for len in [11, usize::MAX] {
+        let err = loams_qdrant::check_request_len("The id list", len, 10).expect_err("over");
+        assert_eq!(err.http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(err.grpc_code(), Code::InvalidArgument);
+        assert_eq!(
+            err.to_string(),
+            format!("Wrong input: The id list holds {len} entries, more than the limit of 10")
+        );
+    }
+}

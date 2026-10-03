@@ -1229,3 +1229,125 @@ async fn grpc_query_matches_rest() {
     assert!(reply.result[0].vectors.is_some());
     assert_eq!(reply.result[0].version, 0);
 }
+
+#[tokio::test]
+async fn query_batch_refuses_more_than_max_batch_queries() {
+    // Issue #298: a client-chosen batch length must not size an allocation.
+    let qd = Qd::start().await;
+    random_collection(&qd, "hb", Distance::Cosine, 3, 4, 7).await;
+    let max = loams_qdrant::QdrantConfig::default().max_batch_queries;
+    let searches = vec![json!({"query": [1.0, 0.0], "limit": 1}); max + 1];
+    let (status, reply) = qd
+        .post(
+            "/collections/hb/points/query/batch",
+            Some(json!({ "searches": searches })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
+    assert_eq!(
+        error(&reply),
+        format!(
+            "Wrong input: The query batch holds {} entries, more than the limit of {max}",
+            max + 1
+        )
+    );
+}
+
+#[tokio::test]
+async fn grpc_batch_counts_are_checked_before_conversion() {
+    let qd = Qd::start_with(|config| {
+        config.qdrant.as_mut().unwrap().max_batch_queries = 2;
+    })
+    .await;
+    random_collection(&qd, "bounded", Distance::Cosine, 3, 4, 7).await;
+    let mut client = qd.points().await;
+    let message = "Wrong input: The query batch holds 3 entries, more than the limit of 2";
+    // The invalid entries must not be converted before rejecting the count.
+    let invalid = pb::QueryPoints {
+        query: Some(pb::Query {
+            variant: Some(pb::query::Variant::Nearest(pb::VectorInput::default())),
+        }),
+        ..Default::default()
+    };
+    assert!(loams_qdrant::convert::query::query_request_from_grpc(&invalid).is_err());
+    let err = client
+        .query_batch(pb::QueryBatchPoints {
+            collection_name: "bounded".into(),
+            query_points: vec![invalid; 3],
+            ..Default::default()
+        })
+        .await
+        .expect_err("query count");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    assert_eq!(err.message(), message);
+    #[allow(deprecated)]
+    let err = client
+        .search_batch(pb::SearchBatchPoints {
+            collection_name: "bounded".into(),
+            search_points: vec![pb::SearchPoints::default(); 3],
+            ..Default::default()
+        })
+        .await
+        .expect_err("search count");
+    assert_eq!(err.message(), message);
+    #[allow(deprecated)]
+    let err = client
+        .recommend_batch(pb::RecommendBatchPoints {
+            collection_name: "bounded".into(),
+            recommend_points: vec![pb::RecommendPoints::default(); 3],
+            ..Default::default()
+        })
+        .await
+        .expect_err("recommend count");
+    assert_eq!(err.message(), message);
+    #[allow(deprecated)]
+    let err = client
+        .discover_batch(pb::DiscoverBatchPoints {
+            collection_name: "bounded".into(),
+            discover_points: vec![pb::DiscoverPoints::default(); 3],
+            ..Default::default()
+        })
+        .await
+        .expect_err("discover count");
+    assert_eq!(err.message(), message);
+    for len in [0, 2] {
+        let result = client
+            .query_batch(pb::QueryBatchPoints {
+                collection_name: "bounded".into(),
+                query_points: vec![
+                    pb::QueryPoints {
+                        limit: Some(1),
+                        ..Default::default()
+                    };
+                    len
+                ],
+                ..Default::default()
+            })
+            .await
+            .expect("at or below count")
+            .into_inner();
+        assert_eq!(result.result.len(), len);
+        let (status, result) = qd
+            .post(
+                "/collections/bounded/points/query/batch",
+                Some(json!({"searches": vec![json!({"limit": 1}); len]})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+        assert_eq!(result["result"].as_array().unwrap().len(), len);
+    }
+    for (route, entry) in [
+        ("search", json!({"vector": [1.0, 0.0, 0.0], "limit": 1})),
+        ("recommend", json!({"positive": [0], "limit": 1})),
+        ("discover", json!({"context": [], "limit": 1})),
+    ] {
+        let (status, result) = qd
+            .post(
+                &format!("/collections/bounded/points/{route}/batch"),
+                Some(json!({"searches": vec![entry; 3]})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{result}");
+        assert_eq!(error(&result), message);
+    }
+}

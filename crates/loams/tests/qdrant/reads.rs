@@ -564,3 +564,65 @@ async fn grpc_reads_match_rest() {
         .expect_err("order_by");
     assert_eq!(err.code(), tonic::Code::Unimplemented);
 }
+
+#[tokio::test]
+async fn retrieve_refuses_more_ids_than_max_point_ids() {
+    // Issue #298: a client-chosen id count must not size an allocation.
+    let qd = Qd::start().await;
+    create_single(&qd, "huge").await;
+    let max = loams_qdrant::QdrantConfig::default().max_point_ids;
+    let ids: Vec<u64> = (0..=max as u64).collect();
+    let (status, reply) = retrieve(&qd, "huge", json!({ "ids": ids })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
+    assert_eq!(
+        error(&reply),
+        format!(
+            "Wrong input: The id list holds {} entries, more than the limit of {max}",
+            max + 1
+        )
+    );
+    // At the limit the request is served (no point exists, so none returns).
+    let ids: Vec<u64> = (0..max as u64).collect();
+    let (status, reply) = retrieve(&qd, "huge", json!({ "ids": ids })).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+}
+
+#[tokio::test]
+async fn grpc_retrieve_count_is_checked_before_conversion() {
+    let qd = Qd::start_with(|config| {
+        config.qdrant.as_mut().unwrap().max_point_ids = 2;
+    })
+    .await;
+    create_single(&qd, "bounded").await;
+    let mut client = qd.points().await;
+    let err = client
+        .get(pb::GetPoints {
+            collection_name: "bounded".into(),
+            ids: vec![pb::PointId::default(); 3],
+            ..Default::default()
+        })
+        .await
+        .expect_err("count precedes invalid ids");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    assert_eq!(
+        err.message(),
+        "Wrong input: The id list holds 3 entries, more than the limit of 2"
+    );
+    for len in [0, 2] {
+        let result = client
+            .get(pb::GetPoints {
+                collection_name: "bounded".into(),
+                ids: vec![
+                    pb::PointId {
+                        point_id_options: Some(pb::point_id::PointIdOptions::Num(1))
+                    };
+                    len
+                ],
+                ..Default::default()
+            })
+            .await
+            .expect("at or below count")
+            .into_inner();
+        assert!(result.result.is_empty());
+    }
+}
