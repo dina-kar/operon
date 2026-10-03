@@ -211,6 +211,23 @@ fn json_term(field: Field, path: &str) -> Term {
     Term::from_field_json_path(field, path, true)
 }
 
+fn date_bound_ms(value: Coerced) -> i64 {
+    match value {
+        Coerced::DateMs(ms) => ms,
+        other => unreachable!("a date bound is DateMs, not {other:?}"),
+    }
+}
+
+fn numeric_bound_term(field: Field, path: &str, value: Coerced) -> Term {
+    let mut term = json_term(field, path);
+    match value {
+        Coerced::I64(n) => term.append_type_and_fast_value(n),
+        Coerced::F64(x) => term.append_type_and_fast_value(x),
+        other => unreachable!("a numeric bound, not {other:?}"),
+    }
+    term
+}
+
 fn json_str(field: Field, path: &str, value: &str) -> Term {
     let mut term = json_term(field, path);
     term.append_type_and_str(value);
@@ -1327,11 +1344,7 @@ impl<'c, 'a> Build<'c, 'a> {
                 if is_never(&lo) || is_never(&hi) {
                     return Ok(empty());
                 }
-                let ms = |c: Coerced| match c {
-                    Coerced::DateMs(ms) => ms,
-                    other => unreachable!("a date bound is DateMs, not {other:?}"),
-                };
-                match (lo.map(ms), hi.map(ms)) {
+                match (lo.map(date_bound_ms), hi.map(date_bound_ms)) {
                     (Bound::Unbounded, Bound::Unbounded) => {
                         let name = format!("{}.{path}", date_companion(&spec.name));
                         self.warm_fast(name.clone(), false);
@@ -1383,15 +1396,7 @@ impl<'c, 'a> Build<'c, 'a> {
         upper: Option<(RangeOp, &FieldValue)>,
     ) -> Result<Vec<Boxed>, ServiceError> {
         let mut parts = Vec::new();
-        let json = |value: Coerced| {
-            let mut term = json_term(main, path);
-            match value {
-                Coerced::I64(n) => term.append_type_and_fast_value(n),
-                Coerced::F64(x) => term.append_type_and_fast_value(x),
-                other => unreachable!("a numeric bound, not {other:?}"),
-            }
-            term
-        };
+        let json = |value: Coerced| numeric_bound_term(main, path, value);
         let float = |side: Option<(RangeOp, &FieldValue)>| match side {
             Some((_, FieldValue::F64(x))) => Some(*x),
             _ => None,
@@ -1875,5 +1880,55 @@ impl tantivy::query::Weight for ExcludedWeight {
         doc: tantivy::DocId,
     ) -> tantivy::Result<tantivy::query::Explanation> {
         self.0.explain(reader, doc)
+    }
+}
+
+#[cfg(test)]
+mod invariant_tests {
+    use super::*;
+
+    const QUERY_VALUE: &str = "private-query-74d85071-d470-4d29-a722-89bf57cdb36d";
+
+    fn assert_redacted(panic: Box<dyn std::any::Any + Send>, expected: &str) {
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .expect("string panic payload");
+        assert!(!message.contains(QUERY_VALUE), "panic leaked query value");
+        assert_eq!(message, expected);
+    }
+
+    #[test]
+    fn date_bound_invariant_panic_redacts_query_value() {
+        assert_eq!(date_bound_ms(Coerced::DateMs(123)), 123);
+        let panic = std::panic::catch_unwind(|| date_bound_ms(Coerced::Str(QUERY_VALUE.into())))
+            .expect_err("a string violates the date-bound invariant");
+        assert_redacted(
+            panic,
+            "internal error: entered unreachable code: a date bound is DateMs",
+        );
+    }
+
+    #[test]
+    fn numeric_bound_invariant_panic_redacts_query_value() {
+        let field = Field::from_field_id(0);
+        for value in [Coerced::I64(42), Coerced::F64(1.5)] {
+            let mut expected = json_term(field, "number");
+            match value {
+                Coerced::I64(n) => expected.append_type_and_fast_value(n),
+                Coerced::F64(n) => expected.append_type_and_fast_value(n),
+                _ => unreachable!(),
+            }
+            assert_eq!(numeric_bound_term(field, "number", value), expected);
+        }
+        let panic = std::panic::catch_unwind(|| {
+            numeric_bound_term(field, "number", Coerced::Str(QUERY_VALUE.into()))
+        })
+        .expect_err("a string violates the numeric-bound invariant");
+        assert_redacted(
+            panic,
+            "internal error: entered unreachable code: a bound of a numeric field is I64 or F64",
+        );
     }
 }

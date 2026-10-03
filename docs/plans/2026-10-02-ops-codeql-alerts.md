@@ -53,8 +53,10 @@ change that would move keys to other shards.
 
 ### Task 2 — Redact unreachable query values (one PR)
 
-Audit the two flagged compile branches. Test private panic paths with
-user-controlled values; replace value formatting with constant messages.
+Audit the two flagged compile branches. Tests first, exact names:
+date_bound_invariant_panic_redacts_query_value and
+numeric_bound_invariant_panic_redacts_query_value. Test private panic paths
+with user-controlled values; replace value formatting with constant messages.
 Keep normal query semantics and existing compile tests. Record exact test
 names in this task before writing them. Run touched-query-crate gates,
 CI/CodeQL, CodeRabbit and full review before merging and updating #237.
@@ -77,6 +79,7 @@ mark all tasks complete and close #298; update #237.
 | 5 | REST discover batches check count before per-entry validation. | The shared legacy path converts later; consistent oversized-request errors must precede discovery validation too. |
 | 6 | Use min(max_point_ids, native max_get_keys) for REST and gRPC list retrieval. | CodeRabbit identified that the native ceiling can be configured below the gateway ceiling; reject before allocation/conversion consistently. |
 | 7 | Single-point GET has a fixed one-ID executor bound, independent of the configurable list limit. | A zero list limit must not disable a separately documented single-point API; the native service still enforces its own limit. |
+| 8 | Extract private date/numeric bound converters to test the real invariant panic paths, preserving valid conversion semantics. | The preceding coercion normally prevents these branches; tests must inject an invalid coerced value into the actual converter and prove that its panic payload contains no user value. |
 
 ## References
 
