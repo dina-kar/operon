@@ -2,18 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists the interfaces it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (names, paths, flags, header values), use them verbatim. The code is not pre-written in this plan; the tests are the specification.
 
-> **Status: Planned** (2026-10-02). **Slot: track SF, first plan** (proposed; D-SF-1). Branches `sf1-t<N>`, stacked; PRs target `main`. Depends on AP1a (the cordis console host and slots, for the browser console) being on `main`; the **desktop** tasks (5b and the GPUI halves of 6 and 7) depend on the native desktop shell, a fork of zeron (§37, amended for a native desktop, D480–D499), and until it lands they build as standalone GPUI crates with a test harness. Tasks 0–2 depend on neither (a spike, a proto and edge configuration). Task 9 is the exit gate and needs Tasks 1–8: its browser-console checks need AP1a, its desktop checks run against the standalone GPUI crates until the fork lands, and its mobile check is an external prerequisite (the `loams-mobile` repository's own CI, pinned to this repository's ref, whose green run the exit report links). Mobile work (Task 8) depends on AP0's protos and AP2/AP3's app shells. **Phase 1 of D-SF-1: Zulip, Plane and Forgejo, in full, before any phase-2 app.**
+> **Status: In progress** (2026-10-02; Task 0 done, [spike notes](sf1-spike.md)). **Slot: track SF, first plan** (proposed; D-SF-1). Branches `sf1-t<N>`, stacked; **PRs target `dev`**. Depends on AP1a (the cordis console host and slots, for the browser console) being on `dev`; the **desktop** tasks (5b and the GPUI halves of 6 and 7) depend on the native desktop shell, a fork of zeron (§37, amended for a native desktop, D480–D499), and until it lands they build as standalone GPUI crates with a test harness. Tasks 0–2 depend on neither (a spike, a proto and edge configuration). Task 9 is the exit gate and needs Tasks 1–8: its browser-console checks need AP1a, its desktop checks run against the standalone GPUI crates until the fork lands, and its mobile check is an external prerequisite (the `loams-mobile` repository's own CI, pinned to this repository's ref, whose green run the exit report links). Mobile work (Task 8) depends on AP0's protos and AP2/AP3's app shells. **Phase 1 of D-SF-1: Zulip, Plane and Forgejo, in full, before any phase-2 app.**
 
 **Goal:** Put Zulip, Plane and Forgejo into Loams in three ways, in the browser console, in the native desktop app and on phones, with no change to any app:
-- **Full app UI.** Browser console: each app's own web UI in a sandboxed iframe, signed in by Authentik, framed through edge configuration only (design §3.3, §3.4). Desktop: the system browser (top-level, the person's Authentik session) and, if the spike allows, an optional in-app sidebar browser (design §3.4 tiers 2 and 3).
+- **Full app UI.** Browser console: each app's own web UI in a sandboxed iframe, signed in by Authentik, framed through edge configuration only (design §3.3, §3.4). Desktop: the system browser (top-level, the person's Authentik session) and, if the spike allows, an optional in-app sidebar browser (design §3.4 tiers 2 and 3) — **Task 0 ruled no, see E1**.
 - **Native panels** from `loams.collab.v1` (the typed read and write surface the loop uses): Zulip threads, Plane issues and cycles, Forgejo repositories, PRs and CI (§3.2, §3.6), with OpenFGA filtering, as cordis plugins in the browser console and native GPUI panels in the desktop app.
 - **Mobile deep links and native views**: issue list and detail, PR list and checks, thread digest, plus `loams://app/…` links into the system browser (§3.4, §3.5).
 
 **Architecture:**
 - **`web/plugins/embed`** (`@loams/plugin-embed`): the `embed` service and the `embed.pane` slot for the **browser console**: the iframe host, the toolbar, the deep-link router.
 - **`web/plugins/{zulip,plane,forgejo}`**: one plugin each, `first-party`, registering `console.page`, `app.panel`, `bot.card`, `embed.pane`, overview cards and palette commands (design §3.5).
-- **`crates/operon-collab`**: the `loams.collab.v1` service (Connect, connect-rust), the app adapters (`ZulipApi`, `PlaneApi`, `ForgejoApi` traits with HTTP implementations and recorded-fixture fakes), the **credential broker** and the OpenFGA filter. SF2 reuses all three.
-- **`crates/operon-apps-client`**: generated connect-rust clients for AP0's services and `loams.collab.v1` (later `loams.bot.v1` and `loams.factory.v1`), shared by the desktop fork and any Rust client.
+- **`crates/loams-collab`**: the `loams.collab.v1` service (Connect, connect-rust), the app adapters (`ZulipApi`, `PlaneApi`, `ForgejoApi` traits with HTTP implementations and recorded-fixture fakes), the **credential broker** and the OpenFGA filter. SF2 reuses all three.
+- **`crates/loams-apps-client`**: generated connect-rust clients for AP0's services and `loams.collab.v1` (later `loams.bot.v1` and `loams.factory.v1`), shared by the desktop fork and any Rust client.
 - **Desktop (the zeron fork; the directory is named by §37's amendment, written `desktop/` below):** crate `loams-ui-collab` with GPUI panels and cards for the same objects, an `AppOpener` (registry-checked system-browser opens) and, spike-gated, `SidebarBrowser`.
 - **`deploy/factory/edge/`**: the edge routes (headers, forward-auth hooks) as Envoy or Caddy snippets and Helm values, plus the CI harness that starts each pinned app image behind the edge.
 - **`loams-mobile`** (separate repository): `Apps` screen, issue and PR views, deep-link handling.
@@ -46,10 +46,26 @@ Same as the AP plans, plus:
 | # | Ruling | Why | Cost if wrong |
 |---|---|---|---|
 | 1 | **Sibling subdomains of one domain** for the apps and the console (Q462's proposal) | Same-site cookies make framing work with `SameSite=Lax`; Plane, Forgejo and Zulip cannot all be served under a path prefix | A single-host install needs a wildcard DNS entry; `loams dev` uses `*.localhost` |
-| 2 | **Desktop gets native panels plus the system browser; the sidebar browser is optional** (design §3.4) | zeron has no webview crate in its workspace, and the factory needs only the objects; the system browser gives SSO for free | Users who want a docked Plane board wait for the spike's answer |
+| 2 | **Desktop gets native panels plus the system browser; the sidebar browser is optional** (design §3.4) | zeron has no webview crate in its workspace, and the factory needs only the objects; the system browser gives SSO for free. **Corrected by Task 0:** zeron's `ui` crate *does* have a browser module (`crates/ui/src/browser`, macOS `wry`/WKWebView and a Linux WebKitGTK helper), but its website-data store is ephemeral on both and WebKitGTK has no WebAuthn, so tier 3 is impossible as it stands. See the execution rulings and [the spike](sf1-spike.md) | Users who want a docked Plane board wait for the spike's answer |
 | 3 | **Native panels first for read, write only for comment, create and (gated) merge** | The loop needs these; every other write is the app's UI | Users ask for more; each is a small addition to `loams.collab.v1` |
 | 4 | **Plane's API key is per agent identity, not per user** (Q463) | Plane CE has no per-user OAuth for third-party callers **(verify, Task 4)** | Audit in Plane names the agent, not the person; Loams' audit holds the person |
 | 5 | **`loams.collab.v1` mirrors A2A's `Part` and artifact kinds where it can** | SF2 and SF3 render the same objects in chat | A little protobuf duplication until Q467 settles importing A2A's proto |
+
+## Rulings made during execution
+
+Task 0's findings, which win over the plan above where they disagree. Full evidence in
+[the spike notes](sf1-spike.md).
+
+| # | Ruling | Why | Cost if wrong |
+|---|---|---|---|
+| E1 | **The sidebar browser (tier 3) does not ship in SF1, on any OS.** The desktop is tiers 1 and 2 only: native panels and `AppOpener` | zeron's browser uses an ephemeral website-data store on both platforms (`macos.rs:41-45` `nonPersistentDataStore`, `linux/helper.c:619` `webkit_web_context_new_ephemeral`), so a sign-in never survives a launch, and WebKitGTK has no WebAuthn at all (WebKit bug 205350), so an Authentik passkey ceremony is impossible on Linux. There is no Windows browser at all | Users who want a docked Plane board wait for AP1n Task 7 (Q482) and D491, which send the work upstream |
+| E2 | **Task 5b's `SidebarBrowser` keeps its `sidebar-browser` feature but loses the per-(environment, app) data store requirement** until E1's upstream work lands; the feature builds only on the system browser fallback | A per-app persistent store is not reachable from zeron's browser without forking it, and the plan's "no native dependency beyond `reqwest`" rule argues against embedding `wry` here | The feature flag ships dead; dropping it later is a one-line change |
+| E3 | **Plane CE needs no `UNIMPLEMENTED` fallback for cycles or modules.** Both are in the CE REST API v1 (`apps/api/plane/api/urls/cycle.py`, `module.py`), so `GetCycle` is a real call and Task 4's `plane_cycle_missing_is_unimplemented_with_reason` becomes a capability-probe test, not a known-unimplemented path | Task 4's contingency was written before CE was read | If a pinned CE image lags this, the probe still returns `APP_CAPABILITY` |
+| E4 | **Plane CE's API key is a personal access token bound to a Plane *account*** (`APIToken.user`, `X-Api-Key`, expirable), with no OAuth issuer for third-party callers, so Ruling 4's "per agent identity" is realised as a dedicated Plane service account for the agent | `apps/api/plane/api/middleware/api_authentication.py` | Plane's audit names the agent's account; Loams' audit holds the person, exactly as Ruling 4 accepted |
+| E5 | **Every app must lose `X-Frame-Options` at the edge: Zulip `DENY` (nginx), Plane `DENY` (Django's `XFrameOptionsMiddleware` default), Forgejo `SAMEORIGIN`. None of the three sends a `Content-Security-Policy`, so the edge appends one.** No `SameSite=None` anywhere, and none may be added | Source reads recorded in the spike; the edge-model check passes for all three | Nothing, if the Task 2 harness confirms |
+| E6 | **Zulip's `__Host-` cookie prefix forbids any `Domain` attribute**, so the apps keep host-only sessions and the edge must not try to share one cookie domain across the subdomains | `zproject/computed_settings.py:485-486` | Sign-in per app per host, which is what the registry wants anyway |
+| E7 | **The app embed frame is a different frame class from the console host's plugin frame.** `web/packages/console-host/src/sandbox.ts` pins `SANDBOX_FLAGS = 'allow-scripts'` and says "never `allow-same-origin`, `allow-top-navigation` or `allow-popups`"; Task 5's embed frame needs `allow-same-origin` (or the app session never applies) and `allow-top-navigation-by-user-activation` (the Authentik redirect). Task 5 must define its own allowlist, in `web/plugins/embed`, and must not reuse `SANDBOX_FLAGS` | The two frames have different jobs: one holds untrusted third-party code, the other holds a trusted app on a registry origin | A frame that can't complete the Authentik redirect, or a host whose plugin frame was loosened to fix it |
+| E8 | **Plane CE's API-key rate limit is `60/minute` by default** (`API_KEY_RATE_LIMIT`, `apps/api/plane/settings/common.py:154`), so Task 4's "bound concurrency per app (default 8)" is right for reads but a 429 must be expected; `Retry-After` handling is not optional | The number is in CE's settings | Throttling during a factory run; the backoff test already covers it |
 
 ## Review Focus
 
@@ -63,9 +79,9 @@ Same as the AP plans, plus:
 
 ```
 proto/loams/collab/v1/collab.proto                    # ListApps, threads, issues, cycles, repos, PRs, checks
-crates/operon-collab/src/{lib.rs,service.rs,broker.rs,fga.rs,apps/{mod.rs,zulip.rs,plane.rs,forgejo.rs},fixtures.rs}
-crates/operon-collab/tests/{main.rs,list.rs,write.rs,broker.rs,fga.rs,canary.rs}
-crates/operon-collab/tests/fixtures/{zulip,plane,forgejo}/*.json   # recorded API responses
+crates/loams-collab/src/{lib.rs,service.rs,broker.rs,fga.rs,apps/{mod.rs,zulip.rs,plane.rs,forgejo.rs},fixtures.rs}
+crates/loams-collab/tests/{main.rs,list.rs,write.rs,broker.rs,fga.rs,canary.rs}
+crates/loams-collab/tests/fixtures/{zulip,plane,forgejo}/*.json   # recorded API responses
 deploy/factory/edge/{envoy.yaml.tmpl,caddy.snippet,values.edge.yaml,README.md}
 deploy/factory/images.lock   LICENSES.md
 deploy/factory/harness/{compose.yml,run.sh,assert_frames.mjs}
@@ -73,7 +89,7 @@ web/plugins/embed/{package.json,src/{index.ts,service.ts,iframe.ts,toolbar.tsx,d
 web/plugins/{zulip,plane,forgejo}/{package.json,src/{index.ts,panels/*.tsx,cards/*.tsx,pages/*.tsx},test/*}
 web/packages/slots/src/{embed.ts,app-panel.ts,bot.ts,factory.ts}   # new slot declarations
 web/apps/console/catalog/base.yml
-crates/operon-apps-client/{Cargo.toml,build.rs,src/lib.rs}
+crates/loams-apps-client/{Cargo.toml,build.rs,src/lib.rs}
 desktop/crates/loams-ui-collab/src/{lib.rs,opener.rs,sidebar.rs,panels/{zulip,plane,forgejo}.rs,cards/*.rs}   # zeron fork; path per §37's amendment
 desktop/crates/loams-ui-collab/tests/*
 docs/design/39-…  docs/design/37-… (slot catalog note)  docs/plans/README.md  CHANGELOG.md
@@ -94,6 +110,14 @@ docs/design/39-…  docs/design/37-… (slot catalog note)  docs/plans/README.md
 - Plane CE: the REST API v1 endpoints for workspaces, projects, issues, cycles, modules, comments, labels and webhooks (answers Q464), the API key model, and rate limits.
 
 **Decision recorded by the spike:** per OS, whether the sidebar browser ships (tier 3) or the desktop has tiers 1 and 2 only. Nothing else in this plan depends on it.
+
+**Done (2026-10-03).** Results: [the spike notes](sf1-spike.md); rulings E1–E8 above. The two
+verdicts the rest of the plan needed: **tier 3 does not ship on any OS** (E1), and **all three
+apps deny framing and send no CSP**, so Task 2's edge work is three header removals plus three
+appended `frame-ancestors` policies (E5). The throwaway harness lived in `desktop/spikes/sidebar/`
+and was deleted; the deliverable is the spike document. The header facts were read from upstream
+source, not from a running container (no container runtime on the build machine) — Task 2's
+`assert_frames.mjs` harness is where the live probe belongs.
 
 **Commit:** `docs: SF1 spike results`.
 
@@ -152,7 +176,7 @@ service CollabService {
 
 ### Task 3: `loams-collab`: Zulip adapter, the broker and OpenFGA filtering
 
-**Files:** `crates/operon-collab/src/{lib.rs,service.rs,broker.rs,fga.rs,apps/{mod.rs,zulip.rs},fixtures.rs}`, `crates/operon-collab/tests/{main.rs,list.rs,write.rs,broker.rs,fga.rs,canary.rs}`.
+**Files:** `crates/loams-collab/src/{lib.rs,service.rs,broker.rs,fga.rs,apps/{mod.rs,zulip.rs},fixtures.rs}`, `crates/loams-collab/tests/{main.rs,list.rs,write.rs,broker.rs,fga.rs,canary.rs}`.
 
 **Produces:**
 
@@ -183,7 +207,7 @@ impl CredentialBroker {
 
 ### Task 4: Plane and Forgejo adapters
 
-**Files:** `crates/operon-collab/src/apps/{plane.rs,forgejo.rs}`, fixtures, tests `list.rs`, `write.rs`, `broker.rs`.
+**Files:** `crates/loams-collab/src/apps/{plane.rs,forgejo.rs}`, fixtures, tests `list.rs`, `write.rs`, `broker.rs`.
 
 **Produces:** `PlaneApi` (`projects`, `issues`, `issue`, `create_issue`, `comment`, `cycles`, `cycle`, `add_issue_to_cycle`) and `ForgejoApi` (`repos`, `branches`, `pulls`, `pull`, `checks` (commit statuses and Actions runs), `ci_log_tail`, `create_branch`, `open_pull`, `comment_pull`, `merge_pull`), as in Task 3.
 
@@ -210,7 +234,7 @@ export interface EmbedService {
 }
 ```
 
-**Semantics (design §3.4, browser console):** `iframe.ts` sets the sandbox attribute of design §3.4 and the `allow` attribute to `clipboard-write; fullscreen` only; the URL must be in `ListApps`' `embed_url` set for the active environment; messages from frames are ignored; the toolbar offers back, reload, open in a new tab and copy link; the parent cannot read a cross-origin frame, so the states are only what it can observe: `loading` until the frame's `load` event, `ready` after it, `slow` if no `load` arrives within 8 s (the toolbar then says "If you see a sign-in page, finish signing in there, or open in a new tab"), and `error` on a failed registry check. No attempt is made to detect which origin the frame is on.
+**Semantics (design §3.4, browser console):** `iframe.ts` sets the sandbox attribute of design §3.4 and the `allow` attribute to `clipboard-write; fullscreen` only; the URL must be in `ListApps`' `embed_url` set for the active environment; messages from frames are ignored; the toolbar offers back, reload, open in a new tab and copy link; the parent cannot read a cross-origin frame, so the states are only what it can observe: `loading` until the frame's `load` event, `ready` after it, `slow` if no `load` arrives within 8 s (the toolbar then says "If you see a sign-in page, finish signing in there, or open in a new tab"), and `error` on a failed registry check. No attempt is made to detect which origin the frame is on. **The embed frame is not the plugin frame (E7):** `web/packages/console-host/src/sandbox.ts` pins `SANDBOX_FLAGS = 'allow-scripts'` and documents "never `allow-same-origin`, `allow-top-navigation` or `allow-popups`" for *third-party plugin* code; the app embed is a trusted, registry-checked origin and needs `allow-same-origin` (or its session cookie never applies) and `allow-top-navigation-by-user-activation` for the Authentik redirect. `web/plugins/embed` declares its own allowlist constant and a test asserts it is not `SANDBOX_FLAGS` and that no token appears in the frame's URL or name.
 
 **Tests (Vitest and Playwright against the Task 2 harness):** `service_opens_sandboxed_iframe`; `unlisted_app_is_refused`; `sandbox_attribute_is_exact`; `allow_attribute_is_exact`; `frame_messages_are_ignored`; `state_slow_after_8_seconds_without_load`; `state_ready_on_load`; `no_token_in_frame_url_or_name`.
 
@@ -218,22 +242,22 @@ export interface EmbedService {
 
 ### Task 5b: The desktop client, panel scaffolding, opener and (optional) sidebar browser
 
-**Files:** `crates/operon-apps-client/**`, `desktop/crates/loams-ui-collab/{src/{lib.rs,opener.rs,sidebar.rs},tests/*}`.
+**Files:** `crates/loams-apps-client/**`, `desktop/crates/loams-ui-collab/{src/{lib.rs,opener.rs,sidebar.rs},tests/*}`.
 
 **Produces:**
 
 ```rust
-// crates/operon-apps-client: generated from AP0 and collab protos
+// crates/loams-apps-client: generated from AP0 and collab protos
 pub struct AppsClient { /* connect-rust clients over the desktop's HTTP stack and token source */ }
 impl AppsClient { pub fn collab(&self) -> CollabServiceClient; /* + instance, approvals; bot and factory arrive in SF3 and SF4 */ }
 
 // desktop/crates/loams-ui-collab
 pub struct AppOpener { /* the active environment's ListApps registry */ }
 impl AppOpener { pub fn open(&self, url: &Url) -> Result<(), OpenError>; }   // refuses unlisted origins; no token, no extra args
-pub struct SidebarBrowser;   // only built with the `sidebar-browser` feature, per Task 0's decision
+pub struct SidebarBrowser;   // only built with the `sidebar-browser` feature, per Task 0's decision — E1: tier 3 does not ship, so the feature is off and the tests below are `#[ignore]`d until AP1n Task 7 (Q482) lands
 ```
 
-**Semantics:** the desktop's HTTP stack and token handling are §37's amendment; `AppsClient` takes them as trait objects (`HttpTransport`, `TokenSource`) so SF1 does not depend on that design. `AppOpener` resolves `loams://app/<env>/<app>/<path>` and panel "Open in browser" actions to registry URLs and opens them with the OS handler. `SidebarBrowser` (feature-gated) loads a registry URL top-level with a per-(environment, app) data store, a navigation allowlist (the app's origin and Authentik's), new windows and downloads refused, no JavaScript bridge to the host, and an address bar that shows the origin.
+**Semantics:** the desktop's HTTP stack and token handling are §37's amendment; `AppsClient` takes them as trait objects (`HttpTransport`, `TokenSource`) so SF1 does not depend on that design. `AppOpener` resolves `loams://app/<env>/<app>/<path>` and panel "Open in browser" actions to registry URLs and opens them with the OS handler. `SidebarBrowser` (feature-gated, **off by default per E1 and E2**) loads a registry URL top-level with a per-(environment, app) data store, a navigation allowlist (the app's origin and Authentik's), new windows and downloads refused, no JavaScript bridge to the host, and an address bar that shows the origin. zeron's own browser already provides the allowlist (`crates/ui/src/browser/model.rs:131-138`), cancels downloads on Linux and denies permission requests, but its store is ephemeral, so the data-store requirement is the one part that cannot be met from the fork today; until then the feature falls back to `AppOpener`.
 
 **Tests:** `opener_refuses_unlisted_origin`; `opener_passes_no_token` (the spawned command line and environment are scanned); `opener_resolves_deeplink_to_registry_url`; `apps_client_uses_injected_transport` (a fake transport sees every call); `apps_client_streams_watch` (collab `Watch` snapshot, changes, heartbeat); with the feature: `sidebar_browser_navigation_allowlist`, `sidebar_browser_data_store_is_per_app_and_env`, `sidebar_browser_refuses_downloads`, `sidebar_browser_has_no_host_bridge`.
 
@@ -280,7 +304,7 @@ pub struct SidebarBrowser;   // only built with the `sidebar-browser` feature, p
 
 ### Task 9: Hardening and the exit gate
 
-**Files:** `crates/operon-collab/tests/canary.rs`, `web/plugins/*/test/security/*`, `docs/plans/sf1-exit-report.md`, `docs/design/39-…` (status and as-built notes), `CHANGELOG.md`.
+**Files:** `crates/loams-collab/tests/canary.rs`, `web/plugins/*/test/security/*`, `docs/plans/sf1-exit-report.md`, `docs/design/39-…` (status and as-built notes), `CHANGELOG.md`.
 
 **Checks:**
 - **Canary:** every `loams.collab.v1` method, error, trace and log line of Tasks 3 and 4 scanned for the canary secrets (§30 D288's test, extended).
