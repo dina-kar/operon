@@ -41,6 +41,10 @@ def main():
         if not path.exists() and not path.is_symlink():
             # A tracked deletion is not part of the candidate tree.
             continue
+        if path.is_symlink() and path.name in ("Cargo.toml", "Cargo.lock"):
+            print(f"{name}: symlinked Cargo manifest/lockfile is forbidden", file=sys.stderr)
+            failed = True
+            continue
         if path.is_symlink():
             # Scan the committed symlink target, never the file it points to.
             data = path.readlink().as_posix().encode(errors="surrogateescape")

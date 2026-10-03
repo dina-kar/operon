@@ -60,6 +60,16 @@ class BoundaryTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(self.root), "add", "fixture-link"], check=True)
         self.check(1)
 
+    def test_guard_rejects_symlinked_cargo_manifest(self):
+        # A symlink target can itself be valid TOML. It must never stand in for
+        # the manifest Cargo reads from its destination.
+        target = "manifest = 'fixture'"
+        prefix = "loam-" + "platform"
+        self.put(target, f'[dependencies]\n{prefix}-meter = "1"\n')
+        (self.root / "Cargo.toml").symlink_to(target)
+        subprocess.run(["git", "-C", str(self.root), "add", "Cargo.toml"], check=True)
+        self.check(1)
+
     def test_guard_rejects_platform_dependency(self):
         prefix = "loam-" + "platform"
         examples = (f'[package]\nname = "{prefix}-meter"\n',
