@@ -35,6 +35,7 @@ The rules, in the order they bite:
 | `not_found` | not_found | any RPC: the named resource does not exist | |
 | `already_exists` | already_exists | any RPC that creates a named resource | |
 | `permission_denied` | permission_denied | any RPC the caller's role may not make | |
+| `token_expired` | unauthenticated | a rejected access token | `hint` says whether to refresh or sign in again |
 | `unauthenticated` | unauthenticated | any RPC with no or an unusable credential | |
 | `failed_precondition` | failed_precondition | any RPC whose preconditions do not hold | |
 | `resource_exhausted` | resource_exhausted | a backpressure or quota refusal | `retry_after_ms` |

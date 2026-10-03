@@ -1,0 +1,36 @@
+{
+  "name": "@loams/live",
+  "version": "0.1.0",
+  "description": "Generated loams.live.v1 Connect stubs for the Loams SDK. Regenerate from proto/ with `pnpm --filter @loams/live generate`.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ostrium-labs/loams",
+    "directory": "sdks/typescript/packages/live"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./live": "./src/gen/loams/live/v1/live_pb.ts",
+    "./options": "./src/gen/loams/options/v1/options_pb.ts",
+    "./value": "./src/gen/loams/live/v1/value_pb.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "generate": "../../../../scripts/sdk/gen.sh typescript-live",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.16.0"
+  },
+  "devDependencies": {
+    "@connectrpc/connect": "2.2.0",
+    "typescript": "5.9.3"
+  }
+}

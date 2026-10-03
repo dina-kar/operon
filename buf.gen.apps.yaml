@@ -9,6 +9,10 @@ version: v2
 inputs:
   - directory: proto
     paths:
+      # protoc-gen-es emits an import for loams.options.v1 because
+      # instance.proto now annotates its service with it, so the package has to
+      # be generated whether or not a client ever sends one of its messages.
+      - proto/loams/options/v1
       - proto/loams/instance/v1
       - proto/loams/devices/v1
       - proto/loams/approvals/v1

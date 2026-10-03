@@ -1,0 +1,49 @@
+{
+  "name": "@loams/client",
+  "version": "0.1.0",
+  "description": "The Loams SDK for TypeScript and JavaScript: one Loams object with namespaced modules over the unified Connect API, generated from proto/.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ostrium-labs/loams",
+    "directory": "sdks/typescript/packages/client"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./node": {
+      "types": "./src/node.ts",
+      "default": "./src/node.ts"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "generate": "../../../../scripts/sdk/gen.sh typescript",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.16.0",
+    "@connectrpc/connect": "2.2.0",
+    "@connectrpc/connect-node": "2.2.0",
+    "@connectrpc/connect-web": "2.2.0",
+    "@loams/live": "workspace:*",
+    "@loams/proto": "workspace:*"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "1.73.0",
+    "@bufbuild/protoc-gen-es": "2.16.0",
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3",
+    "vitest": "5.0.3"
+  }
+}

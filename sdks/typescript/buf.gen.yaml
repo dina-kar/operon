@@ -1,0 +1,54 @@
+# The TypeScript SDK facade of design §44 §7.3 (D606): protoc-gen-loams-facade
+# reads the `loams.options.v1` annotations off the descriptors and writes
+# `@loams/client`'s generated facade — one typed interface per annotated
+# service, one method per `FacadeOptions` call, and the binding table the
+# hand-written runtime dispatches through, plus the `reason` union generated
+# from `docs/api/reasons.md`.
+#
+# The stubs themselves are not generated here: `protoc-gen-es` writes the
+# messages and the service descriptors (@loams/proto for the app packages,
+# @loams/live for loams.live.v1) and the facade imports their types. Running
+# protoc-gen-es again into the SDK would be a second copy of the same protos
+# under a second package name, and the design's package matrix names one
+# `@loams/proto` per language, not one per consumer.
+#
+# Run `scripts/sdk/gen.sh typescript`, which builds the plugin, substitutes
+# the path into a copy of this template and runs buf on that. buf does not
+# expand environment variables in a `local:` plugin path, and the path cannot
+# be committed either: the repository's cargo config sends build output outside
+# the tree. CI regenerates and fails on a diff.
+#
+# The package map is what tells the generator where each proto package's
+# generated types live in the npm packages; without an entry for an annotated
+# package, generation fails rather than emitting imports that do not resolve.
+version: v2
+inputs:
+  # The whole proto module, as one image, so the plugin is invoked once with
+  # every file: the facade is one aggregate file, not one file per proto.
+  # `loams.options.v1` is included because the annotations it declares are
+  # what the plugin reads, not because a client sends any of them (see
+  # options.proto: the package is not in any SDK's wire surface).
+  - directory: proto
+plugins:
+  # Substituted by scripts/sdk/gen.sh. The default is the plain cargo layout.
+  - local: ${LOAMS_FACADE_PLUGIN}
+    out: sdks/typescript/packages/client/src/gen
+    # buf's default strategy is `directory`, which would invoke the plugin once
+    # per proto directory and drop all but the last `facade.ts`. The facade is
+    # one aggregate file over the whole module, so it needs every file at once.
+    strategy: all
+    opt:
+      - lang=typescript
+      - reasons=docs/api/reasons.md
+      # The proto revision this SDK declares (§44 §10.3). Pre-1.0, so it is
+      # the API major rather than a release tag; `loams.version()` checks it
+      # against `GetInstance.api_versions`.
+      - proto_rev=v1
+      - package=loams.instance.v1=@loams/proto/instance
+      - package=loams.devices.v1=@loams/proto/devices
+      - package=loams.approvals.v1=@loams/proto/approvals
+      - package=loams.operations.v1=@loams/proto/operations
+      - package=loams.notifications.v1=@loams/proto/notifications
+      - package=loams.errors.v1=@loams/proto/errors
+      - package=loams.live.v1=@loams/live/live
+clean: true

@@ -11,8 +11,22 @@ syntax = "proto3";
 package loams.live.v1;
 
 import "loams/live/v1/value.proto";
+import "loams/options/v1/options.proto";
 
 service LiveService {
+  // The live package's wire contract may still change (R1), so an SDK marks
+  // the modules experimental and `buf breaking` skips the package (§44
+  // §10.3). SDK2 Task 0 set `unstable` when the TypeScript SDK first needed a
+  // typed client for the unavailable-service path: the flag is what
+  // `GetInstance.services[].unstable` already reported for this package, and
+  // `protoc-gen-es` writes neither the flag nor the module name into its
+  // output, so annotating the service did not change the generated stubs.
+  option (loams.options.v1.module) = {
+    name: "live"
+    summary: "Live sync: watch a query set over a server stream."
+    unstable: true
+  };
+
   // Opens a session. The first Transition starts from the zero version and
   // carries every query's result; later ones carry only changed queries.
   // Heartbeats are empty Transitions every 15 s.
@@ -20,16 +34,30 @@ service LiveService {
   // buf lint: the response is `Transition`, not `WatchResponse`, because it
   // is the protocol's unit (§20 §7.1); RPC_RESPONSE_STANDARD_NAME is
   // excepted for this file in buf.yaml.
-  rpc Watch(WatchRequest) returns (stream Transition);
+  rpc Watch(WatchRequest) returns (stream Transition) {
+    option (loams.options.v1.facade) = { name: "watch" };
+  }
   // Adds and removes queries in an open session. The next Transition
   // reflects the change.
-  rpc ModifyQuerySet(ModifyQuerySetRequest) returns (ModifyQuerySetResponse);
+  rpc ModifyQuerySet(ModifyQuerySetRequest) returns (ModifyQuerySetResponse) {
+    option (loams.options.v1.facade) = { name: "modifyQuerySet" };
+  }
   // A one-shot query, at the latest tick or at a given timestamp.
-  rpc Query(QueryRequest) returns (QueryResponse);
+  //
+  // Exposed on `loams.tables`, not on `loams.live`: §44 §7.2 splits the
+  // service into the session half (watch, modify) and the table half (query,
+  // mutate, deploy), and both are facade names for these RPCs.
+  rpc Query(QueryRequest) returns (QueryResponse) {
+    option (loams.options.v1.facade) = { module: "tables" name: "query" };
+  }
   // Runs a mutation; returns its commit timestamp and result.
-  rpc Mutate(MutateRequest) returns (MutateResponse);
+  rpc Mutate(MutateRequest) returns (MutateResponse) {
+    option (loams.options.v1.facade) = { module: "tables" name: "mutate" };
+  }
   // Admin: deploys a function bundle and a schema.
-  rpc Deploy(DeployRequest) returns (DeployResponse);
+  rpc Deploy(DeployRequest) returns (DeployResponse) {
+    option (loams.options.v1.facade) = { module: "tables" name: "deploy" };
+  }
 }
 
 // A session's state: (query-set version, identity version, ts). A client

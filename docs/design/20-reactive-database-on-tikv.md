@@ -107,7 +107,7 @@ Markers: **(estimate)** is computed from code or specs, not measured. **(verify)
 | `loams-live-proto` | The `loams.live.v1` protos and the Rust code generated from them (buffa messages, connect-rust services) |
 | `loams-live` | Data model and key layout, `LiveTxn`, the commit journal and tailer, the subscription and session managers, the sync service |
 | `loams-live-js` | The QuickJS function runtime (`rquickjs`) and the host database API |
-| `sdks/live-typescript` | `@loams/live`: generated protobuf-es and Connect stubs plus the reactive client |
+| `sdks/typescript/packages/live` | `@loams/live`: generated protobuf-es and Connect stubs plus the reactive client |
 
 ## 4. Data model
 

@@ -1,0 +1,109 @@
+{
+  "about": "The conformance corpus (design §44 §10.4, SDK1 Task 4). Recorded from a real `loams dev` by sdks/conformance/record-fixtures.mjs and replayed by sdks/conformance/fixture-server.mjs.",
+  "cases": [
+    {
+      "name": "instance_get_instance_json",
+      "about": "A successful unary call, no auth: what this instance is. This is the case a client makes before anything else, on a cold start. (The proto3 JSON mapping, which is what `curl` sends (design §44 §4).)",
+      "path": "/loams.instance.v1.InstanceService/GetInstance",
+      "contentType": "application/json",
+      "status": 200,
+      "reason": null
+    },
+    {
+      "name": "instance_get_instance_proto",
+      "about": "A successful unary call, no auth: what this instance is. This is the case a client makes before anything else, on a cold start. (The binary encoding, which is what an SDK sends by default.)",
+      "path": "/loams.instance.v1.InstanceService/GetInstance",
+      "contentType": "application/proto",
+      "status": 200,
+      "reason": null
+    },
+    {
+      "name": "instance_get_instance_grpc_web",
+      "about": "A successful unary call, no auth: what this instance is. This is the case a client makes before anything else, on a cold start. (gRPC-Web, the framing a browser sends. One length-prefixed frame: flag 0 and a zero-length message.)",
+      "path": "/loams.instance.v1.InstanceService/GetInstance",
+      "contentType": "application/grpc-web+proto",
+      "status": 200,
+      "reason": null
+    },
+    {
+      "name": "instance_get_instance_grpc_web_json",
+      "about": "A successful unary call, no auth: what this instance is. This is the case a client makes before anything else, on a cold start. (gRPC-Web carrying the proto3 JSON mapping, which a browser SDK can ask for.)",
+      "path": "/loams.instance.v1.InstanceService/GetInstance",
+      "contentType": "application/grpc-web+json",
+      "status": 200,
+      "reason": null
+    },
+    {
+      "name": "instance_who_am_i_json",
+      "about": "A structured-reason error: `unimplemented` carrying an ErrorInfo whose reason is `not_implemented`, because this build has no authentication yet. An SDK branches on the reason, never on the message. (The proto3 JSON mapping, which is what `curl` sends (design §44 §4).)",
+      "path": "/loams.instance.v1.InstanceService/WhoAmI",
+      "contentType": "application/json",
+      "status": 501,
+      "reason": "not_implemented"
+    },
+    {
+      "name": "instance_who_am_i_proto",
+      "about": "A structured-reason error: `unimplemented` carrying an ErrorInfo whose reason is `not_implemented`, because this build has no authentication yet. An SDK branches on the reason, never on the message. (The binary encoding, which is what an SDK sends by default.)",
+      "path": "/loams.instance.v1.InstanceService/WhoAmI",
+      "contentType": "application/proto",
+      "status": 501,
+      "reason": "not_implemented"
+    },
+    {
+      "name": "instance_who_am_i_grpc_web",
+      "about": "A structured-reason error: `unimplemented` carrying an ErrorInfo whose reason is `not_implemented`, because this build has no authentication yet. An SDK branches on the reason, never on the message. (gRPC-Web, the framing a browser sends. One length-prefixed frame: flag 0 and a zero-length message.)",
+      "path": "/loams.instance.v1.InstanceService/WhoAmI",
+      "contentType": "application/grpc-web+proto",
+      "status": 200,
+      "reason": "not_implemented"
+    },
+    {
+      "name": "instance_who_am_i_grpc_web_json",
+      "about": "A structured-reason error: `unimplemented` carrying an ErrorInfo whose reason is `not_implemented`, because this build has no authentication yet. An SDK branches on the reason, never on the message. (gRPC-Web carrying the proto3 JSON mapping, which a browser SDK can ask for.)",
+      "path": "/loams.instance.v1.InstanceService/WhoAmI",
+      "contentType": "application/grpc-web+json",
+      "status": 200,
+      "reason": "not_implemented"
+    },
+    {
+      "name": "live_query_json",
+      "about": "The unavailable-service path on a unary RPC: `loams.live.v1` is a `full`-variant engine, so every one of its RPCs answers `unimplemented` with reason `feature_not_in_variant` and the variant in `metadata`. (The proto3 JSON mapping, which is what `curl` sends (design §44 §4).)",
+      "path": "/loams.live.v1.LiveService/Query",
+      "contentType": "application/json",
+      "status": 501,
+      "reason": "feature_not_in_variant"
+    },
+    {
+      "name": "live_query_proto",
+      "about": "The unavailable-service path on a unary RPC: `loams.live.v1` is a `full`-variant engine, so every one of its RPCs answers `unimplemented` with reason `feature_not_in_variant` and the variant in `metadata`. (The binary encoding, which is what an SDK sends by default.)",
+      "path": "/loams.live.v1.LiveService/Query",
+      "contentType": "application/proto",
+      "status": 501,
+      "reason": "feature_not_in_variant"
+    },
+    {
+      "name": "live_query_grpc_web",
+      "about": "The unavailable-service path on a unary RPC: `loams.live.v1` is a `full`-variant engine, so every one of its RPCs answers `unimplemented` with reason `feature_not_in_variant` and the variant in `metadata`. (gRPC-Web, the framing a browser sends. One length-prefixed frame: flag 0 and a zero-length message.)",
+      "path": "/loams.live.v1.LiveService/Query",
+      "contentType": "application/grpc-web+proto",
+      "status": 200,
+      "reason": "feature_not_in_variant"
+    },
+    {
+      "name": "live_query_grpc_web_json",
+      "about": "The unavailable-service path on a unary RPC: `loams.live.v1` is a `full`-variant engine, so every one of its RPCs answers `unimplemented` with reason `feature_not_in_variant` and the variant in `metadata`. (gRPC-Web carrying the proto3 JSON mapping, which a browser SDK can ask for.)",
+      "path": "/loams.live.v1.LiveService/Query",
+      "contentType": "application/grpc-web+json",
+      "status": 200,
+      "reason": "feature_not_in_variant"
+    },
+    {
+      "name": "live_watch",
+      "about": "The unavailable-service path on a server stream: the refusal arrives inside the Connect streaming envelope, not as an HTTP status. An SDK that reports it has to read the envelope.",
+      "path": "/loams.live.v1.LiveService/Watch",
+      "contentType": "application/connect+proto",
+      "status": 200,
+      "reason": "feature_not_in_variant"
+    }
+  ]
+}

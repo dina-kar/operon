@@ -21,6 +21,7 @@
     "./errors": "./src/gen/loams/errors/v1/errors_pb.ts",
     "./instance": "./src/gen/loams/instance/v1/instance_pb.ts",
     "./notifications": "./src/gen/loams/notifications/v1/notifications_pb.ts",
+    "./options": "./src/gen/loams/options/v1/options_pb.ts",
     "./operations": "./src/gen/loams/operations/v1/operations_pb.ts"
   },
   "scripts": {

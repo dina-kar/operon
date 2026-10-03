@@ -1,0 +1,23 @@
+{
+  "name": "instance_who_am_i_grpc_web_json",
+  "about": "A structured-reason error: `unimplemented` carrying an ErrorInfo whose reason is `not_implemented`, because this build has no authentication yet. An SDK branches on the reason, never on the message. (gRPC-Web carrying the proto3 JSON mapping, which a browser SDK can ask for.)",
+  "request": {
+    "method": "POST",
+    "path": "/loams.instance.v1.InstanceService/WhoAmI",
+    "headers": {
+      "content-type": "application/grpc-web+json"
+    },
+    "bodyBase64": "AAAAAAJ7fQ=="
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/grpc-web+json"
+    },
+    "bodyBase64": "gAAAAVBncnBjLXN0YXR1czogMTINCmdycGMtbWVzc2FnZTogbG9hbXMuaW5zdGFuY2UudjEuSW5zdGFuY2VTZXJ2aWNlL1dob0FtSSBpcyBub3QgaW1wbGVtZW50ZWQgYnkgdGhpcyBidWlsZCB5ZXQNCmdycGMtc3RhdHVzLWRldGFpbHMtYmluOiBDQXdTVFd4dllXMXpMbWx1YzNSaGJtTmxMbll4TGtsdWMzUmhibU5sVTJWeWRtbGpaUzlYYUc5QmJVa2dhWE1nYm05MElHbHRjR3hsYldWdWRHVmtJR0o1SUhSb2FYTWdZblZwYkdRZ2VXVjBHa0lLTFhSNWNHVXVaMjl2WjJ4bFlYQnBjeTVqYjIwdmJHOWhiWE11WlhKeWIzSnpMbll4TGtWeWNtOXlTVzVtYnhJUkNnOXViM1JmYVcxd2JHVnRaVzUwWldRDQo="
+  },
+  "expect": {
+    "status": 200,
+    "reason": "not_implemented"
+  }
+}

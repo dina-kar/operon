@@ -1,0 +1,22 @@
+{
+  "name": "instance_get_instance_grpc_web_json",
+  "about": "A successful unary call, no auth: what this instance is. This is the case a client makes before anything else, on a cold start. (gRPC-Web carrying the proto3 JSON mapping, which a browser SDK can ask for.)",
+  "request": {
+    "method": "POST",
+    "path": "/loams.instance.v1.InstanceService/GetInstance",
+    "headers": {
+      "content-type": "application/grpc-web+json"
+    },
+    "bodyBase64": "AAAAAAJ7fQ=="
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/grpc-web+json"
+    },
+    "bodyBase64": "AAAAAbp7Imluc3RhbmNlSWQiOiIwMU00MUI0UlA4QlI3NDQ0TkU3RDYxUzBITiIsIm5hbWUiOiJMb2FtcyIsImVkaXRpb24iOiJFRElUSU9OX09TUyIsInNlcnZlclZlcnNpb24iOiIwLjAuMSIsImFwaVZlcnNpb25zIjpbImxvYW1zLmluc3RhbmNlLnYxIl0sInNpZ25Jbk1ldGhvZHMiOlt7ImtpbmQiOiJTSUdOX0lOX0tJTkRfTk9ORSIsImRpc3BsYXlOYW1lIjoiTm8gc2lnbi1pbiJ9XSwic2VydmljZXMiOlt7InBhY2thZ2UiOiJsb2Ftcy5pbnN0YW5jZS52MSIsInZlcnNpb24iOiJ2MSIsImF2YWlsYWJsZSI6dHJ1ZSwic2VydmljZXMiOlsibG9hbXMuaW5zdGFuY2UudjEuSW5zdGFuY2VTZXJ2aWNlIl19LHsicGFja2FnZSI6ImxvYW1zLmxpdmUudjEiLCJ2ZXJzaW9uIjoidjEiLCJzZXJ2aWNlcyI6WyJsb2Ftcy5saXZlLnYxLkxpdmVTZXJ2aWNlIl0sInVuc3RhYmxlIjp0cnVlfV19gAAAABBncnBjLXN0YXR1czogMA0K"
+  },
+  "expect": {
+    "status": 200
+  }
+}

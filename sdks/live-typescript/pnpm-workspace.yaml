@@ -1,4 +1,0 @@
-# pnpm 11: @bufbuild/buf's postinstall only swaps its JS shim for the platform
-# binary; the shim works without it, so no install scripts run.
-allowBuilds:
-  "@bufbuild/buf": false

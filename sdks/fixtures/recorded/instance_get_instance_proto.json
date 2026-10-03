@@ -1,0 +1,22 @@
+{
+  "name": "instance_get_instance_proto",
+  "about": "A successful unary call, no auth: what this instance is. This is the case a client makes before anything else, on a cold start. (The binary encoding, which is what an SDK sends by default.)",
+  "request": {
+    "method": "POST",
+    "path": "/loams.instance.v1.InstanceService/GetInstance",
+    "headers": {
+      "content-type": "application/proto"
+    },
+    "bodyBase64": ""
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/proto"
+    },
+    "bodyBase64": "ChowMU00MUI0UlA4QlI3NDQ0TkU3RDYxUzBIThIFTG9hbXMYASIFMC4wLjEqEWxvYW1zLmluc3RhbmNlLnYxSg4IASIKTm8gc2lnbi1pbno8ChFsb2Ftcy5pbnN0YW5jZS52MRICdjEYASIhbG9hbXMuaW5zdGFuY2UudjEuSW5zdGFuY2VTZXJ2aWNlejAKDWxvYW1zLmxpdmUudjESAnYxIhlsb2Ftcy5saXZlLnYxLkxpdmVTZXJ2aWNlKAE="
+  },
+  "expect": {
+    "status": 200
+  }
+}

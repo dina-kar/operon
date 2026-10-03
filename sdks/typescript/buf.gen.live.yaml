@@ -1,0 +1,32 @@
+# TypeScript for @loams/live (R1 plan Task 7, folded here by SDK2 Task 0 as
+# design §44 §10.2 asks): protoc-gen-es writes the messages and the
+# LiveService descriptor that @connectrpc/connect v2 uses.
+# Run `pnpm --filter @loams/live generate` in web/ (it pins buf and the
+# plugin); CI regenerates and fails on a diff. journal.proto, catalog.proto
+# and idempotency.proto are internal to the server and not generated.
+# The app packages (§37 §8.4) are `buf.gen.apps.yaml`, which writes
+# @loams/proto, and the SDK facade is `buf.gen.yaml` beside this file.
+#
+# The plugin is pinned to an exact version, not a range (SDK1's global
+# constraint): a bump is its own PR with the regenerated output.
+version: v2
+inputs:
+  - directory: proto
+    paths:
+      # loams/options/v1 because live.proto annotates LiveService, and
+      # protoc-gen-es writes an import for whatever a service descriptor
+      # references.
+      - proto/loams/options/v1
+      - proto/loams/live/v1
+    exclude_paths:
+      - proto/loams/live/v1/journal.proto
+      - proto/loams/live/v1/catalog.proto
+      - proto/loams/live/v1/idempotency.proto
+plugins:
+  - local: sdks/typescript/packages/client/node_modules/.bin/protoc-gen-es
+    out: sdks/typescript/packages/live/src/gen
+    include_imports: false
+    opt:
+      - target=ts
+      - import_extension=js
+clean: true

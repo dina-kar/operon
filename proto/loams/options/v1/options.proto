@@ -11,8 +11,13 @@
 // behaviour.
 //
 // This package is deliberately not in any SDK's wire surface: it declares no
-// message of its own that a client sends, and `buf generate` for a
-// language's SDK does not list it (see `buf.gen.apps.yaml`).
+// message of its own that a client sends, and no SDK method takes or returns
+// one. `buf generate` does list it, because a service that carries these
+// annotations has them in its descriptor and `protoc-gen-es` writes that
+// import into the generated file. SDK2 Task 0 found this: annotating
+// `loams.instance.v1.InstanceService` for the SDK facade made
+// `buf.gen.apps.yaml` generate `loams/options/v1/options_pb.ts`, which
+// `@loams/proto/options` then re-exports.
 syntax = "proto3";
 
 package loams.options.v1;
