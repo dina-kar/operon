@@ -25,7 +25,7 @@ This document turns that into decisions **D600–D619** and open questions **Q60
 - No new compatibility surface and no removal of one (D603).
 - No client- or bidi-streaming in the application API (D420's rule stands: browsers and URLSession cannot do it; half-duplex works through every proxy). Bulk upload that needs it goes through Flight `DoPut` (gRPC only) or chunked unary writes (§7.5).
 - No hand-written REST SDKs. M1.6's Python and TypeScript REST SDKs are retired by this work (D604, pre-release, no users to migrate).
-- No billing/metering RPCs here: `loams.meter.v1` belongs to the private `loam-platform` (D220, D552) and is **not** in the open protos or SDKs.
+- No billing/metering RPCs here: the meter protocol belongs to the private `loam-platform` (D220, D552) and is **not** in the open protos or SDKs.
 
 ## 3. What exists today (checked 2026-10-02 on `dev`)
 
@@ -188,7 +188,7 @@ Language idiom rules (D606): module and method names are the proto names in the 
 | `loams.admin` (`.org`, `.projects`, `.agents`, `.keys`, `.audit`), `loams.auth` | `loams.admin.v1`, `loams.auth.v1` | API1 |
 | `loams.console` | `loams.console.v1` `PluginService` | AP1a |
 
-Not in the public protos or SDKs: `loams.internal.v1`, `loams.meter.v1` (private), connector-specific admin.
+Not in the public protos or SDKs: `loams.internal.v1`, the meter protocol (private), connector-specific admin.
 
 ### 7.3 Annotations drive the facade (D606)
 

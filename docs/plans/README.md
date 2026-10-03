@@ -130,11 +130,11 @@ Design references: [32 Loams Flow, Event Fabric and House](../design/32-loams-fl
 
 ## Track RN: runners and the usage hooks
 
-Design reference: [24 CPU-time runtime](../design/24-cpu-time-runtime.md) §16 (the `Runner` trait, D375) and [27 Usage hooks](../design/27-usage-hooks.md) §3.7 (`InvocationObserver`, D549); [34](../design/34-protocol-gateway-and-standards.md) keeps the decision rows. Generic observability only: no metering in this repository (D403, D444, D541), and since 2026-10-02 the usage reporter and `loams.meter.v1` are in `loam-platform` too (D548). The usage-event task and the Cloudflare runner moved to `loam-platform` (private) with the protocol gateway (D440).
+Design reference: [24 CPU-time runtime](../design/24-cpu-time-runtime.md) §16 (the `Runner` trait, D375) and [27 Usage hooks](../design/27-usage-hooks.md) §3.7 (`InvocationObserver`, D549); [34](../design/34-protocol-gateway-and-standards.md) keeps the decision rows. Generic observability only: no metering in this repository (D403, D444, D541), and since 2026-10-02 the usage reporter and the meter protocol are in `loam-platform` too (D548). The usage-event task and the Cloudflare runner moved to `loam-platform` (private) with the protocol gateway (D440).
 
 | Plan | Scope | Depends on | Status |
 |---|---|---|---|
-| [RN1: Runner trait, `InvocationObserver`, process and Lambda runners](2026-10-01-rn1-runner-usage.md) | `loams-runner` (`Runner`, `RunnerHost`, `InvocationObserver`, conformance kit, `RunnerKind::Knative` and `External`); `ProcessRunner`; `LambdaRunner` with Loams's Lambda bootstrap and no usage. Tasks 1 and 2 (`loams.meter.v1`, the reporter) moved to `loam-platform` (D548) | — | Planned (amended 2026-10-02) |
+| [RN1: Runner trait, `InvocationObserver`, process and Lambda runners](2026-10-01-rn1-runner-usage.md) | `loams-runner` (`Runner`, `RunnerHost`, `InvocationObserver`, conformance kit, `RunnerKind::Knative` and `External`); `ProcessRunner`; `LambdaRunner` with Loams's Lambda bootstrap and no usage. Tasks 1 and 2 (the meter protocol, the reporter) moved to `loam-platform` (D548) | — | Planned (amended 2026-10-02) |
 
 ## Track GT: Loams Git, the build cache and the crates mirror
 

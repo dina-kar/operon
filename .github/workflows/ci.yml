@@ -968,11 +968,22 @@ jobs:
         working-directory: .
         run: kubectl kustomize deploy/dapr > /dev/null
 
+  no-metering:
+    name: open-core boundary (no metering)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: boundary guard regression fixtures
+        run: python3 scripts/ci/test-no-metering.py
+      - name: audit all tracked files and Cargo packages
+        run: scripts/ci/no-metering.sh
+
   required:
     name: CI required
     if: always()
     needs:
       - changes
+      - no-metering
       - docs
       - check
       - rust-tests
