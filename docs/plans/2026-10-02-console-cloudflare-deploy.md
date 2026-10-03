@@ -1,6 +1,6 @@
 # Console Cloudflare deployment — #269 Task 3
 
-Status: Implemented for both console entries; CI and review pending.
+Status: Merged #301; live deployment awaits owner setup (#314).
 
 ## Global constraints
 
@@ -24,7 +24,7 @@ Vite+ migration and sign-in work are outside this single deployment task.
 - [x] Bound config fetches, reject invalid/insecure hosted server origins,
   hash whitespace-terminated inline scripts, and pin third-party actions.
 - [x] Integrate the merged cordis entry and verify its runtime config/CSP.
-- [ ] Obtain green CI/DCO, address CodeRabbit, and merge #301.
+- [x] Obtain green CI/DCO, address CodeRabbit, and merge #301.
 - [ ] Deploy and smoke-check console.loams.dev once owner secrets exist.
 
 ## Rulings made during execution
@@ -60,3 +60,6 @@ runtime-configured HTTPS origin. The sample plugin executes in an opaque frame,
 cannot read the parent DOM or fetch, and the directly opened sandbox document
 has an opaque origin from its response CSP. Cloudflare HTML behavior was checked
 against https://developers.cloudflare.com/workers/static-assets/routing/advanced/html-handling/.
+
+Merged commit verified through the GitHub PR API: `a8c799dd8df5f197cd9f30f50b0d708a51d1ed17`.
+Live account/environment configuration is tracked in [owner blocker #314](https://github.com/ostrium-labs/loams/issues/314).

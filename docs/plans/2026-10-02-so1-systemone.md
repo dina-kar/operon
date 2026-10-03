@@ -19,9 +19,9 @@
 **Tech Stack:** Rust 1.97.1, edition 2024, workspace lints; connect-rust and buffa (D128); `reqwest` (rustls) for HTTP clients, `tokio`, `serde_json`, `sha2`, `async-trait` (as the workspace already uses it; Task 3 confirms), `thiserror`. Dev: `axum` for the fake sidecar, `wiremock` for Jev, `proptest`. Python side (Task 5): `uv` and `laya[serve]==<pin>` installed by the CLI, not a build dependency. kevala only if Task 0 passes (git dependency pinned to a commit, Apache-2.0).
 
 **Spec:**
-- [`docs/design/40-loams-systemone.md`](../design/40-loams-systemone.md): all of it, especially §2 (what was verified and corrected), §4, §5, §6, §9; [`_pending/40-log.md`](../design/_pending/40-log.md) (D520–D539, Q520–Q539).
-- [`docs/design/13-decision-log.md`](../design/13-decision-log.md): D111 (loopback), D128 (connect-rust), D220 (open core), D284 (no telemetry), D470 (no content in spans).
-- [`docs/design/39-software-factory-and-loams-bot.md`](../design/39-software-factory-and-loams-bot.md): D468 (approvals), D470.
+- [`docs/design/40-loams-systemone.md`](../design/40-loams-systemone.md): all of it, especially §2 (what was verified and corrected), §4, §5, §6, §9; [decision log](../design/13-decision-log.md) (D520–D539, Q520–Q539).
+- [`docs/design/13-decision-log.md`](../design/13-decision-log.md): D111 (loopback), D128 (connect-rust), D220 (open core), D284 (no telemetry), D-SF-11 (no content in spans).
+- [`docs/design/39-software-factory-and-loams-bot.md`](../design/39-software-factory-and-loams-bot.md): D-SF-9 (approvals), D-SF-11.
 - Upstream, re-read in Task 0: Laya `docs/http-api.md`, `docs/security.md`, `README.md` (Honest Limits); `bvolpato/kevala` `docs/architecture.md`; docs.typesafe.ai primitives.
 
 ## Global Constraints

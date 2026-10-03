@@ -4,11 +4,11 @@ Status: **Proposed** · 2026-10-02. The direction is the owner's, from 2026-10-0
 
 > "write a plan for integrating the UI of Plane, Forgejo, Zulip, GlitchTip, Langfuse 4 for agent tracing and OpenObserve for distributed tracing; for now pick the Slack, Jira, GitHub part [Zulip, Plane, Forgejo first] if you finish it fast; and in our deepseek fork harness in desktop and mobile apps, there should be a single chat interface called Loams bot, where we drive agents of each platform — Plane, Zulip, Forgejo, GlitchTip + product analytics — using A2A. It's a loop, called Loams Software Factory. Make it available as first in our Cloud marketplace page."
 
-**Owner rulings later the same day, applied here:** (1) the names are **Loams Bot** and **Loams Software Factory** in prose, titles and decisions (the quotation above keeps the owner's original words); (2) **the desktop app is native, not Tauri**: a fork of zeron (`github.com/zeronsh/zeron`, MIT; Rust on GPUI; "a native control plane for Claude Code, Codex, Cursor, Devin and other coding agents", with a local engine daemon and optional multi-device sync), and Loams Bot on the desktop builds on zeron's agent and session engine. The browser console stays cordis; the phones stay native SwiftUI and Compose. This document cites **§37 (amended for a native desktop, D440-series pending)** and does not design the desktop shell; it designs what the factory adds to it (§3.4, §13).
+**Owner rulings later the same day, applied here:** (1) the names are **Loams Bot** and **Loams Software Factory** in prose, titles and decisions (the quotation above keeps the owner's original words); (2) **the desktop app is native, not Tauri**: a fork of zeron (`github.com/zeronsh/zeron`, MIT; Rust on GPUI; "a native control plane for Claude Code, Codex, Cursor, Devin and other coding agents", with a local engine daemon and optional multi-device sync), and Loams Bot on the desktop builds on zeron's agent and session engine. The browser console stays cordis; the phones stay native SwiftUI and Compose. This document cites **§37 (amended for a native desktop, D480–D499)** and does not design the desktop shell; it designs what the factory adds to it (§3.4, §13).
 
-This document turns that direction into decisions **D460–D479** and open questions **Q460–Q479** (staged in `docs/design/_pending/39-log.md`, not yet in the decision log). Everything beyond the quoted direction (the embed rules, the A2A mapping, the loop's gates, the open/commercial split) is a **proposal** until the owner confirms it. **No code is written by this document.** The hosted factory and the marketplace are commercial and are designed in the private `loam-platform` repository (its doc 05); this document only states the interface between the two.
+This document turns that direction into decisions **D-SF-1–D-SF-20** and open questions **Q460–Q479** (recorded in the canonical decision log). Everything beyond the quoted direction (the embed rules, the A2A mapping, the loop's gates, the open/commercial split) is a **proposal** until the owner confirms it. **No code is written by this document.** The hosted factory and the marketplace are commercial and are designed in the private `loam-platform` repository (its doc 05); this document only states the interface between the two.
 
-**Numbering.** `main` ends at D459 and Q453 (§38). D460–D479 and Q460–Q479 are a block reserved for this document; renumber at merge if another branch took them. The private repository has its own numbers (PD47 onward).
+**Numbering.** `main` ends at D459 and Q453 (§38). D-SF-1–D-SF-20 and Q460–Q479 are a block reserved for this document; renumber at merge if another branch took them. The private repository has its own numbers (PD47 onward).
 
 Markers: **(verified)** means read on the web on 2026-10-02 at the source in §17. **(verify)** means the plan that builds it checks it first. **(estimate)** means computed, not measured. "The harness" is the DeepSeek Harness (MIT) in its desktop and mobile forms (§37 §3); "our fork" is the harness code Loams adapts, per D421, never a copy-and-fork of the whole repository.
 
@@ -18,26 +18,26 @@ Markers: **(verified)** means read on the web on 2026-10-02 at the source in §1
 
 | # | Decision | Status |
 |---|---|---|
-| D460 | **Two products, one loop.** **Loams Software Factory** ("the factory") is a durable loop over five platform agents: a signal (an error or an analytics anomaly) is triaged in Zulip, becomes an issue in Plane, becomes a branch, a pull request and CI in Forgejo, is deployed, is observed in GlitchTip, OpenPanel, Langfuse and OpenObserve, and feeds the next signal. **Loams Bot** is the single chat in the desktop and mobile apps through which a person drives those agents. A new track, **SF**, has five plans (SF1–SF5). Phase 1 is Zulip, Plane and Forgejo, done in full; phase 2 adds GlitchTip, OpenPanel, Langfuse and OpenObserve | Proposed |
-| D461 | **Embed rule: native panels for what the loop reads and writes, the app's own UI embedded for everything else.** Each app gets (a) API-driven native panels from `loams.collab.v1` (cordis plugins in the browser console, native GPUI panels in the desktop app, SwiftUI and Compose views on phones), for the objects the factory touches, and (b) its own web UI for depth: framed unmodified in the browser console, opened in the system browser or an optional in-app sidebar browser on the desktop. The per-app decision is in §3.2. **Mobile does not embed**: native views, sealed push and deep links that open the app's web UI in the system browser (§3.5) | Proposed |
-| D462 | **Embedding is configuration, never a patch.** Every app runs unmodified behind the edge proxy (§22 §3, Envoy or Caddy per §38), on **sibling subdomains of one registrable domain**. The edge removes the app's `X-Frame-Options`, sets `Content-Security-Policy: frame-ancestors <the console origins>` and leaves cookies as the apps set them (the edge rewrites a `SameSite=None` to `Lax` only on a route whose image needs it, and `images.lock` lists the exception), and the console's `frame-src` lists only the instance's app origins (§3.3). Because no app is modified, AGPL §13's duty for modified, network-served versions is not triggered; redistributing an image and offering the apps as a paid hosted service carry their own obligations, which §4 lists and counsel reviews | Proposed |
-| D463 | **Single sign-on through Authentik** (open-source edition, D404, §38). Native OIDC for Zulip, Forgejo, GlitchTip and Langfuse; **Plane** by the Forgejo-chained Gitea provider (§22 §5); **OpenPanel and OpenObserve have no free OIDC** and sit behind Authentik's proxy outpost (forward-auth). Embedded panes never receive Loams tokens: each is signed in at the app by Authentik's browser session (§3.4) | Proposed |
-| D464 | **Desktop: native panels first, deep UIs in the system browser, an in-app sidebar browser optional.** Loams Desktop is a fork of zeron (§37, amended for a native desktop, D440-series pending), so there is no Tauri webview, CSP or `net_fetch` here. App UIs reach the desktop as (a) native GPUI panels over `loams.collab.v1`, and (b) the app's own web UI opened as a **top-level page** in the system browser, which shares the person's Authentik session, or in an in-app sidebar browser **if** SF1's spike shows a wry-based webview works inside GPUI on the supported OSes. A top-level page is never framed, so the edge's frame headers matter only to the browser console, which uses sandboxed iframes (§3.4) | Proposed |
-| D465 | **A2A v1.0 between Loams Bot and the platform agents; Connect-RPC from the apps to Loams Bot.** A2A 1.0.0 is a Linux Foundation project with official SDKs for Python, JavaScript, Java, .NET, Go and Rust **(verified)**; there are no official Kotlin or Swift SDKs. The phones and the desktop therefore never speak A2A: they use `loams.bot.v1` over Connect (D420), and Loams Bot is the A2A client. Loams Bot also has an A2A server, **disabled by default**: its route and Agent Card exist only when an operator starts the bot with `--bot-a2a` (Q469) (§5) | Proposed |
-| D466 | **One agent per platform, each a separate A2A server with its own principal.** `plane`, `zulip`, `forgejo`, `glitchtip` and `analytics` (OpenPanel). Each serves a signed Agent Card at `/.well-known/agent-card.json`, runs as a Knative service (or in-process in `loams dev`) and holds no app credential: a credential broker injects it per call (§6, §7) | Proposed |
-| D467 | **An A2A Task is a §21 operation.** `contextId` is the chat thread or the factory run, `taskId` is the operation id, A2A states map one-to-one onto operation states, `TASK_STATE_INPUT_REQUIRED` carries either a question for the user or an approval (D435), and push notifications reach the person as D436 sealed pushes (§5.3) | Proposed |
-| D468 | **Approvals reuse §19 and §21 unchanged.** Every agent skill declares a risk (`read`, `write`, `destructive`) in its Agent Card; the org's policy decides which need an approval; the decision is a signed proof from the person, never from Loams Bot, never from the agent that asked (§8) | Proposed |
-| D469 | **Identity: each agent is an `agent` principal** (§19 §5.1) with a policy, a 15-minute token cap and a suspend switch. Loams Bot exchanges the user's token for an attenuated, actor-chained token per agent (RFC 8693, `act` = `user → loams-bot → plane-agent`); Agent Cards declare an OAuth 2.0 scheme whose authorization server is the Loams gateway, and are signed with JWS (RFC 7515, canonicalised by RFC 8785) by the instance key (§6) | Proposed |
-| D470 | **Every agent step is traced twice.** OTel GenAI spans (from the AI gateway and the durable steps, §21 §6.6) carry `a2a.task_id`, `a2a.context_id`, `factory.run_id` and `resonate.promise_id`; a collector sends the LLM-shaped spans, with content, to **Langfuse** and every span, log and metric, without content, to **OpenObserve**, with one W3C `traceparent` across A2A hops (§9) | Proposed |
-| D471 | **MCP is for tools, A2A is for delegation.** A tool call is stateless and returns; a delegation is a stateful task with a lifecycle. Loams Bot talks only A2A to the platform agents. Each platform agent uses REST, and MCP where it helps, inside its own boundary. §30's MCP servers are unchanged; Loams Bot adds no MCP tool that writes (§5.6) | Proposed |
-| D472 | **The factory loop is a Resonate workflow, `factory.run`**, one per signal: intake, triage, plan, fix, review, deploy, observe, close. Each stage is a durable step with an idempotency key, a budget check and a gate (§10) | Proposed |
-| D473 | **Safety rails are in the engine, not the prompt**: per-run and per-org budgets (tokens, money, wall time, attempts, open PRs), a **kill switch** by scope (a run kill cancels that run's tasks and workflows and suspends nothing; an agent kill also suspends that agent's principal; an org kill suspends all of the org's agent principals), loop-depth and cooldown limits against feedback storms, and **no auto-merge and no auto-deploy by default**: every merge and every deploy needs an approval unless the policy lists the repository, path or service and the environment is unprotected (§10.1, §11) | Proposed |
-| D474 | **A factory run is a record**: a Live table `factory_runs`, a stream `factory_events`, audit events as OTel logs (D100), and console pages (runs, run detail, approvals, agents, budgets). The record links every artifact: the Zulip thread, the Plane issue, the Forgejo PR, the deploy, the traces (§12) | Proposed |
-| D475 | **Open-core split (D220 stands).** Open, in this repository: the A2A host and adapters, the five agents, the cordis plugins, the native desktop panels and harness, the Loams Bot service and clients, `loams.collab.v1`, and a **single-organisation factory you can self-host**. Commercial, in `loam-platform`: the hosted multi-tenant factory, managed agents and model costs, the marketplace and its listing, billing and metering (§14) | Proposed |
-| D476 | **The apps run unmodified, from official images pinned by digest**, as separate services: Zulip (Apache-2.0), Plane Community Edition (AGPL-3.0), Forgejo (GPL-3.0-or-later), GlitchTip (MIT), OpenPanel (AGPL-3.0), Langfuse's MIT tree with `ee/` never enabled, OpenObserve's open-source edition (AGPL-3.0). Licences and what each demands are in §4 | Proposed |
-| D477 | **Coding is a skill of the Forgejo agent**, not a sixth public agent: `propose_patch` starts a sandboxed coding session on a workspace branch (§15 D24, §36 Loams Git) and returns a patch the Forgejo agent turns into a branch and a PR. The model is configurable; the default routes DeepSeek through the AI gateway (§13) | Proposed |
-| D478 | **Where it appears in the apps.** Desktop (a zeron fork): Loams Bot is a **new `Harness` in zeron's harness crate** over `loams.bot.v1`, so zeron's conversation, composer, sidebar and trajectory UI show Loams Bot threads, plus native panels for the collab objects, runs and approvals. Browser console: `@loams/plugin-bot` (the DeepSeek harness's conversation UI patterns ported to cordis) and one plugin per app. Phones: native chat, run, approval and issue views over `loams.bot.v1`, `loams.collab.v1` and `loams.factory.v1`. Deep links are `loams://app/…`, `loams://bot/…`, `loams://factory/…` and navigate only (§3.5, §13) | Proposed |
-| D479 | **The marketplace is commercial and private** (`loam-platform` doc 05): Loams Software Factory is listing #1; the open repository ships only the installable **package** (a Helm chart, a catalog patch and a manifest) that the listing installs, so a self-hoster installs the same thing by hand (§14) | Proposed |
+| D-SF-1 | **Two products, one loop.** **Loams Software Factory** ("the factory") is a durable loop over five platform agents: a signal (an error or an analytics anomaly) is triaged in Zulip, becomes an issue in Plane, becomes a branch, a pull request and CI in Forgejo, is deployed, is observed in GlitchTip, OpenPanel, Langfuse and OpenObserve, and feeds the next signal. **Loams Bot** is the single chat in the desktop and mobile apps through which a person drives those agents. A new track, **SF**, has five plans (SF1–SF5). Phase 1 is Zulip, Plane and Forgejo, done in full; phase 2 adds GlitchTip, OpenPanel, Langfuse and OpenObserve | Proposed |
+| D-SF-2 | **Embed rule: native panels for what the loop reads and writes, the app's own UI embedded for everything else.** Each app gets (a) API-driven native panels from `loams.collab.v1` (cordis plugins in the browser console, native GPUI panels in the desktop app, SwiftUI and Compose views on phones), for the objects the factory touches, and (b) its own web UI for depth: framed unmodified in the browser console, opened in the system browser or an optional in-app sidebar browser on the desktop. The per-app decision is in §3.2. **Mobile does not embed**: native views, sealed push and deep links that open the app's web UI in the system browser (§3.5) | Proposed |
+| D-SF-3 | **Embedding is configuration, never a patch.** Every app runs unmodified behind the edge proxy (§22 §3, Envoy or Caddy per §38), on **sibling subdomains of one registrable domain**. The edge removes the app's `X-Frame-Options`, sets `Content-Security-Policy: frame-ancestors <the console origins>` and leaves cookies as the apps set them (the edge rewrites a `SameSite=None` to `Lax` only on a route whose image needs it, and `images.lock` lists the exception), and the console's `frame-src` lists only the instance's app origins (§3.3). Because no app is modified, AGPL §13's duty for modified, network-served versions is not triggered; redistributing an image and offering the apps as a paid hosted service carry their own obligations, which §4 lists and counsel reviews | Proposed |
+| D-SF-4 | **Single sign-on through Authentik** (open-source edition, D404, §38). Native OIDC for Zulip, Forgejo, GlitchTip and Langfuse; **Plane** by the Forgejo-chained Gitea provider (§22 §5); **OpenPanel and OpenObserve have no free OIDC** and sit behind Authentik's proxy outpost (forward-auth). Embedded panes never receive Loams tokens: each is signed in at the app by Authentik's browser session (§3.4) | Proposed |
+| D-SF-5 | **Desktop: native panels first, deep UIs in the system browser, an in-app sidebar browser optional.** Loams Desktop is a fork of zeron (§37, amended for a native desktop, D480–D499), so there is no Tauri webview, CSP or `net_fetch` here. App UIs reach the desktop as (a) native GPUI panels over `loams.collab.v1`, and (b) the app's own web UI opened as a **top-level page** in the system browser, which shares the person's Authentik session, or in an in-app sidebar browser **if** SF1's spike shows a wry-based webview works inside GPUI on the supported OSes. A top-level page is never framed, so the edge's frame headers matter only to the browser console, which uses sandboxed iframes (§3.4) | Proposed |
+| D-SF-6 | **A2A v1.0 between Loams Bot and the platform agents; Connect-RPC from the apps to Loams Bot.** A2A 1.0.0 is a Linux Foundation project with official SDKs for Python, JavaScript, Java, .NET, Go and Rust **(verified)**; there are no official Kotlin or Swift SDKs. The phones and the desktop therefore never speak A2A: they use `loams.bot.v1` over Connect (D420), and Loams Bot is the A2A client. Loams Bot also has an A2A server, **disabled by default**: its route and Agent Card exist only when an operator starts the bot with `--bot-a2a` (Q469) (§5) | Proposed |
+| D-SF-7 | **One agent per platform, each a separate A2A server with its own principal.** `plane`, `zulip`, `forgejo`, `glitchtip` and `analytics` (OpenPanel). Each serves a signed Agent Card at `/.well-known/agent-card.json`, runs as a Knative service (or in-process in `loams dev`) and holds no app credential: a credential broker injects it per call (§6, §7) | Proposed |
+| D-SF-8 | **An A2A Task is a §21 operation.** `contextId` is the chat thread or the factory run, `taskId` is the operation id, A2A states map one-to-one onto operation states, `TASK_STATE_INPUT_REQUIRED` carries either a question for the user or an approval (D435), and push notifications reach the person as D436 sealed pushes (§5.3) | Proposed |
+| D-SF-9 | **Approvals reuse §19 and §21 unchanged.** Every agent skill declares a risk (`read`, `write`, `destructive`) in its Agent Card; the org's policy decides which need an approval; the decision is a signed proof from the person, never from Loams Bot, never from the agent that asked (§8) | Proposed |
+| D-SF-10 | **Identity: each agent is an `agent` principal** (§19 §5.1) with a policy, a 15-minute token cap and a suspend switch. Loams Bot exchanges the user's token for an attenuated, actor-chained token per agent (RFC 8693, `act` = `user → loams-bot → plane-agent`); Agent Cards declare an OAuth 2.0 scheme whose authorization server is the Loams gateway, and are signed with JWS (RFC 7515, canonicalised by RFC 8785) by the instance key (§6) | Proposed |
+| D-SF-11 | **Every agent step is traced twice.** OTel GenAI spans (from the AI gateway and the durable steps, §21 §6.6) carry `a2a.task_id`, `a2a.context_id`, `factory.run_id` and `resonate.promise_id`; a collector sends the LLM-shaped spans, with content, to **Langfuse** and every span, log and metric, without content, to **OpenObserve**, with one W3C `traceparent` across A2A hops (§9) | Proposed |
+| D-SF-12 | **MCP is for tools, A2A is for delegation.** A tool call is stateless and returns; a delegation is a stateful task with a lifecycle. Loams Bot talks only A2A to the platform agents. Each platform agent uses REST, and MCP where it helps, inside its own boundary. §30's MCP servers are unchanged; Loams Bot adds no MCP tool that writes (§5.6) | Proposed |
+| D-SF-13 | **The factory loop is a Resonate workflow, `factory.run`**, one per signal: intake, triage, plan, fix, review, deploy, observe, close. Each stage is a durable step with an idempotency key, a budget check and a gate (§10) | Proposed |
+| D-SF-14 | **Safety rails are in the engine, not the prompt**: per-run and per-org budgets (tokens, money, wall time, attempts, open PRs), a **kill switch** by scope (a run kill cancels that run's tasks and workflows and suspends nothing; an agent kill also suspends that agent's principal; an org kill suspends all of the org's agent principals), loop-depth and cooldown limits against feedback storms, and **no auto-merge and no auto-deploy by default**: every merge and every deploy needs an approval unless the policy lists the repository, path or service and the environment is unprotected (§10.1, §11) | Proposed |
+| D-SF-15 | **A factory run is a record**: a Live table `factory_runs`, a stream `factory_events`, audit events as OTel logs (D100), and console pages (runs, run detail, approvals, agents, budgets). The record links every artifact: the Zulip thread, the Plane issue, the Forgejo PR, the deploy, the traces (§12) | Proposed |
+| D-SF-16 | **Open-core split (D220 stands).** Open, in this repository: the A2A host and adapters, the five agents, the cordis plugins, the native desktop panels and harness, the Loams Bot service and clients, `loams.collab.v1`, and a **single-organisation factory you can self-host**. Commercial, in `loam-platform`: the hosted multi-tenant factory, managed agents and model costs, the marketplace and its listing, billing and metering (§14) | Proposed |
+| D-SF-17 | **The apps run unmodified, from official images pinned by digest**, as separate services: Zulip (Apache-2.0), Plane Community Edition (AGPL-3.0), Forgejo (GPL-3.0-or-later), GlitchTip (MIT), OpenPanel (AGPL-3.0), Langfuse's MIT tree with `ee/` never enabled, OpenObserve's open-source edition (AGPL-3.0). Licences and what each demands are in §4 | Proposed |
+| D-SF-18 | **Coding is a skill of the Forgejo agent**, not a sixth public agent: `propose_patch` starts a sandboxed coding session on a workspace branch (§15 D24, §36 Loams Git) and returns a patch the Forgejo agent turns into a branch and a PR. The model is configurable; the default routes DeepSeek through the AI gateway (§13) | Proposed |
+| D-SF-19 | **Where it appears in the apps.** Desktop (a zeron fork): Loams Bot is a **new `Harness` in zeron's harness crate** over `loams.bot.v1`, so zeron's conversation, composer, sidebar and trajectory UI show Loams Bot threads, plus native panels for the collab objects, runs and approvals. Browser console: `@loams/plugin-bot` (the DeepSeek harness's conversation UI patterns ported to cordis) and one plugin per app. Phones: native chat, run, approval and issue views over `loams.bot.v1`, `loams.collab.v1` and `loams.factory.v1`. Deep links are `loams://app/…`, `loams://bot/…`, `loams://factory/…` and navigate only (§3.5, §13) | Proposed |
+| D-SF-20 | **The marketplace is commercial and private** (`loam-platform` doc 05): Loams Software Factory is listing #1; the open repository ships only the installable **package** (a Helm chart, a catalog patch and a manifest) that the listing installs, so a self-hoster installs the same thing by hand (§14) | Proposed |
 
 ## 2. Goals and non-goals
 
@@ -52,10 +52,10 @@ Markers: **(verified)** means read on the web on 2026-10-02 at the source in §1
 
 ### 2.2 Non-goals
 
-- **No patched apps, no forks** (§4, D476). A feature the apps lack is built as a panel or an agent skill.
+- **No patched apps, no forks** (§4, D-SF-17). A feature the apps lack is built as a panel or an agent skill.
 - **No new chat product.** Loams Bot is the harness's chat with a different set of agents; it does not replace Zulip, which is the team's chat.
 - **No A2A on the phones.** Kotlin and Swift have no official SDK, and D420 already gives the apps one protocol (§5.1).
-- **No autonomous production changes by default** (D473). Removing the gates is an organisation policy that an owner sets, recorded in the audit log.
+- **No autonomous production changes by default** (D-SF-14). Removing the gates is an organisation policy that an owner sets, recorded in the audit log.
 - **No second durability layer.** The loop's state is §21's; the apps keep their own data.
 - **No analytics product of our own.** The analytics agent reads OpenPanel.
 - **No mobile Langfuse, OpenObserve or Forgejo diff viewer.** Phones get status, summaries and deep links (§3.5).
@@ -76,7 +76,7 @@ Markers: **(verified)** means read on the web on 2026-10-02 at the source in §1
 
 **Langfuse 4.** A v4 line exists **(verified)**: Langfuse describes v4 as one open-source platform for tracing, prompts, evaluation and experiments, on a wide, immutable observations table in **ClickHouse** (ClickHouse acquired Langfuse in January 2026; Langfuse already ran on it); the SDKs are built on OpenTelemetry and the server accepts OTLP traces. The product features were all open-sourced under MIT on 2025-06-04, and what remains commercial in `ee/` includes SCIM, audit logs, data-retention policies, project-level RBAC, protected prompt labels, server-side data masking, UI customisation, organisation creators and the organisation- and instance-management APIs (per Langfuse's licence-key documentation; SF5 Task 0 re-reads the list). Server-side masking being commercial is why our masking runs in the collector (§9.1). A third-party page lists v4.38.0 as of 2026-09-17 **(verify the current release at SF5 Task 0)**. It needs Postgres, ClickHouse, Redis and an S3 bucket; RustFS serves the last. Phase 2 runs it as an optional profile.
 
-### 3.2 Embed or API-driven native panels, per app (D461)
+### 3.2 Embed or API-driven native panels, per app (D-SF-2)
 
 The test for each app: **does the loop read or write it, and is the app's UI too deep to rebuild?** The loop's objects get native panels, so Loams Bot's cards, the console's overview and the phones can show them without a web view. Everything deeper is the app's own UI, embedded.
 
@@ -90,7 +90,7 @@ The test for each app: **does the loop read or write it, and is the app's UI too
 | **Langfuse 4** | A trace summary per agent step (from Loams' own event stream: model, latency, cost, score), not a trace viewer | Langfuse's trace and session pages, opened at a given trace id | A step timeline inside the run view; deep link to the browser | Langfuse's tree and diff views are the point; Loams links into them |
 | **OpenObserve** | Nothing native: a "traces for this run" link | The full UI at a search pre-filtered by `factory.run_id`, behind forward-auth | A deep link only | Its SPA is the value; there is no API surface the loop needs beyond ingest |
 
-### 3.3 Edge, CSP and X-Frame-Options (D462)
+### 3.3 Edge, CSP and X-Frame-Options (D-SF-3)
 
 All seven apps send headers that forbid framing by default or by convention (Forgejo's `[cors] X_FRAME_OPTIONS` defaults to `SAMEORIGIN` **(verified)**; the others are checked in SF1 Task 2 and SF5 Task 2). The apps stay unmodified, so the edge decides:
 
@@ -99,7 +99,7 @@ All seven apps send headers that forbid framing by default or by convention (For
 | Domain layout | The instance's apps live at `chat.<domain>`, `plane.<domain>`, `git.<domain>`, `errors.<domain>`, `analytics.<domain>`, `llm.<domain>` and `obs.<domain>` (names are set by the Helm values), all siblings of `console.<domain>` and `auth.<domain>`, so every cookie is **same-site** (Q462 decides subdomains against path prefixes, which several of these apps cannot be served under) |
 | Frame headers | For each app route, the edge removes `X-Frame-Options` and replaces any `Content-Security-Policy` `frame-ancestors` with `frame-ancestors 'self' <console origin>`. The rest of the app's CSP is left alone. This serves the **browser console** only: the desktop and phones load apps as top-level pages |
 | Console `frame-src` | The browser console's CSP `frame-src` is the instance's app origins, from the app registry (below) |
-| Cookies | Not rewritten by default (one rule, also in D462): sessions are the apps' own and same-site, so no cross-site cookie is needed; where an image emits `SameSite=None`, that route's edge rule rewrites it to `Lax` and the exception is recorded in `images.lock`. CI asserts that no cookie reaches the browser as `SameSite=None`. `Secure` and `HttpOnly` stay as the apps set them |
+| Cookies | Not rewritten by default (one rule, also in D-SF-3): sessions are the apps' own and same-site, so no cross-site cookie is needed; where an image emits `SameSite=None`, that route's edge rule rewrites it to `Lax` and the exception is recorded in `images.lock`. CI asserts that no cookie reaches the browser as `SameSite=None`. `Secure` and `HttpOnly` stay as the apps set them |
 | Forward-auth apps | OpenPanel and OpenObserve are routed through Authentik's proxy outpost; the outpost sets a trusted header (`X-authentik-username`) or injects HTTP basic auth to the app's single service account (§3.4). **Trust boundary:** the ingress strips or overwrites any client-supplied `X-authentik-*` header before the outpost sets its own; OpenPanel and OpenObserve accept connections only from the outpost (a network policy leaves no other route to their ports); the outpost-to-app hop uses TLS (HTTPS or the cluster's mTLS) because it carries credentials |
 | Webhooks and API | `/api` and webhook paths are not framed and are reached by Loams' services on the cluster network, never through the console |
 | Verification | CI starts each app from its pinned image behind the edge and asserts: it frames from the console origin and from nowhere else, and loads top-level; `frame-ancestors` is exactly the configured list; no app cookie is `SameSite=None` |
@@ -110,7 +110,7 @@ All seven apps send headers that forbid framing by default or by convention (For
 
 **Browser console (cordis).** A sandboxed `<iframe sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads">` per app (`allow-same-origin` is the app's own origin, which is not the console's, so it cannot reach the console). The iframe loads `<app>/` and the app signs the user in by OIDC against Authentik, silently when the browser has an Authentik session (`prompt=none`), so there is one visible sign-in. The console never passes a Loams token to a frame. Messages from frames are ignored; the app registry decides what loads.
 
-**Desktop (native, a zeron fork; §37 amended, D440-series pending).** The desktop app has no web runtime of its own (zeron draws with GPUI and its architecture lists no webview crate; its README mentions a sidebar browser, which SF1 Task 0 inspects), so app UIs arrive in three tiers:
+**Desktop (native, a zeron fork; §37 amended, D480–D499).** The desktop app has no web runtime of its own (zeron draws with GPUI and its architecture lists no webview crate; its README mentions a sidebar browser, which SF1 Task 0 inspects), so app UIs arrive in three tiers:
 
 1. **Native panels** for the objects the factory touches (issues, PRs, threads, errors, tiles, runs, approvals), drawn in GPUI from `loams.collab.v1` and `loams.factory.v1` through a shared Rust client crate (`loams-apps-client`, §7). This is the default and the only tier the factory needs.
 2. **System browser** for depth: "Open in browser" on every panel and card opens the app's URL top-level, where the person's Authentik session already exists, so SSO is the browser's and nothing is stored by the desktop app. Opened through the OS URL handler after the URL is checked against the app registry's origins.
@@ -118,7 +118,7 @@ All seven apps send headers that forbid framing by default or by convention (For
 
 **Deep links** `loams://app/<env>/<app>/<path>` are registered by the native app (OS registration is §37's amendment), parsed against the app's allowlist of prefixes, and open the native panel for that object if one exists, else the system browser. **A deep link navigates, never acts** (D432).
 
-**Mobile.** No embedded web views for the apps (D461). Links open in the system browser: Custom Tabs on Android, which share the browser's cookies, and the default browser on iOS (`UIApplication.open`), because `SFSafariViewController` does not share Safari's cookies **(verify, AP3)**. The user's Authentik session is the browser's, so one sign-in covers every app.
+**Mobile.** No embedded web views for the apps (D-SF-2). Links open in the system browser: Custom Tabs on Android, which share the browser's cookies, and the default browser on iOS (`UIApplication.open`), because `SFSafariViewController` does not share Safari's cookies **(verify, AP3)**. The user's Authentik session is the browser's, so one sign-in covers every app.
 
 **Forward-auth apps.** For OpenPanel and OpenObserve the outpost authenticates the person against Authentik, checks membership in the OpenFGA-projected group (`factory-viewers`), and logs in to the app as one shared service user per app with a read-only role where the app has roles. This is honest about the gap: **those two apps have one user, not per-person identity** (Q475), so audit of "who looked" is Authentik's log, not the app's.
 
@@ -138,9 +138,9 @@ In the **browser console** all are cordis plugins in `web/plugins/*` (D422), `fi
 
 New slots: `embed.pane` (keyed by app id), `app.panel` (keyed by `<app>` or `<app>.<panel>`; props `{ environment, query }`), `bot.message.renderer` (keyed by part kind), `bot.card` (keyed by artifact kind; props `{ artifact, onAction }`), and `factory.stage.detail` (keyed by stage id).
 
-**Desktop native surfaces (D461, D478).** Crates in the desktop fork, each a set of GPUI views registered in zeron's shell the way its own conversation and diff panes are: `loams-ui-collab` (Zulip thread, Plane issue and cycle, Forgejo PR and CI, GlitchTip error and OpenPanel tile panels, and the artifact cards), `loams-ui-bot` (the cards inside the conversation, the `@agent` mentions, the Loams Bot sidebar section), `loams-ui-factory` (runs, run detail with the stage graph, approvals, agents, policy and budgets, the kill switch), and `loams-harness-bot` (the `Harness`, §13). They read through `loams-apps-client`.
+**Desktop native surfaces (D-SF-2, D-SF-19).** Crates in the desktop fork, each a set of GPUI views registered in zeron's shell the way its own conversation and diff panes are: `loams-ui-collab` (Zulip thread, Plane issue and cycle, Forgejo PR and CI, GlitchTip error and OpenPanel tile panels, and the artifact cards), `loams-ui-bot` (the cards inside the conversation, the `@agent` mentions, the Loams Bot sidebar section), `loams-ui-factory` (runs, run detail with the stage graph, approvals, agents, policy and budgets, the kill switch), and `loams-harness-bot` (the `Harness`, §13). They read through `loams-apps-client`.
 
-**Mobile native surfaces (D461, D478).** Each is a screen over Connect services, in SwiftUI and Compose: the chat; the run list and run timeline; approvals (existing `loams.approvals.v1`); the issue list and detail (Plane); the PR list and checks (Forgejo); the error list (GlitchTip, phase 2); analytics tiles (phase 2); an apps screen with deep links into each app's web UI. Phones show data the engine already fetched, cached with freshness timestamps (D437).
+**Mobile native surfaces (D-SF-2, D-SF-19).** Each is a screen over Connect services, in SwiftUI and Compose: the chat; the run list and run timeline; approvals (existing `loams.approvals.v1`); the issue list and detail (Plane); the PR list and checks (Forgejo); the error list (GlitchTip, phase 2); analytics tiles (phase 2); an apps screen with deep links into each app's web UI. Phones show data the engine already fetched, cached with freshness timestamps (D437).
 
 ### 3.6 Native panels read through Loams, with OpenFGA
 
@@ -153,7 +153,7 @@ A native panel never calls an app directly. It calls `loams.collab.v1` (served b
 
 Writes (comment, create, merge) take an idempotency key, go through the same check, and are audited. A write that §8's policy marks as needing approval returns an operation in `awaiting_approval`, not an error.
 
-## 4. Licences, and what running each app unmodified means (D476)
+## 4. Licences, and what running each app unmodified means (D-SF-17)
 
 Verified 2026-10-02 unless marked; §22 §4 has the earlier matrix and the reasoning, which stands.
 
@@ -189,7 +189,7 @@ Verified 2026-10-02 unless marked; §22 §4 has the earlier matrix and the reaso
 | SDKs | Official: **Python, JavaScript, Java, .NET, Go, Rust**. The Rust repository (`a2aproject/a2a-rs`, Apache-2.0, crates suffixed `-lf`) targets v1, is built on axum for the REST and JSON-RPC bindings and on tonic for gRPC, and requires Rust 1.85+; a third-party summary calls Rust "in validation". **No official Kotlin or Swift SDK**: community ones exist (JetBrains Koog's A2A feature module; `a2a-swift` from Victory Apps) |
 | Not to be confused with | **ACP**, the Agent Client Protocol, which the harness already implements (`packages/acp`, `subagent-acp`) for editor-to-agent automation. It is a different protocol with a different purpose; the harness's `subagent-acp` is the pattern for `subagent-a2a` (§5.2), not a substitute |
 
-### 5.2 Shape (D465, D466)
+### 5.2 Shape (D-SF-6, D-SF-7)
 
 ```
  Loams Desktop (native, zeron fork)   browser console (cordis)    iOS / Android (native)               external A2A or MCP clients
@@ -219,14 +219,14 @@ Verified 2026-10-02 unless marked; §22 §4 has the earlier matrix and the reaso
 - **Client protocol.** `loams.bot.v1` (Connect, AP0 rules: unary and server-streaming, snapshot-then-changes, heartbeat every 15 s, resume cursors, idempotency keys) mirrors the A2A `Message`, `Part`, `Task` and `Artifact` types by **importing A2A's own protobuf** where it can (Q467), so a client and an agent speak one vocabulary and A2A conformance is a property of the data, not a translation.
 - **A2A bindings in our servers.** Agents serve **HTTP+JSON and JSON-RPC with SSE**, on axum (the same server stack as connect-rust, D128). gRPC is not served: it would add tonic beside connect-rust for no client that needs it. Loams Bot's client side uses the same two bindings.
 
-### 5.3 Task lifecycle, streaming and push (D467)
+### 5.3 Task lifecycle, streaming and push (D-SF-8)
 
 | A2A | Loams |
 |---|---|
 | `contextId` | The chat thread id (or the factory run id, §10). One context spans many tasks |
 | `taskId` | The §21 operation id (`op-…` from the idempotency key, D146). `GetTask` is `GetOperation` plus the status message; `ListTasks` pages over operations of the agent |
 | `SUBMITTED` / `WORKING` | Operation `pending` / `running` |
-| `INPUT_REQUIRED` | Operation `awaiting_input` (a question to the person, rendered as a card) or `awaiting_approval` (an approval promise; the status message's `data` part carries `{ approval_id, revision }`). Loams Bot relays the question to the person and answers only one the agent marked `answerable_by_orchestrator`; it never answers or decides an approval (D468, §8) |
+| `INPUT_REQUIRED` | Operation `awaiting_input` (a question to the person, rendered as a card) or `awaiting_approval` (an approval promise; the status message's `data` part carries `{ approval_id, revision }`). Loams Bot relays the question to the person and answers only one the agent marked `answerable_by_orchestrator`; it never answers or decides an approval (D-SF-9, §8) |
 | `AUTH_REQUIRED` | The agent's app account is not linked or its token was revoked; the status message carries a link to the console's "connect app" page. This is an owner/admin action, not the chat user's |
 | `COMPLETED` | Operation `succeeded`; `artifacts` hold results (an issue key and URL, a PR, a summary), each with a `kind` that picks a card renderer |
 | `FAILED`, `REJECTED`, `CANCELED` | `failed` (with the stable `reason`), `rejected` (policy or an approval denied; terminal), `canceled` |
@@ -235,7 +235,7 @@ Verified 2026-10-02 unless marked; §22 §4 has the earlier matrix and the reaso
 | Resubscribe | A client that reconnects calls `Watch` with its cursor; Loams Bot re-subscribes to any task whose stream dropped (`SubscribeToTask`) |
 | Idempotency | `messageId` is deterministic (`op id ‖ step`) so a replayed durable step resends the same message, and the agent deduplicates on it |
 
-### 5.4 Agent cards (D466)
+### 5.4 Agent cards (D-SF-7)
 
 Each agent serves one card, signed by the instance key and carrying the instance JWKS key id. Example, the plane agent (abridged; `risk` is a Loams extension, URI `https://loams.dev/a2a/ext/risk/v1`):
 
@@ -282,7 +282,7 @@ The **extended card** (after authentication) lists the instance's project ids an
 | `glitchtip` | 2 | `issues.search`, `issues.get`, `events.get`, `releases.list` (read); `issues.resolve`, `issues.ignore` (write) | GlitchTip's Sentry-compatible REST |
 | `analytics` | 2 | `metrics.query`, `funnel.get`, `anomaly.check` (read) | OpenPanel's read API; no write skills |
 
-### 5.6 MCP against A2A (D471)
+### 5.6 MCP against A2A (D-SF-12)
 
 | | MCP (§30, M1.6) | A2A |
 |---|---|---|
@@ -292,7 +292,7 @@ The **extended card** (after authentication) lists the instance's project ids an
 | In Loams | Data tools on Loams (`search`, `sql`, `memory_write`, …), the bootstrap stdio server, and each platform agent's *own* tools | Loams Bot to platform agents; external A2A clients to Loams Bot |
 | Rule | **Loams Bot never calls a platform tool.** A platform agent may use MCP or REST inside itself. Loams Bot's own model may use read-only Loams MCP tools (`search`, `sql`) to ground answers. No MCP tool writes to an app. §30 §12's rule that destructive tools are never MCP tools stands | Loams Bot talks A2A to platform agents only; external A2A clients (only with `--bot-a2a`) talk to Loams Bot; no write skill runs without the policy gate (§8) |
 
-## 6. Identity, tokens and credentials (D469)
+## 6. Identity, tokens and credentials (D-SF-10)
 
 ### 6.1 Principals
 
@@ -312,7 +312,7 @@ The **extended card** (after authentication) lists the instance's project ids an
 
 Agent cards declare `oauth2` with the gateway as authorization server (§5.4). A2A's mutual-TLS scheme is available for in-cluster hops (Knative with the mesh's mTLS, §38), but the JWT is the contract, because the user chain must travel with the call.
 
-## 7. Where the code lives (D475, D476)
+## 7. Where the code lives (D-SF-16, D-SF-17)
 
 | Piece | Where |
 |---|---|
@@ -328,7 +328,7 @@ Agent cards declare `oauth2` with the gateway as authorization server (§5.4). A
 | The factory package (Helm chart `loams-factory`, catalog patch, manifest) | This repository, `deploy/factory/` |
 | Crate names follow the current `operon-*` convention and the rename PR renames them (D33) | — |
 
-## 8. Approvals and human-in-the-loop (D468)
+## 8. Approvals and human-in-the-loop (D-SF-9)
 
 1. **Risk is declared by the agent, enforced by Loams.** Each skill carries `read`, `write` or `destructive` in its card tags. The org's **factory policy** (a Live document, versioned, audited) maps `(agent, skill, environment)` to `allow`, `approve` or `deny`. Defaults: `read` allow; `write` allow in non-protected environments, approve in protected ones; `destructive` approve; `prs.merge` approve **in every environment**; deploy approve.
 2. **The agent cannot skip the gate.** `approve` makes the agent's durable function wait on the approval promise (§21 §6.5); only a settled promise releases it. The *server-side* check is in the credential broker: a destructive call carries the approval id and the broker verifies it is settled and matches the call's hash. A prompt-injected agent that "decides" not to wait still cannot get the credential.
@@ -336,7 +336,7 @@ Agent cards declare `oauth2` with the gateway as authorization server (§5.4). A
 4. **Questions are not approvals.** `INPUT_REQUIRED` for a clarification is answered in chat; Loams Bot may answer a question itself only if the agent marked it `answerable_by_orchestrator` (for example "which project?" when the thread names one).
 5. **Prompt-injection posture.** Text from apps (issue bodies, chat messages, error messages, PR descriptions) is untrusted data. Agents receive it in `data` parts tagged `untrusted`, the harness renders it in a quoted block, and no tool call is chosen *only* on it without the policy gate. Red-team fixtures are in SF2 Task 9 and SF4 Task 9.
 
-## 9. Tracing and observability (D470)
+## 9. Tracing and observability (D-SF-11)
 
 | Layer | What is emitted | Where it goes |
 |---|---|---|
@@ -360,7 +360,7 @@ A third exporter sends the same stream to Loams's own OTLP ingest (D73, Q43) so 
 
 Default: prompts and completions are captured **in Langfuse only**, in a project per environment, with **the collector as the only masking boundary** (§9.1: it drops values matching the secret canary's patterns and the `untrusted` data parts' bodies over 2 KB, and fails closed; Langfuse's own server-side masking is an `ee/` feature we do not use); **OpenObserve never receives content**. Production environments may turn content capture off per org. Either way the console's run view shows the step's summary from `factory_events`, which holds no model content.
 
-## 10. The Loams Software Factory loop (D472)
+## 10. The Loams Software Factory loop (D-SF-13)
 
 ### 10.1 Stages
 
@@ -380,12 +380,12 @@ Default: prompts and completions are captured **in Langfuse only**, in a project
 | 2 | **Triage**: open `#factory-triage > run-<id>` and post the evidence (counts, first and last seen, release, suspected commit, the OpenPanel metric); wait for a decision: `fix`, `ignore`, `escalate`, from a person's reply or reaction, or auto-`fix` by policy for severities and projects the org lists | `zulip`, `glitchtip`, `analytics` | A human reply by default (policy can auto-fix low-severity) | Thread URL, decision |
 | 3 | **Plan**: create the Plane issue (title, evidence, links, label `factory`, run id), add to the active cycle if policy says | `plane` | None (write, non-protected) | Issue key and URL |
 | 4 | **Fix**: `forgejo.propose_patch` (sandbox coding session on a workspace branch, §15, §36), `branches.create` `factory/<run>`, `prs.open` linking the issue; wait for CI (a promise settled by Forgejo's webhook); on CI failure feed the log tail back to the coder, up to `max_attempts` (default 3) | `forgejo` (+ coding sandbox) | None until merge | Branch, PR, CI status, attempt count |
-| 5 | **Review**: post the PR link and a summary in the Zulip thread; wait for human review in Forgejo and a merge **approval** (D435) | `forgejo`, `zulip` | **Approval required** (D468) | Approval id, reviewer |
+| 5 | **Review**: post the PR link and a summary in the Zulip thread; wait for human review in Forgejo and a merge **approval** (D435) | `forgejo`, `zulip` | **Approval required** (D-SF-9) | Approval id, reviewer |
 | 6 | **Deploy**: merge, then the org's deploy mechanism. For Loams' own GitOps layout (§38) merging to the environment branch makes Argo CD sync; the run waits on the rollout event (a CloudEvent from Argo's notifications). Other mechanisms are a webhook plus a wait on a callback (Q473) | `forgejo`; deploy by the org's GitOps | **Approval required for every deploy by default**, ordered by mechanism: with the §38 GitOps layout the merge to the environment branch *is* the deploy, so the merge approval and the deploy approval (covering the environment and the resulting commit) both settle before the merge; with a separate deploy step the order is merge approval, merge, then a deploy approval bound to the exact merge commit and the target, then the deploy; a policy may set `deploy.auto` for listed services in unprotected environments only (never protected ones), and the first deploy of any new service always needs one | Deploy ref, rollout state |
 | 7 | **Observe**: for the observation window (default 30 min, configurable), check recurrence of the fingerprint in GlitchTip, the OpenPanel metric against its baseline, Langfuse evaluation scores for agent-facing changes, OpenObserve error rate and latency for the touched service. Verdict: `resolved`, `regressed`, `inconclusive` | `glitchtip`, `analytics`, `loams-factory` (Langfuse and OpenObserve through their APIs) | None | Verdict, evidence links |
 | 8 | **Close**: `resolved` closes the Plane issue and posts a summary; `regressed` opens a **revert PR** (needs the same merge approval) and a new signal linked to the run (`generation + 1`); `inconclusive` extends the window once, then asks a person | `plane`, `zulip`, `forgejo` | Revert needs approval | Final record |
 
-### 10.2 As a durable workflow (D472)
+### 10.2 As a durable workflow (D-SF-13)
 
 `factory.run` is a Resonate function on §21 (Rust SDK in-process, the embedded server). Its shape, in pseudocode that SF4 turns into tests:
 
@@ -425,7 +425,7 @@ fn factory_run(ctx, signal):
 
 > **Cross-reference, 2026-10-02 ([§42](42-cloudflare-2026-betas.md) D574).** A factory run's coding workspace (stage 4, `forgejo.propose_patch`) is a pause and resume unit behind a `WorkspaceSnapshot` seam: a branch plus a volume snapshot on Knative; on Cloudflare Containers, filesystem snapshots (`snapshotContainer`, beta); that Cloudflare provider is private. Server-side web reach for the agents (Q507) is answered in §42 §4.
 
-## 11. Safety: budgets, kill switch, loops, audit (D473)
+## 11. Safety: budgets, kill switch, loops, audit (D-SF-14)
 
 | Rail | Definition | Enforced by |
 |---|---|---|
@@ -437,7 +437,7 @@ fn factory_run(ctx, signal):
 | **Audit** | Every agent action, every approval, every policy change and every kill is an audit event emitted as OTel logs to a Loams stream (D100, open-core table), with the actor chain; the open repository ships the query API and CLI, the hosted audit UI is commercial (D220) | Engine |
 | **Cost visibility** | The run record sums spend per stage, so a person sees what a fix cost | `factory_runs` |
 
-## 12. The factory run record (D474)
+## 12. The factory run record (D-SF-15)
 
 **Live table `factory_runs`** (one row per run, updated by the workflow; subscribed by the console and phones through the Live sync API, §20 §7): `id`, `org`, `env`, `generation`, `parent_run`, `signal { source, fingerprint, title, link }`, `state` (`open`, `waiting`, `paused`, `succeeded`, `failed`, `killed`), `stage`, `stage_state`, `links { zulip_thread, plane_issue, forgejo_pr, deploy_ref, langfuse_trace_ids[], openobserve_query }`, `approvals[]`, `budget { limit, spent }`, `verdict`, `started_at`, `updated_at`.
 
@@ -445,7 +445,7 @@ fn factory_run(ctx, signal):
 
 **Console pages** (`@loams/plugin-factory`): **Runs** (filter by state, project, severity; a lifetime-cost column); **Run detail** (the stage graph, each stage opening its artifacts: the thread, the issue, the PR, the CI log, the deploy, and "open trace in Langfuse" and "open in OpenObserve", which use the embed panes); **Approvals** (the org's queue); **Agents** (cards, health, last task, principal state, suspend); **Policy and budgets** (versioned, approval-gated in protected environments); **Kill switch**. Mobile has the run list and timeline, the approval screen and a kill button.
 
-## 13. Loams Bot in the apps (D478)
+## 13. Loams Bot in the apps (D-SF-19)
 
 **Desktop (a zeron fork).** zeron's engine drives coding agents through a **`Harness` trait** (Claude Code as a subprocess over stream-json, Codex over JSON-RPC, a mock; `zeron-harness`), and its UI (`zeron-ui`: sidebar, conversation, composer, terminal, diff pane) renders any harness's `AgentEvent` stream. Loams Bot is **a new harness, `loams-harness-bot`**, whose "agent" is a server-side Loams Bot thread: a `RunRequest` becomes `BotService.Send`, `Watch` events become `AgentEvent`s (text deltas; a subagent card per A2A task as a tool call with its state; a user question; an approval request), steering and interrupt become `Cancel` and follow-up sends, and the session appears in zeron's attention-sorted sidebar beside local coding sessions. The thread is authoritative on the server (a durable execution, SF3); zeron's session doc mirrors it for the UI, so a thread opened on a second device simply `Watch`es again. **zeron's own sync backend (Cloudflare Durable Objects, per its architecture notes) is not used**: the desktop runs in zeron's Local profile and the Loams instance is the sync (Q468 covers whether the fork keeps zeron's Claude Code and Codex harnesses and how their sessions sync). Artifact cards, `@agent` mentions and the slash commands are GPUI views in `loams-ui-bot`; `/kill` asks for a step-up and confirms; `/approvals` opens the native approvals view; none decides anything.
 
@@ -457,7 +457,7 @@ What is taken from zeron, and what is not (verified 2026-10-02 from its `ARCHITE
 
 **Model and cost.** Loams Bot's default model is DeepSeek, through Loams's AI gateway, which meters tokens per principal and exports GenAI spans. A different model is a gateway route (Q468). **Managed model costs and managed agents are the commercial part** (§14); self-hosters bring their own key.
 
-## 14. Open source and commercial (D475, D479)
+## 14. Open source and commercial (D-SF-16, D-SF-20)
 
 | Piece | Open (this repository, Apache-2.0) | Commercial (`loam-platform`, private) |
 |---|---|---|
@@ -512,16 +512,16 @@ Detailed in plan SF5; the decisions in brief:
 
 | Earlier text | This document | Resolution |
 |---|---|---|
-| §37 D429–D432 (a Tauri shell with a CSP and `net_fetch`) | The desktop is native, a zeron fork, and loads no web content in its own UI | §37 is being amended for a native desktop (D440-series pending); this document needs from it only: Connect clients in Rust, OS deep-link registration, the keychain sign-in, and a place to register GPUI views and a `Harness`. The Tauri-specific rows here are removed |
+| §37 D429–D432 (a Tauri shell with a CSP and `net_fetch`) | The desktop is native, a zeron fork, and loads no web content in its own UI | §37 is being amended for a native desktop (D480–D499); this document needs from it only: Connect clients in Rust, OS deep-link registration, the keychain sign-in, and a place to register GPUI views and a `Harness`. The Tauri-specific rows here are removed |
 | §37 D420: every app call is Connect-RPC | A2A is HTTP JSON | A2A is server-side only (Loams Bot to agents). The apps use Connect (`loams.bot.v1`). Added to the list of named exceptions: none needed |
 | §22 D-SC-3 (Keycloak) | Authentik | §38 D447 already replaced it; this document follows §38 |
 | §22 §8.5: agent actions go through `commons-control` sagas, never with app admin tokens | Agents hold app identities | The credential broker is `commons-control`'s successor for agent calls; app identities are provisioned by the same sagas; agents never hold secrets (§6.2) |
-| §30 D289: destructive tools never MCP | The factory merges and deploys | Those are A2A skills behind approvals, not MCP tools (D471) |
-| §22 §2.2: the suite does not modify apps | Embedding and header rewriting | Header rewriting is edge configuration, not modification (D462) |
+| §30 D289: destructive tools never MCP | The factory merges and deploys | Those are A2A skills behind approvals, not MCP tools (D-SF-12) |
+| §22 §2.2: the suite does not modify apps | Embedding and header rewriting | Header rewriting is edge configuration, not modification (D-SF-3) |
 | §19 §5.3 defines `env` as a token's audience and no `aud` claim | Agent tokens carry `aud` (the agent's interface URL) as well as `env` | SF2 Task 4 amends §19 §5.3: access tokens gain an optional `aud` claim, required for agent-to-agent tokens; `env` stays the environment audience |
 | §19 §5.5: keys cannot be issued to agents | Agents use app tokens | The agent never holds them; the broker does (§6.2) |
 | §22 `PostHog` as the analytics app | The analytics agent reads OpenPanel | §22 §13b already dropped PostHog; D-SC-15 stands |
 
 ## 19. Open questions
 
-The questions are Q460–Q479 in `docs/design/_pending/39-log.md`.
+The questions are Q460–Q479 in the canonical decision log.

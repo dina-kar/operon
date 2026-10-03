@@ -1,6 +1,6 @@
 # Loams — Open-Core Boundary
 
-Status: **Revised by the owner, 2026-10-02** ([D540 to D559](design/_pending/41-log.md), design [§41](design/41-multitenant-byoc-control-plane.md)). Earlier rulings: approved 2026-09-29 (D220, D221), reconfirmed 2026-10-02 (D403, D440). The engine, all gateways and the operator stay Apache-2.0, and reliability and performance features are never withheld from open source.
+Status: **Revised by the owner, 2026-10-02** ([D540 to D559](design/13-decision-log.md), design [§41](design/41-multitenant-byoc-control-plane.md)). Earlier rulings: approved 2026-09-29 (D220, D221), reconfirmed 2026-10-02 (D403, D440). The engine, all gateways and the operator stay Apache-2.0, and reliability and performance features are never withheld from open source.
 
 ## The rule
 

@@ -2,9 +2,9 @@
 
 Status: **Proposed** · 2026-10-02 (revised the same day). Sources: the owner's note of 2026-10-02, "you can use **Headscale** if you want, for added security and unified handling", and the owner's ruling later that day, "for now make it **BYOK Tailscale**, make it configurable so I can add [Headscale] in the future." This document decides how: the private network is a **pluggable tailnet provider**, `tailscale` (the owner's own hosted Tailscale account, bring-your-own key; the default now) or `headscale` (self-hosted, later), and switching is a configuration change only.
 
-It adds decisions **D580–D599** and open questions **Q580–Q599** (Q580–Q597 are used). They are **proposals** until the owner rules on them, except D580, which records the owner's two rulings. (The first draft of this document was Headscale-only; D582 and D585 to D599 were rewritten, not renumbered, for the provider seam.) Plan: [NET1](../plans/2026-10-02-net1-private-networking.md). The staged log is [`_pending/43-log.md`](_pending/43-log.md).
+It adds decisions **D580–D599** and open questions **Q580–Q599** (Q580–Q597 are used). They are **proposals** until the owner rules on them, except D580, which records the owner's two rulings. (The first draft of this document was Headscale-only; D582 and D585 to D599 were rewritten, not renumbered, for the provider seam.) Plan: [NET1](../plans/2026-10-02-net1-private-networking.md). The canonical log is the [decision log](13-decision-log.md).
 
-**Amends** §41 §7 (an optional connectivity mode for BYOC; staged in the pending log until §41 merges), [§30](30-loams-cli.md) §15 (reaching a self-hosted instance), [§37](37-desktop-and-mobile-apps.md) §7.2.4 (private instances and pairing) and [§10](10-operations.md) (private networking). **Builds on** [§38](38-knative-authentik-gitops.md) (Authentik is the identity provider) and [§19](19-console-identity-and-agents.md). The hosted service's side (the Tailscale account's policy workflow and runbook, and the Headscale alternative at `headscale.loams.dev` with its own runbook) lives in the private `loam-platform` repository under `deploy/tailnet/`; this repository depends on none of it.
+**Amends** §41 §7 (the optional connectivity mode for BYOC in §41 §7.4), [§30](30-loams-cli.md) §15 (reaching a self-hosted instance), [§37](37-desktop-and-mobile-apps.md) §7.2.4 (private instances and pairing) and [§10](10-operations.md) (private networking). **Builds on** [§38](38-knative-authentik-gitops.md) (Authentik is the identity provider) and [§19](19-console-identity-and-agents.md). The hosted service's side (the Tailscale account's policy workflow and runbook, and the Headscale alternative at `headscale.loams.dev` with its own runbook) lives in the private `loam-platform` repository under `deploy/tailnet/`; this repository depends on none of it.
 
 Markers: **(verify)** means not checked against a primary source; the task that depends on it checks it first. Every version, licence, plan-limit and status claim with a date was read on 2026-10-02 from the source named in §15. Nothing here was run against a live Tailscale account (none exists yet); what was run is stated in §3.1.
 
@@ -373,9 +373,9 @@ OSS never depends on the hosted instance, and nothing in a Loams binary names a 
 
 ## 14. Amendments to other sections
 
-These blocks are the cross-references. §30, §37 and §10 are edited in this change; §41 is not yet on `dev`, so its block is staged in [`_pending/43-log.md`](_pending/43-log.md) and pasted when §41 merges.
+These cross-references are integrated into §30, §37, §10 and §41. The decisions are in the [decision log](13-decision-log.md).
 
-- **§41 §7.1 (new §7.4, staged):** BYOC connectivity modes: the outbound agent (D543) and the optional tailnet mode (D587; the provider knob of §6.4); per-tenant isolation (D586).
+- **§41 §7.4:** BYOC connectivity modes: the outbound agent (D543) and the optional tailnet mode (D587; the provider knob of §6.4); per-tenant isolation (D586).
 - **§30 §15:** a self-hosted instance on a tailnet (Tailscale or Headscale) is reached through its DNS or MagicDNS name; `loams login --endpoint https://...` needs no network option; the CLI never manages the tailnet (D592, D593).
 - **§37 §7.2.4:** private instances use the user's tailnet client; pairing carries an optional `net` hint (D594); Q425 (a relay) is answered in the negative for tailnet users and stays open for others.
 - **§10:** private networking for self-hosted clusters points here; the internal routes of §01 "must be on a private network" may be satisfied with the template.
