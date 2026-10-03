@@ -27,6 +27,11 @@ clap = { version = "4", features = ["derive"] }
 # server, Task 12); loams-live-proto's `client` feature adds `client`.
 connectrpc = "0.9.1"
 connectrpc-build = "0.9"
+# `grpc.health.v1` and `grpc.reflection.v1` on the main port (design §44 §4,
+# API1 Task 1). Both default their `client` transport off: the server does not
+# need it.
+connectrpc-health = { version = "0.9.0", default-features = false }
+connectrpc-reflection = { version = "0.9.0", default-features = false }
 # CRC-16 of Loams Live document ids (R1 plan Task 8).
 # The Arm A WAL data path (§28 §7.2, D263): thread-per-core, io_uring.
 compio = { version = "0.19.2", default-features = false, features = ["runtime", "io-uring", "polling", "net", "fs", "io", "time"] }
@@ -169,6 +174,9 @@ loams-hot = { path = "crates/loams-hot", version = "0.0.1" }
 loams-link = { path = "crates/loams-link", version = "0.0.1" }
 loams-live = { path = "crates/loams-live", version = "0.0.1" }
 loams-live-proto = { path = "crates/loams-live-proto", version = "0.0.1" }
+# The public `loams.*.v1` packages of the unified Connect API and their
+# descriptor set for reflection (design §44, API1 Task 1).
+loams-proto = { path = "crates/loams-proto", version = "0.0.1" }
 loams-log = { path = "crates/loams-log", version = "0.0.1" }
 loams-meta = { path = "crates/loams-meta", version = "0.0.1" }
 loams-meta-conformance = { path = "crates/loams-meta-conformance", version = "0.0.1" }
