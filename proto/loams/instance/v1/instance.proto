@@ -41,7 +41,8 @@ message GetInstanceResponse {
   string server_version = 4;
   // The proto packages this instance serves, for example
   // "loams.approvals.v1". The console provides an `rpc.<service>` only for a
-  // listed package (AP1a Ruling 6).
+  // listed package (AP1a Ruling 6). The same list, with what is *not*
+  // served, is `services`.
   repeated string api_versions = 5;
   // Feature flags, for example {"billing": false, "passkeys": true}.
   map<string, bool> features = 6;
@@ -64,6 +65,32 @@ message GetInstanceResponse {
   // Set during a signing-key rotation: the new key's thumbprint, signed by
   // the old key (§37 §7.2.3).
   string key_rotation = 14;
+  // The public packages of the API catalogue (design §44 §4, D600) that
+  // exist, and whether this binary serves each. A package whose engine is
+  // not in the build variant (§30 §9) is listed with `available = false`, and
+  // its RPCs answer `unimplemented` with reason `feature_not_in_variant`, so
+  // an SDK feature-detects from this list instead of by calling and reading
+  // the error. A package whose services have not been defined yet has no
+  // entry, so this list never advertises a contract that does not exist. It
+  // is the long form of `api_versions`, which lists only what is served.
+  repeated ServiceStatus services = 15;
+}
+
+// One package of the API catalogue and what this binary does with it.
+message ServiceStatus {
+  // The proto package, for example "loams.collection.v1".
+  string package = 1;
+  // The package's API version, for example "v1".
+  string version = 2;
+  // Whether this binary serves the package. False means every one of its RPCs
+  // answers `unimplemented` with reason `feature_not_in_variant`.
+  bool available = 3;
+  // The services in the package, fully qualified, for example
+  // "loams.collection.v1.CollectionService".
+  repeated string services = 4;
+  // True for a package whose wire contract may still change
+  // (`loams.options.v1.ModuleOptions.unstable`, §44 §10.3).
+  bool unstable = 5;
 }
 
 enum Edition {

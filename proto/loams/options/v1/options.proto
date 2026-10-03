@@ -1,0 +1,65 @@
+// The annotations that drive the SDK facade (design §44 §7.3, D606; API1
+// Task 1).
+//
+// Every public `loams.<service>.v1` service names the SDK module it belongs
+// to (`loams.collections`, `loams.vector`, `loams.admin.org`, ...), and a
+// method may name the facade call or calls it backs.
+// `protoc-gen-loams-facade` (SDK1 Task 3) reads these options out of the
+// descriptor set and renders one facade per language from the templates in
+// `sdks/templates/<lang>/`, so the thirteen SDKs cannot drift. The server
+// ignores them at runtime: an option is metadata for the generator, never
+// behaviour.
+//
+// This package is deliberately not in any SDK's wire surface: it declares no
+// message of its own that a client sends, and `buf generate` for a
+// language's SDK does not list it (see `buf.gen.apps.yaml`).
+syntax = "proto3";
+
+package loams.options.v1;
+
+import "google/protobuf/descriptor.proto";
+
+// The SDK module a service belongs to, set on the service.
+message ModuleOptions {
+  // The module's name in `snake_case`, for example "vector" or "admin.org".
+  string name = 1;
+  // One line for the module's reference docs.
+  string summary = 2;
+  // True for a package whose wire contract may still change: `buf breaking`
+  // skips it and SDKs mark the module experimental (§44 §10.3). The first
+  // such package is `loams.live.v1` (R1), which carries this option when its
+  // server-side service lands in R1 Task 12 — annotating it earlier would
+  // change the descriptor the committed `sdks/live-typescript` output was
+  // generated from.
+  bool unstable = 3;
+}
+
+// One facade call backed by a method, set on the method.
+//
+// `QueryService/Search` backs two calls (`loams.vector.search` and
+// `loams.search.query`) of one RPC, so this option is repeated: the facade
+// reads each entry as a separate method on a module (§44 §7.3).
+message FacadeOptions {
+  // The module the call is exposed in; empty means the service's module.
+  string module = 1;
+  // The call's name in `snake_case`; empty means the method name.
+  string name = 2;
+  // Overrides the retry class the facade derives from `idempotency_level`
+  // and the presence of an `idempotency_key` (D610): true lets the SDK
+  // retry the call on its own.
+  bool retry_safe = 3;
+  // AIP-158 pagination as "<items field>:<next page token field>", for
+  // example "collections:next_page_token"; the facade adds a `list_all`
+  // iterator for it.
+  string pagination = 4;
+}
+
+extend google.protobuf.ServiceOptions {
+  // Extension numbers 50001-50099 are this package's; the 50000-99999 range
+  // is the one protobuf reserves for an organisation's own options.
+  ModuleOptions module = 50001;
+}
+
+extend google.protobuf.MethodOptions {
+  repeated FacadeOptions facade = 50002;
+}
