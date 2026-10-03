@@ -1095,6 +1095,7 @@ jobs:
       - durable-tidb
       - live-protos
       - app-protos
+      - sdk-typescript
       - deny
       - web
       - dapr-edge
