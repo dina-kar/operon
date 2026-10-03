@@ -88,3 +88,12 @@ it into the console build. No cordis source is copied. Its MIT notice:
 The console's plugin model follows the patterns of DeepSeek Harness's
 client (https://github.com/dina-kar/deepseek-harness-desktop, MIT,
 Copyright (c) 2026 DeepSeek); no file of it is copied.
+
+Obscura (https://github.com/h4ckf0r0day/obscura), Apache License 2.0, Copyright
+the Obscura contributors. The docked sidebar browser
+(crates/loams-sidebar-browser) runs Obscura as a separate process and drives it
+over the Chrome DevTools Protocol; it is not vendored, forked or linked, and no
+Obscura source is copied. Loams therefore does not redistribute Obscura's
+Apache-2.0 notice with this file. The release asset an operator installs is
+Obscura's own, under its own licence, and the pinned version is recorded in
+crates/loams-sidebar-browser/src/engine.rs.

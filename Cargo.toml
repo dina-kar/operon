@@ -149,6 +149,13 @@ time-fmt = "0.3.8"
 toml = "0.8"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"] }
+# The WebSocket client for loams-sidebar-browser's CDP transport. Obscura
+# exposes its DevTools endpoint as `ws://127.0.0.1:<port>/devtools/browser`
+# and nothing else, and `obscura-cdp` is not published to crates.io (D620),
+# so the engine is reached over the wire rather than as a library. `connect`
+# and `handshake` only: the endpoint is loopback plaintext by design
+# (`--host` defaults to 127.0.0.1), so no TLS stack is pulled in.
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
 tokio-util = { version = "0.7", default-features = false }
 tonic = "0.14"
 tonic-prost = "0.14"

@@ -40,6 +40,15 @@ resources. Consequences, stated plainly:
 
 ## Decision 1 — Does the sidebar browser ship? (Q461, design §18.5, tier 3)
 
+> **SUPERSEDED on 2026-10-03 by [D620](../design/13-decision-log.md).** The owner
+> overrode this conclusion: the sidebar browser **ships**, on a different engine.
+> The conclusion below is left exactly as the spike wrote it, because its
+> evidence is still true — an ephemeral store, no WebAuthn on the GTK and WPE
+> WebKit ports, and no Windows implementation really are the properties of the
+> per-platform webview. What changed is the premise: **D620 embeds no webview
+> at all**, so none of the three blockers is a property of the feature any more.
+> What is not superseded is E5, E6, E7, E8 and Decision 2, 3 and 4.
+
 **Conclusion: no, on any operating system. The desktop ships tiers 1 and 2 only — native GPUI
 panels and `AppOpener` into the system browser.** Plan ruling E1.
 
@@ -119,11 +128,25 @@ This **respects** the plan's Global Constraints rather than working around them:
 is structurally incapable of holding a Loams token or a session, so "embeds never hold a Loams
 token" is easier to keep here, not harder.
 
+> **What D620 changed about that last paragraph.** The reasoning above is sound
+> and it is also the thing that made E1 reachable: the constraint was easy
+> *because* the store retained nothing. D620 replaces the store with a
+> persistent one, so the constraint stops being free and has to be enforced:
+> Loams holds the credential, runs the OIDC ceremony itself, and hands the
+> engine only host-only scoped session cookies, with `crates/loams-sidebar-browser/src/boundary.rs`
+> auditing both the cookie jar and the whole profile directory for a Loams
+> token. E1's line "`SidebarBrowser` keeps its `sidebar-browser` cargo feature
+> but off by default" is superseded: under D620 the feature is **on** by
+> default, and the persistent per-(environment, app) store ships with it, so
+> E2's parking of that requirement on AP1n Task 7 / Q482 / D491 is superseded
+> too. D491's upstream-first policy is unaffected.
+
 ### What SF1 inherits that is still open
 
 The macOS download refusal is missing upstream, and `gpui-wry` compatibility with zeron's GPUI fork
 was not tested (it needs a compile, which this spike deliberately avoided). Both belong to AP1n
-Task 7, not to SF1.
+Task 7, not to SF1. Under D620 the first of these is moot for the sidebar — there is no WKWebView to
+miss the refusal — and the second is moot too, because `gpui-wry` is not on the sidebar's path.
 
 ---
 
@@ -371,6 +394,8 @@ Nothing here is self-assigned. These findings want rows the owner may want to nu
 
 1. **E1** — the sidebar browser does not ship in SF1 on any OS; the desktop is tiers 1 and 2.
    Related to D484 and D491; a decision ID would let SF3/SF4 cite it instead of re-deriving it.
+   **Answered and superseded: [D620](../design/13-decision-log.md) (2026-10-03),
+   which also closes Q482.** E1's evidence stands; its conclusion does not.
 2. **E7** — the app embed frame is a distinct frame class from the console host's third-party
    plugin frame, with its own allowlist. This *amends* `web/packages/console-host/src/sandbox.ts`'s
    stated policy boundary, which is AP1a's, so it likely wants an ID and a note in design §37 §5.6.
