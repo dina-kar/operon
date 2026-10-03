@@ -1,0 +1,11 @@
+{
+  "extends": "../../../../web/tsconfig.base.json",
+  "compilerOptions": {
+    "noUnusedLocals": false,
+    // The test helpers start a real HTTP server to pin the wire behaviour;
+    // `src/` stays free of Node built-ins so the default entry point is
+    // browser-safe, which the conformance suite checks statically.
+    "types": ["node"]
+  },
+  "include": ["src", "test"]
+}

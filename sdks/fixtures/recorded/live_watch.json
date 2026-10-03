@@ -1,0 +1,23 @@
+{
+  "name": "live_watch",
+  "about": "The unavailable-service path on a server stream: the refusal arrives inside the Connect streaming envelope, not as an HTTP status. An SDK that reports it has to read the envelope.",
+  "request": {
+    "method": "POST",
+    "path": "/loams.live.v1.LiveService/Watch",
+    "headers": {
+      "content-type": "application/connect+proto"
+    },
+    "bodyBase64": "AAAAAAA="
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/connect+proto"
+    },
+    "bodyBase64": "AgAAAOV7ImVycm9yIjp7ImNvZGUiOiJ1bmltcGxlbWVudGVkIiwibWVzc2FnZSI6ImxvYW1zLmxpdmUudjEuTGl2ZVNlcnZpY2UvV2F0Y2ggaXMgbm90IGluIHRoZSBzdGFuZGFyZCB2YXJpYW50IiwiZGV0YWlscyI6W3sidHlwZSI6ImxvYW1zLmVycm9ycy52MS5FcnJvckluZm8iLCJ2YWx1ZSI6IkNoWm1aV0YwZFhKbFgyNXZkRjlwYmw5MllYSnBZVzUwRWhNS0IzWmhjbWxoYm5RU0NITjBZVzVrWVhKayJ9XX19"
+  },
+  "expect": {
+    "status": 200,
+    "reason": "feature_not_in_variant"
+  }
+}

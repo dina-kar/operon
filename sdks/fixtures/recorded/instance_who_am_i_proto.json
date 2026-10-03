@@ -1,0 +1,32 @@
+{
+  "name": "instance_who_am_i_proto",
+  "about": "A structured-reason error: `unimplemented` carrying an ErrorInfo whose reason is `not_implemented`, because this build has no authentication yet. An SDK branches on the reason, never on the message. (The binary encoding, which is what an SDK sends by default.)",
+  "request": {
+    "method": "POST",
+    "path": "/loams.instance.v1.InstanceService/WhoAmI",
+    "headers": {
+      "content-type": "application/proto"
+    },
+    "bodyBase64": ""
+  },
+  "response": {
+    "status": 501,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "code": "unimplemented",
+      "message": "loams.instance.v1.InstanceService/WhoAmI is not implemented by this build yet",
+      "details": [
+        {
+          "type": "loams.errors.v1.ErrorInfo",
+          "value": "Cg9ub3RfaW1wbGVtZW50ZWQ"
+        }
+      ]
+    }
+  },
+  "expect": {
+    "status": 501,
+    "reason": "not_implemented"
+  }
+}

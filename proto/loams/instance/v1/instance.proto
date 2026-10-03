@@ -17,15 +17,23 @@ syntax = "proto3";
 package loams.instance.v1;
 
 import "google/protobuf/timestamp.proto";
+import "loams/options/v1/options.proto";
 
 service InstanceService {
+  option (loams.options.v1.module) = {
+    name: "instance"
+    summary: "What this instance is, and who the caller is on it."
+  };
+
   // What this instance is and how to sign in to it. No auth.
   rpc GetInstance(GetInstanceRequest) returns (GetInstanceResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
+    option (loams.options.v1.facade) = { name: "getInstance" };
   }
   // The calling principal, its org, and the environments it can reach.
   rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
+    option (loams.options.v1.facade) = { name: "whoAmI" };
   }
 }
 

@@ -1,0 +1,7 @@
+{
+  "extends": "../../../../web/tsconfig.base.json",
+  "compilerOptions": {
+    "noUnusedLocals": false
+  },
+  "include": ["src"]
+}

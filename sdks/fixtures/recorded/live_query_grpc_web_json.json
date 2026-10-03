@@ -1,0 +1,23 @@
+{
+  "name": "live_query_grpc_web_json",
+  "about": "The unavailable-service path on a unary RPC: `loams.live.v1` is a `full`-variant engine, so every one of its RPCs answers `unimplemented` with reason `feature_not_in_variant` and the variant in `metadata`. (gRPC-Web carrying the proto3 JSON mapping, which a browser SDK can ask for.)",
+  "request": {
+    "method": "POST",
+    "path": "/loams.live.v1.LiveService/Query",
+    "headers": {
+      "content-type": "application/grpc-web+json"
+    },
+    "bodyBase64": "AAAAAAJ7fQ=="
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/grpc-web+json"
+    },
+    "bodyBase64": "gAAAAVJncnBjLXN0YXR1czogMTINCmdycGMtbWVzc2FnZTogbG9hbXMubGl2ZS52MS5MaXZlU2VydmljZS9RdWVyeSBpcyBub3QgaW4gdGhlIHN0YW5kYXJkIHZhcmlhbnQNCmdycGMtc3RhdHVzLWRldGFpbHMtYmluOiBDQXdTUG14dllXMXpMbXhwZG1VdWRqRXVUR2wyWlZObGNuWnBZMlV2VVhWbGNua2dhWE1nYm05MElHbHVJSFJvWlNCemRHRnVaR0Z5WkNCMllYSnBZVzUwR2w0S0xYUjVjR1V1WjI5dloyeGxZWEJwY3k1amIyMHZiRzloYlhNdVpYSnliM0p6TG5ZeExrVnljbTl5U1c1bWJ4SXRDaFptWldGMGRYSmxYMjV2ZEY5cGJsOTJZWEpwWVc1MEVoTUtCM1poY21saGJuUVNDSE4wWVc1a1lYSmsNCg=="
+  },
+  "expect": {
+    "status": 200,
+    "reason": "feature_not_in_variant"
+  }
+}

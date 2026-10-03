@@ -1,0 +1,21 @@
+[package]
+name = "loams-facade-gen"
+description = "protoc-gen-loams-facade: renders one SDK facade per language from the loams.options.v1 annotations on the protos (design §44 §7.3, D606)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+# Not published: it is a build-time tool, run by `buf generate` as a local
+# plugin (SDK1 Task 1) and by the drift check in CI.
+publish = false
+
+[dependencies]
+# No protobuf crate: `prost` discards the fields it does not know, and the two
+# fields this plugin exists to read *are* fields it does not know
+# (`loams.options.v1` at 50001/50002). `src/wire.rs` reads the descriptor
+# instead. `thiserror` is the workspace's error derive.
+thiserror.workspace = true
+
+[lints]
+workspace = true

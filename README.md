@@ -194,7 +194,7 @@ Writes that the pinned version does not hold yet (the plan's *tail*) are readabl
 | Qdrant | REST and gRPC | Existing Qdrant clients and framework integrations | [`crates/loams-qdrant`](crates/loams-qdrant) |
 | Elasticsearch subset | REST (JSON, NDJSON) | Existing Elasticsearch 8 clients, LangChain and LlamaIndex stores | [`crates/loams-es`](crates/loams-es) |
 | Resonate | HTTP | Durable promises and tasks from the Resonate SDKs (TypeScript, Python, Rust, Go, Java) | [`crates/loams-durable`](crates/loams-durable) |
-| Loams Live | Connect / gRPC (`loams.live.v1`) | Reactive documents and live queries (in progress) | [`proto/loams`](proto/loams), [`sdks/live-typescript`](sdks/live-typescript) |
+| Loams Live | Connect / gRPC (`loams.live.v1`) | Reactive documents and live queries (in progress) | [`proto/loams`](proto/loams), [`sdks/typescript`](sdks/typescript) |
 | Console API | REST (OpenAPI) | The web console (in progress, served by a mock for now) | [`api/console`](api/console) |
 
 Each gateway documents where it differs from the original in its crate's module docs.

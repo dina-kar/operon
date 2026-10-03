@@ -12,6 +12,10 @@ export * as errors from './gen/loams/errors/v1/errors_pb.js';
 export * as instance from './gen/loams/instance/v1/instance_pb.js';
 export * as notifications from './gen/loams/notifications/v1/notifications_pb.js';
 export * as operations from './gen/loams/operations/v1/operations_pb.js';
+// loams.options.v1 is not a wire surface: it declares no message a client
+// sends. It is generated because instance.proto's service options reference
+// it, and protoc-gen-es writes that import into the generated descriptor.
+export * as options from './gen/loams/options/v1/options_pb.js';
 
 /** The proto packages this module generates, as `GetInstance.api_versions` names them. */
 export const APP_API_PACKAGES = [

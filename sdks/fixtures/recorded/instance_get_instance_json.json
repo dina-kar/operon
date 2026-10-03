@@ -1,0 +1,54 @@
+{
+  "name": "instance_get_instance_json",
+  "about": "A successful unary call, no auth: what this instance is. This is the case a client makes before anything else, on a cold start. (The proto3 JSON mapping, which is what `curl` sends (design §44 §4).)",
+  "request": {
+    "method": "POST",
+    "path": "/loams.instance.v1.InstanceService/GetInstance",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "instanceId": "01M41B4RP8BR7444NE7D61S0HN",
+      "name": "Loams",
+      "edition": "EDITION_OSS",
+      "serverVersion": "0.0.1",
+      "apiVersions": [
+        "loams.instance.v1"
+      ],
+      "signInMethods": [
+        {
+          "kind": "SIGN_IN_KIND_NONE",
+          "displayName": "No sign-in"
+        }
+      ],
+      "services": [
+        {
+          "package": "loams.instance.v1",
+          "version": "v1",
+          "available": true,
+          "services": [
+            "loams.instance.v1.InstanceService"
+          ]
+        },
+        {
+          "package": "loams.live.v1",
+          "version": "v1",
+          "services": [
+            "loams.live.v1.LiveService"
+          ],
+          "unstable": true
+        }
+      ]
+    }
+  },
+  "expect": {
+    "status": 200
+  }
+}

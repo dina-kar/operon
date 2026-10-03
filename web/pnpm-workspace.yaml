@@ -3,8 +3,15 @@ packages:
   - packages/*
   - plugins/*
   - examples/*
+  # The TypeScript SDK (design §44 §10.2): `sdks/typescript/packages/*`. It is
+  # in this workspace rather than one of its own so that `@loams/client`
+  # resolves `@loams/proto` and `@loams/live` as workspace packages and shares
+  # one lockfile with the console that already consumes them. The SDK's own
+  # generator inputs (buf templates, the facade generator) stay outside the
+  # workspace, next to `proto/`.
+  - ../sdks/typescript/packages/*
 allowBuilds:
   esbuild: true
   # pnpm 11: @bufbuild/buf's postinstall only swaps its JS shim for the
-  # platform binary; the shim works without it (as in sdks/live-typescript).
+  # platform binary; the shim works without it.
   "@bufbuild/buf": false

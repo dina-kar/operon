@@ -1,0 +1,22 @@
+{
+  "name": "instance_get_instance_grpc_web",
+  "about": "A successful unary call, no auth: what this instance is. This is the case a client makes before anything else, on a cold start. (gRPC-Web, the framing a browser sends. One length-prefixed frame: flag 0 and a zero-length message.)",
+  "request": {
+    "method": "POST",
+    "path": "/loams.instance.v1.InstanceService/GetInstance",
+    "headers": {
+      "content-type": "application/grpc-web+proto"
+    },
+    "bodyBase64": "AAAAAAA="
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/grpc-web+proto"
+    },
+    "bodyBase64": "AAAAAL8KGjAxTTQxQjRSUDhCUjc0NDRORTdENjFTMEhOEgVMb2FtcxgBIgUwLjAuMSoRbG9hbXMuaW5zdGFuY2UudjFKDggBIgpObyBzaWduLWluejwKEWxvYW1zLmluc3RhbmNlLnYxEgJ2MRgBIiFsb2Ftcy5pbnN0YW5jZS52MS5JbnN0YW5jZVNlcnZpY2V6MAoNbG9hbXMubGl2ZS52MRICdjEiGWxvYW1zLmxpdmUudjEuTGl2ZVNlcnZpY2UoAYAAAAAQZ3JwYy1zdGF0dXM6IDANCg=="
+  },
+  "expect": {
+    "status": 200
+  }
+}

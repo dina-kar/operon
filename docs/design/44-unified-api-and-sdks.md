@@ -37,7 +37,7 @@ This document turns that into decisions **D600–D619** and open questions **Q60
 | `loams.live.v1` `LiveService` | `proto/loams/live/v1` | Connect |
 | `loams.instance/devices/approvals/operations/notifications/errors.v1` | `proto/loams/*` (AP0) | Connect |
 | Console `/api/v1` OpenAPI (31 paths incl. OAuth and well-known) | `api/console/openapi.json` | REST |
-| SDKs: `@loams/live` | `sdks/live-typescript` | Connect (protobuf-es) |
+| SDKs: `@loams/live` | `sdks/typescript/packages/live` | Connect (protobuf-es) |
 | SDKs planned: `loams-client` (Python), `@loams/client` (TS), both REST (M1.6, #198) | `docs/plans/2026-09-24-m1.6-sdks-mcp.md` | REST |
 | Designed, not yet on `dev`: `loams.jobs.v1` (§26), `loams.flow.v1` (§32), `loams.git.v1` (§36), `loams.collab.v1`/`loams.bot.v1`/`loams.factory.v1` (§39), `loams.systemone.v1` (§40, `SystemOneService`), `loams.console.v1` (`PluginService`, AP1a) | design docs | Connect (planned) |
 
