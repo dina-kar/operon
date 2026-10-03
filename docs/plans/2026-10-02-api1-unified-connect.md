@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists the interfaces it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (names, paths, headers), use them verbatim. The code is not pre-written in this plan; the tests are the specification.
 
-> **Status: Planned** (2026-10-02). **Slot: new track SDK, first plan** (proposed; D600–D611). Branches `api1-t<N>`, stacked; PRs target `dev`. Depends on AP0 (app protos, `loams-apps-mock`), R1 (`loams.live.v1`) and D128's toolchain (connect-rust, buffa). Does not depend on SDK1 except Task 9's docs.
+> **Status: In progress** (2026-10-02): Task 0 done ([route map](../api/route-map.md)). **Slot: new track SDK, first plan** (proposed; D600–D611). Branches `api1-t<N>`, stacked; PRs target `dev`. Depends on AP0 (app protos, `loams-apps-mock`), R1 (`loams.live.v1`) and D128's toolchain (connect-rust, buffa). Does not depend on SDK1 except Task 9's docs.
 
 **Goal:** One Connect/gRPC API in `loams.<service>.v1` on the one port of the `loams` binary (design [§44](../design/44-unified-api-and-sdks.md) §4–§8):
 - the protos and handlers for collections, documents, query, SQL, streams, links, admin and auth, plus the options file the SDK facade generator reads;
@@ -40,7 +40,7 @@
 
 ## Tasks (one PR each)
 
-- [ ] **Task 0: Reconcile with the as-built code.** Produce `docs/api/route-map.md`: every route in `crates/loams/src/api/*.rs` and `api/console/openapi.json` with its target RPC (start from §44 §5), the trait call it makes, and its existing tests. Record connect-rust/buffa versions. *Tests:* `route_map_covers_every_route` (a test parses the router and fails if a route is missing from the map).
+- [x] **Task 0: Reconcile with the as-built code.** Produce `docs/api/route-map.md`: every route in `crates/loams/src/api/*.rs` and `api/console/openapi.json` with its target RPC (start from §44 §5), the trait call it makes, and its existing tests. Record connect-rust/buffa versions. *Tests:* `route_map_covers_every_route` (a test parses the router and fails if a route is missing from the map).
 - [ ] **Task 1: Options, errors and server plumbing.** `loams/options/v1/options.proto` (§44 §7.3), `reason` registry `docs/api/reasons.md` and its test, the one-port router, `grpc.health.v1`, reflection (Q603 default), `InstanceService.GetInstance.services[]`, variant mapping `UNIMPLEMENTED` + `feature_not_in_variant`. *Tests:* `connect_json_unary_via_curl_shape`, `grpc_and_grpc_web_on_same_port`, `health_rpc_ok`, `unavailable_service_reports_reason`, `reasons_are_snake_case_and_unique`.
 - [ ] **Task 2: `loams.collection.v1` Namespace and Collection services.** Rows of §44 §5.1 for namespaces, collections, fields, versions, aliases, hot/warm, scan (with the pin token and header `loams-consistency-token`). *Tests:* each existing REST collections test ported by its name with an `_rpc` suffix; `create_collection_repeat_is_safe`, `scan_returns_pin_token`.
 - [ ] **Task 3: `DocumentService`.** Write, get, count, delete/patch by filter, with `idempotency_key` (dedupe window equals the REST one) and consistency tokens. *Tests:* ported REST tests; `write_idempotency_key_replays_same_token`; `consistency_at_least_waits`.
@@ -51,3 +51,9 @@
 - [ ] **Task 8: Mount compat gRPC on the main port; `loams.internal.v1`.** Flight and Qdrant gRPC by service name; the cluster listener's internal service replaces `/internal/*`. *Tests:* `qdrant_grpc_client_works_on_main_port`, `flight_client_works_on_main_port`, `cluster_tests_use_internal_rpc` (the cluster test suite passes).
 - [ ] **Task 9: Remove REST and OpenAPI.** Console moves to `@loams/proto` clients (AP1a); delete the native REST routes, `api/console/openapi.json` and the `openapi-typescript` step; optional `--legacy-rest` shim router (Q600) with the "moved" JSON, `Deprecation` and `Sunset` headers; migration page `docs/api/migrate.md` generated from the route map; amend M1.6 and AP1a status lines. *Tests:* `no_native_rest_route_remains` (router inventory equals the allowed protocol endpoints), `legacy_shim_points_to_rpc_when_enabled`, `compat_suites_green`, the console's tests.
 - [ ] **Task 10: Contract gates.** `buf breaking` against the release tag for non-`unstable` packages, CI job `api-protos`, curl examples in `docs/api/curl.md` executed by a test (`curl_examples_run`). Update the plans README and the decision log pointers.
+
+## Rulings made during execution
+
+| # | Task | Ruling | Why |
+|---|---|---|---|
+| 0.1–0.4 | 0 | Recorded in [`docs/api/route-map.md`](../api/route-map.md) §"Rulings made in this reconciliation": 27 `/v1` method/path pairs as built (the 25 `api::router` registers plus `hot` and `warm`, which `hot::routes()` registers separately); the console contract is served only by `loams-console-mock`; the metastore Raft transport is mapped to `loams.internal.v1` (moved in Task 8 if openraft's wire types allow, else a follow-up); hot and warm are `SetHot` and `WarmCollection`. | As built on `dev`, 2026-10-02 |

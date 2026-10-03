@@ -141,6 +141,13 @@
 //!   search is exact (`full_scan_threshold` is accepted and ignored), and a
 //!   sparse validation error reads `Wrong input: Sparse vector <name>: …`
 //!   rather than Qdrant's validator text (Ruling 21).
+//! - A query batch holds at most `max_batch_queries` (1,000) requests and a
+//!   list retrieve at most min(`max_point_ids` (10,000), native
+//!   `max_get_keys`) ids; a larger one is 400
+//!   `Wrong input: <what> holds <n> entries, more than the limit of <max>`.
+//!   These Loams limits are independent of Qdrant's optional strict-mode
+//!   batch limit and the default 32 MiB REST body cap. Single-point GET
+//!   retains its fixed one-id bound independently of the list limit (issue #298).
 //! - Filters on a collection that was not created through the Qdrant API
 //!   (it lacks the `payload` field) are unsupported (row T4-3).
 //! - `GET /collections/aliases` answers 405, not the info of a collection
@@ -226,6 +233,25 @@ pub struct QdrantConfig {
     /// the native writes by filter batch by the collection service's
     /// `filter_write_batch`.
     pub filter_write_chunk: usize,
+    /// The most requests one query batch (`/points/query/batch`,
+    /// `/points/search/batch`, `/points/recommend/batch`, gRPC
+    /// `QueryBatch`) holds: 1,000 (issue #298).
+    pub max_batch_queries: usize,
+    /// The most ids one retrieve (`POST /points`, gRPC `Get`) names:
+    /// 10,000, capped by the native service's `max_get_keys`. Does not
+    /// restrict single-point GET (issue #298).
+    pub max_point_ids: usize,
+}
+
+/// Refuses a client-sized list longer than `max` with a Qdrant `Wrong
+/// input` error, before executor output is allocated for it (issue #298).
+pub fn check_request_len(what: &str, len: usize, max: usize) -> Result<(), GatewayError> {
+    if len > max {
+        return Err(GatewayError::BadRequest(format!(
+            "{what} holds {len} entries, more than the limit of {max}"
+        )));
+    }
+    Ok(())
 }
 
 impl Default for QdrantConfig {
@@ -238,6 +264,8 @@ impl Default for QdrantConfig {
             max_request_bytes: 33_554_432,
             max_candidates: 10_000,
             filter_write_chunk: 1_000,
+            max_batch_queries: 1_000,
+            max_point_ids: 10_000,
         }
     }
 }
@@ -265,6 +293,13 @@ impl QdrantGateway {
     /// How the gateway listens and bounds its requests.
     pub fn config(&self) -> &QdrantConfig {
         &self.inner.config
+    }
+
+    /// The list-retrieval ceiling shared by REST and gRPC.
+    pub(crate) fn retrieve_id_limit(&self) -> usize {
+        self.config()
+            .max_point_ids
+            .min(self.service().config().max_get_keys)
     }
 
     /// The collection service every operation calls (Global Constraints:

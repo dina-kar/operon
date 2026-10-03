@@ -1013,8 +1013,13 @@ async fn legacy_batch<T: Into<QueryRequest>>(
     batch: Batch<T>,
 ) -> Response {
     let g = gw.clone();
-    let requests: Vec<QueryRequest> = batch.searches.into_iter().map(Into::into).collect();
     serve(&gw, &headers, params.timeout, |ctx| async move {
+        crate::check_request_len(
+            "The query batch",
+            batch.searches.len(),
+            g.config().max_batch_queries,
+        )?;
+        let requests: Vec<QueryRequest> = batch.searches.into_iter().map(Into::into).collect();
         let results = query::run_batch(g, ctx, collection, requests).await?;
         Ok(results.into_iter().map(|r| r.points).collect::<Vec<_>>())
     })
@@ -1089,7 +1094,14 @@ async fn discover_batch(
     QdrantQuery(params): QdrantQuery<ReadParams>,
     QdrantJson(batch): QdrantJson<Batch<DiscoverRequest>>,
 ) -> Response {
-    if let Some(e) = batch.searches.iter().find_map(|r| r.check().err()) {
+    let error = crate::check_request_len(
+        "The query batch",
+        batch.searches.len(),
+        gw.config().max_batch_queries,
+    )
+    .err()
+    .or_else(|| batch.searches.iter().find_map(|r| r.check().err()));
+    if let Some(e) = error {
         return serve(
             &gw,
             &headers,

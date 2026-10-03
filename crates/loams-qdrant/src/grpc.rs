@@ -558,6 +558,8 @@ service! {
             request: Request<pb::GetPoints>,
         ) -> Result<Response<pb::GetResponse>, Status> {
             let r = request.get_ref();
+            crate::check_request_len("The id list", r.ids.len(), self.gw.retrieve_id_limit())
+                .map_err(|e| e.grpc_status())?;
             let ids = r
                 .ids
                 .iter()
@@ -750,6 +752,12 @@ service! {
             request: Request<pb::SearchBatchPoints>,
         ) -> Result<Response<pb::SearchBatchResponse>, Status> {
             let r = request.get_ref();
+            crate::check_request_len(
+                "The query batch",
+                r.search_points.len(),
+                self.gw.config().max_batch_queries,
+            )
+                .map_err(|e| e.grpc_status())?;
             let parsed = r
                 .search_points
                 .iter()
@@ -789,6 +797,12 @@ service! {
             request: Request<pb::RecommendBatchPoints>,
         ) -> Result<Response<pb::RecommendBatchResponse>, Status> {
             let r = request.get_ref();
+            crate::check_request_len(
+                "The query batch",
+                r.recommend_points.len(),
+                self.gw.config().max_batch_queries,
+            )
+                .map_err(|e| e.grpc_status())?;
             let parsed = r
                 .recommend_points
                 .iter()
@@ -828,6 +842,12 @@ service! {
             request: Request<pb::DiscoverBatchPoints>,
         ) -> Result<Response<pb::DiscoverBatchResponse>, Status> {
             let r = request.get_ref();
+            crate::check_request_len(
+                "The query batch",
+                r.discover_points.len(),
+                self.gw.config().max_batch_queries,
+            )
+                .map_err(|e| e.grpc_status())?;
             let parsed = r
                 .discover_points
                 .iter()
@@ -901,6 +921,12 @@ service! {
             request: Request<pb::QueryBatchPoints>,
         ) -> Result<Response<pb::QueryBatchResponse>, Status> {
             let r = request.get_ref();
+            crate::check_request_len(
+                "The query batch",
+                r.query_points.len(),
+                self.gw.config().max_batch_queries,
+            )
+                .map_err(|e| e.grpc_status())?;
             let parsed = r
                 .query_points
                 .iter()

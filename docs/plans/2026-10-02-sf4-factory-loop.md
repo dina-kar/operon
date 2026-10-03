@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task by task, test first. Each task lists the interfaces it must produce and the tests that must exist and pass before it is done. Where this plan gives exact values (names, event types, states, defaults, limits), use them verbatim. The code is not pre-written in this plan; the tests are the specification.
 
-> **Status: Planned** (2026-10-02). **Slot: track SF, fourth plan** (proposed; D472–D474, D477). Branches `sf4-t<N>`, stacked; PRs target `main`. Depends on SF2 (agents, A2A client, risk policy evaluation, token exchange), SF3 Task 4 (approvals relay) and §21's embedded Resonate (D1). Stages 1–2 need the Zulip agent; the observation stage's GlitchTip and analytics parts use SF5's agents and, until SF5 lands, **recorded fakes** (the fake agents of Task 0). The **hosted multi-tenant factory is not here**: it is `loam-platform` doc 05. Loopback only until the unified auth plan (D111).
+> **Status: Planned** (2026-10-02). **Slot: track SF, fourth plan** (proposed; D-SF-13–D-SF-15, D-SF-18). Branches `sf4-t<N>`, stacked; PRs target `main`. Depends on SF2 (agents, A2A client, risk policy evaluation, token exchange), SF3 Task 4 (approvals relay) and §21's embedded Resonate (D1). Stages 1–2 need the Zulip agent; the observation stage's GlitchTip and analytics parts use SF5's agents and, until SF5 lands, **recorded fakes** (the fake agents of Task 0). The **hosted multi-tenant factory is not here**: it is `loam-platform` doc 05. Loopback only until the unified auth plan (D111).
 
 **Goal:** Loams Software Factory's loop, for **one organisation that self-hosts it**:
 - the `factory.run` **Resonate workflow** of design §10: intake, triage, plan, fix, review, deploy, observe, close, with `generation` for regressions;
@@ -21,7 +21,7 @@
 **Tech Stack:** Rust 1.97.1, edition 2024, `loams-durable` (Resonate Rust SDK, in-process), `loams-a2a` and `loams-collab`, connect-rust and buffa, Loams Live's client crate, `cloudevents-sdk`, `tokio-test` and a paused clock for time. TypeScript and cordis 4, Vitest, Playwright; Helm 3 and `helm unittest`; `kind` or `k3d` for the install test; SwiftUI and Compose for the phone views. No new durable engine, no new queue.
 
 **Spec:**
-- [`docs/design/39-software-factory-and-loams-bot.md`](../design/39-software-factory-and-loams-bot.md): §8, §10, §11, §12, §14; D472–D475.
+- [`docs/design/39-software-factory-and-loams-bot.md`](../design/39-software-factory-and-loams-bot.md): §8, §10, §11, §12, §14; D-SF-13–D-SF-16.
 - [`docs/design/21-durable-execution.md`](../design/21-durable-execution.md) §3.5, §6.3 (sagas), §6.5 (approval gates), §6.6, §6.7 (idempotency), §8; [`19-console-identity-and-agents.md`](../design/19-console-identity-and-agents.md) §5.4 (revocation); [`20-reactive-database-on-tikv.md`](../design/20-reactive-database-on-tikv.md) (Live tables); [`22-showcase-suite.md`](../design/22-showcase-suite.md) §7.3 (provisioning sagas); [`38-knative-authentik-gitops.md`](../design/38-knative-authentik-gitops.md) (GitOps and rollout events); [`docs/open-core.md`](../open-core.md).
 - SF2's cards and skills; SF3's approvals relay.
 
@@ -198,7 +198,7 @@ pub struct StageCtx<'a> { pub run: &'a RunRecord, pub guard: &'a Guard<'a>, pub 
 
 ### Task 8: Console, desktop and mobile views
 
-**Files:** `web/plugins/factory/**` (browser console), `desktop/crates/loams-ui-factory/**` (the native desktop, a zeron fork; path per §37's amendment, D440-series pending), `loams-mobile` `Factory` modules, `web/apps/console/catalog/*`.
+**Files:** `web/plugins/factory/**` (browser console), `desktop/crates/loams-ui-factory/**` (the native desktop, a zeron fork; path per §37's amendment, D480–D499), `loams-mobile` `Factory` modules, `web/apps/console/catalog/*`.
 
 **Desktop (GPUI):** `loams-ui-factory` renders the same Runs, Run detail (stage graph), Approvals, Agents, Policy and budgets, and Kill views from `loams-apps-client`'s `FactoryService` client and registers them in zeron's shell sidebar; "Open trace in Langfuse" and "Open in OpenObserve" go through SF1's `AppOpener` (system browser, or the sidebar browser where it ships); `/kill` and the Kill view need a step-up and a confirmation naming the in-flight tasks. Tests (GPUI test context, fake `FactoryService`): `runs_view_updates_live`, `run_detail_stage_graph_golden`, `trace_links_use_opener_and_are_hidden_when_apps_absent`, `kill_requires_step_up_and_shows_in_flight_count`, `policy_view_shows_diff`, `viewer_cannot_see_kill`.
 

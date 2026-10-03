@@ -1,6 +1,6 @@
 # 41 — Loams Multitenant BYOC Control Plane with GitOps
 
-Status: **Proposed** · 2026-10-02. Source: the owner's open-core ruling of 2026-10-02: "in open-core, multi-tenant Knative and GitOps using Argo CD is fully open source, so name it as Multitenant BYOC Control Plane with GitOps, and move the commercial API and metering to private, because they may be used to abuse by agents — integrity is the security principle of Loams." The boundary is in [open-core.md](../open-core.md); this document is the architecture of the open half. Decisions **D540–D559** and questions **Q540–Q559** are staged in [`_pending/41-log.md`](_pending/41-log.md) until the integrator folds them into the [decision log](13-decision-log.md). Plan: [MT4](../plans/2026-10-02-mt4-byoc-control-plane.md).
+Status: **Proposed** · 2026-10-02. Source: the owner's open-core ruling of 2026-10-02: "in open-core, multi-tenant Knative and GitOps using Argo CD is fully open source, so name it as Multitenant BYOC Control Plane with GitOps, and move the commercial API and metering to private, because they may be used to abuse by agents — integrity is the security principle of Loams." The boundary is in [open-core.md](../open-core.md); this document is the architecture of the open half. Decisions **D540–D559** and questions **Q540–Q559** are recorded in the [decision log](13-decision-log.md). Plan: [MT4](../plans/2026-10-02-mt4-byoc-control-plane.md).
 
 **Amends** D220 and D221 (the multi-tenant control plane, BYOC management, SCIM, enforced SSO and cross-org admin are open), D403 and D440 (the parts that kept the multi-tenant control plane private), [§18](18-metastore-backends-and-router.md) §8 (D64: BYOC is open), [§24](24-cpu-time-runtime.md) §7 and §16, [§27](27-usage-hooks.md) (billing-grade metering moved to `loam-platform`), [§38](38-knative-authentik-gitops.md) §2.2 (its non-goals) and RN1. **Reaffirms** D190, D202 and D444 (no metering in this repository), with a new reason.
 
@@ -17,7 +17,7 @@ Markers: **(verify)** means not checked against a primary source; the task that 
 | D548 | **Billing-grade metering moves to `loam-platform`**: the meter record, host reports and their delivery rules, the usage reporter, the final-read guarantee. Generic observability stays (§10) | Proposed · owner ruling |
 | D550 | **Commercial APIs are private**; the open operations API has no endpoint that spends money (§12) | Proposed · owner ruling |
 
-The full list, D540 to D559, is in the pending log. This document designs the open half; the private half is in `loam-platform` docs 06 and 07.
+The full list, D540 to D559, is in the canonical decision log. This document designs the open half; the private half is in `loam-platform` docs 06 and 07.
 
 ### 1.1 The picture
 
@@ -82,6 +82,7 @@ This document consolidates; it does not repeat. Each row links to the design tha
 | Knative Serving and Eventing, Kourier | Tenant compute (T2 `http-port`) and the event adapter | §38 §3 (D441 to D446) |
 | Authentik | Identity for people: OIDC, SAML, SCIM, MFA; blueprints in Git | §38 §4 (D447 to D452), MT1 |
 | Gateway, namespace router, OpenFGA | Admission, quota enforcement, routing, authorization | §18 §5 to §7, §24 §5 |
+| `loams-net` (optional) | `NetProvider`, Tailscale and Headscale clients, private connectivity | [§43](43-private-networking.md) |
 | Console, operator view | The tenants, clusters and BYOC pages | §19; this document §12 |
 
 ## 4. The control plane
@@ -177,6 +178,10 @@ A cluster can be configured to run in *observe-only* mode, where it accepts none
 ### 7.3 The data boundary
 
 Unchanged from D64: the control plane may see namespace and collection names, schemas, object paths, offsets, pointers and lease keys, in clear. It never sees documents, vectors, text or bucket credentials. The heartbeat carries conditions and versions, never data.
+
+### 7.4 Connectivity modes: outbound agent or tailnet (D587)
+
+BYOC has two connectivity modes. The default is the outbound agent of §7.1. The optional mode joins the customer's cluster to a **tailnet** (the operator's, or the customer's own Tailscale or Headscale through the provider knob of §43 §6.4; §43, `43-private-networking.md`, provider-neutral): the agent runs `tailscaled` (userspace) as a sidecar, joins with a single-use key tagged `tag:byoc-<tenant>` that the control plane issues, and reaches the control plane's tailnet name. Neither mode opens an inbound port. In tailnet mode the policy lets a tenant reach `tag:control:443` only; the control plane never dials in; the customer may enable a time-boxed support grant that the control plane expires. Tenant isolation is a generated policy on one operator Headscale, with a dedicated Headscale per tenant on request (D586). The tenant's own users and east-west traffic are the tenant's own network. Cites §43 §6.
 
 ## 8. Upgrade waves (new)
 
@@ -285,6 +290,7 @@ The platform may not need the observer at all: cgroups are authoritative for T0 
 - **Blast radius of the hub.** A hub compromise can write tenant files but cannot reach a BYOC cluster directly (pull model); a cluster's own policy (`observe-only`, sync windows, signature verification) bounds what a malicious commit can do.
 - **Authentik hygiene.** No licence key ever (D458). Outposts and the control plane's service identities use short-lived tokens (RFC 8693 exchange, D449).
 - **Supply chain.** Images pinned by digest, `cargo deny`, provenance for the operator fork (MIT notice kept, D185), `buf breaking` on `proto/loams/control`.
+- **Tailnet policy.** Changes are reviewed commits and refused on failing tests (D585); NET1 is optional and independent of MT4.
 - **Audit.** Every control-plane mutation is an audit event (D221) naming the principal, including the agent chain (`act`) when an agent acted for a person.
 
 ## 12. Console, hosted cloud and the dependency direction

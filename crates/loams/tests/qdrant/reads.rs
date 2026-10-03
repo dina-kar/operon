@@ -564,3 +564,116 @@ async fn grpc_reads_match_rest() {
         .expect_err("order_by");
     assert_eq!(err.code(), tonic::Code::Unimplemented);
 }
+
+#[tokio::test]
+async fn retrieve_refuses_more_ids_than_max_point_ids() {
+    // Issue #298: a client-chosen id count must not size an allocation.
+    let qd = Qd::start().await;
+    create_single(&qd, "huge").await;
+    let max = loams_qdrant::QdrantConfig::default().max_point_ids;
+    let ids: Vec<u64> = (0..=max as u64).collect();
+    let (status, reply) = retrieve(&qd, "huge", json!({ "ids": ids })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{reply}");
+    assert_eq!(
+        error(&reply),
+        format!(
+            "Wrong input: The id list holds {} entries, more than the limit of {max}",
+            max + 1
+        )
+    );
+    // At the limit the request is served (no point exists, so none returns).
+    let ids: Vec<u64> = (0..max as u64).collect();
+    let (status, reply) = retrieve(&qd, "huge", json!({ "ids": ids })).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+}
+
+#[tokio::test]
+async fn grpc_retrieve_count_is_checked_before_conversion() {
+    let qd = Qd::start_with(|config| {
+        config.qdrant.as_mut().unwrap().max_point_ids = 2;
+    })
+    .await;
+    create_single(&qd, "bounded").await;
+    let mut client = qd.points().await;
+    let err = client
+        .get(pb::GetPoints {
+            collection_name: "bounded".into(),
+            ids: vec![pb::PointId::default(); 3],
+            ..Default::default()
+        })
+        .await
+        .expect_err("count precedes invalid ids");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    assert_eq!(
+        err.message(),
+        "Wrong input: The id list holds 3 entries, more than the limit of 2"
+    );
+    for len in [0, 2] {
+        let result = client
+            .get(pb::GetPoints {
+                collection_name: "bounded".into(),
+                ids: vec![
+                    pb::PointId {
+                        point_id_options: Some(pb::point_id::PointIdOptions::Num(1))
+                    };
+                    len
+                ],
+                ..Default::default()
+            })
+            .await
+            .expect("at or below count")
+            .into_inner();
+        assert!(result.result.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn retrieve_limit_tracks_native_configuration() {
+    let qd = Qd::start_with(|config| {
+        config.query.max_get_keys = 2;
+        config.qdrant.as_mut().unwrap().max_point_ids = 5;
+    })
+    .await;
+    create_single(&qd, "native_limit").await;
+    let (status, reply) = retrieve(&qd, "native_limit", json!({"ids": [0, 1, 2]})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let message = "Wrong input: The id list holds 3 entries, more than the limit of 2";
+    assert_eq!(error(&reply), message);
+    let err = qd
+        .points()
+        .await
+        .get(pb::GetPoints {
+            collection_name: "native_limit".into(),
+            ids: vec![pb::PointId::default(); 3],
+            ..Default::default()
+        })
+        .await
+        .expect_err("native ceiling before conversion");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    assert_eq!(err.message(), message);
+    let (status, reply) = retrieve(&qd, "native_limit", json!({"ids": [0, 1]})).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["result"], json!([]));
+}
+
+#[tokio::test]
+async fn retrieve_limit_does_not_block_single_point_get() {
+    let qd = Qd::start_with(|config| {
+        config.qdrant.as_mut().unwrap().max_point_ids = 0;
+    })
+    .await;
+    create_single(&qd, "single").await;
+    upsert(&qd, "single", json!([{"id": 1, "vector": [1.0, 2.0]}])).await;
+    let (status, reply) = qd.get("/collections/single/points/1", None).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["result"]["id"], 1);
+    let (status, reply) = retrieve(&qd, "single", json!({"ids": [1]})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error(&reply),
+        "Wrong input: The id list holds 1 entries, more than the limit of 0"
+    );
+    let (status, reply) = retrieve(&qd, "single", json!({"ids": []})).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["result"], json!([]));
+}
