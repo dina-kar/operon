@@ -1,0 +1,289 @@
+name: Release signing (SignPath, Linux)
+
+# Linux release signing for issues #253 and #264, as the owner ruled on
+# 2026-10-03:
+#
+#   Linux    signed, through SignPath. This workflow is the whole of it.
+#   Windows  unsigned. See docs/build-from-source/windows.md.
+#   macOS    unsigned. See docs/build-from-source/macos.md.
+#
+# docs/release/signing.md is the page a maintainer reads; it names every secret
+# and repository variable below and what to do when they are absent. Read that
+# before changing this file.
+#
+# What this workflow is NOT:
+#
+#   * It is not a stub that appears to sign. With no SignPath configuration it
+#     warns loudly and stops; dispatch it with `require_signing: true` and it
+#     fails, naming exactly what is missing. A release is never marked signed
+#     by a step that did nothing.
+#   * It never sees a Windows or macOS artifact. scripts/ci/signpath-artifacts.py
+#     classifies every file before the request is built and refuses anything
+#     that is not an .rpm or a Linux ELF, so widening the platform scope is a
+#     failing check rather than a review nobody notices.
+#   * It does not upload the signed artifact to the release. It submits the
+#     request, waits for the approver SignPath Foundation's terms require, and
+#     stops with the signing request's URL. Attaching the signed file is the
+#     release workflow's job (D292's cargo-dist pipeline), and this workflow
+#     deliberately holds no write permission on the repository to do it.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Published release tag to sign, vX.Y.Z. Defaults to the dispatched release.'
+        required: false
+        default: ''
+      run_id:
+        description: >-
+          Workflow run holding the unsigned Linux artifact to sign. Leave empty to use
+          this release's own assets instead. SignPath only signs a GitHub Actions
+          artifact, so a run id is required whenever the file is not attached to the
+          release yet.
+        required: false
+        default: ''
+      artifact_name:
+        description: 'Name of the unsigned artifact in that run.'
+        required: false
+        default: 'loams-linux'
+      require_signing:
+        description: >-
+          Fail the run when SignPath is not configured, instead of warning and stopping.
+          Use this once the configuration is in place, so a release cannot quietly ship
+          unsigned.
+        type: boolean
+        required: false
+        default: false
+
+# Nothing here writes to the repository. `actions: read` is what
+# actions/download-artifact needs to read another run's artifact, and
+# `contents: read` is what `gh release download` and the guard need.
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: release-sign-${{ github.event.release.tag_name || inputs.tag || github.run_id }}
+  # A signing request that is waiting for a human approver must not be cancelled
+  # by a second dispatch, because SignPath rejects a re-run build under policy.
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH || github.event.repository.default_branch }}
+  SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+  SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+  SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+  SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+
+jobs:
+  # The same guard release-crates.yml runs (issue #254, PR #322): the tag must be
+  # a published release on the release branch at the workspace version. The code
+  # that runs is the branch's, and the source under review includes the build
+  # scripts, which is exactly what SignPath's origin verification attests to.
+  guard:
+    name: release tag guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.guard.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ vars.RELEASE_BRANCH || github.event.repository.default_branch }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: the tag is a published release on the release branch
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          test -n "$TAG" || { echo 'no release tag: dispatch with the tag input'; exit 1; }
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "$TAG is not a vX.Y.Z(-pre) tag"; exit 1
+          fi
+          gh release view "$TAG" --json isDraft,tagName -q '"release " + .tagName' \
+            || { echo "$TAG is not a published release"; exit 1; }
+          git rev-parse --verify "refs/tags/$TAG^{commit}" > "$RUNNER_TEMP/tag.sha" \
+            || { echo "$TAG has no commit in this repository"; exit 1; }
+          tag_sha=$(cat "$RUNNER_TEMP/tag.sha")
+          git merge-base --is-ancestor "$tag_sha" HEAD \
+            || { echo "$TAG is not on $RELEASE_BRANCH; refusing to sign a tag from anywhere else"; exit 1; }
+          version=$(python3 -c 'import tomllib,sys;print(tomllib.load(open(sys.argv[1],"rb"))["workspace"]["package"]["version"])' Cargo.toml)
+          if [ "${TAG#v}" != "$version" ]; then
+            echo "the workspace version is $version but the release tag is $TAG"; exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "$TAG ($version) is a published release on $RELEASE_BRANCH at $tag_sha"
+
+  # The whole gate. SignPath needs an account, an organisation, a project, a
+  # signing policy, an API token and a GitHub App installed on the organisation;
+  # none of that can be created from this repository, and none of it exists yet
+  # (verified 2026-10-03: the ostrium-labs organisation has no Actions secrets
+  # and no Actions variables). So this job decides, out loud, whether the run
+  # signs or stops, and it is the only place that decides.
+  preflight:
+    name: SignPath configuration
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      mode: ${{ steps.decide.outputs.mode }}
+      tag: ${{ needs.guard.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: decide whether this run signs
+        id: decide
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          REQUIRE_SIGNING: ${{ inputs.require_signing == true }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "${SIGNPATH_API_TOKEN:-}" ]] || missing+=("secret SIGNPATH_API_TOKEN")
+          [[ -n "${SIGNPATH_ORGANIZATION_ID:-}" ]] || missing+=("variable SIGNPATH_ORGANIZATION_ID")
+          [[ -n "${SIGNPATH_PROJECT_SLUG:-}" ]] || missing+=("variable SIGNPATH_PROJECT_SLUG")
+          [[ -n "${SIGNPATH_SIGNING_POLICY_SLUG:-}" ]] || missing+=("variable SIGNPATH_SIGNING_POLICY_SLUG")
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "mode=sign" >> "$GITHUB_OUTPUT"
+          echo "SignPath is configured; submitting signing requests for Linux artifacts only."
+          if [ -z "${SIGNPATH_ARTIFACT_CONFIGURATION_SLUG:-}" ]; then
+            echo "::notice::SIGNPATH_ARTIFACT_CONFIGURATION_SLUG is unset, so SignPath uses the project's default artifact configuration. Set the variable to the slug of signpath/artifact-configuration.rpm.xml once the configuration is created."
+          fi
+          exit 0
+          fi
+          if [ "$REQUIRE_SIGNING" = true ]; then
+            echo "::error::SignPath is not configured and require_signing was set, so this release would ship unsigned."
+            printf 'missing: %s\n' "${missing[@]}"
+            echo "docs/release/signing.md has the setup, and the two organisation-level steps in it"
+            echo "(the SignPath GitHub App and the API token's submitter role) need an organisation owner."
+            exit 1
+          fi
+          echo "mode=skip" >> "$GITHUB_OUTPUT"
+          echo "::warning title=SignPath is not configured::This run will NOT sign anything. Missing: ${missing[*]}. Linux artifacts stay unsigned. Set require_signing on the dispatch once these exist."
+          echo "::warning title=No signature was produced::The release is unsigned. Do not describe it as SignPath-signed."
+
+  # SignPath's Open Source Code Signing connector checks, before it signs
+  # anything: that a GitHub workflow actually built the file, that the artifact
+  # was stored as a GitHub Actions artifact first, that the origin metadata came
+  # from GitHub rather than the build script, and that every job up to the
+  # request ran on a GitHub-hosted runner. So this job is on `ubuntu-latest` and
+  # not on `vars.RUNNER_MAIN`, which is a self-hosted pool.
+  sign:
+    name: submit the Linux signing requests
+    needs: [guard, preflight]
+    if: needs.preflight.outputs.mode == 'sign'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: the Linux artifact guard self-test
+        run: python3 scripts/ci/signpath-artifacts.py --self-test
+
+      - name: fetch the unsigned artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+          RUN_ID: ${{ inputs.run_id }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
+        run: |
+          set -euo pipefail
+          unsigned="$RUNNER_TEMP/unsigned"
+          rm -rf "$unsigned" && mkdir -p "$unsigned"
+          if [ -n "${RUN_ID:-}" ]; then
+            echo "taking $ARTIFACT_NAME from run $RUN_ID"
+            gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$ARTIFACT_NAME" --dir "$unsigned"
+          else
+            echo "taking this release's own assets for $TAG"
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$unsigned"
+          fi
+          find "$unsigned" -type f -printf '%P\n' | sort
+
+      - name: only Linux artifacts are eligible
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/signpath-artifacts.py "$RUNNER_TEMP/unsigned" | tee "$RUNNER_TEMP/scope.txt"
+          echo "$(grep -c . "$RUNNER_TEMP/scope.txt") Linux artifact(s) will be submitted for signing"
+
+      # The free Open Source Code Signing programme signs `<rpm-sign>` and
+      # nothing else that Loams builds: `<debsigs-sign>` and
+      # `<create-gpg-signature>` are Semantic-only (verified 2026-10-03 against
+      # docs.signpath.io/artifact-configuration/reference, and recorded as D621).
+      # So a release whose only Linux artifact is a bare ELF cannot be signed
+      # under this policy, and submitting it would guarantee an opaque failure
+      # inside SignPath. Fail here instead, and say why.
+      - name: at least one artifact the free policy can actually sign
+        run: |
+          set -euo pipefail
+          if ! grep -q '^rpm-sign' "$RUNNER_TEMP/scope.txt"; then
+            echo "::error::No .rpm in the signing set, and SignPath's free Open Source Code Signing"
+            echo "::error::programme cannot sign a bare ELF binary or a .tar.gz (D621). The unsigned"
+            echo "::error::Linux release needs an RPM package attached to it, or a signing policy that"
+            echo "::error::carries a detached-signature certificate. See docs/release/signing.md."
+            exit 1
+          fi
+          echo "an .rpm is in the signing set, which <rpm-sign> can sign"
+
+      - name: store the unsigned artifact, because SignPath signs no other kind
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # SignPath's connector reads the artifact id from upload-artifact, so
+          # the request cannot be built from a local path.
+          name: signpath-request-${{ needs.preflight.outputs.tag }}
+          path: ${{ format('{0}/unsigned/*', runner.temp) }}
+          # archive: false keeps the .rpm out of a ZIP -- SignPath's artifact
+          # configuration has to see the package itself, not a wrapper -- and
+          # skip-decompress on the submit step below keeps the signed file's own
+          # name.
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: submit for signing and wait for the approver
+        id: submit
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload.outputs.artifact-id }}
+          github-token: ${{ github.token }}
+          wait-for-completion: true
+          # SignPath Foundation's terms require a human approver on every
+          # release, so this waits rather than polling in a tight loop.
+          wait-for-completion-timeout-in-seconds: '1800'
+          output-artifact-directory: ${{ runner.temp }}/signed
+          skip-decompress: true
+
+      - name: what was signed
+        env:
+          REQUEST_URL: ${{ steps.submit.outputs.signing-request-web-url }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Linux signing"
+            echo
+            echo "- tag: \`${{ needs.preflight.outputs.tag }}\`"
+            echo "- signing request: ${REQUEST_URL:-<not reported by the action>}"
+            echo "- signed files:"
+            find "$RUNNER_TEMP/signed" -type f -printf '  - `%P`\n' 2>/dev/null || echo "  - <none downloaded>"
+            echo
+            echo "Attach the signed files to the release from the signing request or from"
+            echo "\`$RUNNER_TEMP/signed\`. Windows and macOS artifacts are unsigned by decision;"
+            echo "see docs/build-from-source/."
+          } >> "$GITHUB_STEP_SUMMARY"

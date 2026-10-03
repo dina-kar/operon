@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Loams Linux artifact configuration for SignPath.
+
+  This is the configuration to paste into SignPath when the project is created.
+  It signs an RPM package, which is the one Linux format SignPath's Open Source
+  Code Signing edition can sign: verified on 2026-10-03 against
+  https://docs.signpath.io/artifact-configuration/reference, `<rpm-sign>` is
+  listed as available for "Semantic Code Signing, Open Source Code Signing".
+
+  Two nearby formats are deliberately NOT here, because the same page lists them
+  as unavailable to the OSS edition:
+
+    `<deb-file><debsigs-sign>`            Semantic Code Signing only
+    `<file><create-gpg-signature>`        Semantic Code Signing only
+
+  So a Debian package and a detached GPG signature on a bare ELF binary are both
+  out of reach of the free programme. See docs/release/signing.md for what that
+  means for each artifact Loams releases, and why `.rpm` is the shape to build
+  first.
+
+  RPM signature verification on the user's machine, from the same page:
+      rpm --import <the project GPG public key>.asc
+      rpm --verbose --checksig loams-*.rpm
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <rpm-file>
+    <rpm-sign />
+  </rpm-file>
+</artifact-configuration>
