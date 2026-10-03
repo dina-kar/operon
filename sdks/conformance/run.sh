@@ -29,6 +29,14 @@ fi
 
 # Where a Rust build output lands, without hard-coding a target directory: the
 # repository's cargo config sends it outside the tree.
+# The server's pid, written to a file rather than a shell variable.
+#
+# `endpoint="$(start_server)"` runs the function in a subshell, so a `pid=$!`
+# inside it never reaches the parent and cleanup has nothing to kill: the
+# server survives the run and the next one collides with it. Writing the pid to
+# a file is what makes the trap work.
+PID_FILE=""
+
 loams_bin() {
   cargo build -p loams --message-format=json 2>/dev/null \
     | grep -o '"executable":"[^"]*/loams"' \
@@ -57,7 +65,8 @@ start_server() {
     port=$((20000 + RANDOM % 20000))
     "$bin" dev --listen "127.0.0.1:$port" --data-dir "$datadir" \
       --no-flight-sql --no-qdrant --no-es > "$log" 2>&1 &
-    pid=$!
+    echo "$!" > "$PID_FILE"
+    pid="$!"
     endpoint=""
     for _ in $(seq 1 100); do
       endpoint="$(grep -o "http://127\.0\.0\.1:$port" "$log" | head -1 || true)"
@@ -84,7 +93,7 @@ start_server() {
     fi
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
-    pid=""
+    : > "$PID_FILE"
   done
   echo "loams dev did not come up:" >&2
   cat "$log" >&2
@@ -92,18 +101,24 @@ start_server() {
 }
 
 server=""
-pid=""
 started=0
+PID_FILE="$(mktemp)"
 
 cleanup() {
-  if [ "$keep" -eq 1 ] && [ "$started" -eq 1 ]; then
-    echo "leaving $server running (pid $pid)" >&2
-    return
+  local pid=""
+  if [ -s "$PID_FILE" ]; then
+    pid="$(cat "$PID_FILE")"
   fi
-  if [ "$started" -eq 1 ] && [ -n "$pid" ]; then
+  if [ -n "$pid" ]; then
+    if [ "$keep" -eq 1 ] && [ "$started" -eq 1 ]; then
+      echo "leaving $server running (pid $pid)" >&2
+      rm -f "$PID_FILE"
+      return
+    fi
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
   fi
+  rm -f "$PID_FILE"
 }
 trap cleanup EXIT
 

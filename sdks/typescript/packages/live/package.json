@@ -23,7 +23,7 @@
     "src"
   ],
   "scripts": {
-    "generate": "../../../scripts/sdk/gen.sh typescript-live",
+    "generate": "../../../../scripts/sdk/gen.sh typescript-live",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

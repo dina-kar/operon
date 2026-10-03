@@ -140,12 +140,17 @@ export async function callWithRetry(
 export function withIdempotencyKey(
   request: unknown,
   supplied: string | undefined,
+  /** Whether the request *schema* declares an `idempotency_key` field. */
+  declared = false,
 ): { request: unknown; keyed: boolean } {
   if (typeof request !== 'object' || request === null) {
     return { request, keyed: false };
   }
   const message = request as Record<string, unknown>;
-  if (!('idempotencyKey' in message)) {
+  // Either the schema declares the field or the object carries it; without one
+  // of those two there is nothing to key, and a request that has no key field
+  // must be left exactly as the caller wrote it.
+  if (!declared && !('idempotencyKey' in message)) {
     return { request, keyed: false };
   }
   if (typeof message.idempotencyKey === 'string' && message.idempotencyKey !== '') {
@@ -168,6 +173,10 @@ async function* streamOf(source: AsyncIterable<unknown> | AsyncIterable<Promise<
   yield* source as AsyncIterable<unknown>;
 }
 
+/** The request-message field a mutation is keyed by (D610). Read from the
+ * generated schema rather than guessed from the object a caller built. */
+const IDEMPOTENCY_KEY = 'idempotencyKey';
+
 /**
  * The session a call asked for: its own store if it brought one, the client's
  * if it asked for the session's, none otherwise.
@@ -189,6 +198,9 @@ function resolveSession(
  */
 export class CallInvoker {
   private readonly clients = new Map<string, Record<string, unknown>>();
+  private readonly descriptors = new Map<string, DescService>();
+  /** Whether a call's request schema declares `idempotency_key`, per RPC. */
+  private readonly keyed = new Map<string, boolean>();
 
   constructor(
     private readonly transport: Transport,
@@ -206,10 +218,27 @@ export class CallInvoker {
     if (this.clients.has(service)) {
       return;
     }
+    this.descriptors.set(service, descriptor);
+    for (const method of Object.values(descriptor.method)) {
+      // Whether this RPC takes an idempotency key is a property of its request
+      // message, so it is read from the generated schema rather than inferred
+      // from the object a caller happened to build. A caller who omits an
+      // `optional` field still gets a key, and `MutateRequest` (which has one)
+      // is never confused with `DeployRequest` (which does not).
+      this.keyed.set(
+        `${service}/${method.name}`,
+        method.input.field[IDEMPOTENCY_KEY] !== undefined,
+      );
+    }
     this.clients.set(service, createClient(descriptor, this.transport) as unknown as Record<
       string,
       unknown
     >);
+  }
+
+  /** Whether this call's request message declares an `idempotency_key`. */
+  private takesIdempotencyKey(binding: CallBinding): boolean {
+    return this.keyed.get(`${binding.service}/${binding.method}`) ?? false;
   }
 
   /** The connect-es method a binding names, or a clear internal error. */
@@ -227,28 +256,25 @@ export class CallInvoker {
 
   /** One unary call: the whole runtime contract, applied to one binding. */
   async unary(binding: CallBinding, request: unknown, options: CallOptions = {}) {
-    const { request: keyed, keyed: hasKey } = withIdempotencyKey(request, options.idempotencyKey);
+    const { request: keyed, keyed: hasKey } = withIdempotencyKey(
+      request,
+      options.idempotencyKey,
+      this.takesIdempotencyKey(binding),
+    );
     const maxRetries = options.maxRetries ?? this.maxRetries;
     // D610: a `safe` call always retries; a mutation retries once it carries an
     // idempotency key, which `withIdempotencyKey` has just decided.
     const retrySafe = options.retrySafe ?? (binding.retry === 'safe' || hasKey);
     const session = resolveSession(options.consistency, this.consistency);
-    const consistency = options.consistency?.token;
+    // An explicit token wins; otherwise the session's, which is what makes
+    // `consistency: { session: true }` read-your-writes rather than record it
+    // and never send it (R4).
+    const consistency = options.consistency?.token ?? session?.current();
     const method = this.method(binding);
 
     const result = (await callWithRetry(
       keyed,
-      async () => {
-        const headers: Record<string, string> = { ...options.headers };
-        const bearer = await this.tokenSource?.token();
-        if (bearer !== undefined) {
-          headers.authorization = `Bearer ${bearer}`;
-        }
-        if (consistency !== undefined) {
-          headers['loams-consistency'] = consistency;
-        }
-        return method(keyed, { ...options, headers });
-      },
+      async () => method(keyed, { ...options, headers: await this.headers(options, consistency) }),
       {
         retrySafe,
         maxRetries,
@@ -261,6 +287,23 @@ export class CallInvoker {
     return result;
   }
 
+  /** The headers a call carries: the caller's, plus the bearer and the
+   * consistency token the runtime owns. */
+  private async headers(
+    options: CallOptions,
+    consistency: string | undefined,
+  ): Promise<Record<string, string>> {
+    const headers: Record<string, string> = { ...options.headers };
+    const bearer = await this.tokenSource?.token();
+    if (bearer !== undefined) {
+      headers.authorization = `Bearer ${bearer}`;
+    }
+    if (consistency !== undefined) {
+      headers['loams-consistency'] = consistency;
+    }
+    return headers;
+  }
+
   /**
    * One server stream, with the errors mapped: no resume, no cursor tracking.
    *
@@ -269,12 +312,56 @@ export class CallInvoker {
    * iterable would see a `ConnectError` with no `reason` — the one place in the
    * SDK where `reason` could go missing. `watch()` adds the resume on top.
    */
-  stream(binding: CallBinding, request: unknown, options: CallOptions = {}) {
+  stream(binding: CallBinding, request: unknown, options: CallOptions = {}): AsyncIterable<unknown> {
     const method = this.method(binding) as unknown as (
       request: unknown,
       options: CallOptions,
     ) => AsyncIterable<unknown>;
-    return this.mapped(streamOf(method(request, { ...options })), binding.rpc);
+    const session = resolveSession(options.consistency, this.consistency);
+    const consistency = options.consistency?.token ?? session?.current();
+    const self = this;
+    const refresh = this.tokenSource?.refresh?.bind(this.tokenSource);
+    // Synchronous, because `loams.live.watch(...)` has to hand back an
+    // `AsyncIterable` rather than a promise of one (design §44 §7.1). The
+    // bearer is fetched when the caller first steps the stream rather than when
+    // the call is made: a stream that never authenticates is not a stream.
+    const invoke = async function* (): AsyncGenerator<unknown, void, undefined> {
+      let refreshed = false;
+      let yielded = false;
+      for (;;) {
+        const headers = await self.headers(options, consistency);
+        const source = self.mapped(
+          streamOf(method(request, { ...options, headers })),
+          binding.rpc,
+        );
+        try {
+          for await (const message of source) {
+            yielded = true;
+            yield message;
+          }
+          return;
+        } catch (thrown) {
+          const error = toLoamsError(thrown, binding.rpc);
+          // R1 on a stream: one refresh and one re-open, and only if nothing
+          // has been yielded yet. Once messages are flowing the caller is
+          // holding a position in the stream, and re-opening it is `watch()`'s
+          // job (it resumes from the cursor); replaying from the start here
+          // would duplicate everything the caller has already seen.
+          if (
+            error instanceof TokenExpiredError &&
+            !refreshed &&
+            refresh !== undefined &&
+            !yielded
+          ) {
+            refreshed = true;
+            await refresh();
+            continue;
+          }
+          throw error;
+        }
+      }
+    };
+    return invoke();
   }
 
   /** Wraps an iterable so every throw becomes a `LoamsError`. */
@@ -298,7 +385,15 @@ export class CallInvoker {
       return;
     }
     const token = result.consistencyToken;
-    session.record(typeof token === 'string' && token !== '' ? token : undefined);
+    try {
+      session.record(typeof token === 'string' && token !== '' ? token : undefined);
+    } catch {
+      // The RPC already succeeded. A token the session cannot merge — the
+      // encoding is still opaque, see `ConsistencySession` — must not turn a
+      // committed write into a thrown error, because a caller that retries on
+      // that error performs the write twice. `ConsistencySession.conflicts`
+      // counts it instead.
+    }
   }
 
 }

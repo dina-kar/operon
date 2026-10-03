@@ -23,6 +23,9 @@ importers:
       '@connectrpc/connect':
         specifier: 2.2.0
         version: 2.2.0(@bufbuild/protobuf@2.16.0)
+      '@connectrpc/connect-node':
+        specifier: 2.2.0
+        version: 2.2.0(@bufbuild/protobuf@2.16.0)(@connectrpc/connect@2.2.0(@bufbuild/protobuf@2.16.0))
       '@connectrpc/connect-web':
         specifier: 2.2.0
         version: 2.2.0(@bufbuild/protobuf@2.16.0)(@connectrpc/connect@2.2.0(@bufbuild/protobuf@2.16.0))
@@ -39,9 +42,6 @@ importers:
       '@bufbuild/protoc-gen-es':
         specifier: 2.16.0
         version: 2.16.0(@bufbuild/protobuf@2.16.0)(supports-color@10.2.2)
-      '@connectrpc/connect-node':
-        specifier: 2.2.0
-        version: 2.2.0(@bufbuild/protobuf@2.16.0)(@connectrpc/connect@2.2.0(@bufbuild/protobuf@2.16.0))
       '@types/node':
         specifier: 24.10.1
         version: 24.10.1

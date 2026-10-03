@@ -39,7 +39,9 @@ export function createNodeTransport(options: TransportOptions = {}): Transport {
     baseUrl: options.baseUrl ?? '',
     useBinaryFormat: options.useBinaryFormat ?? true,
     ...(options.headers === undefined ? {} : { headers: options.headers }),
-    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    ...(options.defaultTimeoutMs === undefined
+      ? {}
+      : { defaultTimeoutMs: options.defaultTimeoutMs }),
     ...(options.interceptors === undefined ? {} : { interceptors: options.interceptors }),
   });
 }

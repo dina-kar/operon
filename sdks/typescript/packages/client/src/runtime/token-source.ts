@@ -62,8 +62,17 @@ export function envToken(
 export function refreshing(fetchToken: () => Promise<string>): TokenSource {
   let cached: string | undefined;
   let inFlight: Promise<void> | undefined;
-  return {
-    token: () => Promise.resolve(cached),
+  const source: TokenSource = {
+    // The first `token()` fetches: a source whose cache starts empty would send
+    // no credential at all, and an instance that requires one answers
+    // `unauthenticated`, which the call path treats as "the token expired" and
+    // retries — with still no credential.
+    token: () => {
+      if (cached !== undefined) {
+        return Promise.resolve(cached);
+      }
+      return (source.refresh?.() ?? Promise.resolve()).then(() => cached);
+    },
     refresh: () => {
       inFlight ??= fetchToken()
         .then((next) => {
@@ -75,6 +84,7 @@ export function refreshing(fetchToken: () => Promise<string>): TokenSource {
       return inFlight;
     },
   };
+  return source;
 }
 
 /** The RFC 8693 token exchange a person signed in through Authentik needs

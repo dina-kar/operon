@@ -96,6 +96,25 @@ const server = createServer((request, response) => {
       response.end(body);
       return;
     }
+    // The recorded case also carries the request that produced it, and it is
+    // checked. A replay that ignores what the client sent would pass an SDK
+    // that frames a gRPC-Web message wrongly or posts the wrong payload, which
+    // is the class of bug a recorded corpus exists to catch.
+    const sent = Buffer.concat(chunks);
+    const expected =
+      found.request.body === undefined
+        ? Buffer.from(found.request.bodyBase64 ?? '', 'base64')
+        : Buffer.from(found.request.body, 'utf8');
+    if (!sent.equals(expected)) {
+      const body = JSON.stringify({
+        error: `the request does not match the recorded one for ${key}`,
+        expected: expected.toString('base64'),
+        sent: sent.toString('base64'),
+      });
+      response.writeHead(400, { 'content-type': 'application/json' });
+      response.end(body);
+      return;
+    }
     const headers = { ...found.response.headers };
     const body =
       found.response.body === undefined

@@ -16,7 +16,9 @@ import { Code, ConnectError } from '@connectrpc/connect';
 import { createConnectTransport } from '@connectrpc/connect-web';
 import { createServer, type Server } from 'node:http';
 import { describe, expect, it } from 'vitest';
+import { MODULES } from '../src/gen/facade.js';
 import { InstanceService } from '@loams/proto/instance';
+import { LiveService } from '@loams/live/live';
 import { CallInvoker, callWithRetry, withIdempotencyKey } from '../src/runtime/call.js';
 import { backoffMs } from '../src/runtime/retry.js';
 import { uuidv7, uuidv7Time } from '../src/runtime/uuidv7.js';
@@ -47,11 +49,58 @@ describe('typescript_retry_reuses_idempotency_key', () => {
     const unkeyed = withIdempotencyKey({ idempotencyKey: '' }, 'supplied');
     expect((unkeyed.request as { idempotencyKey: string }).idempotencyKey).toBe('supplied');
 
-    // A message with no `idempotency_key` field is left alone: proto3 messages
-    // are plain objects here, so the field's presence is the test.
+    // A message with no `idempotency_key` field is left alone. Two proofs are
+    // available and either is enough: the generated schema declaring the field
+    // (`declared`, which is what the invoker reads) or the object carrying it.
     const plain = withIdempotencyKey({ collectionId: 'col_1' }, 'supplied');
     expect(plain.keyed).toBe(false);
     expect(plain.request).toEqual({ collectionId: 'col_1' });
+  });
+
+  it('keys a call whose schema declares the field, even when the caller omitted it', () => {
+    // `MutateRequest.idempotency_key` is proto3 `optional`, so a caller who
+    // leaves it out sends no key at all and the mutation is not retryable. The
+    // decision is read from the generated schema, so it does not depend on what
+    // the caller's object happens to contain.
+    const generated = withIdempotencyKey({ function: 'go' }, undefined, true);
+    expect(generated.keyed).toBe(true);
+    expect((generated.request as { idempotencyKey: string }).idempotencyKey).not.toBe('');
+
+    // `DeployRequest` has no such field, so a key would be a field the schema
+    // does not know: still nothing to key.
+    const undeclared = withIdempotencyKey({ bundle: new Uint8Array() }, undefined, false);
+    expect(undeclared.keyed).toBe(false);
+    expect(undeclared.request).toEqual({ bundle: new Uint8Array() });
+  });
+
+  it('reads the key decision off the generated schemas of the live service', () => {
+    // The live service is the only one with a keyed mutation today, and it is
+    // generated, so this asserts the schema walk itself: `Mutate` is keyed,
+    // `Deploy` and `Query` are not.
+    const invoker = new CallInvoker(
+      createConnectTransport({ baseUrl: 'http://127.0.0.1:1' }),
+      undefined,
+      3,
+      undefined,
+    );
+    invoker.register('loams.live.v1.LiveService', LiveService);
+    // `Deploy` is a `tables` call and `Mutate` is too, while `live` is the
+    // session half; both modules name the same service, so the search is across
+    // every module of the package.
+    const binding = (name: string) =>
+      MODULES.filter((module) => module.package === 'loams.live.v1')
+        .flatMap((module) => module.calls)
+        .find((call) => call.method === name)!;
+    const takes = (name: string) =>
+      (
+        invoker as unknown as { takesIdempotencyKey(binding: unknown): boolean }
+      ).takesIdempotencyKey(binding(name));
+
+    expect(takes('Mutate')).toBe(true);
+    expect(takes('Deploy')).toBe(false);
+    expect(takes('Query')).toBe(false);
+    // And a read is retryable on its own account, key or no key.
+    expect(MODULES.find((m) => m.name === 'instance')!.calls[0]!.retry).toBe('safe');
   });
 
   it('reuses the key on every retry of one logical call', async () => {
@@ -186,7 +235,6 @@ describe('typescript_retry_reuses_idempotency_key', () => {
 /** The retry class of every generated call, read off the generated table. */
 const MODULES_RETRY = new Map<string, string>();
 {
-  const { MODULES } = await import('../src/gen/facade.js');
   for (const module of MODULES) {
     for (const call of module.calls) {
       MODULES_RETRY.set(`${module.name}.${call.name}`, call.retry);
@@ -195,6 +243,6 @@ const MODULES_RETRY = new Map<string, string>();
 }
 
 /** `instance.getInstance`, which the generated table says is `safe`. */
-const READ_BINDING = (await import('../src/gen/facade.js')).MODULES.find(
+const READ_BINDING = MODULES.find(
   (module) => module.name === 'instance',
 )!.calls.find((call) => call.name === 'getInstance')!;

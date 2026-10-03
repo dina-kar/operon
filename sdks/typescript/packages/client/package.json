@@ -27,13 +27,14 @@
     "node": ">=22"
   },
   "scripts": {
-    "generate": "../../../scripts/sdk/gen.sh typescript",
+    "generate": "../../../../scripts/sdk/gen.sh typescript",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run"
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.16.0",
     "@connectrpc/connect": "2.2.0",
+    "@connectrpc/connect-node": "2.2.0",
     "@connectrpc/connect-web": "2.2.0",
     "@loams/live": "workspace:*",
     "@loams/proto": "workspace:*"
@@ -41,9 +42,8 @@
   "devDependencies": {
     "@bufbuild/buf": "1.73.0",
     "@bufbuild/protoc-gen-es": "2.16.0",
-    "@connectrpc/connect-node": "2.2.0",
+    "@types/node": "24.10.1",
     "typescript": "5.9.3",
-    "vitest": "5.0.3",
-    "@types/node": "24.10.1"
+    "vitest": "5.0.3"
   }
 }

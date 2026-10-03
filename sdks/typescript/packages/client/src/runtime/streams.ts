@@ -68,9 +68,15 @@ export async function* watch<Message, Request extends object>(
   const retrySafe = options.retrySafe ?? true;
   let current = request;
   let cursor: string | undefined;
-  for (let attempt = 0; ; attempt += 1) {
+  let attempt = 0;
+  for (;;) {
     try {
       for await (const message of open(current, options)) {
+        // Progress earns a fresh budget: `maxRetries` bounds the retries in
+        // one *run* of disconnects, not for the life of the stream. A watch
+        // that recovers from a node restart and then runs for days must not
+        // spend its budget on the first failure of each of those days.
+        attempt = 0;
         cursor = cursorOf(message) ?? cursor;
         options.onCursor?.(cursor, message);
         yield message;
@@ -83,6 +89,7 @@ export async function* watch<Message, Request extends object>(
       }
       current = options.resume(cursor, request);
       await sleep(backoffMs(attempt), options.signal);
+      attempt += 1;
     }
   }
 }

@@ -36,8 +36,11 @@ export interface TransportOptions {
    * smaller and does not need a JSON codec on the wire.
    */
   useBinaryFormat?: boolean;
-  /** Aborts every call that outlives it. */
-  timeoutMs?: number;
+  /**
+   * The deadline for a call that does not set its own, passed to the
+   * transport as `defaultTimeoutMs`. A per-call `timeoutMs` still wins.
+   */
+  defaultTimeoutMs?: number;
   /**
    * CORS preflights for the browser: custom headers and the credential mode.
    * A browser sending `Authorization` needs the server's CORS policy to allow
@@ -59,7 +62,9 @@ export function createLoamsTransport(options: TransportOptions = {}): Transport 
     baseUrl: options.baseUrl ?? '',
     useBinaryFormat: options.useBinaryFormat ?? true,
     ...(options.headers === undefined ? {} : { headers: options.headers }),
-    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    ...(options.defaultTimeoutMs === undefined
+      ? {}
+      : { defaultTimeoutMs: options.defaultTimeoutMs }),
     ...(options.interceptors === undefined ? {} : { interceptors: options.interceptors }),
   });
 }

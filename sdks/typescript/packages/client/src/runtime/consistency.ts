@@ -50,6 +50,7 @@ export class ConsistencySession {
       return;
     }
     if (!isConsistencyToken(token)) {
+      this.#conflicts += 1;
       throw new LoamsError(`not a consistency token: ${token}`, { code: Code.Internal });
     }
     if (this.#token === undefined || this.#token === token) {
