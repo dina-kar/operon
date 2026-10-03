@@ -4,6 +4,7 @@ mod aggs;
 mod aliases;
 mod ann;
 mod backlog;
+mod coerce_kinds;
 mod compile;
 mod determinism;
 mod filter_write;
