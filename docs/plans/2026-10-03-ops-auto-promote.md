@@ -76,6 +76,7 @@ State inspected on 2026-10-03, before this change:
 | 6 | Reversal is documented in the comment, not automated. | GitHub offers no undo for an organisation invitation, and an unattended "undo" job would be able to remove a maintainer. The comment names the team and says a maintainer can remove the account from it; that is the whole of the reversal. |
 | 7 | The credential is not created by this task, and the workflow is not gated on it. | Creating a GitHub App and a private key is an owner action the issue names explicitly. The workflow ships first and does the useful half of the job — telling the contributor and the maintainer what happened — from the moment it merges. |
 | 8 | The test is not wired into `ci.yml` in this PR. | `.github/workflows/ci.yml` is being edited concurrently for #232; adding a job here would conflict. The test runs standalone with `python3 scripts/ci/test-auto-promote.py` and should be added to the `check` job once #232 lands. |
+| 9 | `actions/checkout` pinned to a SHA, and the App's private key scoped to the token-minting step rather than the job. | This workflow runs on `pull_request_target`, so the `GITHUB_TOKEN` has write access and the job can see the org secret. Pinning removes the moved-tag vector, and scoping the key to the one step that needs it keeps it out of every other step's environment. A configured `ORG_APP_ID` with a missing key fails loudly rather than falling back silently. |
 
 ## Owner action
 
