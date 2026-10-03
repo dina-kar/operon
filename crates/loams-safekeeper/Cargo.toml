@@ -6,6 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
+# Not on crates.io yet: the `tikv` feature's loams-tikv dependency is part of
+# the published manifest, and loams-tikv is `publish = false` because
+# tikv-client is a git dependency. The flag comes off when that fork is
+# published or vendored. See docs/release/publishing.md.
+publish = false
 
 [features]
 # The TiKV WalStore (the production hot tier). Off by default, so the crate

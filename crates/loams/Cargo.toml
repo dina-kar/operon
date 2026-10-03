@@ -6,6 +6,14 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
+# Not on crates.io yet. The optional loams-tikv, loams-durable and
+# loams-meta-tikv dependencies are part of the published manifest, and all
+# three are `publish = false` (the first two on git dependencies that no
+# registry can resolve), so crates.io would ship a crate nobody can build.
+# Publishing the binary is D294's `cargo install loams`; it waits on the
+# release pipeline's Task 9 and this flag comes off in the PR that does it.
+# See docs/release/publishing.md.
+publish = false
 
 [[bin]]
 name = "loams"
