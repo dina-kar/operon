@@ -1,0 +1,42 @@
+[package]
+name = "loams-sidebar-browser"
+description = "The docked sidebar browser: Obscura over CDP, with a persistent per-(environment, app) profile and a credential boundary that keeps Loams tokens out of the engine (design §37 §18, D620)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+# Desktop-internal: it is not a library anyone consumes, and its release
+# artefacts are the desktop's, not a crate.
+publish = false
+
+[features]
+# D620 supersedes SF1 Task 0's ruling E1. The feature is **on** by default:
+# there is no longer a per-platform webview whose ephemeral store or missing
+# WebAuthn implementation could block it, because there is no webview. The
+# flag stays so the panel can still be compiled out of a build that must not
+# ship the engine at all.
+default = ["sidebar-browser"]
+sidebar-browser = []
+
+[dependencies]
+base64.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio-tungstenite.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true
